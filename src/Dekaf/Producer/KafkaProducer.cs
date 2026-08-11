@@ -1937,33 +1937,45 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         ArgumentNullException.ThrowIfNull(topic);
         ArgumentNullException.ThrowIfNull(messages);
 
-        var messageList = messages as IList<TopicProducerMessage<TKey, TValue>> ?? messages.ToList();
+        // Materialize before entering the bulk scope so arbitrary caller enumeration cannot
+        // suppress the accumulator's app-limited seal gate for an unbounded duration.
+        var messageList = PooledReadOnlyList<TopicProducerMessage<TKey, TValue>>.Rent(messages);
         if (messageList.Count == 0)
+        {
+            messageList.Dispose();
             return [];
+        }
 
         var completion = ProduceAllCompletion.Rent(messageList.Count);
         using var bulkScope = _accumulator.EnterBulkProduceScope();
-        for (var i = 0; i < messageList.Count; i++)
+        try
         {
-            try
+            for (var i = 0; i < messageList.Count; i++)
             {
-                var message = messageList[i];
-                completion.Register(i, ProduceAsync(
-                    topic,
-                    message.Key,
-                    message.Value,
-                    message.Headers,
-                    message.Partition,
-                    message.Timestamp,
-                    ProduceContinuationMode.InlineWhenDirect,
-                    cancellationToken));
+                try
+                {
+                    var message = messageList[i];
+                    completion.Register(i, ProduceAsync(
+                        topic,
+                        message.Key,
+                        message.Value,
+                        message.Headers,
+                        message.Partition,
+                        message.Timestamp,
+                        ProduceContinuationMode.InlineWhenDirect,
+                        cancellationToken));
+                }
+                catch (Exception ex)
+                {
+                    completion.RecordFailure(i, ex);
+                    completion.AbortRegistration(messageList.Count - i);
+                    break;
+                }
             }
-            catch (Exception ex)
-            {
-                completion.RecordFailure(i, ex);
-                completion.AbortRegistration(messageList.Count - i);
-                break;
-            }
+        }
+        finally
+        {
+            messageList.Dispose();
         }
 
         return await completion.WaitAsync().ConfigureAwait(false);

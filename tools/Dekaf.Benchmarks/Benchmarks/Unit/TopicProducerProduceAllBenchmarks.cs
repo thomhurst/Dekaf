@@ -13,13 +13,22 @@ public class TopicProducerProduceAllBenchmarks
     private ITopicProducer<string, string> _producer = null!;
     private TopicProducerMessage<string, string>[] _messages = null!;
 
+    public enum MessageSource
+    {
+        Array,
+        Enumerable,
+    }
+
     [Params(1, 100)]
     public int MessageCount { get; set; }
+
+    [ParamsAllValues]
+    public MessageSource Source { get; set; }
 
     [GlobalSetup]
     public void Setup()
     {
-        _producer = new BenchmarkProducer().ForTopic("benchmark-topic");
+        _producer = new BenchmarkProducer(MessageCount).ForTopic("benchmark-topic");
         _messages = Enumerable.Range(0, MessageCount)
             .Select(static i => new TopicProducerMessage<string, string>
             {
@@ -32,13 +41,23 @@ public class TopicProducerProduceAllBenchmarks
     }
 
     [Benchmark]
-    public Task<RecordMetadata[]> ProduceAllAsync() => _producer.ProduceAllAsync(_messages);
+    public Task<RecordMetadata[]> ProduceAllAsync() => _producer.ProduceAllAsync(GetMessages());
+
+    private IEnumerable<TopicProducerMessage<string, string>> GetMessages() =>
+        Source is MessageSource.Array ? _messages : EnumerateMessages();
+
+    private IEnumerable<TopicProducerMessage<string, string>> EnumerateMessages()
+    {
+        for (var i = 0; i < _messages.Length; i++)
+            yield return _messages[i];
+    }
 
     private sealed class BenchmarkProducer : IKafkaProducer<string, string>, IProducerFastPath<string, string>
     {
-        private static readonly RecordMetadata[] Results = [];
-        private static readonly Task<RecordMetadata[]> CompletedResults = Task.FromResult(Results);
+        private readonly int _expectedCount;
         private int _checksum;
+
+        public BenchmarkProducer(int expectedCount) => _expectedCount = expectedCount;
 
         public ValueTask InitializeAsync(CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
 
@@ -73,12 +92,18 @@ public class TopicProducerProduceAllBenchmarks
             IEnumerable<ProducerMessage<string, string>> messages,
             CancellationToken cancellationToken = default)
         {
+            var results = new RecordMetadata[_expectedCount];
             var checksum = 0;
+            var index = 0;
             foreach (var message in messages)
+            {
                 checksum += message.Value.Length;
+                results[index] = CreateMetadata(index++);
+            }
 
+            ValidateCount(index);
             Volatile.Write(ref _checksum, checksum);
-            return CompletedResults;
+            return Task.FromResult(results);
         }
 
         public Task<RecordMetadata[]> ProduceAllAsync(
@@ -91,12 +116,32 @@ public class TopicProducerProduceAllBenchmarks
             IEnumerable<TopicProducerMessage<string, string>> messages,
             CancellationToken cancellationToken = default)
         {
+            var results = new RecordMetadata[_expectedCount];
             var checksum = 0;
+            var index = 0;
             foreach (var message in messages)
+            {
                 checksum += message.Value.Length;
+                results[index] = CreateMetadata(index++);
+            }
 
+            ValidateCount(index);
             Volatile.Write(ref _checksum, checksum);
-            return CompletedResults;
+            return Task.FromResult(results);
+        }
+
+        private static RecordMetadata CreateMetadata(int index) => new()
+        {
+            Topic = "benchmark-topic",
+            Partition = index % 3,
+            Offset = index,
+            Timestamp = DateTimeOffset.UnixEpoch,
+        };
+
+        private void ValidateCount(int count)
+        {
+            if (count != _expectedCount)
+                throw new InvalidOperationException($"Expected {_expectedCount} messages but received {count}.");
         }
 
         public ValueTask FlushAsync(CancellationToken cancellationToken = default) => ValueTask.CompletedTask;

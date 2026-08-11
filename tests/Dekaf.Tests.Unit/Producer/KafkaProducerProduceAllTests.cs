@@ -61,4 +61,34 @@ public class KafkaProducerProduceAllTests
             await producer.DisposeAsync();
         }
     }
+
+    [Test]
+    public async Task TopicProducer_ProduceAllAsync_NonListSyncThrow_FaultsAggregateWithoutHanging()
+    {
+        var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .Build();
+
+        try
+        {
+            var topicProducer = producer.ForTopic("test-topic");
+
+            var thrown = await Assert.ThrowsAsync<InvalidOperationException>(
+                async () => await topicProducer.ProduceAllAsync(EnumerateMessages())
+                    .WaitAsync(TimeSpan.FromSeconds(10)));
+
+            await Assert.That(thrown!.Message).Contains("InitializeAsync");
+        }
+        finally
+        {
+            await producer.DisposeAsync();
+        }
+    }
+
+    private static IEnumerable<TopicProducerMessage<string, string>> EnumerateMessages()
+    {
+        yield return new TopicProducerMessage<string, string> { Key = "k0", Value = "v0" };
+        yield return new TopicProducerMessage<string, string> { Key = "k1", Value = "v1" };
+        yield return new TopicProducerMessage<string, string> { Key = "k2", Value = "v2" };
+    }
 }
