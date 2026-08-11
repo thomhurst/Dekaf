@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Engines;
 using Dekaf.Consumer;
@@ -67,6 +68,16 @@ public class MpscFetchBufferSignalBenchmarks
         "benchmark-topic",
         partitionIndex: 0,
         Array.Empty<RecordBatch>());
+    private readonly Action _continuation;
+    private ValueTask<bool> _pendingWait;
+    private Exception? _completionException;
+    private bool _signaled;
+    private int _completionVersion;
+
+    public MpscFetchBufferSignalBenchmarks()
+    {
+        _continuation = CompletePendingWait;
+    }
 
     [GlobalSetup]
     public void Setup() => SignalPendingWait();
@@ -74,22 +85,49 @@ public class MpscFetchBufferSignalBenchmarks
     [Benchmark]
     public bool SignalPendingWait()
     {
-        var wait = _buffer.WaitToReadAsync(Timeout.Infinite, CancellationToken.None);
-        if (wait.IsCompleted)
+        var expectedVersion = Volatile.Read(ref _completionVersion) + 1;
+        _completionException = null;
+        _pendingWait = _buffer.WaitToReadAsync(Timeout.Infinite, CancellationToken.None);
+        if (_pendingWait.IsCompleted)
             throw new InvalidOperationException("Read wait did not park.");
+
+        _pendingWait.GetAwaiter().UnsafeOnCompleted(_continuation);
 
         if (!_buffer.TryWrite(_item))
             throw new InvalidOperationException("Benchmark item could not be written.");
 
+        var deadline = Stopwatch.GetTimestamp() + 5 * Stopwatch.Frequency;
         var spin = new SpinWait();
-        while (!wait.IsCompleted)
+        while (Volatile.Read(ref _completionVersion) != expectedVersion)
+        {
+            if (Stopwatch.GetTimestamp() >= deadline)
+                throw new InvalidOperationException("Read wait did not complete within five seconds.");
             spin.SpinOnce();
+        }
 
-        var signaled = wait.GetAwaiter().GetResult();
+        if (_completionException is not null)
+            throw new InvalidOperationException("Read wait failed.", _completionException);
+
         if (!_buffer.TryRead(out var item) || !ReferenceEquals(item, _item))
             throw new InvalidOperationException("Benchmark item could not be read.");
 
-        return signaled;
+        return _signaled;
+    }
+
+    private void CompletePendingWait()
+    {
+        try
+        {
+            _signaled = _pendingWait.GetAwaiter().GetResult();
+        }
+        catch (Exception exception)
+        {
+            _completionException = exception;
+        }
+        finally
+        {
+            Interlocked.Increment(ref _completionVersion);
+        }
     }
 
     [GlobalCleanup]

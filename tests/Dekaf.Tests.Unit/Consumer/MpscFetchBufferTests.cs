@@ -502,6 +502,93 @@ public class MpscFetchBufferTests
     }
 
     [Test]
+    public async Task WaitToReadAsync_DisposeAfterCancellationRegistration_DoesNotReactivateWaiter()
+    {
+        using var registrationCompleted = new ManualResetEventSlim();
+        using var releaseWaiter = new ManualResetEventSlim();
+        using var cts = new CancellationTokenSource();
+        var buffer = new MpscFetchBuffer(
+            capacity: 4,
+            afterProducerWaiterCountIncrementedForTesting: null,
+            afterConsumerCancellationRegisteredForTesting: () =>
+            {
+                registrationCompleted.Set();
+                releaseWaiter.Wait();
+            });
+
+        var waitTask = Task.Run(() =>
+            buffer.WaitToReadAsync(Timeout.Infinite, cts.Token).AsTask());
+
+        try
+        {
+            await Assert.That(registrationCompleted.Wait(TimeSpan.FromSeconds(5))).IsTrue();
+
+            buffer.Dispose();
+            releaseWaiter.Set();
+
+            await Assert.That(await waitTask).IsFalse();
+            await Assert.That(GetConsumerWaiting(buffer)).IsEqualTo(0);
+            await Assert.That(IsReadWaiterActive(buffer)).IsFalse();
+        }
+        finally
+        {
+            releaseWaiter.Set();
+            buffer.Dispose();
+        }
+    }
+
+    [Test]
+    public async Task Dispose_PrefetchProducerCanCompleteAfterBestEffortShutdown()
+    {
+        var buffer = new MpscFetchBuffer(4);
+        var producerCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        buffer.Dispose(producerCompletion.Task);
+        buffer.Complete();
+
+        await Assert.That(buffer.IsCompleted).IsTrue();
+        await Assert.That(buffer.ProducerSignalsDisposedForTesting).IsFalse();
+
+        producerCompletion.SetResult();
+        await TestWait.UntilAsync(
+            () => buffer.ProducerSignalsDisposedForTesting,
+            TimeSpan.FromSeconds(5));
+    }
+
+    [Test]
+    public async Task Dispose_PrefetchProducerCanObserveReleasedSpaceAfterBestEffortShutdown()
+    {
+        var buffer = new MpscFetchBuffer(1);
+        var item = CreateDummy();
+        var producerCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        try
+        {
+            await Assert.That(buffer.TryWrite(item)).IsTrue();
+            var producerWait = buffer.WaitToWriteAsync(CancellationToken.None).AsTask();
+            await TestWait.UntilAsync(() => buffer.ProducerWaiterCount == 1, TimeSpan.FromSeconds(5));
+
+            buffer.Dispose(producerCompletion.Task);
+            await Assert.That(buffer.TryRead(out var read)).IsTrue();
+            await producerWait;
+
+            await Assert.That(read).IsSameReferenceAs(item);
+            await Assert.That(buffer.ProducerSignalsDisposedForTesting).IsFalse();
+
+            producerCompletion.SetResult();
+            await TestWait.UntilAsync(
+                () => buffer.ProducerSignalsDisposedForTesting,
+                TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            producerCompletion.TrySetResult();
+            item.Dispose();
+            buffer.Dispose();
+        }
+    }
+
+    [Test]
     public async Task WaitToReadAsync_AlreadyCompletedWithError_ThrowsError()
     {
         var buffer = new MpscFetchBuffer(4);

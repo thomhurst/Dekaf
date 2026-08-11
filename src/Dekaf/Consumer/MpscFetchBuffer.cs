@@ -34,9 +34,11 @@ internal sealed class MpscFetchBuffer
     private readonly Action? _beforeConsumerTimeoutForTesting;
     private readonly Action? _afterConsumerTimeoutForTesting;
     private readonly Action? _beforeConsumerTimeoutCompletionForTesting;
+    private readonly Action? _afterConsumerCancellationRegisteredForTesting;
     private bool _readWaiterActive;
     private int _producerWaiterCount;
     private int _consumerWaiting;
+    private int _producerSignalsDisposed;
     private volatile bool _completed;
     private volatile Exception? _completionError;
 
@@ -48,7 +50,8 @@ internal sealed class MpscFetchBuffer
             afterProducerSlotReservedForTesting: null,
             beforeConsumerTimeoutForTesting: null,
             afterConsumerTimeoutForTesting: null,
-            beforeConsumerTimeoutCompletionForTesting: null)
+            beforeConsumerTimeoutCompletionForTesting: null,
+            afterConsumerCancellationRegisteredForTesting: null)
     {
     }
 
@@ -59,7 +62,8 @@ internal sealed class MpscFetchBuffer
         Action<long>? afterProducerSlotReservedForTesting = null,
         Action? beforeConsumerTimeoutForTesting = null,
         Action? afterConsumerTimeoutForTesting = null,
-        Action? beforeConsumerTimeoutCompletionForTesting = null)
+        Action? beforeConsumerTimeoutCompletionForTesting = null,
+        Action? afterConsumerCancellationRegisteredForTesting = null)
     {
         if (capacity < 1)
             throw new ArgumentOutOfRangeException(nameof(capacity), "Capacity must be positive.");
@@ -80,6 +84,7 @@ internal sealed class MpscFetchBuffer
         _beforeConsumerTimeoutForTesting = beforeConsumerTimeoutForTesting;
         _afterConsumerTimeoutForTesting = afterConsumerTimeoutForTesting;
         _beforeConsumerTimeoutCompletionForTesting = beforeConsumerTimeoutCompletionForTesting;
+        _afterConsumerCancellationRegisteredForTesting = afterConsumerCancellationRegisteredForTesting;
         _readWaiter = new ReadWaiter(this);
     }
 
@@ -96,6 +101,8 @@ internal sealed class MpscFetchBuffer
     }
 
     internal int ProducerWaiterCount => Volatile.Read(ref _producerWaiterCount);
+
+    internal bool ProducerSignalsDisposedForTesting => Volatile.Read(ref _producerSignalsDisposed) != 0;
 
     /// <summary>
     /// Attempts to write an item. Safe for concurrent callers (multiple prefetch tasks).
@@ -294,7 +301,10 @@ internal sealed class MpscFetchBuffer
             spin.SpinOnce();
         }
 
-        _readWaiter.SetCancellationToken(cancellationToken);
+        if (!_readWaiter.TrySetCancellationToken(cancellationToken))
+            return new ValueTask<bool>(false);
+
+        _afterConsumerCancellationRegisteredForTesting?.Invoke();
         Volatile.Write(ref _consumerWaiting, 1);
         Interlocked.MemoryBarrier();
 
@@ -313,6 +323,12 @@ internal sealed class MpscFetchBuffer
                 if (_completionError is not null)
                     throw _completionError;
                 return new ValueTask<bool>(HasDataAvailable());
+            }
+
+            if (_readWaiter.IsDisposed)
+            {
+                Volatile.Write(ref _consumerWaiting, 0);
+                return new ValueTask<bool>(false);
             }
 
             Debug.Assert(!_readWaiterActive, "MpscFetchBuffer supports one active reader.");
@@ -361,9 +377,36 @@ internal sealed class MpscFetchBuffer
         }
     }
 
-    internal void Dispose()
+    internal void Dispose(Task? producerTask = null)
     {
         _readWaiter.Dispose();
+
+        if (producerTask is { IsCompleted: false })
+        {
+            _ = producerTask.ContinueWith(
+                static (task, state) =>
+                {
+                    _ = task.Exception;
+                    ((MpscFetchBuffer)state!).DisposeProducerSignals();
+                },
+                this,
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+            return;
+        }
+
+        if (producerTask?.IsFaulted is true)
+            _ = producerTask.Exception;
+
+        DisposeProducerSignals();
+    }
+
+    private void DisposeProducerSignals()
+    {
+        if (Interlocked.Exchange(ref _producerSignalsDisposed, 1) != 0)
+            return;
+
         _dataAvailable.Dispose();
         _spaceAvailable.Dispose();
     }
@@ -381,6 +424,7 @@ internal sealed class MpscFetchBuffer
 #endif
     {
         private readonly MpscFetchBuffer _owner;
+        private readonly object _registrationGate = new();
         private readonly TimerCallback _timeoutCallback;
         private ManualResetValueTaskSourceCore<bool> _core;
         private Timer? _timeoutTimer;
@@ -400,16 +444,25 @@ internal sealed class MpscFetchBuffer
             _timeoutCallback = static state => ((ReadWaiter)state!).OnTimeout();
         }
 
-        public void SetCancellationToken(CancellationToken cancellationToken)
+        public bool IsDisposed => _disposed;
+
+        public bool TrySetCancellationToken(CancellationToken cancellationToken)
         {
-            // CancellationTokenSource.TryReset clears registrations without changing token
-            // identity, so equality cannot prove that the previous registration is still live.
-            _cancellationRegistration.Dispose();
-            _cancellationToken = cancellationToken;
-            Volatile.Write(ref _cancellationRequested, cancellationToken.IsCancellationRequested ? 1 : 0);
-            _cancellationRegistration = cancellationToken.CanBeCanceled
-                ? cancellationToken.UnsafeRegister(static state => ((ReadWaiter)state!).OnCancellation(), this)
-                : default;
+            lock (_registrationGate)
+            {
+                if (_disposed)
+                    return false;
+
+                // CancellationTokenSource.TryReset clears registrations without changing token
+                // identity, so equality cannot prove that the previous registration is still live.
+                _cancellationRegistration.Dispose();
+                _cancellationToken = cancellationToken;
+                Volatile.Write(ref _cancellationRequested, cancellationToken.IsCancellationRequested ? 1 : 0);
+                _cancellationRegistration = cancellationToken.CanBeCanceled
+                    ? cancellationToken.UnsafeRegister(static state => ((ReadWaiter)state!).OnCancellation(), this)
+                    : default;
+                return true;
+            }
         }
 
         public ValueTask<bool> Prepare(int timeoutMs)
@@ -570,30 +623,33 @@ internal sealed class MpscFetchBuffer
 
         public void Dispose()
         {
-            CancellationTokenRegistration cancellationRegistration;
-            Timer? timeoutTimer;
-
-            lock (_owner._dataAvailableWaiterLock)
+            lock (_registrationGate)
             {
-                if (_disposed)
-                    return;
+                CancellationTokenRegistration cancellationRegistration;
+                Timer? timeoutTimer;
 
-                _disposed = true;
+                lock (_owner._dataAvailableWaiterLock)
+                {
+                    if (_disposed)
+                        return;
 
-                // Dispose may race the caller consuming the pending ValueTask. Complete it
-                // before tearing down its only wake-up sources, then detach the timer so the
-                // eventual GetResult cleanup cannot call Change on a disposed instance.
-                if (_owner._readWaiterActive)
-                    TrySetSignal();
+                    _disposed = true;
 
-                cancellationRegistration = _cancellationRegistration;
-                _cancellationRegistration = default;
-                timeoutTimer = _timeoutTimer;
-                _timeoutTimer = null;
+                    // Dispose may race the caller consuming the pending ValueTask. Complete it
+                    // before tearing down its only wake-up sources, then detach the timer so the
+                    // eventual GetResult cleanup cannot call Change on a disposed instance.
+                    if (_owner._readWaiterActive)
+                        TrySetSignal();
+
+                    cancellationRegistration = _cancellationRegistration;
+                    _cancellationRegistration = default;
+                    timeoutTimer = _timeoutTimer;
+                    _timeoutTimer = null;
+                }
+
+                cancellationRegistration.Dispose();
+                timeoutTimer?.Dispose();
             }
-
-            cancellationRegistration.Dispose();
-            timeoutTimer?.Dispose();
         }
     }
 
