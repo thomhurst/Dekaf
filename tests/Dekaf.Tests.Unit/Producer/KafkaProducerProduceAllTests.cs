@@ -85,10 +85,39 @@ public class KafkaProducerProduceAllTests
         }
     }
 
+    [Test]
+    public async Task TopicProducer_ProduceAllAsync_EmptyInputs_ReturnsEmptyResults()
+    {
+        var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .Build();
+
+        try
+        {
+            var topicProducer = producer.ForTopic("test-topic");
+
+            var listResult = await topicProducer.ProduceAllAsync(
+                Array.Empty<TopicProducerMessage<string, string>>());
+            var enumerableResult = await topicProducer.ProduceAllAsync(EnumerateNoMessages());
+
+            await Assert.That(listResult).IsEmpty();
+            await Assert.That(enumerableResult).IsEmpty();
+        }
+        finally
+        {
+            await producer.DisposeAsync();
+        }
+    }
+
     private static IEnumerable<TopicProducerMessage<string, string>> EnumerateMessages()
     {
         yield return new TopicProducerMessage<string, string> { Key = "k0", Value = "v0" };
         yield return new TopicProducerMessage<string, string> { Key = "k1", Value = "v1" };
         yield return new TopicProducerMessage<string, string> { Key = "k2", Value = "v2" };
+    }
+
+    private static IEnumerable<TopicProducerMessage<string, string>> EnumerateNoMessages()
+    {
+        yield break;
     }
 }
