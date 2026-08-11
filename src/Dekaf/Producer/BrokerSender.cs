@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading.Channels;
 using System.Threading.Tasks.Sources;
 using Dekaf.Compression;
@@ -2993,10 +2994,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     // Diagnostic: log response content and expected batches for mismatch diagnosis
                     if (_logger.IsEnabled(LogLevel.Debug))
                     {
-                        var batchKeys = string.Join(", ",
-                            Enumerable.Range(0, count)
-                                .Where(idx => batches[idx] is not null)
-                                .Select(idx => $"{batches[idx].TopicPartition.Topic}-{batches[idx].TopicPartition.Partition}"));
+                        var batchKeys = FormatBatchKeys(batches, count);
                         var respKeys = directResponse is not null
                             ? $"{batches[0].TopicPartition.Topic}-{directResponse.Value.Index}"
                             : responseLookup is not null
@@ -3970,10 +3968,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // This traces which batches are paired with which response task.
                 if (_logger.IsEnabled(LogLevel.Debug))
                 {
-                    var pipelinedPartitions = string.Join(", ",
-                        Enumerable.Range(0, count)
-                            .Where(i => batches[i] is not null)
-                            .Select(i => $"{batches[i].TopicPartition.Topic}-{batches[i].TopicPartition.Partition}"));
+                    var pipelinedPartitions = FormatBatchKeys(batches, count);
                     LogPendingResponseCreated(_instanceId, _brokerId, responseTask.Id, count, pipelinedPartitions);
                 }
 
@@ -4165,6 +4160,26 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 ArrayPool<int>.Shared.Return(generations);
             }
         }
+    }
+
+    internal static string FormatBatchKeys(ReadyBatch[] batches, int count)
+    {
+        var result = new StringBuilder();
+        for (var i = 0; i < count; i++)
+        {
+            var batch = batches[i];
+            if (batch is null)
+                continue;
+
+            if (result.Length > 0)
+                result.Append(", ");
+
+            result.Append(batch.TopicPartition.Topic)
+                .Append('-')
+                .Append(batch.TopicPartition.Partition);
+        }
+
+        return result.ToString();
     }
 
     internal static bool IsFatalAuthenticationFailure(
