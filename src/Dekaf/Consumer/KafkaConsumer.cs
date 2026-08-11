@@ -4049,6 +4049,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         return ConsumeOneWithTimeoutAsync(timeout, bufferedDrainStarted, pollRecorded, cancellationToken);
     }
 
+#if NET
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
+#endif
     private async ValueTask<ConsumeResult<TKey, TValue>?> ConsumeOneWithTimeoutAsync(
         TimeSpan timeout,
         long? bufferedDrainStarted,
