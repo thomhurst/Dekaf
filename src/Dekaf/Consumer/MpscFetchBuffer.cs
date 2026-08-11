@@ -521,6 +521,8 @@ internal sealed class MpscFetchBuffer
             if (!ThreadPool.UnsafeQueueUserWorkItem(this, preferLocal: false))
                 ExecuteQueuedCompletion();
 #else
+            // The compatibility reference asset cannot access IThreadPoolWorkItem. Dekaf's
+            // supported .NET 10+ runtime selects the allocation-free net10.0 asset above.
             if (!ThreadPool.QueueUserWorkItem(static state => ((ReadWaiter)state!).ExecuteQueuedCompletion(), this))
                 ExecuteQueuedCompletion();
 #endif
