@@ -1,6 +1,8 @@
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Threading.Tasks.Sources;
 
 namespace Dekaf.Consumer;
 
@@ -25,10 +27,14 @@ internal sealed class MpscFetchBuffer
     private readonly ManualResetEventSlim _dataAvailable = new(false);
     private readonly SemaphoreSlim _spaceAvailable = new(0, int.MaxValue);
     private readonly object _dataAvailableWaiterLock = new();
+    private readonly ReadWaiter _readWaiter;
     private readonly Action? _afterProducerWaiterCountIncrementedForTesting;
     private readonly Action? _beforeConsumerWaitSpinForTesting;
     private readonly Action<long>? _afterProducerSlotReservedForTesting;
-    private TaskCompletionSource<bool>? _dataAvailableWaiter;
+    private readonly Action? _beforeConsumerTimeoutForTesting;
+    private readonly Action? _afterConsumerTimeoutForTesting;
+    private readonly Action? _beforeConsumerTimeoutCompletionForTesting;
+    private bool _readWaiterActive;
     private int _producerWaiterCount;
     private int _consumerWaiting;
     private volatile bool _completed;
@@ -39,7 +45,10 @@ internal sealed class MpscFetchBuffer
             capacity,
             afterProducerWaiterCountIncrementedForTesting: null,
             beforeConsumerWaitSpinForTesting: null,
-            afterProducerSlotReservedForTesting: null)
+            afterProducerSlotReservedForTesting: null,
+            beforeConsumerTimeoutForTesting: null,
+            afterConsumerTimeoutForTesting: null,
+            beforeConsumerTimeoutCompletionForTesting: null)
     {
     }
 
@@ -47,7 +56,10 @@ internal sealed class MpscFetchBuffer
         int capacity,
         Action? afterProducerWaiterCountIncrementedForTesting,
         Action? beforeConsumerWaitSpinForTesting = null,
-        Action<long>? afterProducerSlotReservedForTesting = null)
+        Action<long>? afterProducerSlotReservedForTesting = null,
+        Action? beforeConsumerTimeoutForTesting = null,
+        Action? afterConsumerTimeoutForTesting = null,
+        Action? beforeConsumerTimeoutCompletionForTesting = null)
     {
         if (capacity < 1)
             throw new ArgumentOutOfRangeException(nameof(capacity), "Capacity must be positive.");
@@ -65,6 +77,10 @@ internal sealed class MpscFetchBuffer
         _afterProducerWaiterCountIncrementedForTesting = afterProducerWaiterCountIncrementedForTesting;
         _beforeConsumerWaitSpinForTesting = beforeConsumerWaitSpinForTesting;
         _afterProducerSlotReservedForTesting = afterProducerSlotReservedForTesting;
+        _beforeConsumerTimeoutForTesting = beforeConsumerTimeoutForTesting;
+        _afterConsumerTimeoutForTesting = afterConsumerTimeoutForTesting;
+        _beforeConsumerTimeoutCompletionForTesting = beforeConsumerTimeoutCompletionForTesting;
+        _readWaiter = new ReadWaiter(this);
     }
 
     internal int Capacity => _buffer.Length;
@@ -240,20 +256,20 @@ internal sealed class MpscFetchBuffer
     /// Waits asynchronously until data is available or the buffer is completed.
     /// Returns false if the wait times out or the buffer is completed and empty.
     /// </summary>
-    public async ValueTask<bool> WaitToReadAsync(int timeoutMs, CancellationToken cancellationToken)
+    public ValueTask<bool> WaitToReadAsync(int timeoutMs, CancellationToken cancellationToken)
     {
         if (timeoutMs < Timeout.Infinite)
             throw new ArgumentOutOfRangeException(nameof(timeoutMs), "Timeout must be non-negative or Timeout.Infinite.");
 
         // Fast check: data already available?
         if (HasDataAvailable())
-            return true;
+            return new ValueTask<bool>(true);
 
         if (_completed)
         {
             if (_completionError is not null)
                 throw _completionError;
-            return HasDataAvailable();
+            return new ValueTask<bool>(HasDataAvailable());
         }
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -262,7 +278,7 @@ internal sealed class MpscFetchBuffer
         {
             if (_completionError is not null)
                 throw _completionError;
-            return HasDataAvailable();
+            return new ValueTask<bool>(HasDataAvailable());
         }
 
         // Catch near-simultaneous producer arrivals without publishing a TCS and forcing its
@@ -273,75 +289,34 @@ internal sealed class MpscFetchBuffer
         while (!spin.NextSpinWillYield)
         {
             if (HasDataAvailable())
-                return true;
+                return new ValueTask<bool>(true);
 
             spin.SpinOnce();
         }
 
-        TaskCompletionSource<bool>? waiter = null;
+        _readWaiter.SetCancellationToken(cancellationToken);
         Volatile.Write(ref _consumerWaiting, 1);
+        Interlocked.MemoryBarrier();
 
-        try
+        lock (_dataAvailableWaiterLock)
         {
-            Interlocked.MemoryBarrier();
-
-            lock (_dataAvailableWaiterLock)
+            // Re-check after publishing the waiter flag to avoid missed signals.
+            if (HasDataAvailable())
             {
-                // Re-check after publishing the waiter flag to avoid missed signals.
-                if (HasDataAvailable())
-                    return true;
-
-                if (_completed)
-                {
-                    if (_completionError is not null)
-                        throw _completionError;
-                    return HasDataAvailable();
-                }
-
-                if (_dataAvailableWaiter is null || _dataAvailableWaiter.Task.IsCompleted)
-                {
-                    _dataAvailableWaiter =
-                        new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-                }
-
-                waiter = _dataAvailableWaiter;
+                Volatile.Write(ref _consumerWaiting, 0);
+                return new ValueTask<bool>(true);
             }
 
-            bool signaled;
-            if (timeoutMs == Timeout.Infinite)
+            if (_completed)
             {
-                signaled = await waiter.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
-            }
-            else
-            {
-                using var timeoutTimer = new Timer(
-                    static state => ((TaskCompletionSource<bool>)state!).TrySetResult(false),
-                    waiter,
-                    timeoutMs,
-                    Timeout.Infinite);
-                signaled = await waiter.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+                Volatile.Write(ref _consumerWaiting, 0);
+                if (_completionError is not null)
+                    throw _completionError;
+                return new ValueTask<bool>(HasDataAvailable());
             }
 
-            if (!signaled)
-                return false;
-
-            if (_completionError is not null)
-                throw _completionError;
-
-            return HasDataAvailable();
-        }
-        finally
-        {
-            if (waiter is not null)
-            {
-                lock (_dataAvailableWaiterLock)
-                {
-                    if (ReferenceEquals(_dataAvailableWaiter, waiter))
-                        _dataAvailableWaiter = null;
-                }
-            }
-
-            Volatile.Write(ref _consumerWaiting, 0);
+            _readWaiterActive = true;
+            return _readWaiter.Prepare(timeoutMs);
         }
     }
 
@@ -378,19 +353,222 @@ internal sealed class MpscFetchBuffer
     {
         _dataAvailable.Set();
 
-        TaskCompletionSource<bool>? waiter;
         lock (_dataAvailableWaiterLock)
         {
-            waiter = _dataAvailableWaiter;
+            if (_readWaiterActive)
+                _readWaiter.TrySetSignal();
         }
+    }
 
-        waiter?.TrySetResult(true);
+    internal void Dispose()
+    {
+        _readWaiter.Dispose();
+        _dataAvailable.Dispose();
+        _spaceAvailable.Dispose();
     }
 
     private void DrainAvailableSpaceSignals()
     {
         while (_spaceAvailable.Wait(0, CancellationToken.None))
         {
+        }
+    }
+
+    private sealed class ReadWaiter : IValueTaskSource<bool>, IDisposable
+#if NET10_0_OR_GREATER
+        , IThreadPoolWorkItem
+#endif
+    {
+        private readonly MpscFetchBuffer _owner;
+        private readonly TimerCallback _timeoutCallback;
+        private ManualResetValueTaskSourceCore<bool> _core;
+        private Timer? _timeoutTimer;
+        private CancellationTokenRegistration _cancellationRegistration;
+        private CancellationToken _cancellationToken;
+        private long _timeoutDeadline;
+        private bool _completed;
+        private bool _queuedResult;
+        private Exception? _queuedException;
+        private int _cancellationRequested;
+
+        public ReadWaiter(MpscFetchBuffer owner)
+        {
+            _owner = owner;
+            _core.RunContinuationsAsynchronously = false;
+            _timeoutCallback = static state => ((ReadWaiter)state!).OnTimeout();
+        }
+
+        public void SetCancellationToken(CancellationToken cancellationToken)
+        {
+            if (cancellationToken == _cancellationToken)
+                return;
+
+            _cancellationRegistration.Dispose();
+            _cancellationToken = cancellationToken;
+            Volatile.Write(ref _cancellationRequested, cancellationToken.IsCancellationRequested ? 1 : 0);
+            _cancellationRegistration = cancellationToken.CanBeCanceled
+                ? cancellationToken.UnsafeRegister(static state => ((ReadWaiter)state!).OnCancellation(), this)
+                : default;
+        }
+
+        public ValueTask<bool> Prepare(int timeoutMs)
+        {
+            _core.Reset();
+            _completed = false;
+
+            if (Volatile.Read(ref _cancellationRequested) != 0)
+            {
+                TrySetException(new OperationCanceledException(_cancellationToken));
+                return new ValueTask<bool>(this, _core.Version);
+            }
+
+            if (timeoutMs != Timeout.Infinite)
+            {
+                _timeoutDeadline = Stopwatch.GetTimestamp()
+                    + timeoutMs * Stopwatch.Frequency / 1_000;
+                if (_timeoutTimer is null)
+                    _timeoutTimer = new Timer(_timeoutCallback, this, timeoutMs, Timeout.Infinite);
+                else
+                    _timeoutTimer.Change(timeoutMs, Timeout.Infinite);
+            }
+            else
+            {
+                _timeoutDeadline = long.MaxValue;
+            }
+
+            return new ValueTask<bool>(this, _core.Version);
+        }
+
+        public void TrySetSignal()
+        {
+            if (_completed)
+                return;
+
+            _completed = true;
+            _queuedResult = true;
+            _queuedException = null;
+            QueueCompletion();
+        }
+
+        private void TrySetException(Exception exception)
+        {
+            if (_completed)
+                return;
+
+            _completed = true;
+            _queuedResult = false;
+            _queuedException = exception;
+            QueueCompletion();
+        }
+
+        private void QueueCompletion()
+        {
+#if NET10_0_OR_GREATER
+            if (!ThreadPool.UnsafeQueueUserWorkItem(this, preferLocal: true))
+                ExecuteQueuedCompletion();
+#else
+            if (!ThreadPool.QueueUserWorkItem(static state => ((ReadWaiter)state!).ExecuteQueuedCompletion(), this))
+                ExecuteQueuedCompletion();
+#endif
+        }
+
+        private void ExecuteQueuedCompletion()
+        {
+            var exception = _queuedException;
+            _queuedException = null;
+            if (exception is not null)
+                _core.SetException(exception);
+            else
+                _core.SetResult(_queuedResult);
+        }
+
+#if NET10_0_OR_GREATER
+        void IThreadPoolWorkItem.Execute() => ExecuteQueuedCompletion();
+#endif
+
+        private void OnCancellation()
+        {
+            Volatile.Write(ref _cancellationRequested, 1);
+            lock (_owner._dataAvailableWaiterLock)
+            {
+                if (_owner._readWaiterActive)
+                    TrySetException(new OperationCanceledException(_cancellationToken));
+            }
+        }
+
+        private void OnTimeout()
+        {
+            _owner._beforeConsumerTimeoutForTesting?.Invoke();
+            try
+            {
+                lock (_owner._dataAvailableWaiterLock)
+                {
+                    if (!_owner._readWaiterActive || _completed || _timeoutDeadline == long.MaxValue)
+                        return;
+
+                    var remainingTicks = _timeoutDeadline - Stopwatch.GetTimestamp();
+                    if (remainingTicks > 0)
+                    {
+                        var remainingMs = Math.Max(
+                            1,
+                            (int)((remainingTicks * 1_000 + Stopwatch.Frequency - 1) / Stopwatch.Frequency));
+                        _timeoutTimer!.Change(remainingMs, Timeout.Infinite);
+                        return;
+                    }
+
+                    _completed = true;
+                }
+
+                // Completing inline while holding the owner lock can deadlock: the continuation
+                // may dispose a linked CTS and wait for a cancellation callback that needs the
+                // same lock. Publish completion only after releasing it.
+                _owner._beforeConsumerTimeoutCompletionForTesting?.Invoke();
+                _core.SetResult(false);
+            }
+            finally
+            {
+                _owner._afterConsumerTimeoutForTesting?.Invoke();
+            }
+        }
+
+        bool IValueTaskSource<bool>.GetResult(short token)
+        {
+            try
+            {
+                var signaled = _core.GetResult(token);
+                if (!signaled)
+                    return false;
+
+                if (_owner._completionError is not null)
+                    throw _owner._completionError;
+
+                return _owner.HasDataAvailable();
+            }
+            finally
+            {
+                lock (_owner._dataAvailableWaiterLock)
+                {
+                    _timeoutTimer?.Change(Timeout.Infinite, Timeout.Infinite);
+                    _owner._readWaiterActive = false;
+                }
+
+                Volatile.Write(ref _owner._consumerWaiting, 0);
+            }
+        }
+
+        ValueTaskSourceStatus IValueTaskSource<bool>.GetStatus(short token) => _core.GetStatus(token);
+
+        void IValueTaskSource<bool>.OnCompleted(
+            Action<object?> continuation,
+            object? state,
+            short token,
+            ValueTaskSourceOnCompletedFlags flags) =>
+            _core.OnCompleted(continuation, state, token, flags);
+
+        public void Dispose()
+        {
+            _cancellationRegistration.Dispose();
+            _timeoutTimer?.Dispose();
         }
     }
 

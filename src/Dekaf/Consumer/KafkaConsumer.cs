@@ -9345,6 +9345,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             prefetched.Dispose();
         }
 
+        _prefetchBuffer.Dispose();
+
         _fetchBufferMemoryPool.Dispose();
 
         _assignmentLock.Dispose();
