@@ -18,6 +18,18 @@ public class BrokerSenderDiagnosticFormattingTests
         await Assert.That(result).IsEqualTo("orders-2, payments-7");
     }
 
+    [Test]
+    public async Task FormatBatchKeys_FormatsPartitionExtremes()
+    {
+        var minimum = CreateBatch("minimum", int.MinValue);
+        var maximum = CreateBatch("maximum", int.MaxValue);
+        ReadyBatch[] batches = [minimum, maximum];
+
+        var result = BrokerSender.FormatBatchKeys(batches, batches.Length);
+
+        await Assert.That(result).IsEqualTo($"minimum-{int.MinValue}, maximum-{int.MaxValue}");
+    }
+
     private static ReadyBatch CreateBatch(string topic, int partition)
     {
         var batch = new ReadyBatch();
