@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
@@ -2993,10 +2994,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     // Diagnostic: log response content and expected batches for mismatch diagnosis
                     if (_logger.IsEnabled(LogLevel.Debug))
                     {
-                        var batchKeys = string.Join(", ",
-                            Enumerable.Range(0, count)
-                                .Where(idx => batches[idx] is not null)
-                                .Select(idx => $"{batches[idx].TopicPartition.Topic}-{batches[idx].TopicPartition.Partition}"));
+                        var batchKeys = FormatBatchKeys(batches, count);
                         var respKeys = directResponse is not null
                             ? $"{batches[0].TopicPartition.Topic}-{directResponse.Value.Index}"
                             : responseLookup is not null
@@ -3970,10 +3968,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // This traces which batches are paired with which response task.
                 if (_logger.IsEnabled(LogLevel.Debug))
                 {
-                    var pipelinedPartitions = string.Join(", ",
-                        Enumerable.Range(0, count)
-                            .Where(i => batches[i] is not null)
-                            .Select(i => $"{batches[i].TopicPartition.Topic}-{batches[i].TopicPartition.Partition}"));
+                    var pipelinedPartitions = FormatBatchKeys(batches, count);
                     LogPendingResponseCreated(_instanceId, _brokerId, responseTask.Id, count, pipelinedPartitions);
                 }
 
@@ -4165,6 +4160,81 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 ArrayPool<int>.Shared.Return(generations);
             }
         }
+    }
+
+    internal static string FormatBatchKeys(ReadyBatch[] batches, int count)
+    {
+        var length = 0;
+        for (var i = 0; i < count; i++)
+        {
+            var batch = batches[i];
+            if (batch is null)
+                continue;
+
+            if (length > 0)
+                length += 2;
+
+            length = checked(length + batch.TopicPartition.Topic.Length + 1);
+            length = checked(length + GetPartitionFormattedLength(batch.TopicPartition.Partition));
+        }
+
+        if (length == 0)
+            return string.Empty;
+
+        return string.Create(
+            length,
+            (Batches: batches, Count: count),
+            static (destination, state) =>
+            {
+                var position = 0;
+                for (var i = 0; i < state.Count; i++)
+                {
+                    var batch = state.Batches[i];
+                    if (batch is null)
+                        continue;
+
+                    if (position > 0)
+                    {
+                        destination[position++] = ',';
+                        destination[position++] = ' ';
+                    }
+
+                    var topic = batch.TopicPartition.Topic;
+                    topic.AsSpan().CopyTo(destination[position..]);
+                    position += topic.Length;
+                    destination[position++] = '-';
+
+                    if (!batch.TopicPartition.Partition.TryFormat(
+                            destination[position..],
+                            out var partitionLength,
+                            provider: CultureInfo.CurrentCulture))
+                        throw new InvalidOperationException("Partition could not be formatted.");
+
+                    position += partitionLength;
+                }
+            });
+    }
+
+    private static int GetPartitionFormattedLength(int partition)
+    {
+        var magnitude = partition < 0 ? (uint)-(long)partition : (uint)partition;
+        var digitCount = magnitude switch
+        {
+            >= 1_000_000_000 => 10,
+            >= 100_000_000 => 9,
+            >= 10_000_000 => 8,
+            >= 1_000_000 => 7,
+            >= 100_000 => 6,
+            >= 10_000 => 5,
+            >= 1_000 => 4,
+            >= 100 => 3,
+            >= 10 => 2,
+            _ => 1,
+        };
+
+        return partition < 0
+            ? checked(digitCount + NumberFormatInfo.CurrentInfo.NegativeSign.Length)
+            : digitCount;
     }
 
     internal static bool IsFatalAuthenticationFailure(
