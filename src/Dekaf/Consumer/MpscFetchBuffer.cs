@@ -518,13 +518,15 @@ internal sealed class MpscFetchBuffer
                     }
 
                     _completed = true;
+                    _queuedResult = false;
+                    _queuedException = null;
                 }
 
                 // Completing inline while holding the owner lock can deadlock: the continuation
                 // may dispose a linked CTS and wait for a cancellation callback that needs the
                 // same lock. Publish completion only after releasing it.
                 _owner._beforeConsumerTimeoutCompletionForTesting?.Invoke();
-                _core.SetResult(false);
+                QueueCompletion();
             }
             finally
             {

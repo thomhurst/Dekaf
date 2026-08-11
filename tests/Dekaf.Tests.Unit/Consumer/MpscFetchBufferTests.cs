@@ -398,6 +398,56 @@ public class MpscFetchBufferTests
     }
 
     [Test]
+    public async Task WaitToReadAsync_TimeoutDoesNotRunContinuationOnTimerThread()
+    {
+        using var continuationEntered = new ManualResetEventSlim();
+        using var releaseContinuation = new ManualResetEventSlim();
+        using var continuationFinished = new ManualResetEventSlim();
+        using var timeoutCallbackExited = new ManualResetEventSlim();
+        var buffer = new MpscFetchBuffer(
+            capacity: 4,
+            afterProducerWaiterCountIncrementedForTesting: null,
+            afterConsumerTimeoutForTesting: timeoutCallbackExited.Set);
+        var result = true;
+        Exception? continuationException = null;
+
+        try
+        {
+            var awaiter = buffer.WaitToReadAsync(1, CancellationToken.None).GetAwaiter();
+            awaiter.UnsafeOnCompleted(() =>
+            {
+                continuationEntered.Set();
+                releaseContinuation.Wait();
+                try
+                {
+                    result = awaiter.GetResult();
+                }
+                catch (Exception exception)
+                {
+                    continuationException = exception;
+                }
+                finally
+                {
+                    continuationFinished.Set();
+                }
+            });
+
+            await Assert.That(continuationEntered.Wait(TimeSpan.FromSeconds(5))).IsTrue();
+            await Assert.That(timeoutCallbackExited.Wait(TimeSpan.FromSeconds(5))).IsTrue();
+
+            releaseContinuation.Set();
+            await Assert.That(continuationFinished.Wait(TimeSpan.FromSeconds(5))).IsTrue();
+            await Assert.That(continuationException).IsNull();
+            await Assert.That(result).IsFalse();
+        }
+        finally
+        {
+            releaseContinuation.Set();
+            buffer.Dispose();
+        }
+    }
+
+    [Test]
     public async Task WaitToReadAsync_ResetCancellationSource_ReRegistersCallback()
     {
         var buffer = new MpscFetchBuffer(4);
