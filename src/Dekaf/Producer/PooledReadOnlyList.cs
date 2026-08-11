@@ -46,7 +46,7 @@ internal ref struct PooledReadOnlyList<T>
 
         // Keep the concrete CopyTo call: dispatch through ICollection<T> measured 40 B/op.
         var count = queue.Count;
-        var rentedArray = ArrayPool<T>.Shared.Rent(Math.Max(InitialPooledCapacity, count));
+        var rentedArray = ArrayPool<T>.Shared.Rent(count);
         try
         {
             queue.CopyTo(rentedArray, 0);
@@ -66,7 +66,7 @@ internal ref struct PooledReadOnlyList<T>
 
         // Keep the concrete CopyTo call: dispatch through IEnumerable<T> boxes Stack<T>.Enumerator.
         var count = stack.Count;
-        var rentedArray = ArrayPool<T>.Shared.Rent(Math.Max(InitialPooledCapacity, count));
+        var rentedArray = ArrayPool<T>.Shared.Rent(count);
         try
         {
             stack.CopyTo(rentedArray, 0);
@@ -85,7 +85,7 @@ internal ref struct PooledReadOnlyList<T>
             return new PooledReadOnlyList<T>(default, null, 0);
 
         var count = linkedList.Count;
-        var rentedArray = ArrayPool<T>.Shared.Rent(Math.Max(InitialPooledCapacity, count));
+        var rentedArray = ArrayPool<T>.Shared.Rent(count);
         try
         {
             linkedList.CopyTo(rentedArray, 0);
@@ -104,7 +104,7 @@ internal ref struct PooledReadOnlyList<T>
             return new PooledReadOnlyList<T>(default, null, 0);
 
         var count = hashSet.Count;
-        var rentedArray = ArrayPool<T>.Shared.Rent(Math.Max(InitialPooledCapacity, count));
+        var rentedArray = ArrayPool<T>.Shared.Rent(count);
         try
         {
             hashSet.CopyTo(rentedArray, 0);
@@ -123,7 +123,7 @@ internal ref struct PooledReadOnlyList<T>
             return new PooledReadOnlyList<T>(default, null, 0);
 
         var count = sortedSet.Count;
-        var rentedArray = ArrayPool<T>.Shared.Rent(Math.Max(InitialPooledCapacity, count));
+        var rentedArray = ArrayPool<T>.Shared.Rent(count);
         try
         {
             sortedSet.CopyTo(rentedArray, 0);
@@ -177,7 +177,14 @@ internal ref struct PooledReadOnlyList<T>
                 rentedArray = null;
             }
 
-            enumerator.Dispose();
+            // Preserve the enumeration failure if cleanup also fails.
+            try
+            {
+                enumerator.Dispose();
+            }
+            catch
+            {
+            }
             throw;
         }
 

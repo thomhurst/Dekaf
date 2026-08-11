@@ -117,6 +117,18 @@ public class PooledReadOnlyListTests
             .WithMessage("dispose failed");
     }
 
+    [Test]
+    public async Task Rent_EnumerationAndDisposeThrow_PreservesEnumerationException()
+    {
+        Action act = static () =>
+        {
+            using var messages = PooledReadOnlyList<int>.Rent(new EnumerationAndDisposeThrowingEnumerable());
+        };
+
+        await Assert.That(act).Throws<ArgumentException>()
+            .WithMessage("enumeration failed");
+    }
+
     private static IEnumerable<int> Enumerate(int count)
     {
         for (var i = 0; i < count; i++)
@@ -168,6 +180,34 @@ public class PooledReadOnlyListTests
             object System.Collections.IEnumerator.Current => Current;
 
             public bool MoveNext() => ++_current < 2;
+
+            public void Reset() => throw new NotSupportedException();
+
+            public void Dispose() => throw new InvalidOperationException("dispose failed");
+        }
+    }
+
+    private sealed class EnumerationAndDisposeThrowingEnumerable : IEnumerable<int>
+    {
+        public IEnumerator<int> GetEnumerator() => new Enumerator();
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+
+        private sealed class Enumerator : IEnumerator<int>
+        {
+            private int _current = -1;
+
+            public int Current => _current;
+
+            object System.Collections.IEnumerator.Current => Current;
+
+            public bool MoveNext()
+            {
+                if (++_current < 2)
+                    return true;
+
+                throw new ArgumentException("enumeration failed");
+            }
 
             public void Reset() => throw new NotSupportedException();
 
