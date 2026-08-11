@@ -158,12 +158,15 @@ internal sealed class TopicProducer<TKey, TValue> : ITopicProducer<TKey, TValue>
     }
 
     /// <inheritdoc />
-    public async Task<RecordMetadata[]> ProduceAllAsync(
+    public Task<RecordMetadata[]> ProduceAllAsync(
         IEnumerable<TopicProducerMessage<TKey, TValue>> messages,
         CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(messages);
+
+        if (_producer is IProducerFastPath<TKey, TValue> fastPath)
+            return fastPath.ProduceAllAsync(Topic, messages, cancellationToken);
 
         // Convert TopicProducerMessage to ProducerMessage with embedded topic
         var producerMessages = messages.Select(m => new ProducerMessage<TKey, TValue>
@@ -176,7 +179,7 @@ internal sealed class TopicProducer<TKey, TValue> : ITopicProducer<TKey, TValue>
             Timestamp = m.Timestamp
         });
 
-        return await _producer.ProduceAllAsync(producerMessages, cancellationToken).ConfigureAwait(false);
+        return _producer.ProduceAllAsync(producerMessages, cancellationToken);
     }
 
     /// <inheritdoc />

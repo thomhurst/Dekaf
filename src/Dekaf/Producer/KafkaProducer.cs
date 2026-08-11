@@ -1929,6 +1929,46 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         return await completion.WaitAsync().ConfigureAwait(false);
     }
 
+    async Task<RecordMetadata[]> IProducerFastPath<TKey, TValue>.ProduceAllAsync(
+        string topic,
+        IEnumerable<TopicProducerMessage<TKey, TValue>> messages,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(topic);
+        ArgumentNullException.ThrowIfNull(messages);
+
+        var messageList = messages as IList<TopicProducerMessage<TKey, TValue>> ?? messages.ToList();
+        if (messageList.Count == 0)
+            return [];
+
+        var completion = ProduceAllCompletion.Rent(messageList.Count);
+        using var bulkScope = _accumulator.EnterBulkProduceScope();
+        for (var i = 0; i < messageList.Count; i++)
+        {
+            try
+            {
+                var message = messageList[i];
+                completion.Register(i, ProduceAsync(
+                    topic,
+                    message.Key,
+                    message.Value,
+                    message.Headers,
+                    message.Partition,
+                    message.Timestamp,
+                    ProduceContinuationMode.InlineWhenDirect,
+                    cancellationToken));
+            }
+            catch (Exception ex)
+            {
+                completion.RecordFailure(i, ex);
+                completion.AbortRegistration(messageList.Count - i);
+                break;
+            }
+        }
+
+        return await completion.WaitAsync().ConfigureAwait(false);
+    }
+
     public ValueTask FlushAsync(CancellationToken cancellationToken = default)
     {
         if (ProducerCallbackContext.IsInDeliveryCallback)

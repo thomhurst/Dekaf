@@ -12,4 +12,9 @@ internal interface IProducerFastPath<TKey, TValue>
         int? partition,
         DateTimeOffset? timestamp,
         CancellationToken cancellationToken);
+
+    Task<RecordMetadata[]> ProduceAllAsync(
+        string topic,
+        IEnumerable<TopicProducerMessage<TKey, TValue>> messages,
+        CancellationToken cancellationToken);
 }
