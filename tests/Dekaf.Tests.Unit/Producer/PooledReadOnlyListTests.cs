@@ -59,6 +59,25 @@ public class PooledReadOnlyListTests
     }
 
     [Test]
+    public async Task Rent_HashSetMultiple_PreservesCountAndOrder()
+    {
+        var source = new HashSet<int>(Enumerable.Range(0, MultipleItemCount));
+        var expected = source.ToArray();
+        var count = 0;
+        var preservesOrder = true;
+
+        {
+            using var messages = PooledReadOnlyList<int>.Rent(source);
+            count = messages.Count;
+            for (var i = 0; i < messages.Count; i++)
+                preservesOrder &= messages[i] == expected[i];
+        }
+
+        await Assert.That(count).IsEqualTo(MultipleItemCount);
+        await Assert.That(preservesOrder).IsTrue();
+    }
+
+    [Test]
     public async Task Rent_Collection_PreservesCountAndOrder()
     {
         var count = 0;
@@ -103,6 +122,24 @@ public class PooledReadOnlyListTests
         }
 
         await Assert.That(value).IsEqualTo(42);
+    }
+
+    [Test]
+    public async Task Rent_SortedSetMultiple_PreservesCountAndOrder()
+    {
+        var count = 0;
+        var preservesOrder = true;
+
+        {
+            var source = new SortedSet<int>(Enumerable.Range(0, MultipleItemCount).Reverse());
+            using var messages = PooledReadOnlyList<int>.Rent(source);
+            count = messages.Count;
+            for (var i = 0; i < messages.Count; i++)
+                preservesOrder &= messages[i] == i;
+        }
+
+        await Assert.That(count).IsEqualTo(MultipleItemCount);
+        await Assert.That(preservesOrder).IsTrue();
     }
 
     [Test]
