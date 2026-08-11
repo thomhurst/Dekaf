@@ -307,22 +307,23 @@ internal sealed class MpscFetchBuffer
                 waiter = _dataAvailableWaiter;
             }
 
-            try
+            bool signaled;
+            if (timeoutMs == Timeout.Infinite)
             {
-                if (timeoutMs == Timeout.Infinite)
-                {
-                    await waiter.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
-                }
-                else
-                {
-                    await waiter.Task.WaitAsync(TimeSpan.FromMilliseconds(timeoutMs), cancellationToken)
-                        .ConfigureAwait(false);
-                }
+                signaled = await waiter.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
             }
-            catch (TimeoutException)
+            else
             {
+                using var timeoutTimer = new Timer(
+                    static state => ((TaskCompletionSource<bool>)state!).TrySetResult(false),
+                    waiter,
+                    timeoutMs,
+                    Timeout.Infinite);
+                signaled = await waiter.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            if (!signaled)
                 return false;
-            }
 
             if (_completionError is not null)
                 throw _completionError;
