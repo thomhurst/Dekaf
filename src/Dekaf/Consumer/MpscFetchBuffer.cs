@@ -465,7 +465,7 @@ internal sealed class MpscFetchBuffer
         private void QueueCompletion()
         {
 #if NET10_0_OR_GREATER
-            if (!ThreadPool.UnsafeQueueUserWorkItem(this, preferLocal: true))
+            if (!ThreadPool.UnsafeQueueUserWorkItem(this, preferLocal: false))
                 ExecuteQueuedCompletion();
 #else
             if (!ThreadPool.QueueUserWorkItem(static state => ((ReadWaiter)state!).ExecuteQueuedCompletion(), this))

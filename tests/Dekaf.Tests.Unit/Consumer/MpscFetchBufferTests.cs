@@ -400,6 +400,8 @@ public class MpscFetchBufferTests
     [Test]
     public async Task WaitToReadAsync_TimeoutDoesNotRunContinuationOnTimerThread()
     {
+        using var timeoutEntered = new ManualResetEventSlim();
+        using var releaseTimeout = new ManualResetEventSlim();
         using var continuationEntered = new ManualResetEventSlim();
         using var releaseContinuation = new ManualResetEventSlim();
         using var continuationFinished = new ManualResetEventSlim();
@@ -407,6 +409,11 @@ public class MpscFetchBufferTests
         var buffer = new MpscFetchBuffer(
             capacity: 4,
             afterProducerWaiterCountIncrementedForTesting: null,
+            beforeConsumerTimeoutForTesting: () =>
+            {
+                timeoutEntered.Set();
+                releaseTimeout.Wait();
+            },
             afterConsumerTimeoutForTesting: timeoutCallbackExited.Set);
         var result = true;
         Exception? continuationException = null;
@@ -432,6 +439,8 @@ public class MpscFetchBufferTests
                 }
             });
 
+            await Assert.That(timeoutEntered.Wait(TimeSpan.FromSeconds(5))).IsTrue();
+            releaseTimeout.Set();
             await Assert.That(continuationEntered.Wait(TimeSpan.FromSeconds(5))).IsTrue();
             await Assert.That(timeoutCallbackExited.Wait(TimeSpan.FromSeconds(5))).IsTrue();
 
@@ -442,6 +451,7 @@ public class MpscFetchBufferTests
         }
         finally
         {
+            releaseTimeout.Set();
             releaseContinuation.Set();
             buffer.Dispose();
         }
