@@ -1,5 +1,4 @@
 using System.Buffers;
-using System.Runtime.CompilerServices;
 
 namespace Dekaf.Producer;
 
@@ -207,16 +206,8 @@ internal ref struct PooledReadOnlyList<T>
         Return(buffer, Count);
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static void Return(T[] buffer, int count)
     {
-        // Sparse buckets clear live slots only; dense buckets use ArrayPool's optimized full clear.
-        if (count >= buffer.Length / 2)
-        {
-            ArrayPool<T>.Shared.Return(buffer, clearArray: true);
-            return;
-        }
-
         buffer.AsSpan(0, count).Clear();
         ArrayPool<T>.Shared.Return(buffer);
     }
