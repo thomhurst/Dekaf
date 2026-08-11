@@ -426,6 +426,22 @@ public class MpscFetchBufferTests
     }
 
     [Test]
+    public async Task WaitToReadAsync_Dispose_CompletesActiveWait()
+    {
+        var buffer = new MpscFetchBuffer(4);
+        using var cts = new CancellationTokenSource();
+        var waitTask = buffer.WaitToReadAsync(30_000, cts.Token).AsTask();
+
+        await Assert.That(waitTask.IsCompleted).IsFalse();
+
+        buffer.Dispose();
+
+        await Assert.That(await waitTask).IsFalse();
+        await Assert.That(GetConsumerWaiting(buffer)).IsEqualTo(0);
+        await Assert.That(IsReadWaiterActive(buffer)).IsFalse();
+    }
+
+    [Test]
     public async Task WaitToReadAsync_AlreadyCompletedWithError_ThrowsError()
     {
         var buffer = new MpscFetchBuffer(4);

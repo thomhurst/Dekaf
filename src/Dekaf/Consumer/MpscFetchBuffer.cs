@@ -315,6 +315,7 @@ internal sealed class MpscFetchBuffer
                 return new ValueTask<bool>(HasDataAvailable());
             }
 
+            Debug.Assert(!_readWaiterActive, "MpscFetchBuffer supports one active reader.");
             _readWaiterActive = true;
             return _readWaiter.Prepare(timeoutMs);
         }
@@ -390,6 +391,7 @@ internal sealed class MpscFetchBuffer
         private bool _queuedResult;
         private Exception? _queuedException;
         private int _cancellationRequested;
+        private bool _disposed;
 
         public ReadWaiter(MpscFetchBuffer owner)
         {
@@ -566,8 +568,30 @@ internal sealed class MpscFetchBuffer
 
         public void Dispose()
         {
-            _cancellationRegistration.Dispose();
-            _timeoutTimer?.Dispose();
+            CancellationTokenRegistration cancellationRegistration;
+            Timer? timeoutTimer;
+
+            lock (_owner._dataAvailableWaiterLock)
+            {
+                if (_disposed)
+                    return;
+
+                _disposed = true;
+
+                // Dispose may race the caller consuming the pending ValueTask. Complete it
+                // before tearing down its only wake-up sources, then detach the timer so the
+                // eventual GetResult cleanup cannot call Change on a disposed instance.
+                if (_owner._readWaiterActive)
+                    TrySetSignal();
+
+                cancellationRegistration = _cancellationRegistration;
+                _cancellationRegistration = default;
+                timeoutTimer = _timeoutTimer;
+                _timeoutTimer = null;
+            }
+
+            cancellationRegistration.Dispose();
+            timeoutTimer?.Dispose();
         }
     }
 
