@@ -43,25 +43,6 @@ public class TopicProducerProduceAllBenchmarks
     [Benchmark]
     public Task<RecordMetadata[]> ProduceAllAsync() => _producer.ProduceAllAsync(GetMessages());
 
-    [Benchmark]
-    public int MaterializeForIndexedRegistration()
-    {
-        var source = GetMessages();
-        if (source is IList<TopicProducerMessage<string, string>> messageList)
-        {
-            var listChecksum = 0;
-            for (var i = 0; i < messageList.Count; i++)
-                listChecksum += messageList[i].Value.Length;
-            return listChecksum;
-        }
-
-        using var messages = PooledReadOnlyList<TopicProducerMessage<string, string>>.Rent(source);
-        var checksum = 0;
-        for (var i = 0; i < messages.Count; i++)
-            checksum += messages[i].Value.Length;
-        return checksum;
-    }
-
     private IEnumerable<TopicProducerMessage<string, string>> GetMessages() =>
         Source is MessageSource.Array ? _messages : EnumerateMessages();
 
@@ -192,5 +173,36 @@ public class TopicProducerProduceAllBenchmarks
             new TopicProducer<string, string>(this, topic, ownsProducer: false);
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+}
+
+[MemoryDiagnoser]
+[SimpleJob(RunStrategy.Throughput, launchCount: 1, warmupCount: 3, iterationCount: 5)]
+public class TopicProducerMessageMaterializationBenchmarks
+{
+    private TopicProducerMessage<string, string>[] _messages = null!;
+
+    [Params(1, 100)]
+    public int MessageCount { get; set; }
+
+    [GlobalSetup]
+    public void Setup() => _messages = Enumerable.Range(0, MessageCount)
+        .Select(static i => new TopicProducerMessage<string, string> { Key = i.ToString(), Value = "value" })
+        .ToArray();
+
+    [Benchmark]
+    public int MaterializeForIndexedRegistration()
+    {
+        using var messages = PooledReadOnlyList<TopicProducerMessage<string, string>>.Rent(EnumerateMessages());
+        var checksum = 0;
+        for (var i = 0; i < messages.Count; i++)
+            checksum += messages[i].Value.Length;
+        return checksum;
+    }
+
+    private IEnumerable<TopicProducerMessage<string, string>> EnumerateMessages()
+    {
+        for (var i = 0; i < _messages.Length; i++)
+            yield return _messages[i];
     }
 }
