@@ -337,6 +337,46 @@ public class TopicProducerTests
     }
 
     [Test]
+    public async Task ProduceAllAsync_Messages_UsesBatchFastPathWhenAvailable()
+    {
+        var innerProducer = new FastPathProducerSpy<string, string>();
+        var topicProducer = new TopicProducer<string, string>(innerProducer, "my-topic", ownsProducer: false);
+        var timestamp = DateTimeOffset.UtcNow;
+        var headers = new Headers { { "header", [1, 2, 3] } };
+        using var cts = new CancellationTokenSource();
+        var messages = new[]
+        {
+            new TopicProducerMessage<string, string> { Key = "key1", Value = "value1" },
+            new TopicProducerMessage<string, string>
+            {
+                Key = "key2",
+                Value = "value2",
+                Headers = headers,
+                Partition = 2,
+                Timestamp = timestamp,
+            },
+        };
+
+        var results = await topicProducer.ProduceAllAsync(messages, cts.Token);
+
+        await Assert.That(results).Count().IsEqualTo(2);
+        await Assert.That(results[0].Offset).IsEqualTo(0);
+        await Assert.That(results[1].Offset).IsEqualTo(1);
+        await Assert.That(innerProducer.CapturedBatchKeys[0]).IsEqualTo("key1");
+        await Assert.That(innerProducer.CapturedBatchKeys[1]).IsEqualTo("key2");
+        await Assert.That(innerProducer.BatchFastPathCalls).IsEqualTo(1);
+        await Assert.That(innerProducer.FastPathCalls).IsEqualTo(2);
+        await Assert.That(innerProducer.MessageCalls).IsEqualTo(0);
+        await Assert.That(innerProducer.CapturedTopic).IsEqualTo("my-topic");
+        await Assert.That(innerProducer.CapturedKey).IsEqualTo("key2");
+        await Assert.That(innerProducer.CapturedValue).IsEqualTo("value2");
+        await Assert.That(innerProducer.CapturedHeaders).IsSameReferenceAs(headers);
+        await Assert.That(innerProducer.CapturedPartition).IsEqualTo(2);
+        await Assert.That(innerProducer.CapturedTimestamp).IsEqualTo(timestamp);
+        await Assert.That(innerProducer.CapturedCancellationToken).IsEqualTo(cts.Token);
+    }
+
+    [Test]
     public async Task FlushAsync_DelegatesToInnerProducer()
     {
         // Arrange

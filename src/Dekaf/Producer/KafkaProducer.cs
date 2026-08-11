@@ -1929,6 +1929,110 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         return await completion.WaitAsync().ConfigureAwait(false);
     }
 
+    async Task<RecordMetadata[]> IProducerFastPath<TKey, TValue>.ProduceAllAsync(
+        string topic,
+        IEnumerable<TopicProducerMessage<TKey, TValue>> messages,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(topic);
+        ArgumentNullException.ThrowIfNull(messages);
+
+        if (messages is IList<TopicProducerMessage<TKey, TValue>> messageList)
+        {
+            var messageCount = messageList.Count;
+            if (messageCount == 0)
+                return [];
+
+            var listCompletion = ProduceAllCompletion.Rent(messageCount);
+            using var listBulkScope = _accumulator.EnterBulkProduceScope();
+            for (var i = 0; i < messageCount; i++)
+            {
+                try
+                {
+                    var message = messageList[i];
+                    listCompletion.Register(i, ProduceAsync(
+                        topic,
+                        message.Key,
+                        message.Value,
+                        message.Headers,
+                        message.Partition,
+                        message.Timestamp,
+                        ProduceContinuationMode.InlineWhenDirect,
+                        cancellationToken));
+                }
+                catch (Exception ex)
+                {
+                    listCompletion.RecordFailure(i, ex);
+                    listCompletion.AbortRegistration(messageCount - i);
+                    break;
+                }
+            }
+
+            return await listCompletion.WaitAsync().ConfigureAwait(false);
+        }
+
+        // Materialize before entering the bulk scope so arbitrary caller enumeration cannot
+        // suppress the accumulator's app-limited seal gate for an unbounded duration.
+        var messageBuffer = PooledReadOnlyList<TopicProducerMessage<TKey, TValue>>.Rent(messages);
+        if (messageBuffer.Count == 0)
+        {
+            messageBuffer.Dispose();
+            return [];
+        }
+
+        ProduceAllCompletion completion;
+        RecordAccumulator.BulkProduceScope bulkScope;
+        try
+        {
+            completion = ProduceAllCompletion.Rent(messageBuffer.Count);
+            bulkScope = _accumulator.EnterBulkProduceScope();
+        }
+        catch
+        {
+            messageBuffer.Dispose();
+            throw;
+        }
+
+        try
+        {
+            try
+            {
+                for (var i = 0; i < messageBuffer.Count; i++)
+                {
+                    try
+                    {
+                        var message = messageBuffer[i];
+                        completion.Register(i, ProduceAsync(
+                            topic,
+                            message.Key,
+                            message.Value,
+                            message.Headers,
+                            message.Partition,
+                            message.Timestamp,
+                            ProduceContinuationMode.InlineWhenDirect,
+                            cancellationToken));
+                    }
+                    catch (Exception ex)
+                    {
+                        completion.RecordFailure(i, ex);
+                        completion.AbortRegistration(messageBuffer.Count - i);
+                        break;
+                    }
+                }
+            }
+            finally
+            {
+                messageBuffer.Dispose();
+            }
+
+            return await completion.WaitAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            bulkScope.Dispose();
+        }
+    }
+
     public ValueTask FlushAsync(CancellationToken cancellationToken = default)
     {
         if (ProducerCallbackContext.IsInDeliveryCallback)

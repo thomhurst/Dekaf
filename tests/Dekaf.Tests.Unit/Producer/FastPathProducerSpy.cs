@@ -7,6 +7,7 @@ namespace Dekaf.Tests.Unit.Producer;
 internal sealed class FastPathProducerSpy<TKey, TValue> : IKafkaProducer<TKey, TValue>, IProducerFastPath<TKey, TValue>
 {
     public int FastPathCalls { get; private set; }
+    public int BatchFastPathCalls { get; private set; }
     public int MessageCalls { get; private set; }
     public string? CapturedTopic { get; private set; }
     public TKey? CapturedKey { get; private set; }
@@ -15,6 +16,7 @@ internal sealed class FastPathProducerSpy<TKey, TValue> : IKafkaProducer<TKey, T
     public int? CapturedPartition { get; private set; }
     public DateTimeOffset? CapturedTimestamp { get; private set; }
     public CancellationToken CapturedCancellationToken { get; private set; }
+    public List<TKey?> CapturedBatchKeys { get; } = [];
 
     public RecordMetadata Result { get; set; } = new()
     {
@@ -67,6 +69,30 @@ internal sealed class FastPathProducerSpy<TKey, TValue> : IKafkaProducer<TKey, T
         CapturedTimestamp = timestamp;
         CapturedCancellationToken = cancellationToken;
         return ValueTask.FromResult(Result);
+    }
+
+    Task<RecordMetadata[]> IProducerFastPath<TKey, TValue>.ProduceAllAsync(
+        string topic,
+        IEnumerable<TopicProducerMessage<TKey, TValue>> messages,
+        CancellationToken cancellationToken)
+    {
+        BatchFastPathCalls++;
+        var results = new List<RecordMetadata>();
+        foreach (var message in messages)
+        {
+            _ = ((IProducerFastPath<TKey, TValue>)this).ProduceAsync(
+                topic,
+                message.Key,
+                message.Value,
+                message.Headers,
+                message.Partition,
+                message.Timestamp,
+                cancellationToken);
+            CapturedBatchKeys.Add(message.Key);
+            results.Add(Result with { Offset = results.Count });
+        }
+
+        return Task.FromResult(results.ToArray());
     }
 
     public ValueTask FireAsync(ProducerMessage<TKey, TValue> message) => ValueTask.CompletedTask;
