@@ -76,9 +76,102 @@ public class PooledReadOnlyListTests
         await Assert.That(preservesOrder).IsTrue();
     }
 
+    [Test]
+    public async Task Rent_ArbitraryCollection_PreservesEnumerationOrder()
+    {
+        var source = new ReverseCopyCollection(Enumerable.Range(0, MultipleItemCount));
+        var preservesOrder = true;
+
+        {
+            using var messages = PooledReadOnlyList<int>.Rent(source);
+            for (var i = 0; i < messages.Count; i++)
+                preservesOrder &= messages[i] == i;
+        }
+
+        await Assert.That(preservesOrder).IsTrue();
+        await Assert.That(source.CopyToCalled).IsFalse();
+    }
+
+    [Test]
+    public async Task Rent_SortedSetSingleton_PreservesValue()
+    {
+        var value = 0;
+
+        {
+            using var messages = PooledReadOnlyList<int>.Rent(new SortedSet<int> { 42 });
+            value = messages[0];
+        }
+
+        await Assert.That(value).IsEqualTo(42);
+    }
+
+    [Test]
+    public async Task Rent_EnumeratorDisposeThrows_PropagatesException()
+    {
+        Action act = static () =>
+        {
+            using var messages = PooledReadOnlyList<int>.Rent(new DisposeThrowingEnumerable());
+        };
+
+        await Assert.That(act).Throws<InvalidOperationException>()
+            .WithMessage("dispose failed");
+    }
+
     private static IEnumerable<int> Enumerate(int count)
     {
         for (var i = 0; i < count; i++)
             yield return i;
+    }
+
+    private sealed class ReverseCopyCollection(IEnumerable<int> items) : ICollection<int>
+    {
+        private readonly List<int> _items = [.. items];
+
+        public bool CopyToCalled { get; private set; }
+
+        public int Count => _items.Count;
+
+        public bool IsReadOnly => true;
+
+        public IEnumerator<int> GetEnumerator() => _items.GetEnumerator();
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+
+        public void CopyTo(int[] array, int arrayIndex)
+        {
+            CopyToCalled = true;
+            for (var i = 0; i < _items.Count; i++)
+                array[arrayIndex + i] = _items[_items.Count - i - 1];
+        }
+
+        public bool Contains(int item) => _items.Contains(item);
+
+        public void Add(int item) => throw new NotSupportedException();
+
+        public void Clear() => throw new NotSupportedException();
+
+        public bool Remove(int item) => throw new NotSupportedException();
+    }
+
+    private sealed class DisposeThrowingEnumerable : IEnumerable<int>
+    {
+        public IEnumerator<int> GetEnumerator() => new Enumerator();
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+
+        private sealed class Enumerator : IEnumerator<int>
+        {
+            private int _current = -1;
+
+            public int Current => _current;
+
+            object System.Collections.IEnumerator.Current => Current;
+
+            public bool MoveNext() => ++_current < 2;
+
+            public void Reset() => throw new NotSupportedException();
+
+            public void Dispose() => throw new InvalidOperationException("dispose failed");
+        }
     }
 }

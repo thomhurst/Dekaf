@@ -1939,12 +1939,13 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         if (messages is IList<TopicProducerMessage<TKey, TValue>> messageList)
         {
-            if (messageList.Count == 0)
+            var messageCount = messageList.Count;
+            if (messageCount == 0)
                 return [];
 
-            var listCompletion = ProduceAllCompletion.Rent(messageList.Count);
+            var listCompletion = ProduceAllCompletion.Rent(messageCount);
             using var listBulkScope = _accumulator.EnterBulkProduceScope();
-            for (var i = 0; i < messageList.Count; i++)
+            for (var i = 0; i < messageCount; i++)
             {
                 try
                 {
@@ -1962,7 +1963,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 catch (Exception ex)
                 {
                     listCompletion.RecordFailure(i, ex);
-                    listCompletion.AbortRegistration(messageList.Count - i);
+                    listCompletion.AbortRegistration(messageCount - i);
                     break;
                 }
             }

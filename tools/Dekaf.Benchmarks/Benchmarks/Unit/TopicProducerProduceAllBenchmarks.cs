@@ -180,18 +180,23 @@ public class TopicProducerProduceAllBenchmarks
 [SimpleJob(RunStrategy.Throughput, launchCount: 1, warmupCount: 3, iterationCount: 5)]
 public class TopicProducerMessageMaterializationBenchmarks
 {
+    private static readonly IComparer<TopicProducerMessage<string, string>> MessageComparer =
+        Comparer<TopicProducerMessage<string, string>>.Create(
+            static (left, right) => string.CompareOrdinal(left.Key, right.Key));
     private TopicProducerMessage<string, string>[] _messages = null!;
     private Queue<TopicProducerMessage<string, string>> _queue = null!;
     private Stack<TopicProducerMessage<string, string>> _stack = null!;
+    private SortedSet<TopicProducerMessage<string, string>> _sortedSet = null!;
 
     public enum EnumerableSource
     {
         Iterator,
         Queue,
         Stack,
+        SortedSet,
     }
 
-    [Params(1, 100)]
+    [Params(1, 2, 100)]
     public int MessageCount { get; set; }
 
     [ParamsAllValues]
@@ -205,6 +210,7 @@ public class TopicProducerMessageMaterializationBenchmarks
             .ToArray();
         _queue = new Queue<TopicProducerMessage<string, string>>(_messages);
         _stack = new Stack<TopicProducerMessage<string, string>>(_messages.Reverse());
+        _sortedSet = new SortedSet<TopicProducerMessage<string, string>>(_messages, MessageComparer);
     }
 
     [Benchmark]
@@ -222,6 +228,7 @@ public class TopicProducerMessageMaterializationBenchmarks
         EnumerableSource.Iterator => EnumerateMessages(),
         EnumerableSource.Queue => _queue,
         EnumerableSource.Stack => _stack,
+        EnumerableSource.SortedSet => _sortedSet,
         _ => throw new ArgumentOutOfRangeException(),
     };
 

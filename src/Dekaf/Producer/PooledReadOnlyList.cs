@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Runtime.CompilerServices;
 
 namespace Dekaf.Producer;
 
@@ -31,9 +32,11 @@ internal ref struct PooledReadOnlyList<T>
         Stack<T> { Count: 1 } stack => new PooledReadOnlyList<T>(stack.Peek(), null, 1),
         Stack<T> stack => RentStack(stack),
         LinkedList<T> { Count: 1 } linkedList => new PooledReadOnlyList<T>(linkedList.First!.Value, null, 1),
+        LinkedList<T> linkedList => RentLinkedList(linkedList),
         HashSet<T> { Count: 1 } hashSet => RentEnumerator(hashSet.GetEnumerator()),
-        SortedSet<T> { Count: 1 } sortedSet => RentEnumerator(sortedSet.GetEnumerator()),
-        ICollection<T> collection => RentCollection(collection),
+        HashSet<T> hashSet => RentHashSet(hashSet),
+        SortedSet<T> { Count: 1 } sortedSet => new PooledReadOnlyList<T>(sortedSet.Min, null, 1),
+        SortedSet<T> sortedSet => RentSortedSet(sortedSet),
         _ => RentEnumerator(source.GetEnumerator()),
     };
 
@@ -43,33 +46,16 @@ internal ref struct PooledReadOnlyList<T>
             return new PooledReadOnlyList<T>(default, null, 0);
 
         // Keep the concrete CopyTo call: dispatch through ICollection<T> measured 40 B/op.
-        var rentedArray = ArrayPool<T>.Shared.Rent(Math.Max(InitialPooledCapacity, queue.Count));
+        var count = queue.Count;
+        var rentedArray = ArrayPool<T>.Shared.Rent(Math.Max(InitialPooledCapacity, count));
         try
         {
             queue.CopyTo(rentedArray, 0);
-            return new PooledReadOnlyList<T>(default, rentedArray, queue.Count);
+            return new PooledReadOnlyList<T>(default, rentedArray, count);
         }
         catch
         {
-            ArrayPool<T>.Shared.Return(rentedArray, clearArray: true);
-            throw;
-        }
-    }
-
-    private static PooledReadOnlyList<T> RentCollection(ICollection<T> collection)
-    {
-        if (collection.Count == 0)
-            return new PooledReadOnlyList<T>(default, null, 0);
-
-        var rentedArray = ArrayPool<T>.Shared.Rent(Math.Max(InitialPooledCapacity, collection.Count));
-        try
-        {
-            collection.CopyTo(rentedArray, 0);
-            return new PooledReadOnlyList<T>(default, rentedArray, collection.Count);
-        }
-        catch
-        {
-            ArrayPool<T>.Shared.Return(rentedArray, clearArray: true);
+            Return(rentedArray, count);
             throw;
         }
     }
@@ -80,15 +66,73 @@ internal ref struct PooledReadOnlyList<T>
             return new PooledReadOnlyList<T>(default, null, 0);
 
         // Keep the concrete CopyTo call: dispatch through IEnumerable<T> boxes Stack<T>.Enumerator.
-        var rentedArray = ArrayPool<T>.Shared.Rent(Math.Max(InitialPooledCapacity, stack.Count));
+        var count = stack.Count;
+        var rentedArray = ArrayPool<T>.Shared.Rent(Math.Max(InitialPooledCapacity, count));
         try
         {
             stack.CopyTo(rentedArray, 0);
-            return new PooledReadOnlyList<T>(default, rentedArray, stack.Count);
+            return new PooledReadOnlyList<T>(default, rentedArray, count);
         }
         catch
         {
-            ArrayPool<T>.Shared.Return(rentedArray, clearArray: true);
+            Return(rentedArray, count);
+            throw;
+        }
+    }
+
+    private static PooledReadOnlyList<T> RentLinkedList(LinkedList<T> linkedList)
+    {
+        if (linkedList.Count == 0)
+            return new PooledReadOnlyList<T>(default, null, 0);
+
+        var count = linkedList.Count;
+        var rentedArray = ArrayPool<T>.Shared.Rent(Math.Max(InitialPooledCapacity, count));
+        try
+        {
+            linkedList.CopyTo(rentedArray, 0);
+            return new PooledReadOnlyList<T>(default, rentedArray, count);
+        }
+        catch
+        {
+            Return(rentedArray, count);
+            throw;
+        }
+    }
+
+    private static PooledReadOnlyList<T> RentHashSet(HashSet<T> hashSet)
+    {
+        if (hashSet.Count == 0)
+            return new PooledReadOnlyList<T>(default, null, 0);
+
+        var count = hashSet.Count;
+        var rentedArray = ArrayPool<T>.Shared.Rent(Math.Max(InitialPooledCapacity, count));
+        try
+        {
+            hashSet.CopyTo(rentedArray, 0);
+            return new PooledReadOnlyList<T>(default, rentedArray, count);
+        }
+        catch
+        {
+            Return(rentedArray, count);
+            throw;
+        }
+    }
+
+    private static PooledReadOnlyList<T> RentSortedSet(SortedSet<T> sortedSet)
+    {
+        if (sortedSet.Count == 0)
+            return new PooledReadOnlyList<T>(default, null, 0);
+
+        var count = sortedSet.Count;
+        var rentedArray = ArrayPool<T>.Shared.Rent(Math.Max(InitialPooledCapacity, count));
+        try
+        {
+            sortedSet.CopyTo(rentedArray, 0);
+            return new PooledReadOnlyList<T>(default, rentedArray, count);
+        }
+        catch
+        {
+            Return(rentedArray, count);
             throw;
         }
     }
@@ -102,44 +146,54 @@ internal ref struct PooledReadOnlyList<T>
 
         try
         {
-            while (enumerator.MoveNext())
+            if (enumerator.MoveNext())
             {
-                var item = enumerator.Current;
-                if (count == 0)
+                firstItem = enumerator.Current;
+                count = 1;
+                while (enumerator.MoveNext())
                 {
-                    firstItem = item;
-                    count = 1;
-                    continue;
-                }
+                    var item = enumerator.Current;
+                    if (rentedArray is null)
+                    {
+                        rentedArray = ArrayPool<T>.Shared.Rent(InitialPooledCapacity);
+                        rentedArray[0] = firstItem!;
+                    }
+                    else if (count == rentedArray.Length)
+                    {
+                        var expanded = ArrayPool<T>.Shared.Rent(checked(rentedArray.Length * 2));
+                        rentedArray.AsSpan(0, count).CopyTo(expanded);
+                        Return(rentedArray, count);
+                        rentedArray = expanded;
+                    }
 
-                if (rentedArray is null)
-                {
-                    rentedArray = ArrayPool<T>.Shared.Rent(InitialPooledCapacity);
-                    rentedArray[0] = firstItem!;
+                    rentedArray[count++] = item;
                 }
-                else if (count == rentedArray.Length)
-                {
-                    var expanded = ArrayPool<T>.Shared.Rent(checked(rentedArray.Length * 2));
-                    rentedArray.AsSpan(0, count).CopyTo(expanded);
-                    ArrayPool<T>.Shared.Return(rentedArray, clearArray: true);
-                    rentedArray = expanded;
-                }
-
-                rentedArray[count++] = item;
             }
-
-            return new PooledReadOnlyList<T>(firstItem, rentedArray, count);
         }
         catch
         {
             if (rentedArray is not null)
-                ArrayPool<T>.Shared.Return(rentedArray, clearArray: true);
+            {
+                Return(rentedArray, count);
+                rentedArray = null;
+            }
+
+            enumerator.Dispose();
             throw;
         }
-        finally
+
+        try
         {
             enumerator.Dispose();
         }
+        catch
+        {
+            if (rentedArray is not null)
+                Return(rentedArray, count);
+            throw;
+        }
+
+        return new PooledReadOnlyList<T>(firstItem, rentedArray, count);
     }
 
     public void Dispose()
@@ -150,6 +204,20 @@ internal ref struct PooledReadOnlyList<T>
             return;
 
         _rentedArray = null;
-        ArrayPool<T>.Shared.Return(buffer, clearArray: true);
+        Return(buffer, Count);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void Return(T[] buffer, int count)
+    {
+        // Sparse buckets clear live slots only; dense buckets use ArrayPool's optimized full clear.
+        if (count >= buffer.Length / 2)
+        {
+            ArrayPool<T>.Shared.Return(buffer, clearArray: true);
+            return;
+        }
+
+        buffer.AsSpan(0, count).Clear();
+        ArrayPool<T>.Shared.Return(buffer);
     }
 }
