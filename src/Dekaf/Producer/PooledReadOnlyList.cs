@@ -29,6 +29,7 @@ internal ref struct PooledReadOnlyList<T>
         Queue<T> { Count: 1 } queue => new PooledReadOnlyList<T>(queue.Peek(), null, 1),
         Queue<T> queue => RentQueue(queue),
         Stack<T> { Count: 1 } stack => new PooledReadOnlyList<T>(stack.Peek(), null, 1),
+        Stack<T> stack => RentStack(stack),
         LinkedList<T> { Count: 1 } linkedList => new PooledReadOnlyList<T>(linkedList.First!.Value, null, 1),
         HashSet<T> { Count: 1 } hashSet => RentEnumerator(hashSet.GetEnumerator()),
         SortedSet<T> { Count: 1 } sortedSet => RentEnumerator(sortedSet.GetEnumerator()),
@@ -65,6 +66,25 @@ internal ref struct PooledReadOnlyList<T>
         {
             collection.CopyTo(rentedArray, 0);
             return new PooledReadOnlyList<T>(default, rentedArray, collection.Count);
+        }
+        catch
+        {
+            ArrayPool<T>.Shared.Return(rentedArray, clearArray: true);
+            throw;
+        }
+    }
+
+    private static PooledReadOnlyList<T> RentStack(Stack<T> stack)
+    {
+        if (stack.Count == 0)
+            return new PooledReadOnlyList<T>(default, null, 0);
+
+        // Keep the concrete CopyTo call: dispatch through IEnumerable<T> boxes Stack<T>.Enumerator.
+        var rentedArray = ArrayPool<T>.Shared.Rent(Math.Max(InitialPooledCapacity, stack.Count));
+        try
+        {
+            stack.CopyTo(rentedArray, 0);
+            return new PooledReadOnlyList<T>(default, rentedArray, stack.Count);
         }
         catch
         {

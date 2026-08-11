@@ -182,11 +182,13 @@ public class TopicProducerMessageMaterializationBenchmarks
 {
     private TopicProducerMessage<string, string>[] _messages = null!;
     private Queue<TopicProducerMessage<string, string>> _queue = null!;
+    private Stack<TopicProducerMessage<string, string>> _stack = null!;
 
     public enum EnumerableSource
     {
         Iterator,
         Queue,
+        Stack,
     }
 
     [Params(1, 100)]
@@ -202,6 +204,7 @@ public class TopicProducerMessageMaterializationBenchmarks
             .Select(static i => new TopicProducerMessage<string, string> { Key = i.ToString(), Value = "value" })
             .ToArray();
         _queue = new Queue<TopicProducerMessage<string, string>>(_messages);
+        _stack = new Stack<TopicProducerMessage<string, string>>(_messages.Reverse());
     }
 
     [Benchmark]
@@ -214,8 +217,13 @@ public class TopicProducerMessageMaterializationBenchmarks
         return checksum;
     }
 
-    private IEnumerable<TopicProducerMessage<string, string>> GetMessages() =>
-        Source is EnumerableSource.Iterator ? EnumerateMessages() : _queue;
+    private IEnumerable<TopicProducerMessage<string, string>> GetMessages() => Source switch
+    {
+        EnumerableSource.Iterator => EnumerateMessages(),
+        EnumerableSource.Queue => _queue,
+        EnumerableSource.Stack => _stack,
+        _ => throw new ArgumentOutOfRangeException(),
+    };
 
     private IEnumerable<TopicProducerMessage<string, string>> EnumerateMessages()
     {
