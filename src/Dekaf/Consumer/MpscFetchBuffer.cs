@@ -400,9 +400,8 @@ internal sealed class MpscFetchBuffer
 
         public void SetCancellationToken(CancellationToken cancellationToken)
         {
-            if (cancellationToken == _cancellationToken)
-                return;
-
+            // CancellationTokenSource.TryReset clears registrations without changing token
+            // identity, so equality cannot prove that the previous registration is still live.
             _cancellationRegistration.Dispose();
             _cancellationToken = cancellationToken;
             Volatile.Write(ref _cancellationRequested, cancellationToken.IsCancellationRequested ? 1 : 0);

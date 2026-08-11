@@ -13,13 +13,20 @@ public class MpscFetchBufferTimeoutBenchmarks
     private CancellationTokenSource? _cancellationSource;
     private CancellationToken _cancellationToken;
 
-    [Params(false, true)]
-    public bool Cancellable { get; set; }
+    public enum CancellationMode
+    {
+        None,
+        Stable,
+        ResetBetweenWaits,
+    }
+
+    [ParamsAllValues]
+    public CancellationMode Mode { get; set; }
 
     [GlobalSetup]
     public async Task Setup()
     {
-        if (Cancellable)
+        if (Mode is not CancellationMode.None)
         {
             _cancellationSource = new CancellationTokenSource();
             _cancellationToken = _cancellationSource.Token;
@@ -29,8 +36,17 @@ public class MpscFetchBufferTimeoutBenchmarks
     }
 
     [Benchmark]
-    public ValueTask<bool> TimeoutAsync() =>
-        _buffer.WaitToReadAsync(timeoutMs: 1, _cancellationToken);
+    public ValueTask<bool> TimeoutAsync()
+    {
+        if (Mode is CancellationMode.ResetBetweenWaits)
+        {
+            if (!_cancellationSource!.TryReset())
+                throw new InvalidOperationException("Cancellation source could not be reset.");
+            _cancellationToken = _cancellationSource.Token;
+        }
+
+        return _buffer.WaitToReadAsync(timeoutMs: 1, _cancellationToken);
+    }
 
     [GlobalCleanup]
     public void Cleanup()

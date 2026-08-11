@@ -398,6 +398,34 @@ public class MpscFetchBufferTests
     }
 
     [Test]
+    public async Task WaitToReadAsync_ResetCancellationSource_ReRegistersCallback()
+    {
+        var buffer = new MpscFetchBuffer(4);
+        var item = CreateDummy();
+        using var cts = new CancellationTokenSource();
+
+        try
+        {
+            var firstWait = buffer.WaitToReadAsync(Timeout.Infinite, cts.Token).AsTask();
+            await Assert.That(buffer.TryWrite(item)).IsTrue();
+            await Assert.That(await firstWait).IsTrue();
+            await Assert.That(buffer.TryRead(out var read)).IsTrue();
+            await Assert.That(read).IsSameReferenceAs(item);
+
+            await Assert.That(cts.TryReset()).IsTrue();
+            var nextWait = buffer.WaitToReadAsync(Timeout.Infinite, cts.Token).AsTask();
+            await cts.CancelAsync();
+
+            await Assert.That(async () => await nextWait).Throws<OperationCanceledException>();
+        }
+        finally
+        {
+            item.Dispose();
+            buffer.Dispose();
+        }
+    }
+
+    [Test]
     public async Task WaitToReadAsync_AlreadyCompletedWithError_ThrowsError()
     {
         var buffer = new MpscFetchBuffer(4);
