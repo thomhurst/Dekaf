@@ -267,6 +267,9 @@ internal sealed class ResponseFrameReader : IDisposable
         return BoundedResponseFrame.ForResponse(correlationId, response, reservation);
     }
 
+#if NET
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
+#endif
     private async ValueTask<bool> DiscardFrameAsync(int frameSize)
     {
         var buffered = Math.Min(frameSize, BufferedByteCount);
