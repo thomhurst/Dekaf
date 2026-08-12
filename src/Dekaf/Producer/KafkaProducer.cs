@@ -4619,6 +4619,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     /// delivery-error accounting stay unified. The returned ValueTask completes when the message
     /// is appended (parity with FireAsync's append semantics).
     /// </summary>
+#if NET
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+#endif
     private async ValueTask FireWithAsyncSerializationAsync(
         ProducerMessage<TKey, TValue> message,
         Activity? activity,
