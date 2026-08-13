@@ -26,8 +26,8 @@ public sealed class ConsumerHealthCheckIntegrationTests(KafkaTestContainer kafka
         try
         {
             await WaitForConditionAsync(
-                () => ((IConsumerGroupLiveness)first).GroupLiveness.IsJoined &&
-                      ((IConsumerGroupLiveness)second).GroupLiveness.IsJoined &&
+                () => HasConfirmedHeartbeat(first) &&
+                      HasConfirmedHeartbeat(second) &&
                       first.Assignment.Count + second.Assignment.Count == 1,
                 TimeSpan.FromSeconds(20),
                 description: "both consumers to join with one standby member");
@@ -72,5 +72,11 @@ public sealed class ConsumerHealthCheckIntegrationTests(KafkaTestContainer kafka
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
         }
+    }
+
+    private static bool HasConfirmedHeartbeat(IKafkaConsumer<string, string> consumer)
+    {
+        var liveness = ((IConsumerGroupLiveness)consumer).GroupLiveness;
+        return liveness.IsJoined && liveness.TimeSinceLastHeartbeat is not null;
     }
 }

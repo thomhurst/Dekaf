@@ -56,6 +56,51 @@ public class HealthCheckTests
     }
 
     [Test]
+    public async Task ConsumerHealthCheck_NoLivenessWithMemberIdAndNoAssignment_ReturnsUnhealthy()
+    {
+        var consumer = CreateConsumerSubstitute(out var partitions, out _, out _);
+        consumer.MemberId.Returns("stale-member-id");
+        partitions.Assignment.Returns(new HashSet<TopicPartition>());
+
+        var healthCheck = new DekafConsumerHealthCheck<string, string>(
+            consumer, new DekafConsumerHealthCheckOptions());
+
+        var result = await healthCheck.CheckHealthAsync(CreateContext());
+
+        await Assert.That(result.Status).IsEqualTo(HealthStatus.Unhealthy);
+        await Assert.That(result.Data["ConsumerState"]).IsEqualTo("MissingGroupMembership");
+    }
+
+    [Test]
+    public async Task ConsumerHealthCheck_ManualAssignmentWithConfiguredGroup_EvaluatesLag()
+    {
+        var consumer = CreateConsumerSubstitute(
+            LiveGroupLiveness() with
+            {
+                HasConsumerGroup = false,
+                IsJoined = false,
+                TimeSinceLastHeartbeat = null,
+                LastHeartbeatFailure = "failure from previous group subscription"
+            },
+            out var partitions,
+            out var positions,
+            out var offsets);
+        var topicPartition = new TopicPartition("test-topic", 0);
+        partitions.Assignment.Returns(new HashSet<TopicPartition> { topicPartition });
+        positions.GetPosition(topicPartition).Returns(90L);
+        offsets.QueryWatermarkOffsetsAsync(topicPartition, Arg.Any<CancellationToken>())
+            .Returns(new WatermarkOffsets(0, 100));
+
+        var healthCheck = new DekafConsumerHealthCheck<string, string>(
+            consumer, new DekafConsumerHealthCheckOptions());
+
+        var result = await healthCheck.CheckHealthAsync(CreateContext());
+
+        await Assert.That(result.Status).IsEqualTo(HealthStatus.Healthy);
+        await Assert.That(result.Data["MaxLag"]).IsEqualTo(10L);
+    }
+
+    [Test]
     public async Task ConsumerHealthCheck_NotJoinedWithAssignment_ReturnsUnhealthy()
     {
         var consumer = CreateConsumerSubstitute(
@@ -93,6 +138,8 @@ public class HealthCheckTests
         await Assert.That(result.Status).IsEqualTo(HealthStatus.Unhealthy);
         await Assert.That(result.Description).Contains("stale");
         await Assert.That(result.Data["ConsumerState"]).IsEqualTo("StaleHeartbeat");
+        await Assert.That(result.Data["HeartbeatIntervalMilliseconds"]).IsEqualTo(3000d);
+        await Assert.That(result.Data["HeartbeatStaleThresholdMilliseconds"]).IsEqualTo(9000d);
     }
 
     [Test]
@@ -790,7 +837,7 @@ public class HealthCheckTests
         IsJoined: true,
         IsStopped: false,
         TimeSinceLastHeartbeat: TimeSpan.FromSeconds(1),
-        SessionTimeout: TimeSpan.FromSeconds(10),
+        HeartbeatInterval: TimeSpan.FromSeconds(3),
         LastHeartbeatFailure: null);
 
     private static HealthCheckContext CreateContext()

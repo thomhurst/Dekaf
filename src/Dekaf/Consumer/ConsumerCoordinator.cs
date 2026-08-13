@@ -166,17 +166,17 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     public TopicPartitionSet Assignment => _assignedPartitions;
     internal int AssignmentVersion => Volatile.Read(ref _assignmentVersion);
 
-    internal ConsumerGroupLiveness CaptureGroupLiveness(bool isStopped)
+    internal ConsumerGroupLiveness CaptureGroupLiveness(bool isStopped, bool hasConsumerGroup)
     {
         var lastHeartbeatTimestamp = Volatile.Read(ref _lastSuccessfulHeartbeatTimestamp);
         return new ConsumerGroupLiveness(
-            HasConsumerGroup: true,
-            IsJoined: _state == CoordinatorState.Stable,
+            HasConsumerGroup: hasConsumerGroup,
+            IsJoined: hasConsumerGroup && _state == CoordinatorState.Stable,
             IsStopped: isStopped || Volatile.Read(ref _disposed) != 0,
             TimeSinceLastHeartbeat: lastHeartbeatTimestamp == 0
                 ? null
                 : Stopwatch.GetElapsedTime(lastHeartbeatTimestamp),
-            SessionTimeout: TimeSpan.FromMilliseconds(_options.SessionTimeoutMs),
+            HeartbeatInterval: TimeSpan.FromMilliseconds(Math.Max(_heartbeatIntervalMs, 1)),
             LastHeartbeatFailure: Volatile.Read(ref _lastHeartbeatFailure));
     }
 

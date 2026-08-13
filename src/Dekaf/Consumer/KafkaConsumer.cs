@@ -1729,10 +1729,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             IsJoined: false,
             IsStopped: Volatile.Read(ref _closed) != 0 || Volatile.Read(ref _consumerDisposed) != 0,
             TimeSinceLastHeartbeat: null,
-            SessionTimeout: TimeSpan.Zero,
+            HeartbeatInterval: TimeSpan.Zero,
             LastHeartbeatFailure: null)
         : _coordinator.CaptureGroupLiveness(
-            Volatile.Read(ref _closed) != 0 || Volatile.Read(ref _consumerDisposed) != 0);
+            Volatile.Read(ref _closed) != 0 || Volatile.Read(ref _consumerDisposed) != 0,
+            _topicPattern is not null || _subscriptionSnapshot.Count != 0);
 
     IDisposable IConsumerRebalanceEventSource.RegisterRuntimeRebalanceListener(IRebalanceListener listener)
     {

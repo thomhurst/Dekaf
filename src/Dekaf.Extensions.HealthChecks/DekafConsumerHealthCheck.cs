@@ -9,11 +9,14 @@ namespace Dekaf.Extensions.HealthChecks;
 /// <see cref="HealthStatus.Degraded"/> when any partition exceeds the degraded threshold,
 /// and <see cref="HealthStatus.Unhealthy"/> when any partition exceeds the unhealthy threshold
 /// or when the consumer's group membership is not live.
+/// A heartbeat is considered stale after three missed broker-directed heartbeat intervals.
 /// </summary>
 /// <typeparam name="TKey">The consumer key type.</typeparam>
 /// <typeparam name="TValue">The consumer value type.</typeparam>
 public sealed class DekafConsumerHealthCheck<TKey, TValue> : IHealthCheck
 {
+    private const int HeartbeatStaleIntervalMultiplier = 3;
+
     private readonly IKafkaConsumer<TKey, TValue> _consumer;
     private readonly DekafConsumerHealthCheckOptions _options;
 
@@ -151,14 +154,7 @@ public sealed class DekafConsumerHealthCheck<TKey, TValue> : IHealthCheck
     private HealthCheckResult? CheckGroupLiveness(int assignedPartitionCount)
     {
         if (_consumer is not IConsumerGroupLiveness livenessSource)
-        {
-            if (assignedPartitionCount != 0)
-                return null;
-
-            return string.IsNullOrEmpty(_consumer.MemberId)
-                ? null
-                : CreateStandbyResult(CreateLivenessData("Standby", assignedPartitionCount));
-        }
+            return null;
 
         var liveness = livenessSource.GroupLiveness;
 
@@ -169,7 +165,7 @@ public sealed class DekafConsumerHealthCheck<TKey, TValue> : IHealthCheck
                 data: CreateLivenessData("Stopped", assignedPartitionCount, liveness));
         }
 
-        if (liveness.LastHeartbeatFailure is { Length: > 0 } failure)
+        if (liveness.HasConsumerGroup && liveness.LastHeartbeatFailure is { Length: > 0 } failure)
         {
             return HealthCheckResult.Unhealthy(
                 $"Consumer coordinator heartbeat failed: {failure}",
@@ -184,14 +180,15 @@ public sealed class DekafConsumerHealthCheck<TKey, TValue> : IHealthCheck
         }
 
         var heartbeatAge = liveness.TimeSinceLastHeartbeat;
+        var heartbeatStaleThreshold = GetHeartbeatStaleThreshold(liveness.HeartbeatInterval);
         if (liveness.HasConsumerGroup &&
-            (heartbeatAge is null || heartbeatAge > liveness.SessionTimeout))
+            (heartbeatAge is null || heartbeatAge > heartbeatStaleThreshold))
         {
             return HealthCheckResult.Unhealthy(
                 heartbeatAge is null
                     ? "Consumer has joined its group but has no successful heartbeat."
                     : $"Consumer heartbeat is stale ({heartbeatAge.Value.TotalSeconds:F1}s old; " +
-                      $"session timeout is {liveness.SessionTimeout.TotalSeconds:F1}s).",
+                      $"expected interval is {liveness.HeartbeatInterval.TotalSeconds:F1}s).",
                 data: CreateLivenessData("StaleHeartbeat", assignedPartitionCount, liveness));
         }
 
@@ -205,6 +202,16 @@ public sealed class DekafConsumerHealthCheck<TKey, TValue> : IHealthCheck
         _options.NoAssignmentStatus,
         "Consumer is a live standby group member with no partition assignment.",
         data: data);
+
+    private static TimeSpan GetHeartbeatStaleThreshold(TimeSpan heartbeatInterval)
+    {
+        if (heartbeatInterval <= TimeSpan.Zero)
+            return TimeSpan.Zero;
+
+        return heartbeatInterval.Ticks > TimeSpan.MaxValue.Ticks / HeartbeatStaleIntervalMultiplier
+            ? TimeSpan.MaxValue
+            : TimeSpan.FromTicks(heartbeatInterval.Ticks * HeartbeatStaleIntervalMultiplier);
+    }
 
     private static Dictionary<string, object> CreateLivenessData(
         string consumerState,
@@ -222,7 +229,9 @@ public sealed class DekafConsumerHealthCheck<TKey, TValue> : IHealthCheck
             data["HasConsumerGroup"] = snapshot.HasConsumerGroup;
             data["IsJoined"] = snapshot.IsJoined;
             data["IsStopped"] = snapshot.IsStopped;
-            data["SessionTimeoutMilliseconds"] = snapshot.SessionTimeout.TotalMilliseconds;
+            data["HeartbeatIntervalMilliseconds"] = snapshot.HeartbeatInterval.TotalMilliseconds;
+            data["HeartbeatStaleThresholdMilliseconds"] =
+                GetHeartbeatStaleThreshold(snapshot.HeartbeatInterval).TotalMilliseconds;
             if (snapshot.TimeSinceLastHeartbeat is { } heartbeatAge)
                 data["HeartbeatAgeMilliseconds"] = heartbeatAge.TotalMilliseconds;
             if (snapshot.LastHeartbeatFailure is { } failure)

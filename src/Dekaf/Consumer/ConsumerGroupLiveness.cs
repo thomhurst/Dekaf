@@ -24,12 +24,14 @@ public interface IConsumerGroupLiveness
 /// Time elapsed since the most recent successful group heartbeat, or <see langword="null"/>
 /// when no heartbeat has succeeded.
 /// </param>
-/// <param name="SessionTimeout">The configured group session timeout.</param>
+/// <param name="HeartbeatInterval">
+/// The broker-directed interval between consumer group heartbeats.
+/// </param>
 /// <param name="LastHeartbeatFailure">The most recent heartbeat failure, if any.</param>
 public readonly record struct ConsumerGroupLiveness(
     bool HasConsumerGroup,
     bool IsJoined,
     bool IsStopped,
     TimeSpan? TimeSinceLastHeartbeat,
-    TimeSpan SessionTimeout,
+    TimeSpan HeartbeatInterval,
     string? LastHeartbeatFailure);
