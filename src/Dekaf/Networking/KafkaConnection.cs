@@ -22,6 +22,7 @@ using Dekaf.Security;
 using Dekaf.Security.Sasl;
 using Dekaf.Telemetry;
 using Microsoft.Extensions.Logging;
+using CancellationTokenSourcePool = Reservoir.CancellationTokenSourcePool;
 
 namespace Dekaf.Networking;
 
@@ -1072,7 +1073,7 @@ public sealed partial class KafkaConnection :
         private ValueTask<PooledResponseBuffer> _pendingTask;
         private CancellationToken _cancellationToken;
         private CancellationTokenRegistration _callerRegistration;
-        private CancellationTokenSourcePool.PooledCancellationTokenSource? _timeoutCts;
+        private CancellationTokenSource? _timeoutCts;
         private int _correlationId;
         private short _apiVersion;
         private bool _callerOwnsTimeout;
@@ -3987,7 +3988,7 @@ public sealed partial class KafkaConnection :
 
         // Do not dispose either write semaphore here. Writers queued before disposal must still
         // acquire them, observe the disposed connection, and release them from finally blocks.
-        _timeoutCtsPool.Clear();
+        _timeoutCtsPool.Dispose();
         _ownedTokenProvider?.Dispose();
 
         // Dispose certificates loaded from files
