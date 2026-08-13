@@ -131,4 +131,16 @@ public class BatchArrayReuseQueueTests
         await Assert.That(success2).IsTrue();
         await Assert.That(reusable2).IsSameReferenceAs(array2);
     }
+
+    [Test]
+    public async Task Clear_EmptiesQueue()
+    {
+        var queue = new BatchArrayReuseQueue(maxSize: 2);
+        queue.EnqueueOrReturn(CreateTestArray());
+        queue.EnqueueOrReturn(CreateTestArray());
+
+        queue.Clear();
+
+        await Assert.That(queue.TryDequeue(out _)).IsFalse();
+    }
 }

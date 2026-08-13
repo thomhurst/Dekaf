@@ -29,6 +29,12 @@ internal abstract class ObjectPool<T> where T : class
     /// Best-effort retained count for diagnostics and cold-path pre-warming.
     /// Reservoir remains the sole authority for retention decisions.
     /// </summary>
+    /// <remarks>
+    /// Concurrent rents and returns can make this value transiently inaccurate. A return that
+    /// races with pool replacement can also leave a bounded permanent offset because the old
+    /// Reservoir is no longer reachable. Do not use this value as a correctness gate or expect
+    /// pre-warming during concurrent use to reach an exact retained count.
+    /// </remarks>
     public int ApproximateCount => Volatile.Read(ref _retainedCount);
 
     /// <summary>Number of empty-pool rents that created an item.</summary>
@@ -86,6 +92,8 @@ internal abstract class ObjectPool<T> where T : class
                 return;
 
             Volatile.Write(ref _pool, CreatePool(newSize));
+            // Reservoir exposes neither an exact retained count nor a non-creating TryRent.
+            // Draining by ApproximateCount could fabricate items after the old pool empties.
             currentPool.Clear();
         }
     }
@@ -100,7 +108,7 @@ internal abstract class ObjectPool<T> where T : class
     }
 
     /// <summary>Clears retained items while leaving pool usable.</summary>
-    public void Clear()
+    public virtual void Clear()
     {
         Volatile.Read(ref _pool).Clear();
     }

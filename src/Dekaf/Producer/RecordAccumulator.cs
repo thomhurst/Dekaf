@@ -7257,6 +7257,12 @@ internal sealed class PartitionBatchPool : ObjectPool<PartitionBatch>
         item.PrepareForPooling(_options, _arrayReuseQueue);
     }
 
+    public override void Clear()
+    {
+        base.Clear();
+        _arrayReuseQueue.Clear();
+    }
+
     /// <summary>
     /// Gets a batch from the pool or creates a new one, configured for the given partition.
     /// </summary>
@@ -8637,6 +8643,9 @@ internal sealed class BatchArrayReuseQueue
         completionSources = candidate;
         return true;
     }
+
+    /// <summary>Returns all retained arrays to the dedicated array pool.</summary>
+    public void Clear() => _pool.Clear();
 
     private readonly struct CompletionSourceArrayPolicy
         : Reservoir.IPooledObjectDestroyPolicy<PooledValueTaskSource<RecordMetadata>[]>
