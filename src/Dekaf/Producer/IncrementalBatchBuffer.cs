@@ -14,10 +14,8 @@ internal sealed class IncrementalBatchBuffer
 
     private const int BufferPoolSize = 1024;
     private const int InitialSegmentPoolSize = 8192;
-    private static readonly LockFreeStack<IncrementalBatchBuffer> s_buffers = new(BufferPoolSize);
-    private static readonly Lock s_segmentPoolLock = new();
-    private static LockFreeStack<ChunkSegment> s_segments = new(InitialSegmentPoolSize);
-    private static int s_segmentPoolCapacity = InitialSegmentPoolSize;
+    private static readonly BufferPool s_buffers = new();
+    private static readonly SegmentPool s_segments = new(InitialSegmentPoolSize);
     private static readonly RatchetableArrayPool<byte> s_chunkArrays = new(
         maxArrayLength: 4 * 1024 * 1024,
         initialArraysPerBucket: BatchArena.DefaultPoolSize);
@@ -61,8 +59,8 @@ internal sealed class IncrementalBatchBuffer
         for (var i = 0; i < count; i++)
             s_chunkArrays.Pool.Return(arrays[i], clearArray: false);
 
-        while (s_segments.Count < count && s_segments.TryPush(new ChunkSegment())) { }
-        while (s_buffers.Count < count && s_buffers.TryPush(new IncrementalBatchBuffer(batchSize))) { }
+        s_segments.PreWarm(count);
+        s_buffers.PreWarm(count);
     }
 
     internal int RetainedCapacity
@@ -78,9 +76,7 @@ internal sealed class IncrementalBatchBuffer
 
     internal static IncrementalBatchBuffer Rent(int batchSize)
     {
-        if (!s_buffers.TryPop(out var buffer))
-            return new IncrementalBatchBuffer(batchSize);
-
+        var buffer = s_buffers.Rent();
         buffer.Reset(batchSize);
         return buffer;
     }
@@ -88,7 +84,7 @@ internal sealed class IncrementalBatchBuffer
     internal static void ReturnToPool(IncrementalBatchBuffer buffer)
     {
         buffer.ReturnChunks();
-        s_buffers.TryPush(buffer);
+        s_buffers.Return(buffer);
     }
 
     internal void Allocate(
@@ -182,30 +178,11 @@ internal sealed class IncrementalBatchBuffer
         Math.Clamp(Math.Min(MaximumChunkSize, batchSize), MinimumChunkSize, MaximumChunkSize);
 
     private static void RatchetSegmentPoolSize(int capacity)
-    {
-        if (capacity <= Volatile.Read(ref s_segmentPoolCapacity))
-            return;
-
-        lock (s_segmentPoolLock)
-        {
-            if (capacity <= s_segmentPoolCapacity)
-                return;
-
-            var current = Volatile.Read(ref s_segments);
-            var replacement = new LockFreeStack<ChunkSegment>(capacity);
-            while (current.TryPop(out var segment))
-                replacement.TryPush(segment);
-
-            Volatile.Write(ref s_segments, replacement);
-            Volatile.Write(ref s_segmentPoolCapacity, capacity);
-        }
-    }
+        => s_segments.RatchetMaxPoolSize(capacity);
 
     private static ChunkSegment RentSegment(int capacity)
     {
-        if (!Volatile.Read(ref s_segments).TryPop(out var segment))
-            segment = new ChunkSegment();
-
+        var segment = s_segments.Rent();
         segment.Initialize(s_chunkArrays.Pool.Rent(capacity));
         return segment;
     }
@@ -214,7 +191,7 @@ internal sealed class IncrementalBatchBuffer
     {
         var buffer = segment.Release();
         s_chunkArrays.Pool.Return(buffer, clearArray: false);
-        Volatile.Read(ref s_segments).TryPush(segment);
+        s_segments.Return(segment);
     }
 
     private void ReturnChunks()
@@ -279,5 +256,19 @@ internal sealed class IncrementalBatchBuffer
             Memory = default;
             return buffer;
         }
+    }
+
+    private sealed class BufferPool() : ObjectPool<IncrementalBatchBuffer>(BufferPoolSize)
+    {
+        protected override IncrementalBatchBuffer Create() => new(MinimumChunkSize);
+
+        protected override void Reset(IncrementalBatchBuffer item) { }
+    }
+
+    private sealed class SegmentPool(int maxPoolSize) : ObjectPool<ChunkSegment>(maxPoolSize)
+    {
+        protected override ChunkSegment Create() => new();
+
+        protected override void Reset(ChunkSegment item) { }
     }
 }

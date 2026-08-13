@@ -354,7 +354,8 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
     // ~1MB buffer rented from DekafPools.SerializationBuffers. With 3+ brokers, dozens of
     // threads accumulated caches over time, depleting the pool and driving Gen2 GC pressure.
     private const int MaxPooledCaches = 16;
-    private static readonly LockFreeStack<SerializationCache> s_cachePool = new(MaxPooledCaches);
+    private static readonly Reservoir.ObjectPool<SerializationCache, SerializationCachePolicy>
+        s_cachePool = new(MaxPooledCaches);
 
     /// <summary>
     /// Holds scratch buffer state for a single RecordBatch serialization/deserialization operation.
@@ -381,17 +382,19 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
     }
 
     private static SerializationCache RentSerializationCache()
-    {
-        if (s_cachePool.TryPop(out var cache))
-            return cache;
-
-        return new SerializationCache();
-    }
+        => s_cachePool.Rent();
 
     private static void ReturnSerializationCache(SerializationCache cache)
+        => s_cachePool.Return(cache);
+
+    private readonly struct SerializationCachePolicy
+        : Reservoir.IPooledObjectDestroyPolicy<SerializationCache>
     {
-        if (!s_cachePool.TryPush(cache))
-            cache.Dispose();
+        public SerializationCache Create() => new();
+
+        public bool TryReset(SerializationCache cache) => true;
+
+        public void Destroy(SerializationCache cache) => cache.Dispose();
     }
 
     private static PooledReusableBufferWriter GetRecordsBuffer(SerializationCache cache)
