@@ -77,6 +77,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     private volatile CoordinatorState _state = CoordinatorState.Unjoined;
     private KafkaException? _fatalHeartbeatException;
+    private long _lastSuccessfulHeartbeatTimestamp;
+    private string? _lastHeartbeatFailure;
     private int _disposed;
     private readonly Func<int> _getCoordinationConnectionIndex;
 
@@ -163,6 +165,20 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     public CoordinatorState State => _state;
     public TopicPartitionSet Assignment => _assignedPartitions;
     internal int AssignmentVersion => Volatile.Read(ref _assignmentVersion);
+
+    internal ConsumerGroupLiveness CaptureGroupLiveness(bool isStopped)
+    {
+        var lastHeartbeatTimestamp = Volatile.Read(ref _lastSuccessfulHeartbeatTimestamp);
+        return new ConsumerGroupLiveness(
+            HasConsumerGroup: true,
+            IsJoined: _state == CoordinatorState.Stable,
+            IsStopped: isStopped || Volatile.Read(ref _disposed) != 0,
+            TimeSinceLastHeartbeat: lastHeartbeatTimestamp == 0
+                ? null
+                : Stopwatch.GetElapsedTime(lastHeartbeatTimestamp),
+            SessionTimeout: TimeSpan.FromMilliseconds(_options.SessionTimeoutMs),
+            LastHeartbeatFailure: Volatile.Read(ref _lastHeartbeatFailure));
+    }
 
     internal ValueTask RecordPollAsync(CancellationToken cancellationToken)
     {
@@ -1596,6 +1612,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             HandleConsumerGroupHeartbeatError(response, subscribedTopicRegex);
         }
 
+        Volatile.Write(ref _lastSuccessfulHeartbeatTimestamp, Stopwatch.GetTimestamp());
+        Volatile.Write(ref _lastHeartbeatFailure, null);
+
         if (!isInitial && ownedTopicPartitions is not null)
             Volatile.Write(ref _sentOwnedTopicPartitionsVersion, assignmentVersion);
 
@@ -1998,6 +2017,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             catch (Exception ex)
             {
                 LogHeartbeatFailed(ex);
+                Volatile.Write(ref _lastHeartbeatFailure, ex.Message);
 
                 if (ex is BrokerVersionException brokerVersionException)
                 {

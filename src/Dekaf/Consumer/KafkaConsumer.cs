@@ -861,6 +861,7 @@ internal static class ConsumerFetchPools
 /// <typeparam name="TValue">Value type.</typeparam>
 public sealed partial class KafkaConsumer<TKey, TValue> :
     IKafkaConsumer<TKey, TValue>,
+    IConsumerGroupLiveness,
     IConsumerPositions,
     IConsumerPartitions,
     IConsumerOffsets,
@@ -1721,6 +1722,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     public IConsumerPositions Positions => this;
     public IConsumerPartitions Partitions => this;
     public IConsumerOffsets Offsets => this;
+
+    ConsumerGroupLiveness IConsumerGroupLiveness.GroupLiveness => _coordinator is null
+        ? new ConsumerGroupLiveness(
+            HasConsumerGroup: false,
+            IsJoined: false,
+            IsStopped: Volatile.Read(ref _closed) != 0 || Volatile.Read(ref _consumerDisposed) != 0,
+            TimeSinceLastHeartbeat: null,
+            SessionTimeout: TimeSpan.Zero,
+            LastHeartbeatFailure: null)
+        : _coordinator.CaptureGroupLiveness(
+            Volatile.Read(ref _closed) != 0 || Volatile.Read(ref _consumerDisposed) != 0);
 
     IDisposable IConsumerRebalanceEventSource.RegisterRuntimeRebalanceListener(IRebalanceListener listener)
     {
