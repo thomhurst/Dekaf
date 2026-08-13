@@ -17,6 +17,7 @@ using Dekaf.Retry;
 using Dekaf.Serialization;
 using Dekaf.Telemetry;
 using Microsoft.Extensions.Logging;
+using CancellationTokenSourcePool = Reservoir.CancellationTokenSourcePool;
 #if NETSTANDARD2_0
 using StringSet = System.Collections.Generic.IReadOnlyCollection<string>;
 using TopicPartitionSet = System.Collections.Generic.IReadOnlyCollection<Dekaf.TopicPartition>;
@@ -9330,9 +9331,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         prefetchCts?.Dispose();
         _leaderRefreshCts.Dispose();
 
-        // Clear and dispose CancellationTokenSource pool
+        // Dispose CancellationTokenSource pool
         // Note: active consume cancellation sources are managed by the pool and should not be disposed here
-        _ctsPool.Clear();
+        _ctsPool.Dispose();
 
         // Clear and dispose any pending fetch data to release pooled memory
         while (_pendingFetches.TryDequeue(out var pending))

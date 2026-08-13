@@ -60,10 +60,11 @@ public sealed class ConsumeOneFastPathTests
         await using var consumer = CreateInitializedConsumer(fetch);
         MarkManualAssignmentCurrent(consumer);
 
-        var result = await consumer.ConsumeOneAsync(TimeSpan.FromMinutes(1), CancellationToken.None);
+        var resultTask = consumer.ConsumeOneAsync(TimeSpan.FromMinutes(1), CancellationToken.None);
 
+        await Assert.That(resultTask.IsCompletedSuccessfully).IsTrue();
+        var result = await resultTask;
         await Assert.That(result).IsNotNull();
-        await Assert.That(GetTimeoutCtsPoolCount(consumer)).IsEqualTo(0);
     }
 
     [Test]
@@ -97,7 +98,7 @@ public sealed class ConsumeOneFastPathTests
         var result = await consumer.ConsumeOneAsync(Timeout.InfiniteTimeSpan, CancellationToken.None);
 
         await Assert.That(result).IsNotNull();
-        await Assert.That(GetTimeoutCtsPoolCount(consumer)).IsEqualTo(1);
+        await Assert.That(GetPrivateField<Task?>(consumer, "_prefetchTask") is not null).IsTrue();
     }
 
     [Test]
@@ -113,7 +114,7 @@ public sealed class ConsumeOneFastPathTests
         var result = await consumer.ConsumeOneAsync(Timeout.InfiniteTimeSpan, CancellationToken.None);
 
         await Assert.That(result).IsNotNull();
-        await Assert.That(GetTimeoutCtsPoolCount(consumer)).IsEqualTo(1);
+        await Assert.That(GetPrivateField<Task?>(consumer, "_autoCommitTask") is not null).IsTrue();
     }
 
     [Test]
@@ -904,6 +905,15 @@ public sealed class ConsumeOneFastPathTests
         field.SetValue(consumer, value);
     }
 
+    private static T GetPrivateField<T>(KafkaConsumer<string, string> consumer, string fieldName)
+    {
+        var field = typeof(KafkaConsumer<string, string>).GetField(
+            fieldName,
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException($"{fieldName} field not found.");
+        return (T)field.GetValue(consumer)!;
+    }
+
     private static ConsumerCoordinator GetCoordinator(KafkaConsumer<string, string> consumer)
     {
         var field = typeof(KafkaConsumer<string, string>).GetField(
@@ -920,18 +930,6 @@ public sealed class ConsumeOneFastPathTests
             BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("_pollVersion field not found.");
         return (long)field.GetValue(coordinator)!;
-    }
-
-    private static int GetTimeoutCtsPoolCount(KafkaConsumer<string, string> consumer)
-    {
-        var ctsPoolField = typeof(KafkaConsumer<string, string>).GetField(
-            "_ctsPool",
-            BindingFlags.NonPublic | BindingFlags.Instance)
-            ?? throw new InvalidOperationException("_ctsPool field not found.");
-        var ctsPool = ctsPoolField.GetValue(consumer)!;
-        var countField = ctsPool.GetType().GetField("_count", BindingFlags.NonPublic | BindingFlags.Instance)
-            ?? throw new InvalidOperationException("CancellationTokenSourcePool._count field not found.");
-        return (int)countField.GetValue(ctsPool)!;
     }
 
     private static ConcurrentDictionary<TopicPartition, long> GetFetchPositions(
