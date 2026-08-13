@@ -1,5 +1,6 @@
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Columns;
+using System.Collections.Concurrent;
 using Dekaf.Consumer;
 using Dekaf.Networking;
 using Dekaf.Producer;
@@ -16,24 +17,36 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 [OperationsPerSecond]
 public class ObjectPoolMigrationBenchmarks
 {
+    private ConcurrentStackPool _concurrentStack = null!;
     private ObjectPool<PooledItem, PooledItemPolicy> _reservoir = null!;
     private TrackedPool _tracked = null!;
 
-    [Params(32, 128)]
+    [Params(32, 128, 256)]
     public int Capacity { get; set; }
 
     [GlobalSetup]
     public void Setup()
     {
+        _concurrentStack = new ConcurrentStackPool(Capacity);
         _reservoir = new ObjectPool<PooledItem, PooledItemPolicy>(Capacity);
         _tracked = new TrackedPool(Capacity);
 
+        var concurrentStackItem = _concurrentStack.Rent();
+        _concurrentStack.Return(concurrentStackItem);
         var item = _reservoir.Rent();
         _reservoir.Return(item);
         _tracked.PreWarm(1);
     }
 
     [Benchmark(Baseline = true)]
+    public PooledItem ConcurrentStack()
+    {
+        var item = _concurrentStack.Rent();
+        _concurrentStack.Return(item);
+        return item;
+    }
+
+    [Benchmark]
     public PooledItem Reservoir()
     {
         var item = _reservoir.Rent();
@@ -50,6 +63,32 @@ public class ObjectPoolMigrationBenchmarks
     }
 
     public sealed class PooledItem;
+
+    private sealed class ConcurrentStackPool(int capacity)
+    {
+        private readonly ConcurrentStack<PooledItem> _items = new();
+        private int _count;
+
+        public PooledItem Rent()
+        {
+            if (!_items.TryPop(out var item))
+                return new PooledItem();
+
+            Interlocked.Decrement(ref _count);
+            return item;
+        }
+
+        public void Return(PooledItem item)
+        {
+            if (Interlocked.Increment(ref _count) <= capacity)
+            {
+                _items.Push(item);
+                return;
+            }
+
+            Interlocked.Decrement(ref _count);
+        }
+    }
 
     private sealed class TrackedPool(int capacity)
         : Dekaf.Producer.ObjectPool<PooledItem>(capacity)

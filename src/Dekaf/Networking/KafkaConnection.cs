@@ -1059,7 +1059,9 @@ public sealed partial class KafkaConnection :
         private const int ConsumerReady = 2;
         private const int ReturnReady = CompletionReady | ConsumerReady;
 
-        private static readonly ConcurrentStack<PooledPipelinedResponse<TRequest, TResponse>> Pool = new();
+        private static readonly Reservoir.ObjectPool<
+            PooledPipelinedResponse<TRequest, TResponse>,
+            PoolPolicy> Pool = new(MaxPoolSize);
         private static int s_poolCount;
 
         // The pending request already enters this completion from an asynchronous callback.
@@ -1098,14 +1100,8 @@ public sealed partial class KafkaConnection :
             long telemetryStartTimestamp,
             CancellationToken cancellationToken)
         {
-            if (!Pool.TryPop(out var operation))
-            {
-                operation = new PooledPipelinedResponse<TRequest, TResponse>();
-            }
-            else
-            {
-                Interlocked.Decrement(ref s_poolCount);
-            }
+            var operation = Pool.Rent();
+            Interlocked.Decrement(ref s_poolCount);
 
             operation.Initialize(
                 connection,
@@ -1306,6 +1302,14 @@ public sealed partial class KafkaConnection :
 
         private void ReturnToPool()
         {
+            Pool.Return(this);
+            // Reservoir invokes Destroy synchronously when capacity rejects this return.
+            // Increment after Return balances both retained and rejected objects.
+            Interlocked.Increment(ref s_poolCount);
+        }
+
+        private void ResetForPooling()
+        {
             _connection = null;
             _pending = null;
             _pendingTask = default;
@@ -1317,15 +1321,28 @@ public sealed partial class KafkaConnection :
             _telemetryStartTimestamp = 0;
             _returnReadiness = 0;
             _core.Reset();
+        }
 
-            if (Interlocked.Increment(ref s_poolCount) <= MaxPoolSize)
+        private readonly struct PoolPolicy
+            : Reservoir.IPooledObjectDestroyPolicy<
+                PooledPipelinedResponse<TRequest, TResponse>>
+        {
+            public PooledPipelinedResponse<TRequest, TResponse> Create()
             {
-                Pool.Push(this);
+                // Rent decrements after Reservoir returns, so count misses as transient retained
+                // entries to keep the diagnostic count at zero for newly created operations.
+                Interlocked.Increment(ref s_poolCount);
+                return new PooledPipelinedResponse<TRequest, TResponse>();
             }
-            else
+
+            public bool TryReset(PooledPipelinedResponse<TRequest, TResponse> operation)
             {
-                Interlocked.Decrement(ref s_poolCount);
+                operation.ResetForPooling();
+                return true;
             }
+
+            public void Destroy(PooledPipelinedResponse<TRequest, TResponse> operation)
+                => Interlocked.Decrement(ref s_poolCount);
         }
 
         TResponse IValueTaskSource<TResponse>.GetResult(short token)
