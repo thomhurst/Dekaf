@@ -49,7 +49,7 @@ internal sealed class PendingFetchData : IDisposable
     private static PendingFetchDataPoolState s_poolState = CreatePool(DefaultMaxPoolSize);
     private static Reservoir.ObjectPool<PendingFetchData, PendingFetchDataPolicy> s_pool =
         s_poolState.Pool;
-    private static List<PendingFetchDataPoolState>? s_retiredPools;
+    private static PendingFetchDataPoolState? s_retiredPool;
     private static int s_maxParsedRecordSlabsPerBucket = DefaultMaxParsedRecordSlabsPerBucket;
     private static ArrayPool<Record> s_parsedRecordSlabPool = ArrayPool<Record>.Create(
         RecordBatch.MaxReasonableLazyRecordCount,
@@ -82,15 +82,15 @@ internal sealed class PendingFetchData : IDisposable
                     s_poolState = replacementState;
                     Volatile.Write(ref s_pool, replacementState.Pool);
 
-                    if (s_retiredPools is { } retiredPools)
+                    if (s_retiredPool is { } retiredPool)
                     {
-                        for (var i = 0; i < retiredPools.Count; i++)
-                            retiredPools[i].Pool.Clear();
+                        retiredPool.Pool.Clear();
+                        retiredPool.Pool.Dispose();
                     }
                     currentPool.Clear();
-                    // Keep the old generation reachable for returns that captured it before
-                    // publication; a later ratchet drains any item returned after this Clear.
-                    (s_retiredPools ??= []).Add(currentState);
+                    // Keep one old generation reachable for returns that captured it before
+                    // publication; the next ratchet forwards them and releases its storage.
+                    s_retiredPool = currentState;
                 }
 
                 if (Volatile.Read(ref s_maxParsedRecordSlabsPerBucket) < desiredSlabDepth)

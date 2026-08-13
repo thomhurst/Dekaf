@@ -18,7 +18,7 @@ internal abstract class ObjectPool<T> where T : class
 {
     private Reservoir.ObjectPool<T, PoolPolicy> _pool;
     private PoolState _poolState;
-    private List<PoolState>? _retiredPools;
+    private PoolState? _retiredPool;
     private readonly Lock _resizeLock = new();
     private int _maxPoolSize;
     private int _retainedCount;
@@ -102,25 +102,31 @@ internal abstract class ObjectPool<T> where T : class
             // Clear invokes the old policy's Destroy callback for every retained item. During
             // a ratchet that callback forwards the item to the replacement pool, preserving
             // warm objects without relying on an approximate count or a creating Rent call.
-            if (_retiredPools is { } retiredPools)
+            if (_retiredPool is { } retiredPool)
             {
-                for (var i = 0; i < retiredPools.Count; i++)
-                    retiredPools[i].Pool.Clear();
+                retiredPool.Pool.Clear();
+                retiredPool.Pool.Dispose();
             }
             currentPool.Clear();
-            // A return may have captured the old pool before publication. Keep that generation
-            // reachable so a later ratchet or Clear can release any item returned after this drain.
-            (_retiredPools ??= []).Add(currentState);
+            // A return may have captured the old pool before publication. Keep that one generation
+            // reachable so the next ratchet can forward late returns before releasing its storage.
+            _retiredPool = currentState;
         }
     }
 
-    /// <summary>Pre-allocates retained items up to <paramref name="count"/>.</summary>
+    /// <summary>
+    /// Creates and retains fresh items up to <paramref name="count"/> without applying the
+    /// return-time reset intended for previously used objects.
+    /// </summary>
     public void PreWarm(int count)
     {
         count = Math.Min(count, MaxPoolSize);
         var missing = Math.Max(0, count - ApproximateCount);
         for (var i = 0; i < missing; i++)
-            Return(Create());
+        {
+            Volatile.Read(ref _pool).Return(Create());
+            Interlocked.Increment(ref _retainedCount);
+        }
     }
 
     /// <summary>Clears retained items while leaving pool usable.</summary>
@@ -128,20 +134,18 @@ internal abstract class ObjectPool<T> where T : class
     {
         lock (_resizeLock)
         {
-            if (_retiredPools is { } retiredPools)
-            {
-                for (var i = 0; i < retiredPools.Count; i++)
-                    Volatile.Write(ref retiredPools[i].MigrationTarget, null);
-            }
+            var retiredPool = _retiredPool;
+            if (retiredPool is not null)
+                Volatile.Write(ref retiredPool.MigrationTarget, null);
 
             Volatile.Read(ref _pool).Clear();
 
-            if (_retiredPools is not { } pools)
+            if (retiredPool is null)
                 return;
 
-            for (var i = 0; i < pools.Count; i++)
-                pools[i].Pool.Clear();
-            pools.Clear();
+            retiredPool.Pool.Clear();
+            retiredPool.Pool.Dispose();
+            _retiredPool = null;
         }
     }
 

@@ -117,6 +117,17 @@ public class ObjectPoolTests
     }
 
     [Test]
+    public async Task PreWarm_DoesNotResetFreshItems()
+    {
+        var pool = new TestPool(2);
+
+        pool.PreWarm(1);
+        var item = pool.Rent();
+
+        await Assert.That(item.WasReset).IsFalse();
+    }
+
+    [Test]
     public async Task PreWarm_RentDoesNotIncrementMissCounter()
     {
         var pool = new TestPool(10);
@@ -182,6 +193,20 @@ public class ObjectPoolTests
         pool.RatchetMaxPoolSize(2);
 
         await Assert.That(pool.MaxPoolSize).IsEqualTo(4);
+    }
+
+    [Test]
+    public async Task Clear_AfterRatchet_DestroysMigratedItems()
+    {
+        var pool = new TestPool(1);
+        var item = pool.Rent();
+        pool.Return(item);
+        pool.RatchetMaxPoolSize(2);
+
+        pool.Clear();
+
+        await Assert.That(item.WasDestroyed).IsTrue();
+        await Assert.That(pool.Rent()).IsNotSameReferenceAs(item);
     }
 
     [Test]
