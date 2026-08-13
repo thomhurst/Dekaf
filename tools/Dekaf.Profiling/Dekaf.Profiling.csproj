@@ -15,6 +15,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="SSH.NET" PrivateAssets="All" />
     <PackageReference Include="Testcontainers.Kafka" />
   </ItemGroup>
 
