@@ -1,6 +1,7 @@
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Columns;
 using Dekaf.Consumer;
+using Dekaf.Networking;
 using Dekaf.Producer;
 using Dekaf.Protocol.Records;
 using Reservoir;
@@ -76,15 +77,24 @@ public class PoolHotPathBenchmarks
     private const int ArenaCapacity = 1024 * 1024;
     private static readonly IReadOnlyList<RecordBatch> EmptyBatches = Array.Empty<RecordBatch>();
     private ValueTaskSourcePool<int> _valueTaskSources = null!;
+    private PendingRequestPool _pendingRequests = null!;
+    private PipeMemoryPool _pipeMemory = null!;
 
     [GlobalSetup]
     public void Setup()
     {
         _valueTaskSources = new ValueTaskSourcePool<int>(4096);
+        _pendingRequests = new PendingRequestPool();
+        _pipeMemory = new PipeMemoryPool();
 
         var source = _valueTaskSources.Rent();
         source.SetResult(0);
         _ = source.Task.GetAwaiter().GetResult();
+
+        var pendingRequest = _pendingRequests.Rent();
+        _pendingRequests.Return(pendingRequest);
+
+        _pipeMemory.Rent(4096).Dispose();
 
         var arena = BatchArena.RentOrCreate(ArenaCapacity);
         BatchArena.ReturnToPool(arena);
@@ -117,4 +127,24 @@ public class PoolHotPathBenchmarks
         BatchArena.ReturnToPool(arena);
         return capacity;
     }
+
+    [Benchmark]
+    public int PendingRequestRentReturn()
+    {
+        var request = _pendingRequests.Rent();
+        _pendingRequests.Return(request);
+        return _pendingRequests.ApproximateCount;
+    }
+
+    [Benchmark]
+    public int PipeMemoryOwnerRentReturn()
+    {
+        var owner = _pipeMemory.Rent(4096);
+        var length = owner.Memory.Length;
+        owner.Dispose();
+        return length;
+    }
+
+    [GlobalCleanup]
+    public void Cleanup() => _pipeMemory.Dispose();
 }
