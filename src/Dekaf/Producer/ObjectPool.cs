@@ -17,6 +17,8 @@ namespace Dekaf.Producer;
 internal abstract class ObjectPool<T> where T : class
 {
     private Reservoir.ObjectPool<T, PoolPolicy> _pool;
+    private PoolState _poolState;
+    private List<PoolState>? _retiredPools;
     private readonly Lock _resizeLock = new();
     private int _maxPoolSize;
     private int _retainedCount;
@@ -30,10 +32,9 @@ internal abstract class ObjectPool<T> where T : class
     /// Reservoir remains the sole authority for retention decisions.
     /// </summary>
     /// <remarks>
-    /// Concurrent rents and returns can make this value transiently inaccurate. A return that
-    /// races with pool replacement can also leave a bounded permanent offset because the old
-    /// Reservoir is no longer reachable. Do not use this value as a correctness gate or expect
-    /// pre-warming during concurrent use to reach an exact retained count.
+    /// Concurrent rents, returns, and pool replacement can make this value transiently
+    /// inaccurate. Do not use it as a correctness gate or expect pre-warming during concurrent
+    /// use to reach an exact retained count.
     /// </remarks>
     public int ApproximateCount => Volatile.Read(ref _retainedCount);
 
@@ -44,7 +45,8 @@ internal abstract class ObjectPool<T> where T : class
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxPoolSize);
         _maxPoolSize = maxPoolSize;
-        _pool = CreatePool(maxPoolSize);
+        _poolState = CreatePool(maxPoolSize);
+        _pool = _poolState.Pool;
     }
 
     /// <summary>Creates a new instance when no retained item is available.</summary>
@@ -91,10 +93,24 @@ internal abstract class ObjectPool<T> where T : class
             if (currentPool.MaximumRetained >= newSize)
                 return;
 
-            Volatile.Write(ref _pool, CreatePool(newSize));
-            // Reservoir exposes neither an exact retained count nor a non-creating TryRent.
-            // Draining by ApproximateCount could fabricate items after the old pool empties.
+            var currentState = _poolState;
+            var replacementState = CreatePool(newSize);
+            Volatile.Write(ref currentState.MigrationTarget, replacementState);
+            _poolState = replacementState;
+            Volatile.Write(ref _pool, replacementState.Pool);
+
+            // Clear invokes the old policy's Destroy callback for every retained item. During
+            // a ratchet that callback forwards the item to the replacement pool, preserving
+            // warm objects without relying on an approximate count or a creating Rent call.
+            if (_retiredPools is { } retiredPools)
+            {
+                for (var i = 0; i < retiredPools.Count; i++)
+                    retiredPools[i].Pool.Clear();
+            }
             currentPool.Clear();
+            // A return may have captured the old pool before publication. Keep that generation
+            // reachable so a later ratchet or Clear can release any item returned after this drain.
+            (_retiredPools ??= []).Add(currentState);
         }
     }
 
@@ -110,17 +126,45 @@ internal abstract class ObjectPool<T> where T : class
     /// <summary>Clears retained items while leaving pool usable.</summary>
     public virtual void Clear()
     {
-        Volatile.Read(ref _pool).Clear();
+        lock (_resizeLock)
+        {
+            if (_retiredPools is { } retiredPools)
+            {
+                for (var i = 0; i < retiredPools.Count; i++)
+                    Volatile.Write(ref retiredPools[i].MigrationTarget, null);
+            }
+
+            Volatile.Read(ref _pool).Clear();
+
+            if (_retiredPools is not { } pools)
+                return;
+
+            for (var i = 0; i < pools.Count; i++)
+                pools[i].Pool.Clear();
+            pools.Clear();
+        }
     }
 
-    private Reservoir.ObjectPool<T, PoolPolicy> CreatePool(int capacity) =>
-        new(new PoolPolicy(this), capacity);
+    private PoolState CreatePool(int capacity)
+    {
+        var state = new PoolState(this);
+        state.Pool = new Reservoir.ObjectPool<T, PoolPolicy>(new PoolPolicy(state), capacity);
+        return state;
+    }
 
-    private readonly struct PoolPolicy(ObjectPool<T> owner)
+    private sealed class PoolState(ObjectPool<T> owner)
+    {
+        public readonly ObjectPool<T> Owner = owner;
+        public Reservoir.ObjectPool<T, PoolPolicy> Pool = null!;
+        public PoolState? MigrationTarget;
+    }
+
+    private readonly struct PoolPolicy(PoolState state)
         : Reservoir.IPooledObjectDestroyPolicy<T>
     {
         public T Create()
         {
+            var owner = state.Owner;
             Interlocked.Increment(ref owner._misses);
             var item = owner.Create();
             Interlocked.Increment(ref owner._retainedCount);
@@ -131,8 +175,20 @@ internal abstract class ObjectPool<T> where T : class
 
         public void Destroy(T item)
         {
+            var owner = state.Owner;
             Interlocked.Decrement(ref owner._retainedCount);
-            owner.Destroy(item);
+            var target = Volatile.Read(ref state.MigrationTarget);
+            if (target is null)
+            {
+                owner.Destroy(item);
+                return;
+            }
+
+            while (Volatile.Read(ref target.MigrationTarget) is { } next)
+                target = next;
+
+            target.Pool.Return(item);
+            Interlocked.Increment(ref owner._retainedCount);
         }
     }
 }

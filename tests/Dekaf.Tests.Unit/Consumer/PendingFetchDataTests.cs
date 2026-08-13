@@ -9,10 +9,12 @@ public class PendingFetchDataTests
 {
     private static readonly FieldInfo ActivityNameField = typeof(PendingFetchData)
         .GetField("_activityName", BindingFlags.Instance | BindingFlags.NonPublic)!;
-    private static readonly FieldInfo MaxPoolSizeField = typeof(PendingFetchData)
-        .GetField("s_maxPoolSize", BindingFlags.Static | BindingFlags.NonPublic)!;
     private static readonly FieldInfo PoolField = typeof(PendingFetchData)
         .GetField("s_pool", BindingFlags.Static | BindingFlags.NonPublic)!;
+
+    private static void ClearPool() =>
+        PoolField.FieldType.GetMethod(nameof(Reservoir.ObjectPool<object>.Clear))!
+            .Invoke(PoolField.GetValue(null), null);
 
     [Test]
     public async Task Constructor_WithActivityName_UsesCachedValue()
@@ -110,6 +112,7 @@ public class PendingFetchDataTests
     }
 
     [Test]
+    [NotInParallel]
     public async Task RatchetPoolSize_IncreasesMaxPoolSize()
     {
         var before = PendingFetchData.MaxPoolSizeValue;
@@ -124,41 +127,27 @@ public class PendingFetchDataTests
 
     [Test]
     [NotInParallel]
-    public async Task RatchetPoolSize_ReplacesPreviousStorage()
+    public async Task RatchetPoolSize_PreservesRetainedInstances()
     {
-        var originalMaxPoolSize = MaxPoolSizeField.GetValue(null);
-        var originalPool = PoolField.GetValue(null);
-        PendingFetchData? second = null;
+        ClearPool();
+        var first = PendingFetchData.Create(
+            "topic-1",
+            partitionIndex: 0,
+            batches: Array.Empty<RecordBatch>());
+        first.Dispose();
 
-        try
-        {
-            MaxPoolSizeField.SetValue(null, 1);
-            PoolField.SetValue(null, Activator.CreateInstance(PoolField.FieldType, 1));
+        PendingFetchData.RatchetPoolSize(PendingFetchData.MaxPoolSizeValue + 1);
 
-            var first = PendingFetchData.Create(
-                "topic-1",
-                partitionIndex: 0,
-                batches: Array.Empty<RecordBatch>());
-            first.Dispose();
+        using var second = PendingFetchData.Create(
+            "topic-2",
+            partitionIndex: 1,
+            batches: Array.Empty<RecordBatch>());
 
-            PendingFetchData.RatchetPoolSize(2);
-
-            second = PendingFetchData.Create(
-                "topic-2",
-                partitionIndex: 1,
-                batches: Array.Empty<RecordBatch>());
-
-            await Assert.That(second).IsNotSameReferenceAs(first);
-        }
-        finally
-        {
-            second?.Dispose();
-            MaxPoolSizeField.SetValue(null, originalMaxPoolSize);
-            PoolField.SetValue(null, originalPool);
-        }
+        await Assert.That(second).IsSameReferenceAs(first);
     }
 
     [Test]
+    [NotInParallel]
     public async Task RatchetPoolSize_DoesNotDecrease()
     {
         // Ratchet to a known high value first to avoid ordering dependency with other tests
@@ -197,34 +186,19 @@ public class PendingFetchDataTests
     [NotInParallel]
     public async Task Dispose_ReleasesParsedRecordSlabBeforePooledReuse()
     {
-        var originalMaxPoolSize = MaxPoolSizeField.GetValue(null);
-        var originalPool = PoolField.GetValue(null);
         var slabField = typeof(PendingFetchData)
             .GetField("_parsedRecordSlab", BindingFlags.Instance | BindingFlags.NonPublic)!;
-        PendingFetchData? second = null;
+        ClearPool();
+        var first = PendingFetchData.Create("topic-1", 0, Array.Empty<RecordBatch>());
+        var slab = new Record[32];
+        slab[^1] = new Record { Value = new byte[] { 42 } };
+        slabField.SetValue(first, slab);
+        first.Dispose();
 
-        try
-        {
-            MaxPoolSizeField.SetValue(null, 1);
-            PoolField.SetValue(null, Activator.CreateInstance(PoolField.FieldType, 1));
+        using var second = PendingFetchData.Create("topic-2", 1, Array.Empty<RecordBatch>());
 
-            var first = PendingFetchData.Create("topic-1", 0, Array.Empty<RecordBatch>());
-            var slab = new Record[32];
-            slab[^1] = new Record { Value = new byte[] { 42 } };
-            slabField.SetValue(first, slab);
-            first.Dispose();
-
-            second = PendingFetchData.Create("topic-2", 1, Array.Empty<RecordBatch>());
-
-            await Assert.That(second).IsSameReferenceAs(first);
-            await Assert.That(slabField.GetValue(second)).IsNull();
-            await Assert.That(slab[^1]).IsEqualTo(default(Record));
-        }
-        finally
-        {
-            second?.Dispose();
-            MaxPoolSizeField.SetValue(null, originalMaxPoolSize);
-            PoolField.SetValue(null, originalPool);
-        }
+        await Assert.That(second).IsSameReferenceAs(first);
+        await Assert.That(slabField.GetValue(second)).IsNull();
+        await Assert.That(slab[^1]).IsEqualTo(default(Record));
     }
 }

@@ -46,8 +46,10 @@ internal sealed class PendingFetchData : IDisposable
     // PoolSizing ratchets the depth for high-partition workloads.
     private const int DefaultMaxParsedRecordSlabsPerBucket = 16;
     private static int s_maxPoolSize = DefaultMaxPoolSize;
+    private static PendingFetchDataPoolState s_poolState = CreatePool(DefaultMaxPoolSize);
     private static Reservoir.ObjectPool<PendingFetchData, PendingFetchDataPolicy> s_pool =
-        new(DefaultMaxPoolSize);
+        s_poolState.Pool;
+    private static List<PendingFetchDataPoolState>? s_retiredPools;
     private static int s_maxParsedRecordSlabsPerBucket = DefaultMaxParsedRecordSlabsPerBucket;
     private static ArrayPool<Record> s_parsedRecordSlabPool = ArrayPool<Record>.Create(
         RecordBatch.MaxReasonableLazyRecordCount,
@@ -74,9 +76,21 @@ internal sealed class PendingFetchData : IDisposable
                 currentPool = Volatile.Read(ref s_pool);
                 if (currentPool.MaximumRetained < newSize)
                 {
-                    var newPool = new Reservoir.ObjectPool<PendingFetchData, PendingFetchDataPolicy>(newSize);
-                    Volatile.Write(ref s_pool, newPool);
+                    var currentState = s_poolState;
+                    var replacementState = CreatePool(newSize);
+                    Volatile.Write(ref currentState.MigrationTarget, replacementState);
+                    s_poolState = replacementState;
+                    Volatile.Write(ref s_pool, replacementState.Pool);
+
+                    if (s_retiredPools is { } retiredPools)
+                    {
+                        for (var i = 0; i < retiredPools.Count; i++)
+                            retiredPools[i].Pool.Clear();
+                    }
                     currentPool.Clear();
+                    // Keep the old generation reachable for returns that captured it before
+                    // publication; a later ratchet drains any item returned after this Clear.
+                    (s_retiredPools ??= []).Add(currentState);
                 }
 
                 if (Volatile.Read(ref s_maxParsedRecordSlabsPerBucket) < desiredSlabDepth)
@@ -716,14 +730,39 @@ internal sealed class PendingFetchData : IDisposable
         Volatile.Read(ref s_pool).Return(this);
     }
 
-    private readonly struct PendingFetchDataPolicy
+    private static PendingFetchDataPoolState CreatePool(int capacity)
+    {
+        var state = new PendingFetchDataPoolState();
+        state.Pool = new Reservoir.ObjectPool<PendingFetchData, PendingFetchDataPolicy>(
+            new PendingFetchDataPolicy(state),
+            capacity);
+        return state;
+    }
+
+    private sealed class PendingFetchDataPoolState
+    {
+        public Reservoir.ObjectPool<PendingFetchData, PendingFetchDataPolicy> Pool = null!;
+        public PendingFetchDataPoolState? MigrationTarget;
+    }
+
+    private readonly struct PendingFetchDataPolicy(PendingFetchDataPoolState state)
         : Reservoir.IPooledObjectDestroyPolicy<PendingFetchData>
     {
         public PendingFetchData Create() => new();
 
         public bool TryReset(PendingFetchData item) => true;
 
-        public void Destroy(PendingFetchData item) { }
+        public void Destroy(PendingFetchData item)
+        {
+            var target = Volatile.Read(ref state.MigrationTarget);
+            if (target is null)
+                return;
+
+            while (Volatile.Read(ref target.MigrationTarget) is { } next)
+                target = next;
+
+            target.Pool.Return(item);
+        }
     }
 }
 

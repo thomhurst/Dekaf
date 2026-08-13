@@ -158,17 +158,20 @@ public class ObjectPoolTests
     }
 
     [Test]
-    public async Task RatchetMaxPoolSize_GrowsAndClearsPreviousStorage()
+    public async Task RatchetMaxPoolSize_GrowsAndPreservesRetainedItems()
     {
         var pool = new TestPool(1);
         var item = pool.Rent();
         pool.Return(item);
+        var missesBeforeRatchet = pool.Misses;
 
         pool.RatchetMaxPoolSize(4);
+        var retained = pool.Rent();
 
         await Assert.That(pool.MaxPoolSize).IsEqualTo(4);
-        await Assert.That(item.WasDestroyed).IsTrue();
-        await Assert.That(pool.Rent()).IsNotSameReferenceAs(item);
+        await Assert.That(item.WasDestroyed).IsFalse();
+        await Assert.That(retained).IsSameReferenceAs(item);
+        await Assert.That(pool.Misses).IsEqualTo(missesBeforeRatchet);
     }
 
     [Test]
