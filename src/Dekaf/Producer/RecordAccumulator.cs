@@ -717,11 +717,9 @@ internal readonly struct AppendWorkItem
 /// </remarks>
 internal sealed class BatchArena
 {
-    // Lock-free stack pool. Eliminates the ~32-byte ConcurrentQueue Node allocation
-    // per Enqueue that caused Gen2 GC pressure under high batch churn.
-    // Replaced atomically during RatchetPoolSize — always access via Volatile.Read/Write.
-    private static LockFreeStack<BatchArena> s_pool = new(DefaultPoolSize);
-    private static readonly object s_resizeLock = new();
+    // Reservoir-backed pool eliminates ConcurrentQueue node allocations and specializes
+    // bounded storage for configured capacity.
+    private static readonly BatchArenaPool s_pool = new(DefaultPoolSize);
     // Memory tradeoff: pooling arenas retains POH memory for the pool's lifetime.
     // This is a static/process-wide pool shared across all RecordAccumulator instances.
     // POH buffers are reclaimable by the GC when evicted from the pool (references dropped).
@@ -759,32 +757,7 @@ internal sealed class BatchArena
     internal static void RatchetPoolSize(int newSize)
     {
         InterlockedHelper.RatchetUp(ref s_maxPoolSize, newSize);
-
-        // Grow the pool if needed. The lock serializes concurrent resize attempts
-        // (e.g. multiple producers created simultaneously with different batch sizes).
-        // Brief lock is acceptable because RatchetPoolSize is called during producer
-        // initialization or after a sustained run of pool misses, not for every rental.
-        var currentPool = Volatile.Read(ref s_pool);
-        if (currentPool.Capacity < newSize)
-        {
-            lock (s_resizeLock)
-            {
-                currentPool = Volatile.Read(ref s_pool);
-                if (currentPool.Capacity < newSize)
-                {
-                    var newPool = new LockFreeStack<BatchArena>(newSize);
-                    // Drain existing pool into the new one.
-                    // Note: threads holding a stale reference to currentPool (captured
-                    // before this lock) may ReturnToPool into it after this drain completes
-                    // but before the Volatile.Write below. Those arenas are not migrated
-                    // and will be GC'd. This one-time loss is recovered on demand via
-                    // the miss path.
-                    while (currentPool.TryPop(out var arena))
-                        newPool.TryPush(arena);
-                    Volatile.Write(ref s_pool, newPool);
-                }
-            }
-        }
+        s_pool.RatchetMaxPoolSize(newSize);
     }
 
     /// <summary>
@@ -801,7 +774,7 @@ internal sealed class BatchArena
     /// <summary>
     /// Current capacity of the process-wide arena pool.
     /// </summary>
-    internal static int PoolCapacity => Volatile.Read(ref s_pool).Capacity;
+    internal static int PoolCapacity => s_pool.MaxPoolSize;
 
     internal static int ComputeRatchetPoolSize(int currentSize, long missesSinceLastRatchet)
     {
@@ -840,16 +813,9 @@ internal sealed class BatchArena
     /// <param name="capacity">Buffer capacity for each arena.</param>
     internal static void PreWarm(int count, int capacity)
     {
-        var pool = Volatile.Read(ref s_pool);
-        for (var i = 0; i < count; i++)
-        {
-            if (pool.Count >= Volatile.Read(ref s_maxPoolSize))
-                break;
-
-            var arena = new BatchArena(capacity);
-            if (!pool.TryPush(arena))
-                break; // Pool full
-        }
+        count = Math.Min(count, Volatile.Read(ref s_maxPoolSize));
+        while (s_pool.ApproximateCount < count &&
+               s_pool.TryReturnArena(new BatchArena(capacity))) { }
     }
 
     private byte[] _buffer;
@@ -873,6 +839,11 @@ internal sealed class BatchArena
         _maxPooledCapacity = maxPooledCapacity;
     }
 
+    private BatchArena()
+    {
+        _buffer = [];
+    }
+
     /// <summary>
     /// Rents an arena from the pool or creates a new one.
     /// Pooled arenas retain their POH buffers for the pool's lifetime - no ArrayPool rent/return overhead.
@@ -882,16 +853,13 @@ internal sealed class BatchArena
 
     public static BatchArena RentOrCreate(int capacity, int maxPooledCapacity)
     {
-        var pool = Volatile.Read(ref s_pool);
-        if (pool.TryPop(out var arena))
-        {
-            arena.Reset(capacity, maxPooledCapacity);
-            return arena;
-        }
-
-        var missCount = Interlocked.Increment(ref s_misses);
-        MaybeRatchetPoolSize(missCount);
-        return new BatchArena(capacity, maxPooledCapacity);
+        var missesBefore = Volatile.Read(ref s_misses);
+        var arena = s_pool.Rent();
+        var missCount = Volatile.Read(ref s_misses);
+        if (missCount != missesBefore)
+            MaybeRatchetPoolSize(missCount);
+        arena.Reset(capacity, maxPooledCapacity);
+        return arena;
     }
 
     /// <summary>
@@ -909,8 +877,7 @@ internal sealed class BatchArena
             return false;
         }
 
-        var pool = Volatile.Read(ref s_pool);
-        if (!pool.TryPush(arena))
+        if (!s_pool.TryReturnArena(arena))
         {
             // Pool full — drop the reference so the GC can reclaim the POH segment
             // once all objects on it are dead. No ArrayPool return needed.
@@ -920,6 +887,19 @@ internal sealed class BatchArena
         }
 
         return true;
+    }
+
+    private sealed class BatchArenaPool(int maxPoolSize) : ObjectPool<BatchArena>(maxPoolSize)
+    {
+        protected override BatchArena Create()
+        {
+            Interlocked.Increment(ref s_misses);
+            return new BatchArena();
+        }
+
+        protected override void Reset(BatchArena item) { }
+
+        internal bool TryReturnArena(BatchArena arena) => TryReturn(arena);
     }
 
     /// <summary>
@@ -8632,11 +8612,15 @@ internal sealed class ReadyBatchPool(int maxPoolSize = BatchArena.DefaultPoolSiz
 /// </summary>
 internal sealed class BatchArrayReuseQueue
 {
-    private readonly LockFreeStack<PooledValueTaskSource<RecordMetadata>[]> _queue;
+    private readonly Reservoir.ObjectPool<
+        PooledValueTaskSource<RecordMetadata>[],
+        CompletionSourceArrayPolicy> _pool;
 
     public BatchArrayReuseQueue(int maxSize = 128)
     {
-        _queue = new LockFreeStack<PooledValueTaskSource<RecordMetadata>[]>(maxSize);
+        _pool = new Reservoir.ObjectPool<
+            PooledValueTaskSource<RecordMetadata>[],
+            CompletionSourceArrayPolicy>(maxSize);
     }
 
     /// <summary>
@@ -8644,18 +8628,42 @@ internal sealed class BatchArrayReuseQueue
     /// to the dedicated ArrayPool instead.
     /// </summary>
     public void EnqueueOrReturn(PooledValueTaskSource<RecordMetadata>[] completionSources)
-    {
-        if (!_queue.TryPush(completionSources))
-        {
-            ProducerContainerPools.CompletionSources.Return(completionSources, clearArray: false);
-        }
-    }
+        => _pool.Return(completionSources);
 
     /// <summary>
     /// Tries to pop a reusable completion sources array.
     /// </summary>
     public bool TryDequeue([NotNullWhen(true)] out PooledValueTaskSource<RecordMetadata>[]? completionSources)
-        => _queue.TryPop(out completionSources);
+    {
+        var candidate = _pool.Rent();
+        if (candidate.Length == 0)
+        {
+            completionSources = null;
+            return false;
+        }
+
+        completionSources = candidate;
+        return true;
+    }
+
+    private readonly struct CompletionSourceArrayPolicy
+        : Reservoir.IPooledObjectDestroyPolicy<PooledValueTaskSource<RecordMetadata>[]>
+    {
+        // Empty singleton represents a cache miss without allocating or renting an unusable array.
+        public PooledValueTaskSource<RecordMetadata>[] Create() => [];
+
+        public bool TryReset(PooledValueTaskSource<RecordMetadata>[] completionSources) => true;
+
+        public void Destroy(PooledValueTaskSource<RecordMetadata>[] completionSources)
+        {
+            if (completionSources.Length != 0)
+            {
+                ProducerContainerPools.CompletionSources.Return(
+                    completionSources,
+                    clearArray: false);
+            }
+        }
+    }
 }
 
 /// <summary>

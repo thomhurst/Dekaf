@@ -36,7 +36,7 @@ public static class ValueTaskSourcePool
 
 /// <summary>
 /// Thread-safe bounded pool for <see cref="PooledValueTaskSource{T}"/> instances.
-/// Uses a pre-allocated array with CAS-guarded index for zero-allocation Rent/Return.
+/// Uses Reservoir's bounded, preallocated striped storage for zero-allocation Rent/Return.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -47,9 +47,8 @@ public static class ValueTaskSourcePool
 /// <para>
 /// The previous ConcurrentStack implementation allocated a ~32-byte Node per Push call.
 /// Every ProduceAsync flows through this pool, so at high throughput (millions/sec) the
-/// Node allocations promoted to Gen2 and caused a GC feedback loop. This array-based
-/// CAS stack eliminates all per-operation allocations — only the fixed-size array is allocated
-/// at construction time.
+/// Node allocations promoted to Gen2 and caused a GC feedback loop. Reservoir eliminates
+/// per-operation allocations and specializes storage for configured capacity.
 /// </para>
 /// <para>
 /// The pool has a configurable maximum size. When the pool is empty, new instances are created.
@@ -61,7 +60,9 @@ public static class ValueTaskSourcePool
 /// <typeparam name="T">The result type of the value task sources.</typeparam>
 public sealed class ValueTaskSourcePool<T> : IAsyncDisposable
 {
-    private readonly LockFreeStack<PooledValueTaskSource<T>> _stack;
+    private readonly Reservoir.ObjectPool<PooledValueTaskSource<T>, PoolPolicy> _pool;
+    private readonly int _maxPoolSize;
+    private int _retainedCount;
     private int _disposed;
 
     /// <summary>
@@ -80,7 +81,10 @@ public sealed class ValueTaskSourcePool<T> : IAsyncDisposable
         if (maxPoolSize <= 0)
             throw new ArgumentOutOfRangeException(nameof(maxPoolSize), "Max pool size must be positive.");
 
-        _stack = new LockFreeStack<PooledValueTaskSource<T>>(maxPoolSize);
+        _maxPoolSize = maxPoolSize;
+        _pool = new Reservoir.ObjectPool<PooledValueTaskSource<T>, PoolPolicy>(
+            new PoolPolicy(this),
+            maxPoolSize);
     }
 
     /// <summary>
@@ -94,13 +98,9 @@ public sealed class ValueTaskSourcePool<T> : IAsyncDisposable
         if (Volatile.Read(ref _disposed) != 0)
             throw new ObjectDisposedException(nameof(ValueTaskSourcePool<T>));
 
-        if (_stack.TryPop(out var source))
-            return source;
-
-        // Pool empty - create new instance
-        var newSource = new PooledValueTaskSource<T>();
-        newSource.SetPool(this);
-        return newSource;
+        var source = _pool.Rent();
+        DecrementRetainedCount();
+        return source;
     }
 
     /// <summary>
@@ -118,18 +118,31 @@ public sealed class ValueTaskSourcePool<T> : IAsyncDisposable
         if (Volatile.Read(ref _disposed) != 0)
             return; // Silently discard after disposal
 
-        _stack.TryPush(source);
+        _pool.Return(source);
+
+        if (Volatile.Read(ref _disposed) != 0)
+            return;
+
+        while (true)
+        {
+            var count = Volatile.Read(ref _retainedCount);
+            if (count >= _maxPoolSize ||
+                Interlocked.CompareExchange(ref _retainedCount, count + 1, count) == count)
+            {
+                return;
+            }
+        }
     }
 
     /// <summary>
     /// Gets the approximate number of instances currently in the pool.
     /// </summary>
-    public int ApproximateCount => _stack.Count;
+    public int ApproximateCount => Volatile.Read(ref _retainedCount);
 
     /// <summary>
     /// Gets the maximum pool size.
     /// </summary>
-    public int MaxPoolSize => _stack.Capacity;
+    public int MaxPoolSize => _maxPoolSize;
 
     /// <summary>
     /// Disposes the pool. Outstanding instances can still complete but won't be returned to the pool.
@@ -139,8 +152,38 @@ public sealed class ValueTaskSourcePool<T> : IAsyncDisposable
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return default;
 
-        _stack.Clear();
+        _pool.Dispose();
+        Volatile.Write(ref _retainedCount, 0);
 
         return default;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void DecrementRetainedCount()
+    {
+        while (true)
+        {
+            var count = Volatile.Read(ref _retainedCount);
+            if (count == 0 ||
+                Interlocked.CompareExchange(ref _retainedCount, count - 1, count) == count)
+            {
+                return;
+            }
+        }
+    }
+
+    private readonly struct PoolPolicy(ValueTaskSourcePool<T> owner)
+        : Reservoir.IPooledObjectDestroyPolicy<PooledValueTaskSource<T>>
+    {
+        public PooledValueTaskSource<T> Create()
+        {
+            var source = new PooledValueTaskSource<T>();
+            source.SetPool(owner);
+            return source;
+        }
+
+        public bool TryReset(PooledValueTaskSource<T> source) => true;
+
+        public void Destroy(PooledValueTaskSource<T> source) { }
     }
 }

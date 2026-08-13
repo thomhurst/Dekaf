@@ -13,6 +13,8 @@ public class PendingFetchDataTests
         .GetField("s_maxPoolSize", BindingFlags.Static | BindingFlags.NonPublic)!;
     private static readonly FieldInfo PoolField = typeof(PendingFetchData)
         .GetField("s_pool", BindingFlags.Static | BindingFlags.NonPublic)!;
+    private static readonly FieldInfo PoolCountField = typeof(PendingFetchData)
+        .GetField("s_poolCount", BindingFlags.Static | BindingFlags.NonPublic)!;
 
     [Test]
     public async Task Constructor_WithActivityName_UsesCachedValue()
@@ -128,12 +130,14 @@ public class PendingFetchDataTests
     {
         var originalMaxPoolSize = MaxPoolSizeField.GetValue(null);
         var originalPool = PoolField.GetValue(null);
+        var originalPoolCount = PoolCountField.GetValue(null);
         PendingFetchData? second = null;
 
         try
         {
             MaxPoolSizeField.SetValue(null, 1);
-            PoolField.SetValue(null, new LockFreeStack<PendingFetchData>(1));
+            PoolField.SetValue(null, Activator.CreateInstance(PoolField.FieldType, 1));
+            PoolCountField.SetValue(null, 0);
 
             var first = PendingFetchData.Create(
                 "topic-1",
@@ -155,6 +159,7 @@ public class PendingFetchDataTests
             second?.Dispose();
             MaxPoolSizeField.SetValue(null, originalMaxPoolSize);
             PoolField.SetValue(null, originalPool);
+            PoolCountField.SetValue(null, originalPoolCount);
         }
     }
 
@@ -199,6 +204,7 @@ public class PendingFetchDataTests
     {
         var originalMaxPoolSize = MaxPoolSizeField.GetValue(null);
         var originalPool = PoolField.GetValue(null);
+        var originalPoolCount = PoolCountField.GetValue(null);
         var slabField = typeof(PendingFetchData)
             .GetField("_parsedRecordSlab", BindingFlags.Instance | BindingFlags.NonPublic)!;
         PendingFetchData? second = null;
@@ -206,7 +212,8 @@ public class PendingFetchDataTests
         try
         {
             MaxPoolSizeField.SetValue(null, 1);
-            PoolField.SetValue(null, new LockFreeStack<PendingFetchData>(1));
+            PoolField.SetValue(null, Activator.CreateInstance(PoolField.FieldType, 1));
+            PoolCountField.SetValue(null, 0);
 
             var first = PendingFetchData.Create("topic-1", 0, Array.Empty<RecordBatch>());
             var slab = new Record[32];
@@ -225,6 +232,7 @@ public class PendingFetchDataTests
             second?.Dispose();
             MaxPoolSizeField.SetValue(null, originalMaxPoolSize);
             PoolField.SetValue(null, originalPool);
+            PoolCountField.SetValue(null, originalPoolCount);
         }
     }
 }

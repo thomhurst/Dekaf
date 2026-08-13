@@ -4,137 +4,165 @@ using Dekaf.Internal;
 namespace Dekaf.Producer;
 
 /// <summary>
-/// Thread-safe bounded object pool backed by <see cref="LockFreeStack{T}"/>.
-/// Zero allocation in steady state: Rent/Return only perform Interlocked operations
-/// on the stack pointer and array slots — no linked list nodes or wrapper objects.
-/// Provides pre-warming to eliminate ramp-up allocation bursts and miss tracking for diagnostics.
+/// Thread-safe bounded object pool backed by Reservoir.
+/// Provides pre-warming, retained-count diagnostics, dynamic capacity ratcheting,
+/// and miss tracking for Dekaf's pooled producer and protocol objects.
 /// </summary>
 /// <remarks>
 /// Subclasses implement <see cref="Create"/> to produce new items and <see cref="Reset"/>
-/// to prepare returned items for reuse.
+/// to prepare returned items for reuse. Reservoir supplies fixed-capacity, zero-allocation
+/// storage specialized for small and large pools.
 /// </remarks>
-/// <typeparam name="T">The pooled item type. Must be a reference type.</typeparam>
+/// <typeparam name="T">Pooled reference type.</typeparam>
 internal abstract class ObjectPool<T> where T : class
 {
-    private LockFreeStack<T> _stack;
+    private Reservoir.ObjectPool<T, PoolPolicy> _pool;
     private readonly Lock _resizeLock = new();
     private int _maxPoolSize;
+    private int _retainedCount;
     private long _misses;
 
-    /// <summary>
-    /// Maximum number of items the pool will retain. Excess items are discarded for GC.
-    /// </summary>
+    /// <summary>Maximum number of items retained.</summary>
     public int MaxPoolSize => Volatile.Read(ref _maxPoolSize);
 
-    /// <summary>
-    /// Approximate number of items currently in the pool.
-    /// </summary>
-    public int ApproximateCount => Volatile.Read(ref _stack).Count;
+    /// <summary>Approximate number of retained items.</summary>
+    public int ApproximateCount => Volatile.Read(ref _retainedCount);
 
-    /// <summary>
-    /// Number of times <see cref="Rent"/> found the pool empty and had to allocate.
-    /// Use this to diagnose pool sizing — sustained misses under load indicate the pool is too small.
-    /// </summary>
+    /// <summary>Number of empty-pool rents that created an item.</summary>
     public long Misses => Volatile.Read(ref _misses);
 
     protected ObjectPool(int maxPoolSize)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxPoolSize);
         _maxPoolSize = maxPoolSize;
-        _stack = new LockFreeStack<T>(maxPoolSize);
+        _pool = CreatePool(maxPoolSize);
     }
 
-    /// <summary>
-    /// Creates a new instance when the pool is empty.
-    /// </summary>
+    /// <summary>Creates a new instance when no retained item is available.</summary>
     protected abstract T Create();
 
-    /// <summary>
-    /// Resets an item before it is returned to the pool, preparing it for reuse.
-    /// Must be idempotent and must not throw — may be called on items that are
-    /// ultimately discarded if the pool fills between the capacity check and the
-    /// TryPush. If Reset throws, the item is neither pooled nor returned to the caller.
-    /// </summary>
+    /// <summary>Resets an item before retention or discard.</summary>
     protected abstract void Reset(T item);
 
-    /// <summary>
-    /// Gets an item from the pool or creates a new one if empty.
-    /// </summary>
+    /// <summary>Rents an item, creating one on a miss.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public T Rent()
     {
-        if (Volatile.Read(ref _stack).TryPop(out var item))
-            return item;
-
-        Interlocked.Increment(ref _misses);
-        return Create();
+        var item = Volatile.Read(ref _pool).Rent();
+        DecrementRetainedCount();
+        return item;
     }
 
-    /// <summary>
-    /// Returns an item to the pool for reuse. If the pool is full, the reset item is discarded.
-    /// </summary>
-    /// <remarks>
-    /// TryPush is the sole capacity gate so Return stays O(1) on striped stacks; Reset may run on an
-    /// item that is ultimately discarded when the pool is full, which is benign because Reset is
-    /// idempotent.
-    /// </remarks>
+    /// <summary>Returns an item, discarding it when retained capacity is full.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Return(T item)
     {
         Reset(item);
-        Volatile.Read(ref _stack).TryPush(item);
+        TryRetain(item);
     }
 
     /// <summary>
-    /// Increases retained capacity while preserving items already in the pool.
-    /// A concurrent return through a stale stack reference may be lost during the
-    /// one-time migration; later returns use the newly published pool.
+    /// Resets and attempts to retain an item.
     /// </summary>
+    /// <returns><see langword="true"/> when retained; otherwise <see langword="false"/>.</returns>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    protected bool TryReturn(T item)
+    {
+        Reset(item);
+        return TryRetain(item);
+    }
+
+    /// <summary>Increases retained capacity while preserving currently retained items.</summary>
     public void RatchetMaxPoolSize(int newSize)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(newSize);
         InterlockedHelper.RatchetUp(ref _maxPoolSize, newSize);
 
-        var currentPool = Volatile.Read(ref _stack);
-        if (currentPool.Capacity >= newSize)
+        var currentPool = Volatile.Read(ref _pool);
+        if (currentPool.MaximumRetained >= newSize)
             return;
 
         lock (_resizeLock)
         {
-            currentPool = Volatile.Read(ref _stack);
-            if (currentPool.Capacity >= newSize)
+            currentPool = Volatile.Read(ref _pool);
+            if (currentPool.MaximumRetained >= newSize)
                 return;
 
-            var newPool = new LockFreeStack<T>(newSize);
-            while (currentPool.TryPop(out var item))
-                newPool.TryPush(item);
-            Volatile.Write(ref _stack, newPool);
+            var newPool = CreatePool(newSize);
+            var transferCount = Math.Min(
+                Volatile.Read(ref _retainedCount),
+                currentPool.MaximumRetained);
+
+            for (var i = 0; i < transferCount; i++)
+                newPool.Return(currentPool.Rent());
+
+            Volatile.Write(ref _pool, newPool);
+            Volatile.Write(ref _retainedCount, transferCount);
+            currentPool.Clear();
         }
     }
 
-    /// <summary>
-    /// Pre-allocates items up to the specified count (capped at <see cref="MaxPoolSize"/>).
-    /// Call during initialization to eliminate ramp-up allocation bursts.
-    /// </summary>
-    /// <param name="count">Number of items to pre-allocate.</param>
+    /// <summary>Pre-allocates retained items up to <paramref name="count"/>.</summary>
     public void PreWarm(int count)
     {
         count = Math.Min(count, MaxPoolSize);
+        while (Volatile.Read(ref _retainedCount) < count && TryRetain(Create())) { }
+    }
 
-        for (var i = 0; i < count; i++)
+    /// <summary>Clears retained items while leaving pool usable.</summary>
+    public void Clear()
+    {
+        Volatile.Read(ref _pool).Clear();
+        Volatile.Write(ref _retainedCount, 0);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryRetain(T item)
+    {
+        Volatile.Read(ref _pool).Return(item);
+
+        while (true)
         {
-            var item = Create();
-            if (!Volatile.Read(ref _stack).TryPush(item))
-                break;
+            var count = Volatile.Read(ref _retainedCount);
+            if (count >= Volatile.Read(ref _maxPoolSize))
+                return false;
+
+            if (Interlocked.CompareExchange(ref _retainedCount, count + 1, count) != count)
+                continue;
+
+            return true;
         }
     }
 
-    /// <summary>
-    /// Clears all pooled items.
-    /// Not thread-safe with concurrent Rent/Return — only call during single-threaded teardown.
-    /// </summary>
-    public void Clear()
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void DecrementRetainedCount()
     {
-        Volatile.Read(ref _stack).Clear();
+        while (true)
+        {
+            var count = Volatile.Read(ref _retainedCount);
+            if (count == 0 ||
+                Interlocked.CompareExchange(ref _retainedCount, count - 1, count) == count)
+            {
+                return;
+            }
+        }
+    }
+
+    private Reservoir.ObjectPool<T, PoolPolicy> CreatePool(int capacity) =>
+        new(new PoolPolicy(this), capacity);
+
+    private readonly struct PoolPolicy(ObjectPool<T> owner)
+        : Reservoir.IPooledObjectDestroyPolicy<T>
+    {
+        public T Create()
+        {
+            Interlocked.Increment(ref owner._misses);
+            return owner.Create();
+        }
+
+        public bool TryReset(T item) => true;
+
+        // Preserve prior behavior: discarded items become GC-eligible without implicit disposal.
+        public void Destroy(T item) { }
     }
 }
