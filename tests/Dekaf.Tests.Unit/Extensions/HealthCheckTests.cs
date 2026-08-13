@@ -15,9 +15,51 @@ public class HealthCheckTests
     #region Consumer Health Check Tests
 
     [Test]
-    public async Task ConsumerHealthCheck_NoAssignment_ReturnsUnhealthy()
+    public async Task ConsumerHealthCheck_LiveStandbyWithNoAssignment_ReturnsHealthy()
+    {
+        var consumer = CreateConsumerSubstitute(
+            LiveGroupLiveness(),
+            out var partitions,
+            out _,
+            out _);
+        partitions.Assignment.Returns(new HashSet<TopicPartition>());
+
+        var healthCheck = new DekafConsumerHealthCheck<string, string>(
+            consumer, new DekafConsumerHealthCheckOptions());
+
+        var result = await healthCheck.CheckHealthAsync(CreateContext());
+
+        await Assert.That(result.Status).IsEqualTo(HealthStatus.Healthy);
+        await Assert.That(result.Description).Contains("live standby");
+        await Assert.That(result.Data["ConsumerState"]).IsEqualTo("Standby");
+        await Assert.That(result.Data["AssignedPartitionCount"]).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task ConsumerHealthCheck_LiveStandby_UsesConfiguredNoAssignmentStatus()
+    {
+        var consumer = CreateConsumerSubstitute(
+            LiveGroupLiveness(),
+            out var partitions,
+            out _,
+            out _);
+        partitions.Assignment.Returns(new HashSet<TopicPartition>());
+
+        var healthCheck = new DekafConsumerHealthCheck<string, string>(
+            consumer,
+            new DekafConsumerHealthCheckOptions { NoAssignmentStatus = HealthStatus.Degraded });
+
+        var result = await healthCheck.CheckHealthAsync(CreateContext());
+
+        await Assert.That(result.Status).IsEqualTo(HealthStatus.Degraded);
+        await Assert.That(result.Data["ConsumerState"]).IsEqualTo("Standby");
+    }
+
+    [Test]
+    public async Task ConsumerHealthCheck_NoLivenessWithMemberIdAndNoAssignment_ReturnsUnhealthy()
     {
         var consumer = CreateConsumerSubstitute(out var partitions, out _, out _);
+        consumer.MemberId.Returns("stale-member-id");
         partitions.Assignment.Returns(new HashSet<TopicPartition>());
 
         var healthCheck = new DekafConsumerHealthCheck<string, string>(
@@ -26,13 +68,128 @@ public class HealthCheckTests
         var result = await healthCheck.CheckHealthAsync(CreateContext());
 
         await Assert.That(result.Status).IsEqualTo(HealthStatus.Unhealthy);
-        await Assert.That(result.Description).Contains("no partition assignment");
+        await Assert.That(result.Data["ConsumerState"]).IsEqualTo("MissingGroupMembership");
+    }
+
+    [Test]
+    public async Task ConsumerHealthCheck_ManualAssignmentWithConfiguredGroup_EvaluatesLag()
+    {
+        var consumer = CreateConsumerSubstitute(
+            LiveGroupLiveness() with
+            {
+                HasConsumerGroup = false,
+                IsJoined = false,
+                TimeSinceLastHeartbeat = null,
+                LastHeartbeatFailure = "failure from previous group subscription"
+            },
+            out var partitions,
+            out var positions,
+            out var offsets);
+        var topicPartition = new TopicPartition("test-topic", 0);
+        partitions.Assignment.Returns(new HashSet<TopicPartition> { topicPartition });
+        positions.GetPosition(topicPartition).Returns(90L);
+        offsets.QueryWatermarkOffsetsAsync(topicPartition, Arg.Any<CancellationToken>())
+            .Returns(new WatermarkOffsets(0, 100));
+
+        var healthCheck = new DekafConsumerHealthCheck<string, string>(
+            consumer, new DekafConsumerHealthCheckOptions());
+
+        var result = await healthCheck.CheckHealthAsync(CreateContext());
+
+        await Assert.That(result.Status).IsEqualTo(HealthStatus.Healthy);
+        await Assert.That(result.Data["MaxLag"]).IsEqualTo(10L);
+    }
+
+    [Test]
+    public async Task ConsumerHealthCheck_NotJoinedWithAssignment_ReturnsUnhealthy()
+    {
+        var consumer = CreateConsumerSubstitute(
+            LiveGroupLiveness() with { IsJoined = false, TimeSinceLastHeartbeat = null },
+            out var partitions,
+            out _,
+            out _);
+        partitions.Assignment.Returns(new HashSet<TopicPartition> { new("test-topic", 0) });
+
+        var healthCheck = new DekafConsumerHealthCheck<string, string>(
+            consumer, new DekafConsumerHealthCheckOptions());
+
+        var result = await healthCheck.CheckHealthAsync(CreateContext());
+
+        await Assert.That(result.Status).IsEqualTo(HealthStatus.Unhealthy);
+        await Assert.That(result.Description).Contains("not joined");
+        await Assert.That(result.Data["ConsumerState"]).IsEqualTo("MissingGroupMembership");
+    }
+
+    [Test]
+    public async Task ConsumerHealthCheck_StaleHeartbeat_ReturnsUnhealthy()
+    {
+        var consumer = CreateConsumerSubstitute(
+            LiveGroupLiveness() with { TimeSinceLastHeartbeat = TimeSpan.FromSeconds(11) },
+            out var partitions,
+            out _,
+            out _);
+        partitions.Assignment.Returns(new HashSet<TopicPartition>());
+
+        var healthCheck = new DekafConsumerHealthCheck<string, string>(
+            consumer, new DekafConsumerHealthCheckOptions());
+
+        var result = await healthCheck.CheckHealthAsync(CreateContext());
+
+        await Assert.That(result.Status).IsEqualTo(HealthStatus.Unhealthy);
+        await Assert.That(result.Description).Contains("stale");
+        await Assert.That(result.Data["ConsumerState"]).IsEqualTo("StaleHeartbeat");
+        await Assert.That(result.Data["HeartbeatIntervalMilliseconds"]).IsEqualTo(3000d);
+        await Assert.That(result.Data["HeartbeatStaleThresholdMilliseconds"]).IsEqualTo(9000d);
+    }
+
+    [Test]
+    public async Task ConsumerHealthCheck_CoordinatorFailure_ReturnsUnhealthy()
+    {
+        var consumer = CreateConsumerSubstitute(
+            LiveGroupLiveness() with { LastHeartbeatFailure = "Coordinator unavailable" },
+            out var partitions,
+            out _,
+            out _);
+        partitions.Assignment.Returns(new HashSet<TopicPartition>());
+
+        var healthCheck = new DekafConsumerHealthCheck<string, string>(
+            consumer, new DekafConsumerHealthCheckOptions());
+
+        var result = await healthCheck.CheckHealthAsync(CreateContext());
+
+        await Assert.That(result.Status).IsEqualTo(HealthStatus.Unhealthy);
+        await Assert.That(result.Description).Contains("Coordinator unavailable");
+        await Assert.That(result.Data["ConsumerState"]).IsEqualTo("CoordinatorFailure");
+    }
+
+    [Test]
+    public async Task ConsumerHealthCheck_StoppedConsumer_ReturnsUnhealthy()
+    {
+        var consumer = CreateConsumerSubstitute(
+            LiveGroupLiveness() with { IsStopped = true },
+            out var partitions,
+            out _,
+            out _);
+        partitions.Assignment.Returns(new HashSet<TopicPartition>());
+
+        var healthCheck = new DekafConsumerHealthCheck<string, string>(
+            consumer, new DekafConsumerHealthCheckOptions());
+
+        var result = await healthCheck.CheckHealthAsync(CreateContext());
+
+        await Assert.That(result.Status).IsEqualTo(HealthStatus.Unhealthy);
+        await Assert.That(result.Description).Contains("stopped");
+        await Assert.That(result.Data["ConsumerState"]).IsEqualTo("Stopped");
     }
 
     [Test]
     public async Task ConsumerHealthCheck_LowLag_ReturnsHealthy()
     {
-        var consumer = CreateConsumerSubstitute(out var partitions, out var positions, out var offsets);
+        var consumer = CreateConsumerSubstitute(
+            LiveGroupLiveness(),
+            out var partitions,
+            out var positions,
+            out var offsets);
         var tp = new TopicPartition("test-topic", 0);
         partitions.Assignment.Returns(new HashSet<TopicPartition> { tp });
         positions.GetPosition(tp).Returns(90L);
@@ -266,6 +423,19 @@ public class HealthCheckTests
 
         await Assert.That(() => new DekafConsumerHealthCheck<string, string>(consumer, options))
             .Throws<ArgumentException>();
+    }
+
+    [Test]
+    public async Task ConsumerHealthCheck_InvalidNoAssignmentStatus_ThrowsArgumentOutOfRangeException()
+    {
+        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var options = new DekafConsumerHealthCheckOptions
+        {
+            NoAssignmentStatus = (HealthStatus)int.MaxValue
+        };
+
+        await Assert.That(() => new DekafConsumerHealthCheck<string, string>(consumer, options))
+            .Throws<ArgumentOutOfRangeException>();
     }
 
     [Test]
@@ -603,6 +773,7 @@ public class HealthCheckTests
         await Assert.That(options.DegradedThreshold).IsEqualTo(1000L);
         await Assert.That(options.UnhealthyThreshold).IsEqualTo(10000L);
         await Assert.That(options.Timeout).IsEqualTo(TimeSpan.FromSeconds(5));
+        await Assert.That(options.NoAssignmentStatus).IsEqualTo(HealthStatus.Healthy);
     }
 
     [Test]
@@ -641,6 +812,33 @@ public class HealthCheckTests
 
         return consumer;
     }
+
+    private static IKafkaConsumer<string, string> CreateConsumerSubstitute(
+        ConsumerGroupLiveness groupLiveness,
+        out IConsumerPartitions partitions,
+        out IConsumerPositions positions,
+        out IConsumerOffsets offsets)
+    {
+        var consumer = Substitute.For<IKafkaConsumer<string, string>, IConsumerGroupLiveness>();
+        ((IConsumerGroupLiveness)consumer).GroupLiveness.Returns(groupLiveness);
+        partitions = Substitute.For<IConsumerPartitions>();
+        positions = Substitute.For<IConsumerPositions>();
+        offsets = Substitute.For<IConsumerOffsets>();
+
+        consumer.Partitions.Returns(partitions);
+        consumer.Positions.Returns(positions);
+        consumer.Offsets.Returns(offsets);
+
+        return consumer;
+    }
+
+    private static ConsumerGroupLiveness LiveGroupLiveness() => new(
+        HasConsumerGroup: true,
+        IsJoined: true,
+        IsStopped: false,
+        TimeSinceLastHeartbeat: TimeSpan.FromSeconds(1),
+        HeartbeatInterval: TimeSpan.FromSeconds(3),
+        LastHeartbeatFailure: null);
 
     private static HealthCheckContext CreateContext()
     {
