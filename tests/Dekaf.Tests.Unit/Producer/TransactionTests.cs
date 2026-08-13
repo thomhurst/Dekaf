@@ -558,6 +558,74 @@ public sealed class TransactionTests
     }
 
     [Test]
+    public async Task InitTransactionsAsync_RetriesBeyondPreviousAttemptLimits()
+    {
+        await using var harness = BuildPreparedCompletionHarness(
+            PreparedTransactionState.Empty,
+            currentProducerId: 2002,
+            currentProducerEpoch: 9,
+            coordinatorRetriableFailuresBeforeSuccess: 5,
+            initProducerIdRetriableFailuresBeforeSuccess: 10);
+        harness.Producer._transactionState = TransactionState.Uninitialized;
+
+        await harness.Producer.InitTransactionsAsync();
+
+        await Assert.That(harness.FindCoordinatorRequests).IsEqualTo(6);
+        await Assert.That(harness.InitProducerIdRequests).IsEqualTo(11);
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.Ready);
+    }
+
+    [Test]
+    public async Task ReinitializeProducerIdAsync_MaxBlockDeadline_ThrowsTransactionTimeout()
+    {
+        await using var harness = BuildPreparedCompletionHarness(
+            PreparedTransactionState.Empty,
+            currentProducerId: 2002,
+            currentProducerEpoch: 9,
+            initProducerIdRetriableFailuresBeforeSuccess: int.MaxValue,
+            retryBackoffMs: 10,
+            maxBlockMs: 50);
+
+        var exception = await Assert.That(() => harness.Producer.ReinitializeProducerIdAsync(
+                CancellationToken.None).AsTask())
+            .Throws<KafkaTimeoutException>();
+
+        await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Transaction);
+        await Assert.That(exception.Configured).IsEqualTo(TimeSpan.FromMilliseconds(50));
+        await Assert.That(exception.Message).Contains("max.block.ms (50ms)");
+    }
+
+    [Test]
+    public async Task EndTransactionAsync_RetriesBeyondPreviousAttemptLimit()
+    {
+        await using var harness = BuildPreparedCompletionHarness(
+            PreparedTransactionState.Empty,
+            currentProducerId: 2002,
+            currentProducerEpoch: 9,
+            endTxnRetriableFailuresBeforeSuccess: 5);
+
+        await harness.Producer.EndTransactionAsync(committed: true, CancellationToken.None);
+
+        await Assert.That(harness.EndTxnRequests).IsEqualTo(6);
+    }
+
+    [Test]
+    public async Task AddPartitionsToTransactionAsync_RetriesBeyondPreviousAttemptLimit()
+    {
+        await using var harness = BuildPreparedCompletionHarness(
+            PreparedTransactionState.Empty,
+            currentProducerId: 2002,
+            currentProducerEpoch: 9,
+            addPartitionsRetriableFailuresBeforeSuccess: 5);
+
+        await harness.Producer.AddPartitionsToTransactionAsync(
+            [new TopicPartition("orders", 0)],
+            CancellationToken.None);
+
+        await Assert.That(harness.AddPartitionsRequests).IsEqualTo(6);
+    }
+
+    [Test]
     public async Task CompletePreparedTransactionAsync_Abort_UsesPreparedTransactionProducerIdentity()
     {
         var preparedState = new PreparedTransactionState(1001, 4);
@@ -974,13 +1042,23 @@ public sealed class TransactionTests
         long currentProducerId,
         short currentProducerEpoch,
         ErrorCode endTxnError = ErrorCode.None,
-        short transactionFeatureVersion = 3)
+        short transactionFeatureVersion = 3,
+        int coordinatorRetriableFailuresBeforeSuccess = 0,
+        int initProducerIdRetriableFailuresBeforeSuccess = 0,
+        int addPartitionsRetriableFailuresBeforeSuccess = 0,
+        int endTxnRetriableFailuresBeforeSuccess = 0,
+        int retryBackoffMs = 0,
+        int maxBlockMs = 1000)
     {
         var connection = new LeaseTrackingConnection(
             preparedState,
             currentProducerId,
             currentProducerEpoch,
-            endTxnError);
+            endTxnError,
+            coordinatorRetriableFailuresBeforeSuccess,
+            initProducerIdRetriableFailuresBeforeSuccess,
+            addPartitionsRetriableFailuresBeforeSuccess,
+            endTxnRetriableFailuresBeforeSuccess);
 
         var connectionPool = new ConnectionPool(
             clientId: "test-producer",
@@ -990,6 +1068,19 @@ public sealed class TransactionTests
         connectionPool.RegisterBroker(1, "localhost", 9092);
 
         var metadataManager = new MetadataManager(connectionPool, ["localhost:9092"]);
+        metadataManager.Metadata.Update(new MetadataResponse
+        {
+            Brokers = [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }],
+            Topics = []
+        });
+        metadataManager.SetApiVersion(
+            ApiKey.FindCoordinator,
+            FindCoordinatorRequest.LowestSupportedVersion,
+            FindCoordinatorRequest.HighestSupportedVersion);
+        metadataManager.SetApiVersion(
+            ApiKey.AddPartitionsToTxn,
+            AddPartitionsToTxnRequest.LowestSupportedVersion,
+            AddPartitionsToTxnRequest.HighestSupportedVersion);
         metadataManager.SetApiVersion(
             ApiKey.EndTxn,
             EndTxnRequest.LowestSupportedVersion,
@@ -1006,6 +1097,9 @@ public sealed class TransactionTests
                 BootstrapServers = ["localhost:9092"],
                 TransactionalId = "test-txn-id",
                 EnableTwoPhaseCommit = true,
+                RetryBackoffMs = retryBackoffMs,
+                RetryBackoffMaxMs = retryBackoffMs,
+                MaxBlockMs = maxBlockMs,
                 CloseTimeoutMs = 100
             },
             Serializers.String,
@@ -1080,6 +1174,10 @@ public sealed class TransactionTests
         public int LeaseCountDuringRequest => connection.LeaseCountDuringRequest;
         public int LeaseCount => connection.LeaseCount;
         public int PipelinedResponseAbandonCalls => connection.PipelinedResponseAbandonCalls;
+        public int FindCoordinatorRequests => connection.FindCoordinatorRequests;
+        public int InitProducerIdRequests => connection.InitProducerIdRequests;
+        public int AddPartitionsRequests => connection.AddPartitionsRequests;
+        public int EndTxnRequests => connection.EndTxnRequests;
 
         public async ValueTask DisposeAsync()
         {
@@ -1092,7 +1190,11 @@ public sealed class TransactionTests
         PreparedTransactionState preparedState,
         long producerId,
         short producerEpoch,
-        ErrorCode endTxnError) : IKafkaConnection, IRetirableKafkaConnection,
+        ErrorCode endTxnError,
+        int coordinatorRetriableFailuresBeforeSuccess,
+        int initProducerIdRetriableFailuresBeforeSuccess,
+        int addPartitionsRetriableFailuresBeforeSuccess,
+        int endTxnRetriableFailuresBeforeSuccess) : IKafkaConnection, IRetirableKafkaConnection,
         IKafkaPipelinedWriteCompletionConnection
     {
         private readonly TrackingResponseSource<EndTxnResponse> _pipelinedResponseSource = new();
@@ -1108,6 +1210,10 @@ public sealed class TransactionTests
         public int LeaseCountDuringRequest => Volatile.Read(ref _leaseCountDuringRequest);
         public int ActiveOperationCount => 0;
         public int PipelinedResponseAbandonCalls => _pipelinedResponseSource.AbandonCalls;
+        public int FindCoordinatorRequests { get; private set; }
+        public int InitProducerIdRequests { get; private set; }
+        public int AddPartitionsRequests { get; private set; }
+        public int EndTxnRequests { get; private set; }
 
         public bool TryAcquireLease()
         {
@@ -1132,24 +1238,78 @@ public sealed class TransactionTests
             IKafkaResponse response = request switch
             {
                 EndTxnRequest endTxnRequest => CreateEndTxnResponse(endTxnRequest),
-                InitProducerIdRequest => new InitProducerIdResponse
-                {
-                    ErrorCode = ErrorCode.None,
-                    ProducerId = producerId,
-                    ProducerEpoch = producerEpoch
-                },
+                InitProducerIdRequest => CreateInitProducerIdResponse(),
+                FindCoordinatorRequest findCoordinatorRequest => CreateFindCoordinatorResponse(findCoordinatorRequest),
+                AddPartitionsToTxnRequest addPartitionsRequest => CreateAddPartitionsResponse(addPartitionsRequest),
                 _ => throw new NotSupportedException()
             };
 
             return ValueTask.FromResult((TResponse)response);
         }
 
+        private FindCoordinatorResponse CreateFindCoordinatorResponse(FindCoordinatorRequest request)
+        {
+            FindCoordinatorRequests++;
+            return new FindCoordinatorResponse
+            {
+                Coordinators =
+                [
+                    new Coordinator
+                    {
+                        Key = request.Key,
+                        NodeId = 1,
+                        Host = "localhost",
+                        Port = 9092,
+                        ErrorCode = FindCoordinatorRequests <= coordinatorRetriableFailuresBeforeSuccess
+                            ? ErrorCode.CoordinatorNotAvailable
+                            : ErrorCode.None
+                    }
+                ]
+            };
+        }
+
+        private InitProducerIdResponse CreateInitProducerIdResponse()
+        {
+            InitProducerIdRequests++;
+            return new InitProducerIdResponse
+            {
+                ErrorCode = InitProducerIdRequests <= initProducerIdRetriableFailuresBeforeSuccess
+                    ? ErrorCode.CoordinatorLoadInProgress
+                    : ErrorCode.None,
+                ProducerId = producerId,
+                ProducerEpoch = producerEpoch
+            };
+        }
+
+        private AddPartitionsToTxnResponse CreateAddPartitionsResponse(AddPartitionsToTxnRequest request)
+        {
+            AddPartitionsRequests++;
+            var errorCode = AddPartitionsRequests <= addPartitionsRetriableFailuresBeforeSuccess
+                ? ErrorCode.CoordinatorLoadInProgress
+                : ErrorCode.None;
+            return new AddPartitionsToTxnResponse
+            {
+                Results = request.Topics.Select(topic => new AddPartitionsToTxnTopicResult
+                {
+                    Name = topic.Name,
+                    Partitions = topic.Partitions.Select(partition => new AddPartitionsToTxnPartitionResult
+                    {
+                        PartitionIndex = partition,
+                        ErrorCode = errorCode
+                    }).ToArray()
+                }).ToArray()
+            };
+        }
+
         private EndTxnResponse CreateEndTxnResponse(EndTxnRequest request)
         {
+            EndTxnRequests++;
             CapturedEndTxnRequest = request;
             return new EndTxnResponse
             {
-                ErrorCode = endTxnError,
+                ErrorCode = EndTxnRequests <= endTxnRetriableFailuresBeforeSuccess
+                    ? ErrorCode.CoordinatorLoadInProgress
+                    : endTxnError,
                 ProducerId = preparedState.ProducerId,
                 ProducerEpoch = (short)(preparedState.ProducerEpoch + 1)
             };

@@ -414,8 +414,9 @@ public sealed class ProducerOptions
     /// and <see cref="KafkaProducer{TKey,TValue}.Send"/> will block when the producer's buffer
     /// is full or metadata is unavailable.
     /// <para>
-    /// This controls how long the producer waits for buffer space (backpressure) and for
-    /// initial metadata when producing to a new topic for the first time.
+    /// This controls how long the producer waits for buffer space (backpressure), initial
+    /// metadata when producing to a new topic for the first time, and transaction coordinator
+    /// operations such as initialization, offset commits, commit, and abort.
     /// </para>
     /// <para>
     /// If the timeout expires, a <see cref="Errors.KafkaTimeoutException"/> is thrown with a descriptive message.

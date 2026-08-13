@@ -239,6 +239,31 @@ public sealed class TransactionOffsetCommitTests
     }
 
     [Test]
+    public async Task TV2_RetriableCommitError_RetriesBeyondPreviousAttemptLimit()
+    {
+        var outcomes = new Queue<object>(
+        [
+            ErrorCode.CoordinatorLoadInProgress,
+            ErrorCode.CoordinatorLoadInProgress,
+            ErrorCode.CoordinatorLoadInProgress,
+            ErrorCode.CoordinatorLoadInProgress,
+            ErrorCode.CoordinatorLoadInProgress,
+            ErrorCode.None
+        ]);
+        await using var harness = CreateHarness(
+            transactionVersion: 2,
+            txnOffsetCommitMaxVersion: 5,
+            commitOutcomes: outcomes);
+
+        await harness.Producer.SendOffsetsToTransactionInternalAsync(
+            [new TopicPartitionOffset("orders", 0, 42)],
+            "group-1",
+            CancellationToken.None);
+
+        await Assert.That(harness.Connection.CommitRequests).Count().IsEqualTo(6);
+    }
+
+    [Test]
     public async Task TV2_TransactionAbortable_UsesKip890Classification()
     {
         var outcomes = new Queue<object>([ErrorCode.TransactionAbortable]);
