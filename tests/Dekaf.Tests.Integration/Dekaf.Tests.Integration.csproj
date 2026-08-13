@@ -39,6 +39,7 @@
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Condition="'$(PublishAot)' != 'true'" />
     <PackageReference Include="Microsoft.Extensions.Hosting" />
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Condition="'$(PublishAot)' != 'true'" />
+    <PackageReference Include="SSH.NET" PrivateAssets="All" />
     <PackageReference Include="TUnit" />
     <PackageReference Include="TUnit.Logging.Microsoft" />
     <PackageReference Include="Testcontainers.Kafka" />
