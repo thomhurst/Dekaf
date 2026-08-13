@@ -125,8 +125,8 @@ internal sealed class PartitionState
 }
 
 /// <summary>
-/// Lock-free pool for InflightEntry objects.
-/// Extends <see cref="ObjectPool{T}"/> for pre-warm support and miss tracking.
+/// Reservoir-backed pool for InflightEntry objects.
+/// Uses manual Rent/Return because entries remain owned across asynchronous send completion.
 /// Default size 1024: with MaxInFlightRequestsPerConnection=5 and coalesced batches
 /// containing 10-50 partitions each, the steady-state in-flight count can reach
 /// 5 * 50 = 250 entries per connection. Multiple BrokerSenders multiply this further.
@@ -134,11 +134,52 @@ internal sealed class PartitionState
 /// workloads, creating mid-lived InflightEntry objects that survived Gen0 and got
 /// promoted to Gen2 before dying — contributing to pathological Gen2 GC pressure.
 /// </summary>
-internal sealed class InflightEntryPool(int maxPoolSize = 1024)
-    : ObjectPool<InflightEntry>(maxPoolSize)
+internal sealed class InflightEntryPool
 {
-    protected override InflightEntry Create() => new();
-    protected override void Reset(InflightEntry item) => item.Reset();
+    private readonly Reservoir.ObjectPool<InflightEntry, InflightEntryPolicy> _pool;
+    private long _misses;
+
+    public InflightEntryPool(int maxPoolSize = 1024)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxPoolSize);
+        MaxPoolSize = maxPoolSize;
+        _pool = new Reservoir.ObjectPool<InflightEntry, InflightEntryPolicy>(
+            new InflightEntryPolicy(this),
+            maxPoolSize);
+    }
+
+    public int MaxPoolSize { get; }
+
+    public long Misses => Volatile.Read(ref _misses);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public InflightEntry Rent() => _pool.Rent();
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void Return(InflightEntry item) => _pool.Return(item);
+
+    public void PreWarm(int count)
+    {
+        count = Math.Min(count, MaxPoolSize);
+        for (var i = 0; i < count; i++)
+            _pool.Return(new InflightEntry());
+    }
+
+    private readonly struct InflightEntryPolicy(InflightEntryPool owner)
+        : Reservoir.IPooledObjectPolicy<InflightEntry>
+    {
+        public InflightEntry Create()
+        {
+            Interlocked.Increment(ref owner._misses);
+            return new InflightEntry();
+        }
+
+        public bool TryReset(InflightEntry item)
+        {
+            item.Reset();
+            return true;
+        }
+    }
 }
 
 /// <summary>
