@@ -12,6 +12,7 @@ public class ObjectPoolTests
     {
         public int Id { get; set; }
         public bool WasReset { get; set; }
+        public bool WasDestroyed { get; set; }
     }
 
     private sealed class TestPool(int maxPoolSize) : ObjectPool<TestItem>(maxPoolSize)
@@ -19,7 +20,13 @@ public class ObjectPoolTests
         private int _nextId;
 
         protected override TestItem Create() => new() { Id = Interlocked.Increment(ref _nextId) };
-        protected override void Reset(TestItem item) => item.WasReset = true;
+        protected override void Reset(TestItem item)
+        {
+            item.WasReset = true;
+            item.WasDestroyed = false;
+        }
+
+        protected override void Destroy(TestItem item) => item.WasDestroyed = true;
     }
 
     [Test]
@@ -151,7 +158,7 @@ public class ObjectPoolTests
     }
 
     [Test]
-    public async Task RatchetMaxPoolSize_GrowsAndPreservesPooledItems()
+    public async Task RatchetMaxPoolSize_GrowsAndClearsPreviousStorage()
     {
         var pool = new TestPool(1);
         var item = pool.Rent();
@@ -160,7 +167,8 @@ public class ObjectPoolTests
         pool.RatchetMaxPoolSize(4);
 
         await Assert.That(pool.MaxPoolSize).IsEqualTo(4);
-        await Assert.That(pool.Rent()).IsSameReferenceAs(item);
+        await Assert.That(item.WasDestroyed).IsTrue();
+        await Assert.That(pool.Rent()).IsNotSameReferenceAs(item);
     }
 
     [Test]
@@ -197,5 +205,33 @@ public class ObjectPoolTests
         // Pool count should be within bounds (approximate due to lock-free design)
         await Assert.That(pool.ApproximateCount).IsGreaterThanOrEqualTo(0);
         await Assert.That(pool.ApproximateCount).IsLessThanOrEqualTo(maxPool + threadCount); // Small overshoot OK
+    }
+
+    [Test]
+    [Repeat(10)]
+    public async Task ConcurrentOverflow_NeverRentsDestroyedItem()
+    {
+        const int threadCount = 8;
+        const int opsPerThread = 1_000;
+        var pool = new TestPool(1);
+        pool.PreWarm(1);
+        var corruptedRents = 0;
+
+        var tasks = Enumerable.Range(0, threadCount).Select(_ => Task.Run(() =>
+        {
+            for (var i = 0; i < opsPerThread; i++)
+            {
+                var item = pool.Rent();
+                if (item.WasDestroyed)
+                    Interlocked.Increment(ref corruptedRents);
+
+                pool.Return(item);
+            }
+        }));
+
+        await Task.WhenAll(tasks);
+
+        await Assert.That(corruptedRents).IsEqualTo(0);
+        await Assert.That(pool.ApproximateCount).IsBetween(0, 1);
     }
 }

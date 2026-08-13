@@ -3654,9 +3654,8 @@ public class RecordAccumulatorTests
         var dropsBefore = BatchArena.Drops;
         var arena = new BatchArena(capacity: 128, maxPooledCapacity: 64);
 
-        var returned = BatchArena.ReturnToPool(arena);
+        BatchArena.ReturnToPool(arena);
 
-        await Assert.That(returned).IsFalse();
         await Assert.That(BatchArena.Drops).IsGreaterThanOrEqualTo(dropsBefore + 1);
     }
 

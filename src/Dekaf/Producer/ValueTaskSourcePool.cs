@@ -99,7 +99,7 @@ public sealed class ValueTaskSourcePool<T> : IAsyncDisposable
             throw new ObjectDisposedException(nameof(ValueTaskSourcePool<T>));
 
         var source = _pool.Rent();
-        DecrementRetainedCount();
+        Interlocked.Decrement(ref _retainedCount);
         return source;
     }
 
@@ -119,23 +119,13 @@ public sealed class ValueTaskSourcePool<T> : IAsyncDisposable
             return; // Silently discard after disposal
 
         _pool.Return(source);
-
-        if (Volatile.Read(ref _disposed) != 0)
-            return;
-
-        while (true)
-        {
-            var count = Volatile.Read(ref _retainedCount);
-            if (count >= _maxPoolSize ||
-                Interlocked.CompareExchange(ref _retainedCount, count + 1, count) == count)
-            {
-                return;
-            }
-        }
+        // Destroy runs synchronously on rejection or disposal, balancing this lifecycle count.
+        Interlocked.Increment(ref _retainedCount);
     }
 
     /// <summary>
-    /// Gets the approximate number of instances currently in the pool.
+    /// Gets the best-effort number of instances currently in the pool.
+    /// Reservoir remains the sole authority for retention decisions.
     /// </summary>
     public int ApproximateCount => Volatile.Read(ref _retainedCount);
 
@@ -153,23 +143,8 @@ public sealed class ValueTaskSourcePool<T> : IAsyncDisposable
             return default;
 
         _pool.Dispose();
-        Volatile.Write(ref _retainedCount, 0);
 
         return default;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void DecrementRetainedCount()
-    {
-        while (true)
-        {
-            var count = Volatile.Read(ref _retainedCount);
-            if (count == 0 ||
-                Interlocked.CompareExchange(ref _retainedCount, count - 1, count) == count)
-            {
-                return;
-            }
-        }
     }
 
     private readonly struct PoolPolicy(ValueTaskSourcePool<T> owner)
@@ -179,11 +154,13 @@ public sealed class ValueTaskSourcePool<T> : IAsyncDisposable
         {
             var source = new PooledValueTaskSource<T>();
             source.SetPool(owner);
+            Interlocked.Increment(ref owner._retainedCount);
             return source;
         }
 
         public bool TryReset(PooledValueTaskSource<T> source) => true;
 
-        public void Destroy(PooledValueTaskSource<T> source) { }
+        public void Destroy(PooledValueTaskSource<T> source) =>
+            Interlocked.Decrement(ref owner._retainedCount);
     }
 }

@@ -738,7 +738,6 @@ internal sealed class BatchArena
     internal const int MaxPoolSizeCap = 512;
     internal const long MissRatchetThreshold = 128;
     private static int s_maxPoolSize = DefaultPoolSize;
-    private static long s_misses;
     private static long s_drops;
     private static long s_lastRatchetMissCount;
 
@@ -764,10 +763,11 @@ internal sealed class BatchArena
     /// Number of times <see cref="RentOrCreate"/> found the pool empty and had to allocate a new arena.
     /// Use this to diagnose pool sizing — sustained misses under load indicate the pool is too small.
     /// </summary>
-    internal static long Misses => Volatile.Read(ref s_misses);
+    internal static long Misses => s_pool.Misses;
 
     /// <summary>
-    /// Number of arenas rejected from the pool because their buffer was oversized or the pool was full.
+    /// Number of arenas discarded because their buffer was oversized, the pool was full,
+    /// or a capacity ratchet replaced the previous pool.
     /// </summary>
     internal static long Drops => Volatile.Read(ref s_drops);
 
@@ -814,8 +814,9 @@ internal sealed class BatchArena
     internal static void PreWarm(int count, int capacity)
     {
         count = Math.Min(count, Volatile.Read(ref s_maxPoolSize));
-        while (s_pool.ApproximateCount < count &&
-               s_pool.TryReturnArena(new BatchArena(capacity))) { }
+        var missing = Math.Max(0, count - s_pool.ApproximateCount);
+        for (var i = 0; i < missing; i++)
+            s_pool.Return(new BatchArena(capacity));
     }
 
     private byte[] _buffer;
@@ -853,11 +854,7 @@ internal sealed class BatchArena
 
     public static BatchArena RentOrCreate(int capacity, int maxPooledCapacity)
     {
-        var missesBefore = Volatile.Read(ref s_misses);
         var arena = s_pool.Rent();
-        var missCount = Volatile.Read(ref s_misses);
-        if (missCount != missesBefore)
-            MaybeRatchetPoolSize(missCount);
         arena.Reset(capacity, maxPooledCapacity);
         return arena;
     }
@@ -866,7 +863,7 @@ internal sealed class BatchArena
     /// Returns an arena to the pool for reuse, or drops the reference for GC collection if the pool is full.
     /// The POH buffer is never returned to ArrayPool.
     /// </summary>
-    public static bool ReturnToPool(BatchArena arena)
+    public static void ReturnToPool(BatchArena arena)
     {
         arena._position = 0;
 
@@ -874,32 +871,27 @@ internal sealed class BatchArena
         {
             arena._buffer = null!;
             Interlocked.Increment(ref s_drops);
-            return false;
+            return;
         }
 
-        if (!s_pool.TryReturnArena(arena))
-        {
-            // Pool full — drop the reference so the GC can reclaim the POH segment
-            // once all objects on it are dead. No ArrayPool return needed.
-            arena._buffer = null!;
-            Interlocked.Increment(ref s_drops);
-            return false;
-        }
-
-        return true;
+        s_pool.Return(arena);
     }
 
     private sealed class BatchArenaPool(int maxPoolSize) : ObjectPool<BatchArena>(maxPoolSize)
     {
         protected override BatchArena Create()
         {
-            Interlocked.Increment(ref s_misses);
+            MaybeRatchetPoolSize(Misses);
             return new BatchArena();
         }
 
         protected override void Reset(BatchArena item) { }
 
-        internal bool TryReturnArena(BatchArena arena) => TryReturn(arena);
+        protected override void Destroy(BatchArena item)
+        {
+            item._buffer = null!;
+            Interlocked.Increment(ref s_drops);
+        }
     }
 
     /// <summary>

@@ -25,7 +25,10 @@ internal abstract class ObjectPool<T> where T : class
     /// <summary>Maximum number of items retained.</summary>
     public int MaxPoolSize => Volatile.Read(ref _maxPoolSize);
 
-    /// <summary>Approximate number of retained items.</summary>
+    /// <summary>
+    /// Best-effort retained count for diagnostics and cold-path pre-warming.
+    /// Reservoir remains the sole authority for retention decisions.
+    /// </summary>
     public int ApproximateCount => Volatile.Read(ref _retainedCount);
 
     /// <summary>Number of empty-pool rents that created an item.</summary>
@@ -44,12 +47,15 @@ internal abstract class ObjectPool<T> where T : class
     /// <summary>Resets an item before retention or discard.</summary>
     protected abstract void Reset(T item);
 
+    /// <summary>Releases resources owned by an item discarded by Reservoir.</summary>
+    protected virtual void Destroy(T item) { }
+
     /// <summary>Rents an item, creating one on a miss.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public T Rent()
     {
         var item = Volatile.Read(ref _pool).Rent();
-        DecrementRetainedCount();
+        Interlocked.Decrement(ref _retainedCount);
         return item;
     }
 
@@ -58,21 +64,12 @@ internal abstract class ObjectPool<T> where T : class
     public void Return(T item)
     {
         Reset(item);
-        TryRetain(item);
+        Volatile.Read(ref _pool).Return(item);
+        // Destroy runs synchronously on rejection, so this balances both retained and discarded items.
+        Interlocked.Increment(ref _retainedCount);
     }
 
-    /// <summary>
-    /// Resets and attempts to retain an item.
-    /// </summary>
-    /// <returns><see langword="true"/> when retained; otherwise <see langword="false"/>.</returns>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    protected bool TryReturn(T item)
-    {
-        Reset(item);
-        return TryRetain(item);
-    }
-
-    /// <summary>Increases retained capacity while preserving currently retained items.</summary>
+    /// <summary>Increases retained capacity.</summary>
     public void RatchetMaxPoolSize(int newSize)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(newSize);
@@ -88,16 +85,7 @@ internal abstract class ObjectPool<T> where T : class
             if (currentPool.MaximumRetained >= newSize)
                 return;
 
-            var newPool = CreatePool(newSize);
-            var transferCount = Math.Min(
-                Volatile.Read(ref _retainedCount),
-                currentPool.MaximumRetained);
-
-            for (var i = 0; i < transferCount; i++)
-                newPool.Return(currentPool.Rent());
-
-            Volatile.Write(ref _pool, newPool);
-            Volatile.Write(ref _retainedCount, transferCount);
+            Volatile.Write(ref _pool, CreatePool(newSize));
             currentPool.Clear();
         }
     }
@@ -106,46 +94,15 @@ internal abstract class ObjectPool<T> where T : class
     public void PreWarm(int count)
     {
         count = Math.Min(count, MaxPoolSize);
-        while (Volatile.Read(ref _retainedCount) < count && TryRetain(Create())) { }
+        var missing = Math.Max(0, count - ApproximateCount);
+        for (var i = 0; i < missing; i++)
+            Return(Create());
     }
 
     /// <summary>Clears retained items while leaving pool usable.</summary>
     public void Clear()
     {
         Volatile.Read(ref _pool).Clear();
-        Volatile.Write(ref _retainedCount, 0);
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool TryRetain(T item)
-    {
-        Volatile.Read(ref _pool).Return(item);
-
-        while (true)
-        {
-            var count = Volatile.Read(ref _retainedCount);
-            if (count >= Volatile.Read(ref _maxPoolSize))
-                return false;
-
-            if (Interlocked.CompareExchange(ref _retainedCount, count + 1, count) != count)
-                continue;
-
-            return true;
-        }
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void DecrementRetainedCount()
-    {
-        while (true)
-        {
-            var count = Volatile.Read(ref _retainedCount);
-            if (count == 0 ||
-                Interlocked.CompareExchange(ref _retainedCount, count - 1, count) == count)
-            {
-                return;
-            }
-        }
     }
 
     private Reservoir.ObjectPool<T, PoolPolicy> CreatePool(int capacity) =>
@@ -157,12 +114,17 @@ internal abstract class ObjectPool<T> where T : class
         public T Create()
         {
             Interlocked.Increment(ref owner._misses);
-            return owner.Create();
+            var item = owner.Create();
+            Interlocked.Increment(ref owner._retainedCount);
+            return item;
         }
 
         public bool TryReset(T item) => true;
 
-        // Preserve prior behavior: discarded items become GC-eligible without implicit disposal.
-        public void Destroy(T item) { }
+        public void Destroy(T item)
+        {
+            Interlocked.Decrement(ref owner._retainedCount);
+            owner.Destroy(item);
+        }
     }
 }
