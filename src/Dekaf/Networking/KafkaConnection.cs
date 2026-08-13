@@ -4875,18 +4875,23 @@ internal sealed class PooledResponseMemory : IPooledMemory
 
 /// <summary>
 /// Thread-safe bounded pool for <see cref="PooledPendingRequest"/> instances.
-/// Uses lock-free operations via <see cref="ConcurrentStack{T}"/> for high throughput.
+/// Uses Reservoir's bounded, preallocated storage for zero-allocation rent and return.
 /// </summary>
 internal sealed class PendingRequestPool
 {
     private const int DefaultMaxPoolSize = 256;
-    private readonly int _maxPoolSize;
-    private readonly ConcurrentStack<PooledPendingRequest> _pool = new();
+    private readonly Reservoir.ObjectPool<PooledPendingRequest, PoolPolicy> _pool;
     private int _poolCount;
 
     public PendingRequestPool() : this(DefaultMaxPoolSize) { }
 
-    public PendingRequestPool(int maxPoolSize) { _maxPoolSize = maxPoolSize; }
+    public PendingRequestPool(int maxPoolSize)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxPoolSize);
+        _pool = new Reservoir.ObjectPool<PooledPendingRequest, PoolPolicy>(
+            new PoolPolicy(this),
+            maxPoolSize);
+    }
 
     public int ApproximateCount => Volatile.Read(ref _poolCount);
 
@@ -4896,13 +4901,9 @@ internal sealed class PendingRequestPool
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public PooledPendingRequest Rent()
     {
-        if (_pool.TryPop(out var request))
-        {
-            Interlocked.Decrement(ref _poolCount);
-            return request;
-        }
-
-        return new PooledPendingRequest();
+        var request = _pool.Rent();
+        Interlocked.Decrement(ref _poolCount);
+        return request;
     }
 
     /// <summary>
@@ -4912,20 +4913,28 @@ internal sealed class PendingRequestPool
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Return(PooledPendingRequest request)
     {
-        // Reset the request for reuse
-        request.Reset();
+        _pool.Return(request);
+        // Destroy runs synchronously when retention is rejected.
+        Interlocked.Increment(ref _poolCount);
+    }
 
-        // Check if pool is full
-        var count = Interlocked.Increment(ref _poolCount);
-        if (count <= _maxPoolSize)
+    private readonly struct PoolPolicy(PendingRequestPool owner)
+        : Reservoir.IPooledObjectDestroyPolicy<PooledPendingRequest>
+    {
+        public PooledPendingRequest Create()
         {
-            _pool.Push(request);
+            Interlocked.Increment(ref owner._poolCount);
+            return new PooledPendingRequest();
         }
-        else
+
+        public bool TryReset(PooledPendingRequest request)
         {
-            // Pool is full - decrement count and let GC handle the instance
-            Interlocked.Decrement(ref _poolCount);
+            request.Reset();
+            return true;
         }
+
+        public void Destroy(PooledPendingRequest request) =>
+            Interlocked.Decrement(ref owner._poolCount);
     }
 }
 

@@ -1,5 +1,4 @@
 using System.Buffers;
-using System.Collections.Concurrent;
 
 namespace Dekaf.Networking;
 
@@ -42,8 +41,7 @@ internal sealed class PipeMemoryPool : MemoryPool<byte>
     private static readonly Queue<(int MaxArrayLength, int MaxArraysPerBucket)> s_sharedPoolOrder = [];
 
     private readonly ArrayPool<byte> _pool;
-    private readonly ConcurrentStack<PooledMemoryOwner> _ownerPool = new();
-    private int _ownerPoolCount;
+    private readonly Reservoir.ObjectPool<PooledMemoryOwner, PooledMemoryOwnerPolicy> _ownerPool;
     private int _disposed;
 
     /// <summary>
@@ -79,6 +77,9 @@ internal sealed class PipeMemoryPool : MemoryPool<byte>
     public PipeMemoryPool(int maxArrayLength = 4 * 1024 * 1024, int maxArraysPerBucket = 32)
     {
         _pool = ArrayPool<byte>.Create(maxArrayLength, maxArraysPerBucket);
+        _ownerPool = new Reservoir.ObjectPool<PooledMemoryOwner, PooledMemoryOwnerPolicy>(
+            new PooledMemoryOwnerPolicy(this),
+            MaxOwnerPoolSize);
     }
 
     internal static PipeMemoryPool Create(
@@ -124,17 +125,9 @@ internal sealed class PipeMemoryPool : MemoryPool<byte>
         if (minBufferSize < 0)
             minBufferSize = 4096;
 
-        if (_ownerPool.TryPop(out var owner))
-        {
-            // Note: the decrement happens after the pop, so _ownerPoolCount can transiently
-            // overstate the actual number of pooled items. This is an acceptable approximation —
-            // the count is only used to bound pool growth, not for correctness.
-            Interlocked.Decrement(ref _ownerPoolCount);
-            owner.Initialize(minBufferSize);
-            return owner;
-        }
-
-        return new PooledMemoryOwner(this, minBufferSize);
+        var owner = _ownerPool.Rent();
+        owner.Initialize(minBufferSize);
+        return owner;
     }
 
     /// <summary>
@@ -145,40 +138,17 @@ internal sealed class PipeMemoryPool : MemoryPool<byte>
     /// sends (hundreds of Rent/Dispose cycles per second per connection).
     /// </summary>
     private void ReturnOwner(PooledMemoryOwner owner)
-    {
-        if (Volatile.Read(ref _disposed) != 0)
-            return;
-
-        if (Interlocked.Increment(ref _ownerPoolCount) <= MaxOwnerPoolSize)
-        {
-            _ownerPool.Push(owner);
-
-            // Guard against dispose racing between the check above and the push.
-            // If Dispose() ran between our initial check and the Push, the drain loop
-            // in Dispose may have already completed — re-drain to avoid leaking the owner.
-            if (Volatile.Read(ref _disposed) != 0)
-            {
-                while (_ownerPool.TryPop(out _)) { }
-            }
-        }
-        else
-        {
-            Interlocked.Decrement(ref _ownerPoolCount);
-        }
-    }
+        => _ownerPool.Return(owner);
 
     protected override void Dispose(bool disposing)
     {
         // Mark as disposed. The underlying ArrayPool<byte>.Create() instance
         // has no Dispose method — it will be collected by the GC along with all
         // its retained arrays once no more IMemoryOwner references are alive.
-        Volatile.Write(ref _disposed, 1);
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            return;
 
-        // Drain the owner pool to allow GC of wrapper objects
-        while (_ownerPool.TryPop(out _))
-        {
-            // Discard
-        }
+        _ownerPool.Dispose();
     }
 
     /// <summary>
@@ -191,11 +161,7 @@ internal sealed class PipeMemoryPool : MemoryPool<byte>
         private readonly PipeMemoryPool _parentPool;
         private byte[]? _array;
 
-        public PooledMemoryOwner(PipeMemoryPool parentPool, int minBufferSize)
-        {
-            _parentPool = parentPool;
-            _array = parentPool._pool.Rent(minBufferSize);
-        }
+        public PooledMemoryOwner(PipeMemoryPool parentPool) => _parentPool = parentPool;
 
         /// <summary>
         /// Re-initializes the owner for reuse after being returned to the wrapper pool.
@@ -224,5 +190,13 @@ internal sealed class PipeMemoryPool : MemoryPool<byte>
                 _parentPool.ReturnOwner(this);
             }
         }
+    }
+
+    private readonly struct PooledMemoryOwnerPolicy(PipeMemoryPool owner)
+        : Reservoir.IPooledObjectPolicy<PooledMemoryOwner>
+    {
+        public PooledMemoryOwner Create() => new(owner);
+
+        public bool TryReset(PooledMemoryOwner item) => true;
     }
 }
