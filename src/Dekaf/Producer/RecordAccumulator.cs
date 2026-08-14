@@ -8896,7 +8896,34 @@ internal sealed class ReadyBatch
     private int[]? _callbackIndexes;
 
     internal PooledValueTaskSource<RecordMetadata>? GetCompletionSource(int recordIndex)
-        => _completionSourcesArray?[recordIndex];
+    {
+        if (_completionSourcesArray is null || recordIndex < 0)
+            return null;
+
+        if (recordIndex < _completionSourceDenseCount)
+            return _completionSourcesArray[recordIndex];
+
+        var indexes = _completionSourceIndexes;
+        if (indexes is null)
+            return null;
+
+        var low = 0;
+        var high = _completionSourcesCount - _completionSourceDenseCount - 1;
+        while (low <= high)
+        {
+            var middle = low + ((high - low) >> 1);
+            var indexedRecord = indexes[middle];
+            if (indexedRecord == recordIndex)
+                return _completionSourcesArray[recordIndex];
+
+            if (indexedRecord < recordIndex)
+                low = middle + 1;
+            else
+                high = middle - 1;
+        }
+
+        return null;
+    }
 
     internal Action<RecordMetadata, Exception?>? GetCallback(int recordIndex)
         => _callbacks?[recordIndex];
