@@ -7451,7 +7451,7 @@ internal sealed class PartitionBatch
     private int _recordCount;
 
     // Zero-allocation array management: use pooled arrays instead of List<T>
-    private PooledValueTaskSource<RecordMetadata>[] _completionSources;
+    private PooledValueTaskSource<RecordMetadata>[]? _completionSources;
     private int _completionSourceCount;
     // Dense prefixes need no index array; only delivery records after the first gap are tracked.
     private int _completionSourceDenseCount;
@@ -7521,7 +7521,7 @@ internal sealed class PartitionBatch
         CreateAppendBuffer(options, rentFullArenaFromPool: false);
         _recordCount = 0;
 
-        // Rent arrays from pool - eliminates List allocations
+        // Rent arrays from pool - eliminates List allocations.
         _completionSources = ProducerContainerPools.CompletionSources.Rent(_initialRecordCapacity);
         _completionSourceCount = 0;
     }
@@ -7603,7 +7603,7 @@ internal sealed class PartitionBatch
 
     /// <summary>
     /// Prepares the batch for returning to the pool.
-    /// Allocates new arrays (the old ones were transferred to ReadyBatch).
+    /// Recreates transferred append storage while retaining fire-only completion storage.
     /// IMPORTANT: This must only be called after Complete() which transfers arrays to ReadyBatch.
     /// </summary>
     internal void PrepareForPooling(ProducerOptions options, BatchArrayReuseQueue? arrayReuseQueue = null)
@@ -7619,18 +7619,18 @@ internal sealed class PartitionBatch
 
         CreateAppendBuffer(options);
 
-        // The completion sources array was transferred to ReadyBatch by Complete() and is now null.
-        // Try to reclaim one from the reuse queue first (returned by ReadyBatch.Cleanup()),
-        // avoiding an ArrayPool Rent operation per batch cycle.
-        if (_arrayReuseQueue is not null && _arrayReuseQueue.TryDequeue(out var reusable))
+        // Awaited batches transfer completion storage to ReadyBatch. Fire-only batches
+        // retain their array across pool rotations and skip this cross-thread handoff.
+        if (_completionSources is null)
         {
-            _completionSources = reusable;
-        }
-        else
-        {
-            // Fallback: rent a fresh array from the dedicated pool (not ArrayPool<T>.Shared)
-            // to prevent TLS accumulation from cross-thread rent/return patterns
-            _completionSources = ProducerContainerPools.CompletionSources.Rent(_initialRecordCapacity);
+            if (_arrayReuseQueue is not null && _arrayReuseQueue.TryDequeue(out var reusable))
+            {
+                _completionSources = reusable;
+            }
+            else
+            {
+                _completionSources = ProducerContainerPools.CompletionSources.Rent(_initialRecordCapacity);
+            }
         }
 
         // Reset counters and state for reuse.
@@ -8002,7 +8002,7 @@ internal sealed class PartitionBatch
             return new RecordAppendResult(false);
         }
 
-        // Defensive check: if the array is null, batch is in inconsistent state (being pooled)
+        // A completed awaited batch transfers this array before returning to the pool.
         if (_completionSources is null)
         {
             reservedAppend = default;
@@ -8182,9 +8182,10 @@ internal sealed class PartitionBatch
         _encodedRecordsLength += reservedAppend.EncodedRecordSize;
         _maxTimestamp = recordIndex == 0 ? reservedAppend.Timestamp : Math.Max(_maxTimestamp, reservedAppend.Timestamp);
 
-        _completionSources[recordIndex] = completionSource!;
         if (completionSource is not null)
         {
+            Debug.Assert(_completionSources is not null);
+            _completionSources![recordIndex] = completionSource;
             TrackDeliveryIndex(
                 recordIndex,
                 _completionSourceCount,
@@ -8477,12 +8478,14 @@ internal sealed class PartitionBatch
             // This eliminates per-batch class allocations at high throughput
             readyBatch = _readyBatchPool?.Rent() ?? new ReadyBatch();
 
-            // Initialize with batch data - ownership of arrays transfers to ReadyBatch
+            // Initialize with batch data. Fire-only batches retain their unused completion
+            // array locally; awaited batches transfer ownership to ReadyBatch.
             // PooledValueTaskSource auto-returns to its pool when GetResult() is called
+            var transfersCompletionSources = _completionSourceCount > 0;
             readyBatch.Initialize(
                 _topicPartition,
                 batch,
-                _completionSources,
+                transfersCompletionSources ? _completionSources : null,
                 _completionSourceCount,
                 _recordCount,
                 _estimatedSize,
@@ -8525,8 +8528,9 @@ internal sealed class PartitionBatch
             batch = null;
             readyBatch = null;
 
-            // Null out references - ownership transferred to ReadyBatch
-            _completionSources = null!;
+            // Null out references whose ownership transferred to ReadyBatch.
+            if (transfersCompletionSources)
+                _completionSources = null;
             _completionSourceIndexes = null;
             _arena = null;
             _incrementalBuffer = null;
@@ -8652,7 +8656,7 @@ internal sealed class PartitionBatch
             IncrementalBatchBuffer.ReturnToPool(_incrementalBuffer);
 
         // Null out references to prevent accidental reuse
-        _completionSources = null!;
+        _completionSources = null;
         _completionSourceIndexes = null;
         _arena = null;
         _incrementalBuffer = null;
@@ -8745,10 +8749,10 @@ internal sealed class ReadyBatchPool(int maxPoolSize = BatchArena.DefaultPoolSiz
 }
 
 /// <summary>
-/// Reuse queue for the completion sources array that PartitionBatch rents from ArrayPool.
+/// Reuse queue for completion source arrays rented by PartitionBatch.
 /// When ReadyBatch finishes cleanup, it pushes the array here instead of returning it to
 /// ArrayPool. PartitionBatch.PrepareForPooling() dequeues from here first, falling back
-/// to ArrayPool on miss. This eliminates an ArrayPool Rent/Return pair per batch cycle.
+/// to ArrayPool on miss. Fire-only batches retain their array and skip the handoff.
 /// </summary>
 internal sealed class BatchArrayReuseQueue
 {
@@ -8892,7 +8896,34 @@ internal sealed class ReadyBatch
     private int[]? _callbackIndexes;
 
     internal PooledValueTaskSource<RecordMetadata>? GetCompletionSource(int recordIndex)
-        => _completionSourcesArray?[recordIndex];
+    {
+        if (_completionSourcesArray is null || recordIndex < 0)
+            return null;
+
+        if (recordIndex < _completionSourceDenseCount)
+            return _completionSourcesArray[recordIndex];
+
+        var indexes = _completionSourceIndexes;
+        if (indexes is null)
+            return null;
+
+        var low = 0;
+        var high = _completionSourcesCount - _completionSourceDenseCount - 1;
+        while (low <= high)
+        {
+            var middle = low + ((high - low) >> 1);
+            var indexedRecord = indexes[middle];
+            if (indexedRecord == recordIndex)
+                return _completionSourcesArray[recordIndex];
+
+            if (indexedRecord < recordIndex)
+                low = middle + 1;
+            else
+                high = middle - 1;
+        }
+
+        return null;
+    }
 
     internal Action<RecordMetadata, Exception?>? GetCallback(int recordIndex)
         => _callbacks?[recordIndex];

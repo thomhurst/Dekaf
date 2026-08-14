@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Reflection;
 using Dekaf.Compression;
 using Dekaf.Metadata;
 using Dekaf.Producer;
@@ -9,6 +10,109 @@ namespace Dekaf.Tests.Unit.Producer;
 
 public sealed class Kip126BatchSplittingTests
 {
+    [Test]
+    public async Task FireOnlyBatch_DoesNotTransferCompletionSourceStorage()
+    {
+        var options = new ProducerOptions { BootstrapServers = ["localhost:9092"], BatchSize = 4096 };
+        var batch = new PartitionBatch(new TopicPartition("fire-only", 0), options);
+        var partitionStorage = typeof(PartitionBatch).GetField(
+            "_completionSources",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var readyStorage = typeof(ReadyBatch).GetField(
+            "_completionSourcesArray",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+        var storage = partitionStorage.GetValue(batch);
+        await Assert.That(storage).IsNotNull();
+        Append(batch, 0, completionSource: null, callback: null);
+        await Assert.That(partitionStorage.GetValue(batch)).IsSameReferenceAs(storage);
+
+        var ready = batch.Complete()!;
+        await Assert.That(readyStorage.GetValue(ready)).IsNull();
+        await Assert.That(partitionStorage.GetValue(batch)).IsSameReferenceAs(storage);
+
+        batch.PrepareForPooling(options);
+        batch.Reset(new TopicPartition("fire-only-reused", 1), partitionCount: 2);
+        await Assert.That(partitionStorage.GetValue(batch)).IsSameReferenceAs(storage);
+
+        ready.CompleteSend(0, DateTimeOffset.UnixEpoch);
+        batch.Complete();
+    }
+
+    [Test]
+    public async Task MixedBatch_SplitLookupIgnoresStaleFireOnlySlot()
+    {
+        var options = new ProducerOptions { BootstrapServers = ["localhost:9092"], BatchSize = 4096 };
+        var batch = new PartitionBatch(new TopicPartition("mixed-stale", 0), options);
+        var sourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var stale = sourcePool.Rent();
+        var awaited = sourcePool.Rent();
+        var staleTask = stale.Task;
+        var awaitedTask = awaited.Task;
+        var completionStorage = typeof(PartitionBatch).GetField(
+            "_completionSources",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var storage = (PooledValueTaskSource<RecordMetadata>[])completionStorage.GetValue(batch)!;
+
+        // Simulate retained, uncleared storage from an earlier awaited batch.
+        storage[0] = stale;
+        Append(batch, 0, completionSource: null, callback: null);
+        Append(batch, 1, awaited, callback: null);
+
+        var ready = batch.Complete()!;
+        await Assert.That(ready.GetCompletionSource(0)).IsNull();
+        await Assert.That(ready.GetCompletionSource(1)).IsSameReferenceAs(awaited);
+
+        ready.TrySetMemoryReleased();
+        await using var accumulator = new RecordAccumulator(options, new CompressionCodecRegistry());
+        var children = accumulator.SplitForSenderRetry(
+            ready,
+            ready.Generation,
+            static () => { })!;
+        await Assert.That(children.Sum(static child => child.CompletionSourcesCount)).IsEqualTo(1);
+
+        var baseOffset = 100L;
+        foreach (var child in children)
+        {
+            CompleteAndReturn(accumulator, child, baseOffset);
+            baseOffset += child.RecordCount;
+        }
+
+        await Assert.That((await awaitedTask).Offset).IsEqualTo(101);
+        await Assert.That(staleTask.IsCompleted).IsFalse();
+        await Assert.That(stale.TrySetException(new InvalidOperationException("Test cleanup."))).IsTrue();
+        await Assert.That(async () => await staleTask)
+            .ThrowsExactly<InvalidOperationException>();
+        await sourcePool.DisposeAsync();
+    }
+
+    [Test]
+    public async Task FirstLateCompletion_PreservesOriginalRecordIndex()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            BatchSize = 64 * 1024,
+            InitialBatchRecordCapacity = 16
+        };
+        var batch = new PartitionBatch(new TopicPartition("late-completion", 0), options);
+        var sourcePool = new ValueTaskSourcePool<RecordMetadata>();
+
+        for (var i = 0; i < 100; i++)
+            Append(batch, i, completionSource: null, callback: null);
+
+        var source = sourcePool.Rent();
+        var task = source.Task;
+        Append(batch, 100, source, callback: null);
+
+        var ready = batch.Complete()!;
+        ready.TrySetMemoryReleased();
+        ready.CompleteSend(500, DateTimeOffset.UnixEpoch);
+
+        await Assert.That((await task).Offset).IsEqualTo(600);
+        await sourcePool.DisposeAsync();
+    }
+
     [Test]
     public async Task CompressedBatch_ZeroBufferMemory_UsesMinimumSizeLimit()
     {
