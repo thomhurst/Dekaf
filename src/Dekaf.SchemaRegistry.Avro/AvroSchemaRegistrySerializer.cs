@@ -2,7 +2,6 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
-using System.Runtime.CompilerServices;
 using Avro.Generic;
 using Avro.IO;
 using Avro.Specific;
@@ -49,17 +48,15 @@ public sealed class AvroSchemaRegistrySerializer<
     private readonly bool _ownsClient;
     private readonly ConcurrentDictionary<SchemaIdCacheKey, Lazy<Task<int>>> _schemaIdCache = new();
     private readonly SubjectSchemaIdCache _subjectSchemaIdCache = new();
-    private readonly ConcurrentDictionary<string, SubjectSchemaIdCache> _dynamicSubjectSchemaIdCaches =
-        new(StringComparer.Ordinal);
-    private readonly ConditionalWeakTable<AvroSchema, DynamicSubjectSchemaIdCache> _dynamicSubjectSchemaIdCachesByInstance = new();
-    private readonly ConditionalWeakTable<AvroSchema, DynamicSubjectSchemaIdCache>.CreateValueCallback
-        _createDynamicSubjectSchemaIdCache;
-    private readonly ConcurrentDictionary<AvroSchema, GenericDatumWriter<GenericRecord>> _genericWriters =
-        new(AvroSchemaReferenceComparer.Instance);
+    private readonly ConcurrentDictionary<AvroSchema, DynamicSubjectSchemaIdCache> _dynamicSubjectSchemaIdCaches =
+        new(AvroSchemaLogicalComparer.Instance);
+    private readonly ConcurrentDictionary<AvroSchema, DynamicGenericWriter> _genericWriters =
+        new(AvroSchemaLogicalComparer.Instance);
     private readonly ConcurrentDictionary<AvroSchema, SpecificDefaultWriter> _specificWriters =
         new(AvroSchemaReferenceComparer.Instance);
     private readonly AvroSchema? _writerSchema;
     private DynamicSubjectSchemaIdCache? _lastDynamicSubjectSchemaIdCache;
+    private DynamicGenericWriter? _lastDynamicGenericWriter;
 
     /// <summary>
     /// Creates a new Avro Schema Registry serializer.
@@ -75,7 +72,6 @@ public sealed class AvroSchemaRegistrySerializer<
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _config = config ?? new AvroSerializerConfig();
         _ownsClient = ownsClient;
-        _createDynamicSubjectSchemaIdCache = CreateDynamicSubjectSchemaIdCache;
 
         // Try to get schema from type T if it's a specific record
         _writerSchema = GetSchemaFromType();
@@ -316,9 +312,7 @@ public sealed class AvroSchemaRegistrySerializer<
                 break;
 
             case GenericRecord genericRecord:
-                var genericWriter = _genericWriters.GetOrAdd(
-                    genericRecord.Schema,
-                    static schema => new GenericDatumWriter<GenericRecord>(schema));
+                var genericWriter = GetGenericWriter(genericRecord.Schema);
                 genericWriter.Write(genericRecord, encoder);
                 break;
 
@@ -456,19 +450,24 @@ public sealed class AvroSchemaRegistrySerializer<
         if (last is not null && ReferenceEquals(last.Schema, schema))
             return last.Cache;
 
-        var entry = _dynamicSubjectSchemaIdCachesByInstance.GetValue(
+        var entry = _dynamicSubjectSchemaIdCaches.GetOrAdd(
             schema,
-            _createDynamicSubjectSchemaIdCache);
+            static schema => new DynamicSubjectSchemaIdCache(schema, new SubjectSchemaIdCache()));
         Volatile.Write(ref _lastDynamicSubjectSchemaIdCache, entry);
         return entry.Cache;
     }
 
-    private DynamicSubjectSchemaIdCache CreateDynamicSubjectSchemaIdCache(AvroSchema schema)
+    private GenericDatumWriter<GenericRecord> GetGenericWriter(AvroSchema schema)
     {
-        var cache = _dynamicSubjectSchemaIdCaches.GetOrAdd(
-            schema.ToString(),
-            static _ => new SubjectSchemaIdCache());
-        return new DynamicSubjectSchemaIdCache(schema, cache);
+        var last = Volatile.Read(ref _lastDynamicGenericWriter);
+        if (last is not null && ReferenceEquals(last.Schema, schema))
+            return last.Writer;
+
+        var entry = _genericWriters.GetOrAdd(
+            schema,
+            static schema => new DynamicGenericWriter(schema));
+        Volatile.Write(ref _lastDynamicGenericWriter, entry);
+        return entry.Writer;
     }
 
     private sealed class DynamicSubjectSchemaIdCache
@@ -481,6 +480,18 @@ public sealed class AvroSchemaRegistrySerializer<
 
         internal AvroSchema Schema { get; }
         internal SubjectSchemaIdCache Cache { get; }
+    }
+
+    private sealed class DynamicGenericWriter
+    {
+        internal DynamicGenericWriter(AvroSchema schema)
+        {
+            Schema = schema;
+            Writer = new GenericDatumWriter<GenericRecord>(schema);
+        }
+
+        internal AvroSchema Schema { get; }
+        internal GenericDatumWriter<GenericRecord> Writer { get; }
     }
 
     private static AvroSchema? GetSchemaFromType()

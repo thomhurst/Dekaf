@@ -253,6 +253,18 @@ public sealed class SubjectNameStrategyTests
         }
         """;
 
+    private const string RecursiveRecordSchema = """
+        {
+            "type": "record",
+            "name": "Node",
+            "namespace": "test",
+            "fields": [
+                { "name": "value", "type": "int" },
+                { "name": "next", "type": ["null", "test.Node"], "default": null }
+            ]
+        }
+        """;
+
     private static SerializationContext CreateContext(string topic = "test-topic", bool isKey = false) =>
         new()
         {
@@ -416,19 +428,69 @@ public sealed class SubjectNameStrategyTests
         using var schemaRegistry = new MockSchemaRegistryClient();
         await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry);
         var context = CreateContext("shared-topic");
+        var records = new GenericRecord[100];
 
-        for (var i = 0; i < 100; i++)
+        for (var i = 0; i < records.Length; i++)
         {
             var schema = (Avro.RecordSchema)AvroSchema.Parse(SimpleRecordSchema);
             var record = new GenericRecord(schema);
             record.Add("id", i);
             record.Add("name", "equivalent");
-            var buffer = new ArrayBufferWriter<byte>();
+            records[i] = record;
+        }
 
+        var buffer = new ArrayBufferWriter<byte>();
+        serializer.Serialize(records[0], ref buffer, context);
+        buffer.ResetWrittenCount();
+        serializer.Serialize(records[1], ref buffer, context);
+
+        var prepareBefore = GC.GetAllocatedBytesForCurrentThread();
+        for (var i = 2; i < records.Length; i++)
+            serializer.PrepareAsync(records[i], context).GetAwaiter().GetResult();
+        var prepareAllocated = GC.GetAllocatedBytesForCurrentThread() - prepareBefore;
+
+        var stableBefore = GC.GetAllocatedBytesForCurrentThread();
+        for (var i = 2; i < records.Length; i++)
+        {
+            buffer.ResetWrittenCount();
+            serializer.Serialize(records[0], ref buffer, context);
+        }
+        var stableAllocated = GC.GetAllocatedBytesForCurrentThread() - stableBefore;
+
+        var equivalentBefore = GC.GetAllocatedBytesForCurrentThread();
+        for (var i = 2; i < records.Length; i++)
+        {
+            buffer.ResetWrittenCount();
+            serializer.Serialize(records[i], ref buffer, context);
+        }
+        var equivalentAllocated = GC.GetAllocatedBytesForCurrentThread() - equivalentBefore;
+
+        await Assert.That(serializer.CachedDynamicSubjectSchemaCount).IsEqualTo(1);
+        await Assert.That(serializer.CachedGenericWriterCount).IsEqualTo(1);
+        await Assert.That(prepareAllocated).IsEqualTo(0);
+        await Assert.That(equivalentAllocated).IsEqualTo(stableAllocated);
+    }
+
+    [Test]
+    public async Task AvroSerializer_EquivalentRecursiveSchemas_ReuseSubjectCache()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry);
+        var context = CreateContext("recursive-topic");
+        var buffer = new ArrayBufferWriter<byte>();
+
+        for (var i = 0; i < 2; i++)
+        {
+            var schema = (Avro.RecordSchema)AvroSchema.Parse(RecursiveRecordSchema);
+            var record = new GenericRecord(schema);
+            record.Add("value", i);
+            record.Add("next", null);
+            buffer.ResetWrittenCount();
             serializer.Serialize(record, ref buffer, context);
         }
 
         await Assert.That(serializer.CachedDynamicSubjectSchemaCount).IsEqualTo(1);
+        await Assert.That(serializer.CachedGenericWriterCount).IsEqualTo(1);
     }
 
     [Test]
