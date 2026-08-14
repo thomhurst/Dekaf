@@ -3111,13 +3111,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </summary>
     private sealed class AccumulatorThreadCache
     {
+        public RecordAccumulator? Owner;
+
         public readonly AccumulatorThreadCacheEntry[] Entries =
             new AccumulatorThreadCacheEntry[DequeCacheSize];
     }
 
     private struct AccumulatorThreadCacheEntry
     {
-        public RecordAccumulator? Accumulator;
         public string? Topic;
         public int Partition;
         public PartitionDeque? Deque;
@@ -3132,10 +3133,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private PartitionDeque GetOrCreateDeque(string topic, int partition)
     {
         var cache = t_cache ??= new AccumulatorThreadCache();
+        if (cache.Owner != this)
+            return GetOrCreateDequeForNewOwner(topic, partition, cache);
+
         var cacheIndex = partition & DequeCacheMask;
         ref var entry = ref cache.Entries[cacheIndex];
-        if (entry.Accumulator == this
-            && Volatile.Read(ref _disposed) == 0
+        if (Volatile.Read(ref _disposed) == 0
             && entry.Partition == partition
             && string.Equals(entry.Topic, topic, StringComparison.Ordinal)
             && entry.Deque is { } cached)
@@ -3143,6 +3146,18 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             return cached;
         }
 
+        return GetOrCreateDequeSlow(topic, partition, ref entry);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private PartitionDeque GetOrCreateDequeForNewOwner(
+        string topic,
+        int partition,
+        AccumulatorThreadCache cache)
+    {
+        Array.Clear(cache.Entries, 0, cache.Entries.Length);
+        cache.Owner = this;
+        ref var entry = ref cache.Entries[partition & DequeCacheMask];
         return GetOrCreateDequeSlow(topic, partition, ref entry);
     }
 
@@ -3155,7 +3170,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var tp = new TopicPartition(topic, partition);
         var deque = _partitionDeques.GetOrAdd(tp, static (_, owner) => new PartitionDeque(owner), this);
 
-        entry.Accumulator = this;
         entry.Topic = topic;
         entry.Partition = partition;
         entry.Deque = deque;
