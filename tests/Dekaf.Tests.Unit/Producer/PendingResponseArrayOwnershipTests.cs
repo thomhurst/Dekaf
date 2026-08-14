@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Threading.Tasks.Sources;
 using Dekaf.Networking;
 using Dekaf.Producer;
 using Dekaf.Protocol;
@@ -54,16 +55,16 @@ public sealed class PendingResponseArrayOwnershipTests : ScriptedProduceResponse
         // Standalone struct, never attached to a live sender. The claim lives in the
         // reference-typed guard, so it is shared across every by-value copy — the second
         // call must no-op even from a different copy.
-        var pending = new BrokerSender.PendingResponse(
-            default,
+        var pending = BrokerSender.PendingResponse.Create(
+            new PipelinedResponse<ProduceResponse>(Task.FromResult(new ProduceResponse())),
             ArrayPool<ReadyBatch>.Shared.Rent(1),
             ArrayPool<int>.Shared.Rent(1),
-            TopicIds: null,
-            ApiVersion: 12,
-            Count: 0,
-            EncodedBytes: 0,
-            DataBytes: 0,
-            RequestStartTime: 0,
+            topicIds: null,
+            apiVersion: 12,
+            count: 0,
+            encodedBytes: 0,
+            dataBytes: 0,
+            requestStartTime: 0,
             default);
         var copy = pending;
 
@@ -72,6 +73,47 @@ public sealed class PendingResponseArrayOwnershipTests : ScriptedProduceResponse
 
         await Assert.That(first).IsTrue();
         await Assert.That(second).IsFalse();
+    }
+
+    [Test]
+    public async Task PipelinedResponse_StaleGenerationCannotReleaseReusedSource()
+    {
+        var source = new GenerationOwnershipSource();
+        var stale = new PipelinedResponse<ProduceResponse>(source, token: 0, ownershipGeneration: 0);
+        await Assert.That(stale.TryRetainExternalOwner())
+            .IsEqualTo(ExternalOwnershipClaimResult.Retained);
+
+        source.Reset(generation: 1);
+        var current = new PipelinedResponse<ProduceResponse>(source, token: 0, ownershipGeneration: 1);
+        await Assert.That(current.TryRetainExternalOwner())
+            .IsEqualTo(ExternalOwnershipClaimResult.Retained);
+
+        await Assert.That(stale.TryReleaseExternalOwner()).IsFalse();
+        await Assert.That(current.TryReleaseExternalOwner()).IsTrue();
+    }
+
+    [Test]
+    public async Task PendingResponse_Create_RejectsFailedPooledOwnershipClaim()
+    {
+        var source = new GenerationOwnershipSource();
+        source.Reset(generation: 1);
+        var stale = new PipelinedResponse<ProduceResponse>(
+            source,
+            token: 0,
+            ownershipGeneration: 0);
+
+        await Assert.That(() => BrokerSender.PendingResponse.Create(
+                stale,
+                [],
+                [],
+                topicIds: null,
+                apiVersion: 12,
+                count: 1,
+                encodedBytes: 0,
+                dataBytes: 0,
+                requestStartTime: 0,
+                default))
+            .Throws<InvalidOperationException>();
     }
 
     [Test]
@@ -143,6 +185,44 @@ public sealed class PendingResponseArrayOwnershipTests : ScriptedProduceResponse
             await sender.DisposeAsync();
             await accumulator.DisposeAsync();
             await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    private sealed class GenerationOwnershipSource :
+        IPipelinedResponseSource<ProduceResponse>,
+        IPipelinedResponseExternalOwnership
+    {
+        private const int Retained = 1;
+        private const int Released = 2;
+        private int _generation;
+        private int _readiness;
+
+        public void Reset(int generation)
+        {
+            _generation = generation;
+            _readiness = 0;
+        }
+
+        public bool TryRetainExternalOwner(int generation) =>
+            generation == Volatile.Read(ref _generation)
+            && Interlocked.CompareExchange(ref _readiness, Retained, 0) == 0;
+
+        public bool TryReleaseExternalOwner(int generation) =>
+            generation == Volatile.Read(ref _generation)
+            && Interlocked.CompareExchange(ref _readiness, Released, Retained) == Retained;
+
+        public ProduceResponse GetResult(short token) => throw new NotSupportedException();
+
+        public ValueTaskSourceStatus GetStatus(short token) => ValueTaskSourceStatus.Pending;
+
+        public void OnCompleted(
+            Action<object?> continuation,
+            object? state,
+            short token,
+            ValueTaskSourceOnCompletedFlags flags) => throw new NotSupportedException();
+
+        public void Abandon(short token)
+        {
         }
     }
 

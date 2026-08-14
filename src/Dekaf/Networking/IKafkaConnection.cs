@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Threading.Tasks.Sources;
 using Dekaf.Protocol;
 
@@ -155,18 +156,36 @@ internal interface IPipelinedResponseSource<TResponse> : IValueTaskSource<TRespo
     void Abandon(short token);
 }
 
+internal interface IPipelinedResponseExternalOwnership
+{
+    bool TryRetainExternalOwner(int generation);
+    bool TryReleaseExternalOwner(int generation);
+}
+
+internal enum ExternalOwnershipClaimResult : byte
+{
+    Unsupported,
+    Retained,
+    Rejected
+}
+
 internal readonly struct PipelinedResponse<TResponse>
 {
     private readonly Task<TResponse>? _task;
     private readonly IPipelinedResponseSource<TResponse>? _source;
+    private readonly int _ownershipGeneration;
     private readonly short _token;
 
     public PipelinedResponse(Task<TResponse> task) => _task = task;
 
-    public PipelinedResponse(IPipelinedResponseSource<TResponse> source, short token)
+    public PipelinedResponse(
+        IPipelinedResponseSource<TResponse> source,
+        short token,
+        int ownershipGeneration = 0)
     {
         _source = source;
         _token = token;
+        _ownershipGeneration = ownershipGeneration;
     }
 
     public bool IsCompleted => _task?.IsCompleted
@@ -206,4 +225,19 @@ internal readonly struct PipelinedResponse<TResponse>
     }
 
     public void Abandon() => _source?.Abandon(_token);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public ExternalOwnershipClaimResult TryRetainExternalOwner()
+    {
+        if (_source is not IPipelinedResponseExternalOwnership externalOwnership)
+            return ExternalOwnershipClaimResult.Unsupported;
+
+        return externalOwnership.TryRetainExternalOwner(_ownershipGeneration)
+            ? ExternalOwnershipClaimResult.Retained
+            : ExternalOwnershipClaimResult.Rejected;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool TryReleaseExternalOwner() =>
+        (_source as IPipelinedResponseExternalOwnership)?.TryReleaseExternalOwner(_ownershipGeneration) == true;
 }

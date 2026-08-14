@@ -6,6 +6,7 @@ using System.Runtime.InteropServices;
 using System.Net.Security;
 using System.Net.Sockets;
 using System.Reflection;
+using System.Threading.Tasks.Sources;
 using Dekaf.Compression;
 using Dekaf.Errors;
 using Dekaf.Networking;
@@ -642,6 +643,112 @@ public sealed class KafkaConnectionTests
         {
             listener.Stop();
         }
+    }
+
+    [Test]
+    [NotInParallel]
+    [Timeout(10_000)]
+    public async Task PipelinedResponse_ExternalOwner_DelaysPoolReturn(
+        CancellationToken cancellationToken)
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+
+        try
+        {
+            var baseline = KafkaConnection.GetPipelinedResponsePoolCount<
+                ApiVersionsRequest,
+                ApiVersionsResponse>();
+            var expectedWhileRetained = Math.Max(0, baseline - 1);
+            var expectedAfterReturn = Math.Max(1, baseline);
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            var acceptTask = AcceptAndCompleteHandshakeAsync(listener, cancellationToken);
+            await using var connection = new KafkaConnection(IPAddress.Loopback.ToString(), port);
+            await connection.ConnectAsync(cancellationToken);
+            using var serverClient = await acceptTask.ConfigureAwait(false);
+
+            var response = await ((IKafkaPipelinedWriteCompletionConnection)connection)
+                .SendPipelinedAfterWriteAsync<ApiVersionsRequest, ApiVersionsResponse>(
+                    new ApiVersionsRequest { ClientSoftwareName = "test", ClientSoftwareVersion = "1.0" },
+                    apiVersion: 3,
+                    cancellationToken);
+            await Assert.That(response.TryRetainExternalOwner())
+                .IsEqualTo(ExternalOwnershipClaimResult.Retained);
+            await Assert.That(response.TryRetainExternalOwner())
+                .IsEqualTo(ExternalOwnershipClaimResult.Rejected);
+
+            var requestFrame = await ReadRequestFrameAsync(serverClient.GetStream(), cancellationToken);
+            var correlationId = BinaryPrimitives.ReadInt32BigEndian(requestFrame.AsSpan(4, 4));
+            await serverClient.GetStream().WriteAsync(
+                BuildApiVersionsV3ResponseFrame(correlationId),
+                cancellationToken);
+
+            while (!response.IsCompleted)
+                await Task.Yield();
+            var parsed = response.GetResult();
+
+            await Assert.That(parsed.ErrorCode).IsEqualTo(ErrorCode.None);
+            await Assert.That(KafkaConnection.GetPipelinedResponsePoolCount<
+                ApiVersionsRequest,
+                ApiVersionsResponse>()).IsEqualTo(expectedWhileRetained);
+
+            using var releaseGate = new ManualResetEventSlim();
+            var firstRelease = Task.Run(() =>
+            {
+                releaseGate.Wait(cancellationToken);
+                return response.TryReleaseExternalOwner();
+            }, cancellationToken);
+            var secondRelease = Task.Run(() =>
+            {
+                releaseGate.Wait(cancellationToken);
+                return response.TryReleaseExternalOwner();
+            }, cancellationToken);
+            releaseGate.Set();
+            var releaseResults = await Task.WhenAll(firstRelease, secondRelease);
+
+            await Assert.That(releaseResults.Count(static released => released)).IsEqualTo(1);
+            await Assert.That(response.TryReleaseExternalOwner()).IsFalse();
+            while (KafkaConnection.GetPipelinedResponsePoolCount<
+                       ApiVersionsRequest,
+                       ApiVersionsResponse>() < expectedAfterReturn)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await Task.Yield();
+            }
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    [Test]
+    public async Task PipelinedResponse_MaxOwnershipGeneration_RetiresWithoutReset()
+    {
+        const BindingFlags instanceFlags = BindingFlags.Instance | BindingFlags.NonPublic;
+        const BindingFlags staticFlags = BindingFlags.Static | BindingFlags.NonPublic;
+        var responseType = typeof(KafkaConnection)
+            .GetNestedType("PooledPipelinedResponse`2", BindingFlags.NonPublic)!
+            .MakeGenericType(typeof(ApiVersionsRequest), typeof(ApiVersionsResponse));
+        var response = Activator.CreateInstance(responseType, nonPublic: true)!;
+        var generationField = responseType.GetField("_ownershipGeneration", instanceFlags)!;
+        var maxGeneration = (int)responseType
+            .GetField("MaxOwnershipGeneration", staticFlags)!
+            .GetRawConstantValue()!;
+        generationField.SetValue(response, maxGeneration);
+
+        var coreField = responseType.GetField("_core", instanceFlags)!;
+        var versionBefore = ((ManualResetValueTaskSourceCore<ApiVersionsResponse>)coreField
+            .GetValue(response)!).Version;
+        var reset = (bool)responseType
+            .GetMethod("TryResetForPooling", instanceFlags)!
+            .Invoke(response, null)!;
+        var versionAfter = ((ManualResetValueTaskSourceCore<ApiVersionsResponse>)coreField
+            .GetValue(response)!).Version;
+
+        await Assert.That(reset).IsFalse();
+        await Assert.That(generationField.GetValue(response)).IsEqualTo(maxGeneration);
+        await Assert.That(versionAfter).IsEqualTo(versionBefore);
     }
 
     [Test]
