@@ -10,6 +10,21 @@ public class PartitionerBenchmarks
 {
     private const string Topic = "partitioner-hot-path";
     private const uint PositiveMask = 0x7fff_ffff;
+    private static readonly string[] Topics =
+    [
+        "partitioner-hot-path-0",
+        "partitioner-hot-path-1",
+        "partitioner-hot-path-2",
+        "partitioner-hot-path-3",
+        "partitioner-hot-path-4",
+        "partitioner-hot-path-5",
+        "partitioner-hot-path-6",
+        "partitioner-hot-path-7",
+        "partitioner-hot-path-8",
+        "partitioner-hot-path-9",
+        "partitioner-hot-path-10",
+        "partitioner-hot-path-11"
+    ];
     private readonly IPartitioner _baselinePartitioner = new HashingDefaultPartitioner();
     private readonly IPartitioner _partitioner = new DefaultPartitioner();
     private readonly IUniformStickyPartitioner _uniformPartitioner;
@@ -44,6 +59,29 @@ public class PartitionerBenchmarks
                 PartitionCount);
             _uniformPartitioner.OnRecordAppended(
                 Topic,
+                partition,
+                bytes: 1_000,
+                PartitionCount);
+            result ^= partition;
+        }
+
+        return result;
+    }
+
+    [Benchmark(OperationsPerInvoke = 1_000)]
+    public int PartitionAndRecordNullKeysAcrossTopics()
+    {
+        var result = 0;
+        for (var i = 0; i < 1_000; i++)
+        {
+            var topic = Topics[i % Topics.Length];
+            var partition = _partitioner.Partition(
+                topic,
+                ReadOnlySpan<byte>.Empty,
+                keyIsNull: true,
+                PartitionCount);
+            _uniformPartitioner.OnRecordAppended(
+                topic,
                 partition,
                 bytes: 1_000,
                 PartitionCount);
