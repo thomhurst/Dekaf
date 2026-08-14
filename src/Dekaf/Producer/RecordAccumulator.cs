@@ -3096,24 +3096,35 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     // Direct mapping preserves partition locality without an O(n) lookup: round-robin producers
-    // otherwise fall through to ConcurrentDictionary on every message. Keeping the cache on the
-    // accumulator makes producer switches O(1) and ties cache lifetime to accumulator lifetime.
-    private const int DequeCacheSize = 16;
-    private const int DequeCacheMask = DequeCacheSize - 1;
+    // otherwise fall through to ConcurrentDictionary on every message. The shared array belongs
+    // to one RecordAccumulator and is split into 64 thread-assigned shards, giving partition-affine
+    // producer threads independent hot entries under normal producer concurrency. Thread-local state
+    // stores only a shard number, so it cannot extend the accumulator's lifetime.
+    private const int DequeCacheSlotsPerShard = 16;
+    private const int DequeCacheSlotMask = DequeCacheSlotsPerShard - 1;
+    private const int DequeCacheShardCount = 64;
+    private const int DequeCacheShardMask = DequeCacheShardCount - 1;
+    private const int DequeCacheShardShift = 4;
 
-    // IMPORTANT: This cache is only valid because _partitionDeques never removes entries.
-    // If partition eviction is ever added, the cache must be invalidated on removal.
-    private readonly PartitionDeque?[] _partitionDequeCache = new PartitionDeque?[DequeCacheSize];
+    private static int s_nextDequeCacheShard;
+
+    [ThreadStatic]
+    private static int t_dequeCacheShardPlusOne;
+
+    // IMPORTANT: This per-RecordAccumulator cache is only valid because _partitionDeques never
+    // removes entries. If partition eviction is ever added, all shards must be invalidated.
+    private readonly PartitionDeque?[] _partitionDequeCache =
+        new PartitionDeque?[DequeCacheSlotsPerShard * DequeCacheShardCount];
 
     /// <summary>
     /// Gets or creates the PartitionDeque for a topic-partition pair.
-    /// Uses a per-thread direct-mapped cache to avoid ConcurrentDictionary lookup for
-    /// partition-affine and round-robin append workers.
+    /// Uses a thread-sharded direct-mapped cache owned by this RecordAccumulator to avoid
+    /// ConcurrentDictionary lookup for partition-affine and round-robin append workers.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private PartitionDeque GetOrCreateDeque(string topic, int partition)
     {
-        var cacheIndex = partition & DequeCacheMask;
+        var cacheIndex = GetDequeCacheIndex(partition);
         var cached = Volatile.Read(ref _partitionDequeCache[cacheIndex]);
         if (Volatile.Read(ref _disposed) == 0
             && cached is not null
@@ -3124,6 +3135,25 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         return GetOrCreateDequeSlow(topic, partition, cacheIndex);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int GetDequeCacheIndex(int partition)
+    {
+        var shardPlusOne = t_dequeCacheShardPlusOne;
+        if (shardPlusOne == 0)
+            shardPlusOne = InitializeDequeCacheShard();
+
+        return ((shardPlusOne - 1) << DequeCacheShardShift) | (partition & DequeCacheSlotMask);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static int InitializeDequeCacheShard()
+    {
+        var shard = (Interlocked.Increment(ref s_nextDequeCacheShard) - 1) & DequeCacheShardMask;
+        var shardPlusOne = shard + 1;
+        t_dequeCacheShardPlusOne = shardPlusOne;
+        return shardPlusOne;
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
