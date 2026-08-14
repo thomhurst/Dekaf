@@ -97,11 +97,11 @@ public class PartitionDequeCacheBenchmarks
     }
 
     /// <summary>
-    /// Resolves colliding slots concurrently after forcing the prior modulo-64 shard collision.
+    /// Resolves warmed colliding slots concurrently after forcing the prior modulo-64 shard reuse.
     /// Worker creation is outside measurement; synchronization is amortized over 100,000 resolutions.
     /// </summary>
     [Benchmark(OperationsPerInvoke = ConcurrentResolutionsPerWorker * 2)]
-    public int ResolveConcurrentCacheCollisionAfterThreadChurn()
+    public int ResolveWarmedConcurrentLookupsAfterThreadChurn()
     {
         RunWorkers();
 
