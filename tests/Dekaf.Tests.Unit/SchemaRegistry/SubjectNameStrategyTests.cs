@@ -467,6 +467,7 @@ public sealed class SubjectNameStrategyTests
 
         await Assert.That(serializer.CachedDynamicSubjectSchemaCount).IsEqualTo(1);
         await Assert.That(serializer.CachedGenericWriterCount).IsEqualTo(1);
+        await Assert.That(schemaRegistry.GetOrRegisterSchemaCallCount).IsEqualTo(1);
         await Assert.That(prepareAllocated).IsEqualTo(0);
         await Assert.That(equivalentAllocated).IsEqualTo(stableAllocated);
     }
@@ -491,6 +492,7 @@ public sealed class SubjectNameStrategyTests
 
         await Assert.That(serializer.CachedDynamicSubjectSchemaCount).IsEqualTo(1);
         await Assert.That(serializer.CachedGenericWriterCount).IsEqualTo(1);
+        await Assert.That(schemaRegistry.GetOrRegisterSchemaCallCount).IsEqualTo(1);
     }
 
     [Test]
