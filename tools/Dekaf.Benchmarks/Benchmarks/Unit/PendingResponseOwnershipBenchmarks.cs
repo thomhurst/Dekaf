@@ -17,6 +17,7 @@ public class PendingResponseOwnershipBenchmarks
     private static readonly ReadyBatch[] EmptyBatches = [];
     private static readonly int[] EmptyGenerations = [];
     private readonly ExternalOwnershipSource _source = new();
+
     [Benchmark(Baseline = true)]
     public bool GuardPerRequest()
     {

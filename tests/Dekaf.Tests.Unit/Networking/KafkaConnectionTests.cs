@@ -689,11 +689,29 @@ public sealed class KafkaConnectionTests
                 ApiVersionsRequest,
                 ApiVersionsResponse>()).IsEqualTo(expectedWhileRetained);
 
-            await Assert.That(response.TryReleaseExternalOwner()).IsTrue();
+            using var releaseGate = new ManualResetEventSlim();
+            var firstRelease = Task.Run(() =>
+            {
+                releaseGate.Wait(cancellationToken);
+                return response.TryReleaseExternalOwner();
+            }, cancellationToken);
+            var secondRelease = Task.Run(() =>
+            {
+                releaseGate.Wait(cancellationToken);
+                return response.TryReleaseExternalOwner();
+            }, cancellationToken);
+            releaseGate.Set();
+            var releaseResults = await Task.WhenAll(firstRelease, secondRelease);
+
+            await Assert.That(releaseResults.Count(static released => released)).IsEqualTo(1);
             await Assert.That(response.TryReleaseExternalOwner()).IsFalse();
-            await Assert.That(KafkaConnection.GetPipelinedResponsePoolCount<
-                ApiVersionsRequest,
-                ApiVersionsResponse>()).IsEqualTo(expectedAfterReturn);
+            while (KafkaConnection.GetPipelinedResponsePoolCount<
+                       ApiVersionsRequest,
+                       ApiVersionsResponse>() < expectedAfterReturn)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await Task.Yield();
+            }
         }
         finally
         {
