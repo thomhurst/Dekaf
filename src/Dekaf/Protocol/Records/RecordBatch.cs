@@ -1993,8 +1993,15 @@ internal static class Crc32C
     private const int SliceCount = 8;
     private const int PositiveIntBitCount = 31;
 #if !NETSTANDARD2_0
+    // Short inputs need small chunks to minimize the scalar tail. Larger inputs use wider
+    // chunks to amortize the GF(2) shift that recombines the three independent CRC lanes.
     private const int HardwareParallelChunkSize = 512;
     private const int HardwareParallelBlockSize = HardwareParallelChunkSize * 3;
+    private const int HardwareMediumParallelChunkSize = 4_096;
+    private const int HardwareMediumParallelBlockSize = HardwareMediumParallelChunkSize * 3;
+    private const int HardwareLargeParallelChunkSize = 16_384;
+    private const int HardwareLargeParallelBlockSize = HardwareLargeParallelChunkSize * 3;
+    private const int HardwareLargeInputThreshold = 256 * 1024;
 #endif
 
     private static readonly uint[] Table = GenerateTable();
@@ -2003,6 +2010,14 @@ internal static class Crc32C
 #if !NETSTANDARD2_0
     private static readonly uint[] HardwareShiftChunk = CreateShiftOperator(HardwareParallelChunkSize);
     private static readonly uint[] HardwareShiftTwoChunks = CreateShiftOperator(HardwareParallelChunkSize * 2);
+    private static readonly uint[] HardwareMediumShiftChunk =
+        CreateShiftOperator(HardwareMediumParallelChunkSize);
+    private static readonly uint[] HardwareMediumShiftTwoChunks =
+        CreateShiftOperator(HardwareMediumParallelChunkSize * 2);
+    private static readonly uint[] HardwareLargeShiftChunk =
+        CreateShiftOperator(HardwareLargeParallelChunkSize);
+    private static readonly uint[] HardwareLargeShiftTwoChunks =
+        CreateShiftOperator(HardwareLargeParallelChunkSize * 2);
 #endif
 
     private static uint[] GenerateTable()
@@ -2077,6 +2092,16 @@ internal static class Crc32C
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static uint ComputeHardwareX86(ReadOnlySpan<byte> data)
     {
+        if (Sse42.X64.IsSupported && data.Length >= HardwareLargeInputThreshold)
+        {
+            return ComputeHardwareX86Large(data);
+        }
+
+        if (Sse42.X64.IsSupported && data.Length >= HardwareMediumParallelBlockSize)
+        {
+            return ComputeHardwareX86Medium(data);
+        }
+
         if (Sse42.X64.IsSupported && data.Length >= HardwareParallelBlockSize)
         {
             return ComputeHardwareX86Optimized(data);
@@ -2123,6 +2148,78 @@ internal static class Crc32C
             // shifting each raw CRC state as though its following chunks were zero bytes.
             crc = ShiftCrc32C(crc0, HardwareShiftTwoChunks) ^ ShiftCrc32C(crc1, HardwareShiftChunk) ^ crc2;
             offset += HardwareParallelBlockSize;
+        }
+
+        return UpdateHardwareX86(data[offset..], crc) ^ 0xFFFFFFFFu;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static uint ComputeHardwareX86Medium(ReadOnlySpan<byte> data)
+    {
+        var crc = 0xFFFFFFFFu;
+        var offset = 0;
+
+        while (offset + HardwareMediumParallelBlockSize <= data.Length)
+        {
+            var crc0 = crc;
+            var crc1 = 0u;
+            var crc2 = 0u;
+
+            for (var i = 0; i < HardwareMediumParallelChunkSize; i += 8)
+            {
+                crc0 = (uint)Sse42.X64.Crc32(
+                    crc0,
+                    BinaryPrimitives.ReadUInt64LittleEndian(data.Slice(offset + i, 8)));
+                crc1 = (uint)Sse42.X64.Crc32(
+                    crc1,
+                    BinaryPrimitives.ReadUInt64LittleEndian(
+                        data.Slice(offset + HardwareMediumParallelChunkSize + i, 8)));
+                crc2 = (uint)Sse42.X64.Crc32(
+                    crc2,
+                    BinaryPrimitives.ReadUInt64LittleEndian(
+                        data.Slice(offset + (HardwareMediumParallelChunkSize * 2) + i, 8)));
+            }
+
+            crc = ShiftCrc32C(crc0, HardwareMediumShiftTwoChunks)
+                ^ ShiftCrc32C(crc1, HardwareMediumShiftChunk)
+                ^ crc2;
+            offset += HardwareMediumParallelBlockSize;
+        }
+
+        return UpdateHardwareX86(data[offset..], crc) ^ 0xFFFFFFFFu;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static uint ComputeHardwareX86Large(ReadOnlySpan<byte> data)
+    {
+        var crc = 0xFFFFFFFFu;
+        var offset = 0;
+
+        while (offset + HardwareLargeParallelBlockSize <= data.Length)
+        {
+            var crc0 = crc;
+            var crc1 = 0u;
+            var crc2 = 0u;
+
+            for (var i = 0; i < HardwareLargeParallelChunkSize; i += 8)
+            {
+                crc0 = (uint)Sse42.X64.Crc32(
+                    crc0,
+                    BinaryPrimitives.ReadUInt64LittleEndian(data.Slice(offset + i, 8)));
+                crc1 = (uint)Sse42.X64.Crc32(
+                    crc1,
+                    BinaryPrimitives.ReadUInt64LittleEndian(
+                        data.Slice(offset + HardwareLargeParallelChunkSize + i, 8)));
+                crc2 = (uint)Sse42.X64.Crc32(
+                    crc2,
+                    BinaryPrimitives.ReadUInt64LittleEndian(
+                        data.Slice(offset + (HardwareLargeParallelChunkSize * 2) + i, 8)));
+            }
+
+            crc = ShiftCrc32C(crc0, HardwareLargeShiftTwoChunks)
+                ^ ShiftCrc32C(crc1, HardwareLargeShiftChunk)
+                ^ crc2;
+            offset += HardwareLargeParallelBlockSize;
         }
 
         return UpdateHardwareX86(data[offset..], crc) ^ 0xFFFFFFFFu;

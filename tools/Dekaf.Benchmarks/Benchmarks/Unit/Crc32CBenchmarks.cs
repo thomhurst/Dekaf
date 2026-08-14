@@ -13,7 +13,7 @@ public class Crc32CBenchmarks
 {
     private byte[] _data = null!;
 
-    [Params(128, 512, 1024, 1536, 4096, 16384, 65536)]
+    [Params(128, 512, 1024, 1536, 4096, 16384, 65536, 262_144, 524_288, 1_048_576)]
     public int Size { get; set; }
 
     [GlobalSetup]
