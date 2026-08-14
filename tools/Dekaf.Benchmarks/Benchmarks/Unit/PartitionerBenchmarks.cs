@@ -12,7 +12,13 @@ public class PartitionerBenchmarks
     private const uint PositiveMask = 0x7fff_ffff;
     private readonly IPartitioner _baselinePartitioner = new HashingDefaultPartitioner();
     private readonly IPartitioner _partitioner = new DefaultPartitioner();
+    private readonly IUniformStickyPartitioner _uniformPartitioner;
     private readonly byte[] _key = "benchmark-partition-key"u8.ToArray();
+
+    public PartitionerBenchmarks()
+    {
+        _uniformPartitioner = (IUniformStickyPartitioner)_partitioner;
+    }
 
     [Params(1, 12)]
     public int PartitionCount { get; set; }
@@ -24,6 +30,28 @@ public class PartitionerBenchmarks
     [Benchmark(OperationsPerInvoke = 1_000)]
     public int PartitionKeyedRecords()
         => PartitionKeyedRecords(_partitioner);
+
+    [Benchmark(OperationsPerInvoke = 1_000)]
+    public int PartitionAndRecordNullKeys()
+    {
+        var result = 0;
+        for (var i = 0; i < 1_000; i++)
+        {
+            var partition = _partitioner.Partition(
+                Topic,
+                ReadOnlySpan<byte>.Empty,
+                keyIsNull: true,
+                PartitionCount);
+            _uniformPartitioner.OnRecordAppended(
+                Topic,
+                partition,
+                bytes: 1_000,
+                PartitionCount);
+            result ^= partition;
+        }
+
+        return result;
+    }
 
     private int PartitionKeyedRecords(IPartitioner partitioner)
     {
