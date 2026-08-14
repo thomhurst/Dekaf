@@ -158,22 +158,27 @@ internal interface IPipelinedResponseSource<TResponse> : IValueTaskSource<TRespo
 
 internal interface IPipelinedResponseExternalOwnership
 {
-    bool TryRetainExternalOwner(short token);
-    bool TryReleaseExternalOwner(short token);
+    bool TryRetainExternalOwner(int generation);
+    bool TryReleaseExternalOwner(int generation);
 }
 
 internal readonly struct PipelinedResponse<TResponse>
 {
     private readonly Task<TResponse>? _task;
     private readonly IPipelinedResponseSource<TResponse>? _source;
+    private readonly int _ownershipGeneration;
     private readonly short _token;
 
     public PipelinedResponse(Task<TResponse> task) => _task = task;
 
-    public PipelinedResponse(IPipelinedResponseSource<TResponse> source, short token)
+    public PipelinedResponse(
+        IPipelinedResponseSource<TResponse> source,
+        short token,
+        int ownershipGeneration = 0)
     {
         _source = source;
         _token = token;
+        _ownershipGeneration = ownershipGeneration;
     }
 
     public bool IsCompleted => _task?.IsCompleted
@@ -216,9 +221,9 @@ internal readonly struct PipelinedResponse<TResponse>
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool TryRetainExternalOwner() =>
-        (_source as IPipelinedResponseExternalOwnership)?.TryRetainExternalOwner(_token) == true;
+        (_source as IPipelinedResponseExternalOwnership)?.TryRetainExternalOwner(_ownershipGeneration) == true;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool TryReleaseExternalOwner() =>
-        (_source as IPipelinedResponseExternalOwnership)?.TryReleaseExternalOwner(_token) == true;
+        (_source as IPipelinedResponseExternalOwnership)?.TryReleaseExternalOwner(_ownershipGeneration) == true;
 }

@@ -1103,7 +1103,8 @@ public sealed partial class KafkaConnection :
         private const int ExternalOwnerReady = 8;
         private const int ReturnReady = CompletionReady | ConsumerReady;
         private const int ReturnReadinessMask = 0xff;
-        private const int ReturnTokenShift = 8;
+        private const int ReturnGenerationShift = 8;
+        private const int MaxOwnershipGeneration = 0x00ff_ffff;
 
         private static readonly Reservoir.ObjectPool<
             PooledPipelinedResponse<TRequest, TResponse>,
@@ -1128,8 +1129,10 @@ public sealed partial class KafkaConnection :
         private bool _canceled;
         private long _telemetryStartTimestamp;
         private int _consumerState;
-        // Packs ManualResetValueTaskSourceCore.Version with readiness bits. External release
-        // validates token and claims ownership in one CAS, preventing pool-reset ABA races.
+        private int _ownershipGeneration;
+        // Packs a non-wrapping per-source generation with readiness bits. External release
+        // validates generation and claims ownership in one CAS, preventing pool-reset ABA races.
+        // The source is retired before its 24-bit generation can wrap.
         private int _returnState;
 
         private PooledPipelinedResponse()
@@ -1159,7 +1162,10 @@ public sealed partial class KafkaConnection :
                 callerOwnsTimeout,
                 telemetryStartTimestamp,
                 cancellationToken);
-            return new PipelinedResponse<TResponse>(operation, operation._core.Version);
+            return new PipelinedResponse<TResponse>(
+                operation,
+                operation._core.Version,
+                operation._ownershipGeneration);
         }
 
         private void Initialize(
@@ -1180,7 +1186,7 @@ public sealed partial class KafkaConnection :
             _cancellationToken = cancellationToken;
             _canceled = false;
             _consumerState = ConsumerActive;
-            _returnState = PackReturnState(_core.Version, readiness: 0);
+            _returnState = PackReturnState(_ownershipGeneration, readiness: 0);
             connection.LogWaitingForResponse(correlationId);
 
             if (callerOwnsTimeout && cancellationToken.CanBeCanceled)
@@ -1318,10 +1324,10 @@ public sealed partial class KafkaConnection :
             ReturnIfAbandoned();
         }
 
-        public bool TryRetainExternalOwner(short token)
+        public bool TryRetainExternalOwner(int generation)
         {
             var state = Volatile.Read(ref _returnState);
-            while (GetReturnToken(state) == token)
+            while (GetReturnGeneration(state) == generation)
             {
                 var readiness = GetReturnReadiness(state);
                 if ((readiness & (ConsumerReady | ExternalOwnerRetained)) != 0)
@@ -1340,10 +1346,10 @@ public sealed partial class KafkaConnection :
             return false;
         }
 
-        public bool TryReleaseExternalOwner(short token)
+        public bool TryReleaseExternalOwner(int generation)
         {
             var state = Volatile.Read(ref _returnState);
-            while (GetReturnToken(state) == token)
+            while (GetReturnGeneration(state) == generation)
             {
                 var readiness = GetReturnReadiness(state);
                 if ((readiness & ExternalOwnerRetained) == 0
@@ -1407,11 +1413,11 @@ public sealed partial class KafkaConnection :
                 ReturnToPool();
         }
 
-        private static int PackReturnState(short token, int readiness) =>
-            (ushort)token << ReturnTokenShift | readiness;
+        private static int PackReturnState(int generation, int readiness) =>
+            unchecked(generation << ReturnGenerationShift) | readiness;
 
-        private static short GetReturnToken(int state) =>
-            (short)(state >> ReturnTokenShift);
+        private static int GetReturnGeneration(int state) =>
+            (int)((uint)state >> ReturnGenerationShift);
 
         private static int GetReturnReadiness(int state) =>
             state & ReturnReadinessMask;
@@ -1424,7 +1430,7 @@ public sealed partial class KafkaConnection :
             Interlocked.Increment(ref s_poolCount);
         }
 
-        private void ResetForPooling()
+        private bool TryResetForPooling()
         {
             _connection = null;
             _pending = null;
@@ -1435,8 +1441,14 @@ public sealed partial class KafkaConnection :
             _callerOwnsTimeout = false;
             _canceled = false;
             _telemetryStartTimestamp = 0;
+
+            if (_ownershipGeneration == MaxOwnershipGeneration)
+                return false;
+
             _core.Reset();
-            _returnState = PackReturnState(_core.Version, readiness: 0);
+            _ownershipGeneration++;
+            _returnState = PackReturnState(_ownershipGeneration, readiness: 0);
+            return true;
         }
 
         private readonly struct PoolPolicy
@@ -1452,10 +1464,7 @@ public sealed partial class KafkaConnection :
             }
 
             public bool TryReset(PooledPipelinedResponse<TRequest, TResponse> operation)
-            {
-                operation.ResetForPooling();
-                return true;
-            }
+                => operation.TryResetForPooling();
 
             public void Destroy(PooledPipelinedResponse<TRequest, TResponse> operation)
                 => Interlocked.Decrement(ref s_poolCount);

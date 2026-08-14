@@ -61,15 +61,15 @@ public class PendingResponseOwnershipBenchmarks
 
         public void Reset() => _readiness = 0;
 
-        public bool TryRetainExternalOwner(short token)
+        public bool TryRetainExternalOwner(int generation)
         {
             var readiness = Volatile.Read(ref _readiness);
-            return token == 0
+            return generation == 0
                 && Interlocked.CompareExchange(ref _readiness, readiness | 4, readiness) == readiness;
         }
 
-        public bool TryReleaseExternalOwner(short token) =>
-            token == 0 && (Interlocked.Or(ref _readiness, 8) & 8) == 0;
+        public bool TryReleaseExternalOwner(int generation) =>
+            generation == 0 && (Interlocked.Or(ref _readiness, 8) & 8) == 0;
 
         public ProduceResponse GetResult(short token) => throw new NotSupportedException();
 

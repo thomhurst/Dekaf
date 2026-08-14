@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Threading.Tasks.Sources;
 using Dekaf.Networking;
 using Dekaf.Producer;
 using Dekaf.Protocol;
@@ -75,6 +76,21 @@ public sealed class PendingResponseArrayOwnershipTests : ScriptedProduceResponse
     }
 
     [Test]
+    public async Task PipelinedResponse_StaleGenerationCannotReleaseReusedSource()
+    {
+        var source = new GenerationOwnershipSource();
+        var stale = new PipelinedResponse<ProduceResponse>(source, token: 0, ownershipGeneration: 0);
+        await Assert.That(stale.TryRetainExternalOwner()).IsTrue();
+
+        source.Reset(generation: 1);
+        var current = new PipelinedResponse<ProduceResponse>(source, token: 0, ownershipGeneration: 1);
+        await Assert.That(current.TryRetainExternalOwner()).IsTrue();
+
+        await Assert.That(stale.TryReleaseExternalOwner()).IsFalse();
+        await Assert.That(current.TryReleaseExternalOwner()).IsTrue();
+    }
+
+    [Test]
     [Timeout(120_000)]
     public async Task BufferMemory_AckedWaves_AlwaysReleaseReservations(
         CancellationToken cancellationToken)
@@ -143,6 +159,44 @@ public sealed class PendingResponseArrayOwnershipTests : ScriptedProduceResponse
             await sender.DisposeAsync();
             await accumulator.DisposeAsync();
             await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    private sealed class GenerationOwnershipSource :
+        IPipelinedResponseSource<ProduceResponse>,
+        IPipelinedResponseExternalOwnership
+    {
+        private const int Retained = 1;
+        private const int Released = 2;
+        private int _generation;
+        private int _readiness;
+
+        public void Reset(int generation)
+        {
+            _generation = generation;
+            _readiness = 0;
+        }
+
+        public bool TryRetainExternalOwner(int generation) =>
+            generation == Volatile.Read(ref _generation)
+            && Interlocked.CompareExchange(ref _readiness, Retained, 0) == 0;
+
+        public bool TryReleaseExternalOwner(int generation) =>
+            generation == Volatile.Read(ref _generation)
+            && Interlocked.CompareExchange(ref _readiness, Released, Retained) == Retained;
+
+        public ProduceResponse GetResult(short token) => throw new NotSupportedException();
+
+        public ValueTaskSourceStatus GetStatus(short token) => ValueTaskSourceStatus.Pending;
+
+        public void OnCompleted(
+            Action<object?> continuation,
+            object? state,
+            short token,
+            ValueTaskSourceOnCompletedFlags flags) => throw new NotSupportedException();
+
+        public void Abandon(short token)
+        {
         }
     }
 
