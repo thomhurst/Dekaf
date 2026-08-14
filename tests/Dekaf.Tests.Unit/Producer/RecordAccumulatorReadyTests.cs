@@ -919,11 +919,16 @@ public class RecordAccumulatorReadyTests
 
             await Assert.That(appended).IsTrue();
             await Assert.That(accumulator.TryGetBatch("test-topic", 0, out _)).IsTrue();
+            await Assert.That(await accumulator.WaitForLingerWakeupAsync(5_000)).IsTrue();
 
             await accumulator.ExpireLingerAsync(CancellationToken.None);
             await Assert.That(accumulator.TryGetBatch("test-topic", 0, out _)).IsTrue();
+            await Assert.That(GetPrivateField<ConcurrentQueue<TopicPartition>>(accumulator, "_lingerPartitions").IsEmpty).IsTrue();
+            await Assert.That(accumulator.GetMillisUntilEarliestLingerDeadline(5_000)).IsEqualTo(5_000);
 
+            var lingerWakeup = accumulator.WaitForLingerWakeupAsync(5_000).AsTask();
             accumulator.UnmutePartition(topicPartition);
+            await Assert.That(await lingerWakeup).IsTrue();
             await accumulator.ExpireLingerAsync(CancellationToken.None);
             await Assert.That(accumulator.TryGetBatch("test-topic", 0, out _)).IsFalse();
 
@@ -1033,8 +1038,19 @@ public class RecordAccumulatorReadyTests
         await Assert.That(accumulator.TryGetBatch("test-topic", 0, out _)).IsTrue()
             .Because("an in-flight predecessor should keep the next partial batch open");
 
+        await accumulator.ExpireLingerAsync(CancellationToken.None);
+        await Assert.That(GetPrivateField<ConcurrentQueue<TopicPartition>>(accumulator, "_lingerPartitions").IsEmpty).IsTrue();
+        await Assert.That(accumulator.GetMillisUntilEarliestLingerDeadline(5_000)).IsEqualTo(5_000);
+
+        while (await accumulator.WaitForLingerWakeupAsync(1))
+        {
+        }
+
+        var lingerWakeup = accumulator.WaitForLingerWakeupAsync(5_000).AsTask();
+
         firstBatch!.CompleteSend(baseOffset: 0, timestamp: DateTimeOffset.UtcNow);
         accumulator.OnBatchExitsPipeline(firstBatch);
+        await Assert.That(await lingerWakeup).IsTrue();
         accumulator.ReturnReadyBatch(firstBatch);
 
         await accumulator.ExpireLingerAsync(CancellationToken.None);

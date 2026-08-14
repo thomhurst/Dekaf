@@ -1442,6 +1442,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         public int LingerQueued;
 
         /// <summary>
+        /// 1 when an expired partial batch is parked behind a muted or in-flight predecessor.
+        /// The predecessor's exit reactivates linger instead of polling the partition.
+        /// </summary>
+        public int LingerDeferred;
+
+        /// <summary>
         /// True while a thread has detached CurrentBatch and is completing it outside Lock.
         /// Appenders wait for the ready batch to be enqueued before creating or rotating another batch.
         /// </summary>
@@ -2296,6 +2302,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (HasQueuedBatches(tp))
             _readyPartitions.Enqueue(tp);
 
+        if (_partitionDeques.TryGetValue(tp, out var pd))
+            ReactivateDeferredLinger(tp, pd);
+
         SignalWakeup(); // Wake sender loop so it can drain the newly-unmuted partition
     }
     internal bool IsMuted(TopicPartition tp) => _mutedPartitions.ContainsKey(tp);
@@ -2604,6 +2613,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// Computes how long the linger loop may sleep before the earliest unsealed batch can
     /// reach its linger deadline. Based on the oldest-batch hint (a lower bound on the oldest
     /// unsealed batch's creation time), so the result can only wake the loop early, never late.
+    /// When every expired batch is deferred, waits until the next orphan check or an explicit
+    /// predecessor-exit signal instead of polling an already-expired deadline.
     /// Clamped to [1, <paramref name="maxWaitMs"/>]: the 1 ms floor prevents a busy spin when
     /// a deadline has already passed (e.g. a muted partition defers its seal past linger).
     /// </summary>
@@ -2616,6 +2627,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             : _options.LingerMs;
 
         var oldestTicks = Volatile.Read(ref _oldestBatchCreatedTicks);
+        if (oldestTicks == long.MaxValue && HasUnsealedBatches())
+            return Math.Max(1, maxWaitMs);
+
         var elapsedMs = oldestTicks == long.MaxValue
             ? 0.0
             : Stopwatch.GetElapsedTime(oldestTicks).TotalMilliseconds;
@@ -3261,6 +3275,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void TrackCurrentBatchForLinger(PartitionDeque pd, TopicPartition topicPartition, PartitionBatch batch)
     {
+        Volatile.Write(ref pd.LingerDeferred, 0);
         var observedSweepVersion = Volatile.Read(ref _lingerSweepVersion);
         var shortensDeadline = TrackOldestBatchCreated(batch.CreatedAtStopwatchTimestamp);
         QueueLingerPartition(
@@ -3322,6 +3337,27 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private static void MarkLingerPartitionDequeued(PartitionDeque pd)
     {
         Volatile.Write(ref pd.LingerQueued, 0);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void ClearLingerPartitionTracking(PartitionDeque pd)
+    {
+        MarkLingerPartitionDequeued(pd);
+        Volatile.Write(ref pd.LingerDeferred, 0);
+    }
+
+    private void ReactivateDeferredLinger(TopicPartition topicPartition, PartitionDeque pd)
+    {
+        if (Volatile.Read(ref pd.LingerDeferred) == 0
+            || Volatile.Read(ref pd.QueueBytes) > 0
+            || _mutedPartitions.ContainsKey(topicPartition)
+            || Interlocked.CompareExchange(ref pd.LingerDeferred, 0, 1) != 1)
+        {
+            return;
+        }
+
+        QueueLingerPartition(pd, topicPartition, signalLingerLoop: false);
+        _lingerWakeupSignal.Signal();
     }
 
     /// <summary>
@@ -3552,7 +3588,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             else
                             {
                                 pd.CurrentBatch = null;
-                                MarkLingerPartitionDequeued(pd);
+                                ClearLingerPartitionTracking(pd);
                                 Interlocked.Decrement(ref _unsealedBatchCount);
                                 ClearRotationInProgressUnderLock(pd);
                                 ownsRotation = false;
@@ -4001,7 +4037,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             else
                             {
                                 pd.CurrentBatch = null;
-                                MarkLingerPartitionDequeued(pd);
+                                ClearLingerPartitionTracking(pd);
                                 Interlocked.Decrement(ref _unsealedBatchCount);
                                 ClearRotationInProgressUnderLock(pd);
                                 ownsRotation = false;
@@ -4525,7 +4561,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private PartitionBatch DetachCurrentBatchForSealUnderLock(PartitionDeque pd, PartitionBatch currentBatch)
     {
         pd.CurrentBatch = null;
-        MarkLingerPartitionDequeued(pd);
+        ClearLingerPartitionTracking(pd);
         pd.RotationInProgress = true;
         Interlocked.Decrement(ref _unsealedBatchCount);
         return currentBatch;
@@ -4651,7 +4687,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void RemovePartitionQueueBytes(PartitionDeque pd, int bytes)
+    private static bool RemovePartitionQueueBytes(PartitionDeque pd, int bytes)
     {
         var current = Volatile.Read(ref pd.QueueBytes);
         while (true)
@@ -4659,7 +4695,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             var updated = Math.Max(0, current - bytes);
             var observed = Interlocked.CompareExchange(ref pd.QueueBytes, updated, current);
             if (observed == current)
-                return;
+                return updated == 0;
 
             current = observed;
         }
@@ -5395,7 +5431,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             {
                 Interlocked.Decrement(ref _unsealedBatchCount);
                 pd.CurrentBatch = null;
-                MarkLingerPartitionDequeued(pd);
+                ClearLingerPartitionTracking(pd);
                 ClearAdmissionFlushRequestUnderLock(pd);
             }
         }
@@ -5429,6 +5465,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (Volatile.Read(ref _pendingAwaitedProduceCount) == 0)
         {
             var oldestTicks = Volatile.Read(ref _oldestBatchCreatedTicks);
+            if (oldestTicks == long.MaxValue && _lingerPartitions.IsEmpty)
+                return default;
+
             if (oldestTicks != long.MaxValue)
             {
                 var millisSinceOldest = (long)Stopwatch.GetElapsedTime(oldestTicks).TotalMilliseconds;
@@ -5591,6 +5630,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         ReadyBatch? sealedBatch = null;
         PartitionBatch? batchToComplete = null;
+        var lingerDeferred = false;
         var spinner = new SpinWait();
 
         while (true)
@@ -5608,6 +5648,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 }
                 else if (pd.CurrentBatch is null)
                 {
+                    Volatile.Write(ref pd.LingerDeferred, 0);
                     ClearAdmissionFlushRequestUnderLock(pd);
                     break;
                 }
@@ -5615,23 +5656,33 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 // Keep its partial arena open so zero-linger appends coalesce instead of
                 // allocating one BatchSize arena per record while they wait. Size-full batches
                 // still seal in the append path, and FlushAsync must always seal.
-                else if (sealAll
-                    || IsAdmissionFlushRequiredUnderLock(pd)
-                    || (!ShouldDeferPartialBatchSeal(pd, pd.CurrentBatch)
-                        && pd.CurrentBatch.ShouldFlush(now, _options.LingerMs)))
-                {
-                    ProducerDebugCounters.RecordBatchFlushedFromDictionary();
-                    batchToComplete = DetachCurrentBatchForSealUnderLock(pd, pd.CurrentBatch);
-                    break;
-                }
                 else
                 {
-                    var batchCreatedTicks = pd.CurrentBatch.CreatedAtStopwatchTimestamp;
-                    if (batchCreatedTicks < newOldestTicks)
-                        newOldestTicks = batchCreatedTicks;
+                    var currentBatch = pd.CurrentBatch;
+                    var shouldDefer = !sealAll && ShouldDeferPartialBatchSeal(pd, currentBatch);
+                    var forceSeal = sealAll || IsAdmissionFlushRequiredUnderLock(pd);
+                    var shouldFlush = forceSeal || currentBatch.ShouldFlush(now, _options.LingerMs);
 
-                    if (!sealAll)
-                        QueueLingerPartition(pd, topicPartition, signalLingerLoop: false);
+                    if (forceSeal || (shouldFlush && !shouldDefer))
+                    {
+                        ProducerDebugCounters.RecordBatchFlushedFromDictionary();
+                        batchToComplete = DetachCurrentBatchForSealUnderLock(pd, currentBatch);
+                    }
+                    else if (shouldFlush)
+                    {
+                        Volatile.Write(ref pd.LingerDeferred, 1);
+                        lingerDeferred = true;
+                    }
+                    else
+                    {
+                        Volatile.Write(ref pd.LingerDeferred, 0);
+                        var batchCreatedTicks = currentBatch.CreatedAtStopwatchTimestamp;
+                        if (batchCreatedTicks < newOldestTicks)
+                            newOldestTicks = batchCreatedTicks;
+
+                        if (!sealAll)
+                            QueueLingerPartition(pd, topicPartition, signalLingerLoop: false);
+                    }
                     break;
                 }
             }
@@ -5651,6 +5702,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             cancellationToken.ThrowIfCancellationRequested();
             spinner.SpinOnce();
         }
+
+        if (lingerDeferred)
+            ReactivateDeferredLinger(topicPartition, pd);
 
         if (batchToComplete is null)
             return false;
@@ -5761,8 +5815,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             SignalBufferSpaceAvailable();
         }
 
-        if (_partitionDeques.TryGetValue(batch.TopicPartition, out var pd))
-            RemovePartitionQueueBytes(pd, batch.DataSize);
+        if (_partitionDeques.TryGetValue(batch.TopicPartition, out var pd)
+            && RemovePartitionQueueBytes(pd, batch.DataSize))
+        {
+            ReactivateDeferredLinger(batch.TopicPartition, pd);
+        }
 
         if (_options.EnableDeliveryDiagnostics)
             batch.AppendDiag('X');
@@ -6765,7 +6822,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         if (pd.CurrentBatch is { } currentBatch)
                         {
                             pd.CurrentBatch = null;
-                            MarkLingerPartitionDequeued(pd);
+                            ClearLingerPartitionTracking(pd);
                             ClearAdmissionFlushRequestUnderLock(pd);
                             Interlocked.Decrement(ref _unsealedBatchCount);
 
@@ -7188,7 +7245,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             if (pd.CurrentBatch is { } current)
                             {
                                 pd.CurrentBatch = null;
-                                MarkLingerPartitionDequeued(pd);
+                                ClearLingerPartitionTracking(pd);
                                 ClearAdmissionFlushRequestUnderLock(pd);
                                 Interlocked.Decrement(ref _unsealedBatchCount);
 
