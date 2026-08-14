@@ -48,15 +48,12 @@ public sealed class AvroSchemaRegistrySerializer<
     private readonly bool _ownsClient;
     private readonly ConcurrentDictionary<SchemaIdCacheKey, Lazy<Task<int>>> _schemaIdCache = new();
     private readonly SubjectSchemaIdCache _subjectSchemaIdCache = new();
-    private readonly ConcurrentDictionary<AvroSchema, DynamicSubjectSchemaIdCache> _dynamicSubjectSchemaIdCaches =
-        new(AvroSchemaLogicalComparer.Instance);
-    private readonly ConcurrentDictionary<AvroSchema, DynamicGenericWriter> _genericWriters =
+    private readonly ConcurrentDictionary<AvroSchema, DynamicSchemaCache> _dynamicSchemaCaches =
         new(AvroSchemaLogicalComparer.Instance);
     private readonly ConcurrentDictionary<AvroSchema, SpecificDefaultWriter> _specificWriters =
         new(AvroSchemaReferenceComparer.Instance);
     private readonly AvroSchema? _writerSchema;
-    private DynamicSubjectSchemaIdCache? _lastDynamicSubjectSchemaIdCache;
-    private DynamicGenericWriter? _lastDynamicGenericWriter;
+    private DynamicSchemaCache? _lastDynamicSchemaCache;
 
     /// <summary>
     /// Creates a new Avro Schema Registry serializer.
@@ -77,9 +74,9 @@ public sealed class AvroSchemaRegistrySerializer<
         _writerSchema = GetSchemaFromType();
     }
 
-    internal int CachedGenericWriterCount => _genericWriters.Count;
+    internal int CachedGenericWriterCount => _dynamicSchemaCaches.Count;
     internal int CachedSpecificWriterCount => _specificWriters.Count;
-    internal int CachedDynamicSubjectSchemaCount => _dynamicSubjectSchemaIdCaches.Count;
+    internal int CachedDynamicSubjectSchemaCount => _dynamicSchemaCaches.Count;
 
     /// <summary>
     /// Pre-warms the schema cache for a specific topic.
@@ -446,51 +443,37 @@ public sealed class AvroSchemaRegistrySerializer<
         if (_writerSchema is not null)
             return _subjectSchemaIdCache;
 
-        var last = Volatile.Read(ref _lastDynamicSubjectSchemaIdCache);
-        if (last is not null && ReferenceEquals(last.Schema, schema))
-            return last.Cache;
+        return GetDynamicSchemaCache(schema).SubjectSchemaIdCache;
+    }
 
-        var entry = _dynamicSubjectSchemaIdCaches.GetOrAdd(
+    private GenericDatumWriter<GenericRecord> GetGenericWriter(AvroSchema schema) =>
+        GetDynamicSchemaCache(schema).Writer;
+
+    private DynamicSchemaCache GetDynamicSchemaCache(AvroSchema schema)
+    {
+        var last = Volatile.Read(ref _lastDynamicSchemaCache);
+        if (last is not null && ReferenceEquals(Volatile.Read(ref last.LastSeenSchema), schema))
+            return last;
+
+        var entry = _dynamicSchemaCaches.GetOrAdd(
             schema,
-            static schema => new DynamicSubjectSchemaIdCache(schema, new SubjectSchemaIdCache()));
-        Volatile.Write(ref _lastDynamicSubjectSchemaIdCache, entry);
-        return entry.Cache;
+            static schema => new DynamicSchemaCache(schema));
+        Volatile.Write(ref entry.LastSeenSchema, schema);
+        Volatile.Write(ref _lastDynamicSchemaCache, entry);
+        return entry;
     }
 
-    private GenericDatumWriter<GenericRecord> GetGenericWriter(AvroSchema schema)
+    private sealed class DynamicSchemaCache
     {
-        var last = Volatile.Read(ref _lastDynamicGenericWriter);
-        if (last is not null && ReferenceEquals(last.Schema, schema))
-            return last.Writer;
-
-        var entry = _genericWriters.GetOrAdd(
-            schema,
-            static schema => new DynamicGenericWriter(schema));
-        Volatile.Write(ref _lastDynamicGenericWriter, entry);
-        return entry.Writer;
-    }
-
-    private sealed class DynamicSubjectSchemaIdCache
-    {
-        internal DynamicSubjectSchemaIdCache(AvroSchema schema, SubjectSchemaIdCache cache)
+        internal DynamicSchemaCache(AvroSchema schema)
         {
-            Schema = schema;
-            Cache = cache;
-        }
-
-        internal AvroSchema Schema { get; }
-        internal SubjectSchemaIdCache Cache { get; }
-    }
-
-    private sealed class DynamicGenericWriter
-    {
-        internal DynamicGenericWriter(AvroSchema schema)
-        {
-            Schema = schema;
+            LastSeenSchema = schema;
+            SubjectSchemaIdCache = new SubjectSchemaIdCache();
             Writer = new GenericDatumWriter<GenericRecord>(schema);
         }
 
-        internal AvroSchema Schema { get; }
+        internal AvroSchema LastSeenSchema;
+        internal SubjectSchemaIdCache SubjectSchemaIdCache { get; }
         internal GenericDatumWriter<GenericRecord> Writer { get; }
     }
 

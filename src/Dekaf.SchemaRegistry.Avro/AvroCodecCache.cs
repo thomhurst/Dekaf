@@ -73,40 +73,52 @@ internal sealed class AvroSchemaLogicalComparer : IEqualityComparer<AvroSchema>
         if (x.Tag != y.Tag)
             return false;
 
+        var pair = default(AvroSchemaPair);
+        var pairAdded = false;
         if (x is NamedSchema xNamed)
         {
             if (y is not NamedSchema yNamed || !NamedSchemaEquals(xNamed, yNamed))
                 return false;
 
-            if (!state.EqualityPairs.Add(new AvroSchemaPair(x, y)))
+            pair = new AvroSchemaPair(x, y);
+            if (!state.EqualityPairs.Add(pair))
                 return true;
+            pairAdded = true;
         }
 
-        if (!PropertiesEqual(
-                AvroSchemaLogicalAccessors.GetProperties(x),
-                AvroSchemaLogicalAccessors.GetProperties(y)))
+        try
         {
-            return false;
-        }
+            if (!PropertiesEqual(
+                    AvroSchemaLogicalAccessors.GetProperties(x),
+                    AvroSchemaLogicalAccessors.GetProperties(y)))
+            {
+                return false;
+            }
 
-        return x.Tag switch
+            return x.Tag switch
+            {
+                AvroSchema.Type.Record or AvroSchema.Type.Error =>
+                    RecordSchemaEquals((RecordSchema)x, (RecordSchema)y, state),
+                AvroSchema.Type.Enumeration => EnumSchemaEquals((EnumSchema)x, (EnumSchema)y),
+                AvroSchema.Type.Array => EqualsCore(
+                    ((ArraySchema)x).ItemSchema,
+                    ((ArraySchema)y).ItemSchema,
+                    state),
+                AvroSchema.Type.Map => EqualsCore(
+                    ((MapSchema)x).ValueSchema,
+                    ((MapSchema)y).ValueSchema,
+                    state),
+                AvroSchema.Type.Union => UnionSchemaEquals((UnionSchema)x, (UnionSchema)y, state),
+                AvroSchema.Type.Fixed => ((FixedSchema)x).Size == ((FixedSchema)y).Size,
+                AvroSchema.Type.Logical => LogicalSchemaEquals((LogicalSchema)x, (LogicalSchema)y, state),
+                _ => true
+            };
+        }
+        finally
         {
-            AvroSchema.Type.Record or AvroSchema.Type.Error =>
-                RecordSchemaEquals((RecordSchema)x, (RecordSchema)y, state),
-            AvroSchema.Type.Enumeration => EnumSchemaEquals((EnumSchema)x, (EnumSchema)y),
-            AvroSchema.Type.Array => EqualsCore(
-                ((ArraySchema)x).ItemSchema,
-                ((ArraySchema)y).ItemSchema,
-                state),
-            AvroSchema.Type.Map => EqualsCore(
-                ((MapSchema)x).ValueSchema,
-                ((MapSchema)y).ValueSchema,
-                state),
-            AvroSchema.Type.Union => UnionSchemaEquals((UnionSchema)x, (UnionSchema)y, state),
-            AvroSchema.Type.Fixed => ((FixedSchema)x).Size == ((FixedSchema)y).Size,
-            AvroSchema.Type.Logical => LogicalSchemaEquals((LogicalSchema)x, (LogicalSchema)y, state),
-            _ => true
-        };
+            if (pairAdded)
+                state.EqualityPairs.Remove(pair);
+        }
     }
 
     private static bool NamedSchemaEquals(NamedSchema x, NamedSchema y) =>
@@ -230,38 +242,47 @@ internal sealed class AvroSchemaLogicalComparer : IEqualityComparer<AvroSchema>
 
     private static int GetHashCodeCore(AvroSchema schema, AvroSchemaComparisonState state)
     {
-        if (schema is NamedSchema named && !state.HashedSchemas.Add(schema))
-            return Combine((int)schema.Tag, GetStringHashCode(named.Fullname));
+        var tracksPath = schema is NamedSchema;
+        if (tracksPath && !state.HashedSchemas.Add(schema))
+            return Combine((int)schema.Tag, GetStringHashCode(((NamedSchema)schema).Fullname));
 
-        var hash = Combine(
-            (int)schema.Tag,
-            GetPropertiesHashCode(AvroSchemaLogicalAccessors.GetProperties(schema)));
-
-        if (schema is NamedSchema namedSchema)
+        try
         {
-            hash = Combine(hash, GetStringHashCode(namedSchema.Fullname));
-            hash = Combine(hash, GetOptionalStringHashCode(namedSchema.Documentation));
-            hash = Combine(
-                hash,
-                GetSchemaNameListHashCode(AvroSchemaLogicalAccessors.GetAliases(namedSchema)));
+            var hash = Combine(
+                (int)schema.Tag,
+                GetPropertiesHashCode(AvroSchemaLogicalAccessors.GetProperties(schema)));
+
+            if (schema is NamedSchema namedSchema)
+            {
+                hash = Combine(hash, GetStringHashCode(namedSchema.Fullname));
+                hash = Combine(hash, GetOptionalStringHashCode(namedSchema.Documentation));
+                hash = Combine(
+                    hash,
+                    GetSchemaNameListHashCode(AvroSchemaLogicalAccessors.GetAliases(namedSchema)));
+            }
+
+            return schema.Tag switch
+            {
+                AvroSchema.Type.Record or AvroSchema.Type.Error =>
+                    GetRecordSchemaHashCode(hash, (RecordSchema)schema, state),
+                AvroSchema.Type.Enumeration => GetEnumSchemaHashCode(hash, (EnumSchema)schema),
+                AvroSchema.Type.Array => Combine(
+                    hash,
+                    GetHashCodeCore(((ArraySchema)schema).ItemSchema, state)),
+                AvroSchema.Type.Map => Combine(
+                    hash,
+                    GetHashCodeCore(((MapSchema)schema).ValueSchema, state)),
+                AvroSchema.Type.Union => GetUnionSchemaHashCode(hash, (UnionSchema)schema, state),
+                AvroSchema.Type.Fixed => Combine(hash, ((FixedSchema)schema).Size),
+                AvroSchema.Type.Logical => GetLogicalSchemaHashCode(hash, (LogicalSchema)schema, state),
+                _ => hash
+            };
         }
-
-        return schema.Tag switch
+        finally
         {
-            AvroSchema.Type.Record or AvroSchema.Type.Error =>
-                GetRecordSchemaHashCode(hash, (RecordSchema)schema, state),
-            AvroSchema.Type.Enumeration => GetEnumSchemaHashCode(hash, (EnumSchema)schema),
-            AvroSchema.Type.Array => Combine(
-                hash,
-                GetHashCodeCore(((ArraySchema)schema).ItemSchema, state)),
-            AvroSchema.Type.Map => Combine(
-                hash,
-                GetHashCodeCore(((MapSchema)schema).ValueSchema, state)),
-            AvroSchema.Type.Union => GetUnionSchemaHashCode(hash, (UnionSchema)schema, state),
-            AvroSchema.Type.Fixed => Combine(hash, ((FixedSchema)schema).Size),
-            AvroSchema.Type.Logical => GetLogicalSchemaHashCode(hash, (LogicalSchema)schema, state),
-            _ => hash
-        };
+            if (tracksPath)
+                state.HashedSchemas.Remove(schema);
+        }
     }
 
     private static int GetRecordSchemaHashCode(
