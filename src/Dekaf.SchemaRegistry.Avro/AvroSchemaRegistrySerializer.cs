@@ -46,13 +46,17 @@ public sealed class AvroSchemaRegistrySerializer<
     private readonly ISchemaRegistryClient _schemaRegistry;
     private readonly AvroSerializerConfig _config;
     private readonly bool _ownsClient;
-    private readonly ConcurrentDictionary<string, Lazy<Task<int>>> _schemaIdCache = new();
+    private readonly ConcurrentDictionary<SchemaIdCacheKey, Lazy<Task<int>>> _schemaIdCache = new();
     private readonly SubjectSchemaIdCache _subjectSchemaIdCache = new();
+    private readonly ConcurrentDictionary<AvroSchema, SubjectSchemaIdCache> _dynamicSubjectSchemaIdCaches =
+        new(AvroSchemaReferenceComparer.Instance);
     private readonly ConcurrentDictionary<AvroSchema, GenericDatumWriter<GenericRecord>> _genericWriters =
         new(AvroSchemaReferenceComparer.Instance);
     private readonly ConcurrentDictionary<AvroSchema, SpecificDefaultWriter> _specificWriters =
         new(AvroSchemaReferenceComparer.Instance);
     private readonly AvroSchema? _writerSchema;
+    private AvroSchema? _lastDynamicSchema;
+    private SubjectSchemaIdCache? _lastDynamicSubjectSchemaIdCache;
 
     /// <summary>
     /// Creates a new Avro Schema Registry serializer.
@@ -92,10 +96,11 @@ public sealed class AvroSchemaRegistrySerializer<
     public async Task<int> WarmupAsync(string topic, T value, bool isKey = false, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(value);
-        var subject = GetSubjectName(topic, isKey, value);
-        var schema = CreateRegistrySchema(value);
+        var avroSchema = GetSchemaForValue(value);
+        var subject = GetSubjectName(topic, isKey, avroSchema);
+        var schema = CreateRegistrySchema(avroSchema);
         var schemaId = await GetOrFetchSchemaIdAsync(subject, schema, cancellationToken).ConfigureAwait(false);
-        CacheSubjectSchemaId(topic, isKey, subject, schemaId, schema);
+        CacheSubjectSchemaId(topic, isKey, avroSchema, subject, schemaId, schema);
         return schemaId;
     }
 
@@ -110,7 +115,8 @@ public sealed class AvroSchemaRegistrySerializer<
         ArgumentNullException.ThrowIfNull(value);
 
         var isKey = context.Component == SerializationComponent.Key;
-        if (_subjectSchemaIdCache.Contains(context.Topic, isKey))
+        var avroSchema = GetSchemaForValue(value);
+        if (GetSubjectSchemaIdCache(avroSchema).Contains(context.Topic, isKey))
         {
             return ValueTask.CompletedTask;
         }
@@ -261,21 +267,35 @@ public sealed class AvroSchemaRegistrySerializer<
     }
 
     private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry GetSchemaForContext(string topic, bool isKey, T value)
-        => _subjectSchemaIdCache.GetOrAdd(
+    {
+        var avroSchema = GetSchemaForValue(value);
+        var state = new SubjectSchemaIdState(this, avroSchema);
+        return GetSubjectSchemaIdCache(avroSchema).GetOrAdd(
             topic,
             isKey,
-            new SubjectSchemaIdState(this, value),
-            static (state, topic, isKey) => state.Serializer.GetSubjectName(topic, isKey, state.Value),
-            static (state, subject) => state.Serializer.GetSchemaIdCacheValue(subject, state.Value));
+            state,
+            static (state, topic, isKey) => state.Serializer.GetSubjectName(topic, isKey, state.Schema),
+            static (state, subject) => state.Serializer.GetSchemaIdCacheValue(subject, state.Schema));
+    }
 
-    private int CacheSubjectSchemaId(string topic, bool isKey, string subject, int schemaId, RegistrySchema schema)
-        => _subjectSchemaIdCache.Cache(topic, isKey, subject, schemaId, schema);
+    private int CacheSubjectSchemaId(
+        string topic,
+        bool isKey,
+        AvroSchema avroSchema,
+        string subject,
+        int schemaId,
+        RegistrySchema schema) =>
+        GetSubjectSchemaIdCache(avroSchema).Cache(topic, isKey, subject, schemaId, schema);
 
-    private readonly record struct SubjectSchemaIdState(AvroSchemaRegistrySerializer<T> Serializer, T Value);
+    private readonly record struct SubjectSchemaIdState(
+        AvroSchemaRegistrySerializer<T> Serializer,
+        AvroSchema Schema);
 
-    private SubjectSchemaIdCache.SubjectSchemaIdCacheValue GetSchemaIdCacheValue(string subject, T value)
+    private SubjectSchemaIdCache.SubjectSchemaIdCacheValue GetSchemaIdCacheValue(
+        string subject,
+        AvroSchema avroSchema)
     {
-        var schema = CreateRegistrySchema(value);
+        var schema = CreateRegistrySchema(avroSchema);
         return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(GetSchemaIdCached(subject, schema), schema);
     }
 
@@ -338,26 +358,30 @@ public sealed class AvroSchemaRegistrySerializer<
 
     private Lazy<Task<int>> GetOrAddSchemaIdLazy(string subject, RegistrySchema schema)
     {
-        if (_schemaIdCache.TryGetValue(subject, out var cached))
+        var key = new SchemaIdCacheKey(subject, schema.SchemaString);
+        if (_schemaIdCache.TryGetValue(key, out var cached))
             return cached;
 
         return _schemaIdCache.GetOrAdd(
-            subject,
+            key,
             static (key, state) => state.Serializer.CreateSchemaIdLazy(key, state.Schema),
             new SchemaIdFetchState(this, schema));
     }
 
-    private Lazy<Task<int>> CreateSchemaIdLazy(string subject, RegistrySchema schema) =>
-        new(() => FetchSchemaIdAsync(subject, schema));
+    private Lazy<Task<int>> CreateSchemaIdLazy(SchemaIdCacheKey key, RegistrySchema schema) =>
+        new(() => FetchSchemaIdAsync(key, schema));
+
+    private readonly record struct SchemaIdCacheKey(string Subject, string SchemaString);
 
     private readonly record struct SchemaIdFetchState(
         AvroSchemaRegistrySerializer<T> Serializer,
         RegistrySchema Schema);
 
     private async Task<int> FetchSchemaIdAsync(
-        string subject,
+        SchemaIdCacheKey key,
         RegistrySchema registrySchema)
     {
+        var subject = key.Subject;
         try
         {
             if (_config.UseLatestVersion)
@@ -390,14 +414,13 @@ public sealed class AvroSchemaRegistrySerializer<
         }
         catch
         {
-            _schemaIdCache.TryRemove(subject, out _);
+            _schemaIdCache.TryRemove(key, out _);
             throw;
         }
     }
 
-    private RegistrySchema CreateRegistrySchema(T value)
+    private static RegistrySchema CreateRegistrySchema(AvroSchema avroSchema)
     {
-        var avroSchema = GetSchemaFromValue(value);
         return new RegistrySchema
         {
             SchemaType = SchemaType.Avro,
@@ -416,6 +439,26 @@ public sealed class AvroSchemaRegistrySerializer<
         };
     }
 
+    private AvroSchema GetSchemaForValue(T value) =>
+        _writerSchema ?? GetSchemaFromValue(value);
+
+    private SubjectSchemaIdCache GetSubjectSchemaIdCache(AvroSchema schema)
+    {
+        if (_writerSchema is not null)
+            return _subjectSchemaIdCache;
+
+        var lastSchema = Volatile.Read(ref _lastDynamicSchema);
+        if (ReferenceEquals(lastSchema, schema))
+            return Volatile.Read(ref _lastDynamicSubjectSchemaIdCache)!;
+
+        var cache = _dynamicSubjectSchemaIdCaches.GetOrAdd(
+            schema,
+            static _ => new SubjectSchemaIdCache());
+        Volatile.Write(ref _lastDynamicSubjectSchemaIdCache, cache);
+        Volatile.Write(ref _lastDynamicSchema, schema);
+        return cache;
+    }
+
     private static AvroSchema? GetSchemaFromType()
     {
         // Check if T implements ISpecificRecord and has a static Schema property
@@ -431,9 +474,9 @@ public sealed class AvroSchemaRegistrySerializer<
         return null;
     }
 
-    private string GetSubjectName(string topic, bool isKey, T value)
+    private string GetSubjectName(string topic, bool isKey, AvroSchema schema)
     {
-        var recordName = GetRecordName(value);
+        var recordName = GetRecordName(schema);
         if (_config.CustomSubjectNameStrategy is not null)
         {
             return _config.CustomSubjectNameStrategy.GetSubjectName(topic, recordName, isKey);
@@ -447,9 +490,9 @@ public sealed class AvroSchemaRegistrySerializer<
             _config.UseLegacySubjectNames);
     }
 
-    private string GetRecordName(T value)
+    private static string GetRecordName(AvroSchema schema)
     {
-        return GetSchemaFromValue(value) is global::Avro.RecordSchema recordSchema
+        return schema is global::Avro.RecordSchema recordSchema
             ? recordSchema.Fullname
             : typeof(T).FullName ?? typeof(T).Name;
     }

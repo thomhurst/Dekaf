@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Buffers.Binary;
 using Avro.Generic;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Avro;
@@ -241,6 +242,17 @@ public sealed class SubjectNameStrategyTests
         }
         """;
 
+    private const string AlternateRecordSchema = """
+        {
+            "type": "record",
+            "name": "AlternateRecord",
+            "namespace": "test",
+            "fields": [
+                { "name": "id", "type": "int" }
+            ]
+        }
+        """;
+
     private static SerializationContext CreateContext(string topic = "test-topic", bool isKey = false) =>
         new()
         {
@@ -324,6 +336,37 @@ public sealed class SubjectNameStrategyTests
     }
 
     [Test]
+    [Arguments(SubjectNameStrategy.TopicName)]
+    [Arguments(SubjectNameStrategy.RecordName)]
+    [Arguments(SubjectNameStrategy.TopicRecordName)]
+    public async Task AvroSerializer_RuntimeSchemasOnSameTopic_UseDistinctSchemaIds(
+        SubjectNameStrategy subjectNameStrategy)
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        var config = new AvroSerializerConfig { SubjectNameStrategy = subjectNameStrategy };
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry, config);
+
+        var firstSchema = (Avro.RecordSchema)AvroSchema.Parse(SimpleRecordSchema);
+        var firstRecord = new GenericRecord(firstSchema);
+        firstRecord.Add("id", 1);
+        firstRecord.Add("name", "first");
+
+        var secondSchema = (Avro.RecordSchema)AvroSchema.Parse(AlternateRecordSchema);
+        var secondRecord = new GenericRecord(secondSchema);
+        secondRecord.Add("id", 2);
+
+        var firstBuffer = new ArrayBufferWriter<byte>();
+        var secondBuffer = new ArrayBufferWriter<byte>();
+        var context = CreateContext("shared-topic");
+        serializer.Serialize(firstRecord, ref firstBuffer, context);
+        serializer.Serialize(secondRecord, ref secondBuffer, context);
+
+        var firstId = BinaryPrimitives.ReadInt32BigEndian(firstBuffer.WrittenSpan.Slice(1, 4));
+        var secondId = BinaryPrimitives.ReadInt32BigEndian(secondBuffer.WrittenSpan.Slice(1, 4));
+        await Assert.That(secondId).IsNotEqualTo(firstId);
+    }
+
+    [Test]
     public async Task JsonSerializer_RecordNameStrategy_UsesSchemaTitle()
     {
         using var schemaRegistry = new MockSchemaRegistryClient();
@@ -360,6 +403,7 @@ public sealed class SubjectNameStrategyTests
     public async Task GenericSerializer_RecordNameStrategy_UsesRuntimeSchemaName()
     {
         using var schemaRegistry = new MockSchemaRegistryClient();
+        var requestedSubjects = new List<string>();
         var schema = new Schema
         {
             SchemaType = SchemaType.Avro,
@@ -374,12 +418,46 @@ public sealed class SubjectNameStrategyTests
                     span[i] = (byte)value[i];
                 writer.Advance(value.Length);
             },
-            _ => schema,
+            subject =>
+            {
+                requestedSubjects.Add(subject);
+                return schema;
+            },
             SubjectNameStrategy.RecordName);
 
         var buffer = new ArrayBufferWriter<byte>();
         serializer.Serialize("value", ref buffer, CreateContext("my-topic"));
 
+        var subjects = await schemaRegistry.GetAllSubjectsAsync();
+        await Assert.That(subjects).Contains("test.SimpleRecord");
+        await Assert.That(requestedSubjects).Count().IsEqualTo(2);
+        await Assert.That(requestedSubjects).IsEquivalentTo(["System.String", "test.SimpleRecord"]);
+    }
+
+    [Test]
+    public async Task GenericSerializer_SubjectIndependentSchemaFactory_ResolvesSchemaOnce()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        var calls = 0;
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = SimpleRecordSchema
+        };
+        await using var serializer = new SchemaRegistrySerializer<string>(
+            schemaRegistry,
+            static (_, writer) => writer.Advance(0),
+            () =>
+            {
+                calls++;
+                return schema;
+            },
+            SubjectNameStrategy.RecordName);
+
+        var buffer = new ArrayBufferWriter<byte>();
+        serializer.Serialize("value", ref buffer, CreateContext("my-topic"));
+
+        await Assert.That(calls).IsEqualTo(1);
         var subjects = await schemaRegistry.GetAllSubjectsAsync();
         await Assert.That(subjects).Contains("test.SimpleRecord");
     }

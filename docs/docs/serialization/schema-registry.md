@@ -157,6 +157,10 @@ These formats match Confluent serializers. Avro `GenericRecord` subjects use the
 record's runtime schema, JSON Schema subjects use the schema `title` when present, and Protobuf
 subjects use the message descriptor's full name.
 
+When using the generic `SchemaRegistrySerializer` with a record-based strategy, prefer its
+subject-independent `Func<Schema>` schema factory overload. The subject-aware `Func<string, Schema>`
+overload may be called again with the schema-derived subject until the callback and schema name agree.
+
 ### Migrating subjects created before this fix
 
 Older Dekaf releases appended `-key` or `-value` to `RecordName` and `TopicRecordName` subjects.

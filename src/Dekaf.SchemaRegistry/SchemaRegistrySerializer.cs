@@ -34,6 +34,7 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
     private readonly ISchemaRegistryClient _schemaRegistry;
     private readonly Action<T, IBufferWriter<byte>> _serialize;
     private readonly Func<string, Schema> _getSchema;
+    private readonly bool _schemaFactoryIgnoresSubject;
     private readonly SubjectNameStrategy _subjectNameStrategy;
     private readonly ISubjectNameStrategy? _customSubjectNameStrategy;
     private readonly bool _autoRegisterSchemas;
@@ -96,6 +97,58 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _serialize = serialize ?? throw new ArgumentNullException(nameof(serialize));
         _getSchema = getSchema ?? throw new ArgumentNullException(nameof(getSchema));
+        _subjectNameStrategy = subjectNameStrategy;
+        _autoRegisterSchemas = autoRegisterSchemas;
+        _normalizeSchemas = normalizeSchemas;
+        _useLegacySubjectNames = useLegacySubjectNames;
+        _ownsClient = ownsClient;
+        _ruleExecutor = ruleExecutor;
+    }
+
+    /// <summary>
+    /// Creates a new Schema Registry serializer whose schema factory is independent of the subject name.
+    /// </summary>
+    public SchemaRegistrySerializer(
+        ISchemaRegistryClient schemaRegistry,
+        Action<T, IBufferWriter<byte>> serialize,
+        Func<Schema> getSchema,
+        SubjectNameStrategy subjectNameStrategy = SubjectNameStrategy.TopicName,
+        bool autoRegisterSchemas = true,
+        bool ownsClient = false,
+        ISchemaRegistryRuleExecutor? ruleExecutor = null,
+        bool normalizeSchemas = false)
+        : this(
+            schemaRegistry,
+            serialize,
+            getSchema,
+            useLegacySubjectNames: false,
+            subjectNameStrategy,
+            autoRegisterSchemas,
+            ownsClient,
+            ruleExecutor,
+            normalizeSchemas)
+    {
+    }
+
+    /// <summary>
+    /// Creates a new Schema Registry serializer whose schema factory is independent of the subject name.
+    /// </summary>
+    public SchemaRegistrySerializer(
+        ISchemaRegistryClient schemaRegistry,
+        Action<T, IBufferWriter<byte>> serialize,
+        Func<Schema> getSchema,
+        bool useLegacySubjectNames,
+        SubjectNameStrategy subjectNameStrategy = SubjectNameStrategy.TopicName,
+        bool autoRegisterSchemas = true,
+        bool ownsClient = false,
+        ISchemaRegistryRuleExecutor? ruleExecutor = null,
+        bool normalizeSchemas = false)
+    {
+        ArgumentNullException.ThrowIfNull(getSchema);
+        _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
+        _serialize = serialize ?? throw new ArgumentNullException(nameof(serialize));
+        _getSchema = _ => getSchema();
+        _schemaFactoryIgnoresSubject = true;
         _subjectNameStrategy = subjectNameStrategy;
         _autoRegisterSchemas = autoRegisterSchemas;
         _normalizeSchemas = normalizeSchemas;
@@ -188,17 +241,29 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
     private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry ResolveSchema(string topic, bool isKey)
     {
         var fallbackRecordName = typeof(T).FullName ?? typeof(T).Name;
-        var lookupSubject = GetSubjectName(topic, fallbackRecordName, isKey);
-        var schema = _getSchema(lookupSubject);
-        var recordName = SubjectNameResolver.GetRecordName(schema, fallbackRecordName);
-        var subject = string.Equals(recordName, fallbackRecordName, StringComparison.Ordinal)
-            ? lookupSubject
-            : GetSubjectName(topic, recordName, isKey);
-        return new SubjectSchemaIdCache.SubjectSchemaIdCacheEntry(
-            new SubjectSchemaIdCache.SubjectSchemaIdCacheKey(topic, isKey),
-            subject,
-            GetSchemaIdSync(subject, schema),
-            schema);
+        var subject = GetSubjectName(topic, fallbackRecordName, isKey);
+
+        for (var attempt = 0; attempt < 4; attempt++)
+        {
+            var schema = _getSchema(subject);
+            var recordName = SubjectNameResolver.GetRecordName(schema, fallbackRecordName);
+            var resolvedSubject = string.Equals(recordName, fallbackRecordName, StringComparison.Ordinal)
+                ? subject
+                : GetSubjectName(topic, recordName, isKey);
+
+            if (_schemaFactoryIgnoresSubject || string.Equals(resolvedSubject, subject, StringComparison.Ordinal))
+            {
+                return new SubjectSchemaIdCache.SubjectSchemaIdCacheEntry(
+                    new SubjectSchemaIdCache.SubjectSchemaIdCacheKey(topic, isKey),
+                    resolvedSubject,
+                    GetSchemaIdSync(resolvedSubject, schema),
+                    schema);
+            }
+
+            subject = resolvedSubject;
+        }
+
+        throw new InvalidOperationException("The schema callback did not resolve to a stable subject name.");
     }
 
     private int GetSchemaIdSync(string subject, Schema schema)

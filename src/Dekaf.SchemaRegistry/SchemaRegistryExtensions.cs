@@ -148,6 +148,48 @@ public static class SchemaRegistryExtensions
         this ProducerBuilder<TKey, TValue> builder,
         ISchemaRegistryClient schemaRegistry,
         Action<TValue, IBufferWriter<byte>> serialize,
+        Func<Schema> getSchema,
+        SubjectNameStrategy subjectNameStrategy = SubjectNameStrategy.TopicName,
+        bool autoRegisterSchemas = true)
+        => UseSchemaRegistry(
+            builder,
+            schemaRegistry,
+            serialize,
+            getSchema,
+            useLegacySubjectNames: false,
+            subjectNameStrategy: subjectNameStrategy,
+            autoRegisterSchemas: autoRegisterSchemas);
+
+    /// <summary>
+    /// Configures the producer to use a custom Schema Registry serializer for values.
+    /// </summary>
+    public static ProducerBuilder<TKey, TValue> UseSchemaRegistry<TKey, TValue>(
+        this ProducerBuilder<TKey, TValue> builder,
+        ISchemaRegistryClient schemaRegistry,
+        Action<TValue, IBufferWriter<byte>> serialize,
+        Func<Schema> getSchema,
+        bool useLegacySubjectNames,
+        SubjectNameStrategy subjectNameStrategy = SubjectNameStrategy.TopicName,
+        bool autoRegisterSchemas = true)
+    {
+        var serializer = new SchemaRegistrySerializer<TValue>(
+            schemaRegistry,
+            serialize,
+            getSchema,
+            useLegacySubjectNames,
+            subjectNameStrategy,
+            autoRegisterSchemas);
+
+        return builder.WithValueSerializer(serializer);
+    }
+
+    /// <summary>
+    /// Configures the producer to use a custom Schema Registry serializer for values.
+    /// </summary>
+    public static ProducerBuilder<TKey, TValue> UseSchemaRegistry<TKey, TValue>(
+        this ProducerBuilder<TKey, TValue> builder,
+        ISchemaRegistryClient schemaRegistry,
+        Action<TValue, IBufferWriter<byte>> serialize,
         Func<string, Schema> getSchema,
         SubjectNameStrategy subjectNameStrategy = SubjectNameStrategy.TopicName,
         bool autoRegisterSchemas = true)
