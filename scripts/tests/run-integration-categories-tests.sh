@@ -36,7 +36,7 @@ grep -q 'Category=Serialization.*--maximum-parallel-tests 1' "$CALLS_FILE"
 
 grep -Eq 'MaximumParallelTests[[:space:]]*=>[[:space:]]*4' \
   "$repo_root/tools/Dekaf.Pipeline/Modules/RunProducerIntegrationTestsModule.cs"
-grep -Fq 'PackageVersion Include="Testcontainers" Version="4.13.0"' \
+grep -Fq 'PackageVersion Include="Testcontainers" Version="4.14.0"' \
   "$repo_root/Directory.Packages.props"
 grep -Fq "\"$ryuk_image\"" "$repo_root/.github/workflows/ci.yml"
 grep -Fq "\"$ryuk_image\"" "$repo_root/.github/workflows/integration-groups.yml"
