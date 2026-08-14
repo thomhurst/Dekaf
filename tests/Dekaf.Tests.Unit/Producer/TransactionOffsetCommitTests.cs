@@ -264,6 +264,29 @@ public sealed class TransactionOffsetCommitTests
     }
 
     [Test]
+    public async Task TV2_TransportFailuresUntilDeadline_ArePreservedAsTimeoutCause()
+    {
+        var outcomes = new Queue<object>(Enumerable.Range(0, 1000)
+            .Select(static _ => (object)new IOException("coordinator connection lost")));
+        await using var harness = CreateHarness(
+            transactionVersion: 2,
+            txnOffsetCommitMaxVersion: 5,
+            commitOutcomes: outcomes,
+            retryBackoffMs: 10,
+            maxBlockMs: 1000);
+
+        var exception = await Assert.That(() => harness.Producer.SendOffsetsToTransactionInternalAsync(
+                [new TopicPartitionOffset("orders", 0, 42)],
+                "group-1",
+                CancellationToken.None).AsTask())
+            .Throws<KafkaTimeoutException>();
+
+        await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Transaction);
+        await Assert.That(exception.InnerException).IsTypeOf<IOException>();
+        await Assert.That(exception.InnerException!.Message).IsEqualTo("coordinator connection lost");
+    }
+
+    [Test]
     public async Task TV2_TransactionAbortable_UsesKip890Classification()
     {
         var outcomes = new Queue<object>([ErrorCode.TransactionAbortable]);
@@ -286,7 +309,9 @@ public sealed class TransactionOffsetCommitTests
         short transactionVersion,
         short txnOffsetCommitMaxVersion,
         Queue<object>? commitOutcomes = null,
-        Guid topicId = default)
+        Guid topicId = default,
+        int retryBackoffMs = 0,
+        int maxBlockMs = 1000)
     {
         var connection = new RecordingConnection(txnOffsetCommitMaxVersion, commitOutcomes, topicId);
         var connectionPool = new ConnectionPool(
@@ -319,10 +344,10 @@ public sealed class TransactionOffsetCommitTests
             {
                 BootstrapServers = ["localhost:9092"],
                 TransactionalId = "transaction-1",
-                RetryBackoffMs = 0,
-                RetryBackoffMaxMs = 0,
+                RetryBackoffMs = retryBackoffMs,
+                RetryBackoffMaxMs = retryBackoffMs,
                 CloseTimeoutMs = 100,
-                MaxBlockMs = 100
+                MaxBlockMs = maxBlockMs
             },
             Serializers.String,
             Serializers.String,

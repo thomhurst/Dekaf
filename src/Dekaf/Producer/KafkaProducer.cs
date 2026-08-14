@@ -2489,8 +2489,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         TransactionRetryBudget retryBudget,
         out int retryDelayMs)
     {
-        var remainingMs = retryBudget.DeadlineMs - MonotonicClock.GetMilliseconds();
-        if (remainingMs <= 0)
+        if (!TryGetTransactionRemainingMilliseconds(retryBudget, out var remainingMs))
         {
             retryDelayMs = 0;
             return false;
@@ -2500,18 +2499,54 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         return true;
     }
 
+    private static bool TryGetTransactionRemainingMilliseconds(
+        TransactionRetryBudget retryBudget,
+        out int remainingMs)
+    {
+        var remaining = retryBudget.DeadlineMs - MonotonicClock.GetMilliseconds();
+        if (remaining <= 0)
+        {
+            remainingMs = 0;
+            return false;
+        }
+
+        remainingMs = (int)Math.Min(remaining, int.MaxValue);
+        return true;
+    }
+
+    private static CancellationTokenSource CreateTransactionRetryCancellationSource(
+        TransactionRetryBudget retryBudget,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var remainingMs = Math.Max(0, retryBudget.DeadlineMs - MonotonicClock.GetMilliseconds());
+        timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(remainingMs));
+        return timeoutCts;
+    }
+
     private KafkaTimeoutException CreateTransactionTimeoutException(
         string operation,
         TransactionRetryBudget retryBudget,
-        int attempts)
+        int attempts,
+        Exception? innerException = null)
     {
         var elapsedMs = Math.Max(0, MonotonicClock.GetMilliseconds() - retryBudget.StartedAtMs);
         var configured = TimeSpan.FromMilliseconds(_options.MaxBlockMs);
-        return new KafkaTimeoutException(
-            TimeoutKind.Transaction,
-            TimeSpan.FromMilliseconds(elapsedMs),
-            configured,
-            $"{operation} did not complete within max.block.ms ({_options.MaxBlockMs}ms) after {attempts} attempts.");
+        var message =
+            $"{operation} did not complete within max.block.ms ({_options.MaxBlockMs}ms) after {attempts} attempts.";
+        return innerException is null
+            ? new KafkaTimeoutException(
+                TimeoutKind.Transaction,
+                TimeSpan.FromMilliseconds(elapsedMs),
+                configured,
+                message)
+            : new KafkaTimeoutException(
+                TimeoutKind.Transaction,
+                TimeSpan.FromMilliseconds(elapsedMs),
+                configured,
+                message,
+                innerException);
     }
 
     internal async ValueTask ReinitializeProducerIdAsync(
@@ -2529,96 +2564,120 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         CancellationToken cancellationToken)
     {
         var attempt = 0;
-        while (true)
+        if (!TryGetTransactionRemainingMilliseconds(retryBudget, out _))
+            throw CreateTransactionTimeoutException("InitProducerId", retryBudget, attempt);
+
+        using var timeoutCts = CreateTransactionRetryCancellationSource(retryBudget, cancellationToken);
+        var retryCancellationToken = timeoutCts.Token;
+        try
         {
-            var request = new InitProducerIdRequest
+            while (true)
             {
-                TransactionalId = _options.TransactionalId,
-                TransactionTimeoutMs = _options.TransactionTimeoutMs,
-                ProducerId = _producerId,
-                ProducerEpoch = _producerEpoch,
-                EnableTwoPhaseCommit = _options.EnableTwoPhaseCommit,
-                KeepPreparedTransaction = keepPreparedTransaction
-            };
+                if (!TryGetTransactionRemainingMilliseconds(retryBudget, out _))
+                    break;
 
-            var response = await SendWithConnectionLeaseAsync<InitProducerIdRequest, InitProducerIdResponse>(
-                    _transactionCoordinatorId,
-                    request,
-                    cancellationToken,
-                    minimumRequiredVersion: (_options.EnableTwoPhaseCommit || keepPreparedTransaction)
-                        ? (short)6
-                        : short.MinValue,
-                    captureTransactionFeatures: true,
-                    keepPreparedTransaction: keepPreparedTransaction)
-                .ConfigureAwait(false);
-
-            if (response.ErrorCode != ErrorCode.None)
-            {
-                var classification = TransactionErrorClassifier.Classify(response.ErrorCode, _currentTransactionUsesTV2);
-
-                if (classification == TransactionErrorClassification.Retriable)
+                var request = new InitProducerIdRequest
                 {
-                    if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
-                        break;
+                    TransactionalId = _options.TransactionalId,
+                    TransactionTimeoutMs = _options.TransactionTimeoutMs,
+                    ProducerId = _producerId,
+                    ProducerEpoch = _producerEpoch,
+                    EnableTwoPhaseCommit = _options.EnableTwoPhaseCommit,
+                    KeepPreparedTransaction = keepPreparedTransaction
+                };
 
-                    if (response.ErrorCode == ErrorCode.NotCoordinator)
+                var response = await SendWithConnectionLeaseAsync<InitProducerIdRequest, InitProducerIdResponse>(
+                        _transactionCoordinatorId,
+                        request,
+                        retryCancellationToken,
+                        minimumRequiredVersion: (_options.EnableTwoPhaseCommit || keepPreparedTransaction)
+                            ? (short)6
+                            : short.MinValue,
+                        captureTransactionFeatures: true,
+                        keepPreparedTransaction: keepPreparedTransaction)
+                    .ConfigureAwait(false);
+
+                if (response.ErrorCode != ErrorCode.None)
+                {
+                    var classification = TransactionErrorClassifier.Classify(response.ErrorCode, _currentTransactionUsesTV2);
+
+                    if (classification == TransactionErrorClassification.Retriable)
                     {
-                        LogInitProducerIdNotCoordinator(attempt + 1);
+                        if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
+                            break;
 
-                        await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-                        await FindTransactionCoordinatorAsync(retryBudget, cancellationToken).ConfigureAwait(false);
+                        if (response.ErrorCode == ErrorCode.NotCoordinator)
+                        {
+                            LogInitProducerIdNotCoordinator(attempt + 1);
+
+                            await Task.Delay(retryDelayMs, retryCancellationToken).ConfigureAwait(false);
+                            await FindTransactionCoordinatorAsync(retryBudget, retryCancellationToken)
+                                .ConfigureAwait(false);
+                            attempt++;
+                            continue;
+                        }
+
+                        LogInitProducerIdRetriableError(response.ErrorCode, attempt + 1, retryDelayMs);
+
+                        await Task.Delay(retryDelayMs, retryCancellationToken).ConfigureAwait(false);
                         attempt++;
                         continue;
                     }
 
-                    LogInitProducerIdRetriableError(response.ErrorCode, attempt + 1, retryDelayMs);
+                    // InitProducerId runs before a transaction is active, so abortable errors do not
+                    // transition to AbortableError; only fatal errors mark the producer unusable.
+                    if (classification == TransactionErrorClassification.Fatal)
+                    {
+                        _transactionState = TransactionState.FatalError;
+                    }
 
-                    await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-                    attempt++;
-                    continue;
+                    throw CreateTransactionException(response.ErrorCode, classification,
+                        $"InitProducerId failed: {response.ErrorCode}");
                 }
 
-                // InitProducerId runs before a transaction is active, so abortable errors do not
-                // transition to AbortableError; only fatal errors mark the producer unusable.
-                if (classification == TransactionErrorClassification.Fatal)
-                {
-                    _transactionState = TransactionState.FatalError;
-                }
+                _producerId = response.ProducerId;
+                _producerEpoch = response.ProducerEpoch;
 
-                throw CreateTransactionException(response.ErrorCode, classification,
-                    $"InitProducerId failed: {response.ErrorCode}");
+                _accumulator.ProducerId = _producerId;
+                _accumulator.ProducerEpoch = _producerEpoch;
+                _accumulator.IsTransactional = true;
+
+                _accumulator.ResetSequenceNumbers();
+                _preparedTransactionState = response.OngoingTransactionProducerId >= 0
+                    && response.OngoingTransactionProducerEpoch >= 0
+                        ? new PreparedTransactionState(
+                            response.OngoingTransactionProducerId,
+                            response.OngoingTransactionProducerEpoch)
+                        : PreparedTransactionState.Empty;
+
+                LogTransactionsInitialized(_producerId, _producerEpoch);
+                return;
             }
-
-            _producerId = response.ProducerId;
-            _producerEpoch = response.ProducerEpoch;
-
-            _accumulator.ProducerId = _producerId;
-            _accumulator.ProducerEpoch = _producerEpoch;
-            _accumulator.IsTransactional = true;
-
-            _accumulator.ResetSequenceNumbers();
-            _preparedTransactionState = response.OngoingTransactionProducerId >= 0
-                && response.OngoingTransactionProducerEpoch >= 0
-                    ? new PreparedTransactionState(
-                        response.OngoingTransactionProducerId,
-                        response.OngoingTransactionProducerEpoch)
-                    : PreparedTransactionState.Empty;
-
-            LogTransactionsInitialized(_producerId, _producerEpoch);
-            return;
+        }
+        catch (OperationCanceledException) when (
+            timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            throw CreateTransactionTimeoutException("InitProducerId", retryBudget, attempt + 1);
         }
 
         throw CreateTransactionTimeoutException("InitProducerId", retryBudget, attempt + 1);
     }
 
-    private async ValueTask FindTransactionCoordinatorAsync(CancellationToken cancellationToken)
-        => await FindTransactionCoordinatorAsync(CreateTransactionRetryBudget(), cancellationToken)
-            .ConfigureAwait(false);
-
     private async ValueTask FindTransactionCoordinatorAsync(
         TransactionRetryBudget retryBudget,
         CancellationToken cancellationToken)
     {
+        var attempt = 0;
+        if (!TryGetTransactionRemainingMilliseconds(retryBudget, out _))
+        {
+            throw CreateTransactionTimeoutException(
+                "FindCoordinator for transaction",
+                retryBudget,
+                attempt);
+        }
+
+        using var timeoutCts = CreateTransactionRetryCancellationSource(retryBudget, cancellationToken);
+        var retryCancellationToken = timeoutCts.Token;
         var brokers = _metadataManager.Metadata.GetBrokers();
         if (brokers.Count == 0)
         {
@@ -2631,52 +2690,65 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             KeyType = CoordinatorType.Transaction
         };
 
-        var attempt = 0;
-        while (true)
+        try
         {
-            var response = await SendWithConnectionLeaseAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
-                brokers[0].NodeId,
-                request,
-                cancellationToken).ConfigureAwait(false);
-
-            if (response.Coordinators.Count == 0)
+            while (true)
             {
-                throw new TransactionException(ErrorCode.CoordinatorNotAvailable,
-                    "FindCoordinator returned an empty Coordinators array")
-                {
-                    TransactionalId = _options.TransactionalId
-                };
-            }
-
-            var coordinator = response.Coordinators[0];
-            var errorCode = coordinator.ErrorCode;
-
-            if (errorCode is ErrorCode.CoordinatorNotAvailable or ErrorCode.NotCoordinator)
-            {
-                if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
+                if (!TryGetTransactionRemainingMilliseconds(retryBudget, out _))
                     break;
 
-                LogTransactionCoordinatorNotAvailable(errorCode, attempt + 1, retryDelayMs);
+                var response = await SendWithConnectionLeaseAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                    brokers[0].NodeId,
+                    request,
+                    retryCancellationToken).ConfigureAwait(false);
 
-                await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-                attempt++;
-                continue;
-            }
-
-            if (errorCode != ErrorCode.None)
-            {
-                throw new TransactionException(errorCode,
-                    $"FindCoordinator for transaction failed: {errorCode}")
+                if (response.Coordinators.Count == 0)
                 {
-                    TransactionalId = _options.TransactionalId
-                };
+                    throw new TransactionException(ErrorCode.CoordinatorNotAvailable,
+                        "FindCoordinator returned an empty Coordinators array")
+                    {
+                        TransactionalId = _options.TransactionalId
+                    };
+                }
+
+                var coordinator = response.Coordinators[0];
+                var errorCode = coordinator.ErrorCode;
+
+                if (errorCode is ErrorCode.CoordinatorNotAvailable or ErrorCode.NotCoordinator)
+                {
+                    if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
+                        break;
+
+                    LogTransactionCoordinatorNotAvailable(errorCode, attempt + 1, retryDelayMs);
+
+                    await Task.Delay(retryDelayMs, retryCancellationToken).ConfigureAwait(false);
+                    attempt++;
+                    continue;
+                }
+
+                if (errorCode != ErrorCode.None)
+                {
+                    throw new TransactionException(errorCode,
+                        $"FindCoordinator for transaction failed: {errorCode}")
+                    {
+                        TransactionalId = _options.TransactionalId
+                    };
+                }
+
+                _transactionCoordinatorId = coordinator.NodeId;
+                _connectionPool.RegisterBroker(coordinator.NodeId, coordinator.Host, coordinator.Port);
+
+                LogTransactionCoordinatorFound(_transactionCoordinatorId, _options.TransactionalId);
+                return;
             }
-
-            _transactionCoordinatorId = coordinator.NodeId;
-            _connectionPool.RegisterBroker(coordinator.NodeId, coordinator.Host, coordinator.Port);
-
-            LogTransactionCoordinatorFound(_transactionCoordinatorId, _options.TransactionalId);
-            return;
+        }
+        catch (OperationCanceledException) when (
+            timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            throw CreateTransactionTimeoutException(
+                "FindCoordinator for transaction",
+                retryBudget,
+                attempt + 1);
         }
 
         throw CreateTransactionTimeoutException(
@@ -2720,72 +2792,86 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         };
 
         var retryBudget = CreateTransactionRetryBudget();
-
         var attempt = 0;
-        while (true)
+        using var timeoutCts = CreateTransactionRetryCancellationSource(retryBudget, cancellationToken);
+        var retryCancellationToken = timeoutCts.Token;
+
+        try
         {
-            var response = await SendWithConnectionLeaseAsync<AddPartitionsToTxnRequest, AddPartitionsToTxnResponse>(
-                    _transactionCoordinatorId,
-                    request,
-                    cancellationToken,
-                    requireTransactionFeatureMatch: true)
-                .ConfigureAwait(false);
-
-            // Check for retriable errors in the response
-            var hasRetriableError = false;
-            ErrorCode? firstNonRetriableError = null;
-            string? errorContext = null;
-
-            foreach (var topicResult in response.Results)
+            while (true)
             {
-                foreach (var partitionResult in topicResult.Partitions)
-                {
-                    if (partitionResult.ErrorCode == ErrorCode.None)
-                        continue;
+                if (!TryGetTransactionRemainingMilliseconds(retryBudget, out _))
+                    break;
 
-                    if (partitionResult.ErrorCode is ErrorCode.ConcurrentTransactions
-                        or ErrorCode.CoordinatorLoadInProgress
-                        or ErrorCode.CoordinatorNotAvailable)
+                var response = await SendWithConnectionLeaseAsync<AddPartitionsToTxnRequest, AddPartitionsToTxnResponse>(
+                        _transactionCoordinatorId,
+                        request,
+                        retryCancellationToken,
+                        requireTransactionFeatureMatch: true)
+                    .ConfigureAwait(false);
+
+                // Check for retriable errors in the response
+                var hasRetriableError = false;
+                ErrorCode? firstNonRetriableError = null;
+                string? errorContext = null;
+
+                foreach (var topicResult in response.Results)
+                {
+                    foreach (var partitionResult in topicResult.Partitions)
                     {
-                        hasRetriableError = true;
-                    }
-                    else if (partitionResult.ErrorCode == ErrorCode.NotCoordinator)
-                    {
-                        hasRetriableError = true;
-                        // Re-discover coordinator on next retry
-                        await FindTransactionCoordinatorAsync(retryBudget, cancellationToken).ConfigureAwait(false);
-                    }
-                    else
-                    {
-                        firstNonRetriableError = partitionResult.ErrorCode;
-                        errorContext = $"{topicResult.Name}-{partitionResult.PartitionIndex}";
+                        if (partitionResult.ErrorCode == ErrorCode.None)
+                            continue;
+
+                        if (partitionResult.ErrorCode is ErrorCode.ConcurrentTransactions
+                            or ErrorCode.CoordinatorLoadInProgress
+                            or ErrorCode.CoordinatorNotAvailable)
+                        {
+                            hasRetriableError = true;
+                        }
+                        else if (partitionResult.ErrorCode == ErrorCode.NotCoordinator)
+                        {
+                            hasRetriableError = true;
+                            // Re-discover coordinator on next retry
+                            await FindTransactionCoordinatorAsync(retryBudget, retryCancellationToken)
+                                .ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            firstNonRetriableError = partitionResult.ErrorCode;
+                            errorContext = $"{topicResult.Name}-{partitionResult.PartitionIndex}";
+                        }
                     }
                 }
+
+                if (firstNonRetriableError.HasValue)
+                {
+                    // Runs on the BrokerSender background path: transitioning to AbortableError/FatalError
+                    // here is what makes subsequent ProduceAsync calls fail fast. This error is not in the
+                    // classifier's retriable set, so the call always throws (never returns).
+                    ThrowIfNonRetriableTransactionError(
+                        firstNonRetriableError.Value,
+                        $"AddPartitionsToTxn for {errorContext}",
+                        _currentTransactionUsesTV2);
+                }
+
+                if (!hasRetriableError)
+                {
+                    return; // Success
+                }
+
+                if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
+                    break;
+
+                LogAddPartitionsToTxnRetriableError(attempt + 1, retryDelayMs);
+
+                await Task.Delay(retryDelayMs, retryCancellationToken).ConfigureAwait(false);
+                attempt++;
             }
-
-            if (firstNonRetriableError.HasValue)
-            {
-                // Runs on the BrokerSender background path: transitioning to AbortableError/FatalError
-                // here is what makes subsequent ProduceAsync calls fail fast. This error is not in the
-                // classifier's retriable set, so the call always throws (never returns).
-                ThrowIfNonRetriableTransactionError(
-                    firstNonRetriableError.Value,
-                    $"AddPartitionsToTxn for {errorContext}",
-                    _currentTransactionUsesTV2);
-            }
-
-            if (!hasRetriableError)
-            {
-                return; // Success
-            }
-
-            if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
-                break;
-
-            LogAddPartitionsToTxnRetriableError(attempt + 1, retryDelayMs);
-
-            await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-            attempt++;
+        }
+        catch (OperationCanceledException) when (
+            timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            throw CreateTransactionTimeoutException("AddPartitionsToTxn", retryBudget, attempt + 1);
         }
 
         throw CreateTransactionTimeoutException("AddPartitionsToTxn", retryBudget, attempt + 1);
@@ -2849,106 +2935,131 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         CancellationToken cancellationToken)
     {
         var attempt = 0;
-        while (true)
+        if (!TryGetTransactionRemainingMilliseconds(retryBudget, out _))
         {
-            var request = new EndTxnRequest
-            {
-                TransactionalId = _options.TransactionalId!,
-                ProducerId = producerId,
-                ProducerEpoch = producerEpoch,
-                Committed = committed
-            };
+            throw CreateTransactionTimeoutException(
+                $"EndTxn ({(committed ? "commit" : "abort")})",
+                retryBudget,
+                attempt);
+        }
 
-            EndTxnResponse response;
-            using (var connectionLease = await _connectionPool.LeaseConnectionAsync(
-                       _transactionCoordinatorId,
-                       cancellationToken).ConfigureAwait(false))
+        using var timeoutCts = CreateTransactionRetryCancellationSource(retryBudget, cancellationToken);
+        var retryCancellationToken = timeoutCts.Token;
+        try
+        {
+            while (true)
             {
-                var connection = connectionLease.Connection;
-                EnsureTransactionFeatureMatch();
-                var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-                    connection,
-                    ApiKey.EndTxn,
-                    EndTxnRequest.LowestSupportedVersion,
-                    EndTxnRequest.HighestSupportedVersion);
-                if (afterRequestWrittenAsync is null)
+                if (!TryGetTransactionRemainingMilliseconds(retryBudget, out _))
+                    break;
+
+                var request = new EndTxnRequest
                 {
-                    response = await connection
-                        .SendAsync<EndTxnRequest, EndTxnResponse>(
-                            request, apiVersion, cancellationToken)
+                    TransactionalId = _options.TransactionalId!,
+                    ProducerId = producerId,
+                    ProducerEpoch = producerEpoch,
+                    Committed = committed
+                };
+
+                EndTxnResponse response;
+                using (var connectionLease = await _connectionPool.LeaseConnectionAsync(
+                           _transactionCoordinatorId,
+                           retryCancellationToken).ConfigureAwait(false))
+                {
+                    var connection = connectionLease.Connection;
+                    EnsureTransactionFeatureMatch();
+                    var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                        connection,
+                        ApiKey.EndTxn,
+                        EndTxnRequest.LowestSupportedVersion,
+                        EndTxnRequest.HighestSupportedVersion);
+                    if (afterRequestWrittenAsync is null)
+                    {
+                        response = await connection
+                            .SendAsync<EndTxnRequest, EndTxnResponse>(
+                                request, apiVersion, retryCancellationToken)
+                            .ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        if (connection is not IKafkaPipelinedWriteCompletionConnection writeCompletionConnection)
+                        {
+                            throw new InvalidOperationException(
+                                "The transaction coordinator connection cannot report request write completion.");
+                        }
+
+                        var responseTask = await writeCompletionConnection
+                            .SendPipelinedAfterWriteAsync<EndTxnRequest, EndTxnResponse>(
+                                request, apiVersion, retryCancellationToken)
+                            .ConfigureAwait(false);
+                        var responseConsumptionStarted = false;
+                        try
+                        {
+                            var requestWrittenCallback = afterRequestWrittenAsync;
+                            afterRequestWrittenAsync = null;
+                            await requestWrittenCallback().ConfigureAwait(false);
+
+                            var responseValueTask = responseTask.AsValueTask();
+                            responseConsumptionStarted = true;
+                            response = await responseValueTask.ConfigureAwait(false);
+                        }
+                        finally
+                        {
+                            if (!responseConsumptionStarted)
+                                responseTask.Abandon();
+                        }
+                    }
+                }
+
+                if (response.ErrorCode == ErrorCode.None)
+                {
+                    // TV2 (v5+): broker returns bumped ProducerId/Epoch in EndTxn response.
+                    // Apply them so the next transaction uses the new identity without
+                    // a separate InitProducerId round-trip.
+                    // Safe without _epochBumpLock: EndTxn is called only after FlushAsync
+                    // drains all in-flight batches, so no BrokerSender is active.
+                    if (applyResponseProducerState && _currentTransactionUsesTV2 && response.ProducerId >= 0)
+                    {
+                        _producerId = response.ProducerId;
+                        _producerEpoch = response.ProducerEpoch;
+                        _accumulator.ProducerId = _producerId;
+                        _accumulator.ProducerEpoch = _producerEpoch;
+                        _accumulator.ResetSequenceNumbers();
+                    }
+
+                    return;
+                }
+
+                // Fatal or abortable errors transition state and throw the matching typed exception;
+                // this returns only for retriable errors, which are handled with backoff below.
+                ThrowIfNonRetriableTransactionError(response.ErrorCode,
+                    $"EndTxn ({(committed ? "commit" : "abort")})", _currentTransactionUsesTV2);
+
+                if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
+                    break;
+
+                if (response.ErrorCode == ErrorCode.NotCoordinator)
+                {
+                    LogEndTxnNotCoordinator(attempt + 1);
+                    await Task.Delay(retryDelayMs, retryCancellationToken).ConfigureAwait(false);
+                    await FindTransactionCoordinatorAsync(retryBudget, retryCancellationToken)
                         .ConfigureAwait(false);
-                }
-                else
-                {
-                    if (connection is not IKafkaPipelinedWriteCompletionConnection writeCompletionConnection)
-                    {
-                        throw new InvalidOperationException(
-                            "The transaction coordinator connection cannot report request write completion.");
-                    }
-
-                    var responseTask = await writeCompletionConnection
-                        .SendPipelinedAfterWriteAsync<EndTxnRequest, EndTxnResponse>(
-                            request, apiVersion, cancellationToken)
-                        .ConfigureAwait(false);
-                    var responseConsumptionStarted = false;
-                    try
-                    {
-                        var requestWrittenCallback = afterRequestWrittenAsync;
-                        afterRequestWrittenAsync = null;
-                        await requestWrittenCallback().ConfigureAwait(false);
-
-                        var responseValueTask = responseTask.AsValueTask();
-                        responseConsumptionStarted = true;
-                        response = await responseValueTask.ConfigureAwait(false);
-                    }
-                    finally
-                    {
-                        if (!responseConsumptionStarted)
-                            responseTask.Abandon();
-                    }
-                }
-            }
-
-            if (response.ErrorCode == ErrorCode.None)
-            {
-                // TV2 (v5+): broker returns bumped ProducerId/Epoch in EndTxn response.
-                // Apply them so the next transaction uses the new identity without
-                // a separate InitProducerId round-trip.
-                // Safe without _epochBumpLock: EndTxn is called only after FlushAsync
-                // drains all in-flight batches, so no BrokerSender is active.
-                if (applyResponseProducerState && _currentTransactionUsesTV2 && response.ProducerId >= 0)
-                {
-                    _producerId = response.ProducerId;
-                    _producerEpoch = response.ProducerEpoch;
-                    _accumulator.ProducerId = _producerId;
-                    _accumulator.ProducerEpoch = _producerEpoch;
-                    _accumulator.ResetSequenceNumbers();
+                    attempt++;
+                    continue;
                 }
 
-                return;
-            }
-
-            // Fatal or abortable errors transition state and throw the matching typed exception;
-            // this returns only for retriable errors, which are handled with backoff below.
-            ThrowIfNonRetriableTransactionError(response.ErrorCode,
-                $"EndTxn ({(committed ? "commit" : "abort")})", _currentTransactionUsesTV2);
-
-            if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
-                break;
-
-            if (response.ErrorCode == ErrorCode.NotCoordinator)
-            {
-                LogEndTxnNotCoordinator(attempt + 1);
-                await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-                await FindTransactionCoordinatorAsync(retryBudget, cancellationToken).ConfigureAwait(false);
+                LogEndTxnRetriableError(response.ErrorCode, attempt + 1, retryDelayMs);
+                await Task.Delay(retryDelayMs, retryCancellationToken).ConfigureAwait(false);
                 attempt++;
                 continue;
             }
-
-            LogEndTxnRetriableError(response.ErrorCode, attempt + 1, retryDelayMs);
-            await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-            attempt++;
-            continue;
+        }
+        catch (OperationCanceledException) when (
+            timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            throw CreateTransactionTimeoutException(
+                $"EndTxn ({(committed ? "commit" : "abort")})",
+                retryBudget,
+                attempt + 1);
         }
 
         throw CreateTransactionTimeoutException(
@@ -2995,251 +3106,273 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // request-local topic IDs; a connection capped at v4 retains explicit enrollment.
         var retryBudget = CreateTransactionRetryBudget();
         var tv2 = _currentTransactionUsesTV2;
-
-        // Materialize once so a lost response can retry safely even when the caller supplied
-        // a single-use enumerable.
-        var topicOffsets = new Dictionary<string, List<TxnOffsetCommitRequestPartition>>();
-        foreach (var offset in offsets)
-        {
-            if (!topicOffsets.TryGetValue(offset.Topic, out var list))
-            {
-                list = [];
-                topicOffsets[offset.Topic] = list;
-            }
-
-            list.Add(new TxnOffsetCommitRequestPartition
-            {
-                PartitionIndex = offset.Partition,
-                CommittedOffset = offset.Offset,
-                CommittedLeaderEpoch = offset.LeaderEpoch,
-                CommittedMetadata = offset.Metadata
-            });
-        }
-
         var attempt = 0;
-        while (true)
+        Exception? lastTransportException = null;
+        using var timeoutCts = CreateTransactionRetryCancellationSource(retryBudget, cancellationToken);
+        var retryCancellationToken = timeoutCts.Token;
+
+        try
         {
-            // TV1 always performs explicit offset enrollment before coordinator discovery.
-            if (!tv2)
+            // Materialize once so a lost response can retry safely even when the caller supplied
+            // a single-use enumerable.
+            var topicOffsets = new Dictionary<string, List<TxnOffsetCommitRequestPartition>>();
+            foreach (var offset in offsets)
             {
-                var addOffsetsError = await SendAddOffsetsToTransactionAsync(
-                        consumerGroupId,
-                        cancellationToken)
-                    .ConfigureAwait(false);
-                if (addOffsetsError != ErrorCode.None)
+                if (!topicOffsets.TryGetValue(offset.Topic, out var list))
                 {
-                    if (await PrepareAddOffsetsRetryAsync(
-                            addOffsetsError,
-                            attempt,
-                            retryBudget,
-                            tv2,
-                            cancellationToken)
-                        .ConfigureAwait(false))
-                    {
-                        attempt++;
-                        continue;
-                    }
-
-                    break;
+                    list = [];
+                    topicOffsets[offset.Topic] = list;
                 }
-            }
 
-            // Find the group coordinator. This remains uncached so NotCoordinator retries
-            // refresh only the affected group coordinator information.
-            var brokers = _metadataManager.Metadata.GetBrokers();
-            var findCoordRequest = new FindCoordinatorRequest
-            {
-                Key = consumerGroupId,
-                KeyType = CoordinatorType.Group
-            };
-
-            var findCoordResponse = await SendWithConnectionLeaseAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
-                    brokers[0].NodeId,
-                    findCoordRequest,
-                    cancellationToken)
-                .ConfigureAwait(false);
-
-            if (findCoordResponse.Coordinators.Count == 0)
-            {
-                // Treat an empty coordinator set as transiently unavailable and retry.
-                if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
-                    break;
-                await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-                attempt++;
-                continue;
-            }
-
-            var coord = findCoordResponse.Coordinators[0];
-            _connectionPool.RegisterBroker(coord.NodeId, coord.Host, coord.Port);
-
-            if (coord.ErrorCode != ErrorCode.None)
-            {
-                ThrowIfNonRetriableTransactionError(coord.ErrorCode,
-                    $"FindCoordinator for consumer group '{consumerGroupId}'", tv2);
-                if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
-                    break;
-                await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-                attempt++;
-                continue;
-            }
-
-            using var coordinatorLease = await _connectionPool.LeaseConnectionAsync(
-                coord.NodeId,
-                cancellationToken).ConfigureAwait(false);
-            EnsureTransactionFeatureMatch();
-            var coordinatorConnection = coordinatorLease.Connection;
-            var highestAllowedVersion = tv2
-                ? TxnOffsetCommitRequest.HighestSupportedVersion
-                : (short)4;
-            var txnOffsetCommitVersion = _metadataManager.GetNegotiatedApiVersion(
-                coordinatorConnection,
-                ApiKey.TxnOffsetCommit,
-                TxnOffsetCommitRequest.LowestSupportedVersion,
-                highestAllowedVersion);
-
-            if (tv2 && txnOffsetCommitVersion < 5)
-            {
-                var addOffsetsError = await SendAddOffsetsToTransactionAsync(
-                        consumerGroupId,
-                        cancellationToken)
-                    .ConfigureAwait(false);
-                if (addOffsetsError != ErrorCode.None)
+                list.Add(new TxnOffsetCommitRequestPartition
                 {
-                    if (await PrepareAddOffsetsRetryAsync(
-                            addOffsetsError,
-                            attempt,
-                            retryBudget,
-                            tv2,
-                            cancellationToken)
-                        .ConfigureAwait(false))
-                    {
-                        attempt++;
-                        continue;
-                    }
+                    PartitionIndex = offset.Partition,
+                    CommittedOffset = offset.Offset,
+                    CommittedLeaderEpoch = offset.LeaderEpoch,
+                    CommittedMetadata = offset.Metadata
+                });
+            }
 
+            while (true)
+            {
+                if (!TryGetTransactionRemainingMilliseconds(retryBudget, out _))
                     break;
-                }
-            }
 
-            OffsetTopicIdRequestMap? topicIdMap = null;
-            List<TxnOffsetCommitRequestTopic> txnTopics;
-            if (txnOffsetCommitVersion >= TxnOffsetCommitRequest.TopicIdVersion)
-            {
-                (txnTopics, topicIdMap) = await BuildTxnOffsetCommitTopicsAsync(
-                        topicOffsets,
-                        cancellationToken)
-                    .ConfigureAwait(false);
-                if (topicIdMap is null)
-                    txnOffsetCommitVersion = TxnOffsetCommitRequest.TopicIdVersion - 1;
-            }
-            else
-            {
-                txnTopics = BuildTxnOffsetCommitTopics(topicOffsets, topicIdMap: null);
-            }
-
-            var txnOffsetCommitRequest = new TxnOffsetCommitRequest
-            {
-                TransactionalId = _options.TransactionalId!,
-                GroupId = consumerGroupId,
-                ProducerId = _producerId,
-                ProducerEpoch = _producerEpoch,
-                GenerationIdOrMemberEpoch = generationIdOrMemberEpoch,
-                MemberId = memberId,
-                GroupInstanceId = groupInstanceId,
-                Topics = txnTopics
-            };
-
-            TxnOffsetCommitResponse txnOffsetCommitResponse;
-            try
-            {
-                txnOffsetCommitResponse = await coordinatorConnection
-                    .SendAsync<TxnOffsetCommitRequest, TxnOffsetCommitResponse>(
-                        txnOffsetCommitRequest,
-                        txnOffsetCommitVersion,
-                        cancellationToken)
-                    .ConfigureAwait(false);
-            }
-            catch (Exception ex) when (
-                !cancellationToken.IsCancellationRequested
-                && RetryHelper.IsRetriableRequestFailure(ex))
-            {
-                if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
-                    break;
-                await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-                attempt++;
-                continue;
-            }
-
-            ErrorCode? commitError = null;
-            string? commitContext = null;
-            try
-            {
-                var responseSnapshot = topicIdMap?.CaptureResponseSnapshot();
-                foreach (var topicResult in txnOffsetCommitResponse.Topics)
+                // TV1 always performs explicit offset enrollment before coordinator discovery.
+                if (!tv2)
                 {
-                    var topicName = topicIdMap is null
-                        ? topicResult.Name
-                        : topicIdMap.MatchResponseTopic(
-                            topicResult.TopicId,
-                            responseSnapshot!,
-                            "TxnOffsetCommit",
-                            responseMismatchIsRetriable: true);
-
-                    foreach (var partitionResult in topicResult.Partitions)
+                    var addOffsetsError = await SendAddOffsetsToTransactionAsync(
+                            consumerGroupId,
+                            retryCancellationToken)
+                        .ConfigureAwait(false);
+                    if (addOffsetsError != ErrorCode.None)
                     {
-                        if (partitionResult.ErrorCode != ErrorCode.None)
+                        if (await PrepareAddOffsetsRetryAsync(
+                                addOffsetsError,
+                                attempt,
+                                retryBudget,
+                                tv2,
+                                retryCancellationToken)
+                            .ConfigureAwait(false))
                         {
-                            commitError = partitionResult.ErrorCode;
-                            commitContext = $"TxnOffsetCommit for {topicName}-{partitionResult.PartitionIndex}";
-                            break;
+                            attempt++;
+                            continue;
                         }
-                    }
 
-                    if (commitError.HasValue)
                         break;
+                    }
                 }
-            }
-            catch (Exception ex) when (
-                !cancellationToken.IsCancellationRequested
-                && RetryHelper.IsRetriableRequestFailure(ex))
-            {
-                if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
-                    break;
-                await _metadataManager.RefreshMetadataAsync(
-                        topicOffsets.Keys,
-                        forceRefresh: true,
-                        cancellationToken)
-                    .ConfigureAwait(false);
-                await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-                attempt++;
-                continue;
-            }
 
-            if (commitError.HasValue)
-            {
-                ThrowIfNonRetriableTransactionError(commitError.Value, commitContext!, tv2);
-                if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
-                    break;
-                if (commitError.Value.RequiresMetadataRefresh())
+                // Find the group coordinator. This remains uncached so NotCoordinator retries
+                // refresh only the affected group coordinator information.
+                var brokers = _metadataManager.Metadata.GetBrokers();
+                var findCoordRequest = new FindCoordinatorRequest
                 {
+                    Key = consumerGroupId,
+                    KeyType = CoordinatorType.Group
+                };
+
+                var findCoordResponse = await SendWithConnectionLeaseAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                        brokers[0].NodeId,
+                        findCoordRequest,
+                        retryCancellationToken)
+                    .ConfigureAwait(false);
+
+                if (findCoordResponse.Coordinators.Count == 0)
+                {
+                    // Treat an empty coordinator set as transiently unavailable and retry.
+                    if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
+                        break;
+                    await Task.Delay(retryDelayMs, retryCancellationToken).ConfigureAwait(false);
+                    attempt++;
+                    continue;
+                }
+
+                var coord = findCoordResponse.Coordinators[0];
+                _connectionPool.RegisterBroker(coord.NodeId, coord.Host, coord.Port);
+
+                if (coord.ErrorCode != ErrorCode.None)
+                {
+                    ThrowIfNonRetriableTransactionError(coord.ErrorCode,
+                        $"FindCoordinator for consumer group '{consumerGroupId}'", tv2);
+                    if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
+                        break;
+                    await Task.Delay(retryDelayMs, retryCancellationToken).ConfigureAwait(false);
+                    attempt++;
+                    continue;
+                }
+
+                using var coordinatorLease = await _connectionPool.LeaseConnectionAsync(
+                    coord.NodeId,
+                    retryCancellationToken).ConfigureAwait(false);
+                EnsureTransactionFeatureMatch();
+                var coordinatorConnection = coordinatorLease.Connection;
+                var highestAllowedVersion = tv2
+                    ? TxnOffsetCommitRequest.HighestSupportedVersion
+                    : (short)4;
+                var txnOffsetCommitVersion = _metadataManager.GetNegotiatedApiVersion(
+                    coordinatorConnection,
+                    ApiKey.TxnOffsetCommit,
+                    TxnOffsetCommitRequest.LowestSupportedVersion,
+                    highestAllowedVersion);
+
+                if (tv2 && txnOffsetCommitVersion < 5)
+                {
+                    var addOffsetsError = await SendAddOffsetsToTransactionAsync(
+                            consumerGroupId,
+                            retryCancellationToken)
+                        .ConfigureAwait(false);
+                    if (addOffsetsError != ErrorCode.None)
+                    {
+                        if (await PrepareAddOffsetsRetryAsync(
+                                addOffsetsError,
+                                attempt,
+                                retryBudget,
+                                tv2,
+                                retryCancellationToken)
+                            .ConfigureAwait(false))
+                        {
+                            attempt++;
+                            continue;
+                        }
+
+                        break;
+                    }
+                }
+
+                OffsetTopicIdRequestMap? topicIdMap = null;
+                List<TxnOffsetCommitRequestTopic> txnTopics;
+                if (txnOffsetCommitVersion >= TxnOffsetCommitRequest.TopicIdVersion)
+                {
+                    (txnTopics, topicIdMap) = await BuildTxnOffsetCommitTopicsAsync(
+                            topicOffsets,
+                            retryCancellationToken)
+                        .ConfigureAwait(false);
+                    if (topicIdMap is null)
+                        txnOffsetCommitVersion = TxnOffsetCommitRequest.TopicIdVersion - 1;
+                }
+                else
+                {
+                    txnTopics = BuildTxnOffsetCommitTopics(topicOffsets, topicIdMap: null);
+                }
+
+                var txnOffsetCommitRequest = new TxnOffsetCommitRequest
+                {
+                    TransactionalId = _options.TransactionalId!,
+                    GroupId = consumerGroupId,
+                    ProducerId = _producerId,
+                    ProducerEpoch = _producerEpoch,
+                    GenerationIdOrMemberEpoch = generationIdOrMemberEpoch,
+                    MemberId = memberId,
+                    GroupInstanceId = groupInstanceId,
+                    Topics = txnTopics
+                };
+
+                TxnOffsetCommitResponse txnOffsetCommitResponse;
+                try
+                {
+                    txnOffsetCommitResponse = await coordinatorConnection
+                        .SendAsync<TxnOffsetCommitRequest, TxnOffsetCommitResponse>(
+                            txnOffsetCommitRequest,
+                            txnOffsetCommitVersion,
+                            retryCancellationToken)
+                        .ConfigureAwait(false);
+                    lastTransportException = null;
+                }
+                catch (Exception ex) when (
+                    !retryCancellationToken.IsCancellationRequested
+                    && RetryHelper.IsRetriableRequestFailure(ex))
+                {
+                    lastTransportException = ex;
+                    if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
+                        break;
+                    await Task.Delay(retryDelayMs, retryCancellationToken).ConfigureAwait(false);
+                    attempt++;
+                    continue;
+                }
+
+                ErrorCode? commitError = null;
+                string? commitContext = null;
+                try
+                {
+                    var responseSnapshot = topicIdMap?.CaptureResponseSnapshot();
+                    foreach (var topicResult in txnOffsetCommitResponse.Topics)
+                    {
+                        var topicName = topicIdMap is null
+                            ? topicResult.Name
+                            : topicIdMap.MatchResponseTopic(
+                                topicResult.TopicId,
+                                responseSnapshot!,
+                                "TxnOffsetCommit",
+                                responseMismatchIsRetriable: true);
+
+                        foreach (var partitionResult in topicResult.Partitions)
+                        {
+                            if (partitionResult.ErrorCode != ErrorCode.None)
+                            {
+                                commitError = partitionResult.ErrorCode;
+                                commitContext = $"TxnOffsetCommit for {topicName}-{partitionResult.PartitionIndex}";
+                                break;
+                            }
+                        }
+
+                        if (commitError.HasValue)
+                            break;
+                    }
+                }
+                catch (Exception ex) when (
+                    !retryCancellationToken.IsCancellationRequested
+                    && RetryHelper.IsRetriableRequestFailure(ex))
+                {
+                    lastTransportException = ex;
+                    if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
+                        break;
                     await _metadataManager.RefreshMetadataAsync(
                             topicOffsets.Keys,
                             forceRefresh: true,
-                            cancellationToken)
+                            retryCancellationToken)
                         .ConfigureAwait(false);
+                    await Task.Delay(retryDelayMs, retryCancellationToken).ConfigureAwait(false);
+                    attempt++;
+                    continue;
                 }
-                await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-                attempt++;
-                continue;
-            }
 
-            return;
+                if (commitError.HasValue)
+                {
+                    ThrowIfNonRetriableTransactionError(commitError.Value, commitContext!, tv2);
+                    if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
+                        break;
+                    if (commitError.Value.RequiresMetadataRefresh())
+                    {
+                        await _metadataManager.RefreshMetadataAsync(
+                                topicOffsets.Keys,
+                                forceRefresh: true,
+                                retryCancellationToken)
+                            .ConfigureAwait(false);
+                    }
+                    await Task.Delay(retryDelayMs, retryCancellationToken).ConfigureAwait(false);
+                    attempt++;
+                    continue;
+                }
+
+                return;
+            }
+        }
+        catch (OperationCanceledException) when (
+            timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            throw CreateTransactionTimeoutException(
+                "SendOffsetsToTransaction",
+                retryBudget,
+                attempt + 1,
+                lastTransportException);
         }
 
         throw CreateTransactionTimeoutException(
             "SendOffsetsToTransaction",
             retryBudget,
-            attempt + 1);
+            attempt + 1,
+            lastTransportException);
     }
 
     private async ValueTask<(List<TxnOffsetCommitRequestTopic> Topics, OffsetTopicIdRequestMap? TopicIdMap)>

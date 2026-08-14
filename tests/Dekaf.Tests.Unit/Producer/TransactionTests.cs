@@ -584,15 +584,35 @@ public sealed class TransactionTests
             currentProducerEpoch: 9,
             initProducerIdRetriableFailuresBeforeSuccess: int.MaxValue,
             retryBackoffMs: 10,
-            maxBlockMs: 50);
+            maxBlockMs: 1000);
 
         var exception = await Assert.That(() => harness.Producer.ReinitializeProducerIdAsync(
                 CancellationToken.None).AsTask())
             .Throws<KafkaTimeoutException>();
 
         await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Transaction);
-        await Assert.That(exception.Configured).IsEqualTo(TimeSpan.FromMilliseconds(50));
-        await Assert.That(exception.Message).Contains("max.block.ms (50ms)");
+        await Assert.That(exception.Configured).IsEqualTo(TimeSpan.FromMilliseconds(1000));
+        await Assert.That(exception.Message).Contains("max.block.ms (1000ms)");
+    }
+
+    [Test]
+    [Timeout(5_000)]
+    public async Task ReinitializeProducerIdAsync_MaxBlockDeadline_CancelsInFlightRequest(
+        CancellationToken cancellationToken)
+    {
+        await using var harness = BuildPreparedCompletionHarness(
+            PreparedTransactionState.Empty,
+            currentProducerId: 2002,
+            currentProducerEpoch: 9,
+            initProducerIdWaitsForCancellation: true,
+            maxBlockMs: 1000);
+
+        var exception = await Assert.That(() => harness.Producer.ReinitializeProducerIdAsync(
+                cancellationToken).AsTask())
+            .Throws<KafkaTimeoutException>();
+
+        await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Transaction);
+        await Assert.That(harness.InitProducerIdRequests).IsEqualTo(1);
     }
 
     [Test]
@@ -1047,6 +1067,7 @@ public sealed class TransactionTests
         int initProducerIdRetriableFailuresBeforeSuccess = 0,
         int addPartitionsRetriableFailuresBeforeSuccess = 0,
         int endTxnRetriableFailuresBeforeSuccess = 0,
+        bool initProducerIdWaitsForCancellation = false,
         int retryBackoffMs = 0,
         int maxBlockMs = 1000)
     {
@@ -1058,7 +1079,8 @@ public sealed class TransactionTests
             coordinatorRetriableFailuresBeforeSuccess,
             initProducerIdRetriableFailuresBeforeSuccess,
             addPartitionsRetriableFailuresBeforeSuccess,
-            endTxnRetriableFailuresBeforeSuccess);
+            endTxnRetriableFailuresBeforeSuccess,
+            initProducerIdWaitsForCancellation);
 
         var connectionPool = new ConnectionPool(
             clientId: "test-producer",
@@ -1194,7 +1216,8 @@ public sealed class TransactionTests
         int coordinatorRetriableFailuresBeforeSuccess,
         int initProducerIdRetriableFailuresBeforeSuccess,
         int addPartitionsRetriableFailuresBeforeSuccess,
-        int endTxnRetriableFailuresBeforeSuccess) : IKafkaConnection, IRetirableKafkaConnection,
+        int endTxnRetriableFailuresBeforeSuccess,
+        bool initProducerIdWaitsForCancellation) : IKafkaConnection, IRetirableKafkaConnection,
         IKafkaPipelinedWriteCompletionConnection
     {
         private readonly TrackingResponseSource<EndTxnResponse> _pipelinedResponseSource = new();
@@ -1235,6 +1258,12 @@ public sealed class TransactionTests
             where TResponse : IKafkaResponse
         {
             Volatile.Write(ref _leaseCountDuringRequest, LeaseCount);
+            if (request is InitProducerIdRequest && initProducerIdWaitsForCancellation)
+            {
+                InitProducerIdRequests++;
+                return WaitForCancellationAsync<TResponse>(cancellationToken);
+            }
+
             IKafkaResponse response = request switch
             {
                 EndTxnRequest endTxnRequest => CreateEndTxnResponse(endTxnRequest),
@@ -1245,6 +1274,13 @@ public sealed class TransactionTests
             };
 
             return ValueTask.FromResult((TResponse)response);
+        }
+
+        private static async ValueTask<TResponse> WaitForCancellationAsync<TResponse>(
+            CancellationToken cancellationToken)
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+            return default!;
         }
 
         private FindCoordinatorResponse CreateFindCoordinatorResponse(FindCoordinatorRequest request)
