@@ -671,8 +671,10 @@ public sealed class KafkaConnectionTests
                     new ApiVersionsRequest { ClientSoftwareName = "test", ClientSoftwareVersion = "1.0" },
                     apiVersion: 3,
                     cancellationToken);
-            await Assert.That(response.TryRetainExternalOwner()).IsTrue();
-            await Assert.That(response.TryRetainExternalOwner()).IsFalse();
+            await Assert.That(response.TryRetainExternalOwner())
+                .IsEqualTo(ExternalOwnershipClaimResult.Retained);
+            await Assert.That(response.TryRetainExternalOwner())
+                .IsEqualTo(ExternalOwnershipClaimResult.Rejected);
 
             var requestFrame = await ReadRequestFrameAsync(serverClient.GetStream(), cancellationToken);
             var correlationId = BinaryPrimitives.ReadInt32BigEndian(requestFrame.AsSpan(4, 4));

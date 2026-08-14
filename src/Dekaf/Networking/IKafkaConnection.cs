@@ -162,6 +162,13 @@ internal interface IPipelinedResponseExternalOwnership
     bool TryReleaseExternalOwner(int generation);
 }
 
+internal enum ExternalOwnershipClaimResult : byte
+{
+    Unsupported,
+    Retained,
+    Rejected
+}
+
 internal readonly struct PipelinedResponse<TResponse>
 {
     private readonly Task<TResponse>? _task;
@@ -220,8 +227,15 @@ internal readonly struct PipelinedResponse<TResponse>
     public void Abandon() => _source?.Abandon(_token);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool TryRetainExternalOwner() =>
-        (_source as IPipelinedResponseExternalOwnership)?.TryRetainExternalOwner(_ownershipGeneration) == true;
+    public ExternalOwnershipClaimResult TryRetainExternalOwner()
+    {
+        if (_source is not IPipelinedResponseExternalOwnership externalOwnership)
+            return ExternalOwnershipClaimResult.Unsupported;
+
+        return externalOwnership.TryRetainExternalOwner(_ownershipGeneration)
+            ? ExternalOwnershipClaimResult.Retained
+            : ExternalOwnershipClaimResult.Rejected;
+    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool TryReleaseExternalOwner() =>

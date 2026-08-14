@@ -55,8 +55,8 @@ public sealed class PendingResponseArrayOwnershipTests : ScriptedProduceResponse
         // Standalone struct, never attached to a live sender. The claim lives in the
         // reference-typed guard, so it is shared across every by-value copy — the second
         // call must no-op even from a different copy.
-        var pending = new BrokerSender.PendingResponse(
-            default,
+        var pending = BrokerSender.PendingResponse.Create(
+            new PipelinedResponse<ProduceResponse>(Task.FromResult(new ProduceResponse())),
             ArrayPool<ReadyBatch>.Shared.Rent(1),
             ArrayPool<int>.Shared.Rent(1),
             topicIds: null,
@@ -80,14 +80,40 @@ public sealed class PendingResponseArrayOwnershipTests : ScriptedProduceResponse
     {
         var source = new GenerationOwnershipSource();
         var stale = new PipelinedResponse<ProduceResponse>(source, token: 0, ownershipGeneration: 0);
-        await Assert.That(stale.TryRetainExternalOwner()).IsTrue();
+        await Assert.That(stale.TryRetainExternalOwner())
+            .IsEqualTo(ExternalOwnershipClaimResult.Retained);
 
         source.Reset(generation: 1);
         var current = new PipelinedResponse<ProduceResponse>(source, token: 0, ownershipGeneration: 1);
-        await Assert.That(current.TryRetainExternalOwner()).IsTrue();
+        await Assert.That(current.TryRetainExternalOwner())
+            .IsEqualTo(ExternalOwnershipClaimResult.Retained);
 
         await Assert.That(stale.TryReleaseExternalOwner()).IsFalse();
         await Assert.That(current.TryReleaseExternalOwner()).IsTrue();
+    }
+
+    [Test]
+    public async Task PendingResponse_Create_RejectsFailedPooledOwnershipClaim()
+    {
+        var source = new GenerationOwnershipSource();
+        source.Reset(generation: 1);
+        var stale = new PipelinedResponse<ProduceResponse>(
+            source,
+            token: 0,
+            ownershipGeneration: 0);
+
+        await Assert.That(() => BrokerSender.PendingResponse.Create(
+                stale,
+                [],
+                [],
+                topicIds: null,
+                apiVersion: 12,
+                count: 1,
+                encodedBytes: 0,
+                dataBytes: 0,
+                requestStartTime: 0,
+                default))
+            .Throws<InvalidOperationException>();
     }
 
     [Test]

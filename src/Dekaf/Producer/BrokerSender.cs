@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
@@ -264,7 +265,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             long dataBytes,
             long requestStartTime,
             BrokerUnackedByteBudget.DeliverySnapshot deliverySnapshotAtSend)
-            => new(
+        {
+            var ownershipClaim = responseTask.TryRetainExternalOwner();
+            if (ownershipClaim == ExternalOwnershipClaimResult.Rejected)
+                ThrowExternalOwnershipClaimRejected();
+
+            return new PendingResponse(
                 responseTask,
                 batches,
                 batchGenerations,
@@ -275,7 +281,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 dataBytes,
                 requestStartTime,
                 deliverySnapshotAtSend,
-                responseTask.TryRetainExternalOwner() ? null : new ArrayReturnGuard());
+                ownershipClaim == ExternalOwnershipClaimResult.Retained
+                    ? null
+                    : new ArrayReturnGuard());
+        }
+
+        [DoesNotReturn]
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private static void ThrowExternalOwnershipClaimRejected() =>
+            throw new InvalidOperationException(
+                "Pooled pipelined response rejected its external ownership claim.");
 
         /// <summary>
         /// True for the default-valued tombstone left in a pending list by
