@@ -2991,6 +2991,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
         catch (Exception)
         {
+            // EndTxn has already succeeded before this required TV1 epoch refresh starts.
+            // Caller cancellation cannot make the cached producer identity safe to reuse.
             if (_transactionState != TransactionState.FatalError)
             {
                 _lastTransactionError = ErrorCode.InvalidProducerEpoch;
@@ -3021,6 +3023,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         using var timeoutCts = CreateTransactionRetryCancellationSource(retryBudget, cancellationToken);
         var retryCancellationToken = timeoutCts.Token;
+        var endTxnRequestInFlight = false;
         try
         {
             while (true)
@@ -3050,10 +3053,12 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                         EndTxnRequest.HighestSupportedVersion);
                     if (afterRequestWrittenAsync is null)
                     {
+                        endTxnRequestInFlight = true;
                         response = await connection
                             .SendAsync<EndTxnRequest, EndTxnResponse>(
                                 request, apiVersion, retryCancellationToken)
                             .ConfigureAwait(false);
+                        endTxnRequestInFlight = false;
                     }
                     else
                     {
@@ -3063,6 +3068,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                                 "The transaction coordinator connection cannot report request write completion.");
                         }
 
+                        endTxnRequestInFlight = true;
                         var responseTask = await writeCompletionConnection
                             .SendPipelinedAfterWriteAsync<EndTxnRequest, EndTxnResponse>(
                                 request, apiVersion, retryCancellationToken)
@@ -3077,6 +3083,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                             var responseValueTask = responseTask.AsValueTask();
                             responseConsumptionStarted = true;
                             response = await responseValueTask.ConfigureAwait(false);
+                            endTxnRequestInFlight = false;
                         }
                         finally
                         {
@@ -3132,6 +3139,12 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         catch (OperationCanceledException) when (
             timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
+            if (endTxnRequestInFlight)
+            {
+                _lastTransactionError = ErrorCode.RequestTimedOut;
+                _transactionState = TransactionState.FatalError;
+            }
+
             throw CreateTransactionTimeoutException(
                 $"EndTxn ({(committed ? "commit" : "abort")})",
                 retryBudget,
