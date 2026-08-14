@@ -367,6 +367,49 @@ public sealed class SubjectNameStrategyTests
     }
 
     [Test]
+    public async Task AvroSerializer_ConcurrentRuntimeSchemas_KeepSchemaAndCachePaired()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        var config = new AvroSerializerConfig { SubjectNameStrategy = SubjectNameStrategy.RecordName };
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry, config);
+
+        var firstSchema = (Avro.RecordSchema)AvroSchema.Parse(SimpleRecordSchema);
+        var firstRecord = new GenericRecord(firstSchema);
+        firstRecord.Add("id", 1);
+        firstRecord.Add("name", "first");
+
+        var secondSchema = (Avro.RecordSchema)AvroSchema.Parse(AlternateRecordSchema);
+        var secondRecord = new GenericRecord(secondSchema);
+        secondRecord.Add("id", 2);
+
+        var context = CreateContext("shared-topic");
+        var firstId = await serializer.WarmupAsync(context.Topic, firstRecord);
+        var secondId = await serializer.WarmupAsync(context.Topic, secondRecord);
+        var mismatches = 0;
+        using var start = new Barrier(2);
+
+        Task RunAsync(GenericRecord record, int expectedId) => Task.Factory.StartNew(() =>
+        {
+            var buffer = new ArrayBufferWriter<byte>();
+            start.SignalAndWait();
+            for (var i = 0; i < 10_000; i++)
+            {
+                buffer.ResetWrittenCount();
+                serializer.Serialize(record, ref buffer, context);
+                var actualId = BinaryPrimitives.ReadInt32BigEndian(buffer.WrittenSpan.Slice(1, 4));
+                if (actualId != expectedId)
+                    Interlocked.Increment(ref mismatches);
+            }
+        }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+
+        await Task.WhenAll(
+            RunAsync(firstRecord, firstId),
+            RunAsync(secondRecord, secondId));
+
+        await Assert.That(mismatches).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task JsonSerializer_RecordNameStrategy_UsesSchemaTitle()
     {
         using var schemaRegistry = new MockSchemaRegistryClient();

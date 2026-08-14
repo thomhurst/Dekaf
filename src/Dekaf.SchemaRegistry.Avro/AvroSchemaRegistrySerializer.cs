@@ -48,15 +48,14 @@ public sealed class AvroSchemaRegistrySerializer<
     private readonly bool _ownsClient;
     private readonly ConcurrentDictionary<SchemaIdCacheKey, Lazy<Task<int>>> _schemaIdCache = new();
     private readonly SubjectSchemaIdCache _subjectSchemaIdCache = new();
-    private readonly ConcurrentDictionary<AvroSchema, SubjectSchemaIdCache> _dynamicSubjectSchemaIdCaches =
+    private readonly ConcurrentDictionary<AvroSchema, DynamicSubjectSchemaIdCache> _dynamicSubjectSchemaIdCaches =
         new(AvroSchemaReferenceComparer.Instance);
     private readonly ConcurrentDictionary<AvroSchema, GenericDatumWriter<GenericRecord>> _genericWriters =
         new(AvroSchemaReferenceComparer.Instance);
     private readonly ConcurrentDictionary<AvroSchema, SpecificDefaultWriter> _specificWriters =
         new(AvroSchemaReferenceComparer.Instance);
     private readonly AvroSchema? _writerSchema;
-    private AvroSchema? _lastDynamicSchema;
-    private SubjectSchemaIdCache? _lastDynamicSubjectSchemaIdCache;
+    private DynamicSubjectSchemaIdCache? _lastDynamicSubjectSchemaIdCache;
 
     /// <summary>
     /// Creates a new Avro Schema Registry serializer.
@@ -447,16 +446,27 @@ public sealed class AvroSchemaRegistrySerializer<
         if (_writerSchema is not null)
             return _subjectSchemaIdCache;
 
-        var lastSchema = Volatile.Read(ref _lastDynamicSchema);
-        if (ReferenceEquals(lastSchema, schema))
-            return Volatile.Read(ref _lastDynamicSubjectSchemaIdCache)!;
+        var last = Volatile.Read(ref _lastDynamicSubjectSchemaIdCache);
+        if (last is not null && ReferenceEquals(last.Schema, schema))
+            return last.Cache;
 
-        var cache = _dynamicSubjectSchemaIdCaches.GetOrAdd(
+        var entry = _dynamicSubjectSchemaIdCaches.GetOrAdd(
             schema,
-            static _ => new SubjectSchemaIdCache());
-        Volatile.Write(ref _lastDynamicSubjectSchemaIdCache, cache);
-        Volatile.Write(ref _lastDynamicSchema, schema);
-        return cache;
+            static schema => new DynamicSubjectSchemaIdCache(schema));
+        Volatile.Write(ref _lastDynamicSubjectSchemaIdCache, entry);
+        return entry.Cache;
+    }
+
+    private sealed class DynamicSubjectSchemaIdCache
+    {
+        internal DynamicSubjectSchemaIdCache(AvroSchema schema)
+        {
+            Schema = schema;
+            Cache = new SubjectSchemaIdCache();
+        }
+
+        internal AvroSchema Schema { get; }
+        internal SubjectSchemaIdCache Cache { get; }
     }
 
     private static AvroSchema? GetSchemaFromType()
