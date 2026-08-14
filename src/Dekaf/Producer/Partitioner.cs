@@ -546,6 +546,9 @@ public sealed class DefaultPartitioner : IPartitioner, IBatchCompletionAwarePart
 
     public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
     {
+        if (partitionCount == 1)
+            return 0;
+
         if (UsesStickyPartition(key, keyIsNull))
         {
             return _stickyPartitionTracker.GetOrAssign(topic, partitionCount);
@@ -625,6 +628,9 @@ public sealed class StickyPartitioner : IPartitioner, IBatchCompletionAwareParti
 
     public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
     {
+        if (partitionCount == 1)
+            return 0;
+
         if (UsesStickyPartition(key, keyIsNull))
         {
             return _stickyPartitionTracker.GetOrAssign(topic, partitionCount);
@@ -674,6 +680,9 @@ public sealed class RoundRobinPartitioner : IPartitioner
 
     public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
     {
+        if (partitionCount == 1)
+            return 0;
+
         return (int)(++_counter % (uint)partitionCount);
     }
 }
@@ -699,6 +708,9 @@ public sealed class ConsistentPartitioner : IPartitioner
 {
     public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
     {
+        if (partitionCount == 1)
+            return 0;
+
         return LibrdkafkaCrc32.Partition(key, partitionCount);
     }
 }
@@ -712,6 +724,9 @@ public sealed class ConsistentRandomPartitioner : IPartitioner
 
     public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
     {
+        if (partitionCount == 1)
+            return 0;
+
         return key.Length == 0
             ? _randomPartitionSelector.NextPartition(partitionCount)
             : LibrdkafkaCrc32.Partition(key, partitionCount);
@@ -726,6 +741,9 @@ public sealed class Murmur2Partitioner : IPartitioner
 {
     public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
     {
+        if (partitionCount == 1)
+            return 0;
+
         return Murmur2.Partition(key, partitionCount);
     }
 }
@@ -739,6 +757,9 @@ public sealed class Murmur2RandomPartitioner : IPartitioner
 
     public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
     {
+        if (partitionCount == 1)
+            return 0;
+
         return keyIsNull
             ? _randomPartitionSelector.NextPartition(partitionCount)
             : Murmur2.Partition(key, partitionCount);
@@ -753,6 +774,9 @@ public sealed class Fnv1APartitioner : IPartitioner
 {
     public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
     {
+        if (partitionCount == 1)
+            return 0;
+
         return Fnv1A.Partition(key, partitionCount);
     }
 }
@@ -766,6 +790,9 @@ public sealed class Fnv1ARandomPartitioner : IPartitioner
 
     public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
     {
+        if (partitionCount == 1)
+            return 0;
+
         return keyIsNull
             ? _randomPartitionSelector.NextPartition(partitionCount)
             : Fnv1A.Partition(key, partitionCount);
@@ -782,6 +809,9 @@ internal sealed class RandomPartitionSelector
 
     public int NextPartition(int partitionCount)
     {
+        if (partitionCount == 1)
+            return 0;
+
         var value = unchecked((uint)Interlocked.Add(ref _state, GoldenRatioIncrement));
         value ^= value >> 16;
         value *= MixMultiplier1;
