@@ -17,17 +17,31 @@ namespace Dekaf.Networking;
 /// the retained working set grows linearly with the number of unique threads visited —
 /// proportional to broker count and test duration. A dedicated <c>ConfigurableArrayPool</c>
 /// uses a single lock-based pool with bounded bucket depth, eliminating TLS accumulation.
+/// The writer object is pooled separately so request serialization does not allocate a wrapper.
 /// </summary>
 internal sealed class RentedBufferWriter : IBufferWriter<byte>, IDisposable
 {
-    private byte[] _buffer;
+    private const int MaxPoolSize = 256;
+    private static readonly Reservoir.ObjectPool<RentedBufferWriter, PoolPolicy> Pool = new(MaxPoolSize);
+
+    private byte[] _buffer = null!;
     private int _written;
     private bool _detached;
+    private bool _active;
 
-    public RentedBufferWriter(int initialCapacity, int offset)
+    private RentedBufferWriter()
     {
-        _written = offset;
-        _buffer = DekafPools.SerializationBuffers.Rent(initialCapacity + offset);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static RentedBufferWriter Rent(int initialCapacity, int offset)
+    {
+        var writer = Pool.Rent();
+        writer._written = offset;
+        writer._buffer = DekafPools.SerializationBuffers.Rent(initialCapacity + offset);
+        writer._detached = false;
+        writer._active = true;
+        return writer;
     }
 
     internal int WrittenCount => _written;
@@ -47,13 +61,16 @@ internal sealed class RentedBufferWriter : IBufferWriter<byte>, IDisposable
     /// </summary>
     public void Dispose()
     {
+        if (!_active)
+            return;
+
+        _active = false;
+        var buffer = _buffer;
+        _buffer = null!;
         if (!_detached)
-        {
-            var buf = _buffer;
-            _buffer = null!;
-            _detached = true;
-            DekafPools.SerializationBuffers.Return(buf, clearArray: false);
-        }
+            DekafPools.SerializationBuffers.Return(buffer, clearArray: false);
+
+        Pool.Return(this);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -103,5 +120,17 @@ internal sealed class RentedBufferWriter : IBufferWriter<byte>, IDisposable
         _buffer.AsSpan(0, _written).CopyTo(newBuffer);
         DekafPools.SerializationBuffers.Return(_buffer, clearArray: false);
         _buffer = newBuffer;
+    }
+
+    private readonly struct PoolPolicy : Reservoir.IPooledObjectPolicy<RentedBufferWriter>
+    {
+        public RentedBufferWriter Create() => new();
+
+        public bool TryReset(RentedBufferWriter writer)
+        {
+            writer._written = 0;
+            writer._detached = false;
+            return true;
+        }
     }
 }

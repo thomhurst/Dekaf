@@ -1,4 +1,3 @@
-using System.Buffers;
 using Dekaf.Networking;
 
 namespace Dekaf.Tests.Unit.Networking;
@@ -9,7 +8,7 @@ public class RentedBufferWriterTests
     public async Task Write_And_DetachBuffer_ReturnsCorrectLengthAndPreservesPrefix()
     {
         const int offset = 4;
-        using var writer = new RentedBufferWriter(initialCapacity: 64, offset: offset);
+        using var writer = RentedBufferWriter.Rent(initialCapacity: 64, offset: offset);
 
         // Write some data after the reserved prefix
         var span = writer.GetSpan(3);
@@ -33,7 +32,7 @@ public class RentedBufferWriterTests
         }
         finally
         {
-            ArrayPool<byte>.Shared.Return(array);
+            DekafPools.SerializationBuffers.Return(array);
         }
     }
 
@@ -42,7 +41,7 @@ public class RentedBufferWriterTests
     {
         const int offset = 4;
         // Use a tiny initial capacity to force growth
-        using var writer = new RentedBufferWriter(initialCapacity: 8, offset: offset);
+        using var writer = RentedBufferWriter.Rent(initialCapacity: 8, offset: offset);
 
         // Write the prefix area manually via GetSpan at construction time isn't possible,
         // so write a known pattern into the data area, force a grow, then verify.
@@ -74,7 +73,7 @@ public class RentedBufferWriterTests
         }
         finally
         {
-            ArrayPool<byte>.Shared.Return(array);
+            DekafPools.SerializationBuffers.Return(array);
         }
     }
 
@@ -82,7 +81,7 @@ public class RentedBufferWriterTests
     public async Task Dispose_WithoutDetach_ReturnsBufferToPool()
     {
         // Verifying pool return isn't directly observable, but we verify no exception is thrown.
-        var writer = new RentedBufferWriter(initialCapacity: 64, offset: 0);
+        var writer = RentedBufferWriter.Rent(initialCapacity: 64, offset: 0);
         var span = writer.GetSpan(4);
         span[0] = 0xFF;
         writer.Advance(4);
@@ -93,9 +92,28 @@ public class RentedBufferWriterTests
     }
 
     [Test]
-    public async Task Dispose_AfterDetach_IsNoOp()
+    public async Task Rent_AfterDispose_ReinitializesWriter()
     {
-        var writer = new RentedBufferWriter(initialCapacity: 64, offset: 0);
+        var writer = RentedBufferWriter.Rent(initialCapacity: 64, offset: 0);
+        writer.Advance(1);
+        writer.Dispose();
+
+        using var reused = RentedBufferWriter.Rent(initialCapacity: 64, offset: 4);
+        var (array, length) = reused.DetachBuffer();
+        try
+        {
+            await Assert.That(length).IsEqualTo(4);
+        }
+        finally
+        {
+            DekafPools.SerializationBuffers.Return(array);
+        }
+    }
+
+    [Test]
+    public async Task Dispose_AfterDetach_DoesNotReturnDetachedBuffer()
+    {
+        var writer = RentedBufferWriter.Rent(initialCapacity: 64, offset: 0);
         var span = writer.GetSpan(1);
         span[0] = 0x42;
         writer.Advance(1);
@@ -112,14 +130,14 @@ public class RentedBufferWriterTests
         }
         finally
         {
-            ArrayPool<byte>.Shared.Return(array);
+            DekafPools.SerializationBuffers.Return(array);
         }
     }
 
     [Test]
     public async Task Advance_WithNegativeCount_ThrowsArgumentOutOfRangeException()
     {
-        using var writer = new RentedBufferWriter(initialCapacity: 64, offset: 0);
+        using var writer = RentedBufferWriter.Rent(initialCapacity: 64, offset: 0);
 
         var action = () => writer.Advance(-1);
 
@@ -130,7 +148,7 @@ public class RentedBufferWriterTests
     [Test]
     public async Task Advance_ExceedingCapacity_ThrowsArgumentOutOfRangeException()
     {
-        using var writer = new RentedBufferWriter(initialCapacity: 16, offset: 0);
+        using var writer = RentedBufferWriter.Rent(initialCapacity: 16, offset: 0);
 
         // ArrayPool may return a larger buffer than requested, so get actual capacity
         // by requesting 0 span and checking how much we can advance.

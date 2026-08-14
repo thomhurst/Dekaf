@@ -1610,7 +1610,7 @@ public sealed partial class KafkaConnection :
     {
         // Serialize directly into a rented array at offset 4 (reserving space for the size
         // prefix). The only copy is rented array -> PipeWriter under the write lock.
-        using var writer = new RentedBufferWriter(
+        using var writer = RentedBufferWriter.Rent(
             GetPreSerializeInitialCapacity<TResponse>(request),
             MessageSizePrefixLength);
 
@@ -1757,7 +1757,7 @@ public sealed partial class KafkaConnection :
         if (!batch.CanWriteSegmented(partition.Compression))
             return false;
 
-        using var metadataWriter = new RentedBufferWriter(
+        using var metadataWriter = RentedBufferWriter.Rent(
             DefaultPreSerializeInitialCapacity,
             MessageSizePrefixLength);
         var writer = new KafkaProtocolWriter(metadataWriter);
