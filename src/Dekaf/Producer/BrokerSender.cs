@@ -175,30 +175,107 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// Wraps a pipelined response with the batch-generation snapshot the send captured
     /// at send start (before its first await) — the generations detect batch object
     /// recycling between send and response processing. Ownership of the rented
-    /// <paramref name="BatchGenerations"/>, <paramref name="TopicIds"/>, and
-    /// <paramref name="Batches"/> arrays transfers
+    /// <see cref="PendingResponse.BatchGenerations"/>, <see cref="PendingResponse.TopicIds"/>, and
+    /// <see cref="PendingResponse.Batches"/> arrays transfers
     /// to this PendingResponse; they are returned by <see cref="TryReturnArrays"/>.
     /// </summary>
-    internal readonly record struct PendingResponse(
-        PipelinedResponse<ProduceResponse> ResponseTask,
-        ReadyBatch[] Batches,
-        int[] BatchGenerations,
-        Guid[]? TopicIds,
-        short ApiVersion,
-        int Count,
-        long EncodedBytes,
-        long DataBytes,
-        long RequestStartTime,
-        BrokerUnackedByteBudget.DeliverySnapshot DeliverySnapshotAtSend)
+    internal readonly struct PendingResponse
     {
+        public PipelinedResponse<ProduceResponse> ResponseTask { get; }
+        public ReadyBatch[] Batches { get; }
+        public int[] BatchGenerations { get; }
+        public Guid[]? TopicIds { get; }
+        public short ApiVersion { get; }
+        public int Count { get; }
+        public long EncodedBytes { get; }
+        public long DataBytes { get; }
+        public long RequestStartTime { get; }
+        public BrokerUnackedByteBudget.DeliverySnapshot DeliverySnapshotAtSend { get; }
+
         /// <summary>
-        /// One-time-return claim for the rented arrays. Lives in a reference type because
-        /// PendingResponse is a struct copied by value (lists, locals, sweeps) — every copy
-        /// must observe the same claim, or two copies could each return the arrays and
-        /// poison <see cref="ArrayPool{T}.Shared"/> with a double-returned array (#2187:
-        /// a poisoned pool hands the same array to two renters, cross-contaminating requests).
+        /// Task-backed fallbacks keep a reference-typed claim because PendingResponse is
+        /// copied by value. The normal producer path keeps the claim on its already-pooled,
+        /// versioned response source, which cannot return to its pool until arrays release.
+        /// Both forms prevent two copies from returning the same arrays (#2187).
         /// </summary>
-        private ArrayReturnGuard ReturnGuard { get; } = new();
+        private ArrayReturnGuard? ReturnGuard { get; }
+
+        public PendingResponse(
+            PipelinedResponse<ProduceResponse> responseTask,
+            ReadyBatch[] batches,
+            int[] batchGenerations,
+            Guid[]? topicIds,
+            short apiVersion,
+            int count,
+            long encodedBytes,
+            long dataBytes,
+            long requestStartTime,
+            BrokerUnackedByteBudget.DeliverySnapshot deliverySnapshotAtSend)
+            : this(
+                responseTask,
+                batches,
+                batchGenerations,
+                topicIds,
+                apiVersion,
+                count,
+                encodedBytes,
+                dataBytes,
+                requestStartTime,
+                deliverySnapshotAtSend,
+                new ArrayReturnGuard())
+        {
+        }
+
+        private PendingResponse(
+            PipelinedResponse<ProduceResponse> responseTask,
+            ReadyBatch[] batches,
+            int[] batchGenerations,
+            Guid[]? topicIds,
+            short apiVersion,
+            int count,
+            long encodedBytes,
+            long dataBytes,
+            long requestStartTime,
+            BrokerUnackedByteBudget.DeliverySnapshot deliverySnapshotAtSend,
+            ArrayReturnGuard? returnGuard)
+        {
+            ResponseTask = responseTask;
+            Batches = batches;
+            BatchGenerations = batchGenerations;
+            TopicIds = topicIds;
+            ApiVersion = apiVersion;
+            Count = count;
+            EncodedBytes = encodedBytes;
+            DataBytes = dataBytes;
+            RequestStartTime = requestStartTime;
+            DeliverySnapshotAtSend = deliverySnapshotAtSend;
+            ReturnGuard = returnGuard;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal static PendingResponse Create(
+            PipelinedResponse<ProduceResponse> responseTask,
+            ReadyBatch[] batches,
+            int[] batchGenerations,
+            Guid[]? topicIds,
+            short apiVersion,
+            int count,
+            long encodedBytes,
+            long dataBytes,
+            long requestStartTime,
+            BrokerUnackedByteBudget.DeliverySnapshot deliverySnapshotAtSend)
+            => new(
+                responseTask,
+                batches,
+                batchGenerations,
+                topicIds,
+                apiVersion,
+                count,
+                encodedBytes,
+                dataBytes,
+                requestStartTime,
+                deliverySnapshotAtSend,
+                responseTask.TryRetainExternalOwner() ? null : new ArrayReturnGuard());
 
         /// <summary>
         /// True for the default-valued tombstone left in a pending list by
@@ -223,7 +300,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         /// </summary>
         public bool TryReturnArrays()
         {
-            if (!ReturnGuard.TryClaim())
+            if (!TryClaimArrayOwnership())
                 return false;
 
             ArrayPool<int>.Shared.Return(BatchGenerations);
@@ -232,6 +309,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             ArrayPool<ReadyBatch>.Shared.Return(Batches, clearArray: true);
             return true;
         }
+
+        internal bool TryAbandonArrayOwnership() => TryClaimArrayOwnership();
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private bool TryClaimArrayOwnership() => ReturnGuard?.TryClaim()
+            ?? ResponseTask.TryReleaseExternalOwner();
     }
 
     internal readonly record struct ProduceResponseKey(string Topic, Guid TopicId, int Partition)
@@ -3946,7 +4029,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                 Debug.Assert(count > 0,
                     "PendingResponse must never be constructed empty — Count == 0 is the claimed-tombstone sentinel (IsClaimed).");
-                var pendingResponse = new PendingResponse(
+                var pendingResponse = PendingResponse.Create(
                     responseTask,
                     batches,
                     generations,
@@ -3957,7 +4040,17 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     dataBytes,
                     requestStartTime,
                     deliverySnapshotAtSend);
-                _pendingResponsesByConnection[connectionIndex].Add(pendingResponse);
+                try
+                {
+                    _pendingResponsesByConnection[connectionIndex].Add(pendingResponse);
+                }
+                catch
+                {
+                    // The outer failure path still owns and returns the arrays. Release only
+                    // the ownership claim acquired by PendingResponse.Create().
+                    pendingResponse.TryAbandonArrayOwnership();
+                    throw;
+                }
                 pendingResponseAdded = true; // Array ownership transferred to PendingResponse
                 Interlocked.Increment(ref _totalPendingResponseCount);
                 Interlocked.Add(ref _totalPendingResponseBytes, encodedBytes);

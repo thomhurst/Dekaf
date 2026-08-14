@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Threading.Tasks.Sources;
 using Dekaf.Protocol;
 
@@ -155,6 +156,12 @@ internal interface IPipelinedResponseSource<TResponse> : IValueTaskSource<TRespo
     void Abandon(short token);
 }
 
+internal interface IPipelinedResponseExternalOwnership
+{
+    bool TryRetainExternalOwner(short token);
+    bool TryReleaseExternalOwner(short token);
+}
+
 internal readonly struct PipelinedResponse<TResponse>
 {
     private readonly Task<TResponse>? _task;
@@ -206,4 +213,12 @@ internal readonly struct PipelinedResponse<TResponse>
     }
 
     public void Abandon() => _source?.Abandon(_token);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool TryRetainExternalOwner() =>
+        (_source as IPipelinedResponseExternalOwnership)?.TryRetainExternalOwner(_token) == true;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool TryReleaseExternalOwner() =>
+        (_source as IPipelinedResponseExternalOwnership)?.TryReleaseExternalOwner(_token) == true;
 }

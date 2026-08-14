@@ -645,6 +645,63 @@ public sealed class KafkaConnectionTests
     }
 
     [Test]
+    [NotInParallel]
+    [Timeout(10_000)]
+    public async Task PipelinedResponse_ExternalOwner_DelaysPoolReturn(
+        CancellationToken cancellationToken)
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+
+        try
+        {
+            var baseline = KafkaConnection.GetPipelinedResponsePoolCount<
+                ApiVersionsRequest,
+                ApiVersionsResponse>();
+            var expectedWhileRetained = Math.Max(0, baseline - 1);
+            var expectedAfterReturn = Math.Max(1, baseline);
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            var acceptTask = AcceptAndCompleteHandshakeAsync(listener, cancellationToken);
+            await using var connection = new KafkaConnection(IPAddress.Loopback.ToString(), port);
+            await connection.ConnectAsync(cancellationToken);
+            using var serverClient = await acceptTask.ConfigureAwait(false);
+
+            var response = await ((IKafkaPipelinedWriteCompletionConnection)connection)
+                .SendPipelinedAfterWriteAsync<ApiVersionsRequest, ApiVersionsResponse>(
+                    new ApiVersionsRequest { ClientSoftwareName = "test", ClientSoftwareVersion = "1.0" },
+                    apiVersion: 3,
+                    cancellationToken);
+            await Assert.That(response.TryRetainExternalOwner()).IsTrue();
+            await Assert.That(response.TryRetainExternalOwner()).IsFalse();
+
+            var requestFrame = await ReadRequestFrameAsync(serverClient.GetStream(), cancellationToken);
+            var correlationId = BinaryPrimitives.ReadInt32BigEndian(requestFrame.AsSpan(4, 4));
+            await serverClient.GetStream().WriteAsync(
+                BuildApiVersionsV3ResponseFrame(correlationId),
+                cancellationToken);
+
+            while (!response.IsCompleted)
+                await Task.Yield();
+            var parsed = response.GetResult();
+
+            await Assert.That(parsed.ErrorCode).IsEqualTo(ErrorCode.None);
+            await Assert.That(KafkaConnection.GetPipelinedResponsePoolCount<
+                ApiVersionsRequest,
+                ApiVersionsResponse>()).IsEqualTo(expectedWhileRetained);
+
+            await Assert.That(response.TryReleaseExternalOwner()).IsTrue();
+            await Assert.That(response.TryReleaseExternalOwner()).IsFalse();
+            await Assert.That(KafkaConnection.GetPipelinedResponsePoolCount<
+                ApiVersionsRequest,
+                ApiVersionsResponse>()).IsEqualTo(expectedAfterReturn);
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    [Test]
     [Timeout(10_000)]
     public async Task SendAsync_ResponseCancellation_PreservesCallerCancellationToken(CancellationToken cancellationToken)
     {

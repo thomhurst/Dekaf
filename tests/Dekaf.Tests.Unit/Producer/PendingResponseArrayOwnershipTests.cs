@@ -58,12 +58,12 @@ public sealed class PendingResponseArrayOwnershipTests : ScriptedProduceResponse
             default,
             ArrayPool<ReadyBatch>.Shared.Rent(1),
             ArrayPool<int>.Shared.Rent(1),
-            TopicIds: null,
-            ApiVersion: 12,
-            Count: 0,
-            EncodedBytes: 0,
-            DataBytes: 0,
-            RequestStartTime: 0,
+            topicIds: null,
+            apiVersion: 12,
+            count: 0,
+            encodedBytes: 0,
+            dataBytes: 0,
+            requestStartTime: 0,
             default);
         var copy = pending;
 

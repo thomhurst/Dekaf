@@ -1088,7 +1088,8 @@ public sealed partial class KafkaConnection :
     internal static Action? PendingRequestDrainStartedTestHook;
 
     private sealed class PooledPipelinedResponse<TRequest, TResponse> :
-        IPipelinedResponseSource<TResponse>
+        IPipelinedResponseSource<TResponse>,
+        IPipelinedResponseExternalOwnership
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
     {
@@ -1098,6 +1099,8 @@ public sealed partial class KafkaConnection :
         private const int ConsumerReturned = 2;
         private const int CompletionReady = 1;
         private const int ConsumerReady = 2;
+        private const int ExternalOwnerRetained = 4;
+        private const int ExternalOwnerReady = 8;
         private const int ReturnReady = CompletionReady | ConsumerReady;
 
         private static readonly Reservoir.ObjectPool<
@@ -1311,6 +1314,46 @@ public sealed partial class KafkaConnection :
             ReturnIfAbandoned();
         }
 
+        public bool TryRetainExternalOwner(short token)
+        {
+            if (token != _core.Version)
+                return false;
+
+            var readiness = Volatile.Read(ref _returnReadiness);
+            while ((readiness & (ConsumerReady | ExternalOwnerRetained)) == 0)
+            {
+                var observed = Interlocked.CompareExchange(
+                    ref _returnReadiness,
+                    readiness | ExternalOwnerRetained,
+                    readiness);
+                if (observed == readiness)
+                    return true;
+
+                if (token != _core.Version)
+                    return false;
+
+                readiness = observed;
+            }
+
+            return false;
+        }
+
+        public bool TryReleaseExternalOwner(short token)
+        {
+            if (token != _core.Version
+                || (Volatile.Read(ref _returnReadiness) & ExternalOwnerRetained) == 0)
+            {
+                return false;
+            }
+
+            var previous = Interlocked.Or(ref _returnReadiness, ExternalOwnerReady);
+            if ((previous & ExternalOwnerReady) != 0)
+                return false;
+
+            ReturnIfReady(previous, previous | ExternalOwnerReady);
+            return true;
+        }
+
         private void ReturnIfAbandoned()
         {
             if (_core.GetStatus(_core.Version) == ValueTaskSourceStatus.Pending
@@ -1337,7 +1380,16 @@ public sealed partial class KafkaConnection :
         private void SignalReturnReady(int readiness)
         {
             var previous = Interlocked.Or(ref _returnReadiness, readiness);
-            if (previous != ReturnReady && (previous | readiness) == ReturnReady)
+            ReturnIfReady(previous, previous | readiness);
+        }
+
+        private void ReturnIfReady(int previous, int readiness)
+        {
+            var required = ReturnReady;
+            if ((readiness & ExternalOwnerRetained) != 0)
+                required |= ExternalOwnerReady;
+
+            if ((previous & required) != required && (readiness & required) == required)
                 ReturnToPool();
         }
 
