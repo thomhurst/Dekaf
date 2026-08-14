@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
 using Avro.Generic;
 using Avro.IO;
 using Avro.Specific;
@@ -48,8 +49,11 @@ public sealed class AvroSchemaRegistrySerializer<
     private readonly bool _ownsClient;
     private readonly ConcurrentDictionary<SchemaIdCacheKey, Lazy<Task<int>>> _schemaIdCache = new();
     private readonly SubjectSchemaIdCache _subjectSchemaIdCache = new();
-    private readonly ConcurrentDictionary<AvroSchema, DynamicSubjectSchemaIdCache> _dynamicSubjectSchemaIdCaches =
-        new(AvroSchemaReferenceComparer.Instance);
+    private readonly ConcurrentDictionary<string, SubjectSchemaIdCache> _dynamicSubjectSchemaIdCaches =
+        new(StringComparer.Ordinal);
+    private readonly ConditionalWeakTable<AvroSchema, DynamicSubjectSchemaIdCache> _dynamicSubjectSchemaIdCachesByInstance = new();
+    private readonly ConditionalWeakTable<AvroSchema, DynamicSubjectSchemaIdCache>.CreateValueCallback
+        _createDynamicSubjectSchemaIdCache;
     private readonly ConcurrentDictionary<AvroSchema, GenericDatumWriter<GenericRecord>> _genericWriters =
         new(AvroSchemaReferenceComparer.Instance);
     private readonly ConcurrentDictionary<AvroSchema, SpecificDefaultWriter> _specificWriters =
@@ -71,6 +75,7 @@ public sealed class AvroSchemaRegistrySerializer<
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _config = config ?? new AvroSerializerConfig();
         _ownsClient = ownsClient;
+        _createDynamicSubjectSchemaIdCache = CreateDynamicSubjectSchemaIdCache;
 
         // Try to get schema from type T if it's a specific record
         _writerSchema = GetSchemaFromType();
@@ -78,6 +83,7 @@ public sealed class AvroSchemaRegistrySerializer<
 
     internal int CachedGenericWriterCount => _genericWriters.Count;
     internal int CachedSpecificWriterCount => _specificWriters.Count;
+    internal int CachedDynamicSubjectSchemaCount => _dynamicSubjectSchemaIdCaches.Count;
 
     /// <summary>
     /// Pre-warms the schema cache for a specific topic.
@@ -450,19 +456,27 @@ public sealed class AvroSchemaRegistrySerializer<
         if (last is not null && ReferenceEquals(last.Schema, schema))
             return last.Cache;
 
-        var entry = _dynamicSubjectSchemaIdCaches.GetOrAdd(
+        var entry = _dynamicSubjectSchemaIdCachesByInstance.GetValue(
             schema,
-            static schema => new DynamicSubjectSchemaIdCache(schema));
+            _createDynamicSubjectSchemaIdCache);
         Volatile.Write(ref _lastDynamicSubjectSchemaIdCache, entry);
         return entry.Cache;
     }
 
+    private DynamicSubjectSchemaIdCache CreateDynamicSubjectSchemaIdCache(AvroSchema schema)
+    {
+        var cache = _dynamicSubjectSchemaIdCaches.GetOrAdd(
+            schema.ToString(),
+            static _ => new SubjectSchemaIdCache());
+        return new DynamicSubjectSchemaIdCache(schema, cache);
+    }
+
     private sealed class DynamicSubjectSchemaIdCache
     {
-        internal DynamicSubjectSchemaIdCache(AvroSchema schema)
+        internal DynamicSubjectSchemaIdCache(AvroSchema schema, SubjectSchemaIdCache cache)
         {
             Schema = schema;
-            Cache = new SubjectSchemaIdCache();
+            Cache = cache;
         }
 
         internal AvroSchema Schema { get; }

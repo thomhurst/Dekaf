@@ -385,6 +385,7 @@ public sealed class SubjectNameStrategyTests
         var context = CreateContext("shared-topic");
         var firstId = await serializer.WarmupAsync(context.Topic, firstRecord);
         var secondId = await serializer.WarmupAsync(context.Topic, secondRecord);
+        await Assert.That(secondId).IsNotEqualTo(firstId);
         var mismatches = 0;
         using var start = new Barrier(2);
 
@@ -407,6 +408,27 @@ public sealed class SubjectNameStrategyTests
             RunAsync(secondRecord, secondId));
 
         await Assert.That(mismatches).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task AvroSerializer_EquivalentRuntimeSchemaInstances_ReuseSubjectCache()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry);
+        var context = CreateContext("shared-topic");
+
+        for (var i = 0; i < 100; i++)
+        {
+            var schema = (Avro.RecordSchema)AvroSchema.Parse(SimpleRecordSchema);
+            var record = new GenericRecord(schema);
+            record.Add("id", i);
+            record.Add("name", "equivalent");
+            var buffer = new ArrayBufferWriter<byte>();
+
+            serializer.Serialize(record, ref buffer, context);
+        }
+
+        await Assert.That(serializer.CachedDynamicSubjectSchemaCount).IsEqualTo(1);
     }
 
     [Test]
