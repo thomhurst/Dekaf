@@ -93,8 +93,17 @@ public class ProducerFireHotPathBenchmarks
         {
             var result = _producer.FireAsync(Topic, Keys[i], _value);
             if (!result.IsCompletedSuccessfully)
-                result.GetAwaiter().GetResult();
+                WaitForCompletion(result);
         }
+    }
+
+    private static void WaitForCompletion(ValueTask pending)
+    {
+        var spinner = new SpinWait();
+        while (!pending.IsCompleted)
+            spinner.SpinOnce();
+
+        pending.GetAwaiter().GetResult();
     }
 
     private void DrainLoop(CancellationToken cancellationToken)
