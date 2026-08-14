@@ -363,6 +363,62 @@ public class DefaultPartitionerTests
         await Assert.That(partition).IsGreaterThanOrEqualTo(0);
         await Assert.That(partition).IsLessThan(partitionCount);
     }
+
+    [Test]
+    public async Task Partition_ConcurrentTopics_PreserveIndependentStickyState()
+    {
+        var partitioner = new DefaultPartitioner();
+        var uniform = (IUniformStickyPartitioner)partitioner;
+        const string firstTopic = "first-topic";
+        const string secondTopic = "second-topic";
+        const int partitionCount = 17;
+
+        var firstPartition = partitioner.Partition(
+            firstTopic,
+            ReadOnlySpan<byte>.Empty,
+            keyIsNull: true,
+            partitionCount);
+        var secondPartition = partitioner.Partition(
+            secondTopic,
+            ReadOnlySpan<byte>.Empty,
+            keyIsNull: true,
+            partitionCount);
+        while (secondPartition == firstPartition)
+        {
+            partitioner.OnBatchComplete(secondTopic, partitionCount);
+            secondPartition = partitioner.Partition(
+                secondTopic,
+                ReadOnlySpan<byte>.Empty,
+                keyIsNull: true,
+                partitionCount);
+        }
+
+        var statePreserved = 1;
+        var tasks = new Task[8];
+        for (var taskIndex = 0; taskIndex < tasks.Length; taskIndex++)
+        {
+            tasks[taskIndex] = Task.Run(() =>
+            {
+                for (var i = 0; i < 10_000; i++)
+                {
+                    var topic = (i & 1) == 0 ? firstTopic : secondTopic;
+                    var expected = (i & 1) == 0 ? firstPartition : secondPartition;
+                    var actual = partitioner.Partition(
+                        topic,
+                        ReadOnlySpan<byte>.Empty,
+                        keyIsNull: true,
+                        partitionCount);
+                    if (actual != expected)
+                        Interlocked.Exchange(ref statePreserved, 0);
+
+                    uniform.OnRecordAppended(topic, actual, bytes: 1, partitionCount);
+                }
+            });
+        }
+
+        await Task.WhenAll(tasks);
+        await Assert.That(statePreserved).IsEqualTo(1);
+    }
 }
 
 public class StickyPartitionerTests

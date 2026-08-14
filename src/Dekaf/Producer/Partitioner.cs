@@ -3,6 +3,7 @@ using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO.Hashing;
+using System.Runtime.CompilerServices;
 
 namespace Dekaf.Producer;
 
@@ -33,7 +34,13 @@ internal interface IUniformStickyPartitioner
 
 internal sealed class StickyPartitionTracker
 {
+    private const int StateCacheSize = 16;
+    private const int StateCacheMask = StateCacheSize - 1;
+
     private readonly ConcurrentDictionary<string, StickyPartitionState> _partitions = new();
+    // A state contains its topic, so each cache slot is published with one atomic reference
+    // write. Multi-topic misses never serialize on a writer lock.
+    private readonly StickyPartitionState?[] _stateCache = new StickyPartitionState?[StateCacheSize];
     private readonly bool _adaptivePartitioning;
     private readonly int _availabilityTimeoutMs;
     private readonly bool _rackAwarePartitioning;
@@ -438,21 +445,55 @@ internal sealed class StickyPartitionTracker
 
     private StickyPartitionState GetOrCreateAssignedState(string topic, int partitionCount)
     {
-        if (_partitions.TryGetValue(topic, out var state))
-            return state;
+        if (TryGetCachedState(topic) is { } cached)
+            return cached;
 
-        var created = new StickyPartitionState(NextPartition(topic, partitionCount, currentPartition: null));
-        return _partitions.GetOrAdd(topic, created);
+        if (_partitions.TryGetValue(topic, out var state))
+        {
+            CacheState(topic, state);
+            return state;
+        }
+
+        var created = new StickyPartitionState(topic, NextPartition(topic, partitionCount, currentPartition: null));
+        state = _partitions.GetOrAdd(topic, created);
+        CacheState(topic, state);
+        return state;
     }
 
     private StickyPartitionState GetOrCreateStateWithPartition(string topic, int initialPartition)
     {
-        if (_partitions.TryGetValue(topic, out var state))
-            return state;
+        if (TryGetCachedState(topic) is { } cached)
+            return cached;
 
-        var created = new StickyPartitionState(initialPartition);
-        return _partitions.GetOrAdd(topic, created);
+        if (_partitions.TryGetValue(topic, out var state))
+        {
+            CacheState(topic, state);
+            return state;
+        }
+
+        var created = new StickyPartitionState(topic, initialPartition);
+        state = _partitions.GetOrAdd(topic, created);
+        CacheState(topic, state);
+        return state;
     }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private StickyPartitionState? TryGetCachedState(string topic)
+    {
+        var cachedState = Volatile.Read(ref _stateCache[GetStateCacheIndex(topic)]);
+        return cachedState is not null
+            && string.Equals(cachedState.Topic, topic, StringComparison.Ordinal)
+                ? cachedState
+                : null;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void CacheState(string topic, StickyPartitionState state)
+        => Volatile.Write(ref _stateCache[GetStateCacheIndex(topic)], state);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int GetStateCacheIndex(string topic)
+        => RuntimeHelpers.GetHashCode(topic) & StateCacheMask;
 
     private bool IsUnavailable(string topic, int partition, long queueSize)
     {
@@ -495,8 +536,9 @@ internal sealed class StickyPartitionTracker
         return result < left ? long.MaxValue : result;
     }
 
-    private sealed class StickyPartitionState(int partition)
+    private sealed class StickyPartitionState(string topic, int partition)
     {
+        public readonly string Topic = topic;
         public long PackedState = PackState(partition, producedBytes: 0);
     }
 
