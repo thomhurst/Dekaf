@@ -742,3 +742,76 @@ public class LibrdkafkaPartitionerTests
         uint Fnv1A,
         int Fnv1APartition);
 }
+
+public class SinglePartitionFastPathTests
+{
+    private const string Topic = "single-partition-transition";
+    private const int MultiPartitionCount = 7;
+    private const int RandomState = 0x1234_5678;
+
+    [Test]
+    [Arguments(typeof(DefaultPartitioner), true, "")]
+    [Arguments(typeof(StickyPartitioner), true, "")]
+    [Arguments(typeof(RoundRobinPartitioner), false, "key")]
+    [Arguments(typeof(RandomPartitioner), false, "key")]
+    [Arguments(typeof(ConsistentPartitioner), false, "key")]
+    [Arguments(typeof(ConsistentRandomPartitioner), true, "")]
+    [Arguments(typeof(Murmur2Partitioner), false, "key")]
+    [Arguments(typeof(Murmur2RandomPartitioner), true, "")]
+    [Arguments(typeof(Fnv1APartitioner), false, "key")]
+    [Arguments(typeof(Fnv1ARandomPartitioner), true, "")]
+    public async Task Partition_SinglePartition_DoesNotChangeSubsequentSequence(
+        Type partitionerType,
+        bool keyIsNull,
+        string keyText)
+    {
+        var warmedPartitioner = CreatePartitioner(partitionerType);
+        var freshPartitioner = CreatePartitioner(partitionerType);
+        SetRandomStateIfPresent(warmedPartitioner, RandomState);
+        SetRandomStateIfPresent(freshPartitioner, RandomState);
+        var key = Encoding.UTF8.GetBytes(keyText);
+
+        for (var i = 0; i < 32; i++)
+        {
+            await Assert.That(warmedPartitioner.Partition(Topic, key, keyIsNull, partitionCount: 1))
+                .IsEqualTo(0)
+                .Because($"{partitionerType.Name} must return the only available partition");
+        }
+
+        for (var i = 0; i < 32; i++)
+        {
+            var actual = warmedPartitioner.Partition(Topic, key, keyIsNull, MultiPartitionCount);
+            var expected = freshPartitioner.Partition(Topic, key, keyIsNull, MultiPartitionCount);
+
+            await Assert.That(actual)
+                .IsEqualTo(expected)
+                .Because($"single-partition calls must not advance {partitionerType.Name} state");
+        }
+    }
+
+    private static IPartitioner CreatePartitioner(Type partitionerType)
+    {
+        if (partitionerType == typeof(DefaultPartitioner))
+            return new DefaultPartitioner();
+        if (partitionerType == typeof(StickyPartitioner))
+            return new StickyPartitioner();
+
+        return (IPartitioner)(Activator.CreateInstance(partitionerType)
+            ?? throw new InvalidOperationException($"Could not create {partitionerType.Name}."));
+    }
+
+    private static void SetRandomStateIfPresent(IPartitioner partitioner, int state)
+    {
+        var selectorField = partitioner.GetType().GetField(
+            "_randomPartitionSelector",
+            BindingFlags.NonPublic | BindingFlags.Instance);
+        if (selectorField?.GetValue(partitioner) is not { } selector)
+            return;
+
+        var stateField = selector.GetType().GetField(
+            "_state",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new MissingFieldException(selector.GetType().Name, "_state");
+        stateField.SetValue(selector, state);
+    }
+}
