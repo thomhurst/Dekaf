@@ -34,15 +34,42 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
     private readonly ISchemaRegistryClient _schemaRegistry;
     private readonly Action<T, IBufferWriter<byte>> _serialize;
     private readonly Func<string, Schema> _getSchema;
+    private readonly bool _schemaFactoryIgnoresSubject;
     private readonly SubjectNameStrategy _subjectNameStrategy;
     private readonly ISubjectNameStrategy? _customSubjectNameStrategy;
     private readonly bool _autoRegisterSchemas;
     private readonly bool _normalizeSchemas;
+    private readonly bool _useLegacySubjectNames;
     private readonly bool _ownsClient;
     private readonly ISchemaRegistryRuleExecutor? _ruleExecutor;
 
     private readonly ConcurrentDictionary<string, int> _schemaIdCache = new();
     private readonly SubjectSchemaIdCache _subjectSchemaIdCache = new();
+
+    /// <summary>
+    /// Creates a new Schema Registry serializer.
+    /// </summary>
+    public SchemaRegistrySerializer(
+        ISchemaRegistryClient schemaRegistry,
+        Action<T, IBufferWriter<byte>> serialize,
+        Func<string, Schema> getSchema,
+        SubjectNameStrategy subjectNameStrategy = SubjectNameStrategy.TopicName,
+        bool autoRegisterSchemas = true,
+        bool ownsClient = false,
+        ISchemaRegistryRuleExecutor? ruleExecutor = null,
+        bool normalizeSchemas = false)
+        : this(
+            schemaRegistry,
+            serialize,
+            getSchema,
+            useLegacySubjectNames: false,
+            subjectNameStrategy,
+            autoRegisterSchemas,
+            ownsClient,
+            ruleExecutor,
+            normalizeSchemas)
+    {
+    }
 
     /// <summary>
     /// Creates a new Schema Registry serializer.
@@ -55,10 +82,12 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
     /// <param name="ownsClient">Whether this serializer owns the client and should dispose it.</param>
     /// <param name="ruleExecutor">Optional rule executor applied to payload bytes.</param>
     /// <param name="normalizeSchemas">Whether to normalize schemas during registration.</param>
+    /// <param name="useLegacySubjectNames">Whether RecordName and TopicRecordName should use Dekaf's legacy -key/-value suffixes.</param>
     public SchemaRegistrySerializer(
         ISchemaRegistryClient schemaRegistry,
         Action<T, IBufferWriter<byte>> serialize,
         Func<string, Schema> getSchema,
+        bool useLegacySubjectNames,
         SubjectNameStrategy subjectNameStrategy = SubjectNameStrategy.TopicName,
         bool autoRegisterSchemas = true,
         bool ownsClient = false,
@@ -71,6 +100,59 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
         _subjectNameStrategy = subjectNameStrategy;
         _autoRegisterSchemas = autoRegisterSchemas;
         _normalizeSchemas = normalizeSchemas;
+        _useLegacySubjectNames = useLegacySubjectNames;
+        _ownsClient = ownsClient;
+        _ruleExecutor = ruleExecutor;
+    }
+
+    /// <summary>
+    /// Creates a new Schema Registry serializer whose schema factory is independent of the subject name.
+    /// </summary>
+    public SchemaRegistrySerializer(
+        ISchemaRegistryClient schemaRegistry,
+        Action<T, IBufferWriter<byte>> serialize,
+        Func<Schema> getSchema,
+        SubjectNameStrategy subjectNameStrategy = SubjectNameStrategy.TopicName,
+        bool autoRegisterSchemas = true,
+        bool ownsClient = false,
+        ISchemaRegistryRuleExecutor? ruleExecutor = null,
+        bool normalizeSchemas = false)
+        : this(
+            schemaRegistry,
+            serialize,
+            getSchema,
+            useLegacySubjectNames: false,
+            subjectNameStrategy,
+            autoRegisterSchemas,
+            ownsClient,
+            ruleExecutor,
+            normalizeSchemas)
+    {
+    }
+
+    /// <summary>
+    /// Creates a new Schema Registry serializer whose schema factory is independent of the subject name.
+    /// </summary>
+    public SchemaRegistrySerializer(
+        ISchemaRegistryClient schemaRegistry,
+        Action<T, IBufferWriter<byte>> serialize,
+        Func<Schema> getSchema,
+        bool useLegacySubjectNames,
+        SubjectNameStrategy subjectNameStrategy = SubjectNameStrategy.TopicName,
+        bool autoRegisterSchemas = true,
+        bool ownsClient = false,
+        ISchemaRegistryRuleExecutor? ruleExecutor = null,
+        bool normalizeSchemas = false)
+    {
+        ArgumentNullException.ThrowIfNull(getSchema);
+        _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
+        _serialize = serialize ?? throw new ArgumentNullException(nameof(serialize));
+        _getSchema = _ => getSchema();
+        _schemaFactoryIgnoresSubject = true;
+        _subjectNameStrategy = subjectNameStrategy;
+        _autoRegisterSchemas = autoRegisterSchemas;
+        _normalizeSchemas = normalizeSchemas;
+        _useLegacySubjectNames = useLegacySubjectNames;
         _ownsClient = ownsClient;
         _ruleExecutor = ruleExecutor;
     }
@@ -154,14 +236,35 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
             topic,
             isKey,
             this,
-            static (serializer, topic, isKey) => serializer.GetSubjectName(topic, isKey),
-            static (serializer, subject) =>
+            static (serializer, topic, isKey) => serializer.ResolveSchema(topic, isKey));
+
+    private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry ResolveSchema(string topic, bool isKey)
+    {
+        var fallbackRecordName = typeof(T).FullName ?? typeof(T).Name;
+        var subject = GetSubjectName(topic, fallbackRecordName, isKey);
+
+        for (var attempt = 0; attempt < 4; attempt++)
+        {
+            var schema = _getSchema(subject);
+            var recordName = SubjectNameResolver.GetRecordName(schema, fallbackRecordName);
+            var resolvedSubject = string.Equals(recordName, fallbackRecordName, StringComparison.Ordinal)
+                ? subject
+                : GetSubjectName(topic, recordName, isKey);
+
+            if (_schemaFactoryIgnoresSubject || string.Equals(resolvedSubject, subject, StringComparison.Ordinal))
             {
-                var schema = serializer._getSchema(subject);
-                return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(
-                    serializer.GetSchemaIdSync(subject, schema),
+                return new SubjectSchemaIdCache.SubjectSchemaIdCacheEntry(
+                    new SubjectSchemaIdCache.SubjectSchemaIdCacheKey(topic, isKey),
+                    resolvedSubject,
+                    GetSchemaIdSync(resolvedSubject, schema),
                     schema);
-            });
+            }
+
+            subject = resolvedSubject;
+        }
+
+        throw new InvalidOperationException("The schema callback did not resolve to a stable subject name.");
+    }
 
     private int GetSchemaIdSync(string subject, Schema schema)
     {
@@ -187,21 +290,19 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
         return _schemaIdCache.GetOrAdd(subject, fetchedId);
     }
 
-    private string GetSubjectName(string topic, bool isKey)
+    private string GetSubjectName(string topic, string recordName, bool isKey)
     {
         if (_customSubjectNameStrategy is not null)
         {
-            return _customSubjectNameStrategy.GetSubjectName(topic, typeof(T).FullName, isKey);
+            return _customSubjectNameStrategy.GetSubjectName(topic, recordName, isKey);
         }
 
-        var suffix = isKey ? "-key" : "-value";
-        return _subjectNameStrategy switch
-        {
-            SubjectNameStrategy.TopicName => topic + suffix,
-            SubjectNameStrategy.RecordName => typeof(T).FullName + suffix,
-            SubjectNameStrategy.TopicRecordName => $"{topic}-{typeof(T).FullName}{suffix}",
-            _ => topic + suffix
-        };
+        return SubjectNameResolver.GetSubjectName(
+            _subjectNameStrategy,
+            topic,
+            recordName,
+            isKey,
+            _useLegacySubjectNames);
     }
 
     public ValueTask DisposeAsync()
@@ -358,12 +459,12 @@ public enum SubjectNameStrategy
     TopicName,
 
     /// <summary>
-    /// Subject name is the fully qualified record name with -key or -value suffix.
+    /// Subject name is the fully qualified record name.
     /// </summary>
     RecordName,
 
     /// <summary>
-    /// Subject name is topic-recordname with -key or -value suffix.
+    /// Subject name is topic-recordname.
     /// </summary>
     TopicRecordName
 }

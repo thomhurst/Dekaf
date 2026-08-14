@@ -20,6 +20,14 @@ public sealed class ProtobufSerializerConfig
     public ISubjectNameStrategy? CustomSubjectNameStrategy { get; init; }
 
     /// <summary>
+    /// Whether <see cref="SubjectNameStrategy.RecordName"/> and
+    /// <see cref="SubjectNameStrategy.TopicRecordName"/> should retain Dekaf's legacy
+    /// -key/-value suffix. Enable this temporarily while migrating existing subjects.
+    /// Default is false.
+    /// </summary>
+    public bool UseLegacySubjectNames { get; init; }
+
+    /// <summary>
     /// Whether to auto-register schemas when producing messages.
     /// Default is true.
     /// </summary>
@@ -41,7 +49,6 @@ public sealed class ProtobufSerializerConfig
 
     /// <summary>
     /// Whether to use the deprecated unsigned Protobuf message-index encoding.
-    /// This also preserves the previous RecordName subject naming format without a -key/-value suffix.
     /// Default is false.
     /// </summary>
     public bool UseDeprecatedFormat { get; init; }

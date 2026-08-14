@@ -171,17 +171,12 @@ public sealed class ProtobufSchemaRegistrySerializer<
             return _config.CustomSubjectNameStrategy.GetSubjectName(topic, _descriptor.FullName, isKey);
         }
 
-        var suffix = isKey ? "-key" : "-value";
-
-        return _config.SubjectNameStrategy switch
-        {
-            SubjectNameStrategy.TopicName => topic + suffix,
-            SubjectNameStrategy.RecordName => _config.UseDeprecatedFormat
-                ? _descriptor.FullName
-                : _descriptor.FullName + suffix,
-            SubjectNameStrategy.TopicRecordName => $"{topic}-{_descriptor.FullName}{suffix}",
-            _ => topic + suffix
-        };
+        return SubjectNameResolver.GetSubjectName(
+            _config.SubjectNameStrategy,
+            topic,
+            _descriptor.FullName,
+            isKey,
+            _config.UseLegacySubjectNames);
     }
 
     private static MessageDescriptor GetMessageDescriptor()
