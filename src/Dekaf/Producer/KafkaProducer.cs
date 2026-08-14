@@ -4589,6 +4589,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     /// <summary>
     /// Awaits an in-flight append and disposes the activity on completion.
     /// </summary>
+#if NET
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+#endif
     private async ValueTask FinishProduceAsync(ValueTask<bool> appendResult, Activity? activity, string topic)
     {
         try
@@ -4617,6 +4620,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     /// Cold-path finish for the callback fire-and-forget overload.
     /// All exceptions are delivered to the callback rather than thrown.
     /// </summary>
+#if NET
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+#endif
     private async ValueTask FinishProduceAsyncWithCallback(
         ValueTask<bool> appendResult,
         Action<RecordMetadata, Exception?> deliveryHandler)
