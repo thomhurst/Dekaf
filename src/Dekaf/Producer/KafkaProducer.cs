@@ -2677,14 +2677,16 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 return;
             }
         }
-        catch (OperationCanceledException) when (
-            timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException)
         {
             if (initProducerIdRequestInFlight)
             {
                 _lastTransactionError = ErrorCode.InvalidProducerEpoch;
                 _transactionState = TransactionState.FatalError;
             }
+
+            if (cancellationToken.IsCancellationRequested || !timeoutCts.IsCancellationRequested)
+                throw;
 
             throw CreateTransactionTimeoutException("InitProducerId", retryBudget, attempt + 1);
         }
@@ -2939,11 +2941,14 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             {
                 await FlushAsync(timeoutCts.Token).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (
-                timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException)
             {
                 _lastTransactionError = ErrorCode.RequestTimedOut;
                 _transactionState = TransactionState.AbortableError;
+
+                if (cancellationToken.IsCancellationRequested || !timeoutCts.IsCancellationRequested)
+                    throw;
+
                 throw CreateTransactionTimeoutException(
                     "Flush before EndTxn (commit)",
                     retryBudget,
@@ -3026,6 +3031,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         var attempt = 0;
         if (!TryGetTransactionRemainingMilliseconds(retryBudget, out _))
         {
+            PreserveEndTransactionTimeoutState(requestInFlight: false);
             throw CreateTransactionTimeoutException(
                 $"EndTxn ({(committed ? "commit" : "abort")})",
                 retryBudget,
@@ -3147,14 +3153,12 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 continue;
             }
         }
-        catch (OperationCanceledException) when (
-            timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException)
         {
-            if (endTxnRequestInFlight)
-            {
-                _lastTransactionError = ErrorCode.RequestTimedOut;
-                _transactionState = TransactionState.FatalError;
-            }
+            PreserveEndTransactionTimeoutState(endTxnRequestInFlight);
+
+            if (cancellationToken.IsCancellationRequested || !timeoutCts.IsCancellationRequested)
+                throw;
 
             throw CreateTransactionTimeoutException(
                 $"EndTxn ({(committed ? "commit" : "abort")})",
@@ -3162,10 +3166,19 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 attempt + 1);
         }
 
+        PreserveEndTransactionTimeoutState(requestInFlight: false);
         throw CreateTransactionTimeoutException(
             $"EndTxn ({(committed ? "commit" : "abort")})",
             retryBudget,
             attempt + 1);
+    }
+
+    private void PreserveEndTransactionTimeoutState(bool requestInFlight)
+    {
+        _lastTransactionError = ErrorCode.RequestTimedOut;
+        _transactionState = requestInFlight
+            ? TransactionState.FatalError
+            : TransactionState.AbortableError;
     }
 
     internal ValueTask SendOffsetsToTransactionInternalAsync(

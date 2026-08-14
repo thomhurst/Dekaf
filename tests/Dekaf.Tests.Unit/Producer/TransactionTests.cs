@@ -661,6 +661,7 @@ public sealed class TransactionTests
         var accumulator = GetInstanceField<RecordAccumulator>(harness.Producer, "_accumulator");
         SetInstanceField(accumulator, "_inFlightBatchCount", 1L);
         await using var transaction = new Transaction<string, string>(harness.Producer);
+        var stopwatch = Stopwatch.StartNew();
 
         try
         {
@@ -668,6 +669,8 @@ public sealed class TransactionTests
                 .Throws<KafkaTimeoutException>();
 
             await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Transaction);
+            await Assert.That(exception.Configured).IsEqualTo(TimeSpan.FromMilliseconds(1000));
+            await Assert.That(stopwatch.Elapsed).IsLessThan(TimeSpan.FromMilliseconds(2500));
             await Assert.That(harness.EndTxnRequests).IsEqualTo(0);
             await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.AbortableError);
         }
@@ -736,6 +739,30 @@ public sealed class TransactionTests
             .Throws<KafkaTimeoutException>();
 
         await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Transaction);
+        await Assert.That(harness.InitProducerIdRequests).IsEqualTo(1);
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.FatalError);
+        await Assert.That(() => harness.Producer.BeginTransaction()).Throws<FatalTransactionException>();
+    }
+
+    [Test]
+    [Timeout(5_000)]
+    public async Task InitTransactionsAsync_CallerCancellationInFlight_PreservesFatalState(
+        CancellationToken cancellationToken)
+    {
+        await using var harness = BuildPreparedCompletionHarness(
+            PreparedTransactionState.Empty,
+            currentProducerId: 2002,
+            currentProducerEpoch: 9,
+            initProducerIdWaitsForCancellation: true,
+            maxBlockMs: 4000);
+        harness.Producer._transactionState = TransactionState.Ready;
+        using var callerCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var initializationTask = harness.Producer.InitTransactionsAsync(callerCancellation.Token).AsTask();
+
+        await harness.InitProducerIdStarted.WaitAsync(cancellationToken);
+        callerCancellation.Cancel();
+
+        await Assert.That(() => initializationTask).Throws<OperationCanceledException>();
         await Assert.That(harness.InitProducerIdRequests).IsEqualTo(1);
         await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.FatalError);
         await Assert.That(() => harness.Producer.BeginTransaction()).Throws<FatalTransactionException>();
@@ -839,6 +866,36 @@ public sealed class TransactionTests
         await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Transaction);
         await Assert.That(exception.Configured).IsEqualTo(TimeSpan.FromMilliseconds(1000));
         await Assert.That(stopwatch.Elapsed).IsLessThan(TimeSpan.FromMilliseconds(2500));
+        await Assert.That(harness.EndTxnRequests).IsEqualTo(1);
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.FatalError);
+        await Assert.That(() => harness.Producer.BeginTransaction()).Throws<FatalTransactionException>();
+    }
+
+    [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    [Timeout(5_000)]
+    public async Task EndTransactionAsync_CallerCancellationInFlight_PreservesFatalState(
+        bool committed,
+        CancellationToken cancellationToken)
+    {
+        await using var harness = BuildPreparedCompletionHarness(
+            PreparedTransactionState.Empty,
+            currentProducerId: 2002,
+            currentProducerEpoch: 9,
+            endTxnWaitsForCancellation: true,
+            maxBlockMs: 4000);
+        harness.Producer._transactionState = TransactionState.InTransaction;
+        await using var transaction = new Transaction<string, string>(harness.Producer);
+        using var callerCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var completionTask = committed
+            ? transaction.CommitAsync(callerCancellation.Token).AsTask()
+            : transaction.AbortAsync(callerCancellation.Token).AsTask();
+
+        await harness.EndTxnStarted.WaitAsync(cancellationToken);
+        callerCancellation.Cancel();
+
+        await Assert.That(() => completionTask).Throws<OperationCanceledException>();
         await Assert.That(harness.EndTxnRequests).IsEqualTo(1);
         await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.FatalError);
         await Assert.That(() => harness.Producer.BeginTransaction()).Throws<FatalTransactionException>();
@@ -1436,6 +1493,7 @@ public sealed class TransactionTests
         public int AddPartitionsRequests => connection.AddPartitionsRequests;
         public int EndTxnRequests => connection.EndTxnRequests;
         public Task InitProducerIdStarted => connection.InitProducerIdStarted;
+        public Task EndTxnStarted => connection.EndTxnStarted;
 
         public async ValueTask DisposeAsync()
         {
@@ -1478,8 +1536,11 @@ public sealed class TransactionTests
         public int AddPartitionsRequests { get; private set; }
         public int EndTxnRequests { get; private set; }
         public Task InitProducerIdStarted => _initProducerIdStarted.Task;
+        public Task EndTxnStarted => _endTxnStarted.Task;
 
         private readonly TaskCompletionSource _initProducerIdStarted =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _endTxnStarted =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public bool TryAcquireLease()
@@ -1513,6 +1574,7 @@ public sealed class TransactionTests
             {
                 EndTxnRequests++;
                 CapturedEndTxnRequest = waitingEndTxnRequest;
+                _endTxnStarted.TrySetResult();
                 return WaitForCancellationAsync<TResponse>(cancellationToken);
             }
 
