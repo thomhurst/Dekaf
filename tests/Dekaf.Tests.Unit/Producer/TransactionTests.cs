@@ -769,6 +769,29 @@ public sealed class TransactionTests
     }
 
     [Test]
+    [Timeout(5_000)]
+    public async Task InitTransactionsAsync_CancellationBeforeWrite_DoesNotPoisonProducer(
+        CancellationToken cancellationToken)
+    {
+        await using var harness = BuildPreparedCompletionHarness(
+            PreparedTransactionState.Empty,
+            currentProducerId: 2002,
+            currentProducerEpoch: 9,
+            initProducerIdWaitsBeforeWriteForCancellation: true,
+            maxBlockMs: 4000);
+        harness.Producer._transactionState = TransactionState.Ready;
+        using var callerCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var initializationTask = harness.Producer.InitTransactionsAsync(callerCancellation.Token).AsTask();
+
+        await harness.InitProducerIdStarted.WaitAsync(cancellationToken);
+        callerCancellation.Cancel();
+
+        await Assert.That(() => initializationTask).Throws<OperationCanceledException>();
+        await Assert.That(harness.InitProducerIdRequests).IsEqualTo(1);
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.Ready);
+    }
+
+    [Test]
     public async Task EndTransactionAsync_RetriesBeyondPreviousAttemptLimit()
     {
         await using var harness = BuildPreparedCompletionHarness(
@@ -899,6 +922,39 @@ public sealed class TransactionTests
         await Assert.That(harness.EndTxnRequests).IsEqualTo(1);
         await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.FatalError);
         await Assert.That(() => harness.Producer.BeginTransaction()).Throws<FatalTransactionException>();
+    }
+
+    [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    [Timeout(5_000)]
+    public async Task EndTransactionAsync_CancellationBeforeWrite_PreservesAbortableState(
+        bool committed,
+        CancellationToken cancellationToken)
+    {
+        await using var harness = BuildPreparedCompletionHarness(
+            PreparedTransactionState.Empty,
+            currentProducerId: 2002,
+            currentProducerEpoch: 9,
+            endTxnWaitsBeforeWriteForCancellation: true,
+            maxBlockMs: 4000);
+        harness.Producer._transactionState = TransactionState.InTransaction;
+        var transaction = new Transaction<string, string>(harness.Producer);
+        using var callerCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var completionTask = committed
+            ? transaction.CommitAsync(callerCancellation.Token).AsTask()
+            : transaction.AbortAsync(callerCancellation.Token).AsTask();
+
+        await harness.EndTxnStarted.WaitAsync(cancellationToken);
+        callerCancellation.Cancel();
+
+        await Assert.That(() => completionTask).Throws<OperationCanceledException>();
+        await Assert.That(harness.EndTxnRequests).IsEqualTo(1);
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.AbortableError);
+        await Assert.That(() => harness.Producer.BeginTransaction()).Throws<InvalidOperationException>();
+
+        harness.Producer._transactionState = TransactionState.Ready;
+        await transaction.DisposeAsync();
     }
 
     [Test]
@@ -1353,6 +1409,8 @@ public sealed class TransactionTests
         int endTxnRetriableFailuresBeforeSuccess = 0,
         bool endTxnWaitsForCancellation = false,
         bool initProducerIdWaitsForCancellation = false,
+        bool endTxnWaitsBeforeWriteForCancellation = false,
+        bool initProducerIdWaitsBeforeWriteForCancellation = false,
         int findCoordinatorDelayMs = 0,
         int emptyCoordinatorResponsesBeforeSuccess = 0,
         ErrorCode addPartitionsRetriableError = ErrorCode.CoordinatorLoadInProgress,
@@ -1370,6 +1428,8 @@ public sealed class TransactionTests
             endTxnRetriableFailuresBeforeSuccess,
             endTxnWaitsForCancellation,
             initProducerIdWaitsForCancellation,
+            endTxnWaitsBeforeWriteForCancellation,
+            initProducerIdWaitsBeforeWriteForCancellation,
             findCoordinatorDelayMs,
             emptyCoordinatorResponsesBeforeSuccess,
             addPartitionsRetriableError);
@@ -1513,10 +1573,12 @@ public sealed class TransactionTests
         int endTxnRetriableFailuresBeforeSuccess,
         bool endTxnWaitsForCancellation,
         bool initProducerIdWaitsForCancellation,
+        bool endTxnWaitsBeforeWriteForCancellation,
+        bool initProducerIdWaitsBeforeWriteForCancellation,
         int findCoordinatorDelayMs,
         int emptyCoordinatorResponsesBeforeSuccess,
         ErrorCode addPartitionsRetriableError) : IKafkaConnection, IRetirableKafkaConnection,
-        IKafkaPipelinedWriteCompletionConnection
+        IKafkaPipelinedWriteCompletionConnection, IKafkaRequestWriteObserverConnection
     {
         private readonly TrackingResponseSource<EndTxnResponse> _pipelinedResponseSource = new();
         private int _leaseCount;
@@ -1596,6 +1658,33 @@ public sealed class TransactionTests
             };
 
             return ValueTask.FromResult((TResponse)response);
+        }
+
+        public ValueTask<TResponse> SendWithWriteObservationAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            Action requestWriteStarted,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse
+        {
+            if (request is InitProducerIdRequest && initProducerIdWaitsBeforeWriteForCancellation)
+            {
+                InitProducerIdRequests++;
+                _initProducerIdStarted.TrySetResult();
+                return WaitForCancellationAsync<TResponse>(cancellationToken);
+            }
+
+            if (request is EndTxnRequest endTxnRequest && endTxnWaitsBeforeWriteForCancellation)
+            {
+                EndTxnRequests++;
+                CapturedEndTxnRequest = endTxnRequest;
+                _endTxnStarted.TrySetResult();
+                return WaitForCancellationAsync<TResponse>(cancellationToken);
+            }
+
+            requestWriteStarted();
+            return SendAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);
         }
 
         private static async ValueTask<TResponse> WaitForCancellationAsync<TResponse>(
@@ -1732,6 +1821,22 @@ public sealed class TransactionTests
             return ValueTask.FromResult(new PipelinedResponse<TResponse>(
                 (IPipelinedResponseSource<TResponse>)(object)_pipelinedResponseSource,
                 token: 0));
+        }
+
+        public ValueTask<PipelinedResponse<TResponse>>
+            SendPipelinedWithWriteObservationAfterWriteAsync<TRequest, TResponse>(
+                TRequest request,
+                short apiVersion,
+                Action requestWriteStarted,
+                CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse
+        {
+            requestWriteStarted();
+            return SendPipelinedAfterWriteAsync<TRequest, TResponse>(
+                request,
+                apiVersion,
+                cancellationToken);
         }
 
         public ValueTask<PipelinedResponse<TResponse>>

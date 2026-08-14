@@ -80,7 +80,8 @@ public sealed partial class KafkaConnection :
     IKafkaCapabilityProvider,
     IIdleTrackedKafkaConnection,
     IRetirableKafkaConnection,
-    IKafkaPipelinedWriteCompletionConnection
+    IKafkaPipelinedWriteCompletionConnection,
+    IKafkaRequestWriteObserverConnection
 {
     private readonly string _host;
     private readonly int _port;
@@ -603,11 +604,24 @@ public sealed partial class KafkaConnection :
         where TResponse : IKafkaResponse
         => SendAsyncCore<TRequest, TResponse>(request, apiVersion, requireReady: true, cancellationToken);
 
+    ValueTask<TResponse> IKafkaRequestWriteObserverConnection.SendWithWriteObservationAsync<TRequest, TResponse>(
+        TRequest request,
+        short apiVersion,
+        Action requestWriteStarted,
+        CancellationToken cancellationToken)
+        => SendAsyncCore<TRequest, TResponse>(
+            request,
+            apiVersion,
+            requireReady: true,
+            cancellationToken,
+            requestWriteStarted);
+
     private async ValueTask<TResponse> SendAsyncCore<TRequest, TResponse>(
         TRequest request,
         short apiVersion,
         bool requireReady,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action? requestWriteStarted = null)
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
     {
@@ -663,7 +677,13 @@ public sealed partial class KafkaConnection :
             // Write phase
             LogSendingRequest(KafkaMessageMetadata<TRequest, TResponse>.ApiKey, correlationId, apiVersion, _host, _port);
 
-            await PreSerializeAndWriteAsync<TRequest, TResponse>(request, correlationId, apiVersion, headerVersion, cancellationToken)
+            await PreSerializeAndWriteAsync<TRequest, TResponse>(
+                    request,
+                    correlationId,
+                    apiVersion,
+                    headerVersion,
+                    cancellationToken,
+                    requestWriteStarted: requestWriteStarted)
                 .ConfigureAwait(false);
 
             LogRequestSentWaitingForResponse(correlationId);
@@ -913,6 +933,19 @@ public sealed partial class KafkaConnection :
             cancellationToken);
 
     ValueTask<PipelinedResponse<TResponse>>
+        IKafkaRequestWriteObserverConnection.SendPipelinedWithWriteObservationAfterWriteAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            Action requestWriteStarted,
+            CancellationToken cancellationToken)
+        => SendPipelinedAfterWriteCoreAsync<TRequest, TResponse>(
+            request,
+            apiVersion,
+            callerOwnsTimeout: false,
+            cancellationToken,
+            requestWriteStarted);
+
+    ValueTask<PipelinedResponse<TResponse>>
         IKafkaPipelinedWriteCompletionConnection.SendPipelinedWithCallerTimeoutAfterWriteAsync<TRequest, TResponse>(
             TRequest request,
             short apiVersion,
@@ -944,7 +977,8 @@ public sealed partial class KafkaConnection :
         TRequest request,
         short apiVersion,
         bool callerOwnsTimeout,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action? requestWriteStarted = null)
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
     {
@@ -1000,7 +1034,14 @@ public sealed partial class KafkaConnection :
         {
             var telemetryStartTimestamp = _telemetryMetricCollector is null ? 0 : Stopwatch.GetTimestamp();
 
-            await PreSerializeAndWriteAsync<TRequest, TResponse>(request, correlationId, apiVersion, headerVersion, cancellationToken, callerOwnsTimeout)
+            await PreSerializeAndWriteAsync<TRequest, TResponse>(
+                    request,
+                    correlationId,
+                    apiVersion,
+                    headerVersion,
+                    cancellationToken,
+                    callerOwnsTimeout,
+                    requestWriteStarted)
                 .ConfigureAwait(false);
 
             return PooledPipelinedResponse<TRequest, TResponse>.Rent(
@@ -1602,7 +1643,8 @@ public sealed partial class KafkaConnection :
         short apiVersion,
         short headerVersion,
         CancellationToken cancellationToken,
-        bool callerOwnsTimeout = false)
+        bool callerOwnsTimeout = false,
+        Action? requestWriteStarted = null)
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
     {
@@ -1639,7 +1681,8 @@ public sealed partial class KafkaConnection :
                 prefixLength,
                 encodedRecords,
                 suffixOffset,
-                suffixLength);
+                suffixLength,
+                requestWriteStarted);
             await AwaitBorrowedFrameWriteAsync(
                     segmentedWriteTask,
                     correlationId,
@@ -1666,7 +1709,11 @@ public sealed partial class KafkaConnection :
         // From here the frame write owns both the lock and the buffer; WriteFrameHoldingLockAsync
         // releases them itself so a timed-out caller can abandon the wait without cancelling the
         // socket write mid-frame (see AwaitFrameWriteAsync).
-        var writeTask = WriteFrameHoldingLockAsync(serializedArray, serializedLength, clearSerializedArray);
+        var writeTask = WriteFrameHoldingLockAsync(
+            serializedArray,
+            serializedLength,
+            clearSerializedArray,
+            requestWriteStarted);
         await AwaitFrameWriteAsync(writeTask, correlationId, callerOwnsTimeout, cancellationToken).ConfigureAwait(false);
     }
 
@@ -1778,7 +1825,8 @@ public sealed partial class KafkaConnection :
         int prefixLength,
         ReadOnlySequence<byte> encodedRecords,
         int suffixOffset,
-        int suffixLength)
+        int suffixLength,
+        Action? requestWriteStarted = null)
     {
         var scatterGatherSenderLockHeld = false;
         try
@@ -1812,6 +1860,7 @@ public sealed partial class KafkaConnection :
             if (suffixLength > 0)
                 pendingSegments.Add(new ArraySegment<byte>(metadataArray, suffixOffset, suffixLength));
 
+            requestWriteStarted?.Invoke();
             sender.BeginPendingSend();
             while (sender.HasPendingSegments)
             {
@@ -1851,7 +1900,11 @@ public sealed partial class KafkaConnection :
     /// close). Callers that time out abandon the await instead (<see cref="AwaitFrameWriteAsync"/>);
     /// the frame finishes in the background and the connection stays frame-aligned and usable.
     /// </summary>
-    private async Task WriteFrameHoldingLockAsync(byte[] serializedData, int length, bool clearArray)
+    private async Task WriteFrameHoldingLockAsync(
+        byte[] serializedData,
+        int length,
+        bool clearArray,
+        Action? requestWriteStarted = null)
     {
         try
         {
@@ -1864,6 +1917,7 @@ public sealed partial class KafkaConnection :
             if (Volatile.Read(ref _disposed) != 0)
                 throw new ObjectDisposedException(nameof(KafkaConnection));
 
+            requestWriteStarted?.Invoke();
             await _stream.WriteAsync(serializedData.AsMemory(0, length), CancellationToken.None).ConfigureAwait(false);
         }
         catch

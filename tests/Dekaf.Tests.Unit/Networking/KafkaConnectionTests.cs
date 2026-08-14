@@ -686,6 +686,62 @@ public sealed class KafkaConnectionTests
 
     [Test]
     [Timeout(10_000)]
+    public async Task SendWithWriteObservation_CancellationWhileWaitingForWriteLock_DoesNotSignalWriteStart(
+        CancellationToken cancellationToken)
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+
+        try
+        {
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            var acceptTask = AcceptAndCompleteHandshakeAsync(listener, cancellationToken);
+            await using var connection = new KafkaConnection(
+                IPAddress.Loopback.ToString(),
+                port,
+                options: new ConnectionOptions { RequestTimeout = TimeSpan.FromSeconds(30) });
+
+            await connection.ConnectAsync(cancellationToken);
+            using var serverClient = await acceptTask.ConfigureAwait(false);
+            var writeLock = GetPrivateField<SemaphoreSlim>(connection, "_writeLock");
+            await writeLock.WaitAsync(cancellationToken);
+
+            try
+            {
+                var requestWriteStarted = false;
+                using var callerCancellation = new CancellationTokenSource();
+                var sendTask = ((IKafkaRequestWriteObserverConnection)connection)
+                    .SendWithWriteObservationAsync<ApiVersionsRequest, ApiVersionsResponse>(
+                        new ApiVersionsRequest { ClientSoftwareName = "test", ClientSoftwareVersion = "1.0" },
+                        apiVersion: 3,
+                        () => requestWriteStarted = true,
+                        callerCancellation.Token)
+                    .AsTask();
+
+                var requestReachedWriteWait = SpinWait.SpinUntil(
+                    () => GetPrivateField<int>(connection, "_pendingRequestCount") == 1,
+                    TimeSpan.FromSeconds(5));
+                await Assert.That(requestReachedWriteWait).IsTrue();
+                await Assert.That(requestWriteStarted).IsFalse();
+
+                await callerCancellation.CancelAsync();
+                await Assert.That(async () => await sendTask.ConfigureAwait(false))
+                    .Throws<OperationCanceledException>();
+                await Assert.That(requestWriteStarted).IsFalse();
+            }
+            finally
+            {
+                writeLock.Release();
+            }
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    [Test]
+    [Timeout(10_000)]
     public async Task ReceiveLoop_IdleLongerThanRequestTimeout_RemainsConnected(CancellationToken cancellationToken)
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
@@ -1524,7 +1580,7 @@ public sealed class KafkaConnectionTests
         if (method is null)
             throw new InvalidOperationException("WriteFrameHoldingLockAsync was not found.");
 
-        var writeTask = (Task)method.Invoke(connection, [buffer, 4, false])!;
+        var writeTask = (Task)method.Invoke(connection, [buffer, 4, false, null])!;
         return (writeTask, writeLock);
     }
 

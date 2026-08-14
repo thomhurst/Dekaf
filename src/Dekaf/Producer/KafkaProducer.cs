@@ -2406,7 +2406,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         bool captureTransactionFeatures = false,
         bool requireTransactionFeatureMatch = false,
         bool keepPreparedTransaction = false,
-        Action? beforeRequestSend = null)
+        Action? requestWriteStarted = null)
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
     {
@@ -2431,11 +2431,26 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 $"v{minimumRequiredVersion} required by this operation; negotiated v{apiVersion}.");
         }
 
-        beforeRequestSend?.Invoke();
-        return await connection.SendAsync<TRequest, TResponse>(
-            request,
-            apiVersion,
-            cancellationToken).ConfigureAwait(false);
+        if (requestWriteStarted is null)
+        {
+            return await connection.SendAsync<TRequest, TResponse>(
+                request,
+                apiVersion,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        if (connection is not IKafkaRequestWriteObserverConnection writeObserverConnection)
+        {
+            throw new InvalidOperationException(
+                "The transaction coordinator connection cannot report request write start.");
+        }
+
+        return await writeObserverConnection.SendWithWriteObservationAsync<TRequest, TResponse>(
+                request,
+                apiVersion,
+                requestWriteStarted,
+                cancellationToken)
+            .ConfigureAwait(false);
     }
 
     private void CaptureTransactionFeatures(bool keepPreparedTransaction)
@@ -2616,7 +2631,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                             : short.MinValue,
                         captureTransactionFeatures: true,
                         keepPreparedTransaction: keepPreparedTransaction,
-                        beforeRequestSend: () => initProducerIdRequestInFlight = true)
+                        requestWriteStarted: () => initProducerIdRequestInFlight = true)
                     .ConfigureAwait(false);
                 initProducerIdRequestInFlight = false;
 
@@ -3068,27 +3083,31 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                         ApiKey.EndTxn,
                         EndTxnRequest.LowestSupportedVersion,
                         EndTxnRequest.HighestSupportedVersion);
+                    if (connection is not IKafkaRequestWriteObserverConnection writeObserverConnection)
+                    {
+                        throw new InvalidOperationException(
+                            "The transaction coordinator connection cannot report request write start.");
+                    }
+
                     if (afterRequestWrittenAsync is null)
                     {
-                        endTxnRequestInFlight = true;
-                        response = await connection
-                            .SendAsync<EndTxnRequest, EndTxnResponse>(
-                                request, apiVersion, retryCancellationToken)
+                        response = await writeObserverConnection
+                            .SendWithWriteObservationAsync<EndTxnRequest, EndTxnResponse>(
+                                request,
+                                apiVersion,
+                                () => endTxnRequestInFlight = true,
+                                retryCancellationToken)
                             .ConfigureAwait(false);
                         endTxnRequestInFlight = false;
                     }
                     else
                     {
-                        if (connection is not IKafkaPipelinedWriteCompletionConnection writeCompletionConnection)
-                        {
-                            throw new InvalidOperationException(
-                                "The transaction coordinator connection cannot report request write completion.");
-                        }
-
-                        endTxnRequestInFlight = true;
-                        var responseTask = await writeCompletionConnection
-                            .SendPipelinedAfterWriteAsync<EndTxnRequest, EndTxnResponse>(
-                                request, apiVersion, retryCancellationToken)
+                        var responseTask = await writeObserverConnection
+                            .SendPipelinedWithWriteObservationAfterWriteAsync<EndTxnRequest, EndTxnResponse>(
+                                request,
+                                apiVersion,
+                                () => endTxnRequestInFlight = true,
+                                retryCancellationToken)
                             .ConfigureAwait(false);
                         var responseConsumptionStarted = false;
                         try
