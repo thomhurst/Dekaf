@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Reflection;
 using Dekaf.Compression;
 using Dekaf.Metadata;
 using Dekaf.Producer;
@@ -9,6 +10,56 @@ namespace Dekaf.Tests.Unit.Producer;
 
 public sealed class Kip126BatchSplittingTests
 {
+    [Test]
+    public async Task FireOnlyBatch_DoesNotTransferCompletionSourceStorage()
+    {
+        var options = new ProducerOptions { BootstrapServers = ["localhost:9092"], BatchSize = 4096 };
+        var batch = new PartitionBatch(new TopicPartition("fire-only", 0), options);
+        var partitionStorage = typeof(PartitionBatch).GetField(
+            "_completionSources",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var readyStorage = typeof(ReadyBatch).GetField(
+            "_completionSourcesArray",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+        var storage = partitionStorage.GetValue(batch);
+        await Assert.That(storage).IsNotNull();
+        Append(batch, 0, completionSource: null, callback: null);
+        await Assert.That(partitionStorage.GetValue(batch)).IsSameReferenceAs(storage);
+
+        var ready = batch.Complete()!;
+        await Assert.That(readyStorage.GetValue(ready)).IsNull();
+        await Assert.That(partitionStorage.GetValue(batch)).IsSameReferenceAs(storage);
+        ready.CompleteSend(0, DateTimeOffset.UnixEpoch);
+    }
+
+    [Test]
+    public async Task FirstLateCompletion_PreservesOriginalRecordIndex()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            BatchSize = 64 * 1024,
+            InitialBatchRecordCapacity = 16
+        };
+        var batch = new PartitionBatch(new TopicPartition("late-completion", 0), options);
+        var sourcePool = new ValueTaskSourcePool<RecordMetadata>();
+
+        for (var i = 0; i < 100; i++)
+            Append(batch, i, completionSource: null, callback: null);
+
+        var source = sourcePool.Rent();
+        var task = source.Task;
+        Append(batch, 100, source, callback: null);
+
+        var ready = batch.Complete()!;
+        ready.TrySetMemoryReleased();
+        ready.CompleteSend(500, DateTimeOffset.UnixEpoch);
+
+        await Assert.That((await task).Offset).IsEqualTo(600);
+        await sourcePool.DisposeAsync();
+    }
+
     [Test]
     public async Task CompressedBatch_ZeroBufferMemory_UsesMinimumSizeLimit()
     {
