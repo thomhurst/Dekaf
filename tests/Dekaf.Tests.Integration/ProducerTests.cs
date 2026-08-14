@@ -1,6 +1,8 @@
 using Dekaf.Admin;
 using Dekaf.Consumer;
+using Dekaf.Networking;
 using Dekaf.Producer;
+using Dekaf.Protocol.Messages;
 using Dekaf.Serialization;
 
 namespace Dekaf.Tests.Integration;
@@ -149,6 +151,50 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         // Assert
         await Assert.That(metadata.Topic).IsEqualTo(topic);
         await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
+    }
+
+    [Test, NotInParallel]
+    [Timeout(60_000)]
+    public async Task Producer_AcknowledgedResponses_ReleasePooledOwnership(
+        CancellationToken cancellationToken)
+    {
+        var baseline = KafkaConnection.GetPipelinedResponsePoolCount<
+            ProduceRequest,
+            ProduceResponse>();
+        var expectedAfterReturn = Math.Max(1, baseline);
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-producer-response-ownership")
+            .WithIdempotence(false)
+            .WithAcks(Acks.Leader)
+            .WithLinger(TimeSpan.FromMilliseconds(5))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(cancellationToken);
+
+        for (var wave = 0; wave < 2; wave++)
+        {
+            var produces = new Task<RecordMetadata>[32];
+            for (var i = 0; i < produces.Length; i++)
+            {
+                produces[i] = producer.ProduceAsync(
+                    topic,
+                    $"key-{wave}-{i}",
+                    $"value-{wave}-{i}",
+                    cancellationToken).AsTask();
+            }
+
+            var results = await Task.WhenAll(produces)
+                .WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
+            await Assert.That(results.All(static result => result.Offset >= 0)).IsTrue();
+            await WaitForConditionAsync(
+                () => KafkaConnection.GetPipelinedResponsePoolCount<ProduceRequest, ProduceResponse>()
+                    >= expectedAfterReturn,
+                TimeSpan.FromSeconds(10),
+                pollIntervalMs: 10,
+                description: "acknowledged response ownership source to return to pool");
+        }
     }
 
     [Test]

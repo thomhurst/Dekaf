@@ -6,6 +6,7 @@ using System.Runtime.InteropServices;
 using System.Net.Security;
 using System.Net.Sockets;
 using System.Reflection;
+using System.Threading.Tasks.Sources;
 using Dekaf.Compression;
 using Dekaf.Errors;
 using Dekaf.Networking;
@@ -719,6 +720,35 @@ public sealed class KafkaConnectionTests
         {
             listener.Stop();
         }
+    }
+
+    [Test]
+    public async Task PipelinedResponse_MaxOwnershipGeneration_RetiresWithoutReset()
+    {
+        const BindingFlags instanceFlags = BindingFlags.Instance | BindingFlags.NonPublic;
+        const BindingFlags staticFlags = BindingFlags.Static | BindingFlags.NonPublic;
+        var responseType = typeof(KafkaConnection)
+            .GetNestedType("PooledPipelinedResponse`2", BindingFlags.NonPublic)!
+            .MakeGenericType(typeof(ApiVersionsRequest), typeof(ApiVersionsResponse));
+        var response = Activator.CreateInstance(responseType, nonPublic: true)!;
+        var generationField = responseType.GetField("_ownershipGeneration", instanceFlags)!;
+        var maxGeneration = (int)responseType
+            .GetField("MaxOwnershipGeneration", staticFlags)!
+            .GetRawConstantValue()!;
+        generationField.SetValue(response, maxGeneration);
+
+        var coreField = responseType.GetField("_core", instanceFlags)!;
+        var versionBefore = ((ManualResetValueTaskSourceCore<ApiVersionsResponse>)coreField
+            .GetValue(response)!).Version;
+        var reset = (bool)responseType
+            .GetMethod("TryResetForPooling", instanceFlags)!
+            .Invoke(response, null)!;
+        var versionAfter = ((ManualResetValueTaskSourceCore<ApiVersionsResponse>)coreField
+            .GetValue(response)!).Version;
+
+        await Assert.That(reset).IsFalse();
+        await Assert.That(generationField.GetValue(response)).IsEqualTo(maxGeneration);
+        await Assert.That(versionAfter).IsEqualTo(versionBefore);
     }
 
     [Test]
