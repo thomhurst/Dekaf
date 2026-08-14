@@ -12,7 +12,7 @@ public class RecordAccumulatorDequeCacheTests
 
     [Test]
     [Timeout(30_000)]
-    public async Task GetOrCreateDeque_ConcurrentCollidingPartitions_KeepBothThreadShardsHot(
+    public async Task GetOrCreateDeque_ConcurrentCollidingPartitions_ReturnCorrectDeques(
         CancellationToken cancellationToken)
     {
         await using var accumulator = CreateAccumulator();
@@ -41,9 +41,6 @@ public class RecordAccumulatorDequeCacheTests
         await Assert.That(GetPartition(partition0Deque!)).IsEqualTo(0);
         await Assert.That(GetPartition(partition16Deque!)).IsEqualTo(16);
 
-        var cache = AccumulatorTestHelpers.GetPrivateField<object?[]>(accumulator, "_partitionDequeCache");
-        await Assert.That(Array.IndexOf(cache, partition0Deque)).IsGreaterThanOrEqualTo(0);
-        await Assert.That(Array.IndexOf(cache, partition16Deque)).IsGreaterThanOrEqualTo(0);
     }
 
     [Test]
