@@ -3252,7 +3252,7 @@ public class RecordAccumulatorTests
     {
         var pdType = typeof(RecordAccumulator).GetNestedType("PartitionDeque",
             System.Reflection.BindingFlags.NonPublic)!;
-        var pd = Activator.CreateInstance(pdType, accumulator)!;
+        var pd = Activator.CreateInstance(pdType, batch.TopicPartition, accumulator)!;
         var method = typeof(RecordAccumulator).GetMethod("OnBatchEntersPipeline",
             System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
         method!.Invoke(accumulator, [pd, batch]);

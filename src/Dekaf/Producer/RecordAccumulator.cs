@@ -1421,12 +1421,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// Uses a ring-buffer backing array instead of LinkedList to eliminate per-batch
     /// LinkedListNode and HashSet allocations. Typical deques hold 1-3 batches.
     /// </summary>
-    private sealed class PartitionDeque(RecordAccumulator owner)
+    private sealed class PartitionDeque(TopicPartition topicPartition, RecordAccumulator owner)
     {
         private readonly RecordAccumulator _owner = owner;
         private ReadyBatch?[] _items = new ReadyBatch?[4];
         private int _head;
         private int _count;
+
+        public readonly string Topic = topicPartition.Topic;
+        public readonly int Partition = topicPartition.Partition;
 
         /// <summary>Per-partition lock for deque access (matches Java's synchronized(deque)).
         /// SpinLock avoids kernel transitions for the brief critical sections in append/drain paths.</summary>
@@ -1617,7 +1620,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     private PartitionDeque GetOrCreateDeque(TopicPartition tp)
-        => _partitionDeques.GetOrAdd(tp, static (_, owner) => new PartitionDeque(owner), this);
+        => _partitionDeques.GetOrAdd(tp, static (key, owner) => new PartitionDeque(key, owner), this);
 
     /// <summary>
     /// Drains the push-based notification queue to find partitions with sendable data.
@@ -3092,37 +3095,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         return batch;
     }
 
-    // Single thread-local cache consolidating all per-thread deque lookup state.
     // Direct mapping preserves partition locality without an O(n) lookup: round-robin producers
-    // otherwise miss a one-slot cache on every message and fall through to ConcurrentDictionary.
+    // otherwise fall through to ConcurrentDictionary on every message. Keeping the cache on the
+    // accumulator makes producer switches O(1) and ties cache lifetime to accumulator lifetime.
     private const int DequeCacheSize = 16;
     private const int DequeCacheMask = DequeCacheSize - 1;
 
-    // Note: holds a strong reference to the accumulator until the thread reuses the cache slot.
-    // This is acceptable because producers are typically singleton-lifetime objects.
     // IMPORTANT: This cache is only valid because _partitionDeques never removes entries.
     // If partition eviction is ever added, the cache must be invalidated on removal.
-    [ThreadStatic]
-    private static AccumulatorThreadCache? t_cache;
-
-    /// <summary>
-    /// Holds per-thread cached state for partition deque lookups.
-    /// Consolidating into a single class reduces thread-static lookup overhead from 3 to 1.
-    /// </summary>
-    private sealed class AccumulatorThreadCache
-    {
-        public RecordAccumulator? Owner;
-
-        public readonly AccumulatorThreadCacheEntry[] Entries =
-            new AccumulatorThreadCacheEntry[DequeCacheSize];
-    }
-
-    private struct AccumulatorThreadCacheEntry
-    {
-        public string? Topic;
-        public int Partition;
-        public PartitionDeque? Deque;
-    }
+    private readonly PartitionDeque?[] _partitionDequeCache = new PartitionDeque?[DequeCacheSize];
 
     /// <summary>
     /// Gets or creates the PartitionDeque for a topic-partition pair.
@@ -3132,47 +3113,31 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private PartitionDeque GetOrCreateDeque(string topic, int partition)
     {
-        var cache = t_cache ??= new AccumulatorThreadCache();
-        if (cache.Owner != this)
-            return GetOrCreateDequeForNewOwner(topic, partition, cache);
-
         var cacheIndex = partition & DequeCacheMask;
-        ref var entry = ref cache.Entries[cacheIndex];
+        var cached = Volatile.Read(ref _partitionDequeCache[cacheIndex]);
         if (Volatile.Read(ref _disposed) == 0
-            && entry.Partition == partition
-            && string.Equals(entry.Topic, topic, StringComparison.Ordinal)
-            && entry.Deque is { } cached)
+            && cached is not null
+            && cached.Partition == partition
+            && string.Equals(cached.Topic, topic, StringComparison.Ordinal))
         {
             return cached;
         }
 
-        return GetOrCreateDequeSlow(topic, partition, ref entry);
-    }
-
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    private PartitionDeque GetOrCreateDequeForNewOwner(
-        string topic,
-        int partition,
-        AccumulatorThreadCache cache)
-    {
-        Array.Clear(cache.Entries, 0, cache.Entries.Length);
-        cache.Owner = this;
-        ref var entry = ref cache.Entries[partition & DequeCacheMask];
-        return GetOrCreateDequeSlow(topic, partition, ref entry);
+        return GetOrCreateDequeSlow(topic, partition, cacheIndex);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     private PartitionDeque GetOrCreateDequeSlow(
         string topic,
         int partition,
-        ref AccumulatorThreadCacheEntry entry)
+        int cacheIndex)
     {
         var tp = new TopicPartition(topic, partition);
-        var deque = _partitionDeques.GetOrAdd(tp, static (_, owner) => new PartitionDeque(owner), this);
-
-        entry.Topic = topic;
-        entry.Partition = partition;
-        entry.Deque = deque;
+        var deque = _partitionDeques.GetOrAdd(
+            tp,
+            static (key, owner) => new PartitionDeque(key, owner),
+            this);
+        Volatile.Write(ref _partitionDequeCache[cacheIndex], deque);
 
         return deque;
     }
