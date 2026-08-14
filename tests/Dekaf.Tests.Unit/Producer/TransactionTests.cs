@@ -163,6 +163,27 @@ public sealed class TransactionTests
     }
 
     [Test]
+    [Timeout(5_000)]
+    public async Task DisposeAsync_WhenAbortTimesOutBeforeWrite_PreservesAbortableError(
+        CancellationToken cancellationToken)
+    {
+        await using var harness = BuildPreparedCompletionHarness(
+            PreparedTransactionState.Empty,
+            currentProducerId: 42,
+            currentProducerEpoch: 5,
+            endTxnWaitsBeforeWriteForCancellation: true,
+            maxBlockMs: 1000);
+        harness.Producer._transactionState = TransactionState.InTransaction;
+        var transaction = new Transaction<string, string>(harness.Producer);
+
+        await transaction.DisposeAsync().AsTask().WaitAsync(cancellationToken);
+
+        await Assert.That(harness.EndTxnRequests).IsEqualTo(1);
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.AbortableError);
+        await Assert.That(() => harness.Producer.BeginTransaction()).Throws<InvalidOperationException>();
+    }
+
+    [Test]
     public async Task InitTransactionsAsync_WithoutTransactionalId_Throws()
     {
         await using var producer = Kafka.CreateProducer<string, string>()
@@ -566,7 +587,8 @@ public sealed class TransactionTests
             currentProducerId: 2002,
             currentProducerEpoch: 9,
             coordinatorRetriableFailuresBeforeSuccess: 5,
-            initProducerIdRetriableFailuresBeforeSuccess: 10);
+            initProducerIdRetriableFailuresBeforeSuccess: 10,
+            maxBlockMs: 60_000);
         harness.Producer._transactionState = TransactionState.Uninitialized;
 
         await harness.Producer.InitTransactionsAsync();
@@ -583,7 +605,8 @@ public sealed class TransactionTests
             PreparedTransactionState.Empty,
             currentProducerId: 2002,
             currentProducerEpoch: 9,
-            emptyCoordinatorResponsesBeforeSuccess: 1);
+            emptyCoordinatorResponsesBeforeSuccess: 1,
+            maxBlockMs: 60_000);
         harness.Producer._transactionState = TransactionState.Uninitialized;
 
         await harness.Producer.InitTransactionsAsync();
@@ -798,7 +821,8 @@ public sealed class TransactionTests
             PreparedTransactionState.Empty,
             currentProducerId: 2002,
             currentProducerEpoch: 9,
-            endTxnRetriableFailuresBeforeSuccess: 5);
+            endTxnRetriableFailuresBeforeSuccess: 5,
+            maxBlockMs: 60_000);
 
         await harness.Producer.EndTransactionAsync(committed: true, CancellationToken.None);
 
@@ -812,7 +836,8 @@ public sealed class TransactionTests
             PreparedTransactionState.Empty,
             currentProducerId: 2002,
             currentProducerEpoch: 9,
-            addPartitionsRetriableFailuresBeforeSuccess: 5);
+            addPartitionsRetriableFailuresBeforeSuccess: 5,
+            maxBlockMs: 60_000);
 
         await harness.Producer.AddPartitionsToTransactionAsync(
             [new TopicPartition("orders", 0)],
@@ -829,7 +854,8 @@ public sealed class TransactionTests
             currentProducerId: 2002,
             currentProducerEpoch: 9,
             addPartitionsRetriableFailuresBeforeSuccess: 1,
-            addPartitionsRetriableError: ErrorCode.NotCoordinator);
+            addPartitionsRetriableError: ErrorCode.NotCoordinator,
+            maxBlockMs: 60_000);
 
         await harness.Producer.AddPartitionsToTransactionAsync(
             [new TopicPartition("orders", 0), new TopicPartition("orders", 1)],
@@ -1419,20 +1445,20 @@ public sealed class TransactionTests
     {
         var connection = new LeaseTrackingConnection(
             preparedState,
-            currentProducerId,
-            currentProducerEpoch,
-            endTxnError,
-            coordinatorRetriableFailuresBeforeSuccess,
-            initProducerIdRetriableFailuresBeforeSuccess,
-            addPartitionsRetriableFailuresBeforeSuccess,
-            endTxnRetriableFailuresBeforeSuccess,
-            endTxnWaitsForCancellation,
-            initProducerIdWaitsForCancellation,
-            endTxnWaitsBeforeWriteForCancellation,
-            initProducerIdWaitsBeforeWriteForCancellation,
-            findCoordinatorDelayMs,
-            emptyCoordinatorResponsesBeforeSuccess,
-            addPartitionsRetriableError);
+            producerId: currentProducerId,
+            producerEpoch: currentProducerEpoch,
+            endTxnError: endTxnError,
+            coordinatorRetriableFailuresBeforeSuccess: coordinatorRetriableFailuresBeforeSuccess,
+            initProducerIdRetriableFailuresBeforeSuccess: initProducerIdRetriableFailuresBeforeSuccess,
+            addPartitionsRetriableFailuresBeforeSuccess: addPartitionsRetriableFailuresBeforeSuccess,
+            endTxnRetriableFailuresBeforeSuccess: endTxnRetriableFailuresBeforeSuccess,
+            endTxnWaitsForCancellation: endTxnWaitsForCancellation,
+            initProducerIdWaitsForCancellation: initProducerIdWaitsForCancellation,
+            endTxnWaitsBeforeWriteForCancellation: endTxnWaitsBeforeWriteForCancellation,
+            initProducerIdWaitsBeforeWriteForCancellation: initProducerIdWaitsBeforeWriteForCancellation,
+            findCoordinatorDelayMs: findCoordinatorDelayMs,
+            emptyCoordinatorResponsesBeforeSuccess: emptyCoordinatorResponsesBeforeSuccess,
+            addPartitionsRetriableError: addPartitionsRetriableError);
 
         var connectionPool = new ConnectionPool(
             clientId: "test-producer",

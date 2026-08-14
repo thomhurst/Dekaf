@@ -686,7 +686,90 @@ public sealed class KafkaConnectionTests
 
     [Test]
     [Timeout(10_000)]
-    public async Task SendWithWriteObservation_CancellationWhileWaitingForWriteLock_DoesNotSignalWriteStart(
+    public async Task SendWithWriteObservation_Success_InvokesCallbackOnce(CancellationToken cancellationToken)
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+
+        try
+        {
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            var acceptTask = AcceptAndCompleteHandshakeAsync(listener, cancellationToken);
+            await using var connection = new KafkaConnection(IPAddress.Loopback.ToString(), port);
+            await connection.ConnectAsync(cancellationToken);
+            using var serverClient = await acceptTask.ConfigureAwait(false);
+            var callbackCount = 0;
+
+            var sendTask = ((IKafkaRequestWriteObserverConnection)connection)
+                .SendWithWriteObservationAsync<ApiVersionsRequest, ApiVersionsResponse>(
+                    new ApiVersionsRequest { ClientSoftwareName = "test", ClientSoftwareVersion = "1.0" },
+                    apiVersion: 3,
+                    () => Interlocked.Increment(ref callbackCount),
+                    cancellationToken)
+                .AsTask();
+            var requestFrame = await ReadRequestFrameAsync(serverClient.GetStream(), cancellationToken);
+            var correlationId = BinaryPrimitives.ReadInt32BigEndian(requestFrame.AsSpan(4, 4));
+            await serverClient.GetStream().WriteAsync(
+                BuildApiVersionsV3ResponseFrame(correlationId),
+                cancellationToken);
+
+            var response = await sendTask.ConfigureAwait(false);
+            await Assert.That(response.ErrorCode).IsEqualTo(ErrorCode.None);
+            await Assert.That(callbackCount).IsEqualTo(1);
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    [Test]
+    [Timeout(10_000)]
+    public async Task SendPipelinedWithWriteObservation_Success_InvokesCallbackOnce(
+        CancellationToken cancellationToken)
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+
+        try
+        {
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            var acceptTask = AcceptAndCompleteHandshakeAsync(listener, cancellationToken);
+            await using var connection = new KafkaConnection(IPAddress.Loopback.ToString(), port);
+            await connection.ConnectAsync(cancellationToken);
+            using var serverClient = await acceptTask.ConfigureAwait(false);
+            var callbackCount = 0;
+
+            var response = await ((IKafkaRequestWriteObserverConnection)connection)
+                .SendPipelinedWithWriteObservationAfterWriteAsync<ApiVersionsRequest, ApiVersionsResponse>(
+                    new ApiVersionsRequest { ClientSoftwareName = "test", ClientSoftwareVersion = "1.0" },
+                    apiVersion: 3,
+                    () => Interlocked.Increment(ref callbackCount),
+                    cancellationToken);
+            var requestFrame = await ReadRequestFrameAsync(serverClient.GetStream(), cancellationToken);
+            var correlationId = BinaryPrimitives.ReadInt32BigEndian(requestFrame.AsSpan(4, 4));
+            await serverClient.GetStream().WriteAsync(
+                BuildApiVersionsV3ResponseFrame(correlationId),
+                cancellationToken);
+
+            while (!response.IsCompleted)
+                await Task.Yield();
+            var parsed = response.GetResult();
+            await Assert.That(parsed.ErrorCode).IsEqualTo(ErrorCode.None);
+            await Assert.That(callbackCount).IsEqualTo(1);
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    [Timeout(10_000)]
+    public async Task WriteObservation_CancellationWhileWaitingForWriteLock_DoesNotSignalWriteStart(
+        bool pipelined,
         CancellationToken cancellationToken)
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
@@ -710,13 +793,27 @@ public sealed class KafkaConnectionTests
             {
                 var requestWriteStarted = false;
                 using var callerCancellation = new CancellationTokenSource();
-                var sendTask = ((IKafkaRequestWriteObserverConnection)connection)
-                    .SendWithWriteObservationAsync<ApiVersionsRequest, ApiVersionsResponse>(
-                        new ApiVersionsRequest { ClientSoftwareName = "test", ClientSoftwareVersion = "1.0" },
-                        apiVersion: 3,
-                        () => requestWriteStarted = true,
-                        callerCancellation.Token)
-                    .AsTask();
+                var writeObserverConnection = (IKafkaRequestWriteObserverConnection)connection;
+                var request = new ApiVersionsRequest
+                {
+                    ClientSoftwareName = "test",
+                    ClientSoftwareVersion = "1.0"
+                };
+                Task sendTask = pipelined
+                    ? writeObserverConnection
+                        .SendPipelinedWithWriteObservationAfterWriteAsync<ApiVersionsRequest, ApiVersionsResponse>(
+                            request,
+                            apiVersion: 3,
+                            () => requestWriteStarted = true,
+                            callerCancellation.Token)
+                        .AsTask()
+                    : writeObserverConnection
+                        .SendWithWriteObservationAsync<ApiVersionsRequest, ApiVersionsResponse>(
+                            request,
+                            apiVersion: 3,
+                            () => requestWriteStarted = true,
+                            callerCancellation.Token)
+                        .AsTask();
 
                 var requestReachedWriteWait = SpinWait.SpinUntil(
                     () => GetPrivateField<int>(connection, "_pendingRequestCount") == 1,

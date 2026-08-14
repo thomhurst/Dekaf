@@ -5827,13 +5827,17 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
             {
                 await AbortAsync().ConfigureAwait(false);
             }
-            catch (KafkaException exception) when (
-                exception is TransactionException or KafkaTimeoutException)
+            catch (KafkaTimeoutException)
+            {
+                // Best-effort abort timed out. AbortAsync already preserved AbortableError
+                // for a pre-write timeout or FatalError for an ambiguous in-flight outcome.
+                // Keep that state so a new transaction cannot reuse the still-open broker transaction.
+            }
+            catch (TransactionException)
             {
                 // Best-effort abort during disposal — if the broker rejects it
-                // (e.g. InvalidTxnState because no messages were produced) or times out,
-                // just clean up state and move on. Fatal responses remain sticky, while
-                // abortable responses return to Ready because this transaction is disposed.
+                // (e.g. InvalidTxnState because no messages were produced), clean up state
+                // and move on. Fatal responses remain sticky.
                 _producer.FinalizeCompletedTransactionState(preserveAbortableError: false);
             }
         }
