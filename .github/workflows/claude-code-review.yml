@@ -21,7 +21,7 @@ jobs:
       (
         github.actor != 'claude[bot]' &&
         github.event.pull_request.user.login != 'dependabot[bot]' &&
-        github.event.pull_request.user.login != 'renovate[bot]' &&
+        !startsWith(github.event.pull_request.head.ref, 'renovate/') &&
         github.event.pull_request.draft == false &&
         github.event.pull_request.head.repo.full_name == github.repository
       )
