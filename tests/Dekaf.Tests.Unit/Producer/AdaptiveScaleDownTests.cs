@@ -974,10 +974,7 @@ public sealed class AdaptiveScaleDownTests
             SetField(sender, "_totalMaxInFlight", 4);
             SetField(sender, "_totalPendingResponseCount", 1);
 
-            var partitionQueueBytes = GetField<ConcurrentDictionary<TopicPartition, long>>(
-                accumulator,
-                "_partitionQueueBytes");
-            partitionQueueBytes[topicPartition] = 100;
+            accumulator.SetPartitionQueueBytesForTest(Topic, 0, 100);
             accumulator.Reenqueue(CreateTestBatch(valueTaskSourcePool, partition: 0), 0);
 
             typeof(BrokerSender).GetMethod(
@@ -1020,10 +1017,7 @@ public sealed class AdaptiveScaleDownTests
             SetField(sender, "_totalMaxInFlight", 4);
             SetField(sender, "_totalPendingResponseCount", 1);
 
-            var partitionQueueBytes = GetField<ConcurrentDictionary<TopicPartition, long>>(
-                accumulator,
-                "_partitionQueueBytes");
-            partitionQueueBytes[topicPartition] = 100;
+            accumulator.SetPartitionQueueBytesForTest(Topic, 0, 100);
 
             typeof(BrokerSender).GetMethod(
                 "MutePartition",

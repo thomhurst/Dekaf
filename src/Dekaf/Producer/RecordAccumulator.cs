@@ -1268,7 +1268,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private readonly ILogger _logger;
     private readonly Action<string, int>? _onBatchComplete;
     private readonly Action<string, int, int, int>? _onRecordAppended;
-    private readonly ConcurrentDictionary<TopicPartition, long> _partitionQueueBytes = new();
 
     private int _disposed;
     private int _closed;
@@ -1458,6 +1457,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         public int AdmissionInProgress;
 
         public int SlowPathAppendCount;
+
+        /// <summary>
+        /// Bytes in sealed or in-flight batches for this partition. Access atomically because
+        /// append and sender threads update it concurrently.
+        /// </summary>
+        public long QueueBytes;
 
         /// <summary>
         /// Set when this partition cannot reserve more broker-window bytes. The linger loop
@@ -2630,10 +2635,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     internal long GetPartitionQueueBytes(string topic, int partition)
     {
-        return _partitionQueueBytes.TryGetValue(new TopicPartition(topic, partition), out var bytes)
-            ? Math.Max(0, bytes)
+        return _partitionDeques.TryGetValue(new TopicPartition(topic, partition), out var pd)
+            ? Math.Max(0, Volatile.Read(ref pd.QueueBytes))
             : 0;
     }
+
+    internal void SetPartitionQueueBytesForTest(string topic, int partition, long bytes) =>
+        Volatile.Write(ref GetOrCreateDeque(topic, partition).QueueBytes, bytes);
 
     public RecordAccumulator(
         ProducerOptions options,
@@ -3373,7 +3381,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                 ownsRecordResources = false;
                                 if (firstAwaitedProduceInBatch)
                                     TrackPendingAwaitedProduceBatch();
-                                if (ShouldSealAppendedBatch(currentBatch, completionSource))
+                                if (ShouldSealAppendedBatch(pd, currentBatch, completionSource))
                                 {
                                     batchToComplete = DetachCurrentBatchForSealUnderLock(pd, currentBatch);
                                     ownsRotation = true;
@@ -3416,7 +3424,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                 ownsRecordResources = false;
                                 if (firstAwaitedProduceInBatch)
                                     TrackPendingAwaitedProduceBatch();
-                                if (ShouldSealAppendedBatch(newBatch, completionSource))
+                                if (ShouldSealAppendedBatch(pd, newBatch, completionSource))
                                 {
                                     batchToComplete = DetachCurrentBatchForSealUnderLock(pd, newBatch);
                                     ownsRotation = true;
@@ -3952,7 +3960,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                 if (reservedFirstAwaitedProduceInBatch)
                                     TrackPendingAwaitedProduceBatch();
 
-                                if (ShouldSealAppendedBatch(reservedAppendBatch, completionSource))
+                                if (ShouldSealAppendedBatch(pd, reservedAppendBatch, completionSource))
                                 {
                                     batchToComplete = DetachCurrentBatchForSealUnderLock(pd, reservedAppendBatch);
                                     ownsRotation = true;
@@ -4307,7 +4315,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             if (result.FirstCompletionSourceInBatch)
                 TrackPendingAwaitedProduceBatch();
 
-            if (ShouldSealAppendedBatch(currentBatch, completionSource))
+            if (ShouldSealAppendedBatch(pd, currentBatch, completionSource))
             {
                 batchToComplete = DetachCurrentBatchForSealUnderLock(pd, currentBatch);
             }
@@ -4515,6 +4523,36 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         return result < current ? long.MaxValue : result;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void AddPartitionQueueBytes(PartitionDeque pd, int bytes)
+    {
+        var current = Volatile.Read(ref pd.QueueBytes);
+        while (true)
+        {
+            var updated = SaturatingAdd(current, bytes);
+            var observed = Interlocked.CompareExchange(ref pd.QueueBytes, updated, current);
+            if (observed == current)
+                return;
+
+            current = observed;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void RemovePartitionQueueBytes(PartitionDeque pd, int bytes)
+    {
+        var current = Volatile.Read(ref pd.QueueBytes);
+        while (true)
+        {
+            var updated = Math.Max(0, current - bytes);
+            var observed = Interlocked.CompareExchange(ref pd.QueueBytes, updated, current);
+            if (observed == current)
+                return;
+
+            current = observed;
+        }
+    }
+
     // No ShouldFlush conjunct: every call site runs on the appending thread immediately
     // after a successful append, so RecordCount >= 1 and ShouldFlush(now, 0) is true on
     // both the awaited (lingerMs == 0 => true) and fire-and-forget (elapsed >= 0) branches —
@@ -4522,17 +4560,20 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     //
     // The bypass branch checks only the mute set, not ShouldDeferPartialBatchSeal: with
     // zero undelivered batches producer-wide (a gate condition), a non-zero
-    // _partitionQueueBytes entry is bookkeeping lag from the previous delivery
+    // QueueBytes is bookkeeping lag from the previous delivery
     // (decremented in OnBatchExitsPipeline, after CompleteSend resumed the caller),
     // never a real pipeline batch.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool ShouldSealAppendedBatch(PartitionBatch batch, PooledValueTaskSource<RecordMetadata>? completionSource)
+    private bool ShouldSealAppendedBatch(
+        PartitionDeque pd,
+        PartitionBatch batch,
+        PooledValueTaskSource<RecordMetadata>? completionSource)
     {
         if (batch.IsExactlyAtSizeLimit)
             return true;
 
         if (_options.LingerMs == 0)
-            return !ShouldDeferPartialBatchSeal(batch);
+            return !ShouldDeferPartialBatchSeal(pd, batch);
 
         return IsAppLimitedAwaitedAppend(batch, completionSource)
             && !_mutedPartitions.ContainsKey(batch.TopicPartition);
@@ -4593,11 +4634,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool ShouldDeferPartialBatchSeal(PartitionBatch batch)
+    private bool ShouldDeferPartialBatchSeal(PartitionDeque pd, PartitionBatch batch)
     {
         var topicPartition = batch.TopicPartition;
-        var hasPipelineBatch = _partitionQueueBytes.TryGetValue(topicPartition, out var queuedBytes)
-            && queuedBytes > 0;
+        var hasPipelineBatch = Volatile.Read(ref pd.QueueBytes) > 0;
         return ShouldDeferPartialBatchSeal(
             _mutedPartitions.ContainsKey(topicPartition),
             _serializeBatchesPerPartition,
@@ -5465,7 +5505,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 // still seal in the append path, and FlushAsync must always seal.
                 else if (sealAll
                     || IsAdmissionFlushRequiredUnderLock(pd)
-                    || (!ShouldDeferPartialBatchSeal(pd.CurrentBatch)
+                    || (!ShouldDeferPartialBatchSeal(pd, pd.CurrentBatch)
                         && pd.CurrentBatch.ShouldFlush(now, _options.LingerMs)))
                 {
                     ProducerDebugCounters.RecordBatchFlushedFromDictionary();
@@ -5531,7 +5571,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// Tracks a batch entering the pipeline: increments counter and adds to reference-tracking dictionary.
     /// Called when a batch is completed and enqueued to a partition deque.
     /// </summary>
-    private void OnBatchEntersPipeline(PartitionDeque _, ReadyBatch batch)
+    private void OnBatchEntersPipeline(PartitionDeque pd, ReadyBatch batch)
     {
         if (_unackedBudgetEnabled)
             ChargeUnackedBudget(batch);
@@ -5542,11 +5582,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             Volatile.Write(ref batch.UnackedBudgetPipelineTracked, 1);
         }
 
-        _partitionQueueBytes.AddOrUpdate(
-            batch.TopicPartition,
-            static (_, batch) => batch.DataSize,
-            static (_, current, batch) => SaturatingAdd(current, batch.DataSize),
-            batch);
+        AddPartitionQueueBytes(pd, batch.DataSize);
 
         // Counter first, list second. If a batch races between the counter increment
         // and the list add, the sweep will miss it in the snapshot — but that's acceptable
@@ -5613,14 +5649,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             SignalBufferSpaceAvailable();
         }
 
-        // factoryArgument overload with static lambdas: the capturing (_, current) => ... form
-        // allocated a closure + delegate per batch, which de-amortizes to per-message at the
-        // transactional 1-message-per-batch shape (issue #2471; enter-side twin fixed by #1914).
-        _partitionQueueBytes.AddOrUpdate(
-            batch.TopicPartition,
-            static (_, _) => 0,
-            static (_, current, batch) => Math.Max(0, current - batch.DataSize),
-            batch);
+        if (_partitionDeques.TryGetValue(batch.TopicPartition, out var pd))
+            RemovePartitionQueueBytes(pd, batch.DataSize);
 
         if (_options.EnableDeliveryDiagnostics)
             batch.AppendDiag('X');
