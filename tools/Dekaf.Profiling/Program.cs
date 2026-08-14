@@ -154,7 +154,7 @@ public static class Program
     {
         var messageValue = new string('x', messageSize);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(bootstrapServers)
             .WithClientId("profiling-producer")
             .WithIdempotence(false)
@@ -163,7 +163,8 @@ public static class Program
             .WithBatchSize(16384)
             .WithBufferMemory(ProducerBufferMemoryBytes)
             .WithConnectionsPerBroker(connectionsPerBroker)
-            .Build();
+            .BuildAsync()
+            .ConfigureAwait(false);
 
         // Warmup
         await producer.ProduceAsync(Topic, "warmup", "warmup").ConfigureAwait(false);
@@ -206,14 +207,15 @@ public static class Program
     {
         var messageValue = new string('x', messageSize);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(bootstrapServers)
             .WithClientId("profiling-producer-acked")
             .WithAcks(Acks.All)
             .WithLinger(TimeSpan.FromMilliseconds(1))
             .WithBatchSize(16384)
             .WithConnectionsPerBroker(connectionsPerBroker)
-            .Build();
+            .BuildAsync()
+            .ConfigureAwait(false);
 
         // Warmup
         for (var i = 0; i < 10; i++)
@@ -269,14 +271,15 @@ public static class Program
     {
         var messageValue = new string('x', messageSize);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(bootstrapServers)
             .WithClientId("profiling-producer-batch")
             .WithAcks(Acks.Leader)
             .WithLinger(TimeSpan.FromMilliseconds(5))
             .WithBatchSize(16384)
             .WithConnectionsPerBroker(connectionsPerBroker)
-            .Build();
+            .BuildAsync()
+            .ConfigureAwait(false);
 
         // Warmup
         for (var i = 0; i < 100; i++)
@@ -386,7 +389,7 @@ public static class Program
         Console.WriteLine($"  Producer batch size: {producerBatchSize:N0} bytes");
         Console.WriteLine($"  Connections per broker: {connectionsPerBroker}");
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(bootstrapServers)
             .WithClientId(clientId)
             .WithIdempotence(idempotence)
@@ -395,7 +398,8 @@ public static class Program
             .WithBatchSize(producerBatchSize)
             .WithBufferMemory(ProducerBufferMemoryBytes)
             .WithConnectionsPerBroker(connectionsPerBroker)
-            .Build();
+            .BuildAsync()
+            .ConfigureAwait(false);
 
         await producer.ProduceAsync(Topic, "warmup", "warmup").ConfigureAwait(false);
         for (var i = 0; i < 999; i++)
@@ -457,12 +461,13 @@ public static class Program
         var messageValue = new string('x', messageSize);
         var messagesToSeed = batchSize * 100; // Seed plenty of messages
 
-        await using (var producer = Kafka.CreateProducer<string, string>()
+        await using (var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(bootstrapServers)
             .WithClientId("profiling-seeder")
             .WithAcks(Acks.Leader)
             .WithLinger(TimeSpan.FromMilliseconds(1))
-            .Build())
+            .BuildAsync()
+            .ConfigureAwait(false))
         {
             for (var i = 0; i < messagesToSeed; i++)
             {
@@ -473,12 +478,13 @@ public static class Program
         Console.WriteLine($"  Seeded {messagesToSeed:N0} messages");
 
         // Now consume
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(bootstrapServers)
             .WithClientId("profiling-consumer")
             .WithGroupId($"profiling-group-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync()
+            .ConfigureAwait(false);
 
         consumer.Subscribe(Topic);
 
@@ -517,19 +523,21 @@ public static class Program
 
         await kafka.CreateTopicAsync(roundtripTopic, partitions: 1).ConfigureAwait(false);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("profiling-roundtrip-producer")
             .WithAcks(Acks.Leader)
             .WithLinger(TimeSpan.FromMilliseconds(1))
-            .Build();
+            .BuildAsync()
+            .ConfigureAwait(false);
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("profiling-roundtrip-consumer")
             .WithGroupId($"profiling-roundtrip-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync()
+            .ConfigureAwait(false);
 
         consumer.Subscribe(roundtripTopic);
 
@@ -630,11 +638,12 @@ public static class Program
             try
             {
                 // Try to create a producer and send a test message
-                await using var producer = Kafka.CreateProducer<string, string>()
+                await using var producer = await Kafka.CreateProducer<string, string>()
                     .WithBootstrapServers(bootstrapServers)
                     .WithClientId("kafka-ready-check")
                     .WithAcks(Acks.Leader)
-                    .Build();
+                    .BuildAsync()
+                    .ConfigureAwait(false);
 
                 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
                 await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -806,33 +815,8 @@ public static class Program
             _container = container;
         }
 
-        public async Task CreateTopicAsync(string topic, int partitions)
-        {
-            if (_container is null)
-            {
-                await AdminCreateTopicAsync(BootstrapServers, topic, partitions).ConfigureAwait(false);
-                return;
-            }
-
-            var result = await _container.ExecAsync([
-                "kafka-topics",
-                "--bootstrap-server", "localhost:9092",
-                "--create",
-                "--topic", topic,
-                "--partitions", partitions.ToString(),
-                "--replication-factor", "1",
-                "--if-not-exists"
-            ]).ConfigureAwait(false);
-
-            if (result.ExitCode == 0)
-            {
-                Console.WriteLine($"Created topic: {topic}");
-            }
-            else
-            {
-                Console.WriteLine($"Warning: Topic creation returned exit code {result.ExitCode}: {result.Stderr}");
-            }
-        }
+        public Task CreateTopicAsync(string topic, int partitions) =>
+            AdminCreateTopicAsync(BootstrapServers, topic, partitions);
 
         private static async Task AdminCreateTopicAsync(string bootstrapServers, string topic, int partitions)
         {

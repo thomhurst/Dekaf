@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Reflection;
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Engines;
@@ -103,6 +104,19 @@ public class ProducerFireHotPathBenchmarks
         {
             if (_accumulator.TryDrainBatch(out var batch))
             {
+                if (batch.UnackedBudget is { } budget)
+                {
+                    var acknowledgedAt = Stopwatch.GetTimestamp();
+                    var sentAt = acknowledgedAt - Stopwatch.Frequency / 1_000;
+                    var snapshot = budget.SnapshotDelivery(
+                        sentAt,
+                        appLimited: false,
+                        batch.StopwatchCreatedTicks,
+                        batch.AdmissionGeneration);
+                    budget.OnAcked(batch.DataSize, snapshot, acknowledgedAt);
+                    budget.CompleteAckedPass(acknowledgedAt);
+                }
+
                 _accumulator.OnBatchExitsPipeline(batch);
                 _accumulator.ReleaseMemory(batch.DataSize);
                 _accumulator.ReturnReadyBatch(batch);
