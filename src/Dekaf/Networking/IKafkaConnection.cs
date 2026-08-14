@@ -127,6 +127,29 @@ internal interface IKafkaPipelinedWriteCompletionConnection
         where TResponse : IKafkaResponse;
 }
 
+/// <summary>
+/// Exposes the point at which a request may begin writing to the socket, after all
+/// pre-write waits have completed.
+/// </summary>
+internal interface IKafkaRequestWriteObserverConnection
+{
+    ValueTask<TResponse> SendWithWriteObservationAsync<TRequest, TResponse>(
+        TRequest request,
+        short apiVersion,
+        Action requestWriteStarted,
+        CancellationToken cancellationToken = default)
+        where TRequest : IKafkaRequest<TResponse>
+        where TResponse : IKafkaResponse;
+
+    ValueTask<PipelinedResponse<TResponse>> SendPipelinedWithWriteObservationAfterWriteAsync<TRequest, TResponse>(
+        TRequest request,
+        short apiVersion,
+        Action requestWriteStarted,
+        CancellationToken cancellationToken = default)
+        where TRequest : IKafkaRequest<TResponse>
+        where TResponse : IKafkaResponse;
+}
+
 internal interface IPipelinedResponseSource<TResponse> : IValueTaskSource<TResponse>
 {
     void Abandon(short token);

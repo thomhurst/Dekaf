@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using System.Runtime.ExceptionServices;
 using Dekaf.Consumer;
+using Dekaf.Errors;
 using Dekaf.Networking;
 using Dekaf.Producer;
 using Dekaf.Protocol;
@@ -15,6 +17,88 @@ namespace Dekaf.Tests.Integration;
 public sealed class TransactionCoordinatorFaultTests(TransactionFaultKafkaContainer kafka)
 {
     private static readonly TimeSpan TestTimeout = TimeSpan.FromMinutes(2);
+
+    [Test]
+    public async Task InitTransactions_CoordinatorResponseBeyondMaxBlock_TimesOutAndRecovers()
+    {
+        using var testTimeout = new CancellationTokenSource(TestTimeout);
+        var cancellationToken = testTimeout.Token;
+        var topic = await kafka.CreateTestTopicAsync();
+        await WarmTransactionCoordinatorAsync(cancellationToken);
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(kafka.ProducerBootstrapServers)
+            .WithTransactionalId($"transaction-init-deadline-{Guid.NewGuid():N}")
+            .WithMaxBlock(TimeSpan.FromSeconds(2))
+            .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(cancellationToken);
+
+        try
+        {
+            await kafka.AddCoordinatorLatencyAsync(cancellationToken, latencyMs: 8_000);
+            var stopwatch = Stopwatch.StartNew();
+
+            var exception = await Assert.That(() => producer.InitTransactionsAsync(
+                    cancellationToken).AsTask())
+                .Throws<KafkaTimeoutException>();
+
+            await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Transaction);
+            await Assert.That(stopwatch.Elapsed).IsLessThan(TimeSpan.FromSeconds(4));
+        }
+        finally
+        {
+            await kafka.HealCoordinatorAsync(cancellationToken);
+        }
+
+        await producer.InitTransactionsAsync(cancellationToken);
+        await using var transaction = producer.BeginTransaction();
+        _ = await transaction.ProduceAsync(topic, "recovered-key", "recovered-value", cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    [Test]
+    public async Task SendOffsets_CoordinatorResponseBeyondMaxBlock_TimesOutAndRecovers()
+    {
+        using var testTimeout = new CancellationTokenSource(TestTimeout);
+        var cancellationToken = testTimeout.Token;
+        var topic = await kafka.CreateTestTopicAsync();
+        await WarmTransactionCoordinatorAsync(cancellationToken);
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(kafka.ProducerBootstrapServers)
+            .WithTransactionalId($"transaction-offset-deadline-{Guid.NewGuid():N}")
+            .WithMaxBlock(TimeSpan.FromSeconds(2))
+            .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(cancellationToken);
+        await producer.InitTransactionsAsync(cancellationToken);
+        await using var transaction = producer.BeginTransaction();
+        var offsets = new[] { new TopicPartitionOffset(topic, 0, 0) };
+        var consumerGroupId = $"transaction-offset-deadline-group-{Guid.NewGuid():N}";
+
+        try
+        {
+            await kafka.AddCoordinatorLatencyAsync(cancellationToken, latencyMs: 8_000);
+            var stopwatch = Stopwatch.StartNew();
+
+            var exception = await Assert.That(() => transaction.SendOffsetsToTransactionAsync(
+                    offsets,
+                    consumerGroupId,
+                    cancellationToken).AsTask())
+                .Throws<KafkaTimeoutException>();
+
+            await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Transaction);
+            await Assert.That(stopwatch.Elapsed).IsLessThan(TimeSpan.FromSeconds(4));
+        }
+        finally
+        {
+            await kafka.HealCoordinatorAsync(cancellationToken);
+        }
+
+        await transaction.SendOffsetsToTransactionAsync(offsets, consumerGroupId, cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+    }
 
     [Test]
     public async Task Abort_CoordinatorResponseDelayed_RecoversWithoutVisibility()
@@ -152,6 +236,16 @@ public sealed class TransactionCoordinatorFaultTests(TransactionFaultKafkaContai
         {
             // Expected when cleanup cancels an incomplete background operation.
         }
+    }
+
+    private async Task WarmTransactionCoordinatorAsync(CancellationToken cancellationToken)
+    {
+        await using var warmupProducer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(kafka.ProducerBootstrapServers)
+            .WithTransactionalId($"transaction-warmup-{Guid.NewGuid():N}")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(cancellationToken);
+        await warmupProducer.InitTransactionsAsync(cancellationToken);
     }
 
     private sealed class EndTxnRequestObserver

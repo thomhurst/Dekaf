@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Reflection;
 using Dekaf.Consumer;
 using Dekaf.Errors;
@@ -239,6 +240,93 @@ public sealed class TransactionOffsetCommitTests
     }
 
     [Test]
+    public async Task TV2_RetriableCommitError_RetriesBeyondPreviousAttemptLimit()
+    {
+        var outcomes = new Queue<object>(
+        [
+            ErrorCode.CoordinatorLoadInProgress,
+            ErrorCode.CoordinatorLoadInProgress,
+            ErrorCode.CoordinatorLoadInProgress,
+            ErrorCode.CoordinatorLoadInProgress,
+            ErrorCode.CoordinatorLoadInProgress,
+            ErrorCode.None
+        ]);
+        await using var harness = CreateHarness(
+            transactionVersion: 2,
+            txnOffsetCommitMaxVersion: 5,
+            commitOutcomes: outcomes);
+
+        await harness.Producer.SendOffsetsToTransactionInternalAsync(
+            [new TopicPartitionOffset("orders", 0, 42)],
+            "group-1",
+            CancellationToken.None);
+
+        await Assert.That(harness.Connection.CommitRequests).Count().IsEqualTo(6);
+    }
+
+    [Test]
+    public async Task TV2_TransportFailuresUntilDeadline_ArePreservedAsTimeoutCause()
+    {
+        var outcomes = new Queue<object>(Enumerable.Range(0, 1000)
+            .Select(static _ => (object)new IOException("coordinator connection lost")));
+        await using var harness = CreateHarness(
+            transactionVersion: 2,
+            txnOffsetCommitMaxVersion: 5,
+            commitOutcomes: outcomes,
+            findCoordinatorDelayMs: 1200,
+            retryBackoffMs: 10,
+            maxBlockMs: 2000);
+        var stopwatch = Stopwatch.StartNew();
+
+        var exception = await Assert.That(() => harness.Producer.SendOffsetsToTransactionInternalAsync(
+                [new TopicPartitionOffset("orders", 0, 42)],
+                "group-1",
+                CancellationToken.None).AsTask())
+            .Throws<KafkaTimeoutException>();
+
+        await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Transaction);
+        await Assert.That(exception.InnerException).IsTypeOf<IOException>();
+        await Assert.That(exception.InnerException!.Message).IsEqualTo("coordinator connection lost");
+        await Assert.That(stopwatch.Elapsed).IsLessThan(TimeSpan.FromMilliseconds(2800));
+    }
+
+    [Test]
+    public async Task TV2_EmptyCoordinatorResponse_RetriesWithinDeadline()
+    {
+        await using var harness = CreateHarness(
+            transactionVersion: 2,
+            txnOffsetCommitMaxVersion: 5,
+            emptyCoordinatorResponsesBeforeSuccess: 1);
+
+        await harness.Producer.SendOffsetsToTransactionInternalAsync(
+            [new TopicPartitionOffset("orders", 0, 42)],
+            "group-1",
+            CancellationToken.None);
+
+        await Assert.That(harness.Connection.Requests.Count(static request =>
+            request.ApiKey == ApiKey.FindCoordinator)).IsEqualTo(2);
+        await Assert.That(harness.Connection.CommitRequests).Count().IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task TV2_EmptyBrokerMetadata_RefreshesAndRetriesWithinDeadline()
+    {
+        await using var harness = CreateHarness(
+            transactionVersion: 2,
+            txnOffsetCommitMaxVersion: 5,
+            startWithEmptyBrokerMetadata: true);
+
+        await harness.Producer.SendOffsetsToTransactionInternalAsync(
+            [new TopicPartitionOffset("orders", 0, 42)],
+            "group-1",
+            CancellationToken.None);
+
+        await Assert.That(harness.Connection.Requests.Any(static request =>
+            request.ApiKey == ApiKey.Metadata)).IsTrue();
+        await Assert.That(harness.Connection.CommitRequests).Count().IsEqualTo(1);
+    }
+
+    [Test]
     public async Task TV2_TransactionAbortable_UsesKip890Classification()
     {
         var outcomes = new Queue<object>([ErrorCode.TransactionAbortable]);
@@ -261,9 +349,19 @@ public sealed class TransactionOffsetCommitTests
         short transactionVersion,
         short txnOffsetCommitMaxVersion,
         Queue<object>? commitOutcomes = null,
-        Guid topicId = default)
+        Guid topicId = default,
+        int findCoordinatorDelayMs = 0,
+        int emptyCoordinatorResponsesBeforeSuccess = 0,
+        bool startWithEmptyBrokerMetadata = false,
+        int retryBackoffMs = 0,
+        int maxBlockMs = 1000)
     {
-        var connection = new RecordingConnection(txnOffsetCommitMaxVersion, commitOutcomes, topicId);
+        var connection = new RecordingConnection(
+            txnOffsetCommitMaxVersion,
+            commitOutcomes,
+            topicId,
+            findCoordinatorDelayMs,
+            emptyCoordinatorResponsesBeforeSuccess);
         var connectionPool = new ConnectionPool(
             "transaction-offset-tests",
             connectionOptions: null,
@@ -272,7 +370,9 @@ public sealed class TransactionOffsetCommitTests
         connectionPool.RegisterBroker(1, "localhost", 9092);
 
         var metadataManager = new MetadataManager(connectionPool, ["localhost:9092"]);
-        metadataManager.Metadata.Update(CreateMetadataResponse(topicId));
+        metadataManager.Metadata.Update(startWithEmptyBrokerMetadata
+            ? new MetadataResponse { Brokers = [], Topics = [] }
+            : CreateMetadataResponse(topicId));
         metadataManager.ObserveClusterCapabilities(
             "cluster-a",
             KafkaConnectionCapabilities.Create(new ApiVersionsResponse
@@ -294,10 +394,10 @@ public sealed class TransactionOffsetCommitTests
             {
                 BootstrapServers = ["localhost:9092"],
                 TransactionalId = "transaction-1",
-                RetryBackoffMs = 0,
-                RetryBackoffMaxMs = 0,
+                RetryBackoffMs = retryBackoffMs,
+                RetryBackoffMaxMs = retryBackoffMs,
                 CloseTimeoutMs = 100,
-                MaxBlockMs = 100
+                MaxBlockMs = maxBlockMs
             },
             Serializers.String,
             Serializers.String,
@@ -341,8 +441,11 @@ public sealed class TransactionOffsetCommitTests
     private sealed class RecordingConnection(
         short txnOffsetCommitMaxVersion,
         Queue<object>? commitOutcomes,
-        Guid topicId) : IKafkaConnection, IKafkaCapabilityProvider
+        Guid topicId,
+        int findCoordinatorDelayMs,
+        int emptyCoordinatorResponsesBeforeSuccess) : IKafkaConnection, IKafkaCapabilityProvider
     {
+        private int _findCoordinatorRequests;
         public int BrokerId => 1;
         public string Host => "localhost";
         public int Port => 9092;
@@ -374,29 +477,54 @@ public sealed class TransactionOffsetCommitTests
                 apiVersion,
                 request is FindCoordinatorRequest coordinatorRequest ? coordinatorRequest.Key : null));
 
+            if (request is FindCoordinatorRequest delayedFindCoordinatorRequest
+                && findCoordinatorDelayMs > 0)
+            {
+                return CreateDelayedFindCoordinatorResponseAsync<TResponse>(
+                    delayedFindCoordinatorRequest,
+                    cancellationToken);
+            }
+
             IKafkaResponse response = request switch
             {
                 AddOffsetsToTxnRequest => new AddOffsetsToTxnResponse { ErrorCode = ErrorCode.None },
-                FindCoordinatorRequest findRequest => new FindCoordinatorResponse
-                {
-                    Coordinators =
-                    [
-                        new Coordinator
-                        {
-                            Key = findRequest.Key,
-                            NodeId = 1,
-                            Host = "localhost",
-                            Port = 9092,
-                            ErrorCode = ErrorCode.None
-                        }
-                    ]
-                },
+                FindCoordinatorRequest findRequest => CreateFindCoordinatorResponse(findRequest),
                 MetadataRequest => CreateMetadataResponse(topicId),
                 TxnOffsetCommitRequest txnOffsetCommit => CreateCommitResponse(txnOffsetCommit),
                 _ => throw new NotSupportedException(typeof(TRequest).Name)
             };
 
             return ValueTask.FromResult((TResponse)response);
+        }
+
+        private async ValueTask<TResponse> CreateDelayedFindCoordinatorResponseAsync<TResponse>(
+            FindCoordinatorRequest request,
+            CancellationToken cancellationToken)
+            where TResponse : IKafkaResponse
+        {
+            await Task.Delay(findCoordinatorDelayMs, cancellationToken).ConfigureAwait(false);
+            return (TResponse)(IKafkaResponse)CreateFindCoordinatorResponse(request);
+        }
+
+        private FindCoordinatorResponse CreateFindCoordinatorResponse(FindCoordinatorRequest request)
+        {
+            var requestNumber = Interlocked.Increment(ref _findCoordinatorRequests);
+            return new FindCoordinatorResponse
+            {
+                Coordinators = requestNumber <= emptyCoordinatorResponsesBeforeSuccess
+                    ? []
+                    :
+                    [
+                        new Coordinator
+                        {
+                            Key = request.Key,
+                            NodeId = 1,
+                            Host = "localhost",
+                            Port = 9092,
+                            ErrorCode = ErrorCode.None
+                        }
+                    ]
+            };
         }
 
         private TxnOffsetCommitResponse CreateCommitResponse(TxnOffsetCommitRequest request)

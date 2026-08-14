@@ -54,6 +54,20 @@ public sealed class MaxBlockMsTests
         await Assert.That(options.MaxBlockMs).IsEqualTo(1);
     }
 
+    [Test]
+    [Arguments(0)]
+    [Arguments(-1)]
+    public async Task MaxBlockMs_NonPositiveValue_ThrowsArgumentOutOfRangeException(int maxBlockMs)
+    {
+        var act = () => new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            MaxBlockMs = maxBlockMs
+        };
+
+        await Assert.That(act).Throws<ArgumentOutOfRangeException>();
+    }
+
     #endregion
 
     #region Builder - WithMaxBlock (from Ms)
