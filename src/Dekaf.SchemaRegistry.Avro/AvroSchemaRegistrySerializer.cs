@@ -92,7 +92,7 @@ public sealed class AvroSchemaRegistrySerializer<
     public async Task<int> WarmupAsync(string topic, T value, bool isKey = false, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(value);
-        var subject = GetSubjectName(topic, isKey);
+        var subject = GetSubjectName(topic, isKey, value);
         var schema = CreateRegistrySchema(value);
         var schemaId = await GetOrFetchSchemaIdAsync(subject, schema, cancellationToken).ConfigureAwait(false);
         CacheSubjectSchemaId(topic, isKey, subject, schemaId, schema);
@@ -265,7 +265,7 @@ public sealed class AvroSchemaRegistrySerializer<
             topic,
             isKey,
             new SubjectSchemaIdState(this, value),
-            static (state, topic, isKey) => state.Serializer.GetSubjectName(topic, isKey),
+            static (state, topic, isKey) => state.Serializer.GetSubjectName(topic, isKey, state.Value),
             static (state, subject) => state.Serializer.GetSchemaIdCacheValue(subject, state.Value));
 
     private int CacheSubjectSchemaId(string topic, bool isKey, string subject, int schemaId, RegistrySchema schema)
@@ -431,36 +431,27 @@ public sealed class AvroSchemaRegistrySerializer<
         return null;
     }
 
-    private string GetSubjectName(string topic, bool isKey)
+    private string GetSubjectName(string topic, bool isKey, T value)
     {
+        var recordName = GetRecordName(value);
         if (_config.CustomSubjectNameStrategy is not null)
         {
-            return _config.CustomSubjectNameStrategy.GetSubjectName(topic, GetRecordName(), isKey);
+            return _config.CustomSubjectNameStrategy.GetSubjectName(topic, recordName, isKey);
         }
 
-        var suffix = isKey ? "-key" : "-value";
-        return _config.SubjectNameStrategy switch
-        {
-            SubjectNameStrategy.TopicName => topic + suffix,
-            SubjectNameStrategy.RecordName => GetRecordName() + suffix,
-            SubjectNameStrategy.TopicRecordName => $"{topic}-{GetRecordName()}{suffix}",
-            _ => topic + suffix
-        };
+        return SubjectNameResolver.GetSubjectName(
+            _config.SubjectNameStrategy,
+            topic,
+            recordName,
+            isKey,
+            _config.UseLegacySubjectNames);
     }
 
-    private static string GetRecordName()
+    private string GetRecordName(T value)
     {
-        // For Avro specific records, try to get the full name from schema
-        if (typeof(ISpecificRecord).IsAssignableFrom(typeof(T)))
-        {
-            // Avro generated classes have a static _SCHEMA field (cached lookup)
-            var schemaField = AvroSchemaFieldCache.GetSchemaField(typeof(T));
-
-            if (schemaField?.GetValue(null) is global::Avro.RecordSchema recordSchema)
-                return recordSchema.Fullname;
-        }
-
-        return typeof(T).FullName ?? typeof(T).Name;
+        return GetSchemaFromValue(value) is global::Avro.RecordSchema recordSchema
+            ? recordSchema.Fullname
+            : typeof(T).FullName ?? typeof(T).Name;
     }
 
     /// <summary>

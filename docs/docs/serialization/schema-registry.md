@@ -141,14 +141,43 @@ The serializer automatically registers new schema versions and handles compatibi
 ## Subject Naming Strategies
 
 ```csharp
-var serializer = new AvroSerializer<Order>(schemaRegistry, new AvroSerializerConfig
+var serializer = new AvroSchemaRegistrySerializer<Order>(schemaRegistry, new AvroSerializerConfig
 {
-    SubjectNameStrategy = SubjectNameStrategy.TopicRecord
+    SubjectNameStrategy = SubjectNameStrategy.TopicRecordName
 });
 ```
 
-| Strategy | Subject Name |
-|----------|--------------|
-| Topic | `{topic}-value` |
-| Record | `{record-name}` |
-| TopicRecord | `{topic}-{record-name}` |
+| Strategy | Value or key subject |
+|----------|----------------------|
+| `TopicName` | `{topic}-value` or `{topic}-key` |
+| `RecordName` | `{fully-qualified-record-name}` |
+| `TopicRecordName` | `{topic}-{fully-qualified-record-name}` |
+
+These formats match Confluent serializers. Avro `GenericRecord` subjects use the fullname from the
+record's runtime schema, JSON Schema subjects use the schema `title` when present, and Protobuf
+subjects use the message descriptor's full name.
+
+### Migrating subjects created before this fix
+
+Older Dekaf releases appended `-key` or `-value` to `RecordName` and `TopicRecordName` subjects.
+Before upgrading producers, register or copy each schema version from the old suffixed subject to
+the standard subject. Keep the same compatibility mode and version order. For example:
+
+- `com.example.Order-value` becomes `com.example.Order`.
+- `orders-com.example.Order-key` becomes `orders-com.example.Order`.
+
+If consumers or deployment sequencing require a gradual migration, keep the old names temporarily:
+
+```csharp
+var config = new AvroSerializerConfig
+{
+    SubjectNameStrategy = SubjectNameStrategy.RecordName,
+    UseLegacySubjectNames = true
+};
+```
+
+`UseLegacySubjectNames` is also available on `ProtobufSerializerConfig` and as an optional
+constructor/builder-extension argument for JSON Schema and generic Schema Registry serializers.
+It affects only the enum-based `RecordName` and `TopicRecordName` strategies; `TopicName` and custom
+`ISubjectNameStrategy` implementations are unchanged. Disable the option after every producer and
+schema has moved to the standard subject.

@@ -169,7 +169,80 @@ public class ProtobufSchemaRegistrySerializerTests
         serializer.Serialize(message, ref buffer, CreateContext("my-topic"));
 
         // Assert - should use full message name
-        await Assert.That(capturedSubject).IsEqualTo("dekaf.tests.TestMessage-value");
+        await Assert.That(capturedSubject).IsEqualTo("dekaf.tests.TestMessage");
+    }
+
+    [Test]
+    public async Task Serialize_UsesTopicRecordNameSubjectStrategy()
+    {
+        var schemaRegistry = Substitute.For<ISchemaRegistryClient>();
+        string? capturedSubject = null;
+        schemaRegistry.GetOrRegisterSchemaAsync(Arg.Any<string>(), Arg.Any<Schema>(), Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                capturedSubject = callInfo.Arg<string>()!;
+                return Task.FromResult(1);
+            });
+
+        var config = new ProtobufSerializerConfig { SubjectNameStrategy = SubjectNameStrategy.TopicRecordName };
+        await using var serializer = new ProtobufSchemaRegistrySerializer<TestMessage>(schemaRegistry, config);
+
+        var buffer = new ArrayBufferWriter<byte>();
+        serializer.Serialize(new TestMessage(), ref buffer, CreateContext("my-topic", isKey: true));
+
+        await Assert.That(capturedSubject).IsEqualTo("my-topic-dekaf.tests.TestMessage");
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Serialize_UseDeprecatedFormat_DoesNotAffectRecordNameSubject(bool useDeprecatedFormat)
+    {
+        var schemaRegistry = Substitute.For<ISchemaRegistryClient>();
+        string? capturedSubject = null;
+        schemaRegistry.GetOrRegisterSchemaAsync(Arg.Any<string>(), Arg.Any<Schema>(), Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                capturedSubject = callInfo.Arg<string>()!;
+                return Task.FromResult(1);
+            });
+
+        var config = new ProtobufSerializerConfig
+        {
+            SubjectNameStrategy = SubjectNameStrategy.RecordName,
+            UseDeprecatedFormat = useDeprecatedFormat
+        };
+        await using var serializer = new ProtobufSchemaRegistrySerializer<TestMessage>(schemaRegistry, config);
+
+        var buffer = new ArrayBufferWriter<byte>();
+        serializer.Serialize(new TestMessage(), ref buffer, CreateContext("my-topic"));
+
+        await Assert.That(capturedSubject).IsEqualTo("dekaf.tests.TestMessage");
+    }
+
+    [Test]
+    public async Task Serialize_LegacyRecordNameSubjectStrategy_RetainsSuffix()
+    {
+        var schemaRegistry = Substitute.For<ISchemaRegistryClient>();
+        string? capturedSubject = null;
+        schemaRegistry.GetOrRegisterSchemaAsync(Arg.Any<string>(), Arg.Any<Schema>(), Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                capturedSubject = callInfo.Arg<string>()!;
+                return Task.FromResult(1);
+            });
+
+        var config = new ProtobufSerializerConfig
+        {
+            SubjectNameStrategy = SubjectNameStrategy.RecordName,
+            UseLegacySubjectNames = true
+        };
+        await using var serializer = new ProtobufSchemaRegistrySerializer<TestMessage>(schemaRegistry, config);
+
+        var buffer = new ArrayBufferWriter<byte>();
+        serializer.Serialize(new TestMessage(), ref buffer, CreateContext("my-topic", isKey: true));
+
+        await Assert.That(capturedSubject).IsEqualTo("dekaf.tests.TestMessage-key");
     }
 
     [Test]

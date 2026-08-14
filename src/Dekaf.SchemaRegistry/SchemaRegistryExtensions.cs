@@ -13,15 +13,6 @@ public static class SchemaRegistryExtensions
     /// <summary>
     /// Configures the producer to use JSON Schema Registry serialization for values.
     /// </summary>
-    /// <typeparam name="TKey">Key type.</typeparam>
-    /// <typeparam name="TValue">Value type.</typeparam>
-    /// <param name="builder">The producer builder.</param>
-    /// <param name="schemaRegistry">The Schema Registry client.</param>
-    /// <param name="jsonSchema">The JSON schema for the value type.</param>
-    /// <param name="jsonOptions">Optional JSON serializer options.</param>
-    /// <param name="subjectNameStrategy">Subject name strategy.</param>
-    /// <param name="autoRegisterSchemas">Whether to auto-register schemas.</param>
-    /// <returns>The builder for chaining.</returns>
     [RequiresUnreferencedCode("JsonSerializerOptions-based JSON serialization uses reflection. Use the JsonTypeInfo<TValue> overload for NativeAOT.")]
     [RequiresDynamicCode("JsonSerializerOptions-based JSON serialization may require runtime code generation. Use the JsonTypeInfo<TValue> overload for NativeAOT.")]
     public static ProducerBuilder<TKey, TValue> UseJsonSchemaRegistry<TKey, TValue>(
@@ -31,16 +22,68 @@ public static class SchemaRegistryExtensions
         JsonSerializerOptions? jsonOptions = null,
         SubjectNameStrategy subjectNameStrategy = SubjectNameStrategy.TopicName,
         bool autoRegisterSchemas = true)
+        => UseJsonSchemaRegistry(
+            builder,
+            schemaRegistry,
+            jsonSchema,
+            useLegacySubjectNames: false,
+            jsonOptions: jsonOptions,
+            subjectNameStrategy: subjectNameStrategy,
+            autoRegisterSchemas: autoRegisterSchemas);
+
+    /// <summary>
+    /// Configures the producer to use JSON Schema Registry serialization for values.
+    /// </summary>
+    /// <typeparam name="TKey">Key type.</typeparam>
+    /// <typeparam name="TValue">Value type.</typeparam>
+    /// <param name="builder">The producer builder.</param>
+    /// <param name="schemaRegistry">The Schema Registry client.</param>
+    /// <param name="jsonSchema">The JSON schema for the value type.</param>
+    /// <param name="jsonOptions">Optional JSON serializer options.</param>
+    /// <param name="subjectNameStrategy">Subject name strategy.</param>
+    /// <param name="autoRegisterSchemas">Whether to auto-register schemas.</param>
+    /// <param name="useLegacySubjectNames">Whether RecordName and TopicRecordName should use Dekaf's legacy -key/-value suffixes.</param>
+    /// <returns>The builder for chaining.</returns>
+    [RequiresUnreferencedCode("JsonSerializerOptions-based JSON serialization uses reflection. Use the JsonTypeInfo<TValue> overload for NativeAOT.")]
+    [RequiresDynamicCode("JsonSerializerOptions-based JSON serialization may require runtime code generation. Use the JsonTypeInfo<TValue> overload for NativeAOT.")]
+    public static ProducerBuilder<TKey, TValue> UseJsonSchemaRegistry<TKey, TValue>(
+        this ProducerBuilder<TKey, TValue> builder,
+        ISchemaRegistryClient schemaRegistry,
+        string jsonSchema,
+        bool useLegacySubjectNames,
+        JsonSerializerOptions? jsonOptions = null,
+        SubjectNameStrategy subjectNameStrategy = SubjectNameStrategy.TopicName,
+        bool autoRegisterSchemas = true)
     {
         var serializer = new JsonSchemaRegistrySerializer<TValue>(
             schemaRegistry,
             jsonSchema,
+            useLegacySubjectNames,
             jsonOptions,
             subjectNameStrategy,
             autoRegisterSchemas);
 
         return builder.WithValueSerializer(serializer);
     }
+
+    /// <summary>
+    /// Configures the producer to use NativeAOT-safe JSON Schema Registry serialization for values.
+    /// </summary>
+    public static ProducerBuilder<TKey, TValue> UseJsonSchemaRegistry<TKey, TValue>(
+        this ProducerBuilder<TKey, TValue> builder,
+        ISchemaRegistryClient schemaRegistry,
+        string jsonSchema,
+        JsonTypeInfo<TValue> jsonTypeInfo,
+        SubjectNameStrategy subjectNameStrategy = SubjectNameStrategy.TopicName,
+        bool autoRegisterSchemas = true)
+        => UseJsonSchemaRegistry(
+            builder,
+            schemaRegistry,
+            jsonSchema,
+            jsonTypeInfo,
+            useLegacySubjectNames: false,
+            subjectNameStrategy: subjectNameStrategy,
+            autoRegisterSchemas: autoRegisterSchemas);
 
     /// <summary>
     /// Configures the producer to use NativeAOT-safe JSON Schema Registry serialization for values.
@@ -53,12 +96,14 @@ public static class SchemaRegistryExtensions
     /// <param name="jsonTypeInfo">Source-generated metadata for the value type.</param>
     /// <param name="subjectNameStrategy">Subject name strategy.</param>
     /// <param name="autoRegisterSchemas">Whether to auto-register schemas.</param>
+    /// <param name="useLegacySubjectNames">Whether RecordName and TopicRecordName should use Dekaf's legacy -key/-value suffixes.</param>
     /// <returns>The builder for chaining.</returns>
     public static ProducerBuilder<TKey, TValue> UseJsonSchemaRegistry<TKey, TValue>(
         this ProducerBuilder<TKey, TValue> builder,
         ISchemaRegistryClient schemaRegistry,
         string jsonSchema,
         JsonTypeInfo<TValue> jsonTypeInfo,
+        bool useLegacySubjectNames,
         SubjectNameStrategy subjectNameStrategy = SubjectNameStrategy.TopicName,
         bool autoRegisterSchemas = true)
     {
@@ -66,6 +111,7 @@ public static class SchemaRegistryExtensions
             schemaRegistry,
             jsonSchema,
             jsonTypeInfo,
+            useLegacySubjectNames,
             subjectNameStrategy,
             autoRegisterSchemas);
 
@@ -94,6 +140,25 @@ public static class SchemaRegistryExtensions
 
         return builder.WithValueDeserializer(deserializer);
     }
+
+    /// <summary>
+    /// Configures the producer to use a custom Schema Registry serializer for values.
+    /// </summary>
+    public static ProducerBuilder<TKey, TValue> UseSchemaRegistry<TKey, TValue>(
+        this ProducerBuilder<TKey, TValue> builder,
+        ISchemaRegistryClient schemaRegistry,
+        Action<TValue, IBufferWriter<byte>> serialize,
+        Func<string, Schema> getSchema,
+        SubjectNameStrategy subjectNameStrategy = SubjectNameStrategy.TopicName,
+        bool autoRegisterSchemas = true)
+        => UseSchemaRegistry(
+            builder,
+            schemaRegistry,
+            serialize,
+            getSchema,
+            useLegacySubjectNames: false,
+            subjectNameStrategy: subjectNameStrategy,
+            autoRegisterSchemas: autoRegisterSchemas);
 
     /// <summary>
     /// Configures the consumer to use NativeAOT-safe JSON Schema Registry deserialization for values.
@@ -127,12 +192,14 @@ public static class SchemaRegistryExtensions
     /// <param name="getSchema">Function to get the schema for a subject.</param>
     /// <param name="subjectNameStrategy">Subject name strategy.</param>
     /// <param name="autoRegisterSchemas">Whether to auto-register schemas.</param>
+    /// <param name="useLegacySubjectNames">Whether RecordName and TopicRecordName should use Dekaf's legacy -key/-value suffixes.</param>
     /// <returns>The builder for chaining.</returns>
     public static ProducerBuilder<TKey, TValue> UseSchemaRegistry<TKey, TValue>(
         this ProducerBuilder<TKey, TValue> builder,
         ISchemaRegistryClient schemaRegistry,
         Action<TValue, IBufferWriter<byte>> serialize,
         Func<string, Schema> getSchema,
+        bool useLegacySubjectNames,
         SubjectNameStrategy subjectNameStrategy = SubjectNameStrategy.TopicName,
         bool autoRegisterSchemas = true)
     {
@@ -140,6 +207,7 @@ public static class SchemaRegistryExtensions
             schemaRegistry,
             serialize,
             getSchema,
+            useLegacySubjectNames,
             subjectNameStrategy,
             autoRegisterSchemas);
 

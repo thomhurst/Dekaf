@@ -30,15 +30,21 @@
 
   <ItemGroup Condition="'$(PublishAot)' == 'true'">
     <Compile Remove="OutboxRelayIntegrationTests.cs" />
+    <Compile Remove="SchemaRegistrySubjectCompatibilityTests.cs" />
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Apache.Avro" />
     <PackageReference Include="Confluent.Kafka" />
+    <PackageReference Include="Confluent.SchemaRegistry" Condition="'$(PublishAot)' != 'true'" />
+    <PackageReference Include="Confluent.SchemaRegistry.Serdes.Avro" Condition="'$(PublishAot)' != 'true'" />
+    <PackageReference Include="Confluent.SchemaRegistry.Serdes.Json" Condition="'$(PublishAot)' != 'true'" />
+    <PackageReference Include="Confluent.SchemaRegistry.Serdes.Protobuf" Condition="'$(PublishAot)' != 'true'" />
     <PackageReference Include="Google.Protobuf" />
     <PackageReference Include="Grpc.Tools" PrivateAssets="All" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Condition="'$(PublishAot)' != 'true'" />
     <PackageReference Include="Microsoft.Extensions.Hosting" />
+    <PackageReference Include="protobuf-net.Reflection" Condition="'$(PublishAot)' != 'true'" />
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Condition="'$(PublishAot)' != 'true'" />
     <PackageReference Include="SSH.NET" PrivateAssets="All" />
     <PackageReference Include="TUnit" />

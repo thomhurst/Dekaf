@@ -186,6 +186,13 @@ public sealed class SubjectNameStrategyTests
     }
 
     [Test]
+    public async Task AvroSerializerConfig_UseLegacySubjectNames_DefaultsToFalse()
+    {
+        var config = new AvroSerializerConfig();
+        await Assert.That(config.UseLegacySubjectNames).IsFalse();
+    }
+
+    [Test]
     public async Task ProtobufSerializerConfig_SubjectNameStrategy_DefaultsToTopicName()
     {
         var config = new ProtobufSerializerConfig();
@@ -211,6 +218,13 @@ public sealed class SubjectNameStrategyTests
     {
         var config = new ProtobufSerializerConfig();
         await Assert.That(config.UseLatestVersion).IsFalse();
+    }
+
+    [Test]
+    public async Task ProtobufSerializerConfig_UseLegacySubjectNames_DefaultsToFalse()
+    {
+        var config = new ProtobufSerializerConfig();
+        await Assert.That(config.UseLegacySubjectNames).IsFalse();
     }
 
     // --- Integration with AvroSchemaRegistrySerializer ---
@@ -256,11 +270,8 @@ public sealed class SubjectNameStrategyTests
         // Act
         serializer.Serialize(record, ref buffer, context);
 
-        // Assert - for GenericRecord (not ISpecificRecord), the record name falls back
-        // to the .NET FullName of GenericRecord since the static _SCHEMA field is not available.
-        // For ISpecificRecord types, the Avro schema fullname would be used instead.
         var subjects = await schemaRegistry.GetAllSubjectsAsync();
-        await Assert.That(subjects).Contains("Avro.Generic.GenericRecord-value");
+        await Assert.That(subjects).Contains("test.SimpleRecord");
     }
 
     [Test]
@@ -285,19 +296,146 @@ public sealed class SubjectNameStrategyTests
         // Act
         serializer.Serialize(record, ref buffer, context);
 
-        // Assert
         var subjects = await schemaRegistry.GetAllSubjectsAsync();
-        // GenericRecord uses .FullName from the schema, so this should be the
-        // Avro record fullname (not the .NET type name)
-        var hasTopicRecordSubject = false;
-        foreach (var subject in subjects)
+        await Assert.That(subjects).Contains("my-topic-test.SimpleRecord");
+    }
+
+    [Test]
+    public async Task AvroSerializer_LegacyRecordNameStrategy_RetainsSuffix()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        var config = new AvroSerializerConfig
         {
-            if (subject.StartsWith("my-topic-", StringComparison.Ordinal) && subject != "my-topic-value" && subject != "my-topic-key")
+            SubjectNameStrategy = SubjectNameStrategy.RecordName,
+            UseLegacySubjectNames = true
+        };
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry, config);
+
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(SimpleRecordSchema);
+        var record = new GenericRecord(schema);
+        record.Add("id", 1);
+        record.Add("name", "test");
+
+        var buffer = new ArrayBufferWriter<byte>();
+        serializer.Serialize(record, ref buffer, CreateContext("my-topic"));
+
+        var subjects = await schemaRegistry.GetAllSubjectsAsync();
+        await Assert.That(subjects).Contains("test.SimpleRecord-value");
+    }
+
+    [Test]
+    public async Task JsonSerializer_RecordNameStrategy_UsesSchemaTitle()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        await using var serializer = new JsonSchemaRegistrySerializer<string>(
+            schemaRegistry,
+            """{ "title": "com.example.JsonRecord", "type": "string" }""",
+            subjectNameStrategy: SubjectNameStrategy.RecordName);
+
+        var buffer = new ArrayBufferWriter<byte>();
+        serializer.Serialize("value", ref buffer, CreateContext("my-topic"));
+
+        var subjects = await schemaRegistry.GetAllSubjectsAsync();
+        await Assert.That(subjects).Contains("com.example.JsonRecord");
+    }
+
+    [Test]
+    public async Task JsonSerializer_LegacyTopicRecordNameStrategy_RetainsSuffix()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        await using var serializer = new JsonSchemaRegistrySerializer<string>(
+            schemaRegistry,
+            """{ "title": "com.example.JsonRecord", "type": "string" }""",
+            subjectNameStrategy: SubjectNameStrategy.TopicRecordName,
+            useLegacySubjectNames: true);
+
+        var buffer = new ArrayBufferWriter<byte>();
+        serializer.Serialize("value", ref buffer, CreateContext("my-topic", isKey: true));
+
+        var subjects = await schemaRegistry.GetAllSubjectsAsync();
+        await Assert.That(subjects).Contains("my-topic-com.example.JsonRecord-key");
+    }
+
+    [Test]
+    public async Task GenericSerializer_RecordNameStrategy_UsesRuntimeSchemaName()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = SimpleRecordSchema
+        };
+        await using var serializer = new SchemaRegistrySerializer<string>(
+            schemaRegistry,
+            static (value, writer) =>
             {
-                hasTopicRecordSubject = true;
-            }
-        }
-        await Assert.That(hasTopicRecordSubject).IsTrue();
+                var span = writer.GetSpan(value.Length);
+                for (var i = 0; i < value.Length; i++)
+                    span[i] = (byte)value[i];
+                writer.Advance(value.Length);
+            },
+            _ => schema,
+            SubjectNameStrategy.RecordName);
+
+        var buffer = new ArrayBufferWriter<byte>();
+        serializer.Serialize("value", ref buffer, CreateContext("my-topic"));
+
+        var subjects = await schemaRegistry.GetAllSubjectsAsync();
+        await Assert.That(subjects).Contains("test.SimpleRecord");
+    }
+
+    [Test]
+    public async Task GenericSerializer_LegacyRecordNameStrategy_RetainsSuffix()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = SimpleRecordSchema
+        };
+        await using var serializer = new SchemaRegistrySerializer<string>(
+            schemaRegistry,
+            static (value, writer) =>
+            {
+                writer.GetSpan(1)[0] = (byte)value[0];
+                writer.Advance(1);
+            },
+            _ => schema,
+            useLegacySubjectNames: true,
+            subjectNameStrategy: SubjectNameStrategy.RecordName);
+
+        var buffer = new ArrayBufferWriter<byte>();
+        serializer.Serialize("value", ref buffer, CreateContext("my-topic", isKey: true));
+
+        var subjects = await schemaRegistry.GetAllSubjectsAsync();
+        await Assert.That(subjects).Contains("test.SimpleRecord-key");
+    }
+
+    [Test]
+    public async Task UnknownEnumStrategy_PreservesTopicNameFallback()
+    {
+        var subject = SubjectNameResolver.GetSubjectName(
+            (SubjectNameStrategy)int.MaxValue,
+            "my-topic",
+            "com.example.Record",
+            isKey: false,
+            useLegacySubjectNames: false);
+
+        await Assert.That(subject).IsEqualTo("my-topic-value");
+    }
+
+    [Test]
+    public async Task JsonBooleanSchema_RecordNameFallsBackToClrType()
+    {
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = "true"
+        };
+
+        var recordName = SubjectNameResolver.GetRecordName(schema, "com.example.Record");
+
+        await Assert.That(recordName).IsEqualTo("com.example.Record");
     }
 
     [Test]

@@ -25,6 +25,14 @@ public sealed class AvroSerializerConfig
     public ISubjectNameStrategy? CustomSubjectNameStrategy { get; init; }
 
     /// <summary>
+    /// Whether <see cref="SubjectNameStrategy.RecordName"/> and
+    /// <see cref="SubjectNameStrategy.TopicRecordName"/> should retain Dekaf's legacy
+    /// -key/-value suffix. Enable this temporarily while migrating existing subjects.
+    /// Default is false.
+    /// </summary>
+    public bool UseLegacySubjectNames { get; init; }
+
+    /// <summary>
     /// Whether to use the latest schema version from the registry instead of the schema
     /// derived from the .NET type. This is useful when the writer schema should come
     /// from the registry rather than from code.

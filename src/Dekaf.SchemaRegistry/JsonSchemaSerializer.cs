@@ -41,12 +41,41 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
     private readonly ISubjectNameStrategy? _customSubjectNameStrategy;
     private readonly bool _autoRegisterSchemas;
     private readonly bool _normalizeSchemas;
+    private readonly bool _useLegacySubjectNames;
     private readonly Schema _schema;
+    private readonly string _recordName;
     private readonly bool _ownsClient;
     private readonly ISchemaRegistryRuleExecutor? _ruleExecutor;
 
     private readonly ConcurrentDictionary<string, int> _schemaIdCache = new();
     private readonly SubjectSchemaIdCache _subjectSchemaIdCache = new();
+
+    /// <summary>
+    /// Creates a new JSON Schema Registry serializer.
+    /// </summary>
+    [RequiresUnreferencedCode("JsonSerializerOptions-based JSON serialization uses reflection. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
+    [RequiresDynamicCode("JsonSerializerOptions-based JSON serialization may require runtime code generation. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
+    public JsonSchemaRegistrySerializer(
+        ISchemaRegistryClient schemaRegistry,
+        string jsonSchema,
+        JsonSerializerOptions? jsonOptions = null,
+        SubjectNameStrategy subjectNameStrategy = SubjectNameStrategy.TopicName,
+        bool autoRegisterSchemas = true,
+        bool ownsClient = false,
+        ISchemaRegistryRuleExecutor? ruleExecutor = null,
+        bool normalizeSchemas = false)
+        : this(
+            schemaRegistry,
+            jsonSchema,
+            useLegacySubjectNames: false,
+            jsonOptions,
+            subjectNameStrategy,
+            autoRegisterSchemas,
+            ownsClient,
+            ruleExecutor,
+            normalizeSchemas)
+    {
+    }
 
     /// <summary>
     /// Creates a new JSON Schema Registry serializer.
@@ -59,11 +88,13 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
     /// <param name="ownsClient">Whether this serializer owns the client and should dispose it.</param>
     /// <param name="ruleExecutor">Optional rule executor applied to JSON payload bytes.</param>
     /// <param name="normalizeSchemas">Whether to normalize schemas during registration.</param>
+    /// <param name="useLegacySubjectNames">Whether RecordName and TopicRecordName should use Dekaf's legacy -key/-value suffixes.</param>
     [RequiresUnreferencedCode("JsonSerializerOptions-based JSON serialization uses reflection. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
     [RequiresDynamicCode("JsonSerializerOptions-based JSON serialization may require runtime code generation. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
     public JsonSchemaRegistrySerializer(
         ISchemaRegistryClient schemaRegistry,
         string jsonSchema,
+        bool useLegacySubjectNames,
         JsonSerializerOptions? jsonOptions = null,
         SubjectNameStrategy subjectNameStrategy = SubjectNameStrategy.TopicName,
         bool autoRegisterSchemas = true,
@@ -77,6 +108,7 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
         _subjectNameStrategy = subjectNameStrategy;
         _autoRegisterSchemas = autoRegisterSchemas;
         _normalizeSchemas = normalizeSchemas;
+        _useLegacySubjectNames = useLegacySubjectNames;
         _ownsClient = ownsClient;
         _ruleExecutor = ruleExecutor;
         _schema = new Schema
@@ -84,6 +116,32 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
             SchemaType = SchemaType.Json,
             SchemaString = jsonSchema
         };
+        _recordName = SubjectNameResolver.GetRecordName(_schema, typeof(T).FullName ?? typeof(T).Name);
+    }
+
+    /// <summary>
+    /// Creates a new NativeAOT-safe JSON Schema Registry serializer.
+    /// </summary>
+    public JsonSchemaRegistrySerializer(
+        ISchemaRegistryClient schemaRegistry,
+        string jsonSchema,
+        JsonTypeInfo<T> jsonTypeInfo,
+        SubjectNameStrategy subjectNameStrategy = SubjectNameStrategy.TopicName,
+        bool autoRegisterSchemas = true,
+        bool ownsClient = false,
+        ISchemaRegistryRuleExecutor? ruleExecutor = null,
+        bool normalizeSchemas = false)
+        : this(
+            schemaRegistry,
+            jsonSchema,
+            jsonTypeInfo,
+            useLegacySubjectNames: false,
+            subjectNameStrategy,
+            autoRegisterSchemas,
+            ownsClient,
+            ruleExecutor,
+            normalizeSchemas)
+    {
     }
 
     /// <summary>
@@ -97,10 +155,12 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
     /// <param name="ownsClient">Whether this serializer owns the client and should dispose it.</param>
     /// <param name="ruleExecutor">Optional rule executor applied to JSON payload bytes.</param>
     /// <param name="normalizeSchemas">Whether to normalize schemas during registration.</param>
+    /// <param name="useLegacySubjectNames">Whether RecordName and TopicRecordName should use Dekaf's legacy -key/-value suffixes.</param>
     public JsonSchemaRegistrySerializer(
         ISchemaRegistryClient schemaRegistry,
         string jsonSchema,
         JsonTypeInfo<T> jsonTypeInfo,
+        bool useLegacySubjectNames,
         SubjectNameStrategy subjectNameStrategy = SubjectNameStrategy.TopicName,
         bool autoRegisterSchemas = true,
         bool ownsClient = false,
@@ -113,6 +173,7 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
         _subjectNameStrategy = subjectNameStrategy;
         _autoRegisterSchemas = autoRegisterSchemas;
         _normalizeSchemas = normalizeSchemas;
+        _useLegacySubjectNames = useLegacySubjectNames;
         _ownsClient = ownsClient;
         _ruleExecutor = ruleExecutor;
         _schema = new Schema
@@ -120,6 +181,7 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
             SchemaType = SchemaType.Json,
             SchemaString = jsonSchema
         };
+        _recordName = SubjectNameResolver.GetRecordName(_schema, typeof(T).FullName ?? typeof(T).Name);
     }
 
     /// <summary>
@@ -158,6 +220,7 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
             SchemaType = SchemaType.Json,
             SchemaString = jsonSchema
         };
+        _recordName = SubjectNameResolver.GetRecordName(_schema, typeof(T).FullName ?? typeof(T).Name);
     }
 
     /// <summary>
@@ -194,6 +257,7 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
             SchemaType = SchemaType.Json,
             SchemaString = jsonSchema
         };
+        _recordName = SubjectNameResolver.GetRecordName(_schema, typeof(T).FullName ?? typeof(T).Name);
     }
 
     public void Serialize<TWriter>(T value, ref TWriter destination, SerializationContext context)
@@ -300,17 +364,15 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
     {
         if (_customSubjectNameStrategy is not null)
         {
-            return _customSubjectNameStrategy.GetSubjectName(topic, typeof(T).FullName, isKey);
+            return _customSubjectNameStrategy.GetSubjectName(topic, _recordName, isKey);
         }
 
-        var suffix = isKey ? "-key" : "-value";
-        return _subjectNameStrategy switch
-        {
-            SubjectNameStrategy.TopicName => topic + suffix,
-            SubjectNameStrategy.RecordName => typeof(T).FullName + suffix,
-            SubjectNameStrategy.TopicRecordName => $"{topic}-{typeof(T).FullName}{suffix}",
-            _ => topic + suffix
-        };
+        return SubjectNameResolver.GetSubjectName(
+            _subjectNameStrategy,
+            topic,
+            _recordName,
+            isKey,
+            _useLegacySubjectNames);
     }
 
     public ValueTask DisposeAsync()

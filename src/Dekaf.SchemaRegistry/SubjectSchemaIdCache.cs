@@ -30,6 +30,20 @@ internal sealed class SubjectSchemaIdCache
         return Cache(key, subject, schema.SchemaId, schema.Schema);
     }
 
+    internal SubjectSchemaIdCacheEntry GetOrAdd<TState>(
+        string topic,
+        bool isKey,
+        TState state,
+        Func<TState, string, bool, SubjectSchemaIdCacheEntry> resolve)
+    {
+        var key = new SubjectSchemaIdCacheKey(topic, isKey);
+        if (TryGetCached(key, out var cached))
+            return cached;
+
+        var resolved = resolve(state, topic, isKey);
+        return Cache(key, resolved.Subject, resolved.SchemaId, resolved.Schema);
+    }
+
     // Cheap membership check for async preparation: true once (topic, isKey) has a resolved schema ID,
     // meaning a subsequent synchronous GetOrAdd for it will hit the cache instead of fetching/blocking.
     internal bool Contains(string topic, bool isKey) =>
