@@ -3105,6 +3105,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // to the ConcurrentDictionary on every message.
     private const int DequeCacheSize = 16;
     private const int DequeCacheMask = DequeCacheSize - 1;
+    private const int DequeThreadCacheWays = 2;
+    private const int DequeThreadCacheSize = DequeCacheSize * DequeThreadCacheWays;
 
     [ThreadStatic]
     private static WeakReference<PartitionDeque>?[]? t_partitionDequeCache;
@@ -3139,10 +3141,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (Volatile.Read(ref _disposed) == 0)
         {
             var threadCache = t_partitionDequeCache;
-            var weakEntry = threadCache?[cacheIndex];
-            if (weakEntry is not null && weakEntry.TryGetTarget(out var cached)
-                && ReferenceEquals(cached.Owner, this)
-                && IsDequeCacheMatch(cached, topic, partition))
+            if (TryGetThreadCacheMatch(threadCache, cacheIndex, topic, partition, out var cached))
             {
                 return cached;
             }
@@ -3151,6 +3150,47 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         return GetOrCreateDequeSlow(topic, partition, cacheIndex, t_partitionDequeCache);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryGetThreadCacheMatch(
+        WeakReference<PartitionDeque>?[]? threadCache,
+        int cacheIndex,
+        string topic,
+        int partition,
+        out PartitionDeque cached)
+    {
+        if (threadCache is not null)
+        {
+            var firstIndex = cacheIndex << 1;
+            if (IsThreadCacheEntryMatch(threadCache[firstIndex], topic, partition, out cached)
+                || IsThreadCacheEntryMatch(threadCache[firstIndex + 1], topic, partition, out cached))
+            {
+                return true;
+            }
+        }
+
+        cached = null!;
+        return false;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool IsThreadCacheEntryMatch(
+        WeakReference<PartitionDeque>? weakEntry,
+        string topic,
+        int partition,
+        out PartitionDeque cached)
+    {
+        if (weakEntry is not null
+            && weakEntry.TryGetTarget(out cached!)
+            && ReferenceEquals(cached.Owner, this)
+            && IsDequeCacheMatch(cached, topic, partition))
+        {
+            return true;
+        }
+
+        cached = null!;
+        return false;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -3171,15 +3211,33 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         if (threadCache is null)
         {
-            threadCache = new WeakReference<PartitionDeque>?[DequeCacheSize];
+            threadCache = new WeakReference<PartitionDeque>?[DequeThreadCacheSize];
             t_partitionDequeCache = threadCache;
         }
 
-        var weakEntry = threadCache[cacheIndex];
-        if (weakEntry is null)
-            threadCache[cacheIndex] = new WeakReference<PartitionDeque>(deque);
-        else if (!weakEntry.TryGetTarget(out _))
-            weakEntry.SetTarget(deque);
+        var firstIndex = cacheIndex << 1;
+        var firstEntry = threadCache[firstIndex];
+        if (firstEntry is null)
+        {
+            threadCache[firstIndex] = new WeakReference<PartitionDeque>(deque);
+            return;
+        }
+
+        if (!firstEntry.TryGetTarget(out var firstCached))
+        {
+            firstEntry.SetTarget(deque);
+            return;
+        }
+
+        if (ReferenceEquals(firstCached, deque))
+            return;
+
+        var secondIndex = firstIndex + 1;
+        var secondEntry = threadCache[secondIndex];
+        if (secondEntry is null)
+            threadCache[secondIndex] = new WeakReference<PartitionDeque>(deque);
+        else if (!secondEntry.TryGetTarget(out var secondCached) || !ReferenceEquals(secondCached, deque))
+            secondEntry.SetTarget(deque);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

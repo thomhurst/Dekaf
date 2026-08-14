@@ -9,6 +9,9 @@ public class RecordAccumulatorDequeCacheTests
         "GetOrCreateDeque",
         BindingFlags.NonPublic | BindingFlags.Instance,
         [typeof(string), typeof(int)])!;
+    private static readonly FieldInfo ThreadCacheField = typeof(RecordAccumulator).GetField(
+        "t_partitionDequeCache",
+        BindingFlags.NonPublic | BindingFlags.Static)!;
 
     [Test]
     [Timeout(30_000)]
@@ -40,7 +43,32 @@ public class RecordAccumulatorDequeCacheTests
         await Assert.That(partition0Deque).IsNotSameReferenceAs(partition16Deque);
         await Assert.That(GetPartition(partition0Deque!)).IsEqualTo(0);
         await Assert.That(GetPartition(partition16Deque!)).IsEqualTo(16);
+    }
 
+    [Test]
+    [Timeout(30_000)]
+    public async Task GetOrCreateDeque_ReusedWorkerCachesNewLiveOwner(CancellationToken cancellationToken)
+    {
+        await using var firstAccumulator = CreateAccumulator();
+        await using var secondAccumulator = CreateAccumulator();
+        var firstCached = false;
+        var secondCached = false;
+
+        var thread = new Thread(() =>
+        {
+            var first = GetOrCreateDeque(firstAccumulator, "orders", partition: 0);
+            var second = GetOrCreateDeque(secondAccumulator, "orders", partition: 16);
+            firstCached = IsCachedForCurrentThread(first);
+            secondCached = IsCachedForCurrentThread(second);
+        })
+        {
+            IsBackground = true
+        };
+        thread.Start();
+        JoinThread(thread, cancellationToken);
+
+        await Assert.That(firstCached).IsTrue();
+        await Assert.That(secondCached).IsTrue();
     }
 
     [Test]
@@ -119,4 +147,25 @@ public class RecordAccumulatorDequeCacheTests
 
     private static string GetTopic(object deque)
         => (string)deque.GetType().GetField("Topic")!.GetValue(deque)!;
+
+    private static bool IsCachedForCurrentThread(object deque)
+    {
+        var cache = (Array?)ThreadCacheField.GetValue(null);
+        if (cache is null)
+            return false;
+
+        for (var i = 0; i < cache.Length; i++)
+        {
+            var weakEntry = cache.GetValue(i);
+            if (weakEntry is null)
+                continue;
+
+            object?[] arguments = [null];
+            var found = (bool)weakEntry.GetType().GetMethod("TryGetTarget")!.Invoke(weakEntry, arguments)!;
+            if (found && ReferenceEquals(arguments[0], deque))
+                return true;
+        }
+
+        return false;
+    }
 }
