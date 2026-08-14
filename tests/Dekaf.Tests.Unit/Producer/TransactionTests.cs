@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Reflection;
 using System.Threading.Tasks.Sources;
 using Dekaf.Errors;
@@ -576,6 +577,108 @@ public sealed class TransactionTests
     }
 
     [Test]
+    public async Task InitTransactionsAsync_EmptyCoordinatorResponse_RetriesWithinDeadline()
+    {
+        await using var harness = BuildPreparedCompletionHarness(
+            PreparedTransactionState.Empty,
+            currentProducerId: 2002,
+            currentProducerEpoch: 9,
+            emptyCoordinatorResponsesBeforeSuccess: 1);
+        harness.Producer._transactionState = TransactionState.Uninitialized;
+
+        await harness.Producer.InitTransactionsAsync();
+
+        await Assert.That(harness.FindCoordinatorRequests).IsEqualTo(2);
+        await Assert.That(harness.InitProducerIdRequests).IsEqualTo(1);
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.Ready);
+    }
+
+    [Test]
+    [Timeout(5_000)]
+    public async Task InitTransactionsAsync_SharedDeadlineSpansCoordinatorAndProducerId(
+        CancellationToken cancellationToken)
+    {
+        await using var harness = BuildPreparedCompletionHarness(
+            PreparedTransactionState.Empty,
+            currentProducerId: 2002,
+            currentProducerEpoch: 9,
+            initProducerIdWaitsForCancellation: true,
+            findCoordinatorDelayMs: 1200,
+            maxBlockMs: 2000);
+        harness.Producer._transactionState = TransactionState.Uninitialized;
+        var stopwatch = Stopwatch.StartNew();
+
+        var exception = await Assert.That(() => harness.Producer.InitTransactionsAsync(
+                cancellationToken).AsTask())
+            .Throws<KafkaTimeoutException>();
+
+        await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Transaction);
+        await Assert.That(stopwatch.Elapsed).IsLessThan(TimeSpan.FromMilliseconds(2800));
+        await Assert.That(harness.FindCoordinatorRequests).IsEqualTo(1);
+        await Assert.That(harness.InitProducerIdRequests).IsEqualTo(1);
+    }
+
+    [Test]
+    [Timeout(5_000)]
+    public async Task InitTransactionsAsync_MaxBlockDeadline_IncludesLockAcquisition(
+        CancellationToken cancellationToken)
+    {
+        await using var harness = BuildPreparedCompletionHarness(
+            PreparedTransactionState.Empty,
+            currentProducerId: 2002,
+            currentProducerEpoch: 9,
+            maxBlockMs: 1000);
+        harness.Producer._transactionState = TransactionState.Uninitialized;
+        var transactionLock = GetInstanceField<SemaphoreSlim>(harness.Producer, "_transactionLock");
+        await transactionLock.WaitAsync(cancellationToken);
+
+        try
+        {
+            var exception = await Assert.That(() => harness.Producer.InitTransactionsAsync(
+                    cancellationToken).AsTask())
+                .Throws<KafkaTimeoutException>();
+
+            await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Transaction);
+            await Assert.That(harness.FindCoordinatorRequests).IsEqualTo(0);
+        }
+        finally
+        {
+            transactionLock.Release();
+        }
+    }
+
+    [Test]
+    [Timeout(5_000)]
+    public async Task CommitAsync_MaxBlockDeadline_IncludesFlush(
+        CancellationToken cancellationToken)
+    {
+        await using var harness = BuildPreparedCompletionHarness(
+            PreparedTransactionState.Empty,
+            currentProducerId: 2002,
+            currentProducerEpoch: 9,
+            maxBlockMs: 1000);
+        harness.Producer._transactionState = TransactionState.InTransaction;
+        var accumulator = GetInstanceField<RecordAccumulator>(harness.Producer, "_accumulator");
+        SetInstanceField(accumulator, "_inFlightBatchCount", 1L);
+        await using var transaction = new Transaction<string, string>(harness.Producer);
+
+        try
+        {
+            var exception = await Assert.That(() => transaction.CommitAsync(cancellationToken).AsTask())
+                .Throws<KafkaTimeoutException>();
+
+            await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Transaction);
+            await Assert.That(harness.EndTxnRequests).IsEqualTo(0);
+            await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.AbortableError);
+        }
+        finally
+        {
+            SetInstanceField(accumulator, "_inFlightBatchCount", 0L);
+            GetInstanceField<TaskCompletionSource<bool>?>(accumulator, "_flushTcs")?.TrySetResult(true);
+        }
+    }
+
+    [Test]
     public async Task ReinitializeProducerIdAsync_MaxBlockDeadline_ThrowsTransactionTimeout()
     {
         await using var harness = BuildPreparedCompletionHarness(
@@ -643,6 +746,47 @@ public sealed class TransactionTests
             CancellationToken.None);
 
         await Assert.That(harness.AddPartitionsRequests).IsEqualTo(6);
+    }
+
+    [Test]
+    public async Task AddPartitionsToTransactionAsync_MultipleNotCoordinatorErrors_RediscoversOnce()
+    {
+        await using var harness = BuildPreparedCompletionHarness(
+            PreparedTransactionState.Empty,
+            currentProducerId: 2002,
+            currentProducerEpoch: 9,
+            addPartitionsRetriableFailuresBeforeSuccess: 1,
+            addPartitionsRetriableError: ErrorCode.NotCoordinator);
+
+        await harness.Producer.AddPartitionsToTransactionAsync(
+            [new TopicPartition("orders", 0), new TopicPartition("orders", 1)],
+            CancellationToken.None);
+
+        await Assert.That(harness.AddPartitionsRequests).IsEqualTo(2);
+        await Assert.That(harness.FindCoordinatorRequests).IsEqualTo(1);
+    }
+
+    [Test]
+    [Timeout(5_000)]
+    public async Task AbortAsync_TV1ProducerIdReinitializationTimeout_PreservesFatalState(
+        CancellationToken cancellationToken)
+    {
+        await using var harness = BuildPreparedCompletionHarness(
+            PreparedTransactionState.Empty,
+            currentProducerId: 2002,
+            currentProducerEpoch: 9,
+            transactionFeatureVersion: 1,
+            enableTwoPhaseCommit: false,
+            initProducerIdWaitsForCancellation: true,
+            maxBlockMs: 1000);
+        harness.Producer._transactionState = TransactionState.InTransaction;
+        await using var transaction = new Transaction<string, string>(harness.Producer);
+
+        await Assert.That(() => transaction.AbortAsync(cancellationToken).AsTask())
+            .Throws<KafkaTimeoutException>();
+
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.FatalError);
+        await Assert.That(() => harness.Producer.BeginTransaction()).Throws<FatalTransactionException>();
     }
 
     [Test]
@@ -1063,11 +1207,15 @@ public sealed class TransactionTests
         short currentProducerEpoch,
         ErrorCode endTxnError = ErrorCode.None,
         short transactionFeatureVersion = 3,
+        bool enableTwoPhaseCommit = true,
         int coordinatorRetriableFailuresBeforeSuccess = 0,
         int initProducerIdRetriableFailuresBeforeSuccess = 0,
         int addPartitionsRetriableFailuresBeforeSuccess = 0,
         int endTxnRetriableFailuresBeforeSuccess = 0,
         bool initProducerIdWaitsForCancellation = false,
+        int findCoordinatorDelayMs = 0,
+        int emptyCoordinatorResponsesBeforeSuccess = 0,
+        ErrorCode addPartitionsRetriableError = ErrorCode.CoordinatorLoadInProgress,
         int retryBackoffMs = 0,
         int maxBlockMs = 1000)
     {
@@ -1080,7 +1228,10 @@ public sealed class TransactionTests
             initProducerIdRetriableFailuresBeforeSuccess,
             addPartitionsRetriableFailuresBeforeSuccess,
             endTxnRetriableFailuresBeforeSuccess,
-            initProducerIdWaitsForCancellation);
+            initProducerIdWaitsForCancellation,
+            findCoordinatorDelayMs,
+            emptyCoordinatorResponsesBeforeSuccess,
+            addPartitionsRetriableError);
 
         var connectionPool = new ConnectionPool(
             clientId: "test-producer",
@@ -1118,7 +1269,7 @@ public sealed class TransactionTests
             {
                 BootstrapServers = ["localhost:9092"],
                 TransactionalId = "test-txn-id",
-                EnableTwoPhaseCommit = true,
+                EnableTwoPhaseCommit = enableTwoPhaseCommit,
                 RetryBackoffMs = retryBackoffMs,
                 RetryBackoffMaxMs = retryBackoffMs,
                 MaxBlockMs = maxBlockMs,
@@ -1134,7 +1285,7 @@ public sealed class TransactionTests
         SetInstanceField(producer, "_producerId", currentProducerId);
         SetInstanceField(producer, "_producerEpoch", currentProducerEpoch);
         SetInstanceField(producer, "_transactionCoordinatorId", 1);
-        SetInstanceField(producer, "_currentTransactionUsesTV2", true);
+        SetInstanceField(producer, "_currentTransactionUsesTV2", transactionFeatureVersion >= 2);
         SetInstanceField(producer, "_currentTransactionFeatureVersion", transactionFeatureVersion);
         producer._preparedTransactionState = preparedState;
         producer._transactionState = TransactionState.PreparedTransaction;
@@ -1217,7 +1368,10 @@ public sealed class TransactionTests
         int initProducerIdRetriableFailuresBeforeSuccess,
         int addPartitionsRetriableFailuresBeforeSuccess,
         int endTxnRetriableFailuresBeforeSuccess,
-        bool initProducerIdWaitsForCancellation) : IKafkaConnection, IRetirableKafkaConnection,
+        bool initProducerIdWaitsForCancellation,
+        int findCoordinatorDelayMs,
+        int emptyCoordinatorResponsesBeforeSuccess,
+        ErrorCode addPartitionsRetriableError) : IKafkaConnection, IRetirableKafkaConnection,
         IKafkaPipelinedWriteCompletionConnection
     {
         private readonly TrackingResponseSource<EndTxnResponse> _pipelinedResponseSource = new();
@@ -1264,6 +1418,14 @@ public sealed class TransactionTests
                 return WaitForCancellationAsync<TResponse>(cancellationToken);
             }
 
+            if (request is FindCoordinatorRequest delayedFindCoordinatorRequest
+                && findCoordinatorDelayMs > 0)
+            {
+                return CreateDelayedFindCoordinatorResponseAsync<TResponse>(
+                    delayedFindCoordinatorRequest,
+                    cancellationToken);
+            }
+
             IKafkaResponse response = request switch
             {
                 EndTxnRequest endTxnRequest => CreateEndTxnResponse(endTxnRequest),
@@ -1283,9 +1445,21 @@ public sealed class TransactionTests
             return default!;
         }
 
+        private async ValueTask<TResponse> CreateDelayedFindCoordinatorResponseAsync<TResponse>(
+            FindCoordinatorRequest request,
+            CancellationToken cancellationToken)
+            where TResponse : IKafkaResponse
+        {
+            await Task.Delay(findCoordinatorDelayMs, cancellationToken).ConfigureAwait(false);
+            return (TResponse)(IKafkaResponse)CreateFindCoordinatorResponse(request);
+        }
+
         private FindCoordinatorResponse CreateFindCoordinatorResponse(FindCoordinatorRequest request)
         {
             FindCoordinatorRequests++;
+            if (FindCoordinatorRequests <= emptyCoordinatorResponsesBeforeSuccess)
+                return new FindCoordinatorResponse { Coordinators = [] };
+
             return new FindCoordinatorResponse
             {
                 Coordinators =
@@ -1321,7 +1495,7 @@ public sealed class TransactionTests
         {
             AddPartitionsRequests++;
             var errorCode = AddPartitionsRequests <= addPartitionsRetriableFailuresBeforeSuccess
-                ? ErrorCode.CoordinatorLoadInProgress
+                ? addPartitionsRetriableError
                 : ErrorCode.None;
             return new AddPartitionsToTxnResponse
             {

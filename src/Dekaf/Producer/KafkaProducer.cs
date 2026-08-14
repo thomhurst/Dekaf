@@ -2168,11 +2168,29 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         ThrowIfNotInitialized();
         ThrowIfFatalTransactionError("Cannot initialize transactions");
-        await SemaphoreHelper.AcquireOrThrowDisposedAsync(_transactionLock, nameof(KafkaProducer<TKey, TValue>), cancellationToken).ConfigureAwait(false);
+        var retryBudget = CreateTransactionRetryBudget();
+        using (var timeoutCts = CreateTransactionRetryCancellationSource(retryBudget, cancellationToken))
+        {
+            try
+            {
+                await SemaphoreHelper.AcquireOrThrowDisposedAsync(
+                        _transactionLock,
+                        nameof(KafkaProducer<TKey, TValue>),
+                        timeoutCts.Token)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (
+                timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            {
+                throw CreateTransactionTimeoutException(
+                    "InitTransactions lock acquisition",
+                    retryBudget,
+                    attempts: 0);
+            }
+        }
+
         try
         {
-            var retryBudget = CreateTransactionRetryBudget();
-
             // Step 1: Find the transaction coordinator
             await FindTransactionCoordinatorAsync(retryBudget, cancellationToken).ConfigureAwait(false);
 
@@ -2249,7 +2267,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
             if (!committed && !_currentTransactionUsesTV2)
             {
-                await ReinitializeProducerIdAsync(
+                await ReinitializeProducerIdAfterAbortAsync(
                         keepPreparedTransaction: false,
                         retryBudget,
                         cancellationToken)
@@ -2678,12 +2696,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         using var timeoutCts = CreateTransactionRetryCancellationSource(retryBudget, cancellationToken);
         var retryCancellationToken = timeoutCts.Token;
-        var brokers = _metadataManager.Metadata.GetBrokers();
-        if (brokers.Count == 0)
-        {
-            throw new InvalidOperationException("No brokers available");
-        }
-
         var request = new FindCoordinatorRequest
         {
             Key = _options.TransactionalId!,
@@ -2697,6 +2709,18 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 if (!TryGetTransactionRemainingMilliseconds(retryBudget, out _))
                     break;
 
+                var brokers = _metadataManager.Metadata.GetBrokers();
+                if (brokers.Count == 0)
+                {
+                    if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
+                        break;
+
+                    await _metadataManager.RefreshMetadataAsync(retryCancellationToken).ConfigureAwait(false);
+                    await Task.Delay(retryDelayMs, retryCancellationToken).ConfigureAwait(false);
+                    attempt++;
+                    continue;
+                }
+
                 var response = await SendWithConnectionLeaseAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
                     brokers[0].NodeId,
                     request,
@@ -2704,11 +2728,12 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
                 if (response.Coordinators.Count == 0)
                 {
-                    throw new TransactionException(ErrorCode.CoordinatorNotAvailable,
-                        "FindCoordinator returned an empty Coordinators array")
-                    {
-                        TransactionalId = _options.TransactionalId
-                    };
+                    if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
+                        break;
+
+                    await Task.Delay(retryDelayMs, retryCancellationToken).ConfigureAwait(false);
+                    attempt++;
+                    continue;
                 }
 
                 var coordinator = response.Coordinators[0];
@@ -2812,6 +2837,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
                 // Check for retriable errors in the response
                 var hasRetriableError = false;
+                var needsCoordinatorRediscovery = false;
                 ErrorCode? firstNonRetriableError = null;
                 string? errorContext = null;
 
@@ -2831,9 +2857,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                         else if (partitionResult.ErrorCode == ErrorCode.NotCoordinator)
                         {
                             hasRetriableError = true;
-                            // Re-discover coordinator on next retry
-                            await FindTransactionCoordinatorAsync(retryBudget, retryCancellationToken)
-                                .ConfigureAwait(false);
+                            needsCoordinatorRediscovery = true;
                         }
                         else
                         {
@@ -2841,6 +2865,12 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                             errorContext = $"{topicResult.Name}-{partitionResult.PartitionIndex}";
                         }
                     }
+                }
+
+                if (needsCoordinatorRediscovery && !firstNonRetriableError.HasValue)
+                {
+                    await FindTransactionCoordinatorAsync(retryBudget, retryCancellationToken)
+                        .ConfigureAwait(false);
                 }
 
                 if (firstNonRetriableError.HasValue)
@@ -2887,18 +2917,39 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             CreateTransactionRetryBudget(),
             cancellationToken);
 
-    internal ValueTask EndTransactionAsync(
-        bool committed,
+    internal async ValueTask CommitTransactionAsync(
         Func<ValueTask>? afterRequestWrittenAsync,
         CancellationToken cancellationToken)
-        => EndTransactionAsync(
-            committed,
-            _producerId,
-            _producerEpoch,
-            applyResponseProducerState: true,
-            afterRequestWrittenAsync,
-            CreateTransactionRetryBudget(),
-            cancellationToken);
+    {
+        var retryBudget = CreateTransactionRetryBudget();
+        using (var timeoutCts = CreateTransactionRetryCancellationSource(retryBudget, cancellationToken))
+        {
+            try
+            {
+                await FlushAsync(timeoutCts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (
+                timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            {
+                _lastTransactionError = ErrorCode.RequestTimedOut;
+                _transactionState = TransactionState.AbortableError;
+                throw CreateTransactionTimeoutException(
+                    "Flush before EndTxn (commit)",
+                    retryBudget,
+                    attempts: 0);
+            }
+        }
+
+        await EndTransactionAsync(
+                committed: true,
+                _producerId,
+                _producerEpoch,
+                applyResponseProducerState: true,
+                afterRequestWrittenAsync,
+                retryBudget,
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
 
     internal async ValueTask AbortTransactionAsync(CancellationToken cancellationToken)
     {
@@ -2917,11 +2968,36 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // same max.block.ms budget. TV2 already returned the bumped identity.
         if (!_currentTransactionUsesTV2)
         {
-            await ReinitializeProducerIdAsync(
+            await ReinitializeProducerIdAfterAbortAsync(
                     keepPreparedTransaction: false,
                     retryBudget,
                     cancellationToken)
                 .ConfigureAwait(false);
+        }
+    }
+
+    private async ValueTask ReinitializeProducerIdAfterAbortAsync(
+        bool keepPreparedTransaction,
+        TransactionRetryBudget retryBudget,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await ReinitializeProducerIdAsync(
+                    keepPreparedTransaction,
+                    retryBudget,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            if (_transactionState != TransactionState.FatalError)
+            {
+                _lastTransactionError = ErrorCode.InvalidProducerEpoch;
+                _transactionState = TransactionState.FatalError;
+            }
+
+            throw;
         }
     }
 
@@ -3166,6 +3242,17 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 // Find the group coordinator. This remains uncached so NotCoordinator retries
                 // refresh only the affected group coordinator information.
                 var brokers = _metadataManager.Metadata.GetBrokers();
+                if (brokers.Count == 0)
+                {
+                    if (!TryGetTransactionRetryDelay(attempt, retryBudget, out var retryDelayMs))
+                        break;
+
+                    await _metadataManager.RefreshMetadataAsync(retryCancellationToken).ConfigureAwait(false);
+                    await Task.Delay(retryDelayMs, retryCancellationToken).ConfigureAwait(false);
+                    attempt++;
+                    continue;
+                }
+
                 var findCoordRequest = new FindCoordinatorRequest
                 {
                     Key = consumerGroupId,
@@ -5592,11 +5679,7 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
 
         try
         {
-            // Flush all pending messages before committing
-            await _producer.FlushAsync(cancellationToken).ConfigureAwait(false);
-
-            await _producer.EndTransactionAsync(
-                    committed: true,
+            await _producer.CommitTransactionAsync(
                     afterRequestWrittenAsync,
                     cancellationToken)
                 .ConfigureAwait(false);

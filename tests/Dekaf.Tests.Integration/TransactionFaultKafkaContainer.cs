@@ -81,14 +81,16 @@ public sealed class TransactionFaultKafkaContainer : KafkaTestContainer
         await WaitForAdminReadyAsync("transaction fault proxy").ConfigureAwait(false);
     }
 
-    public async Task AddCoordinatorLatencyAsync(CancellationToken cancellationToken)
+    public async Task AddCoordinatorLatencyAsync(
+        CancellationToken cancellationToken,
+        int latencyMs = 5_000)
     {
         var toxic = new ToxiproxyLatencyConfiguration(
             CoordinatorFaultName,
             "latency",
             "downstream",
             1,
-            new ToxiproxyLatencyAttributes(5_000, 0));
+            new ToxiproxyLatencyAttributes(latencyMs, 0));
         using var response = await _toxiproxyClient.PostAsJsonAsync(
             $"proxies/{ProducerProxyName}/toxics",
             toxic,
