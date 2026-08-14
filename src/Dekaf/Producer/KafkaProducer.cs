@@ -2405,7 +2405,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         short minimumRequiredVersion = short.MinValue,
         bool captureTransactionFeatures = false,
         bool requireTransactionFeatureMatch = false,
-        bool keepPreparedTransaction = false)
+        bool keepPreparedTransaction = false,
+        Action? beforeRequestSend = null)
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
     {
@@ -2430,6 +2431,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 $"v{minimumRequiredVersion} required by this operation; negotiated v{apiVersion}.");
         }
 
+        beforeRequestSend?.Invoke();
         return await connection.SendAsync<TRequest, TResponse>(
             request,
             apiVersion,
@@ -2587,6 +2589,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         using var timeoutCts = CreateTransactionRetryCancellationSource(retryBudget, cancellationToken);
         var retryCancellationToken = timeoutCts.Token;
+        var initProducerIdRequestInFlight = false;
         try
         {
             while (true)
@@ -2612,8 +2615,10 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                             ? (short)6
                             : short.MinValue,
                         captureTransactionFeatures: true,
-                        keepPreparedTransaction: keepPreparedTransaction)
+                        keepPreparedTransaction: keepPreparedTransaction,
+                        beforeRequestSend: () => initProducerIdRequestInFlight = true)
                     .ConfigureAwait(false);
+                initProducerIdRequestInFlight = false;
 
                 if (response.ErrorCode != ErrorCode.None)
                 {
@@ -2675,6 +2680,12 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         catch (OperationCanceledException) when (
             timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
+            if (initProducerIdRequestInFlight)
+            {
+                _lastTransactionError = ErrorCode.InvalidProducerEpoch;
+                _transactionState = TransactionState.FatalError;
+            }
+
             throw CreateTransactionTimeoutException("InitProducerId", retryBudget, attempt + 1);
         }
 

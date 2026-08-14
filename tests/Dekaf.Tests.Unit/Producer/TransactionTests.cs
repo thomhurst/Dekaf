@@ -719,6 +719,29 @@ public sealed class TransactionTests
     }
 
     [Test]
+    [Timeout(5_000)]
+    public async Task InitTransactionsAsync_ReadyProducerInFlightInitTimeout_PreservesFatalState(
+        CancellationToken cancellationToken)
+    {
+        await using var harness = BuildPreparedCompletionHarness(
+            PreparedTransactionState.Empty,
+            currentProducerId: 2002,
+            currentProducerEpoch: 9,
+            initProducerIdWaitsForCancellation: true,
+            maxBlockMs: 1000);
+        harness.Producer._transactionState = TransactionState.Ready;
+
+        var exception = await Assert.That(() => harness.Producer.InitTransactionsAsync(
+                cancellationToken).AsTask())
+            .Throws<KafkaTimeoutException>();
+
+        await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Transaction);
+        await Assert.That(harness.InitProducerIdRequests).IsEqualTo(1);
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.FatalError);
+        await Assert.That(() => harness.Producer.BeginTransaction()).Throws<FatalTransactionException>();
+    }
+
+    [Test]
     public async Task EndTransactionAsync_RetriesBeyondPreviousAttemptLimit()
     {
         await using var harness = BuildPreparedCompletionHarness(
@@ -805,6 +828,7 @@ public sealed class TransactionTests
             maxBlockMs: 1000);
         harness.Producer._transactionState = TransactionState.InTransaction;
         await using var transaction = new Transaction<string, string>(harness.Producer);
+        var stopwatch = Stopwatch.StartNew();
 
         var exception = committed
             ? await Assert.That(() => transaction.CommitAsync(cancellationToken).AsTask())
@@ -813,6 +837,8 @@ public sealed class TransactionTests
                 .Throws<KafkaTimeoutException>();
 
         await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Transaction);
+        await Assert.That(exception.Configured).IsEqualTo(TimeSpan.FromMilliseconds(1000));
+        await Assert.That(stopwatch.Elapsed).IsLessThan(TimeSpan.FromMilliseconds(2500));
         await Assert.That(harness.EndTxnRequests).IsEqualTo(1);
         await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.FatalError);
         await Assert.That(() => harness.Producer.BeginTransaction()).Throws<FatalTransactionException>();
