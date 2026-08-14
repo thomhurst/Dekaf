@@ -61,7 +61,7 @@
   </ItemGroup>
   <ItemGroup Condition="'$(TargetFramework)' != 'net8.0'">
     <PackageVersion Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.10" />
-    <PackageVersion Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.10" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.11" />
   </ItemGroup>
   <ItemGroup>
     <!-- Transitive pin: the e_sqlite3 versions EF Core's Sqlite provider pulls in carry GHSA-2m69-gcr7-jv3q. -->
