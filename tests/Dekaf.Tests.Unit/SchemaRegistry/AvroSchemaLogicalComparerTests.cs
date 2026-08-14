@@ -44,6 +44,26 @@ public class AvroSchemaLogicalComparerTests
         await Assert.That(schemas.Count).IsEqualTo(2);
     }
 
+    [Test]
+    public async Task FieldOrdering_IsPartOfSchemaIdentity()
+    {
+        var ascending = AvroSchema.Parse(
+            """{"type":"record","name":"Ordered","fields":[{"name":"value","type":"int","order":"ascending"}]}""");
+        var descending = AvroSchema.Parse(
+            """{"type":"record","name":"Ordered","fields":[{"name":"value","type":"int","order":"descending"}]}""");
+        var comparer = AvroSchemaLogicalComparer.Instance;
+
+        await Assert.That(comparer.Equals(ascending, descending)).IsFalse();
+        await Assert.That(comparer.GetHashCode(ascending)).IsNotEqualTo(comparer.GetHashCode(descending));
+
+        var schemas = new Dictionary<AvroSchema, int>(comparer)
+        {
+            [ascending] = 1,
+            [descending] = 2
+        };
+        await Assert.That(schemas.Count).IsEqualTo(2);
+    }
+
     private static RecordSchema CreateChildSchema() =>
         RecordSchema.Create(
             "Child",

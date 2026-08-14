@@ -153,6 +153,7 @@ internal sealed class AvroSchemaLogicalComparer : IEqualityComparer<AvroSchema>
         string.Equals(x.Name, y.Name, StringComparison.Ordinal) &&
         OptionalStringEquals(x.Documentation, y.Documentation) &&
         JTokenComparer.Equals(x.DefaultValue, y.DefaultValue) &&
+        x.Ordering == y.Ordering &&
         StringListEquals(x.Aliases, y.Aliases) &&
         PropertiesEqual(
             AvroSchemaLogicalAccessors.GetProperties(x),
@@ -303,6 +304,7 @@ internal sealed class AvroSchemaLogicalComparer : IEqualityComparer<AvroSchema>
         hash = Combine(
             hash,
             field.DefaultValue is null ? 0 : JTokenComparer.GetHashCode(field.DefaultValue));
+        hash = Combine(hash, (int?)field.Ordering ?? -1);
         hash = Combine(hash, GetStringListHashCode(field.Aliases));
         hash = Combine(
             hash,
