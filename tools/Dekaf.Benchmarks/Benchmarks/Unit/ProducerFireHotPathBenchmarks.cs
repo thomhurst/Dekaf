@@ -33,6 +33,9 @@ public class ProducerFireHotPathBenchmarks
     [Params(0, 10)]
     public int DeliveryLatencyTargetMs { get; set; }
 
+    [Params(1, 12)]
+    public int PartitionCount { get; set; }
+
     [GlobalSetup]
     public async Task Setup()
     {
@@ -56,7 +59,7 @@ public class ProducerFireHotPathBenchmarks
             Serializers.String);
 
         await StopBackgroundLoopsAsync(_producer).ConfigureAwait(false);
-        SeedMetadata(_producer);
+        SeedMetadata(_producer, PartitionCount);
         SetInstanceField(_producer, "_initialized", true);
 
         _accumulator = _producer.RecordAccumulator;
@@ -112,8 +115,21 @@ public class ProducerFireHotPathBenchmarks
         }
     }
 
-    private static void SeedMetadata(KafkaProducer<string, string> producer)
+    private static void SeedMetadata(KafkaProducer<string, string> producer, int partitionCount)
     {
+        var partitions = new PartitionMetadata[partitionCount];
+        for (var partition = 0; partition < partitionCount; partition++)
+        {
+            partitions[partition] = new PartitionMetadata
+            {
+                ErrorCode = ErrorCode.None,
+                PartitionIndex = partition,
+                LeaderId = 0,
+                ReplicaNodes = [0],
+                IsrNodes = [0],
+            };
+        }
+
         var metadataManager = GetInstanceField<MetadataManager>(producer, "_metadataManager");
         metadataManager.Metadata.Update(new MetadataResponse
         {
@@ -129,17 +145,7 @@ public class ProducerFireHotPathBenchmarks
                 {
                     ErrorCode = ErrorCode.None,
                     Name = Topic,
-                    Partitions =
-                    [
-                        new PartitionMetadata
-                        {
-                            ErrorCode = ErrorCode.None,
-                            PartitionIndex = 0,
-                            LeaderId = 0,
-                            ReplicaNodes = [0],
-                            IsrNodes = [0],
-                        },
-                    ],
+                    Partitions = partitions,
                 },
             ],
         });
