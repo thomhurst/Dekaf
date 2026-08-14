@@ -177,7 +177,12 @@ public class Crc32CTests
             yield return length;
         }
 
-        foreach (var length in new[] { 513, 777, 1024, 1535, 1536, 1537, 2048, 4096, 8191, 8192, 16384, 65536 })
+        foreach (var length in new[]
+                 {
+                     513, 777, 1024, 1535, 1536, 1537, 2048, 4096, 8191, 8192,
+                     12_287, 12_288, 12_289, 16_384, 65_536, 262_143, 262_144,
+                     262_145, 1_048_576
+                 })
         {
             yield return length;
         }
