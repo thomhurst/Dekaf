@@ -17,6 +17,7 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 public class AccumulatorAppendBenchmarks
 {
     private RecordAccumulator _accumulator = null!;
+    private RecordAccumulator _secondAccumulator = null!;
     private byte[] _keyBytes = null!;
     private byte[] _valueBytes = null!;
     private CancellationTokenSource _drainerCts = null!;
@@ -37,6 +38,7 @@ public class AccumulatorAppendBenchmarks
         };
 
         _accumulator = new RecordAccumulator(options);
+        _secondAccumulator = new RecordAccumulator(options);
         _keyBytes = Encoding.UTF8.GetBytes("benchmark-key-0");
         _valueBytes = new byte[MessageSize];
 
@@ -48,11 +50,15 @@ public class AccumulatorAppendBenchmarks
         var ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
         // Warm single-partition pools by filling and draining 4 complete batches
-        FillAndDrain(partition: 0, batchCount: 4, msgsPerBatch, ts);
+        FillAndDrain(_accumulator, partition: 0, batchCount: 4, msgsPerBatch, ts);
+        FillAndDrain(_secondAccumulator, partition: 0, batchCount: 4, msgsPerBatch, ts);
 
         // Warm multi-partition deques used by AppendMultiPartition
         for (var p = 0; p < 10; p++)
-            FillAndDrain(partition: p, batchCount: 1, msgsPerBatch, ts);
+        {
+            FillAndDrain(_accumulator, partition: p, batchCount: 1, msgsPerBatch, ts);
+            FillAndDrain(_secondAccumulator, partition: p, batchCount: 1, msgsPerBatch, ts);
+        }
 
         // Start background drainer to prevent buffer from filling
         _drainerCts = new CancellationTokenSource();
@@ -65,6 +71,7 @@ public class AccumulatorAppendBenchmarks
         _drainerCts.Cancel();
         try { await _drainerTask.ConfigureAwait(false); } catch (OperationCanceledException) { }
         await _accumulator.DisposeAsync().ConfigureAwait(false);
+        await _secondAccumulator.DisposeAsync().ConfigureAwait(false);
     }
 
     /// <summary>
@@ -102,6 +109,24 @@ public class AccumulatorAppendBenchmarks
     }
 
     /// <summary>
+    /// Alternates between producer accumulators on one thread. Guards against cache
+    /// invalidation work becoming an O(cache-size) per-message operation.
+    /// </summary>
+    [Benchmark(OperationsPerInvoke = 100)]
+    public void AppendAlternatingAccumulators()
+    {
+        var ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        for (var i = 0; i < 100; i++)
+        {
+            var accumulator = (i & 1) == 0 ? _accumulator : _secondAccumulator;
+            AwaitSync(accumulator.AppendFromSpansAsync(
+                "bench-topic", i % 10, ts,
+                _keyBytes, false, _valueBytes, false,
+                null, 0, null, CancellationToken.None));
+        }
+    }
+
+    /// <summary>
     /// Blocks on an append ValueTask. On the hot path the task is already completed and this
     /// is allocation-free. On the cold path (buffer full → pooled PendingAppend source) the
     /// task is not yet completed — GetAwaiter().GetResult() on an incomplete IValueTaskSource
@@ -119,29 +144,34 @@ public class AccumulatorAppendBenchmarks
         valueTask.AsTask().GetAwaiter().GetResult();
     }
 
-    private void FillAndDrain(int partition, int batchCount, int msgsPerBatch, long ts)
+    private void FillAndDrain(
+        RecordAccumulator accumulator,
+        int partition,
+        int batchCount,
+        int msgsPerBatch,
+        long ts)
     {
         var totalMessages = msgsPerBatch * batchCount;
         for (var i = 0; i < totalMessages; i++)
         {
-            AwaitSync(_accumulator.AppendFromSpansAsync(
+            AwaitSync(accumulator.AppendFromSpansAsync(
                 "bench-topic", partition, ts,
                 _keyBytes, false, _valueBytes, false,
                 null, 0, null, CancellationToken.None));
 
             // Drain periodically to release memory and return arenas/arrays to pools
             if (i % msgsPerBatch == msgsPerBatch - 1)
-                DrainAll();
+                DrainAll(accumulator);
         }
-        DrainAll();
+        DrainAll(accumulator);
     }
 
-    private void DrainAll()
+    private static void DrainAll(RecordAccumulator accumulator)
     {
-        while (_accumulator.TryDrainBatch(out var batch))
+        while (accumulator.TryDrainBatch(out var batch))
         {
-            _accumulator.ReleaseMemory(batch.DataSize);
-            _accumulator.ReturnReadyBatch(batch);
+            accumulator.ReleaseMemory(batch.DataSize);
+            accumulator.ReturnReadyBatch(batch);
         }
     }
 
@@ -156,6 +186,12 @@ public class AccumulatorAppendBenchmarks
             {
                 _accumulator.ReleaseMemory(batch.DataSize);
                 _accumulator.ReturnReadyBatch(batch);
+                sw.Reset();
+            }
+            else if (_secondAccumulator.TryDrainBatch(out batch))
+            {
+                _secondAccumulator.ReleaseMemory(batch.DataSize);
+                _secondAccumulator.ReturnReadyBatch(batch);
                 sw.Reset();
             }
             else

@@ -1421,12 +1421,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// Uses a ring-buffer backing array instead of LinkedList to eliminate per-batch
     /// LinkedListNode and HashSet allocations. Typical deques hold 1-3 batches.
     /// </summary>
-    private sealed class PartitionDeque(RecordAccumulator owner)
+    private sealed class PartitionDeque(TopicPartition topicPartition, RecordAccumulator owner)
     {
         private readonly RecordAccumulator _owner = owner;
         private ReadyBatch?[] _items = new ReadyBatch?[4];
         private int _head;
         private int _count;
+
+        public readonly string Topic = topicPartition.Topic;
+        public readonly int Partition = topicPartition.Partition;
 
         /// <summary>Per-partition lock for deque access (matches Java's synchronized(deque)).
         /// SpinLock avoids kernel transitions for the brief critical sections in append/drain paths.</summary>
@@ -1617,7 +1620,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     private PartitionDeque GetOrCreateDeque(TopicPartition tp)
-        => _partitionDeques.GetOrAdd(tp, static (_, owner) => new PartitionDeque(owner), this);
+        => _partitionDeques.GetOrAdd(tp, static (key, owner) => new PartitionDeque(key, owner), this);
 
     /// <summary>
     /// Drains the push-based notification queue to find partitions with sendable data.
@@ -3092,56 +3095,79 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         return batch;
     }
 
-    // Single thread-local cache consolidating all per-thread deque lookup state.
-    // Reduces 3 separate [ThreadStatic] lookups to 1.
-    // Per-thread one-slot cache for GetOrCreateDeque to avoid ConcurrentDictionary hash+lookup
-    // on every message. The cache stores (accumulator instance, TopicPartition, PartitionDeque).
-    // Hit rate is high in partition-affine append workers and single-partition scenarios.
-    // Note: holds a strong reference to the accumulator until the thread reuses the cache slot.
-    // This is acceptable because producers are typically singleton-lifetime objects.
-    // IMPORTANT: This cache is only valid because _partitionDeques never removes entries.
-    // If partition eviction is ever added, the cache must be invalidated on removal.
-    [ThreadStatic]
-    private static AccumulatorThreadCache? t_cache;
+    // Direct mapping preserves partition locality without an O(n) lookup: round-robin producers
+    // otherwise fall through to ConcurrentDictionary on every message. The shared array belongs
+    // to one RecordAccumulator and is split into 64 thread-assigned shards, giving partition-affine
+    // producer threads independent hot entries under normal producer concurrency. Thread-local state
+    // stores only a shard number, so it cannot extend the accumulator's lifetime.
+    private const int DequeCacheSlotsPerShard = 16;
+    private const int DequeCacheSlotMask = DequeCacheSlotsPerShard - 1;
+    private const int DequeCacheShardCount = 64;
+    private const int DequeCacheShardMask = DequeCacheShardCount - 1;
+    private const int DequeCacheShardShift = 4;
 
-    /// <summary>
-    /// Holds per-thread cached state for partition deque lookups.
-    /// Consolidating into a single class reduces thread-static lookup overhead from 3 to 1.
-    /// </summary>
-    private sealed class AccumulatorThreadCache
-    {
-        public RecordAccumulator? CachedAccumulator;
-        public TopicPartition CachedTopicPartition;
-        public PartitionDeque? CachedDeque;
-    }
+    private static int s_nextDequeCacheShard;
+
+    [ThreadStatic]
+    private static int t_dequeCacheShardPlusOne;
+
+    // IMPORTANT: This per-RecordAccumulator cache is only valid because _partitionDeques never
+    // removes entries. If partition eviction is ever added, all shards must be invalidated.
+    private readonly PartitionDeque?[] _partitionDequeCache =
+        new PartitionDeque?[DequeCacheSlotsPerShard * DequeCacheShardCount];
 
     /// <summary>
     /// Gets or creates the PartitionDeque for a topic-partition pair.
-    /// Uses a per-thread one-slot cache to avoid ConcurrentDictionary lookup when the
-    /// same thread repeatedly accesses the same partition (common in append workers).
+    /// Uses a thread-sharded direct-mapped cache owned by this RecordAccumulator to avoid
+    /// ConcurrentDictionary lookup for partition-affine and round-robin append workers.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private PartitionDeque GetOrCreateDeque(string topic, int partition)
     {
-        var tp = new TopicPartition(topic, partition);
-
-        // Fast path: check thread-local cache (skip if disposed to avoid serving stale data)
-        var cache = t_cache ??= new AccumulatorThreadCache();
-        if (cache.CachedAccumulator == this && Volatile.Read(ref _disposed) == 0 && cache.CachedTopicPartition == tp && cache.CachedDeque is { } cached)
+        var cacheIndex = GetDequeCacheIndex(partition);
+        var cached = Volatile.Read(ref _partitionDequeCache[cacheIndex]);
+        if (Volatile.Read(ref _disposed) == 0
+            && cached is not null
+            && cached.Partition == partition
+            && string.Equals(cached.Topic, topic, StringComparison.Ordinal))
+        {
             return cached;
+        }
 
-        return GetOrCreateDequeSlow(tp, cache);
+        return GetOrCreateDequeSlow(topic, partition, cacheIndex);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int GetDequeCacheIndex(int partition)
+    {
+        var shardPlusOne = t_dequeCacheShardPlusOne;
+        if (shardPlusOne == 0)
+            shardPlusOne = InitializeDequeCacheShard();
+
+        return ((shardPlusOne - 1) << DequeCacheShardShift) | (partition & DequeCacheSlotMask);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private PartitionDeque GetOrCreateDequeSlow(TopicPartition tp, AccumulatorThreadCache cache)
+    private static int InitializeDequeCacheShard()
     {
-        var deque = _partitionDeques.GetOrAdd(tp, static (_, owner) => new PartitionDeque(owner), this);
+        var shard = (Interlocked.Increment(ref s_nextDequeCacheShard) - 1) & DequeCacheShardMask;
+        var shardPlusOne = shard + 1;
+        t_dequeCacheShardPlusOne = shardPlusOne;
+        return shardPlusOne;
+    }
 
-        // Update thread-local cache
-        cache.CachedAccumulator = this;
-        cache.CachedTopicPartition = tp;
-        cache.CachedDeque = deque;
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private PartitionDeque GetOrCreateDequeSlow(
+        string topic,
+        int partition,
+        int cacheIndex)
+    {
+        var tp = new TopicPartition(topic, partition);
+        var deque = _partitionDeques.GetOrAdd(
+            tp,
+            static (key, owner) => new PartitionDeque(key, owner),
+            this);
+        Volatile.Write(ref _partitionDequeCache[cacheIndex], deque);
 
         return deque;
     }
