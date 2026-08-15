@@ -210,6 +210,130 @@ public sealed class BrokerUnackedAdmissionTests
     }
 
     [Test]
+    public async Task CompletionSpanAppend_ReusesCurrentBatchAdmissionLease()
+    {
+        const int batchSize = 1_024;
+        var options = CreateOptions(capOverride: batchSize, batchSize: batchSize);
+        var accumulator = new RecordAccumulator(options, resolveLeaderId: static (_, _) => LeaderNodeId);
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(accumulator);
+        var metadataManager = AccumulatorTestHelpers.CreateMetadataManager("test-topic", 1, LeaderNodeId);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+
+        try
+        {
+            var budget = accumulator.GetBrokerUnackedBudget(LeaderNodeId)!;
+            var first = pool.Rent();
+            var second = pool.Rent();
+            var firstTask = first.Task;
+            var secondTask = second.Task;
+
+            await Assert.That(accumulator.TryAppendFromSpansWithCompletion(
+                "test-topic", 0, 1,
+                ReadOnlySpan<byte>.Empty, keyIsNull: true,
+                "first"u8, valueIsNull: false,
+                headers: null, headerCount: 0, first)).IsTrue();
+            var artificialCharge = budget.BudgetBytes - budget.UnackedBytes;
+            budget.Charge(artificialCharge);
+            await Assert.That(budget.IsOverBudget()).IsTrue();
+
+            var blockEvents = budget.AdmissionBlockEvents;
+            await Assert.That(accumulator.TryAppendFromSpansWithCompletion(
+                "test-topic", 0, 2,
+                ReadOnlySpan<byte>.Empty, keyIsNull: true,
+                "second"u8, valueIsNull: false,
+                headers: null, headerCount: 0, second)).IsTrue();
+            await Assert.That(budget.AdmissionBlockEvents).IsEqualTo(blockEvents);
+
+            await SealAllAsync(accumulator);
+            var batch = DrainSealedBatches(accumulator, metadataManager).Single();
+            await Assert.That(batch.RecordCount).IsEqualTo(2);
+            var bufferedBytes = accumulator.BufferedBytes;
+            var batchDataSize = batch.DataSize;
+            await Assert.That(bufferedBytes).IsGreaterThan(0);
+
+            ExitAndReturn(accumulator, batch);
+            accumulator.ReleaseMemory(batchDataSize);
+            budget.Release(artificialCharge);
+            _ = await firstTask;
+            _ = await secondTask;
+
+            await Assert.That(accumulator.BufferedBytes).IsEqualTo(bufferedBytes - batchDataSize);
+            await Assert.That(budget.UnackedBytes).IsEqualTo(0);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await metadataManager.DisposeAsync();
+            await pool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task CallbackSpanAppend_ReusesLeaseThenQueuesAfterSeal()
+    {
+        const int batchSize = 1_024;
+        var options = CreateOptions(capOverride: batchSize, batchSize: batchSize);
+        var accumulator = new RecordAccumulator(options, resolveLeaderId: static (_, _) => LeaderNodeId);
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(accumulator);
+        var metadataManager = AccumulatorTestHelpers.CreateMetadataManager("test-topic", 1, LeaderNodeId);
+        var callbackCount = 0;
+        Action<RecordMetadata, Exception?> callback = (_, error) =>
+        {
+            if (error is null)
+                Interlocked.Increment(ref callbackCount);
+        };
+
+        try
+        {
+            var budget = accumulator.GetBrokerUnackedBudget(LeaderNodeId)!;
+            var first = accumulator.AppendFromSpansAsync(
+                "test-topic", 0, 1,
+                ReadOnlySpan<byte>.Empty, keyIsNull: true,
+                "first"u8, valueIsNull: false,
+                headers: null, headerCount: 0, callback, CancellationToken.None);
+            await Assert.That(first.IsCompletedSuccessfully).IsTrue();
+            await Assert.That(await first).IsTrue();
+            var artificialCharge = budget.BudgetBytes - budget.UnackedBytes;
+            budget.Charge(artificialCharge);
+            await Assert.That(budget.IsOverBudget()).IsTrue();
+
+            var blockEvents = budget.AdmissionBlockEvents;
+            var second = accumulator.AppendFromSpansAsync(
+                "test-topic", 0, 2,
+                ReadOnlySpan<byte>.Empty, keyIsNull: true,
+                "second"u8, valueIsNull: false,
+                headers: null, headerCount: 0, callback, CancellationToken.None);
+            await Assert.That(second.IsCompletedSuccessfully).IsTrue();
+            await Assert.That(await second).IsTrue();
+            await Assert.That(budget.AdmissionBlockEvents).IsEqualTo(blockEvents);
+
+            await SealAllAsync(accumulator);
+            var batch = DrainSealedBatches(accumulator, metadataManager).Single();
+            var queued = accumulator.AppendFromSpansAsync(
+                "test-topic", 0, 3,
+                ReadOnlySpan<byte>.Empty, keyIsNull: true,
+                "queued"u8, valueIsNull: false,
+                headers: null, headerCount: 0, callback, CancellationToken.None);
+            await Assert.That(queued.IsCompleted).IsFalse();
+            await Assert.That(accumulator.PendingAppendCountForTest).IsEqualTo(1);
+
+            var batchDataSize = batch.DataSize;
+            ExitAndReturn(accumulator, batch);
+            accumulator.ReleaseMemory(batchDataSize);
+
+            await Assert.That(await queued).IsTrue();
+            budget.Release(artificialCharge);
+            await Assert.That(callbackCount).IsEqualTo(2);
+            await Assert.That(accumulator.PendingAppendCountForTest).IsEqualTo(0);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await metadataManager.DisposeAsync();
+        }
+    }
+
+    [Test]
     [Timeout(30_000)]
     public async Task AsyncAppend_Unblocks_WhenChargedBatchExits(CancellationToken cancellationToken)
     {
