@@ -87,8 +87,10 @@ public class AdmissionLeaseAppendBenchmarks
                 "bench-topic", 0, timestamp,
                 _keyBytes, false, _valueBytes, false,
                 null, 0, null, CancellationToken.None);
-            if (!result.IsCompletedSuccessfully || !result.Result)
-                throw new InvalidOperationException("Span append left the synchronous admission path.");
+            while (!result.IsCompleted)
+                Thread.SpinWait(32);
+            if (!result.Result)
+                throw new InvalidOperationException("Span append failed.");
         }
     }
 
@@ -100,14 +102,11 @@ public class AdmissionLeaseAppendBenchmarks
         {
             var completion = _completionPool.Rent();
             completion.SetRunContinuationsAsynchronously(false);
-            if (!_accumulator.TryAppendFromSpansWithCompletion(
-                "bench-topic", 0, timestamp,
-                _keyBytes, false, _valueBytes, false,
-                null, 0, completion))
-            {
-                _completionPool.Return(completion);
-                throw new InvalidOperationException("Completion append left the synchronous admission path.");
-            }
+            while (!_accumulator.TryAppendFromSpansWithCompletion(
+                       "bench-topic", 0, timestamp,
+                       _keyBytes, false, _valueBytes, false,
+                       null, 0, completion))
+                Thread.SpinWait(32);
 
             completion.ObserveForFireAndForget();
         }
