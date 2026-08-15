@@ -17,10 +17,12 @@ public class AdmissionLeaseAppendBenchmarks
 {
     private const int BatchSize = 1_048_576;
     private const int OperationsPerInvocation = 100;
+    private const int CompletionSourceCount = 4_096;
 
     private RecordAccumulator _accumulator = null!;
     private IDisposable _bulkScope = null!;
-    private ValueTaskSourcePool<RecordMetadata> _completionPool = null!;
+    private PooledValueTaskSource<RecordMetadata>[] _completionSources = null!;
+    private int _completionSourceIndex;
     private byte[] _keyBytes = null!;
     private byte[] _valueBytes = null!;
     private CancellationTokenSource _drainerCts = null!;
@@ -41,15 +43,11 @@ public class AdmissionLeaseAppendBenchmarks
             },
             resolveLeaderId: static (_, _) => 0);
         _bulkScope = _accumulator.EnterBulkProduceScope();
-        _completionPool = new ValueTaskSourcePool<RecordMetadata>();
+        _completionSources = new PooledValueTaskSource<RecordMetadata>[CompletionSourceCount];
+        for (var i = 0; i < _completionSources.Length; i++)
+            _completionSources[i] = new PooledValueTaskSource<RecordMetadata>();
         _keyBytes = Encoding.UTF8.GetBytes("benchmark-key-0");
         _valueBytes = new byte[1_000];
-
-        var pooledSources = new PooledValueTaskSource<RecordMetadata>[_completionPool.MaxPoolSize];
-        for (var i = 0; i < pooledSources.Length; i++)
-            pooledSources[i] = _completionPool.Rent();
-        for (var i = 0; i < pooledSources.Length; i++)
-            _completionPool.Return(pooledSources[i]);
 
         _drainerCts = new CancellationTokenSource();
         _drainerThread = new Thread(() => DrainLoop(_drainerCts.Token))
@@ -74,7 +72,6 @@ public class AdmissionLeaseAppendBenchmarks
         _drainerCts.Dispose();
         _bulkScope.Dispose();
         await _accumulator.DisposeAsync().ConfigureAwait(false);
-        await _completionPool.DisposeAsync().ConfigureAwait(false);
     }
 
     [Benchmark(OperationsPerInvoke = OperationsPerInvocation)]
@@ -100,7 +97,7 @@ public class AdmissionLeaseAppendBenchmarks
         var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         for (var i = 0; i < OperationsPerInvocation; i++)
         {
-            var completion = _completionPool.Rent();
+            var completion = _completionSources[_completionSourceIndex++ & (CompletionSourceCount - 1)];
             completion.SetRunContinuationsAsynchronously(false);
             while (!_accumulator.TryAppendFromSpansWithCompletion(
                        "bench-topic", 0, timestamp,
