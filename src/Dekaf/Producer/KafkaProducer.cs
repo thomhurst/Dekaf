@@ -1771,26 +1771,46 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         var valueIsNull = message.Value is null;
         var key = PooledMemory.Null;
         var value = PooledMemory.Null;
+        var serializationSuspended = false;
         Header[]? pooledHeaderArray = null;
         try
         {
             if (!keyIsNull)
             {
-                key = _asyncKeySerializer is not null
-                    ? await SerializeToPooledAsync(
+                if (_asyncKeySerializer is not null)
+                {
+                    var pendingKey = SerializeToPooledAsync(
                         _asyncKeySerializer, message.Key!, message.Topic,
-                        SerializationComponent.Key, message.Headers, cancellationToken).ConfigureAwait(false)
-                    : SerializeKeyToPooled(message.Key!, message.Topic, message.Headers);
+                        SerializationComponent.Key, message.Headers, cancellationToken);
+                    serializationSuspended |= !pendingKey.IsCompletedSuccessfully;
+                    key = await pendingKey.ConfigureAwait(false);
+                }
+                else
+                {
+                    key = SerializeKeyToPooled(message.Key!, message.Topic, message.Headers);
+                }
             }
 
             if (!valueIsNull)
             {
-                value = _asyncValueSerializer is not null
-                    ? await SerializeToPooledAsync(
+                if (_asyncValueSerializer is not null)
+                {
+                    var pendingValue = SerializeToPooledAsync(
                         _asyncValueSerializer, message.Value!, message.Topic,
-                        SerializationComponent.Value, message.Headers, cancellationToken).ConfigureAwait(false)
-                    : SerializeValueToPooled(message.Value!, message.Topic, message.Headers);
+                        SerializationComponent.Value, message.Headers, cancellationToken);
+                    serializationSuspended |= !pendingValue.IsCompletedSuccessfully;
+                    value = await pendingValue.ConfigureAwait(false);
+                }
+                else
+                {
+                    value = SerializeValueToPooled(message.Value!, message.Topic, message.Headers);
+                }
             }
+
+            // An async serializer may wait arbitrarily long. Preserve the sampled fast path
+            // only when every serializer completed synchronously; otherwise refresh CreateTime.
+            if (message.Timestamp is null && serializationSuspended)
+                currentTicks = Dekaf.MonotonicClock.GetMilliseconds();
 
             // Determine partition
             var partition = message.Partition
@@ -5045,25 +5065,45 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             var valueIsNull = message.Value is null;
             var key = PooledMemory.Null;
             var value = PooledMemory.Null;
+            var serializationSuspended = false;
             try
             {
                 if (!keyIsNull)
                 {
-                    key = _asyncKeySerializer is not null
-                        ? await SerializeToPooledAsync(
+                    if (_asyncKeySerializer is not null)
+                    {
+                        var pendingKey = SerializeToPooledAsync(
                             _asyncKeySerializer, message.Key!, message.Topic,
-                            SerializationComponent.Key, message.Headers, CancellationToken.None).ConfigureAwait(false)
-                        : SerializeKeyToPooled(message.Key!, message.Topic, message.Headers);
+                            SerializationComponent.Key, message.Headers, CancellationToken.None);
+                        serializationSuspended |= !pendingKey.IsCompletedSuccessfully;
+                        key = await pendingKey.ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        key = SerializeKeyToPooled(message.Key!, message.Topic, message.Headers);
+                    }
                 }
 
                 if (!valueIsNull)
                 {
-                    value = _asyncValueSerializer is not null
-                        ? await SerializeToPooledAsync(
+                    if (_asyncValueSerializer is not null)
+                    {
+                        var pendingValue = SerializeToPooledAsync(
                             _asyncValueSerializer, message.Value!, message.Topic,
-                            SerializationComponent.Value, message.Headers, CancellationToken.None).ConfigureAwait(false)
-                        : SerializeValueToPooled(message.Value!, message.Topic, message.Headers);
+                            SerializationComponent.Value, message.Headers, CancellationToken.None);
+                        serializationSuspended |= !pendingValue.IsCompletedSuccessfully;
+                        value = await pendingValue.ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        value = SerializeValueToPooled(message.Value!, message.Topic, message.Headers);
+                    }
                 }
+
+                // Match ProduceInternalAsync: suspended user serialization must not stamp the
+                // record with the pre-serialization cache time.
+                if (message.Timestamp is null && serializationSuspended)
+                    currentTicks = Dekaf.MonotonicClock.GetMilliseconds();
 
                 var appendResult = await AppendSerializedToAccumulatorAsync(
                     message.Topic, key, keyIsNull, value, valueIsNull,
