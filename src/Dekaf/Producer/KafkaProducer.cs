@@ -1110,7 +1110,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // FAST PATH: Check thread-local cached topic metadata first.
         // Avoids MetadataManager dictionary lookup for consecutive messages to the same topic.
         TopicInfo? topicInfo;
-        if (!TryGetCachedTopicInfo(topic, out topicInfo))
+        if (!TryGetCachedTopicInfo(topic, out topicInfo, out var currentTicks))
         {
             // Cache miss - try MetadataManager
             if (!_metadataManager.TryGetCachedTopicMetadata(topic, out topicInfo) || topicInfo is null)
@@ -1119,7 +1119,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             }
 
             // Update thread-local cache for next call
-            UpdateCachedTopicInfo(topic, topicInfo);
+            UpdateCachedTopicInfo(topic, topicInfo, currentTicks);
         }
 
         if (topicInfo!.PartitionCount == 0)
@@ -1131,7 +1131,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         completion = RentCompletion(runContinuationsAsynchronously);
         try
         {
-            TryProduceSyncCore(topic, key, value, headers, partition, timestamp, topicInfo, completion, cancellationToken);
+            TryProduceSyncCore(topic, key, value, headers, partition, timestamp, topicInfo, completion, currentTicks, cancellationToken);
         }
         catch (Exception ex)
         {
@@ -1214,16 +1214,16 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             return FireWithAsyncSerializationAsync(message, activity, deliveryHandler: null);
 
         // Fast path: try thread-local cached topic metadata first
-        var inThreadLocalCache = TryGetCachedTopicInfo(message.Topic, out var topicInfo);
+        var inThreadLocalCache = TryGetCachedTopicInfo(message.Topic, out var topicInfo, out var currentTicks);
         if (inThreadLocalCache ||
             (_metadataManager.TryGetCachedTopicMetadata(message.Topic, out topicInfo) && topicInfo is not null && topicInfo.PartitionCount > 0))
         {
             if (!inThreadLocalCache)
-                UpdateCachedTopicInfo(message.Topic, topicInfo!);
+                UpdateCachedTopicInfo(message.Topic, topicInfo!, currentTicks);
 
             try
             {
-                var appendResult = SerializeAndAppendFromSpansAsync(message.Topic, message.Key, message.Value, message.Headers, message.Partition, message.Timestamp, topicInfo!, null);
+                var appendResult = SerializeAndAppendFromSpansAsync(message.Topic, message.Key, message.Value, message.Headers, message.Partition, message.Timestamp, topicInfo!, null, currentTicks);
 
                 if (appendResult.IsCompleted)
                 {
@@ -1281,16 +1281,16 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
 
         // Fast path: no ProducerMessage allocation, no interceptors, no activity tracing
-        var inThreadLocalCache = TryGetCachedTopicInfo(topic, out var topicInfo);
+        var inThreadLocalCache = TryGetCachedTopicInfo(topic, out var topicInfo, out var currentTicks);
         if (inThreadLocalCache ||
             (_metadataManager.TryGetCachedTopicMetadata(topic, out topicInfo) && topicInfo is not null && topicInfo.PartitionCount > 0))
         {
             if (!inThreadLocalCache)
-                UpdateCachedTopicInfo(topic, topicInfo!);
+                UpdateCachedTopicInfo(topic, topicInfo!, currentTicks);
 
             try
             {
-                var appendResult = SerializeAndAppendFromSpansAsync(topic, key, value, null, null, null, topicInfo!, null);
+                var appendResult = SerializeAndAppendFromSpansAsync(topic, key, value, null, null, null, topicInfo!, null, currentTicks);
 
                 if (appendResult.IsCompleted)
                 {
@@ -1319,9 +1319,10 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     /// Returns true if valid cached metadata exists, false if cache miss or expired.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool TryGetCachedTopicInfo(string topic, out TopicInfo? topicInfo)
+    private bool TryGetCachedTopicInfo(string topic, out TopicInfo? topicInfo, out long currentTicks)
     {
         topicInfo = null;
+        currentTicks = Dekaf.MonotonicClock.GetMilliseconds();
 
         // Early exit if disposed - prevents using stale cache from disposed producer
         if (Volatile.Read(ref _disposed) != 0)
@@ -1330,7 +1331,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // Check if cache is for this metadata manager, topic, and still valid
         // Use signed comparison to handle TickCount64 wraparound (every ~292 million years)
         var cache = GetOrCreateCache();
-        var currentTicks = Dekaf.MonotonicClock.GetMilliseconds();
         if (cache.CachedMetadataManager == _metadataManager &&
             cache.CachedTopicName == topic &&
             cache.CachedTopicInfo is not null &&
@@ -1350,6 +1350,10 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void UpdateCachedTopicInfo(string topic, TopicInfo topicInfo)
+        => UpdateCachedTopicInfo(topic, topicInfo, Dekaf.MonotonicClock.GetMilliseconds());
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void UpdateCachedTopicInfo(string topic, TopicInfo topicInfo, long currentTicks)
     {
         var cache = GetOrCreateCache();
         cache.CachedMetadataManager = _metadataManager;
@@ -1357,7 +1361,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         cache.CachedTopicInfo = topicInfo;
         // Cache valid for ~1 second (1000 ticks) - enough for high-throughput bursts
         // while still detecting stale metadata reasonably quickly
-        cache.CachedTopicValidUntilTicks = Dekaf.MonotonicClock.GetMilliseconds() + 1000;
+        cache.CachedTopicValidUntilTicks = currentTicks + 1000;
     }
 
     /// <summary>
@@ -1381,6 +1385,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             message.Timestamp,
             topicInfo,
             completion,
+            Dekaf.MonotonicClock.GetMilliseconds(),
             cancellationToken);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1409,6 +1414,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         DateTimeOffset? timestamp,
         TopicInfo topicInfo,
         PooledValueTaskSource<RecordMetadata> completion,
+        long currentTicks,
         CancellationToken cancellationToken)
     {
         Header[]? pooledHeaderArray = null;
@@ -1476,7 +1482,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 partition, keySpan, keyIsNull, topicInfo.PartitionCount);
 
             // Get timestamp - use fast cached timestamp when no override provided
-            var timestampMs = timestamp?.ToUnixTimeMilliseconds() ?? GetFastTimestampMs();
+            var timestampMs = timestamp?.ToUnixTimeMilliseconds() ?? GetFastTimestampMs(currentTicks);
 
             // Convert headers
             var headerCount = 0;
@@ -1678,16 +1684,16 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             return FireWithAsyncSerializationAsync(message, activity: null, deliveryHandler);
 
         // Fast path: try thread-local cached topic metadata first
-        var inThreadLocalCache = TryGetCachedTopicInfo(message.Topic, out var topicInfo);
+        var inThreadLocalCache = TryGetCachedTopicInfo(message.Topic, out var topicInfo, out var currentTicks);
         if (inThreadLocalCache ||
             (_metadataManager.TryGetCachedTopicMetadata(message.Topic, out topicInfo) && topicInfo is not null && topicInfo.PartitionCount > 0))
         {
             if (!inThreadLocalCache)
-                UpdateCachedTopicInfo(message.Topic, topicInfo!);
+                UpdateCachedTopicInfo(message.Topic, topicInfo!, currentTicks);
 
             try
             {
-                var appendResult = SerializeAndAppendFromSpansAsync(message.Topic, message.Key, message.Value, message.Headers, message.Partition, message.Timestamp, topicInfo!, deliveryHandler);
+                var appendResult = SerializeAndAppendFromSpansAsync(message.Topic, message.Key, message.Value, message.Headers, message.Partition, message.Timestamp, topicInfo!, deliveryHandler, currentTicks);
 
                 if (appendResult.IsCompleted)
                 {
@@ -1722,7 +1728,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // manager's cache; async fetch only on a true miss. The thread-local hit matters for
         // the async-serialization path (issue #2309), which routes every message through here.
         TopicInfo? topicInfo;
-        if (!TryGetCachedTopicInfo(message.Topic, out topicInfo) &&
+        if (!TryGetCachedTopicInfo(message.Topic, out topicInfo, out _) &&
             !_metadataManager.TryGetCachedTopicMetadata(message.Topic, out topicInfo))
         {
             // Slow path: cache miss, need async refresh with MaxBlockMs timeout
@@ -4529,7 +4535,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     private ValueTask<bool> SerializeAndAppendFromSpansAsync(
         string topic, TKey? key, TValue value, Headers? headers, int? partition, DateTimeOffset? timestamp,
         TopicInfo topicInfo,
-        Action<RecordMetadata, Exception?>? callback)
+        Action<RecordMetadata, Exception?>? callback,
+        long currentTicks = long.MinValue)
     {
         var cache = GetOrCreateCache();
         var keyIsNull = key is null;
@@ -4566,7 +4573,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         var batchCompletionPartitionCount = GetUniformStickyPartitionCount(
             partition, keySpan, keyIsNull, topicInfo.PartitionCount);
 
-        var timestampMs = timestamp?.ToUnixTimeMilliseconds() ?? GetFastTimestampMs();
+        var timestampMs = timestamp?.ToUnixTimeMilliseconds() ?? GetFastTimestampMs(currentTicks);
 
         Header[]? pooledHeaderArray = null;
         var headerCount = 0;
@@ -5001,7 +5008,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             // Metadata: thread-local cache, then manager cache, then bounded fetch
             // (mirrors FireAsyncSlow).
             TopicInfo? topicInfo;
-            if (!TryGetCachedTopicInfo(message.Topic, out topicInfo) &&
+            if (!TryGetCachedTopicInfo(message.Topic, out topicInfo, out _) &&
                 !_metadataManager.TryGetCachedTopicMetadata(message.Topic, out topicInfo))
             {
                 using var timeoutCts = new CancellationTokenSource(_options.MaxBlockMs);
@@ -5157,14 +5164,15 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     /// This is ~10x faster than DateTimeOffset.UtcNow for high-throughput scenarios.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static long GetFastTimestampMs()
+    private static long GetFastTimestampMs(long currentTicks = long.MinValue)
     {
         var cache = GetOrCreateCache();
 
         // Use a cheap monotonic counter to determine if we need to refresh.
         // TickCount64 increments every ~15.6ms on Windows, ~1ms on Linux, but checking
         // the difference is still much cheaper than calling DateTimeOffset.UtcNow.
-        var currentTicks = Dekaf.MonotonicClock.GetMilliseconds();
+        if (currentTicks == long.MinValue)
+            currentTicks = Dekaf.MonotonicClock.GetMilliseconds();
 
         // Refresh if more than ~1ms has passed (or on first call when CachedTimestampTicks is 0)
         if (currentTicks - cache.CachedTimestampTicks > 1 || cache.CachedTimestampTicks == 0)
