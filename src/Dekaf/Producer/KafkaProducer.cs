@@ -1728,7 +1728,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // manager's cache; async fetch only on a true miss. The thread-local hit matters for
         // the async-serialization path (issue #2309), which routes every message through here.
         TopicInfo? topicInfo;
-        if (!TryGetCachedTopicInfo(message.Topic, out topicInfo, out _) &&
+        if (!TryGetCachedTopicInfo(message.Topic, out topicInfo, out var currentTicks) &&
             !_metadataManager.TryGetCachedTopicMetadata(message.Topic, out topicInfo))
         {
             // Slow path: cache miss, need async refresh with MaxBlockMs timeout
@@ -1739,6 +1739,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             {
                 topicInfo = await _metadataManager.GetTopicMetadataAsync(message.Topic, timeoutCts.Token)
                     .ConfigureAwait(false);
+                currentTicks = Dekaf.MonotonicClock.GetMilliseconds();
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
@@ -1759,7 +1760,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             throw NoUsablePartitionsException(message.Topic, topicInfo);
         }
 
-        UpdateCachedTopicInfo(message.Topic, topicInfo);
+        UpdateCachedTopicInfo(message.Topic, topicInfo, currentTicks);
 
         // Serialize key and value to pooled memory (returned to pool when batch completes).
         // Async serializers (issue #2309) are awaited per component; a mixed configuration uses
@@ -1798,8 +1799,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 message.Partition, key.Span, keyIsNull, topicInfo.PartitionCount);
 
             // Get timestamp
-            var timestamp = message.Timestamp ?? DateTimeOffset.UtcNow;
-            var timestampMs = timestamp.ToUnixTimeMilliseconds();
+            var timestampMs = message.Timestamp?.ToUnixTimeMilliseconds()
+                ?? GetFastTimestampMs(currentTicks);
 
             // Convert headers with minimal allocations
             var headerCount = 0;
@@ -5008,7 +5009,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             // Metadata: thread-local cache, then manager cache, then bounded fetch
             // (mirrors FireAsyncSlow).
             TopicInfo? topicInfo;
-            if (!TryGetCachedTopicInfo(message.Topic, out topicInfo, out _) &&
+            if (!TryGetCachedTopicInfo(message.Topic, out topicInfo, out var currentTicks) &&
                 !_metadataManager.TryGetCachedTopicMetadata(message.Topic, out topicInfo))
             {
                 using var timeoutCts = new CancellationTokenSource(_options.MaxBlockMs);
@@ -5016,6 +5017,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 {
                     topicInfo = await _metadataManager.GetTopicMetadataAsync(message.Topic, timeoutCts.Token)
                         .ConfigureAwait(false);
+                    currentTicks = Dekaf.MonotonicClock.GetMilliseconds();
                 }
                 catch (OperationCanceledException)
                 {
@@ -5037,7 +5039,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 throw metadataException;
             }
 
-            UpdateCachedTopicInfo(message.Topic, topicInfo);
+            UpdateCachedTopicInfo(message.Topic, topicInfo, currentTicks);
 
             var keyIsNull = message.Key is null;
             var valueIsNull = message.Value is null;
@@ -5066,7 +5068,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 var appendResult = await AppendSerializedToAccumulatorAsync(
                     message.Topic, key, keyIsNull, value, valueIsNull,
                     message.Headers, message.Partition, message.Timestamp,
-                    topicInfo, deliveryHandler).ConfigureAwait(false);
+                    topicInfo, deliveryHandler, currentTicks).ConfigureAwait(false);
 
                 if (!appendResult)
                     throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
@@ -5122,14 +5124,15 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         int? explicitPartition,
         DateTimeOffset? timestamp,
         TopicInfo topicInfo,
-        Action<RecordMetadata, Exception?>? callback)
+        Action<RecordMetadata, Exception?>? callback,
+        long currentTicks)
     {
         var keySpan = key.Span;
         var partition = explicitPartition
             ?? _partitioner.Partition(topic, keySpan, keyIsNull, topicInfo.PartitionCount);
         var batchCompletionPartitionCount = GetUniformStickyPartitionCount(
             explicitPartition, keySpan, keyIsNull, topicInfo.PartitionCount);
-        var timestampMs = timestamp?.ToUnixTimeMilliseconds() ?? GetFastTimestampMs();
+        var timestampMs = timestamp?.ToUnixTimeMilliseconds() ?? GetFastTimestampMs(currentTicks);
 
         Header[]? pooledHeaderArray = null;
         var headerCount = 0;
