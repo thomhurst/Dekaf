@@ -7,8 +7,9 @@ using Dekaf.Producer;
 namespace Dekaf.Benchmarks.Benchmarks.Unit;
 
 /// <summary>
-/// Measures both headerless span entry points with broker admission enabled. A background
-/// drainer acknowledges sealed batches so the benchmark remains on the synchronous lease path.
+/// Measures both headerless span entry points while one open batch repeatedly consumes and
+/// replenishes broker admission leases. Iteration setup keeps sealing and delivery outside
+/// the measured append path.
 /// </summary>
 [MemoryDiagnoser]
 [OperationsPerSecond]
@@ -16,8 +17,8 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 public class AdmissionLeaseAppendBenchmarks
 {
     private const int BatchSize = 1_048_576;
-    private const int OperationsPerInvocation = 100;
-    private const int CompletionSourceCount = 4_096;
+    private const int OperationsPerInvocation = 900;
+    private const int CompletionSourceCount = 1_024;
 
     private RecordAccumulator _accumulator = null!;
     private IDisposable _bulkScope = null!;
@@ -25,12 +26,20 @@ public class AdmissionLeaseAppendBenchmarks
     private int _completionSourceIndex;
     private byte[] _keyBytes = null!;
     private byte[] _valueBytes = null!;
-    private CancellationTokenSource _drainerCts = null!;
-    private Thread _drainerThread = null!;
-
     [GlobalSetup]
     public void Setup()
     {
+        _completionSources = new PooledValueTaskSource<RecordMetadata>[CompletionSourceCount];
+        for (var i = 0; i < _completionSources.Length; i++)
+            _completionSources[i] = new PooledValueTaskSource<RecordMetadata>();
+        _keyBytes = Encoding.UTF8.GetBytes("benchmark-key-0");
+        _valueBytes = new byte[1_000];
+    }
+
+    [IterationSetup]
+    public void SetupIteration()
+    {
+        _completionSourceIndex = 0;
         _accumulator = new RecordAccumulator(
             new ProducerOptions
             {
@@ -43,35 +52,19 @@ public class AdmissionLeaseAppendBenchmarks
             },
             resolveLeaderId: static (_, _) => 0);
         _bulkScope = _accumulator.EnterBulkProduceScope();
-        _completionSources = new PooledValueTaskSource<RecordMetadata>[CompletionSourceCount];
-        for (var i = 0; i < _completionSources.Length; i++)
-            _completionSources[i] = new PooledValueTaskSource<RecordMetadata>();
-        _keyBytes = Encoding.UTF8.GetBytes("benchmark-key-0");
-        _valueBytes = new byte[1_000];
-
-        _drainerCts = new CancellationTokenSource();
-        _drainerThread = new Thread(() => DrainLoop(_drainerCts.Token))
-        {
-            IsBackground = true,
-            Name = "admission-lease-benchmark-drainer",
-            Priority = ThreadPriority.Highest,
-        };
-        _drainerThread.Start();
-
-        for (var i = 0; i < 40; i++)
-            AppendFromSpans();
-        for (var i = 0; i < 40; i++)
-            AppendFromSpansWithCompletion();
+        var seeded = _accumulator.AppendFromSpansAsync(
+            "bench-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            _keyBytes, false, _valueBytes, false,
+            null, 0, null, CancellationToken.None);
+        if (!seeded.IsCompletedSuccessfully || !seeded.Result)
+            throw new InvalidOperationException("Admission lease seed append failed.");
     }
 
-    [GlobalCleanup]
-    public async Task Cleanup()
+    [IterationCleanup]
+    public void CleanupIteration()
     {
-        _drainerCts.Cancel();
-        _drainerThread.Join();
-        _drainerCts.Dispose();
         _bulkScope.Dispose();
-        await _accumulator.DisposeAsync().ConfigureAwait(false);
+        _accumulator.DisposeAsync().GetAwaiter().GetResult();
     }
 
     [Benchmark(OperationsPerInvoke = OperationsPerInvocation)]
@@ -106,26 +99,6 @@ public class AdmissionLeaseAppendBenchmarks
                 Thread.SpinWait(32);
 
             completion.ObserveForFireAndForget();
-        }
-    }
-
-    private void DrainLoop(CancellationToken cancellationToken)
-    {
-        var spinner = new SpinWait();
-        while (!cancellationToken.IsCancellationRequested)
-        {
-            if (!_accumulator.TryDrainBatch(out var batch))
-            {
-                spinner.SpinOnce();
-                continue;
-            }
-
-            var dataSize = batch.DataSize;
-            _accumulator.OnBatchExitsPipeline(batch);
-            batch.CompleteSend(0, DateTimeOffset.UtcNow);
-            _accumulator.ReleaseMemory(dataSize);
-            _accumulator.ReturnReadyBatch(batch);
-            spinner.Reset();
         }
     }
 }
