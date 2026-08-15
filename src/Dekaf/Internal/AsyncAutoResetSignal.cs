@@ -15,9 +15,18 @@ namespace Dekaf.Internal;
 /// <see cref="WaitAsync"/> must only be called by a single consumer
 /// (not thread-safe for multiple concurrent waiters).
 /// </summary>
-internal sealed class AsyncAutoResetSignal : IValueTaskSource<bool>, IDisposable
+internal sealed class AsyncAutoResetSignal : IValueTaskSource<bool>,
+#if NET
+    IThreadPoolWorkItem,
+#endif
+    IDisposable
 {
+    private const int QueuedSignal = 1;
+    private const int QueuedShutdown = 2;
+
     private ManualResetValueTaskSourceCore<bool> _core;
+    private readonly bool _inlineTimeoutContinuations;
+    private int _queuedCompletion;
 
     /// <summary>
     /// 0 = idle (no waiter), 1 = waiting (waiter registered), 2 = signaled-before-wait.
@@ -54,9 +63,10 @@ internal sealed class AsyncAutoResetSignal : IValueTaskSource<bool>, IDisposable
     private int _shutdownRequested; // 0 = running, 1 = shutdown requested — terminal once set
     private CancellationToken _shutdownToken;
 
-    public AsyncAutoResetSignal()
+    public AsyncAutoResetSignal(bool inlineTimeoutContinuations = false)
     {
-        _core.RunContinuationsAsynchronously = true;
+        _inlineTimeoutContinuations = inlineTimeoutContinuations;
+        _core.RunContinuationsAsynchronously = !inlineTimeoutContinuations;
         _timeoutCallback = static state =>
         {
             var self = (AsyncAutoResetSignal)state!;
@@ -102,7 +112,7 @@ internal sealed class AsyncAutoResetSignal : IValueTaskSource<bool>, IDisposable
                 // Shutdown requested — complete the waiter if one is pending.
                 if (Interlocked.CompareExchange(ref self._state, Idle, Waiting) == Waiting)
                 {
-                    self._core.SetException(new OperationCanceledException(self._shutdownToken));
+                    self.CompleteShutdown();
                 }
             },
             this);
@@ -126,7 +136,7 @@ internal sealed class AsyncAutoResetSignal : IValueTaskSource<bool>, IDisposable
         // having already transitioned Waiting → Idle and called SetResult/SetException.
         // Double-completion of ManualResetValueTaskSourceCore is undefined behavior.
         if (Interlocked.CompareExchange(ref _state, Idle, Waiting) == Waiting)
-            _core.SetResult(true);
+            CompleteSignal();
     }
 
     /// <summary>
@@ -220,6 +230,53 @@ internal sealed class AsyncAutoResetSignal : IValueTaskSource<bool>, IDisposable
 
     void IValueTaskSource<bool>.OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags)
         => _core.OnCompleted(continuation, state, token, flags);
+
+    private void CompleteSignal()
+    {
+        if (!_inlineTimeoutContinuations)
+        {
+            _core.SetResult(true);
+            return;
+        }
+
+        Volatile.Write(ref _queuedCompletion, QueuedSignal);
+        QueueCompletion();
+    }
+
+    private void CompleteShutdown()
+    {
+        if (!_inlineTimeoutContinuations)
+        {
+            _core.SetException(new OperationCanceledException(_shutdownToken));
+            return;
+        }
+
+        Volatile.Write(ref _queuedCompletion, QueuedShutdown);
+        QueueCompletion();
+    }
+
+#if NET
+    void IThreadPoolWorkItem.Execute()
+#else
+    private void ExecuteQueuedCompletion()
+#endif
+    {
+        var completion = Volatile.Read(ref _queuedCompletion);
+        if (completion == QueuedSignal)
+            _core.SetResult(true);
+        else
+            _core.SetException(new OperationCanceledException(_shutdownToken));
+    }
+
+    private void QueueCompletion()
+    {
+#if NET
+        ThreadPool.UnsafeQueueUserWorkItem(this, preferLocal: false);
+#else
+        ThreadPool.UnsafeQueueUserWorkItem(static state =>
+            ((AsyncAutoResetSignal)state!).ExecuteQueuedCompletion(), this);
+#endif
+    }
 
     public void Dispose()
     {
