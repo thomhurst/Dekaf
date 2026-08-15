@@ -3834,6 +3834,25 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             topic, partition, keyIsNull, keyLength, valueIsNull, valueLength,
             headers, headerCount, recordSize);
 
+        if (_unackedBudgetEnabled
+            && headers is null
+            && headerCount == 0
+            && TryAppendFromSpansUsingExistingAdmission(
+                topic,
+                partition,
+                timestamp,
+                keyData,
+                keyIsNull,
+                valueData,
+                valueIsNull,
+                completionSource,
+                callback: null,
+                recordSize,
+                partitionCount))
+        {
+            return true;
+        }
+
         if (!TryAdmitAndReserve(topic, partition, recordSize, out var admissionReservation))
             return false;
 
@@ -4283,6 +4302,25 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             throw;
         }
 
+        if (_unackedBudgetEnabled
+            && headers is null
+            && headerCount == 0
+            && TryAppendFromSpansUsingExistingAdmission(
+                topic,
+                partition,
+                timestamp,
+                keyData,
+                keyIsNull,
+                valueData,
+                valueIsNull,
+                completionSource: null,
+                callback,
+                recordSize,
+                partitionCount))
+        {
+            return new ValueTask<bool>(true);
+        }
+
         // Hot path: non-blocking gate check + CAS reservation — no async state machine
         // allocated. An over-budget broker applies the same backpressure as a full buffer.
         if (TryAdmitAndReserve(topic, partition, recordSize, out var admissionReservation))
@@ -4403,6 +4441,109 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         return AppendFromSpansAfterReservationCore(topic, partition, timestamp, keyData, keyIsNull,
             valueData, valueIsNull, headers, headerCount, completionSource: null, callback,
             recordSize, partitionCount, returnHeadersOnFailure: true, admissionReservation);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryAppendFromSpansUsingExistingAdmission(
+        string topic,
+        int partition,
+        long timestamp,
+        ReadOnlySpan<byte> keyData,
+        bool keyIsNull,
+        ReadOnlySpan<byte> valueData,
+        bool valueIsNull,
+        PooledValueTaskSource<RecordMetadata>? completionSource,
+        Action<RecordMetadata, Exception?>? callback,
+        int recordSize,
+        int partitionCount)
+    {
+        var pd = GetOrCreateDeque(topic, partition);
+        if (Volatile.Read(ref pd.SlowPathAppendCount) != 0)
+            return false;
+
+        PartitionBatch? batchToComplete = null;
+        var actualBytesAdded = 0;
+        var memoryReserved = false;
+        var appendCommitted = false;
+
+        // The admission owner normally spans a lease decision and a later append. When the
+        // current batch already owns enough credit, keep both checks and the append under the
+        // partition lock so the common path needs neither the admission CAS nor a second lock.
+        try
+        {
+            {
+                using var guard = new SpinLockGuard(ref pd.Lock);
+
+                if (Volatile.Read(ref _disposed) != 0
+                    || pd.RotationInProgress
+                    || pd.AppendInProgress
+                    || Volatile.Read(ref pd.AdmissionInProgress) != 0
+                    || pd.CurrentBatch is not { } currentBatch)
+                {
+                    return false;
+                }
+
+                var budget = GetCachedAdmissionBudget(pd, topic, partition);
+                if (NeedsAdmissionLease(currentBatch, budget, recordSize)
+                    || !TryReserveMemory(recordSize))
+                {
+                    return false;
+                }
+
+                memoryReserved = true;
+                var result = currentBatch.TryAppendFromSpans(
+                    timestamp,
+                    keyData,
+                    keyIsNull,
+                    valueData,
+                    valueIsNull,
+                    headers: null,
+                    headerCount: 0,
+                    completionSource,
+                    callback,
+                    estimatedSize: recordSize);
+
+                if (result.Success)
+                {
+                    appendCommitted = true;
+                    actualBytesAdded = result.ActualSizeAdded;
+                    ProducerDebugCounters.RecordMessageAppended(hasCompletionSource: completionSource is not null);
+
+                    if (result.FirstCompletionSourceInBatch)
+                        TrackPendingAwaitedProduceBatch();
+
+                    if (ShouldSealAppendedBatch(pd, currentBatch, completionSource))
+                        batchToComplete = DetachCurrentBatchForSealUnderLock(pd, currentBatch);
+                }
+            }
+        }
+        catch
+        {
+            if (memoryReserved && !appendCommitted)
+                ReleaseMemory(recordSize);
+            throw;
+        }
+
+        if (!appendCommitted)
+        {
+            if (memoryReserved)
+                ReleaseMemory(recordSize);
+            return false;
+        }
+
+        NotifyRecordAppended(topic, partition, actualBytesAdded, partitionCount);
+        if (batchToComplete is not null)
+        {
+            var readyBatch = CompleteDetachedBatchAndEnqueue(pd, batchToComplete);
+            if (readyBatch is not null)
+                StartPreSerialization(readyBatch);
+        }
+        else if (completionSource is not null)
+        {
+            QueueLingerPartition(pd, new TopicPartition(topic, partition), signalLingerLoop: false);
+        }
+
+        return true;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
