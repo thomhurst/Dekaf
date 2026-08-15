@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Reflection;
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Engines;
@@ -20,12 +19,13 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 public class ProducerFireHotPathBenchmarks
 {
     private const string Topic = "producer-fire-hot-path";
+    private const long FixtureCapacityBytes = 1L << 30;
     private static readonly string[] Keys = BenchmarkData.CreateKeys(10_000);
 
     private KafkaProducer<string, string> _producer = null!;
     private RecordAccumulator _accumulator = null!;
     private CancellationTokenSource _drainerCts = null!;
-    private Task _drainerTask = null!;
+    private Thread _drainerThread = null!;
     private string _value = null!;
 
     [Params(1000)]
@@ -45,7 +45,7 @@ public class ProducerFireHotPathBenchmarks
             {
                 BootstrapServers = ["localhost:9092"],
                 ClientId = "producer-fire-hot-path",
-                BufferMemory = 256UL * 1024 * 1024,
+                BufferMemory = (ulong)FixtureCapacityBytes,
                 BatchSize = 1_048_576,
                 LingerMs = 1_000,
                 RequestTimeoutMs = 500,
@@ -54,7 +54,7 @@ public class ProducerFireHotPathBenchmarks
                 EnableIdempotence = false,
                 DeliveryLatencyTargetMs = DeliveryLatencyTargetMs,
                 // Keep admission non-blocking so this measures front-end CPU, not drainer scheduling.
-                UnackedByteBudgetCapOverride = 1L << 30,
+                UnackedByteBudgetCapOverride = FixtureCapacityBytes,
             },
             Serializers.String,
             Serializers.String);
@@ -64,9 +64,23 @@ public class ProducerFireHotPathBenchmarks
         SetInstanceField(_producer, "_initialized", true);
 
         _accumulator = _producer.RecordAccumulator;
+        if (_accumulator.GetBrokerUnackedBudget(brokerId: 0) is { } budget)
+        {
+            // Measure admission bookkeeping, not an intentionally-tight adaptive window.
+            // The stopped sender cannot provide real acknowledgement pacing, so keep the
+            // explicit benchmark cap published while the drainer releases each charge.
+            SetInstanceField(budget, "_budgetBytes", FixtureCapacityBytes);
+        }
+
         _value = new string('x', MessageSize);
         _drainerCts = new CancellationTokenSource();
-        _drainerTask = Task.Run(() => DrainLoop(_drainerCts.Token));
+        _drainerThread = new Thread(() => DrainLoop(_drainerCts.Token))
+        {
+            IsBackground = true,
+            Name = "producer-fire-hot-path-drainer",
+            Priority = ThreadPriority.Highest,
+        };
+        _drainerThread.Start();
 
         FireBatch();
     }
@@ -74,14 +88,9 @@ public class ProducerFireHotPathBenchmarks
     [GlobalCleanup]
     public async Task Cleanup()
     {
-        await _drainerCts.CancelAsync().ConfigureAwait(false);
-        try
-        {
-            await _drainerTask.ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-        }
+        _drainerCts.Cancel();
+        _drainerThread.Join();
+        _drainerCts.Dispose();
 
         await _producer.DisposeAsync().ConfigureAwait(false);
     }
@@ -93,7 +102,11 @@ public class ProducerFireHotPathBenchmarks
         {
             var result = _producer.FireAsync(Topic, Keys[i], _value);
             if (!result.IsCompletedSuccessfully)
-                result.GetAwaiter().GetResult();
+            {
+                throw new InvalidOperationException(
+                    $"Producer front-end became asynchronous; benchmark fixture failed to keep its drainer ahead. " +
+                    $"BufferedBytes={_accumulator.BufferedBytes}, PendingAppends={_accumulator.PendingAppendCountForTest}.");
+            }
         }
     }
 
@@ -104,19 +117,6 @@ public class ProducerFireHotPathBenchmarks
         {
             if (_accumulator.TryDrainBatch(out var batch))
             {
-                if (batch.UnackedBudget is { } budget)
-                {
-                    var acknowledgedAt = Stopwatch.GetTimestamp();
-                    var sentAt = acknowledgedAt - Stopwatch.Frequency / 1_000;
-                    var snapshot = budget.SnapshotDelivery(
-                        sentAt,
-                        appLimited: false,
-                        batch.StopwatchCreatedTicks,
-                        batch.AdmissionGeneration);
-                    budget.OnAcked(batch.DataSize, snapshot, acknowledgedAt);
-                    budget.CompleteAckedPass(acknowledgedAt);
-                }
-
                 _accumulator.OnBatchExitsPipeline(batch);
                 _accumulator.ReleaseMemory(batch.DataSize);
                 _accumulator.ReturnReadyBatch(batch);
