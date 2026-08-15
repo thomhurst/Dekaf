@@ -505,6 +505,22 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
     }
 
     [Test]
+    public async Task SelectWaveCoalesceTailTicks_AdaptsOnlyAfterWaveCadenceIsEstablished()
+    {
+        await Assert.That(BrokerSender.SelectWaveCoalesceTailTicks(
+                configuredQuietTicks: 1_000,
+                maximumArrivalGapTicks: 100,
+                additionalBatchCount: 1))
+            .IsEqualTo(1_000);
+        await Assert.That(BrokerSender.SelectWaveCoalesceTailTicks(1_000, 100, 2))
+            .IsEqualTo(500);
+        await Assert.That(BrokerSender.SelectWaveCoalesceTailTicks(1_000, 300, 2))
+            .IsEqualTo(600);
+        await Assert.That(BrokerSender.SelectWaveCoalesceTailTicks(1_000, 800, 3))
+            .IsEqualTo(1_000);
+    }
+
+    [Test]
     [Timeout(120_000)]
     public async Task SendLoop_WaveCoalesce_RearmsAfterIdleWaitAtDefaultLinger(
         CancellationToken cancellationToken)

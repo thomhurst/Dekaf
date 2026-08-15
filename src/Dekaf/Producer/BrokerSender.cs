@@ -121,6 +121,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private const int WaveCoalesceQuietMicroseconds = 1000;
     private const int WaveCoalesceMaxMicroseconds = 2000;
     private const int WaveCoalesceLingerDivisor = 5;
+    private const int WaveCoalesceTailDivisor = 2;
+    private const int WaveCoalesceGapMultiplier = 2;
     private const int ZeroLingerWaveCoalesceQuietMicroseconds = 75;
     private const int ZeroLingerWaveCoalesceMaxMicroseconds = 500;
 
@@ -1611,6 +1613,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     var started = Stopwatch.GetTimestamp();
                     var hardDeadline = started + waveCoalesceMaxTicks;
                     var quietDeadline = Math.Min(started + waveCoalesceQuietTicks, hardDeadline);
+                    var previousArrival = started;
+                    var maximumArrivalGap = 0L;
+                    var additionalBatchCount = 0;
                     _onWaveCoalesceStarted?.Invoke();
                     // Probe once before consulting the deadline. A queued sibling must not be
                     // split into a later request solely because this thread was preempted here.
@@ -1634,7 +1639,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             if (coalescedCount > countBefore)
                             {
                                 var now = Stopwatch.GetTimestamp();
-                                quietDeadline = Math.Min(now + waveCoalesceQuietTicks, hardDeadline);
+                                maximumArrivalGap = Math.Max(maximumArrivalGap, now - previousArrival);
+                                previousArrival = now;
+                                additionalBatchCount++;
+                                var tailTicks = SelectWaveCoalesceTailTicks(
+                                    waveCoalesceQuietTicks,
+                                    maximumArrivalGap,
+                                    additionalBatchCount);
+                                quietDeadline = Math.Min(now + tailTicks, hardDeadline);
                             }
                         }
                         else if (evt.Type == SendLoopEventType.TransactionEnrollmentReady)
@@ -2510,6 +2522,23 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             quietMicroseconds,
             WaveCoalesceMaxMicroseconds);
         return ((int)quietMicroseconds, (int)maximumMicroseconds);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static long SelectWaveCoalesceTailTicks(
+        long configuredQuietTicks,
+        long maximumArrivalGapTicks,
+        int additionalBatchCount)
+    {
+        // Preserve the full discovery window until two siblings establish a wave cadence.
+        // Thereafter, stop paying the full quiet interval after the final sibling while
+        // retaining enough slack for a sibling delayed by up to twice the widest observed gap.
+        if (additionalBatchCount < 2)
+            return configuredQuietTicks;
+
+        var minimumTailTicks = Math.Max(1, configuredQuietTicks / WaveCoalesceTailDivisor);
+        var arrivalTailTicks = maximumArrivalGapTicks * WaveCoalesceGapMultiplier;
+        return Math.Min(configuredQuietTicks, Math.Max(minimumTailTicks, arrivalTailTicks));
     }
 
     private static long MicrosecondsToStopwatchTicks(long microseconds) =>
