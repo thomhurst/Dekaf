@@ -1128,7 +1128,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// <summary>
     /// Arms the periodic linger cadence when the first unsealed batch becomes active.
     /// </summary>
+#if NET
+    private readonly AsyncAutoResetSignal _lingerWakeupSignal = new(inlineTimeoutContinuations: true);
+#else
     private readonly AsyncAutoResetSignal _lingerWakeupSignal = new();
+#endif
 
     // Per-partition-affine append workers: each worker owns a channel and processes
     // appends for a subset of partitions (partition % workerCount). This reduces
