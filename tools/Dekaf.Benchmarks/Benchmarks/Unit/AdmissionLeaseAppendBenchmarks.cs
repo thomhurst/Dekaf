@@ -19,6 +19,7 @@ public class AdmissionLeaseAppendBenchmarks
     private const int OperationsPerInvocation = 100;
 
     private RecordAccumulator _accumulator = null!;
+    private IDisposable _bulkScope = null!;
     private ValueTaskSourcePool<RecordMetadata> _completionPool = null!;
     private byte[] _keyBytes = null!;
     private byte[] _valueBytes = null!;
@@ -34,11 +35,12 @@ public class AdmissionLeaseAppendBenchmarks
                 BootstrapServers = ["localhost:9092"],
                 BatchSize = BatchSize,
                 BufferMemory = 256L * 1024 * 1024,
-                LingerMs = 0,
+                LingerMs = 1_000,
                 DeliveryLatencyTargetMs = 10,
                 UnackedByteBudgetCapOverride = 1L << 30,
             },
             resolveLeaderId: static (_, _) => 0);
+        _bulkScope = _accumulator.EnterBulkProduceScope();
         _completionPool = new ValueTaskSourcePool<RecordMetadata>();
         _keyBytes = Encoding.UTF8.GetBytes("benchmark-key-0");
         _valueBytes = new byte[1_000];
@@ -70,6 +72,7 @@ public class AdmissionLeaseAppendBenchmarks
         _drainerCts.Cancel();
         _drainerThread.Join();
         _drainerCts.Dispose();
+        _bulkScope.Dispose();
         await _accumulator.DisposeAsync().ConfigureAwait(false);
         await _completionPool.DisposeAsync().ConfigureAwait(false);
     }
