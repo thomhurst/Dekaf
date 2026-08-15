@@ -1613,7 +1613,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     var started = Stopwatch.GetTimestamp();
                     var hardDeadline = started + waveCoalesceMaxTicks;
                     var quietDeadline = Math.Min(started + waveCoalesceQuietTicks, hardDeadline);
-                    var previousArrival = started;
+                    var previousArrival = 0L;
                     var maximumArrivalGap = 0L;
                     var additionalBatchCount = 0;
                     _onWaveCoalesceStarted?.Invoke();
@@ -1639,9 +1639,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             if (coalescedCount > countBefore)
                             {
                                 var now = Stopwatch.GetTimestamp();
-                                maximumArrivalGap = Math.Max(maximumArrivalGap, now - previousArrival);
-                                previousArrival = now;
-                                additionalBatchCount++;
+                                RecordWaveArrival(
+                                    now,
+                                    ref previousArrival,
+                                    ref maximumArrivalGap,
+                                    ref additionalBatchCount);
                                 var tailTicks = SelectWaveCoalesceTailTicks(
                                     waveCoalesceQuietTicks,
                                     maximumArrivalGap,
@@ -2522,6 +2524,20 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             quietMicroseconds,
             WaveCoalesceMaxMicroseconds);
         return ((int)quietMicroseconds, (int)maximumMicroseconds);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static void RecordWaveArrival(
+        long now,
+        ref long previousArrival,
+        ref long maximumArrivalGap,
+        ref int additionalBatchCount)
+    {
+        if (additionalBatchCount > 0)
+            maximumArrivalGap = Math.Max(maximumArrivalGap, now - previousArrival);
+
+        previousArrival = now;
+        additionalBatchCount++;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

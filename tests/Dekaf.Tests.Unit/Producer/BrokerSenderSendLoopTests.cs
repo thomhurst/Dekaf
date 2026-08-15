@@ -521,6 +521,33 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
     }
 
     [Test]
+    public async Task SelectWaveCoalesceTailTicks_ExcludesInitialDiscoveryDelay()
+    {
+        const long configuredQuietTicks = 1_000;
+        var previousArrival = 0L;
+        var maximumSiblingGap = 0L;
+        var additionalBatchCount = 0;
+
+        BrokerSender.RecordWaveArrival(
+            now: 800,
+            ref previousArrival,
+            ref maximumSiblingGap,
+            ref additionalBatchCount);
+        BrokerSender.RecordWaveArrival(
+            now: 801,
+            ref previousArrival,
+            ref maximumSiblingGap,
+            ref additionalBatchCount);
+        var tailTicks = BrokerSender.SelectWaveCoalesceTailTicks(
+            configuredQuietTicks,
+            maximumSiblingGap,
+            additionalBatchCount);
+
+        await Assert.That(maximumSiblingGap).IsEqualTo(1);
+        await Assert.That(tailTicks).IsEqualTo(500);
+    }
+
+    [Test]
     [Timeout(120_000)]
     public async Task SendLoop_WaveCoalesce_RearmsAfterIdleWaitAtDefaultLinger(
         CancellationToken cancellationToken)
