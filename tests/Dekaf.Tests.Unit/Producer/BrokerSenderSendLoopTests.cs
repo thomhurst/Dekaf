@@ -505,6 +505,49 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
     }
 
     [Test]
+    public async Task SelectWaveCoalesceTailTicks_AdaptsOnlyAfterWaveCadenceIsEstablished()
+    {
+        await Assert.That(BrokerSender.SelectWaveCoalesceTailTicks(
+                configuredQuietTicks: 1_000,
+                maximumArrivalGapTicks: 100,
+                additionalBatchCount: 1))
+            .IsEqualTo(1_000);
+        await Assert.That(BrokerSender.SelectWaveCoalesceTailTicks(1_000, 100, 2))
+            .IsEqualTo(500);
+        await Assert.That(BrokerSender.SelectWaveCoalesceTailTicks(1_000, 300, 2))
+            .IsEqualTo(600);
+        await Assert.That(BrokerSender.SelectWaveCoalesceTailTicks(1_000, 800, 3))
+            .IsEqualTo(1_000);
+    }
+
+    [Test]
+    public async Task SelectWaveCoalesceTailTicks_ExcludesInitialDiscoveryDelay()
+    {
+        const long configuredQuietTicks = 1_000;
+        var previousArrival = 0L;
+        var maximumSiblingGap = 0L;
+        var additionalBatchCount = 0;
+
+        BrokerSender.RecordWaveArrival(
+            now: 800,
+            ref previousArrival,
+            ref maximumSiblingGap,
+            ref additionalBatchCount);
+        BrokerSender.RecordWaveArrival(
+            now: 801,
+            ref previousArrival,
+            ref maximumSiblingGap,
+            ref additionalBatchCount);
+        var tailTicks = BrokerSender.SelectWaveCoalesceTailTicks(
+            configuredQuietTicks,
+            maximumSiblingGap,
+            additionalBatchCount);
+
+        await Assert.That(maximumSiblingGap).IsEqualTo(1);
+        await Assert.That(tailTicks).IsEqualTo(500);
+    }
+
+    [Test]
     [Timeout(120_000)]
     public async Task SendLoop_WaveCoalesce_RearmsAfterIdleWaitAtDefaultLinger(
         CancellationToken cancellationToken)

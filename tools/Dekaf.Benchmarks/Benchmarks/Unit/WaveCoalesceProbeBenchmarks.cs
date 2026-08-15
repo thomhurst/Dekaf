@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Threading.Channels;
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Engines;
+using Dekaf.Producer;
 
 namespace Dekaf.Benchmarks.Benchmarks.Unit;
 
@@ -32,4 +33,22 @@ public class WaveCoalesceProbeBenchmarks
 
         return _channel.Writer.TryWrite(item);
     }
+}
+
+[MemoryDiagnoser]
+[SimpleJob(RunStrategy.Throughput, launchCount: 1, warmupCount: 5, iterationCount: 10)]
+public class WaveCoalesceTailBenchmarks
+{
+    private long _configuredQuietTicks = 1_000;
+    private long _maximumArrivalGapTicks = 100;
+    private int _additionalBatchCount = 2;
+
+    [Benchmark(Baseline = true)]
+    public long FixedTail() => _configuredQuietTicks;
+
+    [Benchmark]
+    public long AdaptiveTail() => BrokerSender.SelectWaveCoalesceTailTicks(
+        _configuredQuietTicks,
+        _maximumArrivalGapTicks,
+        _additionalBatchCount);
 }
