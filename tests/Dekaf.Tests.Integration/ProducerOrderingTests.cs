@@ -497,6 +497,51 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
     }
 
     [Test]
+    [Timeout(120_000)]
+    public async Task AdaptiveWaveCoalescing_CrossPartitionBurst_DeliversThroughRealBroker(
+        CancellationToken cancellationToken)
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 4);
+        const int messageCount = 128;
+        var value = new string('x', 1_000);
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-adaptive-wave-coalescing")
+            .WithAcks(Acks.All)
+            .WithBatchSize(1_200)
+            .WithLinger(TimeSpan.FromMilliseconds(5))
+            .WithDeliveryDiagnostics()
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(cancellationToken);
+
+        await producer.WarmUpAllPartitionsAsync(topic, 4);
+        var diagnostics = (IProducerDiagnostics)producer;
+        diagnostics.ResetProduceRequestDiagnostics();
+
+        var deliveries = new Task<RecordMetadata>[messageCount];
+        for (var i = 0; i < deliveries.Length; i++)
+        {
+            deliveries[i] = producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Key = $"key-{i}",
+                Value = value,
+                Partition = i % 4
+            }, cancellationToken).AsTask();
+        }
+
+        var metadata = await Task.WhenAll(deliveries).WaitAsync(cancellationToken);
+        await producer.FlushAsync(cancellationToken);
+        var snapshot = diagnostics.GetDeliveryDiagnosticsSnapshot();
+
+        await Assert.That(metadata.All(static result => result.Offset >= 0)).IsTrue();
+        await Assert.That(snapshot.CoalesceWidthHistogram.Any(
+                static bucket => bucket.MinimumWidth >= 2 && bucket.RequestCount > 0))
+            .IsTrue();
+    }
+
+    [Test]
     public async Task MultiDrainCycles_OrderingPreservedAcrossDrains()
     {
         // Regression test: produces in waves to force multiple drain cycles, each with
