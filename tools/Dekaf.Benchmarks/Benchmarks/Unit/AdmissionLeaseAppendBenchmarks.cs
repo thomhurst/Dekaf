@@ -23,7 +23,7 @@ public class AdmissionLeaseAppendBenchmarks
     private byte[] _keyBytes = null!;
     private byte[] _valueBytes = null!;
     private CancellationTokenSource _drainerCts = null!;
-    private Task _drainerTask = null!;
+    private Thread _drainerThread = null!;
 
     [GlobalSetup]
     public void Setup()
@@ -50,7 +50,13 @@ public class AdmissionLeaseAppendBenchmarks
             _completionPool.Return(pooledSources[i]);
 
         _drainerCts = new CancellationTokenSource();
-        _drainerTask = Task.Run(() => DrainLoop(_drainerCts.Token));
+        _drainerThread = new Thread(() => DrainLoop(_drainerCts.Token))
+        {
+            IsBackground = true,
+            Name = "admission-lease-benchmark-drainer",
+            Priority = ThreadPriority.Highest,
+        };
+        _drainerThread.Start();
 
         for (var i = 0; i < 40; i++)
             AppendFromSpans();
@@ -62,7 +68,7 @@ public class AdmissionLeaseAppendBenchmarks
     public async Task Cleanup()
     {
         _drainerCts.Cancel();
-        try { await _drainerTask.ConfigureAwait(false); } catch (OperationCanceledException) { }
+        _drainerThread.Join();
         _drainerCts.Dispose();
         await _accumulator.DisposeAsync().ConfigureAwait(false);
         await _completionPool.DisposeAsync().ConfigureAwait(false);
