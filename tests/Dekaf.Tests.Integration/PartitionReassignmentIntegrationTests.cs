@@ -21,7 +21,7 @@ public sealed class PartitionReassignmentIntegrationTests(RackAwareKafkaContaine
     [Arguments(true)]
     [Arguments(false)]
     [Timeout(240_000)]
-    public async Task Producer_PartitionReassignment_ContinuesWithoutLossOrDuplicates(
+    public async Task Producer_PartitionReassignment_PreservesAllLogicalMessages(
         bool idempotent,
         CancellationToken cancellationToken)
     {
@@ -75,7 +75,7 @@ public sealed class PartitionReassignmentIntegrationTests(RackAwareKafkaContaine
                 .ConfigureAwait(false);
             await producer.FlushAsync(cancellationToken).ConfigureAwait(false);
 
-            await AssertBrokerSequenceAsync(topic, cancellationToken).ConfigureAwait(false);
+            await AssertBrokerSequenceAsync(topic, idempotent, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -216,7 +216,7 @@ public sealed class PartitionReassignmentIntegrationTests(RackAwareKafkaContaine
                 .ConfigureAwait(false);
             await producer.FlushAsync(cancellationToken).ConfigureAwait(false);
 
-            await AssertBrokerSequenceAsync(topic, cancellationToken).ConfigureAwait(false);
+            await AssertBrokerSequenceAsync(topic, idempotent: true, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -329,7 +329,10 @@ public sealed class PartitionReassignmentIntegrationTests(RackAwareKafkaContaine
         }
     }
 
-    private async Task AssertBrokerSequenceAsync(string topic, CancellationToken cancellationToken)
+    private async Task AssertBrokerSequenceAsync(
+        string topic,
+        bool idempotent,
+        CancellationToken cancellationToken)
     {
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
@@ -341,31 +344,35 @@ public sealed class PartitionReassignmentIntegrationTests(RackAwareKafkaContaine
             .Select(partition => new TopicPartition(topic, partition))
             .ToArray());
 
-        var nextOffsets = new long[PartitionCount];
-        var remaining = PartitionCount * MessagesPerPartition;
-        while (remaining > 0)
+        var oracle = new ReassignmentSequenceOracle(
+            PartitionCount,
+            MessagesPerPartition,
+            allowDuplicates: !idempotent);
+        while (!oracle.IsComplete)
         {
             var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(10), cancellationToken)
                 .ConfigureAwait(false);
-            if (result is null)
-                throw new InvalidOperationException($"Timed out with {remaining} expected record(s) unread.");
+            if (result is not { } record)
+            {
+                oracle.EnsureComplete();
+                continue;
+            }
 
-            var record = result.Value;
-            var expectedOffset = nextOffsets[record.Partition];
-            AssertRecord(topic, record, expectedOffset);
-
-            nextOffsets[record.Partition]++;
-            remaining--;
+            oracle.Observe(topic, record.Partition, record.Offset, record.Key, record.Value);
         }
 
-        var duplicate = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(2), cancellationToken)
-            .ConfigureAwait(false);
-        if (duplicate is not null)
+        while (true)
         {
-            throw new InvalidOperationException(
-                $"Unexpected duplicate at {duplicate.Value.Topic}-{duplicate.Value.Partition}@" +
-                $"{duplicate.Value.Offset}.");
+            var trailing = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(2), cancellationToken)
+                .ConfigureAwait(false);
+            if (trailing is null)
+                break;
+
+            var record = trailing.Value;
+            oracle.Observe(topic, record.Partition, record.Offset, record.Key, record.Value);
         }
+
+        oracle.EnsureComplete();
     }
 
     private static void AssertRecord(
