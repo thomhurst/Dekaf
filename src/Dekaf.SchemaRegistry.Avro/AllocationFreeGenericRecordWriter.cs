@@ -983,21 +983,32 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
         private readonly UnionBranch _arrayBranch;
         private readonly UnionBranch _booleanBranch;
         private readonly UnionBranch _bytesBranch;
-        private UnionBranch _dateTimeBranch;
-        private UnionBranch _decimalBranch;
+        private readonly UnionBranch _dateTimeBranch;
+        private readonly UnionBranch _decimalBranch;
         private readonly UnionBranch _doubleBranch;
         private readonly UnionBranch _floatBranch;
-        private UnionBranch _guidBranch;
+        private readonly UnionBranch _guidBranch;
         private readonly UnionBranch _intBranch;
         private readonly UnionBranch _longBranch;
         private readonly UnionBranch _mapBranch;
         private readonly UnionBranch _stringBranch;
-        private UnionBranch _timeSpanBranch;
+        private readonly UnionBranch _timeSpanBranch;
 
         public UnionBranchCache(global::Avro.UnionSchema schema)
         {
             _schema = schema;
             NullIndex = -1;
+            UnionBranch booleanBranch = default;
+            UnionBranch bytesBranch = default;
+            UnionBranch dateTimeBranch = default;
+            UnionBranch decimalBranch = default;
+            UnionBranch doubleBranch = default;
+            UnionBranch floatBranch = default;
+            UnionBranch guidBranch = default;
+            UnionBranch intBranch = default;
+            UnionBranch longBranch = default;
+            UnionBranch stringBranch = default;
+            UnionBranch timeSpanBranch = default;
             for (var i = 0; i < schema.Count; i++)
             {
                 var branch = schema[i];
@@ -1008,25 +1019,25 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
                         NullIndex = i;
                         break;
                     case global::Avro.Schema.Type.Boolean:
-                        _booleanBranch = resolved;
+                        SetFirst(ref booleanBranch, resolved);
                         break;
                     case global::Avro.Schema.Type.Int:
-                        _intBranch = resolved;
+                        SetFirst(ref intBranch, resolved);
                         break;
                     case global::Avro.Schema.Type.Long:
-                        _longBranch = resolved;
+                        SetFirst(ref longBranch, resolved);
                         break;
                     case global::Avro.Schema.Type.Float:
-                        _floatBranch = resolved;
+                        SetFirst(ref floatBranch, resolved);
                         break;
                     case global::Avro.Schema.Type.Double:
-                        _doubleBranch = resolved;
+                        SetFirst(ref doubleBranch, resolved);
                         break;
                     case global::Avro.Schema.Type.Bytes:
-                        _bytesBranch = resolved;
+                        SetFirst(ref bytesBranch, resolved);
                         break;
                     case global::Avro.Schema.Type.String:
-                        _stringBranch = resolved;
+                        SetFirst(ref stringBranch, resolved);
                         break;
                     case global::Avro.Schema.Type.Record:
                     case global::Avro.Schema.Type.Error:
@@ -1047,10 +1058,70 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
                             _mapBranch = resolved;
                         break;
                     case global::Avro.Schema.Type.Logical:
-                        AddLogicalBranch((global::Avro.LogicalSchema)branch, resolved);
+                        var type = ((global::Avro.LogicalSchema)branch).LogicalType.GetCSharpType(nullible: false);
+                        if (type == typeof(bool))
+                        {
+                            SetFirst(ref booleanBranch, resolved);
+                        }
+                        else if (type == typeof(int))
+                        {
+                            SetFirst(ref intBranch, resolved);
+                        }
+                        else if (type == typeof(long))
+                        {
+                            SetFirst(ref longBranch, resolved);
+                        }
+                        else if (type == typeof(float))
+                        {
+                            SetFirst(ref floatBranch, resolved);
+                        }
+                        else if (type == typeof(double))
+                        {
+                            SetFirst(ref doubleBranch, resolved);
+                        }
+                        else if (type == typeof(byte[]))
+                        {
+                            SetFirst(ref bytesBranch, resolved);
+                        }
+                        else if (type == typeof(string))
+                        {
+                            SetFirst(ref stringBranch, resolved);
+                        }
+                        else if (type == typeof(DateTime))
+                        {
+                            SetFirst(ref dateTimeBranch, resolved);
+                        }
+                        else if (type == typeof(TimeSpan))
+                        {
+                            SetFirst(ref timeSpanBranch, resolved);
+                        }
+                        else if (type == typeof(Guid))
+                        {
+                            SetFirst(ref guidBranch, resolved);
+                        }
+                        else if (type == typeof(global::Avro.AvroDecimal))
+                        {
+                            SetFirst(ref decimalBranch, resolved);
+                        }
+                        else
+                        {
+                            _typedBranches.TryAdd(type, resolved);
+                        }
                         break;
                 }
             }
+
+            _booleanBranch = booleanBranch;
+            _intBranch = intBranch;
+            _longBranch = longBranch;
+            _floatBranch = floatBranch;
+            _doubleBranch = doubleBranch;
+            _bytesBranch = bytesBranch;
+            _stringBranch = stringBranch;
+            _dateTimeBranch = dateTimeBranch;
+            _timeSpanBranch = timeSpanBranch;
+            _guidBranch = guidBranch;
+            _decimalBranch = decimalBranch;
         }
 
         public global::Avro.UnionSchema Schema => _schema;
@@ -1116,15 +1187,15 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
                 case Guid when _guidBranch.Schema is not null: return _guidBranch;
                 case global::Avro.AvroDecimal when _decimalBranch.Schema is not null: return _decimalBranch;
                 case GenericRecord record when _recordBranches.TryGetValue(record.Schema.SchemaName, out var branch):
-                    return branch;
+                    return FirstCompatibleTypedBranch(value.GetType(), branch);
                 case GenericEnum genericEnum when _enumBranches.TryGetValue(genericEnum.Schema.SchemaName, out var branch):
-                    return branch;
+                    return FirstCompatibleTypedBranch(value.GetType(), branch);
                 case GenericFixed fixedValue when _fixedBranches.TryGetValue(fixedValue.Schema.SchemaName, out var branch):
-                    return branch;
+                    return FirstCompatibleTypedBranch(value.GetType(), branch);
                 case (Array or IList) and not byte[] when _arrayBranch.Schema is not null:
-                    return _arrayBranch;
+                    return FirstCompatibleTypedBranch(value.GetType(), _arrayBranch);
                 case IDictionary<string, object> when _mapBranch.Schema is not null:
-                    return _mapBranch;
+                    return FirstCompatibleTypedBranch(value.GetType(), _mapBranch);
                 default:
                     return _typedBranches.TryGetValue(value.GetType(), out var typedBranch)
                         ? typedBranch
@@ -1132,30 +1203,15 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
             }
         }
 
-        private void AddLogicalBranch(global::Avro.LogicalSchema schema, UnionBranch branch)
+        private UnionBranch FirstCompatibleTypedBranch(Type type, UnionBranch schemaBranch) =>
+            _typedBranches.TryGetValue(type, out var typedBranch) && typedBranch.Index < schemaBranch.Index
+                ? typedBranch
+                : schemaBranch;
+
+        private static void SetFirst(ref UnionBranch target, UnionBranch branch)
         {
-            var type = schema.LogicalType.GetCSharpType(nullible: false);
-            if (type == typeof(DateTime))
-            {
-                if (_dateTimeBranch.Schema is null)
-                    _dateTimeBranch = branch;
-            }
-            else if (type == typeof(TimeSpan))
-            {
-                if (_timeSpanBranch.Schema is null)
-                    _timeSpanBranch = branch;
-            }
-            else if (type == typeof(Guid))
-            {
-                if (_guidBranch.Schema is null)
-                    _guidBranch = branch;
-            }
-            else if (type == typeof(global::Avro.AvroDecimal))
-            {
-                if (_decimalBranch.Schema is null)
-                    _decimalBranch = branch;
-            }
-            else _typedBranches.TryAdd(type, branch);
+            if (target.Schema is null)
+                target = branch;
         }
 
         private global::Avro.AvroException NoMatch(object? value) =>
