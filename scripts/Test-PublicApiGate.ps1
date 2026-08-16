@@ -97,3 +97,4 @@ finally {
 }
 
 Write-Host "Public API gate covers $($projects.Count) shipping project(s) and rejects additions/removals."
+exit 0
