@@ -577,6 +577,43 @@ public sealed class SubjectNameStrategyTests
     }
 
     [Test]
+    public async Task AvroSerializer_EquivalentOverflowSchemas_ReuseSubjectCache()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        var config = new AvroSerializerConfig { MaxCachedSchemas = 1 };
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry, config);
+        var context = CreateContext("equivalent-overflow-topic");
+        var buffer = new ArrayBufferWriter<byte>();
+        var retainedSchema = (Avro.RecordSchema)AvroSchema.Parse(SimpleRecordSchema);
+        var retainedRecord = new GenericRecord(retainedSchema);
+        retainedRecord.Add("id", 1);
+        retainedRecord.Add("name", "retained");
+        serializer.Serialize(retainedRecord, ref buffer, context);
+
+        for (var i = 0; i < 3; i++)
+        {
+            var schema = (Avro.RecordSchema)AvroSchema.Parse(
+                """
+                {
+                  "type": "record",
+                  "name": "EquivalentOverflowRecord",
+                  "namespace": "test",
+                  "fields": [{ "name": "id", "type": "int" }]
+                }
+                """);
+            var record = new GenericRecord(schema);
+            record.Add("id", i);
+            buffer.ResetWrittenCount();
+            serializer.Serialize(record, ref buffer, context);
+        }
+
+        await Assert.That(serializer.CachedDynamicSubjectSchemaCount).IsEqualTo(1);
+        await Assert.That(serializer.CachedGenericWriterCount).IsEqualTo(1);
+        await Assert.That(serializer.CachedSchemaIdCount).IsEqualTo(1);
+        await Assert.That(schemaRegistry.GetOrRegisterSchemaCallCount).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task AvroSerializer_SpecificWriterCache_StaysWithinConfiguredBound()
     {
         const int maxCachedSchemas = 2;

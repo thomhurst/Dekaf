@@ -507,8 +507,15 @@ public sealed class AvroSchemaRegistrySerializer<
     private DynamicSchemaCache GetDynamicSchemaCache(AvroSchema schema)
     {
         var last = Volatile.Read(ref _lastDynamicSchemaCache);
-        if (last is not null && ReferenceEquals(Volatile.Read(ref last.LastSeenSchema), schema))
-            return last;
+        if (last is not null)
+        {
+            var lastSchema = Volatile.Read(ref last.LastSeenSchema);
+            if (ReferenceEquals(lastSchema, schema) ||
+                AvroSchemaLogicalComparer.Instance.Equals(lastSchema, schema))
+            {
+                return last;
+            }
+        }
 
         if (_dynamicSchemaCaches.TryGetValue(schema, out var entry))
             return PublishDynamicSchemaCache(entry, schema);
