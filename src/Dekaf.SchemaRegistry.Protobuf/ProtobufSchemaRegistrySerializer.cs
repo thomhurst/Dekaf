@@ -35,6 +35,7 @@ public sealed class ProtobufSchemaRegistrySerializer<
     private readonly bool _ownsClient;
     private readonly MessageDescriptor _descriptor;
     private readonly SubjectSchemaIdCache _subjectSchemaIdCache = new();
+    private readonly SubjectSchemaIdCache _resolvedSubjectCache = new();
     private readonly string _schemaString;
     private readonly byte[] _encodedMessageIndexes;
 
@@ -129,6 +130,29 @@ public sealed class ProtobufSchemaRegistrySerializer<
     private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry ResolveSchemaSync(string topic, bool isKey)
     {
         var subject = GetSubjectName(topic, isKey);
+        // Built-in reference strategies depend only on the import name. A custom strategy may use topic/key.
+        if (!_config.UseSchemaReferences ||
+            _config.UseLatestVersion ||
+            _config.CustomReferenceSubjectNameStrategy is null)
+        {
+            return _resolvedSubjectCache.GetOrAdd(
+                subject,
+                false,
+                new SchemaResolutionState(this, subject, topic, isKey),
+                static (state, _, _) => state.Serializer.ResolveSubjectSchemaSync(
+                    state.Subject,
+                    state.Topic,
+                    state.IsKey));
+        }
+
+        return ResolveSubjectSchemaSync(subject, topic, isKey);
+    }
+
+    private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry ResolveSubjectSchemaSync(
+        string subject,
+        string topic,
+        bool isKey)
+    {
         using var timeoutSource = new CancellationTokenSource(SchemaRegistryTimeout);
         var resolutionTask = ResolveSchemaAsync(subject, topic, isKey, timeoutSource.Token);
         SubjectSchemaIdCache.SubjectSchemaIdCacheValue resolved;
@@ -359,10 +383,39 @@ public sealed class ProtobufSchemaRegistrySerializer<
         };
     }
 
+    // Keep this exact set aligned with Schema Registry's ProtobufSchema.KNOWN_DEPENDENCIES.
     private static bool IsKnownType(string referenceName) =>
-        referenceName.StartsWith("confluent/", StringComparison.Ordinal) ||
-        referenceName.StartsWith("google/protobuf/", StringComparison.Ordinal) ||
-        referenceName.StartsWith("google/type/", StringComparison.Ordinal);
+        referenceName is
+            "confluent/meta.proto" or
+            "confluent/type/decimal.proto" or
+            "confluent/type/variant.proto" or
+            "google/type/calendar_period.proto" or
+            "google/type/color.proto" or
+            "google/type/date.proto" or
+            "google/type/datetime.proto" or
+            "google/type/dayofweek.proto" or
+            "google/type/decimal.proto" or
+            "google/type/expr.proto" or
+            "google/type/fraction.proto" or
+            "google/type/interval.proto" or
+            "google/type/latlng.proto" or
+            "google/type/money.proto" or
+            "google/type/month.proto" or
+            "google/type/phone_number.proto" or
+            "google/type/postal_address.proto" or
+            "google/type/quaternion.proto" or
+            "google/type/timeofday.proto" or
+            "google/protobuf/any.proto" or
+            "google/protobuf/api.proto" or
+            "google/protobuf/descriptor.proto" or
+            "google/protobuf/duration.proto" or
+            "google/protobuf/empty.proto" or
+            "google/protobuf/field_mask.proto" or
+            "google/protobuf/source_context.proto" or
+            "google/protobuf/struct.proto" or
+            "google/protobuf/timestamp.proto" or
+            "google/protobuf/type.proto" or
+            "google/protobuf/wrappers.proto";
 
     private static void ObserveLateFault(Task task)
     {
@@ -388,6 +441,12 @@ public sealed class ProtobufSchemaRegistrySerializer<
     }
 
     private readonly record struct RegisteredDependency(string Subject, int Version);
+
+    private readonly record struct SchemaResolutionState(
+        ProtobufSchemaRegistrySerializer<T> Serializer,
+        string Subject,
+        string Topic,
+        bool IsKey);
 
     private static int[] CalculateMessageIndexes(MessageDescriptor descriptor)
     {
