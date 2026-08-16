@@ -86,6 +86,31 @@ public sealed class SubjectNameResolverTests
         await Assert.That(strategy.CallCount).IsEqualTo(topicCount);
     }
 
+    [Test]
+    public async Task DeserializerSubjectNameCache_BoundsSchemasForStableTopic()
+    {
+        const int schemaCount = 1025;
+        var strategy = new CountingRecordSubjectNameStrategy();
+        var cache = DeserializerSubjectNameCache.Create(
+            new SchemaRegistryDeserializerConfig
+            {
+                CustomSubjectNameStrategy = strategy
+            })!;
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = """{ "type": "object", "title": "Order" }"""
+        };
+        const string topic = "orders";
+
+        for (var schemaId = 0; schemaId < schemaCount; schemaId++)
+            cache.GetSubjectName(schemaId, schema, topic, isKey: false, "Fallback");
+
+        cache.GetSubjectName(0, schema, topic, isKey: false, "Fallback");
+
+        await Assert.That(strategy.CallCount).IsEqualTo(schemaCount + 1);
+    }
+
     private sealed class CountingRecordSubjectNameStrategy : ISubjectNameStrategy
     {
         public int CallCount { get; private set; }

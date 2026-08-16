@@ -51,7 +51,14 @@ internal sealed class DeserializerSubjectNameCache
         bool isKey,
         string fallbackRecordName)
     {
-        var topicSubjects = _subjectsByTopicIdentity.GetValue(topic, static _ => new PerTopicSubjectNames());
+        if (_subjectsByTopicIdentity.TryGetValue(topic, out var topicSubjects))
+            return topicSubjects.GetSubjectName(this, schemaId, schema, topic, isKey, fallbackRecordName);
+
+        var key = new CacheKey(schemaId, topic, isKey);
+        if (_subjects.TryGetValue(key, out var subject))
+            return subject;
+
+        topicSubjects = _subjectsByTopicIdentity.GetValue(topic, static _ => new PerTopicSubjectNames());
         return topicSubjects.GetSubjectName(this, schemaId, schema, topic, isKey, fallbackRecordName);
     }
 
@@ -102,7 +109,11 @@ internal sealed class DeserializerSubjectNameCache
 
     private sealed class PerTopicSubjectNames
     {
+        private const int MaxCachedSchemaCount = 64;
+
         private readonly ConcurrentDictionary<SchemaKey, string> _subjects = new();
+        private readonly Queue<SchemaKey> _subjectOrder = new(MaxCachedSchemaCount);
+        private readonly object _subjectsLock = new();
 
         internal string GetSubjectName(
             DeserializerSubjectNameCache owner,
@@ -122,7 +133,26 @@ internal sealed class DeserializerSubjectNameCache
                 topic,
                 isKey,
                 fallbackRecordName);
-            return _subjects.GetOrAdd(key, subject);
+            return AddSubject(key, subject);
+        }
+
+        private string AddSubject(SchemaKey key, string subject)
+        {
+            lock (_subjectsLock)
+            {
+                if (_subjects.TryGetValue(key, out var cachedSubject))
+                    return cachedSubject;
+
+                if (_subjectOrder.Count >= MaxCachedSchemaCount)
+                {
+                    var evictedKey = _subjectOrder.Dequeue();
+                    _subjects.TryRemove(evictedKey, out _);
+                }
+
+                _subjects[key] = subject;
+                _subjectOrder.Enqueue(key);
+                return subject;
+            }
         }
     }
 

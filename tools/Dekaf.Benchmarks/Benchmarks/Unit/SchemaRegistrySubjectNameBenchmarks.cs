@@ -74,6 +74,22 @@ public class SchemaRegistrySubjectNameBenchmarks
     }
 
     [Benchmark]
+    public string CreateDistinctEqualTopicInstance() =>
+        new("benchmark-topic".AsSpan());
+
+    [Benchmark]
+    public string ResolveConfiguredSubjectFromNewEqualTopicInstance()
+    {
+        var topic = new string("benchmark-topic".AsSpan());
+        return _recordSubjectNames.GetSubjectName(
+            schemaId: 1,
+            _schema,
+            topic,
+            isKey: false,
+            fallbackRecordName: "FallbackRecord");
+    }
+
+    [Benchmark]
     public string ResolveTopicSubjectAcrossMoreThanCacheCapacity()
     {
         var topic = _highCardinalityTopics[_topicIndex++ & (HighCardinalityTopicCount - 1)];
