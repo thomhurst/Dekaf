@@ -1,3 +1,5 @@
+using Dekaf.Errors;
+
 namespace Dekaf.SchemaRegistry;
 
 /// <summary>
@@ -97,7 +99,7 @@ public sealed class JsonSchemaValidationOptions
 /// <summary>
 /// Exception thrown when a JSON payload does not satisfy its registered schema.
 /// </summary>
-public sealed class JsonSchemaValidationException : Exception
+public sealed class JsonSchemaValidationException : KafkaException
 {
     /// <summary>
     /// Creates a JSON Schema validation exception without including payload contents.
@@ -108,7 +110,7 @@ public sealed class JsonSchemaValidationException : Exception
         string jsonPath,
         string message,
         Exception? innerException = null)
-        : base(message, innerException)
+        : base(message, innerException!)
     {
         SchemaId = schemaId;
         Keyword = keyword ?? throw new ArgumentNullException(nameof(keyword));

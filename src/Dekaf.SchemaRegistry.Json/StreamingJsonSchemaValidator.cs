@@ -223,8 +223,9 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
             if (!reader.Read())
                 return Fail(schemaId, "$parse", ref path, out failure);
 
-            var propertySchema = property?.Schema ?? node.AdditionalProperties;
-            if (property is null && !node.AllowsAdditionalProperties)
+            var declaredProperty = property?.IsDeclared == true;
+            var propertySchema = declaredProperty ? property!.Schema : node.AdditionalProperties;
+            if (!declaredProperty && !node.AllowsAdditionalProperties)
                 return Fail(schemaId, "additionalProperties", ref path, out failure);
 
             if (propertySchema is not null)
@@ -323,18 +324,23 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
             return true;
         }
 
-        var value = reader.GetDouble();
-        if (value < node.Minimum || (node.ExclusiveMinimum && value == node.Minimum))
-            return Fail(schemaId, node.ExclusiveMinimum ? "exclusiveMinimum" : "minimum", ref path, out failure);
-        if (value > node.Maximum || (node.ExclusiveMaximum && value == node.Maximum))
-            return Fail(schemaId, node.ExclusiveMaximum ? "exclusiveMaximum" : "maximum", ref path, out failure);
-
-        if (node.MultipleOf > 0)
+        var value = new JsonNumberView(reader.ValueSpan);
+        if (node.Minimum is { } minimum)
         {
-            var quotient = value / node.MultipleOf;
-            if (Math.Abs(quotient - Math.Round(quotient)) > Math.Abs(quotient) * 1e-12)
-                return Fail(schemaId, "multipleOf", ref path, out failure);
+            var comparison = value.CompareTo(minimum);
+            if (comparison < 0 || (node.ExclusiveMinimum && comparison == 0))
+                return Fail(schemaId, node.ExclusiveMinimum ? "exclusiveMinimum" : "minimum", ref path, out failure);
         }
+
+        if (node.Maximum is { } maximum)
+        {
+            var comparison = value.CompareTo(maximum);
+            if (comparison > 0 || (node.ExclusiveMaximum && comparison == 0))
+                return Fail(schemaId, node.ExclusiveMaximum ? "exclusiveMaximum" : "maximum", ref path, out failure);
+        }
+
+        if (node.MultipleOf is { } multipleOf && !value.IsMultipleOf(multipleOf))
+            return Fail(schemaId, "multipleOf", ref path, out failure);
 
         failure = null;
         return true;
@@ -360,11 +366,17 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
 
     private static bool IsInteger(ref Utf8JsonReader reader)
     {
-        if (reader.TryGetDecimal(out var decimalValue))
-            return decimal.Truncate(decimalValue) == decimalValue;
+        var token = reader.ValueSpan;
+        for (var i = 0; i < token.Length; i++)
+        {
+            if (token[i] is (byte)'.' or (byte)'e' or (byte)'E')
+            {
+                var value = new JsonNumberView(token);
+                return value.Sign == 0 || value.Exponent >= 0;
+            }
+        }
 
-        var value = reader.GetDouble();
-        return double.IsFinite(value) && Math.Truncate(value) == value;
+        return true;
     }
 
     private static int GetStringScalarCount(ref Utf8JsonReader reader)
@@ -446,7 +458,7 @@ internal sealed class SchemaCompiler : IDisposable
     private readonly ISchemaRegistryClient _schemaRegistry;
     private readonly StreamingJsonSchemaValidatorOptions _options;
     private readonly List<JsonDocument> _documents = [];
-    private readonly Dictionary<string, SchemaDocument> _documentsByUri = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, SchemaResource> _resourcesByUri = new(StringComparer.Ordinal);
     private readonly Dictionary<NodeKey, CompiledSchemaNode> _compiledNodes = [];
     private int _nextDocumentId;
 
@@ -463,7 +475,13 @@ internal sealed class SchemaCompiler : IDisposable
         var root = AddDocument(schema, retrievalUri);
         var visited = new HashSet<SchemaReferenceKey>();
         RegisterReferences(root, schema, visited);
-        return CompileNode(root, root.Document.RootElement, string.Empty, root.EffectiveBaseUri, 0);
+        return CompileNode(
+            root,
+            root.Document.RootElement,
+            string.Empty,
+            root.EffectiveBaseUri,
+            GetDialect(root.Document.RootElement, SchemaDialect.Draft7),
+            0);
     }
 
     public void Dispose()
@@ -487,8 +505,15 @@ internal sealed class SchemaCompiler : IDisposable
         _documents.Add(document);
         var effectiveBaseUri = GetEffectiveBaseUri(document.RootElement, retrievalUri);
         var schemaDocument = new SchemaDocument(_nextDocumentId++, document, effectiveBaseUri);
-        _documentsByUri[WithoutFragment(retrievalUri).AbsoluteUri] = schemaDocument;
-        _documentsByUri[WithoutFragment(effectiveBaseUri).AbsoluteUri] = schemaDocument;
+        var dialect = GetDialect(document.RootElement, SchemaDialect.Draft7);
+        var root = new SchemaResource(
+            schemaDocument,
+            document.RootElement,
+            string.Empty,
+            effectiveBaseUri,
+            dialect);
+        _resourcesByUri[WithoutFragment(retrievalUri).AbsoluteUri] = root;
+        IndexSchemaResources(schemaDocument, document.RootElement, string.Empty, retrievalUri, dialect);
         return schemaDocument;
     }
 
@@ -543,11 +568,127 @@ internal sealed class SchemaCompiler : IDisposable
         }
     }
 
+    private void IndexSchemaResources(
+        SchemaDocument document,
+        JsonElement schema,
+        string pointer,
+        Uri baseUri,
+        SchemaDialect dialect)
+    {
+        if (schema.ValueKind is JsonValueKind.True or JsonValueKind.False)
+            return;
+        if (schema.ValueKind != JsonValueKind.Object)
+            return;
+
+        var declaresResource = schema.TryGetProperty("$id", out _);
+        baseUri = GetEffectiveBaseUri(schema, baseUri);
+        dialect = GetDialect(schema, dialect);
+        if (pointer.Length == 0 || declaresResource)
+        {
+            _resourcesByUri[WithoutFragment(baseUri).AbsoluteUri] = new SchemaResource(
+                document,
+                schema,
+                pointer,
+                baseUri,
+                dialect);
+        }
+
+        IndexSchemaMap(document, schema, "$defs", pointer, baseUri, dialect);
+        IndexSchemaMap(document, schema, "definitions", pointer, baseUri, dialect);
+        IndexSchemaMap(document, schema, "properties", pointer, baseUri, dialect);
+        IndexSchemaMap(document, schema, "patternProperties", pointer, baseUri, dialect);
+        IndexSchemaMap(document, schema, "dependentSchemas", pointer, baseUri, dialect);
+
+        IndexSchemaValue(document, schema, "additionalProperties", pointer, baseUri, dialect);
+        IndexSchemaValue(document, schema, "unevaluatedProperties", pointer, baseUri, dialect);
+        IndexSchemaValue(document, schema, "propertyNames", pointer, baseUri, dialect);
+        IndexSchemaValue(document, schema, "contains", pointer, baseUri, dialect);
+        IndexSchemaValue(document, schema, "not", pointer, baseUri, dialect);
+        IndexSchemaValue(document, schema, "if", pointer, baseUri, dialect);
+        IndexSchemaValue(document, schema, "then", pointer, baseUri, dialect);
+        IndexSchemaValue(document, schema, "else", pointer, baseUri, dialect);
+        IndexSchemaValue(document, schema, "items", pointer, baseUri, dialect);
+
+        IndexSchemaArray(document, schema, "prefixItems", pointer, baseUri, dialect);
+        IndexSchemaArray(document, schema, "allOf", pointer, baseUri, dialect);
+        IndexSchemaArray(document, schema, "anyOf", pointer, baseUri, dialect);
+        IndexSchemaArray(document, schema, "oneOf", pointer, baseUri, dialect);
+    }
+
+    private void IndexSchemaMap(
+        SchemaDocument document,
+        JsonElement schema,
+        string keyword,
+        string pointer,
+        Uri baseUri,
+        SchemaDialect dialect)
+    {
+        if (!schema.TryGetProperty(keyword, out var map) || map.ValueKind != JsonValueKind.Object)
+            return;
+
+        var mapPointer = AppendPointer(pointer, keyword);
+        foreach (var property in map.EnumerateObject())
+        {
+            IndexSchemaResources(
+                document,
+                property.Value,
+                AppendPointer(mapPointer, property.Name),
+                baseUri,
+                dialect);
+        }
+    }
+
+    private void IndexSchemaValue(
+        SchemaDocument document,
+        JsonElement schema,
+        string keyword,
+        string pointer,
+        Uri baseUri,
+        SchemaDialect dialect)
+    {
+        if (!schema.TryGetProperty(keyword, out var value))
+            return;
+
+        if (value.ValueKind == JsonValueKind.Array)
+        {
+            IndexSchemaArray(document, schema, keyword, pointer, baseUri, dialect);
+            return;
+        }
+
+        IndexSchemaResources(document, value, AppendPointer(pointer, keyword), baseUri, dialect);
+    }
+
+    private void IndexSchemaArray(
+        SchemaDocument document,
+        JsonElement schema,
+        string keyword,
+        string pointer,
+        Uri baseUri,
+        SchemaDialect dialect)
+    {
+        if (!schema.TryGetProperty(keyword, out var values) || values.ValueKind != JsonValueKind.Array)
+            return;
+
+        var arrayPointer = AppendPointer(pointer, keyword);
+        var index = 0;
+        foreach (var value in values.EnumerateArray())
+        {
+            IndexSchemaResources(
+                document,
+                value,
+                AppendPointer(arrayPointer, index.ToString(CultureInfo.InvariantCulture)),
+                baseUri,
+                dialect);
+            index++;
+        }
+    }
+
     private CompiledSchemaNode CompileNode(
         SchemaDocument document,
         JsonElement schema,
         string pointer,
         Uri baseUri,
+        SchemaDialect dialect,
         int depth)
     {
         if (depth > _options.MaxSchemaDepth)
@@ -570,6 +711,7 @@ internal sealed class SchemaCompiler : IDisposable
             throw new InvalidOperationException($"JSON Schema at '{pointer}' must be an object or boolean.");
 
         baseUri = GetEffectiveBaseUri(schema, baseUri);
+        dialect = GetDialect(schema, dialect);
         if (schema.TryGetProperty("$ref", out var referenceElement))
         {
             var referenceText = referenceElement.GetString()
@@ -580,7 +722,11 @@ internal sealed class SchemaCompiler : IDisposable
                 target.Element,
                 target.Pointer,
                 target.BaseUri,
+                target.Dialect,
                 depth + 1);
+
+            if (dialect == SchemaDialect.Draft7)
+                return node;
         }
 
         node.Types = ParseTypes(schema);
@@ -591,8 +737,8 @@ internal sealed class SchemaCompiler : IDisposable
         node.MinLength = GetNonNegativeInt32(schema, "minLength", 0);
         node.MaxLength = GetNonNegativeInt32(schema, "maxLength", int.MaxValue);
         ParseNumericAssertions(schema, node);
-        CompileObjectKeywords(document, schema, pointer, baseUri, depth, node);
-        CompileArrayKeywords(document, schema, pointer, baseUri, depth, node);
+        CompileObjectKeywords(document, schema, pointer, baseUri, dialect, depth, node);
+        CompileArrayKeywords(document, schema, pointer, baseUri, dialect, depth, node);
         RejectUnsupportedAssertions(schema, pointer);
         node.HasLocalAssertions = HasLocalAssertions(node);
         return node;
@@ -603,6 +749,7 @@ internal sealed class SchemaCompiler : IDisposable
         JsonElement schema,
         string pointer,
         Uri baseUri,
+        SchemaDialect dialect,
         int depth,
         CompiledSchemaNode node)
     {
@@ -638,7 +785,7 @@ internal sealed class SchemaCompiler : IDisposable
                 var propertyPointer = AppendPointer(AppendPointer(pointer, "properties"), property.Name);
                 entries.Add(new CompiledProperty(
                     property.Name,
-                    CompileNode(document, property.Value, propertyPointer, baseUri, depth + 1)));
+                    CompileNode(document, property.Value, propertyPointer, baseUri, dialect, depth + 1)));
             }
         }
 
@@ -657,7 +804,7 @@ internal sealed class SchemaCompiler : IDisposable
                 }
 
                 if (!found)
-                    entries.Add(new CompiledProperty(name, null));
+                    entries.Add(new CompiledProperty(name, null, isDeclared: false));
             }
 
             var requiredIndex = 0;
@@ -687,6 +834,7 @@ internal sealed class SchemaCompiler : IDisposable
             additionalProperties,
             AppendPointer(pointer, "additionalProperties"),
             baseUri,
+            dialect,
             depth + 1);
     }
 
@@ -695,10 +843,19 @@ internal sealed class SchemaCompiler : IDisposable
         JsonElement schema,
         string pointer,
         Uri baseUri,
+        SchemaDialect dialect,
         int depth,
         CompiledSchemaNode node)
     {
-        if (schema.TryGetProperty("prefixItems", out var prefixItems))
+        var hasPrefixItems = schema.TryGetProperty("prefixItems", out var prefixItems);
+        var hasItems = schema.TryGetProperty("items", out var items);
+        if (hasPrefixItems && hasItems && items.ValueKind == JsonValueKind.Array)
+        {
+            throw new NotSupportedException(
+                $"JSON Schema at '{pointer}' cannot combine 'prefixItems' with array-form 'items'.");
+        }
+
+        if (hasPrefixItems && dialect == SchemaDialect.Draft202012)
         {
             if (prefixItems.ValueKind != JsonValueKind.Array)
                 throw new InvalidOperationException($"JSON Schema 'prefixItems' at '{pointer}' must be an array.");
@@ -712,6 +869,7 @@ internal sealed class SchemaCompiler : IDisposable
                     item,
                     AppendPointer(AppendPointer(pointer, "prefixItems"), index.ToString(CultureInfo.InvariantCulture)),
                     baseUri,
+                    dialect,
                     depth + 1);
                 index++;
             }
@@ -719,10 +877,16 @@ internal sealed class SchemaCompiler : IDisposable
             node.PrefixItems = prefixNodes;
         }
 
-        if (schema.TryGetProperty("items", out var items))
+        if (hasItems)
         {
             if (items.ValueKind == JsonValueKind.Array)
             {
+                if (dialect == SchemaDialect.Draft202012)
+                {
+                    throw new InvalidOperationException(
+                        $"JSON Schema array-form 'items' at '{pointer}' is not valid in draft 2020-12.");
+                }
+
                 var itemNodes = new CompiledSchemaNode[items.GetArrayLength()];
                 var index = 0;
                 foreach (var item in items.EnumerateArray())
@@ -732,6 +896,7 @@ internal sealed class SchemaCompiler : IDisposable
                         item,
                         AppendPointer(AppendPointer(pointer, "items"), index.ToString(CultureInfo.InvariantCulture)),
                         baseUri,
+                        dialect,
                         depth + 1);
                     index++;
                 }
@@ -740,7 +905,7 @@ internal sealed class SchemaCompiler : IDisposable
             }
             else
             {
-                node.Items = CompileNode(document, items, AppendPointer(pointer, "items"), baseUri, depth + 1);
+                node.Items = CompileNode(document, items, AppendPointer(pointer, "items"), baseUri, dialect, depth + 1);
             }
         }
     }
@@ -748,22 +913,34 @@ internal sealed class SchemaCompiler : IDisposable
     private ReferenceTarget ResolveTarget(Uri baseUri, string reference)
     {
         var targetUri = ResolveUri(baseUri, reference);
-        if (!_documentsByUri.TryGetValue(WithoutFragment(targetUri).AbsoluteUri, out var document))
+        if (!_resourcesByUri.TryGetValue(WithoutFragment(targetUri).AbsoluteUri, out var resource))
             throw new InvalidOperationException($"JSON Schema reference '{reference}' was not registered.");
 
         var pointer = Uri.UnescapeDataString(targetUri.Fragment);
         if (pointer.Length == 0)
-            return new ReferenceTarget(document, document.Document.RootElement, string.Empty, document.EffectiveBaseUri);
+            return new ReferenceTarget(
+                resource.Document,
+                resource.Element,
+                resource.Pointer,
+                resource.BaseUri,
+                resource.Dialect);
         if (pointer[0] != '#')
             throw new InvalidOperationException($"JSON Schema reference '{reference}' has an invalid fragment.");
         pointer = pointer[1..];
         if (pointer.Length == 0)
-            return new ReferenceTarget(document, document.Document.RootElement, string.Empty, document.EffectiveBaseUri);
+            return new ReferenceTarget(
+                resource.Document,
+                resource.Element,
+                resource.Pointer,
+                resource.BaseUri,
+                resource.Dialect);
         if (pointer[0] != '/')
             throw new NotSupportedException($"JSON Schema anchor reference '{reference}' is not supported.");
 
-        var current = document.Document.RootElement;
-        var currentBase = document.EffectiveBaseUri;
+        var current = resource.Element;
+        var currentBase = resource.BaseUri;
+        var currentDialect = resource.Dialect;
+        var absolutePointer = resource.Pointer;
         var position = 1;
         while (position <= pointer.Length)
         {
@@ -789,12 +966,14 @@ internal sealed class SchemaCompiler : IDisposable
             }
 
             currentBase = GetEffectiveBaseUri(current, currentBase);
+            currentDialect = GetDialect(current, currentDialect);
+            absolutePointer = AppendPointer(absolutePointer, segment);
             if (separator < 0)
                 break;
             position = separator + 1;
         }
 
-        return new ReferenceTarget(document, current, pointer, currentBase);
+        return new ReferenceTarget(resource.Document, current, absolutePointer, currentBase, currentDialect);
     }
 
     private static JsonSchemaType ParseTypes(JsonElement schema)
@@ -828,17 +1007,16 @@ internal sealed class SchemaCompiler : IDisposable
     private static void ParseNumericAssertions(JsonElement schema, CompiledSchemaNode node)
     {
         if (schema.TryGetProperty("minimum", out var minimum))
-            node.Minimum = minimum.GetDouble();
+            SetMinimum(node, CompiledJsonNumber.Parse(minimum), exclusive: false);
         if (schema.TryGetProperty("maximum", out var maximum))
-            node.Maximum = maximum.GetDouble();
+            SetMaximum(node, CompiledJsonNumber.Parse(maximum), exclusive: false);
         if (schema.TryGetProperty("exclusiveMinimum", out var exclusiveMinimum))
         {
             if (exclusiveMinimum.ValueKind == JsonValueKind.Number)
             {
-                node.Minimum = exclusiveMinimum.GetDouble();
-                node.ExclusiveMinimum = true;
+                SetMinimum(node, CompiledJsonNumber.Parse(exclusiveMinimum), exclusive: true);
             }
-            else if (exclusiveMinimum.ValueKind == JsonValueKind.True)
+            else if (exclusiveMinimum.ValueKind == JsonValueKind.True && node.Minimum is not null)
             {
                 node.ExclusiveMinimum = true;
             }
@@ -847,34 +1025,74 @@ internal sealed class SchemaCompiler : IDisposable
         {
             if (exclusiveMaximum.ValueKind == JsonValueKind.Number)
             {
-                node.Maximum = exclusiveMaximum.GetDouble();
-                node.ExclusiveMaximum = true;
+                SetMaximum(node, CompiledJsonNumber.Parse(exclusiveMaximum), exclusive: true);
             }
-            else if (exclusiveMaximum.ValueKind == JsonValueKind.True)
+            else if (exclusiveMaximum.ValueKind == JsonValueKind.True && node.Maximum is not null)
             {
                 node.ExclusiveMaximum = true;
             }
         }
         if (schema.TryGetProperty("multipleOf", out var multipleOf))
         {
-            node.MultipleOf = multipleOf.GetDouble();
-            if (node.MultipleOf <= 0)
+            var compiled = CompiledJsonNumber.Parse(multipleOf, requireCoefficient: true);
+            if (compiled.Sign <= 0)
                 throw new InvalidOperationException("JSON Schema 'multipleOf' must be greater than zero.");
+            node.MultipleOf = compiled;
         }
 
-        node.HasNumericAssertions = !double.IsNegativeInfinity(node.Minimum) ||
-            !double.IsPositiveInfinity(node.Maximum) || node.MultipleOf > 0;
+        node.HasNumericAssertions = node.Minimum is not null ||
+            node.Maximum is not null || node.MultipleOf is not null;
+    }
+
+    private static void SetMinimum(CompiledSchemaNode node, CompiledJsonNumber candidate, bool exclusive)
+    {
+        if (node.Minimum is not { } current)
+        {
+            node.Minimum = candidate;
+            node.ExclusiveMinimum = exclusive;
+            return;
+        }
+
+        var comparison = candidate.CompareTo(current);
+        if (comparison > 0)
+        {
+            node.Minimum = candidate;
+            node.ExclusiveMinimum = exclusive;
+        }
+        else if (comparison == 0)
+        {
+            node.ExclusiveMinimum |= exclusive;
+        }
+    }
+
+    private static void SetMaximum(CompiledSchemaNode node, CompiledJsonNumber candidate, bool exclusive)
+    {
+        if (node.Maximum is not { } current)
+        {
+            node.Maximum = candidate;
+            node.ExclusiveMaximum = exclusive;
+            return;
+        }
+
+        var comparison = candidate.CompareTo(current);
+        if (comparison < 0)
+        {
+            node.Maximum = candidate;
+            node.ExclusiveMaximum = exclusive;
+        }
+        else if (comparison == 0)
+        {
+            node.ExclusiveMaximum |= exclusive;
+        }
     }
 
     private static void RejectUnsupportedAssertions(JsonElement schema, string pointer)
     {
-        foreach (var property in schema.EnumerateObject())
+        foreach (var property in schema.EnumerateObject()
+                     .Where(static property => UnsupportedAssertions.Contains(property.Name)))
         {
-            if (UnsupportedAssertions.Contains(property.Name))
-            {
-                throw new NotSupportedException(
-                    $"JSON Schema assertion '{property.Name}' at '{pointer}' is not supported by the streaming validator.");
-            }
+            throw new NotSupportedException(
+                $"JSON Schema assertion '{property.Name}' at '{pointer}' is not supported by the streaming validator.");
         }
     }
 
@@ -911,6 +1129,25 @@ internal sealed class SchemaCompiler : IDisposable
         return baseUri;
     }
 
+    private static SchemaDialect GetDialect(JsonElement schema, SchemaDialect inherited)
+    {
+        if (schema.ValueKind != JsonValueKind.Object ||
+            !schema.TryGetProperty("$schema", out var declaration))
+            return inherited;
+
+        var value = declaration.GetString()
+            ?? throw new InvalidOperationException("JSON Schema $schema must be a string.");
+        if (value.Contains("draft-04", StringComparison.OrdinalIgnoreCase) ||
+            value.Contains("draft-06", StringComparison.OrdinalIgnoreCase) ||
+            value.Contains("draft-07", StringComparison.OrdinalIgnoreCase))
+            return SchemaDialect.Draft7;
+        if (value.Contains("2019-09", StringComparison.OrdinalIgnoreCase) ||
+            value.Contains("2020-12", StringComparison.OrdinalIgnoreCase))
+            return SchemaDialect.Draft202012;
+
+        throw new NotSupportedException($"JSON Schema dialect '{value}' is not supported.");
+    }
+
     private static Uri ResolveUri(Uri baseUri, string value)
     {
         if (Uri.TryCreate(value, UriKind.Absolute, out var absolute))
@@ -930,13 +1167,26 @@ internal sealed class SchemaCompiler : IDisposable
         $"{pointer}/{segment.Replace("~", "~0", StringComparison.Ordinal).Replace("/", "~1", StringComparison.Ordinal)}";
 
     private sealed record SchemaDocument(int Id, JsonDocument Document, Uri EffectiveBaseUri);
+    private readonly record struct SchemaResource(
+        SchemaDocument Document,
+        JsonElement Element,
+        string Pointer,
+        Uri BaseUri,
+        SchemaDialect Dialect);
     private readonly record struct SchemaReferenceKey(string Subject, int Version, string Uri);
     private readonly record struct NodeKey(int DocumentId, string Pointer);
     private readonly record struct ReferenceTarget(
         SchemaDocument Document,
         JsonElement Element,
         string Pointer,
-        Uri BaseUri);
+        Uri BaseUri,
+        SchemaDialect Dialect);
+}
+
+internal enum SchemaDialect : byte
+{
+    Draft7,
+    Draft202012
 }
 
 [Flags]
@@ -971,20 +1221,354 @@ internal sealed class CompiledSchemaNode
     internal int MaxItems { get; set; } = int.MaxValue;
     internal int MinLength { get; set; }
     internal int MaxLength { get; set; } = int.MaxValue;
-    internal double Minimum { get; set; } = double.NegativeInfinity;
-    internal double Maximum { get; set; } = double.PositiveInfinity;
+    internal CompiledJsonNumber? Minimum { get; set; }
+    internal CompiledJsonNumber? Maximum { get; set; }
     internal bool ExclusiveMinimum { get; set; }
     internal bool ExclusiveMaximum { get; set; }
-    internal double MultipleOf { get; set; }
+    internal CompiledJsonNumber? MultipleOf { get; set; }
     internal bool HasNumericAssertions { get; set; }
+}
+
+internal readonly struct CompiledJsonNumber
+{
+    private CompiledJsonNumber(int sign, byte[] digits, long exponent, UInt128 coefficient)
+    {
+        Sign = sign;
+        Digits = digits;
+        Exponent = exponent;
+        Coefficient = coefficient;
+    }
+
+    internal int Sign { get; }
+    internal byte[] Digits { get; }
+    internal long Exponent { get; }
+    internal UInt128 Coefficient { get; }
+
+    internal static CompiledJsonNumber Parse(JsonElement element, bool requireCoefficient = false)
+    {
+        if (element.ValueKind != JsonValueKind.Number)
+            throw new InvalidOperationException("JSON Schema numeric assertions must be numbers.");
+
+        var utf8 = Encoding.UTF8.GetBytes(element.GetRawText());
+        var value = new JsonNumberView(utf8);
+        var digits = new byte[value.DigitCount];
+        value.CopyDigitsTo(digits);
+        var hasCoefficient = TryParseCoefficient(digits, out var coefficient);
+        if (requireCoefficient && !hasCoefficient)
+        {
+            throw new NotSupportedException(
+                "JSON Schema 'multipleOf' coefficients larger than UInt128 are not supported.");
+        }
+
+        return new CompiledJsonNumber(value.Sign, digits, value.Exponent, coefficient);
+    }
+
+    internal int CompareTo(CompiledJsonNumber other)
+    {
+        if (Sign != other.Sign)
+            return Sign.CompareTo(other.Sign);
+        if (Sign == 0)
+            return 0;
+
+        var comparison = JsonNumberMath.CompareMagnitude(
+            Digits,
+            Exponent,
+            other.Digits,
+            other.Exponent);
+        return Sign > 0 ? comparison : -comparison;
+    }
+
+    private static bool TryParseCoefficient(ReadOnlySpan<byte> digits, out UInt128 coefficient)
+    {
+        coefficient = 0;
+        for (var i = 0; i < digits.Length; i++)
+        {
+            var digit = (uint)(digits[i] - (byte)'0');
+            if (coefficient > (UInt128.MaxValue - digit) / 10)
+                return false;
+            coefficient = (coefficient * 10) + digit;
+        }
+
+        return true;
+    }
+}
+
+internal readonly ref struct JsonNumberView
+{
+    private readonly ReadOnlySpan<byte> _value;
+    private readonly int _firstDigit;
+    private readonly int _lastDigit;
+
+    internal JsonNumberView(ReadOnlySpan<byte> value)
+    {
+        _value = value;
+        var mantissaStart = value[0] == (byte)'-' ? 1 : 0;
+        var mantissaEnd = value.Length;
+        var decimalPoint = -1;
+        var exponent = 0L;
+        var firstDigit = -1;
+        var lastDigit = -1;
+        var significantLength = 0;
+        var digitCount = 0;
+
+        for (var i = mantissaStart; i < value.Length; i++)
+        {
+            if (value[i] == (byte)'.')
+            {
+                decimalPoint = i;
+            }
+            else if (value[i] is (byte)'e' or (byte)'E')
+            {
+                mantissaEnd = i;
+                exponent = ParseExponent(value[(i + 1)..]);
+                break;
+            }
+            else if (value[i] != (byte)'0')
+            {
+                firstDigit = firstDigit < 0 ? i : firstDigit;
+                significantLength++;
+                digitCount = significantLength;
+                lastDigit = i;
+            }
+            else if (firstDigit >= 0)
+            {
+                significantLength++;
+            }
+        }
+
+        if (firstDigit < 0)
+        {
+            Sign = 0;
+            DigitCount = 0;
+            Exponent = 0;
+            _firstDigit = 0;
+            _lastDigit = -1;
+            return;
+        }
+
+        var fractionalDigits = decimalPoint < 0 ? 0 : mantissaEnd - decimalPoint - 1;
+        var trailingZeros = significantLength - digitCount;
+
+        Sign = mantissaStart == 0 ? 1 : -1;
+        DigitCount = digitCount;
+        Exponent = JsonNumberMath.SaturatingAdd(
+            JsonNumberMath.SaturatingAdd(exponent, -fractionalDigits),
+            trailingZeros);
+        _firstDigit = firstDigit;
+        _lastDigit = lastDigit;
+    }
+
+    internal int Sign { get; }
+    internal int DigitCount { get; }
+    internal long Exponent { get; }
+
+    internal int CompareTo(CompiledJsonNumber other)
+    {
+        if (Sign != other.Sign)
+            return Sign.CompareTo(other.Sign);
+        if (Sign == 0)
+            return 0;
+
+        var order = JsonNumberMath.SaturatingAdd(Exponent, DigitCount);
+        var otherOrder = JsonNumberMath.SaturatingAdd(other.Exponent, other.Digits.Length);
+        var comparison = order.CompareTo(otherOrder);
+        if (comparison == 0)
+        {
+            var digits = GetDigits();
+            var count = Math.Max(DigitCount, other.Digits.Length);
+            for (var i = 0; i < count; i++)
+            {
+                var digit = i < DigitCount && digits.MoveNext() ? digits.Current : (byte)'0';
+                var otherDigit = i < other.Digits.Length ? other.Digits[i] : (byte)'0';
+                comparison = digit.CompareTo(otherDigit);
+                if (comparison != 0)
+                    break;
+            }
+        }
+
+        return Sign > 0 ? comparison : -comparison;
+    }
+
+    internal bool IsMultipleOf(CompiledJsonNumber divisor)
+    {
+        if (Sign == 0)
+            return true;
+        if (Exponent < divisor.Exponent)
+            return false;
+
+        var modulus = divisor.Coefficient;
+        if (modulus == 1)
+            return true;
+
+        var remainder = (UInt128)0;
+        var digits = GetDigits();
+        while (digits.MoveNext())
+        {
+            remainder = JsonNumberMath.MultiplyByTenModulo(remainder, modulus);
+            remainder = JsonNumberMath.AddModulo(
+                remainder,
+                (uint)(digits.Current - (byte)'0') % modulus,
+                modulus);
+        }
+
+        if (remainder == 0)
+            return true;
+
+        var exponentDifference = JsonNumberMath.PositiveDifference(Exponent, divisor.Exponent);
+        var power = JsonNumberMath.Pow10Modulo(exponentDifference, modulus);
+        return JsonNumberMath.MultiplyModulo(remainder, power, modulus) == 0;
+    }
+
+    internal void CopyDigitsTo(Span<byte> destination)
+    {
+        var digits = GetDigits();
+        var index = 0;
+        while (digits.MoveNext())
+            destination[index++] = digits.Current;
+    }
+
+    private JsonDigitEnumerator GetDigits() => new(_value, _firstDigit, _lastDigit);
+
+    private static long ParseExponent(ReadOnlySpan<byte> value)
+    {
+        var negative = value[0] == (byte)'-';
+        var position = value[0] is (byte)'+' or (byte)'-' ? 1 : 0;
+        var result = 0L;
+        for (; position < value.Length; position++)
+        {
+            var digit = value[position] - (byte)'0';
+            if (result > (long.MaxValue - digit) / 10)
+                return negative ? long.MinValue : long.MaxValue;
+            result = (result * 10) + digit;
+        }
+
+        return negative ? -result : result;
+    }
+
+    private ref struct JsonDigitEnumerator
+    {
+        private readonly ReadOnlySpan<byte> _value;
+        private readonly int _last;
+        private int _position;
+
+        internal JsonDigitEnumerator(ReadOnlySpan<byte> value, int first, int last)
+        {
+            _value = value;
+            _last = last;
+            _position = first - 1;
+            Current = 0;
+        }
+
+        internal byte Current { get; private set; }
+
+        internal bool MoveNext()
+        {
+            while (++_position <= _last)
+            {
+                if (_value[_position] == (byte)'.')
+                    continue;
+                Current = _value[_position];
+                return true;
+            }
+
+            return false;
+        }
+    }
+}
+
+internal static class JsonNumberMath
+{
+    internal static int CompareMagnitude(
+        ReadOnlySpan<byte> leftDigits,
+        long leftExponent,
+        ReadOnlySpan<byte> rightDigits,
+        long rightExponent)
+    {
+        var leftOrder = SaturatingAdd(leftExponent, leftDigits.Length);
+        var rightOrder = SaturatingAdd(rightExponent, rightDigits.Length);
+        var comparison = leftOrder.CompareTo(rightOrder);
+        if (comparison != 0)
+            return comparison;
+
+        var count = Math.Max(leftDigits.Length, rightDigits.Length);
+        for (var i = 0; i < count; i++)
+        {
+            var left = i < leftDigits.Length ? leftDigits[i] : (byte)'0';
+            var right = i < rightDigits.Length ? rightDigits[i] : (byte)'0';
+            comparison = left.CompareTo(right);
+            if (comparison != 0)
+                return comparison;
+        }
+
+        return 0;
+    }
+
+    internal static long SaturatingAdd(long value, long addend)
+    {
+        if (addend > 0 && value > long.MaxValue - addend)
+            return long.MaxValue;
+        if (addend < 0 && value < long.MinValue - addend)
+            return long.MinValue;
+        return value + addend;
+    }
+
+    internal static long PositiveDifference(long left, long right)
+    {
+        if (right < 0 && left > long.MaxValue + right)
+            return long.MaxValue;
+        return left - right;
+    }
+
+    internal static UInt128 AddModulo(UInt128 left, UInt128 right, UInt128 modulus) =>
+        left >= modulus - right ? left - (modulus - right) : left + right;
+
+    internal static UInt128 MultiplyByTenModulo(UInt128 value, UInt128 modulus)
+    {
+        var doubled = AddModulo(value, value, modulus);
+        var quadrupled = AddModulo(doubled, doubled, modulus);
+        var octupled = AddModulo(quadrupled, quadrupled, modulus);
+        return AddModulo(octupled, doubled, modulus);
+    }
+
+    internal static UInt128 MultiplyModulo(UInt128 left, UInt128 right, UInt128 modulus)
+    {
+        var result = (UInt128)0;
+        while (right != 0)
+        {
+            if ((right & 1) != 0)
+                result = AddModulo(result, left, modulus);
+            right >>= 1;
+            if (right != 0)
+                left = AddModulo(left, left, modulus);
+        }
+
+        return result;
+    }
+
+    internal static UInt128 Pow10Modulo(long exponent, UInt128 modulus)
+    {
+        var result = (UInt128)1 % modulus;
+        var value = (UInt128)10 % modulus;
+        while (exponent != 0)
+        {
+            if ((exponent & 1) != 0)
+                result = MultiplyModulo(result, value, modulus);
+            exponent >>= 1;
+            if (exponent != 0)
+                value = MultiplyModulo(value, value, modulus);
+        }
+
+        return result;
+    }
 }
 
 internal sealed class CompiledProperty
 {
-    internal CompiledProperty(string name, CompiledSchemaNode? schema)
+    internal CompiledProperty(string name, CompiledSchemaNode? schema, bool isDeclared = true)
     {
         Name = name;
         Schema = schema;
+        IsDeclared = isDeclared;
         Utf8Name = Encoding.UTF8.GetBytes(name);
         Hash = CompiledPropertyTable.Hash(Utf8Name);
     }
@@ -993,6 +1577,7 @@ internal sealed class CompiledProperty
     internal byte[] Utf8Name { get; }
     internal uint Hash { get; }
     internal CompiledSchemaNode? Schema { get; }
+    internal bool IsDeclared { get; }
     internal int RequiredIndex { get; set; } = -1;
 }
 
