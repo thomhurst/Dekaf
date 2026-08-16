@@ -579,9 +579,14 @@ public sealed class SchemaRegistryCacheTests
     [Test]
     public async Task Client_CreateHttpHandler_SetsPooledConnectionLifetime()
     {
-        using var handler = SchemaRegistryClient.CreateHttpHandler();
+        using var handler = SchemaRegistryClient.CreateConfiguredHttpHandler(new SchemaRegistryConfig
+        {
+            Url = "http://localhost:8081"
+        });
+        var socketsHandler = handler as SocketsHttpHandler;
 
-        await Assert.That(handler.PooledConnectionLifetime).IsEqualTo(TimeSpan.FromMinutes(2));
+        await Assert.That(socketsHandler).IsNotNull();
+        await Assert.That(socketsHandler!.PooledConnectionLifetime).IsEqualTo(TimeSpan.FromMinutes(2));
     }
 
     [Test]
