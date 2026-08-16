@@ -115,12 +115,7 @@ internal sealed class ControllerMetadataManager : IDisposable
                             response.ClusterId,
                             response.ControllerId,
                             controllers,
-                            endpoint with
-                            {
-                                NodeId = endpoint.NodeId >= 0
-                                    ? endpoint.NodeId
-                                    : response.ControllerId
-                            },
+                            IdentifyDiscoveryConnection(endpoint, controllers),
                             DateTimeOffset.UtcNow));
                     return;
                 }
@@ -277,6 +272,25 @@ internal sealed class ControllerMetadataManager : IDisposable
         }
 
         return result;
+    }
+
+    private static ControllerEndpoint IdentifyDiscoveryConnection(
+        ControllerEndpoint endpoint,
+        IReadOnlyDictionary<int, ControllerEndpoint> controllers)
+    {
+        if (endpoint.NodeId >= 0)
+            return endpoint;
+
+        foreach (var controller in controllers.Values)
+        {
+            if (endpoint.Port == controller.Port &&
+                string.Equals(endpoint.Host, controller.Host, StringComparison.OrdinalIgnoreCase))
+            {
+                return endpoint with { NodeId = controller.NodeId };
+            }
+        }
+
+        return endpoint;
     }
 }
 

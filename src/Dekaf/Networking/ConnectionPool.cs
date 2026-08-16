@@ -1724,7 +1724,9 @@ public sealed partial class ConnectionPool :
 
         return _brokerConnectionRuntimeStates.GetOrAdd(
             brokerId,
-            static (_, timestampProvider) => new BrokerConnectionRuntimeState(timestampProvider),
+            static (_, timestampProvider) => new BrokerConnectionRuntimeState(
+                timestampProvider,
+                recordInitialState: true),
             _statusTimestampProvider);
     }
 
@@ -1735,7 +1737,9 @@ public sealed partial class ConnectionPool :
 
         return _endpointConnectionRuntimeStates.GetOrAdd(
             endpoint,
-            static (_, timestampProvider) => new BrokerConnectionRuntimeState(timestampProvider),
+            static (_, timestampProvider) => new BrokerConnectionRuntimeState(
+                timestampProvider,
+                recordInitialState: false),
             _statusTimestampProvider);
     }
 
@@ -1898,6 +1902,7 @@ public sealed partial class ConnectionPool :
             if (_connectionsByEndpoint.TryGetValue(endpointKey, out var connection))
                 AccumulateConnectionStatus(connection, ref connections);
             _endpointConnectionRuntimeStates.TryGetValue(endpointKey, out var runtimeState);
+            AccumulateRuntimeState(runtimeState, ref connections);
             if (endpoint.ConnectionHost is { } connectionHost &&
                 (endpoint.Port != endpoint.ConnectionPort ||
                  !string.Equals(endpoint.Host, connectionHost, StringComparison.OrdinalIgnoreCase)))
@@ -1905,8 +1910,13 @@ public sealed partial class ConnectionPool :
                 var connectionEndpointKey = new EndpointKey(connectionHost, endpoint.ConnectionPort);
                 if (_connectionsByEndpoint.TryGetValue(connectionEndpointKey, out connection))
                     AccumulateConnectionStatus(connection, ref connections);
-                if (runtimeState is null)
-                    _endpointConnectionRuntimeStates.TryGetValue(connectionEndpointKey, out runtimeState);
+                _endpointConnectionRuntimeStates.TryGetValue(connectionEndpointKey, out var connectionRuntimeState);
+                AccumulateRuntimeState(connectionRuntimeState, ref connections);
+                if (connectionRuntimeState?.LastErrorTimestampMs >
+                    (runtimeState?.LastErrorTimestampMs ?? 0))
+                {
+                    runtimeState = connectionRuntimeState;
+                }
             }
             result.Add(CreateBrokerConnectionStatus(
                 new BrokerInfo(endpoint.NodeId, endpoint.Host, endpoint.Port),
@@ -2011,6 +2021,18 @@ public sealed partial class ConnectionPool :
         status.LastStateChangeTimestampMs = Math.Max(
             status.LastStateChangeTimestampMs,
             statusSource.LastConnectionStateChangeTimestampMs);
+    }
+
+    private static void AccumulateRuntimeState(
+        BrokerConnectionRuntimeState? runtimeState,
+        ref ConnectionStatusAccumulator status)
+    {
+        if (runtimeState is not null)
+        {
+            status.LastStateChangeTimestampMs = Math.Max(
+                status.LastStateChangeTimestampMs,
+                runtimeState.LastStateChangeTimestampMs);
+        }
     }
 
     private struct ConnectionStatusAccumulator
@@ -2525,10 +2547,12 @@ public sealed partial class ConnectionPool :
         public int FailureCount;
     }
 
-    private sealed class BrokerConnectionRuntimeState(Func<long> timestampProvider)
+    private sealed class BrokerConnectionRuntimeState(
+        Func<long> timestampProvider,
+        bool recordInitialState)
     {
         private readonly Func<long> _timestampProvider = timestampProvider;
-        private long _lastStateChangeTimestampMs = timestampProvider();
+        private long _lastStateChangeTimestampMs = recordInitialState ? timestampProvider() : 0;
         private long _lastErrorTimestampMs;
         private string? _lastError;
 
