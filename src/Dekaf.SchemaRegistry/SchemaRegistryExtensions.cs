@@ -40,16 +40,16 @@ public static class SchemaRegistryExtensions
         this ProducerBuilder<TKey, TValue> builder,
         ISchemaRegistryClient schemaRegistry,
         string jsonSchema,
+        JsonSerializerOptions? jsonOptions,
         JsonSchemaValidationOptions validationOptions,
-        JsonSerializerOptions? jsonOptions = null,
         SubjectNameStrategy subjectNameStrategy = SubjectNameStrategy.TopicName,
         bool autoRegisterSchemas = true)
     {
         var serializer = new JsonSchemaRegistrySerializer<TValue>(
             schemaRegistry,
             jsonSchema,
-            validationOptions,
             jsonOptions,
+            validationOptions,
             subjectNameStrategy,
             autoRegisterSchemas);
 
@@ -197,13 +197,13 @@ public static class SchemaRegistryExtensions
     public static ConsumerBuilder<TKey, TValue> UseJsonSchemaRegistry<TKey, TValue>(
         this ConsumerBuilder<TKey, TValue> builder,
         ISchemaRegistryClient schemaRegistry,
-        JsonSchemaValidationOptions validationOptions,
-        JsonSerializerOptions? jsonOptions = null)
+        JsonSerializerOptions? jsonOptions,
+        JsonSchemaValidationOptions validationOptions)
     {
         var deserializer = new JsonSchemaRegistryDeserializer<TValue>(
             schemaRegistry,
-            validationOptions,
-            jsonOptions);
+            jsonOptions,
+            validationOptions);
 
         return builder.WithValueDeserializer(deserializer);
     }

@@ -46,7 +46,7 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
     private readonly string _recordName;
     private readonly bool _ownsClient;
     private readonly ISchemaRegistryRuleExecutor? _ruleExecutor;
-    private readonly IJsonSchemaValidator? _validator;
+    private readonly IJsonSchemaValidatorFactory? _validatorFactory;
 
     private readonly ConcurrentDictionary<string, int> _schemaIdCache = new();
     private readonly SubjectSchemaIdCache _subjectSchemaIdCache = new();
@@ -86,8 +86,8 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
     public JsonSchemaRegistrySerializer(
         ISchemaRegistryClient schemaRegistry,
         string jsonSchema,
+        JsonSerializerOptions? jsonOptions,
         JsonSchemaValidationOptions validationOptions,
-        JsonSerializerOptions? jsonOptions = null,
         SubjectNameStrategy subjectNameStrategy = SubjectNameStrategy.TopicName,
         bool autoRegisterSchemas = true,
         bool ownsClient = false,
@@ -105,7 +105,7 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
             normalizeSchemas)
     {
         ArgumentNullException.ThrowIfNull(validationOptions);
-        _validator = validationOptions.CreateSerializerValidator(_schema);
+        _validatorFactory = validationOptions.GetSerializerFactory();
     }
 
     /// <summary>
@@ -200,7 +200,7 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
             normalizeSchemas)
     {
         ArgumentNullException.ThrowIfNull(validationOptions);
-        _validator = validationOptions.CreateSerializerValidator(_schema);
+        _validatorFactory = validationOptions.GetSerializerFactory();
     }
 
     /// <summary>
@@ -252,8 +252,8 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
         ISchemaRegistryClient schemaRegistry,
         string jsonSchema,
         ISubjectNameStrategy customSubjectNameStrategy,
+        JsonSerializerOptions? jsonOptions,
         JsonSchemaValidationOptions validationOptions,
-        JsonSerializerOptions? jsonOptions = null,
         bool autoRegisterSchemas = true,
         bool ownsClient = false,
         ISchemaRegistryRuleExecutor? ruleExecutor = null,
@@ -269,7 +269,7 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
             normalizeSchemas)
     {
         ArgumentNullException.ThrowIfNull(validationOptions);
-        _validator = validationOptions.CreateSerializerValidator(_schema);
+        _validatorFactory = validationOptions.GetSerializerFactory();
     }
 
     /// <summary>
@@ -335,7 +335,7 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
             normalizeSchemas)
     {
         ArgumentNullException.ThrowIfNull(validationOptions);
-        _validator = validationOptions.CreateSerializerValidator(_schema);
+        _validatorFactory = validationOptions.GetSerializerFactory();
     }
 
     /// <summary>
@@ -410,7 +410,8 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
         }
 
         var payload = payloadBuffer.WrittenMemory;
-        _validator?.Validate(payload.Span, schemaId);
+        if (_validatorFactory is not null)
+            _validatorFactory.GetOrCreate(schemaEntry.Schema!).Validate(payload.Span, schemaId);
         if (_ruleExecutor is not null)
         {
             payload = _ruleExecutor.TransformSerializedPayload(
@@ -449,9 +450,16 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
             isKey,
             this,
             static (serializer, topic, isKey) => serializer.GetSubjectName(topic, isKey),
-            static (serializer, subject) => new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(
-                serializer.GetSchemaIdSync(subject),
-                serializer._schema));
+            static (serializer, subject) => serializer.ResolveSchema(subject));
+
+    private SubjectSchemaIdCache.SubjectSchemaIdCacheValue ResolveSchema(string subject)
+    {
+        var schemaId = GetSchemaIdSync(subject);
+        var schema = _validatorFactory is null
+            ? _schema
+            : _schemaRegistry.GetSchemaSync(schemaId, SchemaRegistryTimeout);
+        return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(schemaId, schema);
+    }
 
     private int GetSchemaIdSync(string subject)
     {
@@ -547,7 +555,6 @@ public sealed class JsonSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
     private readonly bool _ownsClient;
     private readonly ISchemaRegistryRuleExecutor? _ruleExecutor;
     private readonly IJsonSchemaValidatorFactory? _validatorFactory;
-    private ValidatorCacheEntry? _lastValidator;
 
     /// <summary>
     /// Creates a new JSON Schema Registry deserializer.
@@ -577,8 +584,8 @@ public sealed class JsonSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
     [RequiresDynamicCode("JsonSerializerOptions-based JSON deserialization may require runtime code generation. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
     public JsonSchemaRegistryDeserializer(
         ISchemaRegistryClient schemaRegistry,
+        JsonSerializerOptions? jsonOptions,
         JsonSchemaValidationOptions validationOptions,
-        JsonSerializerOptions? jsonOptions = null,
         bool ownsClient = false,
         ISchemaRegistryRuleExecutor? ruleExecutor = null)
         : this(schemaRegistry, jsonOptions, ownsClient, ruleExecutor)
@@ -653,26 +660,9 @@ public sealed class JsonSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
         }
 
         if (_validatorFactory is not null)
-            GetValidator(schema).Validate(payload.Span, schemaId);
+            _validatorFactory.GetOrCreate(schema).Validate(payload.Span, schemaId);
 
         return _deserializePayload(payload.Span);
-    }
-
-    private IJsonSchemaValidator GetValidator(Schema schema)
-    {
-        var cached = Volatile.Read(ref _lastValidator);
-        if (cached is not null && ReferenceEquals(cached.Schema, schema))
-            return cached.Validator;
-
-        var validator = _validatorFactory!.GetOrCreate(schema);
-        Volatile.Write(ref _lastValidator, new ValidatorCacheEntry(schema, validator));
-        return validator;
-    }
-
-    private sealed class ValidatorCacheEntry(Schema schema, IJsonSchemaValidator validator)
-    {
-        public Schema Schema { get; } = schema;
-        public IJsonSchemaValidator Validator { get; } = validator;
     }
 
     public ValueTask DisposeAsync()

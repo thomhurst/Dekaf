@@ -125,7 +125,7 @@ internal static class AotSmoke
         var buffer = new ArrayBufferWriter<byte>();
         var validation = new JsonSchemaValidationOptions
         {
-            ValidatorFactory = new JsonSchemaNetValidatorFactory(registry)
+            ValidatorFactory = new StreamingJsonSchemaValidatorFactory(registry)
         };
 
         await using var serializer = new JsonSchemaRegistrySerializer<AotPayload>(

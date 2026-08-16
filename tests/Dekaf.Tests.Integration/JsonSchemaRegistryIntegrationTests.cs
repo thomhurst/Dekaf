@@ -163,12 +163,7 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
         });
         var validation = new JsonSchemaValidationOptions
         {
-            ValidatorFactory = new JsonSchemaNetValidatorFactory(
-                registryClient,
-                new JsonSchemaNetValidatorOptions
-                {
-                    DefaultDialect = JsonSchemaDialect.Draft202012
-                })
+            ValidatorFactory = new StreamingJsonSchemaValidatorFactory(registryClient)
         };
         await using var producer = await Kafka.CreateProducer<string, TestOrder>()
             .WithBootstrapServers(testInfra.BootstrapServers)

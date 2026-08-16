@@ -89,8 +89,7 @@ public sealed class JsonSchemaValidationTests
               "required": ["id"]
             }
             """;
-        var validator = CreateFactory(JsonSchemaDialect.Draft202012)
-            .GetOrCreate(CreateSchema(schemaText));
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
 
         validator.Validate("""{"id":1}"""u8, 9);
         Assert.Throws<JsonSchemaValidationException>(() => validator.Validate("""{"id":0}"""u8, 9));
@@ -123,11 +122,40 @@ public sealed class JsonSchemaValidationTests
                 Subject = "address-value",
                 Version = 1
             }]);
-        var validator = new JsonSchemaNetValidatorFactory(registry).GetOrCreate(root);
+        var validator = new StreamingJsonSchemaValidatorFactory(registry).GetOrCreate(root);
 
         validator.Validate("""{"address":{"postcode":"AB1"}}"""u8, 12);
         Assert.Throws<JsonSchemaValidationException>(
             () => validator.Validate("""{"address":{}}"""u8, 12));
+    }
+
+    [Test]
+    public async Task Validator_ResolvesRelativeReferencesFromEffectiveSchemaId()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        await registry.RegisterSchemaAsync(
+            "address-value",
+            CreateSchema("""{"type":"object","required":["postcode"]}"""));
+        var root = CreateSchema(
+            """
+            {
+              "$id": "https://example.test/schemas/root.json",
+              "type": "object",
+              "properties": { "address": { "$ref": "defs/address.json" } },
+              "required": ["address"]
+            }
+            """,
+            [new SchemaReference
+            {
+                Name = "defs/address.json",
+                Subject = "address-value",
+                Version = 1
+            }]);
+        var validator = new StreamingJsonSchemaValidatorFactory(registry).GetOrCreate(root);
+
+        validator.Validate("""{"address":{"postcode":"AB1"}}"""u8, 13);
+        Assert.Throws<JsonSchemaValidationException>(
+            () => validator.Validate("""{"address":{}}"""u8, 13));
     }
 
     [Test]
@@ -139,9 +167,9 @@ public sealed class JsonSchemaValidationTests
                 Arg.Any<string>(),
                 Arg.Any<CancellationToken>())
             .Returns(new TaskCompletionSource<RegisteredSchema>().Task);
-        var factory = new JsonSchemaNetValidatorFactory(
+        var factory = new StreamingJsonSchemaValidatorFactory(
             registry,
-            new JsonSchemaNetValidatorOptions
+            new StreamingJsonSchemaValidatorOptions
             {
                 ReferenceResolutionTimeout = TimeSpan.FromMilliseconds(10)
             });
@@ -164,11 +192,12 @@ public sealed class JsonSchemaValidationTests
             { "type": "object", "properties": { "id": { "type": "string" } }, "required": ["id"] }
             """;
         using var registry = new MockSchemaRegistryClient();
-        var factory = new JsonSchemaNetValidatorFactory(registry);
+        var factory = new StreamingJsonSchemaValidatorFactory(registry);
         await using var readOnlySerializer = new JsonSchemaRegistrySerializer<ValidationPayload>(
             registry,
             incompatibleSchema,
-            new JsonSchemaValidationOptions
+            jsonOptions: null,
+            validationOptions: new JsonSchemaValidationOptions
             {
                 ValidatorFactory = factory,
                 Mode = JsonSchemaValidationMode.Deserialize
@@ -176,7 +205,8 @@ public sealed class JsonSchemaValidationTests
         await using var writeSerializer = new JsonSchemaRegistrySerializer<ValidationPayload>(
             registry,
             incompatibleSchema,
-            new JsonSchemaValidationOptions
+            jsonOptions: null,
+            validationOptions: new JsonSchemaValidationOptions
             {
                 ValidatorFactory = factory,
                 Mode = JsonSchemaValidationMode.Serialize
@@ -192,6 +222,51 @@ public sealed class JsonSchemaValidationTests
     }
 
     [Test]
+    public async Task Serializer_CompilesCompleteRegisteredSchemaForReferences()
+    {
+        const string rootSchema = """
+            {
+              "$id": "https://example.test/schemas/root.json",
+              "type": "object",
+              "properties": { "address": { "$ref": "address.json" } },
+              "required": ["address"]
+            }
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        await registry.RegisterSchemaAsync(
+            "address-value",
+            CreateSchema("""{"type":"object","required":["postcode"]}"""));
+        await registry.RegisterSchemaAsync(
+            "registered-write-value",
+            CreateSchema(rootSchema, [new SchemaReference
+            {
+                Name = "address.json",
+                Subject = "address-value",
+                Version = 1
+            }]));
+        var validation = new JsonSchemaValidationOptions
+        {
+            ValidatorFactory = new StreamingJsonSchemaValidatorFactory(registry),
+            Mode = JsonSchemaValidationMode.Serialize
+        };
+        await using var serializer = new JsonSchemaRegistrySerializer<ReferencedPayload>(
+            registry,
+            rootSchema,
+            jsonOptions: null,
+            validationOptions: validation,
+            autoRegisterSchemas: false);
+        var context = new SerializationContext
+        {
+            Topic = "registered-write",
+            Component = SerializationComponent.Value
+        };
+        var buffer = new ArrayBufferWriter<byte>();
+
+        serializer.Serialize(new ReferencedPayload(new AddressPayload("AB1")), ref buffer, context);
+        await Assert.That(buffer.WrittenCount).IsGreaterThan(5);
+    }
+
+    [Test]
     public async Task Deserializer_UsesValidatorForMessageSchemaId()
     {
         using var registry = new MockSchemaRegistryClient();
@@ -203,9 +278,10 @@ public sealed class JsonSchemaValidationTests
             CreateSchema("""{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}"""));
         await using var deserializer = new JsonSchemaRegistryDeserializer<ValidationPayload>(
             registry,
-            new JsonSchemaValidationOptions
+            jsonOptions: null,
+            validationOptions: new JsonSchemaValidationOptions
             {
-                ValidatorFactory = new JsonSchemaNetValidatorFactory(registry),
+                ValidatorFactory = new StreamingJsonSchemaValidatorFactory(registry),
                 Mode = JsonSchemaValidationMode.Deserialize
             });
 
@@ -232,18 +308,16 @@ public sealed class JsonSchemaValidationTests
     public void Factory_RejectsNonJsonSchemas()
     {
         using var registry = new MockSchemaRegistryClient();
-        var factory = new JsonSchemaNetValidatorFactory(registry);
+        var factory = new StreamingJsonSchemaValidatorFactory(registry);
         var schema = new Schema { SchemaType = SchemaType.Avro, SchemaString = "{}" };
 
         Assert.Throws<ArgumentException>(() => factory.GetOrCreate(schema));
     }
 
-    private static JsonSchemaNetValidatorFactory CreateFactory(
-        JsonSchemaDialect dialect = JsonSchemaDialect.Draft7)
+    private static StreamingJsonSchemaValidatorFactory CreateFactory()
     {
-        return new JsonSchemaNetValidatorFactory(
-            new MockSchemaRegistryClient(),
-            new JsonSchemaNetValidatorOptions { DefaultDialect = dialect });
+        return new StreamingJsonSchemaValidatorFactory(
+            new MockSchemaRegistryClient());
     }
 
     private static Schema CreateSchema(
@@ -268,4 +342,6 @@ public sealed class JsonSchemaValidationTests
     }
 
     private sealed record ValidationPayload(int Id);
+    private sealed record ReferencedPayload(AddressPayload Address);
+    private sealed record AddressPayload(string Postcode);
 }

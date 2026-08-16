@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Buffers.Binary;
 using BenchmarkDotNet.Attributes;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Json;
@@ -32,16 +33,18 @@ public class JsonSchemaValidationBenchmarks
     private JsonSchemaRegistrySerializer<BenchmarkPayload> _enabledSerializer = null!;
     private JsonSchemaRegistryDeserializer<BenchmarkPayload> _disabledDeserializer = null!;
     private JsonSchemaRegistryDeserializer<BenchmarkPayload> _enabledDeserializer = null!;
-    private JsonSchemaNetValidatorFactory _validatorFactory = null!;
+    private StreamingJsonSchemaValidatorFactory _validatorFactory = null!;
     private Schema _validatorSchema = null!;
     private ReadOnlyMemory<byte> _wirePayload;
+    private ReadOnlyMemory<byte> _alternateWirePayload;
     private SerializationContext _context;
+    private int _alternateSchemaIndex;
 
     [GlobalSetup]
     public void Setup()
     {
         var registry = new BenchmarkSchemaRegistryClient();
-        _validatorFactory = new JsonSchemaNetValidatorFactory(registry);
+        _validatorFactory = new StreamingJsonSchemaValidatorFactory(registry);
         _validatorSchema = new Schema
         {
             SchemaType = SchemaType.Json,
@@ -60,17 +63,30 @@ public class JsonSchemaValidationBenchmarks
         _enabledSerializer = new JsonSchemaRegistrySerializer<BenchmarkPayload>(
             registry,
             JsonSchema,
-            validation);
+            jsonOptions: null,
+            validationOptions: validation);
         _disabledDeserializer = new JsonSchemaRegistryDeserializer<BenchmarkPayload>(registry);
-        _enabledDeserializer = new JsonSchemaRegistryDeserializer<BenchmarkPayload>(registry, validation);
+        _enabledDeserializer = new JsonSchemaRegistryDeserializer<BenchmarkPayload>(
+            registry,
+            jsonOptions: null,
+            validationOptions: validation);
 
         _disabledSerializer.Serialize(_value, ref _disabledDestination, _context);
         _wirePayload = _disabledDestination.WrittenMemory.ToArray();
+        var alternateWirePayload = _wirePayload.ToArray();
+        BinaryPrimitives.WriteInt32BigEndian(alternateWirePayload.AsSpan(1, 4), 2);
+        _alternateWirePayload = alternateWirePayload;
+        registry.AddSchema(2, new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = JsonSchema
+        });
         _disabledDestination.Clear();
         _enabledSerializer.Serialize(_value, ref _enabledDestination, _context);
         _enabledDestination.Clear();
         _ = _disabledDeserializer.Deserialize(_wirePayload, _context);
         _ = _enabledDeserializer.Deserialize(_wirePayload, _context);
+        _ = _enabledDeserializer.Deserialize(_alternateWirePayload, _context);
         _ = _validatorFactory.GetOrCreate(_validatorSchema);
     }
 
@@ -106,6 +122,15 @@ public class JsonSchemaValidationBenchmarks
         _enabledDeserializer.Deserialize(_wirePayload, _context);
 
     [Benchmark]
+    public BenchmarkPayload DeserializeValidationEnabledAlternatingSchemas()
+    {
+        var payload = (_alternateSchemaIndex++ & 1) == 0
+            ? _wirePayload
+            : _alternateWirePayload;
+        return _enabledDeserializer.Deserialize(payload, _context);
+    }
+
+    [Benchmark]
     public IJsonSchemaValidator GetCachedValidator() =>
         _validatorFactory.GetOrCreate(_validatorSchema);
 
@@ -113,25 +138,24 @@ public class JsonSchemaValidationBenchmarks
 
     private sealed class BenchmarkSchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistryCache
     {
-        private Schema? _schema;
+        private readonly Dictionary<int, Schema> _schemas = [];
+
+        public void AddSchema(int id, Schema schema) => _schemas[id] = schema;
 
         public Task<int> RegisterSchemaAsync(
             string subject,
             Schema schema,
             CancellationToken cancellationToken = default)
         {
-            _schema = schema;
+            _schemas[1] = schema;
             return Task.FromResult(1);
         }
 
         public Task<Schema> GetSchemaAsync(int id, CancellationToken cancellationToken = default) =>
-            Task.FromResult(_schema!);
+            Task.FromResult(_schemas[id]);
 
-        public bool TryGetCachedSchema(int id, out Schema schema)
-        {
-            schema = _schema!;
-            return schema is not null;
-        }
+        public bool TryGetCachedSchema(int id, out Schema schema) =>
+            _schemas.TryGetValue(id, out schema!);
 
         public Task<RegisteredSchema> GetSchemaBySubjectAsync(
             string subject,

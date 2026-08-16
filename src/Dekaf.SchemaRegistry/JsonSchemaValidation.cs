@@ -68,11 +68,11 @@ public sealed class JsonSchemaValidationOptions
     /// </summary>
     public required IJsonSchemaValidatorFactory ValidatorFactory { get; init; }
 
-    internal IJsonSchemaValidator? CreateSerializerValidator(Schema schema)
+    internal IJsonSchemaValidatorFactory? GetSerializerFactory()
     {
         ValidateMode();
         return (Mode & JsonSchemaValidationMode.Serialize) != 0
-            ? GetValidatorFactory().GetOrCreate(schema)
+            ? GetValidatorFactory()
             : null;
     }
 

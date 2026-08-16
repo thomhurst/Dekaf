@@ -8,10 +8,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="JsonSchema.Net" />
-  </ItemGroup>
-
-  <ItemGroup>
     <ProjectReference Include="..\Dekaf.SchemaRegistry\Dekaf.SchemaRegistry.csproj" />
   </ItemGroup>
 

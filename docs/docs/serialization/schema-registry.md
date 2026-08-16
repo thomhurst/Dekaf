@@ -106,19 +106,26 @@ var registry = new SchemaRegistryClient(new SchemaRegistryConfig
 
 var validation = new JsonSchemaValidationOptions
 {
-    ValidatorFactory = new JsonSchemaNetValidatorFactory(registry),
+    ValidatorFactory = new StreamingJsonSchemaValidatorFactory(registry),
     Mode = JsonSchemaValidationMode.Both
 };
 
 var producer = await Kafka.CreateProducer<string, Order>()
     .WithBootstrapServers("localhost:9092")
-    .UseJsonSchemaRegistry(registry, orderSchema, validation)
+    .UseJsonSchemaRegistry(
+        registry,
+        orderSchema,
+        jsonOptions: null,
+        validationOptions: validation)
     .BuildAsync();
 
 var consumer = await Kafka.CreateConsumer<string, Order>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("orders")
-    .UseJsonSchemaRegistry(registry, validation)
+    .UseJsonSchemaRegistry(
+        registry,
+        jsonOptions: null,
+        validationOptions: validation)
     .BuildAsync();
 ```
 
@@ -127,27 +134,32 @@ before write rules. `Deserialize` validates after read rules and before JSON des
 ordering lets encryption and migration rules transform the wire payload without validating
 ciphertext or a pre-migration shape.
 
-JsonSchema.Net validators are compiled once per exact `Schema` object and weakly cached. The
-serializer compiles its validator during construction; the deserializer compiles once when each
-schema ID is first encountered. Schema Registry `references` are resolved by subject and version
-with a configurable 30-second default timeout. Internal `$ref` references are supported directly.
+Streaming validators are compiled once per exact registered `Schema` object and weakly cached. The
+serializer fetches the complete registered schema after registration or lookup, so write validation
+includes Schema Registry `references`. The deserializer compiles once when each schema ID is first
+encountered. References are resolved by subject and version with a configurable 30-second default
+timeout. Relative references resolve from the effective `$id`; internal JSON Pointer references are
+supported directly.
 
-Draft 7, 2019-09, and 2020-12 are supported. A schema's `$schema` keyword selects its dialect. When
-that keyword is absent, Draft 7 is used unless `DefaultDialect` is configured:
+The allocation-free evaluator supports the common structural and scalar assertion subset of Draft
+7, 2019-09, and 2020-12: types and nullability, object properties and required fields, additional
+properties, arrays and tuple items, size limits, and numeric limits. Unsupported assertion keywords
+fail during cold validator compilation instead of being silently ignored. Configure reference
+resolution and schema nesting limits when needed:
 
 ```csharp
-var factory = new JsonSchemaNetValidatorFactory(registry, new JsonSchemaNetValidatorOptions
+var factory = new StreamingJsonSchemaValidatorFactory(registry, new StreamingJsonSchemaValidatorOptions
 {
-    DefaultDialect = JsonSchemaDialect.Draft202012,
-    RequireFormatValidation = true,
-    ReferenceResolutionTimeout = TimeSpan.FromSeconds(10)
+    ReferenceResolutionTimeout = TimeSpan.FromSeconds(10),
+    MaxSchemaDepth = 192
 });
 ```
 
 Invalid payloads throw `JsonSchemaValidationException`. `SchemaId`, `Keyword`, and `JsonPath`
 identify the failure. Exception messages never include payload contents. Validation has measurable
-CPU and allocation cost when enabled because each payload must be parsed and evaluated; disabled
-serializers do not allocate for validation and do not load JsonSchema.Net.
+CPU cost when enabled because each payload must be parsed and evaluated. Steady-state validation is
+zero-allocation; disabled serializers remain validation-neutral and do not load the optional JSON
+Schema package.
 
 ## Schema Registry Configuration
 
