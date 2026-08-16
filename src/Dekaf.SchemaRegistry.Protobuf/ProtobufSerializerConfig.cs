@@ -55,7 +55,8 @@ public sealed class ProtobufSerializerConfig
 
     /// <summary>
     /// Whether to skip known types when serializing.
-    /// Default is true, matching Confluent Schema Registry's exact built-in dependency set.
+    /// Default is true, matching Confluent's Protobuf serializer. Imports under
+    /// confluent/, google/protobuf/, and google/type/ are resolved as built-ins.
     /// </summary>
     public bool SkipKnownTypes { get; init; } = true;
 

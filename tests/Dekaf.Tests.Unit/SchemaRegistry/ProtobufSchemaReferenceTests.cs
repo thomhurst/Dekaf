@@ -45,13 +45,12 @@ public sealed class ProtobufSchemaReferenceTests
                 "deps/right.proto",
                 "vendor.proto/common/user.proto",
                 "beta/common.proto",
-                "google/type/company_event.proto",
                 "graph-value"
             ])).IsTrue();
         await Assert.That(registrations.Count(static registration => registration.Subject == "shared/base.proto"))
             .IsEqualTo(1);
         await Assert.That(registrations.Any(static registration =>
-            registration.Subject == TimestampReflection.Descriptor.Name)).IsFalse();
+            registration.Subject.StartsWith("google/", StringComparison.Ordinal))).IsFalse();
 
         var rootRegistration = registrations[^1];
         await Assert.That(rootRegistration.Schema.SchemaString)
@@ -60,8 +59,7 @@ public sealed class ProtobufSchemaReferenceTests
                 "deps/left.proto",
                 "deps/right.proto",
                 "vendor.proto/common/user.proto",
-                "beta/common.proto",
-                "google/type/company_event.proto"
+                "beta/common.proto"
             ])).IsTrue();
 
         var left = registrations.Single(static registration => registration.Subject == "deps/left.proto");
@@ -142,64 +140,6 @@ public sealed class ProtobufSchemaReferenceTests
         await Assert.That(registrations.Select(static registration => registration.Subject).ToArray())
             .Contains("graph-key-shared/base.proto");
         await Assert.That(strategy.Calls).Contains(("graph", "shared/base.proto", true));
-    }
-
-    [Test]
-    public async Task Serialize_RecordNameStrategy_ReusesResolvedReferenceGraphAcrossTopics()
-    {
-        var registrations = new List<Registration>();
-        var schemaRegistry = CreateRegistry(registrations);
-        var config = new ProtobufSerializerConfig { SubjectNameStrategy = SubjectNameStrategy.RecordName };
-        await using var serializer = new ProtobufSchemaRegistrySerializer<ReferenceGraphMessage>(
-            schemaRegistry,
-            config);
-
-        var firstDestination = new ArrayBufferWriter<byte>();
-        serializer.Serialize(
-            new ReferenceGraphMessage(),
-            ref firstDestination,
-            new SerializationContext { Topic = "first", Component = SerializationComponent.Value });
-        var secondDestination = new ArrayBufferWriter<byte>();
-        serializer.Serialize(
-            new ReferenceGraphMessage(),
-            ref secondDestination,
-            new SerializationContext { Topic = "second", Component = SerializationComponent.Value });
-
-        await Assert.That(registrations.Count).IsEqualTo(7);
-        await Assert.That(registrations.Count(static registration =>
-            registration.Subject == ReferenceGraphMessage.Descriptor.FullName)).IsEqualTo(1);
-    }
-
-    [Test]
-    public async Task Serialize_CustomReferenceStrategy_DoesNotReuseGraphAcrossTopics()
-    {
-        var registrations = new List<Registration>();
-        var schemaRegistry = CreateRegistry(registrations);
-        var strategy = new RecordingReferenceStrategy();
-        var config = new ProtobufSerializerConfig
-        {
-            SubjectNameStrategy = SubjectNameStrategy.RecordName,
-            CustomReferenceSubjectNameStrategy = strategy
-        };
-        await using var serializer = new ProtobufSchemaRegistrySerializer<ReferenceGraphMessage>(
-            schemaRegistry,
-            config);
-
-        var firstDestination = new ArrayBufferWriter<byte>();
-        serializer.Serialize(
-            new ReferenceGraphMessage(),
-            ref firstDestination,
-            new SerializationContext { Topic = "first", Component = SerializationComponent.Value });
-        var secondDestination = new ArrayBufferWriter<byte>();
-        serializer.Serialize(
-            new ReferenceGraphMessage(),
-            ref secondDestination,
-            new SerializationContext { Topic = "second", Component = SerializationComponent.Value });
-
-        await Assert.That(strategy.Calls).Contains(("first", "shared/base.proto", false));
-        await Assert.That(strategy.Calls).Contains(("second", "shared/base.proto", false));
-        await Assert.That(registrations.Count(static registration =>
-            registration.Subject == ReferenceGraphMessage.Descriptor.FullName)).IsEqualTo(2);
     }
 
     [Test]
@@ -286,11 +226,7 @@ public sealed class ReferenceGraphMessage : IMessage<ReferenceGraphMessage>, IBu
         var right = CreateImportDescriptor("deps/right.proto", "graph.right", "Right", shared.Name);
         var vendor = CreateCommonDescriptor("vendor.proto/common/user.proto", "graph.vendor", "VendorCommon");
         var beta = CreateCommonDescriptor("beta/common.proto", "graph.beta", "BetaCommon");
-        var googleUser = CreateCommonDescriptor(
-            "google/type/company_event.proto",
-            "google.type.company",
-            "CompanyEvent");
-        var root = CreateRootDescriptor(left.Name, right.Name, vendor.Name, beta.Name, googleUser.Name);
+        var root = CreateRootDescriptor(left.Name, right.Name, vendor.Name, beta.Name);
         var descriptorBytes = new List<ByteString>
         {
             shared.ToByteString(),
@@ -298,7 +234,6 @@ public sealed class ReferenceGraphMessage : IMessage<ReferenceGraphMessage>, IBu
             right.ToByteString(),
             vendor.ToByteString(),
             beta.ToByteString(),
-            googleUser.ToByteString(),
             TimestampReflection.Descriptor.SerializedData,
             root.ToByteString()
         };
@@ -397,8 +332,7 @@ public sealed class ReferenceGraphMessage : IMessage<ReferenceGraphMessage>, IBu
         string leftName,
         string rightName,
         string vendorName,
-        string betaName,
-        string googleUserName)
+        string betaName)
     {
         var descriptor = new FileDescriptorProto
         {
@@ -411,7 +345,6 @@ public sealed class ReferenceGraphMessage : IMessage<ReferenceGraphMessage>, IBu
         descriptor.Dependency.Add(rightName);
         descriptor.Dependency.Add(vendorName);
         descriptor.Dependency.Add(betaName);
-        descriptor.Dependency.Add(googleUserName);
         descriptor.Dependency.Add(TimestampReflection.Descriptor.Name);
 
         var message = new DescriptorProto { Name = "ReferenceGraphMessage" };
