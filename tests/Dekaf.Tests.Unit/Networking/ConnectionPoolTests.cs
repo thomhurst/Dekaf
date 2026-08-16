@@ -70,7 +70,8 @@ public sealed class ConnectionPoolTests
                     if (status.Count != 1 || status[0].BrokerId != 7)
                         throw new InvalidOperationException("Broker status snapshot was inconsistent.");
                 }
-            }));
+            }))
+            .ToArray();
         var writer = Task.Run(() =>
         {
             for (var i = 0; i < 1_000; i++)
@@ -1000,6 +1001,9 @@ public sealed class ConnectionPoolTests
             await Assert.That(reaped).IsEqualTo(1);
             await Assert.That(created[0].DisposeCount).IsEqualTo(0);
             await Assert.That(created[1].DisposeCount).IsEqualTo(1);
+            var status = ((IConnectionPoolStatusSource)pool).GetBrokerConnectionStatus().Single();
+            await Assert.That(status.ConnectionCount).IsEqualTo(1);
+            await Assert.That(status.ConnectedConnectionCount).IsEqualTo(1);
         }
     }
 

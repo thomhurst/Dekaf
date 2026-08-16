@@ -115,18 +115,18 @@ public sealed class BrokerConnectionStatus
 }
 
 /// <summary>Point-in-time producer backlog and capacity state.</summary>
+/// <param name="BufferedBytes">Bytes currently reserved by buffered records.</param>
+/// <param name="BufferCapacityBytes">Configured producer buffer capacity in bytes.</param>
+/// <param name="UnsealedBatchCount">Number of mutable batches accepting records.</param>
+/// <param name="QueuedBatchCount">Number of sealed batches queued for dispatch.</param>
+/// <param name="InFlightBatchCount">Number of batches dispatched and awaiting completion.</param>
+/// <param name="BufferPressureEventCount">Cumulative number of buffer-pressure events.</param>
 public readonly record struct ProducerBacklogStatus(
-    /// <summary>Bytes currently reserved by buffered records.</summary>
     long BufferedBytes,
-    /// <summary>Configured producer buffer capacity in bytes.</summary>
     ulong BufferCapacityBytes,
-    /// <summary>Number of mutable batches accepting records.</summary>
     int UnsealedBatchCount,
-    /// <summary>Number of sealed batches queued for dispatch.</summary>
     long QueuedBatchCount,
-    /// <summary>Number of batches dispatched and awaiting completion.</summary>
     long InFlightBatchCount,
-    /// <summary>Cumulative number of buffer-pressure events.</summary>
     long BufferPressureEventCount)
 {
     /// <summary>Current buffer utilization. Values above 1 are possible while limits shrink.</summary>

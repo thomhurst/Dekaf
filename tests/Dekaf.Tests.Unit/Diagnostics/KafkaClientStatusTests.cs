@@ -126,7 +126,8 @@ public sealed class KafkaClientStatusTests
                             $"Observed unpublished cluster identity '{identity.ClusterId ?? "<null>"}'.");
                     }
                 }
-            }));
+            }))
+            .ToArray();
         var writer = Task.Run(() =>
         {
             for (var i = 0; i < 1_000; i++)

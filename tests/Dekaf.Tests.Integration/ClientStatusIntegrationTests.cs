@@ -1,5 +1,7 @@
+using System.Net.Sockets;
 using Dekaf.Consumer;
 using Dekaf.Diagnostics;
+using Dekaf.Errors;
 using Dekaf.Networking;
 using Dekaf.Producer;
 using Dekaf.Protocol.Messages;
@@ -185,7 +187,24 @@ public sealed class BrokerConnectionStatusIntegrationTests(RackAwareKafkaContain
             await kafka.StartBrokerAsync(1, cancellationToken);
             brokerStopped = false;
             await pool.RemoveConnectionAsync(1);
-            _ = await pool.GetConnectionAsync(1, cancellationToken);
+            await TestWait.WaitForConditionAsync(
+                async () =>
+                {
+                    try
+                    {
+                        _ = await pool.GetConnectionAsync(1, cancellationToken);
+                        return statusSource.GetBrokerConnectionStatus().Single().State
+                            == BrokerConnectionState.Connected;
+                    }
+                    catch (Exception ex) when (ex is KafkaException or SocketException)
+                    {
+                        return false;
+                    }
+                },
+                static connected => connected,
+                maxRetries: 10,
+                initialDelayMs: 250,
+                description: "client to reconnect after broker restart");
             var reconnected = statusSource.GetBrokerConnectionStatus().Single();
             await Assert.That(reconnected.State).IsEqualTo(BrokerConnectionState.Connected);
             var disconnectedAt = disconnected.LastConnectionStateChangeAtUtc

@@ -1867,7 +1867,11 @@ public sealed partial class ConnectionPool :
         if (group is not null)
         {
             for (var i = 0; i < group.Length; i++)
-                AccumulateConnectionStatus(group[i], ref connections);
+            {
+                var groupedConnection = Volatile.Read(ref group[i]);
+                if (groupedConnection is not null)
+                    AccumulateConnectionStatus(groupedConnection, ref connections);
+            }
         }
         if (_connectionsById.TryGetValue(broker.BrokerId, out var connection)
             && !ContainsReference(group, connection))
