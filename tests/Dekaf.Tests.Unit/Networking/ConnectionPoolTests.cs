@@ -114,6 +114,36 @@ public sealed class ConnectionPoolTests
     }
 
     [Test]
+    public async Task StatusSnapshot_PreservesBrokerDisconnectTimeWhenReplacementFails()
+    {
+        long statusTimestamp = 100;
+        var creationAttempt = 0;
+        var connection = new TestIdleConnection(7, "broker-a", 9092);
+        await using var pool = new ConnectionPool(
+            clientId: "status-test",
+            connectionOptions: new ConnectionOptions
+            {
+                ReconnectBackoff = TimeSpan.FromMilliseconds(1),
+                ReconnectBackoffMax = TimeSpan.FromMilliseconds(1)
+            },
+            connectionsPerBroker: 1,
+            connectionFactory: (_, _, _, _, _) => Interlocked.Increment(ref creationAttempt) == 1
+                ? ValueTask.FromResult<IKafkaConnection>(connection)
+                : ValueTask.FromException<IKafkaConnection>(new IOException("replacement refused")),
+            statusTimestampProvider: () => Volatile.Read(ref statusTimestamp));
+        pool.RegisterBroker(7, "broker-a", 9092);
+        _ = await pool.GetConnectionAsync(7);
+        connection.DisconnectAt(101);
+        Volatile.Write(ref statusTimestamp, 102);
+
+        await Assert.ThrowsAsync<IOException>(async () => await pool.GetConnectionAsync(7));
+
+        var status = ((IConnectionPoolStatusSource)pool).GetBrokerConnectionStatus().Single();
+        await Assert.That(status.State).IsEqualTo(BrokerConnectionState.Disconnected);
+        await Assert.That(GetBrokerStateChangeTimestamp(pool, 7)).IsEqualTo(101);
+    }
+
+    [Test]
     public async Task StatusSnapshot_ReportsControllerEndpointConnection()
     {
         var connection = new TestIdleConnection(-1, "controller-a", 19093);
@@ -131,6 +161,37 @@ public sealed class ConnectionPoolTests
         await Assert.That(status.State).IsEqualTo(BrokerConnectionState.Connected);
         await Assert.That(status.ConnectionCount).IsEqualTo(1);
         await Assert.That(status.ConnectedConnectionCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task StatusSnapshot_PreservesControllerDisconnectTimeWhenReplacementFails()
+    {
+        long statusTimestamp = 100;
+        var creationAttempt = 0;
+        var connection = new TestIdleConnection(-1, "controller-a", 19093);
+        await using var pool = new ConnectionPool(
+            clientId: "status-test",
+            connectionOptions: new ConnectionOptions
+            {
+                ReconnectBackoff = TimeSpan.FromMilliseconds(1),
+                ReconnectBackoffMax = TimeSpan.FromMilliseconds(1)
+            },
+            connectionsPerBroker: 1,
+            connectionFactory: (_, _, _, _, _) => Interlocked.Increment(ref creationAttempt) == 1
+                ? ValueTask.FromResult<IKafkaConnection>(connection)
+                : ValueTask.FromException<IKafkaConnection>(new IOException("replacement refused")),
+            statusTimestampProvider: () => Volatile.Read(ref statusTimestamp));
+        _ = await pool.GetConnectionAsync("controller-a", 19093);
+        connection.DisconnectAt(101);
+        Volatile.Write(ref statusTimestamp, 102);
+
+        await Assert.ThrowsAsync<IOException>(async () =>
+            await pool.GetConnectionAsync("controller-a", 19093));
+
+        var status = ((IConnectionPoolStatusSource)pool).GetEndpointConnectionStatus(
+            [new ConnectionStatusEndpoint(2, "controller-a", 19093)]).Single();
+        await Assert.That(status.State).IsEqualTo(BrokerConnectionState.Disconnected);
+        await Assert.That(GetEndpointStateChangeTimestamp(pool, "controller-a", 19093)).IsEqualTo(101);
     }
 
     [Test]
@@ -2628,6 +2689,12 @@ public sealed class ConnectionPoolTests
             Volatile.Write(ref _lastConnectionStateChangeTimestampMs, MonotonicClock.GetMilliseconds());
             Volatile.Write(ref _connected, 0);
             return ValueTask.CompletedTask;
+        }
+
+        public void DisconnectAt(long timestampMs)
+        {
+            Volatile.Write(ref _lastConnectionStateChangeTimestampMs, timestampMs);
+            Volatile.Write(ref _connected, 0);
         }
     }
 }

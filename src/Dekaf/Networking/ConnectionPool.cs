@@ -1157,6 +1157,7 @@ public sealed partial class ConnectionPool :
                 // Dispose disconnected connection before creating a new one to avoid socket/pipe leaks.
                 if (existing is not null)
                 {
+                    PreserveRemovedConnectionState(existing, brokerId, endpoint);
                     _connectionsByEndpoint.TryRemove(endpoint, out _);
                     if (brokerId >= 0)
                         _connectionsById.TryRemove(brokerId, out _);
@@ -1718,6 +1719,27 @@ public sealed partial class ConnectionPool :
 
     private void RecordBrokerConnectionStateChange(int brokerId) =>
         GetBrokerConnectionRuntimeState(brokerId).RecordStateChange();
+
+    private void PreserveRemovedConnectionState(
+        IKafkaConnection connection,
+        int brokerId,
+        EndpointKey endpoint)
+    {
+        var runtimeState = brokerId >= 0
+            ? GetBrokerConnectionRuntimeState(brokerId)
+            : GetEndpointConnectionRuntimeState(endpoint);
+        if (connection is IKafkaConnectionStatusSource statusSource)
+        {
+            var timestampMs = statusSource.LastConnectionStateChangeTimestampMs;
+            if (timestampMs > 0)
+            {
+                runtimeState.RecordStateChange(timestampMs);
+                return;
+            }
+        }
+
+        runtimeState.RecordStateChange();
+    }
 
     private BrokerConnectionRuntimeState GetBrokerConnectionRuntimeState(int brokerId)
     {
@@ -2576,8 +2598,23 @@ public sealed partial class ConnectionPool :
         public long LastErrorSequence => Volatile.Read(ref _lastErrorSequence);
         public string? LastError => Volatile.Read(ref _lastError);
 
-        public void RecordStateChange() =>
-            Volatile.Write(ref _lastStateChangeTimestampMs, _timestampProvider());
+        public void RecordStateChange() => RecordStateChange(_timestampProvider());
+
+        public void RecordStateChange(long timestampMs)
+        {
+            var current = Volatile.Read(ref _lastStateChangeTimestampMs);
+            while (timestampMs > current)
+            {
+                var observed = Interlocked.CompareExchange(
+                    ref _lastStateChangeTimestampMs,
+                    timestampMs,
+                    current);
+                if (observed == current)
+                    return;
+
+                current = observed;
+            }
+        }
 
         public void RecordFailure(string error, long sequence)
         {
