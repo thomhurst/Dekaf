@@ -317,7 +317,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             throw new SchemaRegistryException((int)response.StatusCode, "Schema Registry returned an empty schema response");
 
         var registeredSchema = CreateSchema(result);
-        CacheSchema(result.Id, subject, schema, effectiveNormalize);
+        CacheSchema(result.Id, subject, schema, effectiveNormalize, schemaById: registeredSchema);
 
         return new RegisteredSchema
         {
@@ -378,7 +378,12 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         return id;
     }
 
-    internal void CacheSchema(int id, string? subject, Schema schema, bool normalize = false)
+    internal void CacheSchema(
+        int id,
+        string? subject,
+        Schema schema,
+        bool normalize = false,
+        Schema? schemaById = null)
     {
         if (_maxCachedSchemas == 0)
             return;
@@ -391,7 +396,10 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
                 _idBySchemaCache.Clear();
             }
 
-            _schemaByIdCache.TryAdd(id, schema);
+            if (schemaById is not null)
+                _schemaByIdCache[id] = schemaById;
+            else
+                _schemaByIdCache.TryAdd(id, schema);
             if (subject is not null)
             {
                 _idBySchemaCache.TryAdd((subject, schema, normalize), id);

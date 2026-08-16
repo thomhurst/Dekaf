@@ -99,7 +99,7 @@ public sealed class SchemaRegistryDataContractTests
               "subject": "shared/common.proto",
               "version": 4,
               "id": 42,
-              "schema": "descriptor-base64",
+              "schema": "canonical-descriptor-base64",
               "schemaType": "PROTOBUF"
             }
             """);
@@ -110,8 +110,9 @@ public sealed class SchemaRegistryDataContractTests
         var schema = new Schema
         {
             SchemaType = SchemaType.Protobuf,
-            SchemaString = "descriptor-base64"
+            SchemaString = "request-descriptor-base64"
         };
+        client.CacheSchema(42, subject: null, schema);
 
         var registered = await client.LookupSchemaAsync(
             "shared/common.proto",
@@ -121,12 +122,15 @@ public sealed class SchemaRegistryDataContractTests
 
         await Assert.That(registered.Id).IsEqualTo(42);
         await Assert.That(registered.Version).IsEqualTo(4);
+        await Assert.That(registered.Schema.SchemaString).IsEqualTo("canonical-descriptor-base64");
+        await Assert.That(client.TryGetCachedSchema(42, out var cachedSchema)).IsTrue();
+        await Assert.That(cachedSchema.SchemaString).IsEqualTo("canonical-descriptor-base64");
         await Assert.That(handler.LastRequestUri!.AbsolutePath)
             .IsEqualTo("/subjects/shared%2Fcommon.proto");
         await Assert.That(handler.LastRequestUri.Query).IsEqualTo("?normalize=true&deleted=false");
         using var document = JsonDocument.Parse(handler.LastRequestBody!);
         await Assert.That(document.RootElement.GetProperty("schema").GetString())
-            .IsEqualTo("descriptor-base64");
+            .IsEqualTo("request-descriptor-base64");
         await Assert.That(document.RootElement.GetProperty("schemaType").GetString())
             .IsEqualTo("PROTOBUF");
     }

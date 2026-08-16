@@ -76,6 +76,13 @@ var producer = await Kafka.CreateProducer<string, OrderProto>()
     .BuildAsync();
 ```
 
+Protobuf imports use Schema Registry references by default. If you provide a custom
+`ISchemaRegistryClient`, implement `LookupSchemaAsync`; the serializer uses exact lookup to obtain
+the assigned version for every non-well-known imported `.proto` schema, including after automatic
+registration. The interface's default implementation throws `NotSupportedException` to identify
+custom clients that need updating. Set `UseSchemaReferences = false` only to retain the legacy
+registration behavior that omits references.
+
 ## Schema Registry Configuration
 
 ```csharp
