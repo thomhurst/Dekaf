@@ -137,7 +137,7 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
         }
         catch (Exception ex) when (IsAzureFailure(ex))
         {
-            throw new SchemaRegistryKmsException("Azure Key Vault wrap failed.", ex);
+            throw new SchemaRegistryKmsException("Azure Key Vault wrap failed.");
         }
         finally
         {
@@ -179,7 +179,7 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
         }
         catch (Exception ex) when (IsAzureFailure(ex))
         {
-            throw new SchemaRegistryKmsException("Azure Key Vault unwrap failed.", ex);
+            throw new SchemaRegistryKmsException("Azure Key Vault unwrap failed.");
         }
         finally
         {
@@ -220,7 +220,7 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
     private static KeyReference ParseKeyUri(string? value, string description)
     {
         if (!Uri.TryCreate(value, UriKind.Absolute, out var keyId)
-            || keyId.Scheme is not ("http" or "https")
+            || !string.Equals(keyId.Scheme, Uri.UriSchemeHttps, StringComparison.Ordinal)
             || keyId.UserInfo.Length != 0
             || keyId.Query.Length != 0
             || keyId.Fragment.Length != 0)

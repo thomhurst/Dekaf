@@ -422,7 +422,12 @@ using Dekaf.SchemaRegistry.Kms.Azure;
 
 var credential = new DefaultAzureCredential();
 var azureKms = new AzureKeyVaultKmsProvider(credential);
-var csfle = new SchemaRegistryCsfleRuleHandler(schemaRegistry, [azureKms]);
+var confluentAzureKms = new AzureKeyVaultKmsProvider(
+    credential,
+    type: AzureKeyVaultKmsProvider.ConfluentType);
+var csfle = new SchemaRegistryCsfleRuleHandler(
+    schemaRegistry,
+    [azureKms, confluentAzureKms]);
 ```
 
 `DefaultAzureCredential` uses the standard Azure credential chain. Production applications can
@@ -431,11 +436,12 @@ instead pass a specific credential such as `ManagedIdentityCredential` or
 caller-owned. For complete client-construction control, implement
 `IAzureKeyVaultCryptographyClientFactory`.
 
-Use an absolute key identifier with `/keys/<name>` or `/keys/<name>/<version>`, for example
-`https://payments.vault.azure.net/keys/orders-kek`. The provider accepts KMS types `azure-kv` and
-Confluent-compatible `azure-kms`; matching `azure-kv://` and `azure-kms://` prefixes on the key
-identifier are optional. It uses RSA-OAEP-256. Prefer a versioned key identifier so existing data
-keeps decrypting after rotation. For a versionless key, set the KEK property
+Use an absolute HTTPS key identifier with `/keys/<name>` or `/keys/<name>/<version>`, for example
+`https://payments.vault.azure.net/keys/orders-kek`. Each provider instance registers one KMS type;
+register the default instance for `azure-kv`, the `ConfluentType` instance for Confluent-compatible
+`azure-kms`, or both as shown above. Matching `azure-kv://` and `azure-kms://` prefixes on the key
+identifier are optional. The provider uses RSA-OAEP-256. Prefer a versioned key identifier so
+existing data keeps decrypting after rotation. For a versionless key, set the KEK property
 `encrypt.azure.key.version.save=true` to embed the exact Azure key version in newly wrapped key
 material.
 

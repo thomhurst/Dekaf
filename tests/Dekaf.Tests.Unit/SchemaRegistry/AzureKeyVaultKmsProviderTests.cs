@@ -130,7 +130,8 @@ public class AzureKeyVaultKmsProviderTests
 
         await Assert.That(exception!.Message).IsEqualTo("Azure Key Vault wrap failed.");
         await Assert.That(exception.Message).DoesNotContain("sensitive");
-        await Assert.That(exception.InnerException).IsSameReferenceAs(denied);
+        await Assert.That(exception.InnerException).IsNull();
+        await Assert.That(exception.ToString()).DoesNotContain("sensitive");
     }
 
     [Test]
@@ -201,11 +202,13 @@ public class AzureKeyVaultKmsProviderTests
     }
 
     [Test]
-    public async Task InvalidKeyUri_IsRejectedBeforeClientCreation()
+    [Arguments("https://payments.vault.azure.net/secrets/not-a-key")]
+    [Arguments("http://payments.vault.azure.net/keys/kek")]
+    public async Task InvalidKeyUri_IsRejectedBeforeClientCreation(string keyUri)
     {
         var factory = new RecordingFactory(_ => CreateClient(KeyUri));
         var provider = new AzureKeyVaultKmsProvider(factory);
-        var reference = CreateKeyReference("https://payments.vault.azure.net/secrets/not-a-key");
+        var reference = CreateKeyReference(keyUri);
 
         await Assert.That(async () => await provider.WrapKeyAsync(new byte[] { 1 }, reference))
             .Throws<SchemaRegistryKmsException>();
