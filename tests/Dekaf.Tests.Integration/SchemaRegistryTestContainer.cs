@@ -177,17 +177,23 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
     /// <summary>
     /// Creates a unique topic for a test and returns the topic name.
     /// </summary>
-    public async Task<string> CreateTestTopicAsync(int partitions = 1)
+    public async Task<string> CreateTestTopicAsync(
+        int partitions = 1,
+        IReadOnlyDictionary<string, string>? configs = null)
     {
         var topicName = $"test-topic-{Guid.NewGuid():N}";
-        await CreateTopicAsync(topicName, partitions).ConfigureAwait(false);
+        await CreateTopicAsync(topicName, partitions, configs: configs).ConfigureAwait(false);
         return topicName;
     }
 
     /// <summary>
     /// Creates a topic with the specified name.
     /// </summary>
-    public async Task CreateTopicAsync(string topicName, int partitions = 1, int replicationFactor = 1)
+    public async Task CreateTopicAsync(
+        string topicName,
+        int partitions = 1,
+        int replicationFactor = 1,
+        IReadOnlyDictionary<string, string>? configs = null)
     {
         if (_createdTopics.ContainsKey(topicName))
         {
@@ -208,7 +214,8 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
                 {
                     Name = topicName,
                     NumPartitions = partitions,
-                    ReplicationFactor = (short)replicationFactor
+                    ReplicationFactor = (short)replicationFactor,
+                    Configs = configs
                 }
             ]).ConfigureAwait(false);
         }
