@@ -1046,6 +1046,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private readonly Queue<PendingFetchData> _pausedPendingFetches = new();
     private readonly Queue<PendingFetchData> _pendingFetchScratch = new();
     private int _observedPausedSnapshotVersion;
+    private int _recordIterationEpochSeed;
     private int _pendingFetchDepth;
     // ConsumeOne callbacks run on the documented single application thread. If one
     // reentrantly clears the queue, defer this fetch's disposal until all borrowed
@@ -2088,6 +2089,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
             await EnsureAssignmentForPollAsync(cancellationToken).ConfigureAwait(false);
             RecoverAndClearFetchBufferForPendingCoordinatorRevocations();
+            // An odd seed forces slow validation when a marker is published but not yet clearable.
+            // A later publication changes the captured epoch and reaches the same slow path.
+            var recordIterationEpochSeed = Volatile.Read(ref _batchIterationEpoch.Version);
+            if (Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent) != 0)
+                recordIterationEpochSeed |= 1;
+            _recordIterationEpochSeed = recordIterationEpochSeed;
 
             if (_assignmentSnapshot.Count == 0)
             {
@@ -2171,9 +2178,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                 while (_pendingFetches.Count > 0)
                 {
-                    // Capture before applying the snapshot. A concurrent Pause either
-                    // appears in that snapshot or changes the epoch after this capture.
-                    var recordIterationVersion = Volatile.Read(ref _batchIterationEpoch.Version);
+                    // Start from the last recovered epoch. A control-plane publication during
+                    // a prefetch wait then forces validation before the first record is delivered.
+                    var recordIterationVersion = _recordIterationEpochSeed;
                     PreparePendingFetchesForDelivery();
                     if (_pendingFetches.Count == 0)
                         break;

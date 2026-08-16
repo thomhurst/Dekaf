@@ -316,6 +316,67 @@ public sealed class ConsumerPauseResumeCacheTests
     }
 
     [Test]
+    public async Task ConsumeAsync_RevocationDuringPrefetchWait_SuppressesRevokedPartition()
+    {
+        var revokedPartition = new TopicPartition(PrefetchedTopic, 0);
+        var activePartition = new TopicPartition(PrefetchedTopic, 1);
+        using var waitEntered = new ManualResetEventSlim();
+        using var releaseWait = new ManualResetEventSlim();
+        var prefetchBuffer = new MpscFetchBuffer(
+            4,
+            afterProducerWaiterCountIncrementedForTesting: null,
+            beforeConsumerWaitSpinForTesting: () =>
+            {
+                waitEntered.Set();
+                releaseWait.Wait();
+            });
+        var consumer = new KafkaConsumer<string, string>(
+            new ConsumerOptions
+            {
+                BootstrapServers = ["localhost:9092"],
+                QueuedMinMessages = 2
+            },
+            Serializers.String,
+            Serializers.String);
+        consumer.Assign([revokedPartition, activePartition]);
+        GetField("_initialized").SetValue(consumer, true);
+        GetField("_prefetchTask").SetValue(consumer, Task.CompletedTask);
+        var fetchPositions = (ConcurrentDictionary<TopicPartition, long>)
+            GetField("_fetchPositions").GetValue(consumer)!;
+        fetchPositions[revokedPartition] = 0;
+        fetchPositions[activePartition] = 0;
+        var prefetchBufferField = GetField("_prefetchBuffer");
+        var originalPrefetchBuffer = (MpscFetchBuffer)prefetchBufferField.GetValue(consumer)!;
+        prefetchBufferField.SetValue(consumer, prefetchBuffer);
+        originalPrefetchBuffer.Dispose();
+
+        await using var ownedConsumer = consumer;
+        await using var records = consumer.ConsumeAsync().GetAsyncEnumerator();
+        var moveNext = Task.Run(() => records.MoveNextAsync().AsTask());
+        var stagePendingClear = typeof(KafkaConsumer<string, string>).GetMethod(
+            "StagePendingFetchClear",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("StagePendingFetchClear method not found");
+
+        try
+        {
+            await Assert.That(waitEntered.Wait(TimeSpan.FromSeconds(5))).IsTrue();
+            stagePendingClear.Invoke(consumer, [revokedPartition]);
+            await Assert.That(prefetchBuffer.TryWrite(CreatePendingFetch(revokedPartition, 10, 1))).IsTrue();
+            await Assert.That(prefetchBuffer.TryWrite(CreatePendingFetch(activePartition, 20, 1))).IsTrue();
+        }
+        finally
+        {
+            releaseWait.Set();
+        }
+
+        await Assert.That(await moveNext.WaitAsync(TimeSpan.FromSeconds(5))).IsTrue();
+        await Assert.That(records.Current.Topic).IsEqualTo(activePartition.Topic);
+        await Assert.That(records.Current.Partition).IsEqualTo(activePartition.Partition);
+        await Assert.That(records.Current.Offset).IsEqualTo(20);
+    }
+
+    [Test]
     public async Task ConsumeBatchAsync_PausedPrefetchedPartition_PreservesRecordsAndAllowsOtherPartition()
     {
         var pausedPartition = new TopicPartition(PrefetchedTopic, 0);
