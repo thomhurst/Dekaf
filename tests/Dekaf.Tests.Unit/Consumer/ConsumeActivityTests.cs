@@ -8,12 +8,12 @@ using Dekaf.Serialization;
 namespace Dekaf.Tests.Unit.Consumer;
 
 // Drives the real KafkaConsumer.StartConsumeActivity to pin the semconv contract at the
-// call site (span kind, tombstone, body size), not just the constants it uses.
+// call site (span kind, tombstone, and operation), not just the constants it uses.
 [NotInParallel("ActivityListener")]
 public sealed class ConsumeActivityTests
 {
     [Test]
-    public async Task StartConsumeActivity_ProcessSpan_TombstoneRecord_SetsConsumerKindTombstoneAndZeroBodySize()
+    public async Task StartConsumeActivity_ProcessSpan_TombstoneRecord_SetsConsumerKindAndTombstone()
     {
         using var listener = CreateListener();
 
@@ -21,7 +21,7 @@ public sealed class ConsumeActivityTests
         using var pending = PendingFetchData.Create("orders", partitionIndex: 0, batches: Array.Empty<RecordBatch>());
 
         using var activity = InvokeStartConsumeActivity(
-            consumer, pending, offset: 42, valueLength: 0, isTombstone: true, isProcessSpan: true);
+            consumer, pending, offset: 42, isTombstone: true, isProcessSpan: true);
 
         await Assert.That(activity).IsNotNull();
         // Streaming-path process span: brackets the caller's handling of the record,
@@ -31,12 +31,12 @@ public sealed class ConsumeActivityTests
         await Assert.That(activity.GetTagItem("messaging.operation.name")).IsEqualTo("process");
         await Assert.That(activity.GetTagItem("messaging.operation.type")).IsEqualTo("process");
         await Assert.That((bool?)activity.GetTagItem("messaging.kafka.message.tombstone")).IsTrue();
-        await Assert.That(activity.GetTagItem("messaging.message.body.size")).IsEqualTo(0);
+        await Assert.That(activity.GetTagItem("messaging.message.body.size")).IsNull();
         await Assert.That(activity.GetTagItem("messaging.kafka.offset")).IsEqualTo(42L);
     }
 
     [Test]
-    public async Task StartConsumeActivity_ProcessSpan_RegularRecord_SetsBodySizeToValueLengthWithoutTombstone()
+    public async Task StartConsumeActivity_ProcessSpan_RegularRecord_OmitsOptInBodySizeAndTombstone()
     {
         using var listener = CreateListener();
 
@@ -44,11 +44,11 @@ public sealed class ConsumeActivityTests
         using var pending = PendingFetchData.Create("orders", partitionIndex: 0, batches: Array.Empty<RecordBatch>());
 
         using var activity = InvokeStartConsumeActivity(
-            consumer, pending, offset: 7, valueLength: 512, isTombstone: false, isProcessSpan: true);
+            consumer, pending, offset: 7, isTombstone: false, isProcessSpan: true);
 
         await Assert.That(activity).IsNotNull();
         await Assert.That(activity!.Kind).IsEqualTo(ActivityKind.Consumer);
-        await Assert.That(activity.GetTagItem("messaging.message.body.size")).IsEqualTo(512);
+        await Assert.That(activity.GetTagItem("messaging.message.body.size")).IsNull();
         await Assert.That(activity.GetTagItem("messaging.kafka.message.tombstone")).IsNull();
         await Assert.That(activity.GetTagItem("messaging.kafka.cluster.id")).IsNull();
     }
@@ -62,7 +62,7 @@ public sealed class ConsumeActivityTests
         using var pending = PendingFetchData.Create("orders", partitionIndex: 0, batches: Array.Empty<RecordBatch>());
 
         using var activity = InvokeStartConsumeActivity(
-            consumer, pending, offset: 9, valueLength: 64, isTombstone: false, isProcessSpan: false);
+            consumer, pending, offset: 9, isTombstone: false, isProcessSpan: false);
 
         await Assert.That(activity).IsNotNull();
         // ConsumeOne-path receive span: the activity ends before the record is
@@ -71,7 +71,7 @@ public sealed class ConsumeActivityTests
         await Assert.That(activity.OperationName).IsEqualTo("poll orders");
         await Assert.That(activity.GetTagItem("messaging.operation.name")).IsEqualTo("poll");
         await Assert.That(activity.GetTagItem("messaging.operation.type")).IsEqualTo("receive");
-        await Assert.That(activity.GetTagItem("messaging.message.body.size")).IsEqualTo(64);
+        await Assert.That(activity.GetTagItem("messaging.message.body.size")).IsNull();
         await Assert.That(activity.GetTagItem("messaging.kafka.offset")).IsEqualTo(9L);
     }
 
@@ -100,7 +100,6 @@ public sealed class ConsumeActivityTests
         KafkaConsumer<string, string> consumer,
         PendingFetchData pending,
         long offset,
-        int valueLength,
         bool isTombstone,
         bool isProcessSpan)
     {
@@ -110,6 +109,6 @@ public sealed class ConsumeActivityTests
 
         return (Activity?)method!.Invoke(
             consumer,
-            [pending, null, offset, valueLength, isTombstone, isProcessSpan]);
+            [pending, null, offset, isTombstone, isProcessSpan]);
     }
 }

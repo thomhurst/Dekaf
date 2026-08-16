@@ -247,7 +247,7 @@ public sealed class KafkaClientStatusTests
         var method = typeof(KafkaConsumer<string, string>).GetMethod(
             "StartConsumeActivity",
             BindingFlags.NonPublic | BindingFlags.Instance)!;
-        return (Activity?)method.Invoke(consumer, [pending, null, 42L, 10, false, false]);
+        return (Activity?)method.Invoke(consumer, [pending, null, 42L, false, false]);
     }
 
     private static T GetField<T>(object instance, string name) =>

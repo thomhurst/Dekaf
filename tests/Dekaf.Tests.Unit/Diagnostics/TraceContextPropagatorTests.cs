@@ -40,7 +40,8 @@ public sealed class TraceContextPropagatorTests
 
         var traceparent = result!.GetFirstAsString("traceparent");
         await Assert.That(traceparent).IsNotNull();
-        await Assert.That(traceparent!).StartsWith("00-");
+        await Assert.That(traceparent).IsEqualTo(
+            $"00-{activity!.TraceId}-{activity.SpanId}-{(activity.Recorded ? "01" : "00")}");
     }
 
     [Test]
