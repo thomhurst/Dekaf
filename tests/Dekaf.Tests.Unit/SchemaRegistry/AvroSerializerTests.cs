@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.ObjectModel;
 using System.Numerics;
+using System.Text;
 using Avro.Generic;
 using Avro.IO;
 using Dekaf.SchemaRegistry;
@@ -326,6 +327,32 @@ public sealed class AvroSerializerTests
             """);
         var record = new GenericRecord(schema);
         record.Add("value", new DateTime(2026, 8, 16, 0, 0, 0, DateTimeKind.Utc));
+
+        await AssertSerializedPayloadMatchesApache(serializer, schema, record);
+    }
+
+    [Test]
+    public async Task Serializer_GenericRecord_CustomLogicalUnion_PrecedesPrimitiveBranch()
+    {
+        Avro.Util.LogicalTypeFactory.Instance.Register(new StringBytesLogicalType());
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry);
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(
+            $$"""
+            {
+                "type": "record",
+                "name": "CustomLogicalUnionRecord",
+                "fields": [{
+                    "name": "value",
+                    "type": [
+                        { "type": "bytes", "logicalType": "{{StringBytesLogicalType.LogicalName}}" },
+                        "string"
+                    ]
+                }]
+            }
+            """);
+        var record = new GenericRecord(schema);
+        record.Add("value", "logical-value");
 
         await AssertSerializedPayloadMatchesApache(serializer, schema, record);
     }
@@ -1125,5 +1152,20 @@ public sealed class AvroSerializerTests
         serializer.Serialize(actualRecord, ref buffer, CreateContext());
 
         await Assert.That(buffer.WrittenSpan.Slice(5).SequenceEqual(expected)).IsTrue();
+    }
+
+    private sealed class StringBytesLogicalType() : Avro.Util.LogicalType(LogicalName)
+    {
+        internal const string LogicalName = "dekaf-string-bytes";
+
+        public override object ConvertToBaseValue(object logicalValue, Avro.LogicalSchema schema) =>
+            Encoding.UTF8.GetBytes((string)logicalValue);
+
+        public override object ConvertToLogicalValue(object baseValue, Avro.LogicalSchema schema) =>
+            Encoding.UTF8.GetString((byte[])baseValue);
+
+        public override Type GetCSharpType(bool nullible) => typeof(string);
+
+        public override bool IsInstanceOfLogicalType(object logicalValue) => logicalValue is string;
     }
 }
