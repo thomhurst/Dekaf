@@ -736,7 +736,10 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
 
     private void WriteUnion(global::Avro.UnionSchema schema, object? value, AllocationFreeBinaryEncoder encoder)
     {
-        var branch = _writerCache.GetUnion(schema).Resolve(value);
+        var union = _writerCache.GetUnion(schema);
+        var branch = union.HasConditionalBranches
+            ? union.ResolveConditional(value)
+            : union.Resolve(value);
         encoder.WriteUnionIndex(branch.Index);
         WriteValue(branch.Schema, value, encoder);
     }
@@ -980,6 +983,7 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
         private readonly Dictionary<global::Avro.SchemaName, UnionBranch> _recordBranches = new();
         private readonly Dictionary<global::Avro.SchemaName, UnionBranch> _enumBranches = new();
         private readonly Dictionary<global::Avro.SchemaName, UnionBranch> _fixedBranches = new();
+        private readonly Dictionary<Type, ConditionalUnionBranch>? _conditionalBranches;
         private readonly UnionBranch _arrayBranch;
         private readonly UnionBranch _booleanBranch;
         private readonly UnionBranch _bytesBranch;
@@ -1009,6 +1013,7 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
             UnionBranch longBranch = default;
             UnionBranch stringBranch = default;
             UnionBranch timeSpanBranch = default;
+            Dictionary<Type, ConditionalUnionBranch>? conditionalBranches = null;
             for (var i = 0; i < schema.Count; i++)
             {
                 var branch = schema[i];
@@ -1019,25 +1024,25 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
                         NullIndex = i;
                         break;
                     case global::Avro.Schema.Type.Boolean:
-                        SetFirst(ref booleanBranch, resolved);
+                        SetCompatibleBranch(typeof(bool), ref booleanBranch, resolved, null, ref conditionalBranches);
                         break;
                     case global::Avro.Schema.Type.Int:
-                        SetFirst(ref intBranch, resolved);
+                        SetCompatibleBranch(typeof(int), ref intBranch, resolved, null, ref conditionalBranches);
                         break;
                     case global::Avro.Schema.Type.Long:
-                        SetFirst(ref longBranch, resolved);
+                        SetCompatibleBranch(typeof(long), ref longBranch, resolved, null, ref conditionalBranches);
                         break;
                     case global::Avro.Schema.Type.Float:
-                        SetFirst(ref floatBranch, resolved);
+                        SetCompatibleBranch(typeof(float), ref floatBranch, resolved, null, ref conditionalBranches);
                         break;
                     case global::Avro.Schema.Type.Double:
-                        SetFirst(ref doubleBranch, resolved);
+                        SetCompatibleBranch(typeof(double), ref doubleBranch, resolved, null, ref conditionalBranches);
                         break;
                     case global::Avro.Schema.Type.Bytes:
-                        SetFirst(ref bytesBranch, resolved);
+                        SetCompatibleBranch(typeof(byte[]), ref bytesBranch, resolved, null, ref conditionalBranches);
                         break;
                     case global::Avro.Schema.Type.String:
-                        SetFirst(ref stringBranch, resolved);
+                        SetCompatibleBranch(typeof(string), ref stringBranch, resolved, null, ref conditionalBranches);
                         break;
                     case global::Avro.Schema.Type.Record:
                     case global::Avro.Schema.Type.Error:
@@ -1058,54 +1063,63 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
                             _mapBranch = resolved;
                         break;
                     case global::Avro.Schema.Type.Logical:
-                        var type = ((global::Avro.LogicalSchema)branch).LogicalType.GetCSharpType(nullible: false);
+                        var logical = (global::Avro.LogicalSchema)branch;
+                        var type = logical.LogicalType.GetCSharpType(nullible: false);
+                        var conditional = IsSpecializedLogicalType(logical.LogicalType) ? null : logical;
                         if (type == typeof(bool))
                         {
-                            SetFirst(ref booleanBranch, resolved);
+                            SetCompatibleBranch(type, ref booleanBranch, resolved, conditional, ref conditionalBranches);
                         }
                         else if (type == typeof(int))
                         {
-                            SetFirst(ref intBranch, resolved);
+                            SetCompatibleBranch(type, ref intBranch, resolved, conditional, ref conditionalBranches);
                         }
                         else if (type == typeof(long))
                         {
-                            SetFirst(ref longBranch, resolved);
+                            SetCompatibleBranch(type, ref longBranch, resolved, conditional, ref conditionalBranches);
                         }
                         else if (type == typeof(float))
                         {
-                            SetFirst(ref floatBranch, resolved);
+                            SetCompatibleBranch(type, ref floatBranch, resolved, conditional, ref conditionalBranches);
                         }
                         else if (type == typeof(double))
                         {
-                            SetFirst(ref doubleBranch, resolved);
+                            SetCompatibleBranch(type, ref doubleBranch, resolved, conditional, ref conditionalBranches);
                         }
                         else if (type == typeof(byte[]))
                         {
-                            SetFirst(ref bytesBranch, resolved);
+                            SetCompatibleBranch(type, ref bytesBranch, resolved, conditional, ref conditionalBranches);
                         }
                         else if (type == typeof(string))
                         {
-                            SetFirst(ref stringBranch, resolved);
+                            SetCompatibleBranch(type, ref stringBranch, resolved, conditional, ref conditionalBranches);
                         }
                         else if (type == typeof(DateTime))
                         {
-                            SetFirst(ref dateTimeBranch, resolved);
+                            SetCompatibleBranch(type, ref dateTimeBranch, resolved, conditional, ref conditionalBranches);
                         }
                         else if (type == typeof(TimeSpan))
                         {
-                            SetFirst(ref timeSpanBranch, resolved);
+                            SetCompatibleBranch(type, ref timeSpanBranch, resolved, conditional, ref conditionalBranches);
                         }
                         else if (type == typeof(Guid))
                         {
-                            SetFirst(ref guidBranch, resolved);
+                            SetCompatibleBranch(type, ref guidBranch, resolved, conditional, ref conditionalBranches);
                         }
                         else if (type == typeof(global::Avro.AvroDecimal))
                         {
-                            SetFirst(ref decimalBranch, resolved);
+                            SetCompatibleBranch(type, ref decimalBranch, resolved, conditional, ref conditionalBranches);
                         }
                         else
                         {
-                            _typedBranches.TryAdd(type, resolved);
+                            if (!_typedBranches.TryAdd(type, resolved) && conditional is not null)
+                                throw UnsupportedConditionalBranches(type);
+
+                            if (conditional is not null)
+                            {
+                                conditionalBranches ??= new Dictionary<Type, ConditionalUnionBranch>();
+                                conditionalBranches.Add(type, new ConditionalUnionBranch(resolved, conditional, default));
+                            }
                         }
                         break;
                 }
@@ -1122,14 +1136,19 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
             _timeSpanBranch = timeSpanBranch;
             _guidBranch = guidBranch;
             _decimalBranch = decimalBranch;
+            _conditionalBranches = conditionalBranches;
         }
 
         public global::Avro.UnionSchema Schema => _schema;
+
+        public bool HasConditionalBranches => _conditionalBranches is not null;
 
         public int NullIndex { get; }
 
         public bool TryGetValueBranch(Type type, out UnionBranch branch)
         {
+            ThrowIfConditionalValueBranch(type);
+
             if (type == typeof(bool)) branch = _booleanBranch;
             else if (type == typeof(int)) branch = _intBranch;
             else if (type == typeof(long)) branch = _longBranch;
@@ -1146,6 +1165,8 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
 
         public UnionBranch GetValueBranch(Type type)
         {
+            ThrowIfConditionalValueBranch(type);
+
             UnionBranch branch;
             if (type == typeof(bool)) branch = _booleanBranch;
             else if (type == typeof(int)) branch = _intBranch;
@@ -1203,22 +1224,83 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
             }
         }
 
+        public UnionBranch ResolveConditional(object? value)
+        {
+            if (value is not null &&
+                _conditionalBranches!.TryGetValue(value.GetType(), out var conditional))
+            {
+                if (conditional.LogicalSchema.LogicalType.IsInstanceOfLogicalType(value))
+                    return conditional.Primary;
+                if (conditional.Fallback.Schema is not null)
+                    return conditional.Fallback;
+                throw NoMatch(value);
+            }
+
+            return Resolve(value);
+        }
+
         private UnionBranch FirstCompatibleTypedBranch(Type type, UnionBranch schemaBranch) =>
             _typedBranches.TryGetValue(type, out var typedBranch) && typedBranch.Index < schemaBranch.Index
                 ? typedBranch
                 : schemaBranch;
 
-        private static void SetFirst(ref UnionBranch target, UnionBranch branch)
+        private static void SetCompatibleBranch(
+            Type type,
+            ref UnionBranch target,
+            UnionBranch branch,
+            global::Avro.LogicalSchema? conditional,
+            ref Dictionary<Type, ConditionalUnionBranch>? conditionalBranches)
         {
             if (target.Schema is null)
+            {
                 target = branch;
+                if (conditional is not null)
+                {
+                    conditionalBranches ??= new Dictionary<Type, ConditionalUnionBranch>();
+                    conditionalBranches.Add(type, new ConditionalUnionBranch(branch, conditional, default));
+                }
+                return;
+            }
+
+            if (conditionalBranches is null ||
+                !conditionalBranches.TryGetValue(type, out var existing) ||
+                existing.Fallback.Schema is not null)
+                return;
+
+            if (conditional is not null)
+                throw UnsupportedConditionalBranches(type);
+
+            conditionalBranches[type] = existing with { Fallback = branch };
         }
+
+        private void ThrowIfConditionalValueBranch(Type type)
+        {
+            if (_conditionalBranches?.ContainsKey(type) == true)
+            {
+                throw new global::Avro.AvroTypeException(
+                    $"Union {_schema} uses a value-dependent custom logical branch for {type}; " +
+                    "allocation-free value-type collection serialization cannot evaluate it without boxing.");
+            }
+        }
+
+        private static bool IsSpecializedLogicalType(global::Avro.Util.LogicalType logicalType) =>
+            logicalType is Date or TimestampMillisecond or LocalTimestampMillisecond or
+                TimestampMicrosecond or LocalTimestampMicrosecond or
+                TimeMillisecond or TimeMicrosecond or Uuid or global::Avro.Util.Decimal;
+
+        private static global::Avro.AvroTypeException UnsupportedConditionalBranches(Type type) =>
+            new($"Union contains multiple value-dependent custom logical branches for {type}.");
 
         private global::Avro.AvroException NoMatch(object? value) =>
             new($"Cannot find a union match for {value?.GetType()} in {_schema}.");
     }
 
     private readonly record struct UnionBranch(int Index, global::Avro.Schema Schema);
+
+    private readonly record struct ConditionalUnionBranch(
+        UnionBranch Primary,
+        global::Avro.LogicalSchema LogicalSchema,
+        UnionBranch Fallback);
 
     private sealed class ReferenceComparer<T> : IEqualityComparer<T>
         where T : class
