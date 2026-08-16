@@ -681,9 +681,13 @@ public sealed class SchemaRuleSet
     /// <summary>
     /// Rules used for validation or transforms on the current schema.
     /// </summary>
+    // Preserve the CompilerGenerated attributes emitted by the previously shipped auto-property.
     public IReadOnlyList<SchemaRule>? DomainRules
     {
+        [CompilerGenerated]
         get => _domainRules;
+
+        [CompilerGenerated]
         init
         {
             _domainRules = value;
@@ -695,9 +699,13 @@ public sealed class SchemaRuleSet
     /// <summary>
     /// Rules used for encoding transforms such as field-level encryption.
     /// </summary>
+    // Preserve the CompilerGenerated attributes emitted by the previously shipped auto-property.
     public IReadOnlyList<SchemaRule>? EncodingRules
     {
+        [CompilerGenerated]
         get => _encodingRules;
+
+        [CompilerGenerated]
         init
         {
             _encodingRules = value;
