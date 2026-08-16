@@ -667,6 +667,12 @@ public sealed class SchemaMetadata
 /// </summary>
 public sealed class SchemaRuleSet
 {
+    private IReadOnlyList<SchemaRule>? _domainRules;
+    private IReadOnlyList<SchemaRule>? _encodingRules;
+    private bool _domainRuleCountIsFixed = true;
+    private bool _encodingRuleCountIsFixed = true;
+    private bool _hasFixedDomainOrEncodingRules;
+
     /// <summary>
     /// Rules used when migrating between schema versions.
     /// </summary>
@@ -675,17 +681,45 @@ public sealed class SchemaRuleSet
     /// <summary>
     /// Rules used for validation or transforms on the current schema.
     /// </summary>
-    public IReadOnlyList<SchemaRule>? DomainRules { get; init; }
+    public IReadOnlyList<SchemaRule>? DomainRules
+    {
+        get => _domainRules;
+        init
+        {
+            _domainRules = value;
+            _domainRuleCountIsFixed = value is null or SchemaRule[];
+            UpdateFixedRuleState();
+        }
+    }
 
     /// <summary>
     /// Rules used for encoding transforms such as field-level encryption.
     /// </summary>
-    public IReadOnlyList<SchemaRule>? EncodingRules { get; init; }
+    public IReadOnlyList<SchemaRule>? EncodingRules
+    {
+        get => _encodingRules;
+        init
+        {
+            _encodingRules = value;
+            _encodingRuleCountIsFixed = value is null or SchemaRule[];
+            UpdateFixedRuleState();
+        }
+    }
 
     /// <summary>
     /// Optional Schema Registry activation marker.
     /// </summary>
     public string? EnableAt { get; init; }
+
+    internal bool HasDomainOrEncodingRules =>
+        // Schema Registry responses use fixed-length arrays, so the common no-rules path is one
+        // cached branch. Preserve live Count semantics for caller-supplied mutable list types.
+        _domainRuleCountIsFixed && _encodingRuleCountIsFixed
+            ? _hasFixedDomainOrEncodingRules
+            : _domainRules is { Count: > 0 } || _encodingRules is { Count: > 0 };
+
+    private void UpdateFixedRuleState() =>
+        _hasFixedDomainOrEncodingRules = _domainRules is { Count: > 0 } || _encodingRules is { Count: > 0 };
 }
 
 /// <summary>

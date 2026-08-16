@@ -162,6 +162,28 @@ public interface ISchemaRegistryRuleHandler
 }
 
 /// <summary>
+/// Runs a configured Schema Registry rule success or failure action.
+/// </summary>
+public interface ISchemaRegistryRuleAction
+{
+    /// <summary>
+    /// Gets the Schema Registry action type this implementation supports.
+    /// </summary>
+    string Type { get; }
+
+    /// <summary>
+    /// Runs the action for a completed rule.
+    /// </summary>
+    /// <param name="payload">The current codec payload.</param>
+    /// <param name="context">The completed rule context.</param>
+    /// <param name="exception">The rule failure, or <see langword="null" /> after success.</param>
+    void Run(
+        ReadOnlyMemory<byte> payload,
+        SchemaRegistryRuleHandlerContext context,
+        SchemaRegistryRuleException? exception);
+}
+
+/// <summary>
 /// Exception thrown when Schema Registry rule execution fails.
 /// </summary>
 public sealed class SchemaRegistryRuleException : Exception
@@ -184,24 +206,38 @@ public sealed class SchemaRegistryRuleException : Exception
 }
 
 /// <summary>
-/// Executes Schema Registry encoding rules by dispatching each active rule to a typed handler.
+/// Executes Schema Registry domain and encoding rules by dispatching each active rule to a typed handler.
 /// </summary>
 /// <remarks>
 /// This executor operates on codec payload bytes. It intentionally fails closed when a schema
-/// contains an active encoding rule with no registered handler, so protected data is not
+/// contains an active rule with no registered handler, so protected data is not
 /// accidentally produced or consumed without the configured transform.
 /// </remarks>
 public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
 {
-    private readonly IReadOnlyDictionary<string, ISchemaRegistryRuleHandler> _handlers;
+    private readonly Dictionary<string, ISchemaRegistryRuleHandler> _handlers;
+    private readonly Dictionary<RuleActionName, ISchemaRegistryRuleAction> _actions;
 
     /// <summary>
     /// Creates a Schema Registry rule executor.
     /// </summary>
     /// <param name="handlers">Rule handlers keyed by <see cref="ISchemaRegistryRuleHandler.Type" />.</param>
     public SchemaRegistryRuleExecutor(IEnumerable<ISchemaRegistryRuleHandler> handlers)
+        : this(handlers, [])
+    {
+    }
+
+    /// <summary>
+    /// Creates a Schema Registry rule executor with custom success and failure actions.
+    /// </summary>
+    /// <param name="handlers">Rule handlers keyed by <see cref="ISchemaRegistryRuleHandler.Type" />.</param>
+    /// <param name="actions">Rule actions keyed by <see cref="ISchemaRegistryRuleAction.Type" />.</param>
+    public SchemaRegistryRuleExecutor(
+        IEnumerable<ISchemaRegistryRuleHandler> handlers,
+        IEnumerable<ISchemaRegistryRuleAction> actions)
     {
         ArgumentNullException.ThrowIfNull(handlers);
+        ArgumentNullException.ThrowIfNull(actions);
 
         var dictionary = new Dictionary<string, ISchemaRegistryRuleHandler>(StringComparer.OrdinalIgnoreCase);
         foreach (var handler in handlers)
@@ -215,6 +251,19 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         }
 
         _handlers = dictionary;
+
+        var actionDictionary = new Dictionary<RuleActionName, ISchemaRegistryRuleAction>();
+        foreach (var action in actions)
+        {
+            ArgumentNullException.ThrowIfNull(action);
+            if (string.IsNullOrWhiteSpace(action.Type))
+                throw new ArgumentException("Rule action type cannot be null or whitespace.", nameof(actions));
+
+            if (!actionDictionary.TryAdd(new RuleActionName(action.Type), action))
+                throw new ArgumentException($"A rule action for type '{action.Type}' is already registered.", nameof(actions));
+        }
+
+        _actions = actionDictionary;
     }
 
     /// <inheritdoc />
@@ -236,7 +285,31 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        var rules = context.Schema?.RuleSet?.EncodingRules;
+        var ruleSet = context.Schema?.RuleSet;
+        if (ruleSet is null || !ruleSet.HasDomainOrEncodingRules)
+            return payload;
+
+        if (ruleSet.EnableAt is { } enabledEnvironment && enabledEnvironment is not ("ALL" or "CLIENT"))
+            return payload;
+
+        var domainRules = ruleSet.DomainRules;
+        var encodingRules = ruleSet.EncodingRules;
+        if (direction == SchemaRegistryRuleDirection.Write)
+        {
+            payload = ApplyRules(payload, context, domainRules, direction);
+            return ApplyRules(payload, context, encodingRules, direction);
+        }
+
+        payload = ApplyRules(payload, context, encodingRules, direction);
+        return ApplyRules(payload, context, domainRules, direction);
+    }
+
+    private ReadOnlyMemory<byte> ApplyRules(
+        ReadOnlyMemory<byte> payload,
+        SchemaRegistryRuleContext context,
+        IReadOnlyList<SchemaRule>? rules,
+        SchemaRegistryRuleDirection direction)
+    {
         if (rules is null || rules.Count == 0)
             return payload;
 
@@ -251,42 +324,117 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
             if (!IsActiveRule(rule, direction))
                 continue;
 
-            if (!_handlers.TryGetValue(rule.Type, out var handler))
-                throw new SchemaRegistryRuleException(
-                    $"No Schema Registry rule handler is registered for rule type '{rule.Type}' (rule '{rule.Name}').");
+            var handlerContext = new SchemaRegistryRuleHandlerContext
+            {
+                PayloadContext = context,
+                Rule = rule,
+                Direction = direction
+            };
 
-            payload = ApplyRule(payload, context, rule, handler, direction);
+            SchemaRegistryRuleException? failure = null;
+            var transformedPayload = payload;
+            if (!_handlers.TryGetValue(rule.Type, out var handler))
+            {
+                failure = new SchemaRegistryRuleException(
+                    $"No Schema Registry rule handler is registered for rule type '{rule.Type}' (rule '{rule.Name}').");
+            }
+            else
+            {
+                try
+                {
+                    transformedPayload = direction == SchemaRegistryRuleDirection.Write
+                        ? handler.TransformSerializedPayload(payload, handlerContext)
+                        : handler.TransformDeserializedPayload(payload, handlerContext);
+                }
+                catch (SchemaRegistryRuleException ex)
+                {
+                    failure = ex;
+                }
+                catch (Exception ex)
+                {
+                    failure = new SchemaRegistryRuleException(
+                        $"Schema Registry rule '{rule.Name}' of type '{rule.Type}' failed during {direction.ToString().ToLowerInvariant()} transform.",
+                        ex);
+                }
+            }
+
+            if (failure is null)
+            {
+                payload = transformedPayload;
+                RunAction(rule.OnSuccess, defaultAction: null, payload, handlerContext, exception: null);
+            }
+            else
+            {
+                RunAction(rule.OnFailure, defaultAction: "ERROR", payload, handlerContext, failure);
+            }
         }
 
         return payload;
     }
 
-    private static ReadOnlyMemory<byte> ApplyRule(
+    private void RunAction(
+        string? configuredAction,
+        string? defaultAction,
         ReadOnlyMemory<byte> payload,
-        SchemaRegistryRuleContext payloadContext,
-        SchemaRule rule,
-        ISchemaRegistryRuleHandler handler,
-        SchemaRegistryRuleDirection direction)
+        SchemaRegistryRuleHandlerContext context,
+        SchemaRegistryRuleException? exception)
     {
-        var handlerContext = new SchemaRegistryRuleHandlerContext
+        var actionName = GetActionName(configuredAction, context.Rule.Mode, context.Direction);
+        if (actionName is null && defaultAction is not null)
+            actionName = new RuleActionName(defaultAction);
+
+        if (actionName is not { } resolvedActionName)
+            return;
+
+        if (resolvedActionName.Equals("NONE"))
+            return;
+
+        if (resolvedActionName.Equals("ERROR"))
         {
-            PayloadContext = payloadContext,
-            Rule = rule,
-            Direction = direction
-        };
+            throw exception ?? new SchemaRegistryRuleException(
+                $"Schema Registry rule '{context.Rule.Name}' configured the ERROR action after success.");
+        }
+
+        if (!_actions.TryGetValue(resolvedActionName, out var action))
+        {
+            throw new SchemaRegistryRuleException(
+                $"No Schema Registry rule action is registered for action type '{resolvedActionName}' (rule '{context.Rule.Name}').");
+        }
 
         try
         {
-            return direction == SchemaRegistryRuleDirection.Write
-                ? handler.TransformSerializedPayload(payload, handlerContext)
-                : handler.TransformDeserializedPayload(payload, handlerContext);
+            action.Run(payload, context, exception);
         }
         catch (Exception ex) when (ex is not SchemaRegistryRuleException)
         {
             throw new SchemaRegistryRuleException(
-                $"Schema Registry rule '{rule.Name}' of type '{rule.Type}' failed during {direction.ToString().ToLowerInvariant()} transform.",
+                $"Schema Registry rule action '{resolvedActionName}' failed for rule '{context.Rule.Name}'.",
                 ex);
         }
+    }
+
+    private static RuleActionName? GetActionName(
+        string? configuredAction,
+        SchemaRuleMode ruleMode,
+        SchemaRegistryRuleDirection direction)
+    {
+        if (configuredAction is null)
+            return null;
+
+        if (ruleMode != SchemaRuleMode.WriteRead)
+            return new RuleActionName(configuredAction);
+
+        var separator = configuredAction.IndexOf(',');
+        if (separator < 0)
+            return new RuleActionName(configuredAction);
+
+        if (direction == SchemaRegistryRuleDirection.Write)
+            return new RuleActionName(configuredAction, 0, separator);
+
+        var start = separator + 1;
+        var nextSeparator = configuredAction.IndexOf(',', start);
+        var length = nextSeparator < 0 ? configuredAction.Length - start : nextSeparator - start;
+        return new RuleActionName(configuredAction, start, length);
     }
 
     private static bool IsActiveRule(SchemaRule rule, SchemaRegistryRuleDirection direction)
@@ -300,5 +448,42 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         return direction == SchemaRegistryRuleDirection.Write
             ? rule.Mode is SchemaRuleMode.Write or SchemaRuleMode.WriteRead
             : rule.Mode is SchemaRuleMode.Read or SchemaRuleMode.WriteRead;
+    }
+
+    private readonly struct RuleActionName : IEquatable<RuleActionName>
+    {
+        private readonly string _value;
+        private readonly int _start;
+        private readonly int _length;
+
+        public RuleActionName(string value)
+            : this(value, 0, value.Length)
+        {
+        }
+
+        public RuleActionName(string value, int start, int length)
+        {
+            _value = value;
+            _start = start;
+            _length = length;
+        }
+
+        public bool Equals(RuleActionName other) =>
+            _value.AsSpan(_start, _length).Equals(
+                other._value.AsSpan(other._start, other._length),
+                StringComparison.OrdinalIgnoreCase);
+
+        public bool Equals(string other) =>
+            _value.AsSpan(_start, _length).Equals(other, StringComparison.OrdinalIgnoreCase);
+
+        public override bool Equals(object? obj) => obj is RuleActionName other && Equals(other);
+
+        public override int GetHashCode() =>
+            string.GetHashCode(_value.AsSpan(_start, _length), StringComparison.OrdinalIgnoreCase);
+
+        public override string ToString() =>
+            _start == 0 && _length == _value.Length
+                ? _value
+                : _value.Substring(_start, _length);
     }
 }

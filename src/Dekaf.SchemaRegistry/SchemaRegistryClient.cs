@@ -1103,9 +1103,9 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
 
         return new SchemaRuleSet
         {
-            MigrationRules = ruleSet.MigrationRules?.Select(ToRule).ToList(),
-            DomainRules = ruleSet.DomainRules?.Select(ToRule).ToList(),
-            EncodingRules = ruleSet.EncodingRules?.Select(ToRule).ToList(),
+            MigrationRules = ruleSet.MigrationRules?.Select(ToRule).ToArray(),
+            DomainRules = ruleSet.DomainRules?.Select(ToRule).ToArray(),
+            EncodingRules = ruleSet.EncodingRules?.Select(ToRule).ToArray(),
             EnableAt = ruleSet.EnableAt
         };
     }

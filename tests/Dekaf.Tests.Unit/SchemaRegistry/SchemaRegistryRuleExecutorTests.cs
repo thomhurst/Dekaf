@@ -7,6 +7,62 @@ namespace Dekaf.Tests.Unit.SchemaRegistry;
 public sealed class SchemaRegistryRuleExecutorTests
 {
     [Test]
+    public async Task TransformSerializedPayload_AppliesDomainBeforeEncodingRules()
+    {
+        var calls = new List<string>();
+        var executor = new SchemaRegistryRuleExecutor(
+        [
+            new AppendingRuleHandler("DOMAIN", calls),
+            new AppendingRuleHandler("ENCODING", calls)
+        ]);
+        var schema = CreateSchema(
+            domainRules:
+            [
+                CreateRule("domain-a", "DOMAIN", SchemaRuleMode.WriteRead),
+                CreateRule("disabled", "missing", SchemaRuleMode.WriteRead, disabled: true)
+            ],
+            encodingRules: [CreateRule("encoding-a", "ENCODING", SchemaRuleMode.WriteRead)]);
+
+        var result = executor.TransformSerializedPayload("payload"u8.ToArray(), CreateContext(schema));
+
+        await Assert.That(Encoding.UTF8.GetString(result.Span))
+            .IsEqualTo("payload|DOMAINW|ENCODINGW");
+        await Assert.That(calls).IsEquivalentTo([
+            "Write:domain-a:Json",
+            "Write:encoding-a:Json"
+        ]);
+    }
+
+    [Test]
+    public async Task TransformDeserializedPayload_AppliesEncodingBeforeReversedDomainRules()
+    {
+        var calls = new List<string>();
+        var executor = new SchemaRegistryRuleExecutor(
+        [
+            new AppendingRuleHandler("DOMAIN-A", calls),
+            new AppendingRuleHandler("DOMAIN-B", calls),
+            new AppendingRuleHandler("ENCODING", calls)
+        ]);
+        var schema = CreateSchema(
+            domainRules:
+            [
+                CreateRule("domain-a", "DOMAIN-A", SchemaRuleMode.WriteRead),
+                CreateRule("domain-b", "DOMAIN-B", SchemaRuleMode.Read)
+            ],
+            encodingRules: [CreateRule("encoding-a", "ENCODING", SchemaRuleMode.WriteRead)]);
+
+        var result = executor.TransformDeserializedPayload("payload"u8.ToArray(), CreateContext(schema));
+
+        await Assert.That(Encoding.UTF8.GetString(result.Span))
+            .IsEqualTo("payload|ENCODINGR|DOMAIN-BR|DOMAIN-AR");
+        await Assert.That(calls).IsEquivalentTo([
+            "Read:encoding-a:Json",
+            "Read:domain-b:Json",
+            "Read:domain-a:Json"
+        ]);
+    }
+
+    [Test]
     public async Task TransformSerializedPayload_AppliesActiveEncodingRulesInOrder()
     {
         var calls = new List<string>();
@@ -113,6 +169,110 @@ public sealed class SchemaRegistryRuleExecutorTests
             .WithMessageContaining("encrypt");
     }
 
+    [Test]
+    public async Task TransformSerializedPayload_FailureActionNone_SuppressesRuleFailure()
+    {
+        var executor = new SchemaRegistryRuleExecutor([]);
+        var rule = CreateRule("optional", "missing", SchemaRuleMode.Write, onFailure: "NONE");
+        var schema = CreateSchema(domainRules: [rule]);
+        var payload = "payload"u8.ToArray();
+
+        var result = executor.TransformSerializedPayload(payload, CreateContext(schema));
+
+        await Assert.That(result.ToArray()).IsEquivalentTo(payload);
+    }
+
+    [Test]
+    public async Task TransformSerializedPayload_NonClientEnableAt_SkipsRules()
+    {
+        var executor = new SchemaRegistryRuleExecutor([]);
+        var schema = CreateSchema(
+            domainRules: [CreateRule("server-only", "missing", SchemaRuleMode.Write)],
+            enableAt: "SERVER");
+        var payload = "payload"u8.ToArray();
+
+        var result = executor.TransformSerializedPayload(payload, CreateContext(schema));
+
+        await Assert.That(result.ToArray()).IsEquivalentTo(payload);
+    }
+
+    [Test]
+    public async Task TransformSerializedPayload_MutableRuleListReflectsAddedRules()
+    {
+        var calls = new List<string>();
+        var rules = new List<SchemaRule>();
+        var executor = new SchemaRegistryRuleExecutor([new AppendingRuleHandler("A", calls)]);
+        var schema = CreateSchema(domainRules: rules);
+
+        var before = executor.TransformSerializedPayload("payload"u8.ToArray(), CreateContext(schema));
+        rules.Add(CreateRule("added", "A", SchemaRuleMode.Write));
+        var after = executor.TransformSerializedPayload("payload"u8.ToArray(), CreateContext(schema));
+
+        await Assert.That(Encoding.UTF8.GetString(before.Span)).IsEqualTo("payload");
+        await Assert.That(Encoding.UTF8.GetString(after.Span)).IsEqualTo("payload|AW");
+    }
+
+    [Test]
+    public async Task TransformDeserializedPayload_WriteReadActions_SelectReadAction()
+    {
+        var calls = new List<string>();
+        var action = new CapturingRuleAction("CAPTURE", calls);
+        var executor = new SchemaRegistryRuleExecutor(
+            [new AppendingRuleHandler("A", calls)],
+            [action]);
+        var rule = CreateRule(
+            "transform",
+            "A",
+            SchemaRuleMode.WriteRead,
+            onSuccess: "NONE,CAPTURE,UNKNOWN");
+        var schema = CreateSchema(domainRules: [rule]);
+
+        _ = executor.TransformSerializedPayload("payload"u8.ToArray(), CreateContext(schema));
+        _ = executor.TransformDeserializedPayload("payload"u8.ToArray(), CreateContext(schema));
+
+        await Assert.That(calls).IsEquivalentTo([
+            "Write:transform:Json",
+            "Read:transform:Json",
+            "Action:CAPTURE:Read:transform:success"
+        ]);
+    }
+
+    [Test]
+    public async Task TransformSerializedPayload_CustomFailureAction_ReceivesFailureAndContinues()
+    {
+        var calls = new List<string>();
+        var executor = new SchemaRegistryRuleExecutor([], [new CapturingRuleAction("CAPTURE", calls)]);
+        var rule = CreateRule(
+            "missing-rule",
+            "missing",
+            SchemaRuleMode.Write,
+            onFailure: "CAPTURE");
+        var schema = CreateSchema(domainRules: [rule]);
+
+        var result = executor.TransformSerializedPayload("payload"u8.ToArray(), CreateContext(schema));
+
+        await Assert.That(Encoding.UTF8.GetString(result.Span)).IsEqualTo("payload");
+        await Assert.That(calls).IsEquivalentTo([
+            "Action:CAPTURE:Write:missing-rule:failure"
+        ]);
+    }
+
+    [Test]
+    public async Task TransformSerializedPayload_UnknownFailureAction_Throws()
+    {
+        var executor = new SchemaRegistryRuleExecutor([]);
+        var rule = CreateRule(
+            "missing-rule",
+            "missing",
+            SchemaRuleMode.Write,
+            onFailure: "UNKNOWN");
+        var schema = CreateSchema(domainRules: [rule]);
+
+        await Assert.That(() => executor.TransformSerializedPayload("payload"u8.ToArray(), CreateContext(schema)))
+            .Throws<SchemaRegistryRuleException>()
+            .WithMessageContaining("UNKNOWN");
+    }
+
     private static SchemaRegistryRuleContext CreateContext(Schema? schema) =>
         new()
         {
@@ -125,13 +285,21 @@ public sealed class SchemaRegistryRuleExecutorTests
         };
 
     private static Schema CreateSchema(params SchemaRule[] rules) =>
+        CreateSchema(encodingRules: rules);
+
+    private static Schema CreateSchema(
+        IReadOnlyList<SchemaRule>? domainRules = null,
+        IReadOnlyList<SchemaRule>? encodingRules = null,
+        string? enableAt = null) =>
         new()
         {
             SchemaType = SchemaType.Json,
             SchemaString = "{}",
             RuleSet = new SchemaRuleSet
             {
-                EncodingRules = rules
+                DomainRules = domainRules,
+                EncodingRules = encodingRules,
+                EnableAt = enableAt
             }
         };
 
@@ -140,13 +308,17 @@ public sealed class SchemaRegistryRuleExecutorTests
         string type,
         SchemaRuleMode mode,
         bool disabled = false,
-        SchemaRuleKind kind = SchemaRuleKind.Transform) =>
+        SchemaRuleKind kind = SchemaRuleKind.Transform,
+        string? onSuccess = null,
+        string? onFailure = null) =>
         new()
         {
             Name = name,
             Kind = kind,
             Mode = mode,
             Type = type,
+            OnSuccess = onSuccess,
+            OnFailure = onFailure,
             Disabled = disabled
         };
 
@@ -179,6 +351,22 @@ public sealed class SchemaRegistryRuleExecutorTests
             payload.Span.CopyTo(result);
             suffixBytes.CopyTo(result.AsSpan(payload.Length));
             return result;
+        }
+    }
+
+    private sealed class CapturingRuleAction(
+        string type,
+        List<string> calls) : ISchemaRegistryRuleAction
+    {
+        public string Type => type;
+
+        public void Run(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleHandlerContext context,
+            SchemaRegistryRuleException? exception)
+        {
+            calls.Add(
+                $"Action:{Type}:{context.Direction}:{context.Rule.Name}:{(exception is null ? "success" : "failure")}");
         }
     }
 }

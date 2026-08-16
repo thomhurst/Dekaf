@@ -3,6 +3,9 @@ Dekaf.SchemaRegistry.IJsonSchemaValidator
 Dekaf.SchemaRegistry.IJsonSchemaValidator.Validate(System.ReadOnlySpan<byte> payload, int schemaId) -> void
 Dekaf.SchemaRegistry.IJsonSchemaValidatorFactory
 Dekaf.SchemaRegistry.IJsonSchemaValidatorFactory.GetOrCreate(Dekaf.SchemaRegistry.Schema! schema) -> Dekaf.SchemaRegistry.IJsonSchemaValidator!
+Dekaf.SchemaRegistry.ISchemaRegistryRuleAction
+Dekaf.SchemaRegistry.ISchemaRegistryRuleAction.Run(System.ReadOnlyMemory<byte> payload, Dekaf.SchemaRegistry.SchemaRegistryRuleHandlerContext! context, Dekaf.SchemaRegistry.SchemaRegistryRuleException? exception) -> void
+Dekaf.SchemaRegistry.ISchemaRegistryRuleAction.Type.get -> string!
 Dekaf.SchemaRegistry.ISchemaRegistryClient.GetCompatibilityAsync(string? subject = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Dekaf.SchemaRegistry.SchemaCompatibilityLevel>!
 Dekaf.SchemaRegistry.ISchemaRegistryClient.LookupSchemaAsync(string! subject, Dekaf.SchemaRegistry.Schema! schema, bool ignoreDeletedSchemas = true, bool normalize = false, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Dekaf.SchemaRegistry.RegisteredSchema!>!
 Dekaf.SchemaRegistry.ISchemaRegistryClient.UpdateCompatibilityAsync(Dekaf.SchemaRegistry.SchemaCompatibilityLevel level, string? subject = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Dekaf.SchemaRegistry.SchemaCompatibilityLevel>!
@@ -49,6 +52,7 @@ Dekaf.SchemaRegistry.SchemaCompatibilityLevel.ForwardTransitive = 4 -> Dekaf.Sch
 Dekaf.SchemaRegistry.SchemaCompatibilityLevel.Full = 5 -> Dekaf.SchemaRegistry.SchemaCompatibilityLevel
 Dekaf.SchemaRegistry.SchemaCompatibilityLevel.FullTransitive = 6 -> Dekaf.SchemaRegistry.SchemaCompatibilityLevel
 Dekaf.SchemaRegistry.SchemaCompatibilityLevel.None = 0 -> Dekaf.SchemaRegistry.SchemaCompatibilityLevel
+Dekaf.SchemaRegistry.SchemaRegistryRuleExecutor.SchemaRegistryRuleExecutor(System.Collections.Generic.IEnumerable<Dekaf.SchemaRegistry.ISchemaRegistryRuleHandler!>! handlers, System.Collections.Generic.IEnumerable<Dekaf.SchemaRegistry.ISchemaRegistryRuleAction!>! actions) -> void
 Dekaf.SchemaRegistry.SchemaRegistryClient.GetCompatibilityAsync(string? subject = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Dekaf.SchemaRegistry.SchemaCompatibilityLevel>!
 Dekaf.SchemaRegistry.SchemaRegistryClient.LookupSchemaAsync(string! subject, Dekaf.SchemaRegistry.Schema! schema, bool ignoreDeletedSchemas = true, bool normalize = false, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Dekaf.SchemaRegistry.RegisteredSchema!>!
 Dekaf.SchemaRegistry.SchemaRegistryClient.SchemaRegistryClient(Dekaf.SchemaRegistry.SchemaRegistryConfig! config, System.Func<System.Net.Http.HttpMessageHandler!>! handlerFactory) -> void
