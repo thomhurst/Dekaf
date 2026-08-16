@@ -183,17 +183,33 @@ public sealed class SchemaRegistryRuleExecutorTests
     }
 
     [Test]
-    public async Task TransformSerializedPayload_NonClientEnableAt_SkipsRules()
+    [Arguments("GATEWAY")]
+    [Arguments("SERVER")]
+    [Arguments("NONE")]
+    public async Task TransformSerializedPayload_NonClientEnableAt_SkipsRules(string enableAt)
     {
         var executor = new SchemaRegistryRuleExecutor([]);
         var schema = CreateSchema(
             domainRules: [CreateRule("server-only", "missing", SchemaRuleMode.Write)],
-            enableAt: "SERVER");
+            enableAt: enableAt);
         var payload = "payload"u8.ToArray();
 
         var result = executor.TransformSerializedPayload(payload, CreateContext(schema));
 
         await Assert.That(result.ToArray()).IsEquivalentTo(payload);
+    }
+
+    [Test]
+    public async Task TransformSerializedPayload_UnknownEnableAt_Throws()
+    {
+        var executor = new SchemaRegistryRuleExecutor([]);
+        var schema = CreateSchema(
+            domainRules: [CreateRule("protected", "missing", SchemaRuleMode.Write)],
+            enableAt: "client");
+
+        await Assert.That(() => executor.TransformSerializedPayload("payload"u8.ToArray(), CreateContext(schema)))
+            .Throws<SchemaRegistryRuleException>()
+            .WithMessageContaining("client");
     }
 
     [Test]
@@ -271,6 +287,23 @@ public sealed class SchemaRegistryRuleExecutorTests
         await Assert.That(() => executor.TransformSerializedPayload("payload"u8.ToArray(), CreateContext(schema)))
             .Throws<SchemaRegistryRuleException>()
             .WithMessageContaining("UNKNOWN");
+    }
+
+    [Test]
+    public async Task TransformSerializedPayload_HandlerException_UsesConfiguredFailureAction()
+    {
+        var executor = new SchemaRegistryRuleExecutor([new ThrowingRuleHandler()]);
+        var rule = CreateRule(
+            "failing-rule",
+            ThrowingRuleHandler.RuleType,
+            SchemaRuleMode.Write,
+            onFailure: "NONE");
+        var schema = CreateSchema(domainRules: [rule]);
+        var payload = "payload"u8.ToArray();
+
+        var result = executor.TransformSerializedPayload(payload, CreateContext(schema));
+
+        await Assert.That(result.ToArray()).IsEquivalentTo(payload);
     }
 
     private static SchemaRegistryRuleContext CreateContext(Schema? schema) =>
@@ -368,5 +401,22 @@ public sealed class SchemaRegistryRuleExecutorTests
             calls.Add(
                 $"Action:{Type}:{context.Direction}:{context.Rule.Name}:{(exception is null ? "success" : "failure")}");
         }
+    }
+
+    private sealed class ThrowingRuleHandler : ISchemaRegistryRuleHandler
+    {
+        public const string RuleType = "THROW";
+
+        public string Type => RuleType;
+
+        public ReadOnlyMemory<byte> TransformSerializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleHandlerContext context) =>
+            throw new InvalidOperationException("Handler failed.");
+
+        public ReadOnlyMemory<byte> TransformDeserializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleHandlerContext context) =>
+            throw new InvalidOperationException("Handler failed.");
     }
 }

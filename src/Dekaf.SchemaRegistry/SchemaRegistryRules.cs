@@ -1,3 +1,5 @@
+using System.Collections.Frozen;
+using System.Runtime.CompilerServices;
 using Dekaf.Serialization;
 
 namespace Dekaf.SchemaRegistry;
@@ -118,22 +120,71 @@ public enum SchemaRegistryRuleDirection
 /// <summary>
 /// Context passed to a typed Schema Registry rule handler.
 /// </summary>
+/// <remarks>
+/// Contexts supplied by <see cref="SchemaRegistryRuleExecutor" /> are borrowed and valid only for
+/// the synchronous duration of a handler or action invocation. Implementations must not retain them.
+/// </remarks>
 public sealed class SchemaRegistryRuleHandlerContext
 {
+    private SchemaRegistryRuleContext? _payloadContext;
+    private SchemaRule? _rule;
+    private SchemaRegistryRuleDirection _direction;
+
     /// <summary>
     /// Gets the payload context shared by all rule executors.
     /// </summary>
-    public required SchemaRegistryRuleContext PayloadContext { get; init; }
+    // Preserve the CompilerGenerated accessor metadata emitted by the shipped auto-properties.
+    public required SchemaRegistryRuleContext PayloadContext
+    {
+        [CompilerGenerated]
+        get => _payloadContext!;
+
+        [CompilerGenerated]
+        init => _payloadContext = value;
+    }
 
     /// <summary>
     /// Gets the Schema Registry rule being executed.
     /// </summary>
-    public required SchemaRule Rule { get; init; }
+    public required SchemaRule Rule
+    {
+        [CompilerGenerated]
+        get => _rule!;
+
+        [CompilerGenerated]
+        init => _rule = value;
+    }
 
     /// <summary>
     /// Gets the transform direction.
     /// </summary>
-    public required SchemaRegistryRuleDirection Direction { get; init; }
+    public required SchemaRegistryRuleDirection Direction
+    {
+        [CompilerGenerated]
+        get => _direction;
+
+        [CompilerGenerated]
+        init => _direction = value;
+    }
+
+    internal SchemaRegistryRuleHandlerContext? PoolNext { get; set; }
+
+    internal void Initialize(
+        SchemaRegistryRuleContext payloadContext,
+        SchemaRule rule,
+        SchemaRegistryRuleDirection direction)
+    {
+        _payloadContext = payloadContext;
+        _rule = rule;
+        _direction = direction;
+    }
+
+    internal void Clear()
+    {
+        _payloadContext = null;
+        _rule = null;
+        _direction = default;
+    }
 }
 
 /// <summary>
@@ -215,7 +266,10 @@ public sealed class SchemaRegistryRuleException : Exception
 /// </remarks>
 public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
 {
-    private readonly Dictionary<string, ISchemaRegistryRuleHandler> _handlers;
+    [ThreadStatic]
+    private static SchemaRegistryRuleHandlerContext? t_handlerContextPool;
+
+    private readonly FrozenDictionary<string, ISchemaRegistryRuleHandler> _handlers;
     private readonly Dictionary<RuleActionName, ISchemaRegistryRuleAction> _actions;
 
     /// <summary>
@@ -250,7 +304,7 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
                 throw new ArgumentException($"A rule handler for type '{handler.Type}' is already registered.", nameof(handlers));
         }
 
-        _handlers = dictionary;
+        _handlers = dictionary.ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
 
         var actionDictionary = new Dictionary<RuleActionName, ISchemaRegistryRuleAction>();
         foreach (var action in actions)
@@ -289,8 +343,16 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         if (ruleSet is null || !ruleSet.HasDomainOrEncodingRules)
             return payload;
 
-        if (ruleSet.EnableAt is { } enabledEnvironment && enabledEnvironment is not ("ALL" or "CLIENT"))
-            return payload;
+        switch (ruleSet.EnableAt)
+        {
+            case null or "ALL" or "CLIENT":
+                break;
+            case "GATEWAY" or "SERVER" or "NONE":
+                return payload;
+            case { } enabledEnvironment:
+                throw new SchemaRegistryRuleException(
+                    $"Unknown Schema Registry rule execution environment '{enabledEnvironment}'.");
+        }
 
         var domainRules = ruleSet.DomainRules;
         var encodingRules = ruleSet.EncodingRules;
@@ -324,52 +386,82 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
             if (!IsActiveRule(rule, direction))
                 continue;
 
-            var handlerContext = new SchemaRegistryRuleHandlerContext
+            var handlerContext = RentHandlerContext(context, rule, direction);
+            try
             {
-                PayloadContext = context,
-                Rule = rule,
-                Direction = direction
-            };
-
-            SchemaRegistryRuleException? failure = null;
-            var transformedPayload = payload;
-            if (!_handlers.TryGetValue(rule.Type, out var handler))
-            {
-                failure = new SchemaRegistryRuleException(
-                    $"No Schema Registry rule handler is registered for rule type '{rule.Type}' (rule '{rule.Name}').");
-            }
-            else
-            {
-                try
-                {
-                    transformedPayload = direction == SchemaRegistryRuleDirection.Write
-                        ? handler.TransformSerializedPayload(payload, handlerContext)
-                        : handler.TransformDeserializedPayload(payload, handlerContext);
-                }
-                catch (SchemaRegistryRuleException ex)
-                {
-                    failure = ex;
-                }
-                catch (Exception ex)
+                SchemaRegistryRuleException? failure = null;
+                var transformedPayload = payload;
+                if (!_handlers.TryGetValue(rule.Type, out var handler))
                 {
                     failure = new SchemaRegistryRuleException(
-                        $"Schema Registry rule '{rule.Name}' of type '{rule.Type}' failed during {direction.ToString().ToLowerInvariant()} transform.",
-                        ex);
+                        $"No Schema Registry rule handler is registered for rule type '{rule.Type}' (rule '{rule.Name}').");
+                }
+                else
+                {
+                    try
+                    {
+                        transformedPayload = direction == SchemaRegistryRuleDirection.Write
+                            ? handler.TransformSerializedPayload(payload, handlerContext)
+                            : handler.TransformDeserializedPayload(payload, handlerContext);
+                    }
+                    catch (SchemaRegistryRuleException ex)
+                    {
+                        failure = ex;
+                    }
+                    catch (Exception ex) when (ex is not SchemaRegistryRuleException)
+                    {
+                        failure = new SchemaRegistryRuleException(
+                            $"Schema Registry rule '{rule.Name}' of type '{rule.Type}' failed during {direction.ToString().ToLowerInvariant()} transform.",
+                            ex);
+                    }
+                }
+
+                if (failure is null)
+                {
+                    payload = transformedPayload;
+                    RunAction(rule.OnSuccess, defaultAction: null, payload, handlerContext, exception: null);
+                }
+                else
+                {
+                    RunAction(rule.OnFailure, defaultAction: "ERROR", payload, handlerContext, failure);
                 }
             }
-
-            if (failure is null)
+            finally
             {
-                payload = transformedPayload;
-                RunAction(rule.OnSuccess, defaultAction: null, payload, handlerContext, exception: null);
-            }
-            else
-            {
-                RunAction(rule.OnFailure, defaultAction: "ERROR", payload, handlerContext, failure);
+                ReturnHandlerContext(handlerContext);
             }
         }
 
         return payload;
+    }
+
+    private static SchemaRegistryRuleHandlerContext RentHandlerContext(
+        SchemaRegistryRuleContext payloadContext,
+        SchemaRule rule,
+        SchemaRegistryRuleDirection direction)
+    {
+        var context = t_handlerContextPool;
+        if (context is null)
+        {
+            return new SchemaRegistryRuleHandlerContext
+            {
+                PayloadContext = payloadContext,
+                Rule = rule,
+                Direction = direction
+            };
+        }
+
+        t_handlerContextPool = context.PoolNext;
+        context.PoolNext = null;
+        context.Initialize(payloadContext, rule, direction);
+        return context;
+    }
+
+    private static void ReturnHandlerContext(SchemaRegistryRuleHandlerContext context)
+    {
+        context.Clear();
+        context.PoolNext = t_handlerContextPool;
+        t_handlerContextPool = context;
     }
 
     private void RunAction(
