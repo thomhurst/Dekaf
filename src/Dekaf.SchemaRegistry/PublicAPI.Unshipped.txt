@@ -2,6 +2,19 @@
 Dekaf.SchemaRegistry.ISchemaRegistryClient.GetCompatibilityAsync(string? subject = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Dekaf.SchemaRegistry.SchemaCompatibilityLevel>!
 Dekaf.SchemaRegistry.ISchemaRegistryClient.LookupSchemaAsync(string! subject, Dekaf.SchemaRegistry.Schema! schema, bool ignoreDeletedSchemas = true, bool normalize = false, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Dekaf.SchemaRegistry.RegisteredSchema!>!
 Dekaf.SchemaRegistry.ISchemaRegistryClient.UpdateCompatibilityAsync(Dekaf.SchemaRegistry.SchemaCompatibilityLevel level, string? subject = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Dekaf.SchemaRegistry.SchemaCompatibilityLevel>!
+Dekaf.SchemaRegistry.JsonSchemaRegistrySerializer<T>.PrepareAsync(string! topic, T value, bool isKey = false, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.SchemaRegistry.ResolvedSchemaContext>
+Dekaf.SchemaRegistry.JsonSchemaRegistrySerializer<T>.PrepareAsync(T value, Dekaf.Serialization.SerializationContext context, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.SchemaRegistry.ResolvedSchemaContext
+Dekaf.SchemaRegistry.ResolvedSchemaContext.Deconstruct(out string! Subject, out int SchemaId, out Dekaf.SchemaRegistry.Schema! Schema) -> void
+Dekaf.SchemaRegistry.ResolvedSchemaContext.Equals(Dekaf.SchemaRegistry.ResolvedSchemaContext other) -> bool
+Dekaf.SchemaRegistry.ResolvedSchemaContext.ResolvedSchemaContext() -> void
+Dekaf.SchemaRegistry.ResolvedSchemaContext.ResolvedSchemaContext(string! Subject, int SchemaId, Dekaf.SchemaRegistry.Schema! Schema) -> void
+Dekaf.SchemaRegistry.ResolvedSchemaContext.Schema.get -> Dekaf.SchemaRegistry.Schema!
+Dekaf.SchemaRegistry.ResolvedSchemaContext.Schema.init -> void
+Dekaf.SchemaRegistry.ResolvedSchemaContext.SchemaId.get -> int
+Dekaf.SchemaRegistry.ResolvedSchemaContext.SchemaId.init -> void
+Dekaf.SchemaRegistry.ResolvedSchemaContext.Subject.get -> string!
+Dekaf.SchemaRegistry.ResolvedSchemaContext.Subject.init -> void
 Dekaf.SchemaRegistry.SchemaCompatibilityLevel
 Dekaf.SchemaRegistry.SchemaCompatibilityLevel.Backward = 1 -> Dekaf.SchemaRegistry.SchemaCompatibilityLevel
 Dekaf.SchemaRegistry.SchemaCompatibilityLevel.BackwardTransitive = 2 -> Dekaf.SchemaRegistry.SchemaCompatibilityLevel
@@ -59,3 +72,10 @@ Dekaf.SchemaRegistry.SchemaRegistryTlsConfig.ValidateServerCertificate.get -> bo
 Dekaf.SchemaRegistry.SchemaRegistryTlsConfig.ValidateServerCertificate.init -> void
 Dekaf.SchemaRegistry.SchemaRegistryTlsConfig.ValidateServerCertificateHostName.get -> bool
 Dekaf.SchemaRegistry.SchemaRegistryTlsConfig.ValidateServerCertificateHostName.init -> void
+Dekaf.SchemaRegistry.SchemaRegistrySerializer<T>.PrepareAsync(string! topic, T value, bool isKey = false, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.SchemaRegistry.ResolvedSchemaContext>
+Dekaf.SchemaRegistry.SchemaRegistrySerializer<T>.PrepareAsync(T value, Dekaf.Serialization.SerializationContext context, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+override Dekaf.SchemaRegistry.ResolvedSchemaContext.GetHashCode() -> int
+static Dekaf.SchemaRegistry.ResolvedSchemaContext.operator !=(Dekaf.SchemaRegistry.ResolvedSchemaContext left, Dekaf.SchemaRegistry.ResolvedSchemaContext right) -> bool
+static Dekaf.SchemaRegistry.ResolvedSchemaContext.operator ==(Dekaf.SchemaRegistry.ResolvedSchemaContext left, Dekaf.SchemaRegistry.ResolvedSchemaContext right) -> bool
+~override Dekaf.SchemaRegistry.ResolvedSchemaContext.Equals(object obj) -> bool
+~override Dekaf.SchemaRegistry.ResolvedSchemaContext.ToString() -> string

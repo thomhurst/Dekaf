@@ -83,6 +83,10 @@ registration. The interface's default implementation throws `NotSupportedExcepti
 custom clients that need updating. Set `UseSchemaReferences = false` only to retain the legacy
 registration behavior that omits references.
 
+Known `google/protobuf` imports are skipped by default, matching Confluent's built-in dependency
+handling. This differs from earlier Dekaf releases. Set `SkipKnownTypes = false` if existing subjects
+must retain explicit references to those imports.
+
 ## Schema Registry Configuration
 
 ```csharp

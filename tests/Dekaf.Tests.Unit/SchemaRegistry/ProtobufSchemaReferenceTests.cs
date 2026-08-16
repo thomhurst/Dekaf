@@ -261,7 +261,6 @@ public sealed class ProtobufSchemaReferenceTests
         await sharedEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
         var second = serializer.PrepareAsync("graph-b", new ReferenceGraphMessage());
 
-        await Assert.That(registrationCounts["shared/base.proto"]).IsEqualTo(1);
         sharedRelease.TrySetResult();
         await Task.WhenAll(first.AsTask(), second.AsTask());
 

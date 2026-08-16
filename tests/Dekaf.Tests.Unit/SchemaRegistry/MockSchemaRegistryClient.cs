@@ -195,10 +195,8 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
             return false;
         }
 
-        var leftReferences = left.References;
-        var rightReferences = right.References;
-        if (leftReferences is null || rightReferences is null)
-            return leftReferences is null && rightReferences is null;
+        var leftReferences = left.References ?? [];
+        var rightReferences = right.References ?? [];
         if (leftReferences.Count != rightReferences.Count)
             return false;
 

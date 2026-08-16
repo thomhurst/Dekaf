@@ -94,9 +94,8 @@ internal sealed class SchemaResolutionCache<TValue>
         catch
         {
             if (entry.IsCached &&
-                _cache.TryGetValue(key, out var cached) &&
-                ReferenceEquals(cached, entry) &&
-                _cache.TryRemove(key, out _))
+                ((ICollection<KeyValuePair<SchemaResolutionKey, Entry>>)_cache)
+                .Remove(new KeyValuePair<SchemaResolutionKey, Entry>(key, entry)))
             {
                 Interlocked.Decrement(ref _cacheCount);
             }
