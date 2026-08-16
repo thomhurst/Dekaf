@@ -219,7 +219,11 @@ public sealed class AvroSerializerTests
         var replacementPayload = SerializeAvroRecord(replacement, avroSchema!);
         var wireFormat = CreateWireFormat(schemaId, "encrypted"u8.ToArray());
         var executor = new CapturingRuleExecutor(deserializedPayload: replacementPayload);
-        var config = new AvroDeserializerConfig { RuleExecutor = executor };
+        var config = new AvroDeserializerConfig
+        {
+            SubjectNameStrategy = SubjectNameStrategy.TopicRecordName,
+            RuleExecutor = executor
+        };
         await using var deserializer = new AvroSchemaRegistryDeserializer<GenericRecord>(schemaRegistry, config);
 
         var result = deserializer.Deserialize(wireFormat, CreateContext());
@@ -228,7 +232,7 @@ public sealed class AvroSerializerTests
         await Assert.That((string)result["name"]!).IsEqualTo("plain");
         await Assert.That(executor.DeserializeContext).IsNotNull();
         await Assert.That(executor.DeserializeContext!.PayloadFormat).IsEqualTo(SchemaRegistryPayloadFormat.Avro);
-        await Assert.That(executor.DeserializeContext.Subject).IsEqualTo("test-topic-value");
+        await Assert.That(executor.DeserializeContext.Subject).IsEqualTo("test-topic-test.SimpleRecord");
         await Assert.That(executor.DeserializeContext.SchemaId).IsEqualTo(schemaId);
         await Assert.That(executor.DeserializeContext.Schema).IsSameReferenceAs(schemaObj);
     }

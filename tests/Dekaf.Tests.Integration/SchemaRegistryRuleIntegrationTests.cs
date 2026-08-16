@@ -29,7 +29,7 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
         var schema = new Schema
         {
             SchemaType = SchemaType.Json,
-            SchemaString = """{ "type": "string" }""",
+            SchemaString = """{ "type": "string", "title": "DomainRulePayload" }""",
             RuleSet = new SchemaRuleSet
             {
                 DomainRules =
@@ -40,7 +40,7 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
                         Kind = SchemaRuleKind.Condition,
                         Mode = SchemaRuleMode.WriteRead,
                         Type = "CEL",
-                        Expr = $"subject == \"{topic}-value\""
+                        Expr = "subject == \"DomainRulePayload\""
                     },
                     CreateRule("domain-xor", "DOMAIN-XOR")
                 ],
@@ -57,10 +57,15 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
                 writer.Advance(byteCount);
             },
             () => schema,
+            subjectNameStrategy: SubjectNameStrategy.RecordName,
             ruleExecutor: ruleExecutor);
         await using var deserializer = SchemaRegistryDeserializer.Create(
             registryClient,
             static (ReadOnlyMemory<byte> payload, Schema _) => Encoding.UTF8.GetString(payload.Span),
+            new SchemaRegistryDeserializerConfig
+            {
+                SubjectNameStrategy = SubjectNameStrategy.RecordName
+            },
             ruleExecutor: ruleExecutor);
 
         await using var producer = await Kafka.CreateProducer<string, string>()
@@ -93,7 +98,7 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
             break;
         }
 
-        var registered = await registryClient.GetSchemaBySubjectAsync($"{topic}-value");
+        var registered = await registryClient.GetSchemaBySubjectAsync("DomainRulePayload");
         var registeredById = await registryClient.GetSchemaAsync(registered.Id);
         await Assert.That(consumed).IsEqualTo("domain-rule-payload");
         await Assert.That(registeredById.RuleSet!.DomainRules).Count().IsEqualTo(2);

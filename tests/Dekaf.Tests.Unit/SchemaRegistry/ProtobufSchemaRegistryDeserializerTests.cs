@@ -119,7 +119,11 @@ public class ProtobufSchemaRegistryDeserializerTests
         var schemaId = await schemaRegistry.RegisterSchemaAsync("test-topic-value", schema);
         var replacement = new TestMessage { Id = 9, Name = "Plain", Value = 1.25 };
         var executor = new CapturingRuleExecutor(replacement.ToByteArray());
-        var config = new ProtobufDeserializerConfig { RuleExecutor = executor };
+        var config = new ProtobufDeserializerConfig
+        {
+            SubjectNameStrategy = SubjectNameStrategy.RecordName,
+            RuleExecutor = executor
+        };
         await using var deserializer = new ProtobufSchemaRegistryDeserializer<TestMessage>(schemaRegistry, config);
         var wireBytes = CreateWireBytes(schemaId, new TestMessage { Id = 1, Name = "Encrypted", Value = 3.14 });
 
@@ -130,7 +134,7 @@ public class ProtobufSchemaRegistryDeserializerTests
         await Assert.That(result.Value).IsEqualTo(replacement.Value);
         await Assert.That(executor.Context).IsNotNull();
         await Assert.That(executor.Context!.PayloadFormat).IsEqualTo(SchemaRegistryPayloadFormat.Protobuf);
-        await Assert.That(executor.Context.Subject).IsEqualTo("test-topic-key");
+        await Assert.That(executor.Context.Subject).IsEqualTo(TestMessage.Descriptor.FullName);
         await Assert.That(executor.Context.SchemaId).IsEqualTo(schemaId);
         await Assert.That(executor.Context.Schema).IsSameReferenceAs(schema);
     }

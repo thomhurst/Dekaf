@@ -1103,12 +1103,18 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
 
         return new SchemaRuleSet
         {
-            MigrationRules = ruleSet.MigrationRules?.Select(ToRule).ToArray(),
-            DomainRules = ruleSet.DomainRules?.Select(ToRule).ToArray(),
-            EncodingRules = ruleSet.EncodingRules?.Select(ToRule).ToArray(),
-            EnableAt = ruleSet.EnableAt
+            MigrationRules = ToReadOnlyRules(ruleSet.MigrationRules),
+            DomainRules = ToReadOnlyRules(ruleSet.DomainRules),
+            EncodingRules = ToReadOnlyRules(ruleSet.EncodingRules),
+            EnableAt = ruleSet.EnableAt,
+            HasFixedRuleCollections = true
         };
     }
+
+    private static IReadOnlyList<SchemaRule>? ToReadOnlyRules(IReadOnlyList<SchemaRuleDto>? rules) =>
+        rules is null
+            ? null
+            : Array.AsReadOnly(rules.Select(ToRule).ToArray());
 
     private static SchemaRuleDto ToRuleDto(SchemaRule rule) => new()
     {

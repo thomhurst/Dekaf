@@ -447,8 +447,12 @@ public sealed class SchemaRegistryCacheTests
     public async Task Deserializer_RuleExecutor_TransformsDeserializedPayload()
     {
         var registry = new MockSchemaRegistryClient();
-        var schema = new Schema { SchemaType = SchemaType.Json, SchemaString = """{ "type": "string" }""" };
-        var schemaId = await registry.RegisterSchemaAsync("topic-value", schema);
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = """{ "type": "string", "title": "CustomRecord" }"""
+        };
+        var schemaId = await registry.RegisterSchemaAsync("CustomRecord", schema);
         var cipherText = "encrypted"u8.ToArray();
         var wireBytes = new byte[5 + cipherText.Length];
         wireBytes[0] = 0;
@@ -459,6 +463,10 @@ public sealed class SchemaRegistryCacheTests
         await using var deserializer = SchemaRegistryDeserializer.Create(
             registry,
             static (ReadOnlyMemory<byte> payload, Schema _) => Encoding.UTF8.GetString(payload.Span),
+            new SchemaRegistryDeserializerConfig
+            {
+                CustomSubjectNameStrategy = SubjectNameStrategies.Record
+            },
             ruleExecutor: executor);
 
         var result = deserializer.Deserialize(wireBytes, CreateContext());
@@ -466,7 +474,7 @@ public sealed class SchemaRegistryCacheTests
         await Assert.That(result).IsEqualTo("plain");
         await Assert.That(executor.DeserializeContext).IsNotNull();
         await Assert.That(executor.DeserializeContext!.PayloadFormat).IsEqualTo(SchemaRegistryPayloadFormat.Custom);
-        await Assert.That(executor.DeserializeContext.Subject).IsEqualTo("topic-value");
+        await Assert.That(executor.DeserializeContext.Subject).IsEqualTo("CustomRecord");
         await Assert.That(executor.DeserializeContext.SchemaId).IsEqualTo(schemaId);
         await Assert.That(executor.DeserializeContext.Schema).IsSameReferenceAs(schema);
     }
@@ -849,8 +857,12 @@ public sealed class SchemaRegistryCacheTests
     public async Task Deserializer_UsesCachedSchema_AndPassesPayloadWithoutCopy()
     {
         var registry = new MockSchemaRegistryClient();
-        var schema = new Schema { SchemaType = SchemaType.Json, SchemaString = """{ "type": "string" }""" };
-        var schemaId = await registry.RegisterSchemaAsync("topic-value", schema);
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = """{ "type": "string", "title": "JsonRecord" }"""
+        };
+        var schemaId = await registry.RegisterSchemaAsync("JsonRecord", schema);
         var payloadBytes = "hello"u8.ToArray();
         var wireBytes = new byte[5 + payloadBytes.Length];
         wireBytes[0] = 0;
@@ -929,8 +941,12 @@ public sealed class SchemaRegistryCacheTests
     public async Task JsonDeserializer_RuleExecutor_TransformsPayload()
     {
         var registry = new MockSchemaRegistryClient();
-        var schema = new Schema { SchemaType = SchemaType.Json, SchemaString = """{ "type": "string" }""" };
-        var schemaId = await registry.RegisterSchemaAsync("topic-value", schema);
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = """{ "type": "string", "title": "JsonRecord" }"""
+        };
+        var schemaId = await registry.RegisterSchemaAsync("JsonRecord", schema);
         var cipherText = "encrypted-json"u8.ToArray();
         var wireBytes = new byte[5 + cipherText.Length];
         wireBytes[0] = 0;
@@ -941,6 +957,11 @@ public sealed class SchemaRegistryCacheTests
         var executor = new ReplacingRuleExecutor(deserializedPayload: plainJson);
         await using var deserializer = new JsonSchemaRegistryDeserializer<string>(
             registry,
+            jsonOptions: null,
+            config: new SchemaRegistryDeserializerConfig
+            {
+                SubjectNameStrategy = SubjectNameStrategy.RecordName
+            },
             ruleExecutor: executor);
 
         var result = deserializer.Deserialize(wireBytes, CreateContext());
@@ -948,7 +969,7 @@ public sealed class SchemaRegistryCacheTests
         await Assert.That(result).IsEqualTo("plain");
         await Assert.That(executor.DeserializeContext).IsNotNull();
         await Assert.That(executor.DeserializeContext!.PayloadFormat).IsEqualTo(SchemaRegistryPayloadFormat.Json);
-        await Assert.That(executor.DeserializeContext.Subject).IsEqualTo("topic-value");
+        await Assert.That(executor.DeserializeContext.Subject).IsEqualTo("JsonRecord");
         await Assert.That(executor.DeserializeContext.SchemaId).IsEqualTo(schemaId);
         await Assert.That(executor.DeserializeContext.Schema).IsSameReferenceAs(schema);
     }

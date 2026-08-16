@@ -759,6 +759,7 @@ internal static class SchemaRegistryBuffers
 public sealed class SchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisposable
 {
     private const byte MagicByte = 0x00;
+    private static readonly string FallbackRecordName = typeof(T).FullName ?? typeof(T).Name;
 
     /// <summary>
     /// Default timeout for Schema Registry operations (30 seconds).
@@ -769,6 +770,7 @@ public sealed class SchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisp
     private readonly Func<ReadOnlyMemory<byte>, Schema, T> _deserialize;
     private readonly bool _ownsClient;
     private readonly ISchemaRegistryRuleExecutor? _ruleExecutor;
+    private readonly DeserializerSubjectNameCache? _subjectNames;
 
     /// <summary>
     /// Creates a new Schema Registry deserializer.
@@ -785,8 +787,28 @@ public sealed class SchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisp
             schemaRegistry,
             (ReadOnlyMemory<byte> payload, Schema schema) => deserialize(payload.ToArray(), schema),
             ownsClient,
-            ruleExecutor)
+            ruleExecutor,
+            config: null)
     {
+    }
+
+    /// <summary>
+    /// Creates a new Schema Registry deserializer with subject-name configuration for read rules.
+    /// </summary>
+    public SchemaRegistryDeserializer(
+        ISchemaRegistryClient schemaRegistry,
+        Func<byte[], Schema, T> deserialize,
+        SchemaRegistryDeserializerConfig config,
+        bool ownsClient = false,
+        ISchemaRegistryRuleExecutor? ruleExecutor = null)
+        : this(
+            schemaRegistry,
+            (ReadOnlyMemory<byte> payload, Schema schema) => deserialize(payload.ToArray(), schema),
+            ownsClient,
+            ruleExecutor,
+            config)
+    {
+        ArgumentNullException.ThrowIfNull(config);
     }
 
     /// <summary>
@@ -799,12 +821,14 @@ public sealed class SchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisp
         ISchemaRegistryClient schemaRegistry,
         Func<ReadOnlyMemory<byte>, Schema, T> deserialize,
         bool ownsClient,
-        ISchemaRegistryRuleExecutor? ruleExecutor = null)
+        ISchemaRegistryRuleExecutor? ruleExecutor = null,
+        SchemaRegistryDeserializerConfig? config = null)
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _deserialize = deserialize ?? throw new ArgumentNullException(nameof(deserialize));
         _ownsClient = ownsClient;
         _ruleExecutor = ruleExecutor;
+        _subjectNames = DeserializerSubjectNameCache.Create(config);
     }
 
     public T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
@@ -830,15 +854,25 @@ public sealed class SchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisp
                     Topic = context.Topic,
                     Component = context.Component,
                     SchemaId = schemaId,
-                    Subject = SubjectNameResolver.GetTopicSubjectName(
-                        context.Topic,
-                        context.Component == SerializationComponent.Key),
+                    Subject = GetSubjectName(schemaId, schema, context),
                     Schema = schema,
                     PayloadFormat = SchemaRegistryPayloadFormat.Custom
                 });
         }
 
         return _deserialize(payload, schema);
+    }
+
+    private string GetSubjectName(int schemaId, Schema schema, SerializationContext context)
+    {
+        var isKey = context.Component == SerializationComponent.Key;
+        return _subjectNames?.GetSubjectName(
+                schemaId,
+                schema,
+                context.Topic,
+                isKey,
+                FallbackRecordName)
+            ?? SubjectNameResolver.GetTopicSubjectName(context.Topic, isKey);
     }
 
     public ValueTask DisposeAsync()
@@ -868,6 +902,20 @@ public static class SchemaRegistryDeserializer
         bool ownsClient = false,
         ISchemaRegistryRuleExecutor? ruleExecutor = null)
         => new(schemaRegistry, deserialize, ownsClient, ruleExecutor);
+
+    /// <summary>
+    /// Creates a zero-copy Schema Registry deserializer with subject-name configuration for read rules.
+    /// </summary>
+    public static SchemaRegistryDeserializer<T> Create<T>(
+        ISchemaRegistryClient schemaRegistry,
+        Func<ReadOnlyMemory<byte>, Schema, T> deserialize,
+        SchemaRegistryDeserializerConfig config,
+        bool ownsClient = false,
+        ISchemaRegistryRuleExecutor? ruleExecutor = null)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        return new SchemaRegistryDeserializer<T>(schemaRegistry, deserialize, ownsClient, ruleExecutor, config);
+    }
 }
 
 /// <summary>

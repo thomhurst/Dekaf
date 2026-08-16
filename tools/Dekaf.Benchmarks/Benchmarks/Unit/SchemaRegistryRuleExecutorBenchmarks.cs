@@ -34,7 +34,8 @@ public class SchemaRegistryRuleExecutorBenchmarks
             RuleSet = new SchemaRuleSet
             {
                 DomainRules = [],
-                EncodingRules = []
+                EncodingRules = [],
+                HasFixedRuleCollections = true
             }
         });
     private readonly SchemaRegistryRuleContext _activeDomainRule = CreateContext(
@@ -44,6 +45,7 @@ public class SchemaRegistryRuleExecutorBenchmarks
             SchemaString = "{}",
             RuleSet = new SchemaRuleSet
             {
+                HasFixedRuleCollections = true,
                 DomainRules =
                 [
                     new SchemaRule
@@ -117,6 +119,7 @@ public class SchemaRegistryRuleExecutorBenchmarks
             },
             RuleSet = new SchemaRuleSet
             {
+                HasFixedRuleCollections = true,
                 DomainRules =
                 [
                     new SchemaRule
@@ -158,7 +161,11 @@ public class SchemaRegistryRuleExecutorBenchmarks
         {
             SchemaType = SchemaType.Json,
             SchemaString = "{}",
-            RuleSet = new SchemaRuleSet { DomainRules = rules }
+            RuleSet = new SchemaRuleSet
+            {
+                DomainRules = rules,
+                HasFixedRuleCollections = true
+            }
         };
     }
 

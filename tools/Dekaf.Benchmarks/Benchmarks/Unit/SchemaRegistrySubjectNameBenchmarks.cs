@@ -14,6 +14,17 @@ public class SchemaRegistrySubjectNameBenchmarks
         new string("benchmark-topic".AsSpan()),
         new string("benchmark-topic".AsSpan())
     ];
+    private readonly DeserializerSubjectNameCache _recordSubjectNames =
+        DeserializerSubjectNameCache.Create(
+            new SchemaRegistryDeserializerConfig
+            {
+                SubjectNameStrategy = SubjectNameStrategy.RecordName
+            })!;
+    private readonly Schema _schema = new()
+    {
+        SchemaType = SchemaType.Json,
+        SchemaString = """{ "type": "string", "title": "BenchmarkRecord" }"""
+    };
     private int _topicIndex;
 
     [GlobalSetup]
@@ -21,6 +32,12 @@ public class SchemaRegistrySubjectNameBenchmarks
     {
         SubjectNameResolver.GetTopicSubjectName(_equalTopics[0], isKey: true);
         SubjectNameResolver.GetTopicSubjectName(_equalTopics[0], isKey: false);
+        _recordSubjectNames.GetSubjectName(
+            schemaId: 1,
+            _schema,
+            _equalTopics[0],
+            isKey: false,
+            fallbackRecordName: "FallbackRecord");
     }
 
     [Benchmark]
@@ -28,5 +45,17 @@ public class SchemaRegistrySubjectNameBenchmarks
     {
         var topic = _equalTopics[_topicIndex++ & 1];
         return SubjectNameResolver.GetTopicSubjectName(topic, isKey: false);
+    }
+
+    [Benchmark]
+    public string ResolveConfiguredSubjectFromDistinctEqualTopicInstance()
+    {
+        var topic = _equalTopics[_topicIndex++ & 1];
+        return _recordSubjectNames.GetSubjectName(
+            schemaId: 1,
+            _schema,
+            topic,
+            isKey: false,
+            fallbackRecordName: "FallbackRecord");
     }
 }

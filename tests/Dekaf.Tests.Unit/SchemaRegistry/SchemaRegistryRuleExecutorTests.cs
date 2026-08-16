@@ -63,7 +63,7 @@ public sealed class SchemaRegistryRuleExecutorTests
     }
 
     [Test]
-    public async Task TransformSerializedPayload_SourceArrayMutationDoesNotChangeExistingRuleSet()
+    public async Task TransformSerializedPayload_SourceArrayMutationChangesCallerOwnedRuleSet()
     {
         var calls = new List<string>();
         var originalRule = CreateRule("original", "ORIGINAL", SchemaRuleMode.Write);
@@ -79,16 +79,12 @@ public sealed class SchemaRegistryRuleExecutorTests
         executor.TransformSerializedPayload("payload"u8.ToArray(), CreateContext(schema));
         rules[0] = replacementRule;
         executor.TransformSerializedPayload("payload"u8.ToArray(), CreateContext(schema));
-        executor.TransformSerializedPayload(
-            "payload"u8.ToArray(),
-            CreateContext(CreateSchema(domainRules: rules)));
 
         await Assert.That(calls).IsEquivalentTo([
             "Write:original:Json",
-            "Write:original:Json",
             "Write:replacement:Json"
         ]);
-        await Assert.That(schema.RuleSet!.DomainRules![0]).IsSameReferenceAs(originalRule);
+        await Assert.That(schema.RuleSet!.DomainRules![0]).IsSameReferenceAs(replacementRule);
     }
 
     [Test]

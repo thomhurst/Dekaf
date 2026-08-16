@@ -669,8 +669,6 @@ public sealed class SchemaRuleSet
 {
     private IReadOnlyList<SchemaRule>? _domainRules;
     private IReadOnlyList<SchemaRule>? _encodingRules;
-    private bool _domainRuleCountIsFixed = true;
-    private bool _encodingRuleCountIsFixed = true;
     private bool _hasFixedDomainOrEncodingRules;
 
     /// <summary>
@@ -690,8 +688,7 @@ public sealed class SchemaRuleSet
         [CompilerGenerated]
         init
         {
-            _domainRules = SnapshotArray(value);
-            _domainRuleCountIsFixed = value is null or SchemaRule[];
+            _domainRules = value;
             UpdateFixedRuleState();
         }
     }
@@ -708,8 +705,7 @@ public sealed class SchemaRuleSet
         [CompilerGenerated]
         init
         {
-            _encodingRules = SnapshotArray(value);
-            _encodingRuleCountIsFixed = value is null or SchemaRule[];
+            _encodingRules = value;
             UpdateFixedRuleState();
         }
     }
@@ -722,20 +718,15 @@ public sealed class SchemaRuleSet
     internal bool HasDomainOrEncodingRules =>
         // Schema Registry responses use fixed-length arrays, so the common no-rules path is one
         // cached branch. Preserve live Count semantics for caller-supplied mutable list types.
-        _domainRuleCountIsFixed && _encodingRuleCountIsFixed
+        HasFixedRuleCollections
             ? _hasFixedDomainOrEncodingRules
             : _domainRules is { Count: > 0 } || _encodingRules is { Count: > 0 };
 
-    internal bool HasFixedRuleCollections =>
-        _domainRuleCountIsFixed && _encodingRuleCountIsFixed;
+    internal bool HasFixedRuleCollections { get; init; }
 
     private void UpdateFixedRuleState() =>
         _hasFixedDomainOrEncodingRules = _domainRules is { Count: > 0 } || _encodingRules is { Count: > 0 };
 
-    private static IReadOnlyList<SchemaRule>? SnapshotArray(IReadOnlyList<SchemaRule>? rules) =>
-        rules is SchemaRule[] array
-            ? Array.AsReadOnly((SchemaRule[])array.Clone())
-            : rules;
 }
 
 /// <summary>
