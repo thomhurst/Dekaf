@@ -984,6 +984,7 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
         private readonly Dictionary<global::Avro.SchemaName, UnionBranch> _enumBranches = new();
         private readonly Dictionary<global::Avro.SchemaName, UnionBranch> _fixedBranches = new();
         private readonly Dictionary<Type, ConditionalUnionBranch>? _conditionalBranches;
+        private readonly Dictionary<Type, MultipleConditionalUnionBranches>? _multipleConditionalBranches;
         private readonly UnionBranch _arrayBranch;
         private readonly UnionBranch _booleanBranch;
         private readonly UnionBranch _bytesBranch;
@@ -1013,7 +1014,7 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
             UnionBranch longBranch = default;
             UnionBranch stringBranch = default;
             UnionBranch timeSpanBranch = default;
-            Dictionary<Type, ConditionalUnionBranch>? conditionalBranches = null;
+            Dictionary<Type, ConditionalUnionBranchBuilder>? conditionalBranchBuilders = null;
             for (var i = 0; i < schema.Count; i++)
             {
                 var branch = schema[i];
@@ -1024,25 +1025,25 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
                         NullIndex = i;
                         break;
                     case global::Avro.Schema.Type.Boolean:
-                        SetCompatibleBranch(typeof(bool), ref booleanBranch, resolved, null, ref conditionalBranches);
+                        SetCompatibleBranch(typeof(bool), ref booleanBranch, resolved, null, ref conditionalBranchBuilders);
                         break;
                     case global::Avro.Schema.Type.Int:
-                        SetCompatibleBranch(typeof(int), ref intBranch, resolved, null, ref conditionalBranches);
+                        SetCompatibleBranch(typeof(int), ref intBranch, resolved, null, ref conditionalBranchBuilders);
                         break;
                     case global::Avro.Schema.Type.Long:
-                        SetCompatibleBranch(typeof(long), ref longBranch, resolved, null, ref conditionalBranches);
+                        SetCompatibleBranch(typeof(long), ref longBranch, resolved, null, ref conditionalBranchBuilders);
                         break;
                     case global::Avro.Schema.Type.Float:
-                        SetCompatibleBranch(typeof(float), ref floatBranch, resolved, null, ref conditionalBranches);
+                        SetCompatibleBranch(typeof(float), ref floatBranch, resolved, null, ref conditionalBranchBuilders);
                         break;
                     case global::Avro.Schema.Type.Double:
-                        SetCompatibleBranch(typeof(double), ref doubleBranch, resolved, null, ref conditionalBranches);
+                        SetCompatibleBranch(typeof(double), ref doubleBranch, resolved, null, ref conditionalBranchBuilders);
                         break;
                     case global::Avro.Schema.Type.Bytes:
-                        SetCompatibleBranch(typeof(byte[]), ref bytesBranch, resolved, null, ref conditionalBranches);
+                        SetCompatibleBranch(typeof(byte[]), ref bytesBranch, resolved, null, ref conditionalBranchBuilders);
                         break;
                     case global::Avro.Schema.Type.String:
-                        SetCompatibleBranch(typeof(string), ref stringBranch, resolved, null, ref conditionalBranches);
+                        SetCompatibleBranch(typeof(string), ref stringBranch, resolved, null, ref conditionalBranchBuilders);
                         break;
                     case global::Avro.Schema.Type.Record:
                     case global::Avro.Schema.Type.Error:
@@ -1068,58 +1069,58 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
                         var conditional = IsSpecializedLogicalType(logical.LogicalType) ? null : logical;
                         if (type == typeof(bool))
                         {
-                            SetCompatibleBranch(type, ref booleanBranch, resolved, conditional, ref conditionalBranches);
+                            SetCompatibleBranch(type, ref booleanBranch, resolved, conditional, ref conditionalBranchBuilders);
                         }
                         else if (type == typeof(int))
                         {
-                            SetCompatibleBranch(type, ref intBranch, resolved, conditional, ref conditionalBranches);
+                            SetCompatibleBranch(type, ref intBranch, resolved, conditional, ref conditionalBranchBuilders);
                         }
                         else if (type == typeof(long))
                         {
-                            SetCompatibleBranch(type, ref longBranch, resolved, conditional, ref conditionalBranches);
+                            SetCompatibleBranch(type, ref longBranch, resolved, conditional, ref conditionalBranchBuilders);
                         }
                         else if (type == typeof(float))
                         {
-                            SetCompatibleBranch(type, ref floatBranch, resolved, conditional, ref conditionalBranches);
+                            SetCompatibleBranch(type, ref floatBranch, resolved, conditional, ref conditionalBranchBuilders);
                         }
                         else if (type == typeof(double))
                         {
-                            SetCompatibleBranch(type, ref doubleBranch, resolved, conditional, ref conditionalBranches);
+                            SetCompatibleBranch(type, ref doubleBranch, resolved, conditional, ref conditionalBranchBuilders);
                         }
                         else if (type == typeof(byte[]))
                         {
-                            SetCompatibleBranch(type, ref bytesBranch, resolved, conditional, ref conditionalBranches);
+                            SetCompatibleBranch(type, ref bytesBranch, resolved, conditional, ref conditionalBranchBuilders);
                         }
                         else if (type == typeof(string))
                         {
-                            SetCompatibleBranch(type, ref stringBranch, resolved, conditional, ref conditionalBranches);
+                            SetCompatibleBranch(type, ref stringBranch, resolved, conditional, ref conditionalBranchBuilders);
                         }
                         else if (type == typeof(DateTime))
                         {
-                            SetCompatibleBranch(type, ref dateTimeBranch, resolved, conditional, ref conditionalBranches);
+                            SetCompatibleBranch(type, ref dateTimeBranch, resolved, conditional, ref conditionalBranchBuilders);
                         }
                         else if (type == typeof(TimeSpan))
                         {
-                            SetCompatibleBranch(type, ref timeSpanBranch, resolved, conditional, ref conditionalBranches);
+                            SetCompatibleBranch(type, ref timeSpanBranch, resolved, conditional, ref conditionalBranchBuilders);
                         }
                         else if (type == typeof(Guid))
                         {
-                            SetCompatibleBranch(type, ref guidBranch, resolved, conditional, ref conditionalBranches);
+                            SetCompatibleBranch(type, ref guidBranch, resolved, conditional, ref conditionalBranchBuilders);
                         }
                         else if (type == typeof(global::Avro.AvroDecimal))
                         {
-                            SetCompatibleBranch(type, ref decimalBranch, resolved, conditional, ref conditionalBranches);
+                            SetCompatibleBranch(type, ref decimalBranch, resolved, conditional, ref conditionalBranchBuilders);
                         }
                         else
                         {
-                            if (!_typedBranches.TryAdd(type, resolved) && conditional is not null)
-                                throw UnsupportedConditionalBranches(type);
-
-                            if (conditional is not null)
-                            {
-                                conditionalBranches ??= new Dictionary<Type, ConditionalUnionBranch>();
-                                conditionalBranches.Add(type, new ConditionalUnionBranch(resolved, conditional, default));
-                            }
+                            _typedBranches.TryGetValue(type, out var typedBranch);
+                            SetCompatibleBranch(
+                                type,
+                                ref typedBranch,
+                                resolved,
+                                conditional,
+                                ref conditionalBranchBuilders);
+                            _typedBranches[type] = typedBranch;
                         }
                         break;
                 }
@@ -1136,7 +1137,9 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
             _timeSpanBranch = timeSpanBranch;
             _guidBranch = guidBranch;
             _decimalBranch = decimalBranch;
-            _conditionalBranches = conditionalBranches;
+            _conditionalBranches = BuildConditionalBranches(
+                conditionalBranchBuilders,
+                out _multipleConditionalBranches);
         }
 
         public global::Avro.UnionSchema Schema => _schema;
@@ -1231,8 +1234,24 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
             {
                 if (conditional.LogicalSchema.LogicalType.IsInstanceOfLogicalType(value))
                     return conditional.Primary;
+
                 if (conditional.Fallback.Schema is not null)
                     return conditional.Fallback;
+                throw NoMatch(value);
+            }
+
+            if (value is not null &&
+                _multipleConditionalBranches?.TryGetValue(value.GetType(), out var multiple) == true)
+            {
+                var candidates = multiple.Candidates;
+                for (var i = 0; i < candidates.Length; i++)
+                {
+                    var candidate = candidates[i];
+                    if (candidate.LogicalSchema.LogicalType.IsInstanceOfLogicalType(value))
+                        return candidate.Branch;
+                }
+                if (multiple.Fallback.Schema is not null)
+                    return multiple.Fallback;
                 throw NoMatch(value);
             }
 
@@ -1249,33 +1268,68 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
             ref UnionBranch target,
             UnionBranch branch,
             global::Avro.LogicalSchema? conditional,
-            ref Dictionary<Type, ConditionalUnionBranch>? conditionalBranches)
+            ref Dictionary<Type, ConditionalUnionBranchBuilder>? conditionalBranchBuilders)
         {
             if (target.Schema is null)
             {
                 target = branch;
                 if (conditional is not null)
                 {
-                    conditionalBranches ??= new Dictionary<Type, ConditionalUnionBranch>();
-                    conditionalBranches.Add(type, new ConditionalUnionBranch(branch, conditional, default));
+                    conditionalBranchBuilders ??= new Dictionary<Type, ConditionalUnionBranchBuilder>();
+                    var builder = new ConditionalUnionBranchBuilder();
+                    builder.Candidates.Add(new ConditionalUnionCandidate(branch, conditional));
+                    conditionalBranchBuilders.Add(type, builder);
                 }
                 return;
             }
 
-            if (conditionalBranches is null ||
-                !conditionalBranches.TryGetValue(type, out var existing) ||
+            if (conditionalBranchBuilders is null ||
+                !conditionalBranchBuilders.TryGetValue(type, out var existing) ||
                 existing.Fallback.Schema is not null)
                 return;
 
             if (conditional is not null)
-                throw UnsupportedConditionalBranches(type);
+            {
+                existing.Candidates.Add(new ConditionalUnionCandidate(branch, conditional));
+                return;
+            }
 
-            conditionalBranches[type] = existing with { Fallback = branch };
+            existing.Fallback = branch;
+        }
+
+        private static Dictionary<Type, ConditionalUnionBranch>? BuildConditionalBranches(
+            Dictionary<Type, ConditionalUnionBranchBuilder>? builders,
+            out Dictionary<Type, MultipleConditionalUnionBranches>? multipleBranches)
+        {
+            multipleBranches = null;
+            if (builders is null)
+                return null;
+
+            var branches = new Dictionary<Type, ConditionalUnionBranch>(builders.Count);
+            foreach (var (type, builder) in builders)
+            {
+                if (builder.Candidates.Count == 1)
+                {
+                    var candidate = builder.Candidates[0];
+                    branches.Add(
+                        type,
+                        new ConditionalUnionBranch(candidate.Branch, candidate.LogicalSchema, builder.Fallback));
+                    continue;
+                }
+
+                multipleBranches ??= new Dictionary<Type, MultipleConditionalUnionBranches>();
+                multipleBranches.Add(
+                    type,
+                    new MultipleConditionalUnionBranches(builder.Candidates.ToArray(), builder.Fallback));
+            }
+
+            return branches;
         }
 
         private void ThrowIfConditionalValueBranch(Type type)
         {
-            if (_conditionalBranches?.ContainsKey(type) == true)
+            if (_conditionalBranches?.ContainsKey(type) == true ||
+                _multipleConditionalBranches?.ContainsKey(type) == true)
             {
                 throw new global::Avro.AvroTypeException(
                     $"Union {_schema} uses a value-dependent custom logical branch for {type}; " +
@@ -1288,19 +1342,30 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
                 TimestampMicrosecond or LocalTimestampMicrosecond or
                 TimeMillisecond or TimeMicrosecond or Uuid or global::Avro.Util.Decimal;
 
-        private static global::Avro.AvroTypeException UnsupportedConditionalBranches(Type type) =>
-            new($"Union contains multiple value-dependent custom logical branches for {type}.");
-
         private global::Avro.AvroException NoMatch(object? value) =>
             new($"Cannot find a union match for {value?.GetType()} in {_schema}.");
     }
 
     private readonly record struct UnionBranch(int Index, global::Avro.Schema Schema);
 
+    private readonly record struct ConditionalUnionCandidate(
+        UnionBranch Branch,
+        global::Avro.LogicalSchema LogicalSchema);
+
     private readonly record struct ConditionalUnionBranch(
         UnionBranch Primary,
         global::Avro.LogicalSchema LogicalSchema,
         UnionBranch Fallback);
+
+    private readonly record struct MultipleConditionalUnionBranches(
+        ConditionalUnionCandidate[] Candidates,
+        UnionBranch Fallback);
+
+    private sealed class ConditionalUnionBranchBuilder
+    {
+        public List<ConditionalUnionCandidate> Candidates { get; } = [];
+        public UnionBranch Fallback { get; set; }
+    }
 
     private sealed class ReferenceComparer<T> : IEqualityComparer<T>
         where T : class
