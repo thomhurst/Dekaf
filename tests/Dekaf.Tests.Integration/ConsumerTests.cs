@@ -728,6 +728,43 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
     }
 
     [Test]
+    public async Task ConsumeBatchAsync_PauseDuringDeserialization_RedeliversAfterResume()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        var partition = new TopicPartition(topic, 0);
+        await using var producer = await CreatePauseTestProducerAsync();
+        await ProducePauseTestRecordsAsync(producer, topic, partition: 0, start: 0, count: 2);
+        var deserializer = new CallbackOnceStringDeserializer();
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("pause-during-batch-deserialization-consumer")
+            .WithQueuedMinMessages(100)
+            .WithValueDeserializer(deserializer)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        consumer.Assign(partition);
+        consumer.Seek(new TopicPartitionOffset(topic, 0, 0));
+        deserializer.SetCallback(() => consumer.Pause(partition));
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await using var batches = consumer.ConsumeBatchAsync(cancellation.Token).GetAsyncEnumerator();
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        using (var interrupted = batches.Current.GetEnumerator())
+        {
+            await Assert.That(interrupted.MoveNext()).IsFalse();
+        }
+
+        await Assert.That(deserializer.CallbackCount).IsEqualTo(1);
+        consumer.Resume(partition);
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        using var redelivered = batches.Current.GetEnumerator();
+        await Assert.That(redelivered.MoveNext()).IsTrue();
+        await Assert.That(redelivered.Current.Offset).IsEqualTo(0L);
+        await Assert.That(redelivered.Current.Value).IsEqualTo("value-0");
+    }
+
+    [Test]
     public async Task ConsumeRawBatchAsync_PauseSuppressesPrefetchedRecordsUntilResume()
     {
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2);

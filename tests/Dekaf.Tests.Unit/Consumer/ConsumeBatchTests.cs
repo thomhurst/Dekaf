@@ -194,6 +194,30 @@ public class ConsumeBatchTests
     }
 
     [Test]
+    public async Task ConsumeBatch_PauseDuringDeserialization_BuffersCurrentRecordForRedelivery()
+    {
+        using var pending = CreatePendingFetchData("test-topic", partitionIndex: 0, baseOffset: 7, messageCount: 1);
+        var assignmentEpoch = new BatchIterationEpoch();
+        var status = BatchIterationStatus.Continue;
+        var deserializer = new CallbackDeserializer(() =>
+        {
+            status = BatchIterationStatus.Paused;
+            assignmentEpoch.Invalidate();
+        });
+        var batch = new ConsumeBatch<string, string>(
+            pending,
+            Serializers.String,
+            deserializer,
+            new BatchIterationGuard(assignmentEpoch, assignmentEpoch.Version, _ => status));
+
+        using var enumerator = batch.GetEnumerator();
+
+        await Assert.That(enumerator.MoveNext()).IsFalse();
+        await Assert.That(pending.MoveNext()).IsTrue();
+        await Assert.That(pending.CurrentBaseOffset + pending.CurrentRecord.OffsetDelta).IsEqualTo(7L);
+    }
+
+    [Test]
     public async Task BatchIterationGuard_DoesNotAdoptInProgressPublication()
     {
         var assignmentEpoch = new BatchIterationEpoch();
