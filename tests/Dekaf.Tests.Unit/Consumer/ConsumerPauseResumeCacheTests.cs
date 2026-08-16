@@ -884,6 +884,32 @@ public sealed class ConsumerPauseResumeCacheTests
     }
 
     [Test]
+    public async Task ConsumeBatchAsync_ControlChangeAfterPausedFinalRecord_RetainsExhaustionProbe()
+    {
+        var pausedPartition = new TopicPartition(PrefetchedTopic, 0);
+        var activePartition = new TopicPartition(PrefetchedTopic, 1);
+        await using var consumer = CreatePrefetchedConsumer(
+            CreatePendingFetch(pausedPartition, 10, 1),
+            CreatePendingFetch(activePartition, 20, 1));
+        await using var batches = consumer.ConsumeBatchAsync().GetAsyncEnumerator();
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        using (var records = batches.Current.GetEnumerator())
+        {
+            await Assert.That(records.MoveNext()).IsTrue();
+            consumer.Pause(pausedPartition);
+            await Assert.That(records.MoveNext()).IsFalse();
+        }
+
+        consumer.Seek(new TopicPartitionOffset(PrefetchedTopic, 2, 100));
+        consumer.Resume(pausedPartition);
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(batches.Current.TopicPartition).IsEqualTo(activePartition);
+        await Assert.That(batches.Current.Single().Offset).IsEqualTo(20);
+    }
+
+    [Test]
     public async Task ConsumeBatchAsync_SeekAfterPausedFinalRecord_DoesNotProbeDisposedFetch()
     {
         var partition = new TopicPartition(PrefetchedTopic, 0);
@@ -949,6 +975,32 @@ public sealed class ConsumerPauseResumeCacheTests
             await Assert.That(records.MoveNext()).IsFalse();
         }
 
+        consumer.Resume(pausedPartition);
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(batches.Current.TopicPartition).IsEqualTo(activePartition);
+        await Assert.That(batches.Current.Single().Offset).IsEqualTo(20);
+    }
+
+    [Test]
+    public async Task ConsumeRawBatchAsync_ControlChangeAfterPausedFinalRecord_RetainsExhaustionProbe()
+    {
+        var pausedPartition = new TopicPartition(PrefetchedTopic, 0);
+        var activePartition = new TopicPartition(PrefetchedTopic, 1);
+        await using var consumer = CreatePrefetchedConsumer(
+            CreatePendingFetch(pausedPartition, 10, 1),
+            CreatePendingFetch(activePartition, 20, 1));
+        await using var batches = consumer.ConsumeRawBatchAsync().GetAsyncEnumerator();
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        using (var records = batches.Current.GetEnumerator())
+        {
+            await Assert.That(records.MoveNext()).IsTrue();
+            consumer.Pause(pausedPartition);
+            await Assert.That(records.MoveNext()).IsFalse();
+        }
+
+        consumer.Seek(new TopicPartitionOffset(PrefetchedTopic, 2, 100));
         consumer.Resume(pausedPartition);
 
         await Assert.That(await batches.MoveNextAsync()).IsTrue();

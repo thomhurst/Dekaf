@@ -3701,6 +3701,20 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         return flushed;
     }
 
+    /// <summary>
+    /// An explicit commit vouches for delivered records even when pause reconciliation
+    /// has moved their fetches out of the active queue. This control path may scan the
+    /// paused queue; normal delivery never pays this cost.
+    /// </summary>
+    private void FlushPausedConsumedPositions()
+    {
+        foreach (var pending in _pausedPendingFetches)
+        {
+            pending.MarkYieldedProcessed();
+            FlushConsumedPositions(pending);
+        }
+    }
+
     private bool TryGetActiveConsumedPosition(TopicPartition partition, out long position, out int leaderEpoch)
     {
         if (_options.OffsetCommitMode == OffsetCommitMode.Auto)
@@ -5032,6 +5046,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // Explicit commit: the caller vouches for everything yielded so far, including
         // a record still being processed.
         FlushActiveConsumedPosition();
+        FlushPausedConsumedPositions();
 
         if (_coordinator is null)
             return;
@@ -5501,6 +5516,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private void MovePendingFetchToPaused(PendingFetchData pending)
     {
         Debug.Assert(_pendingFetches.Count > 0 && ReferenceEquals(_pendingFetches.Peek(), pending));
+
+        // The inner batch iterator can discover pause only when probing past its final
+        // record. Complete that probe before parking so resume does not expose an empty
+        // batch. The outer iterator will observe the queue-version change and return
+        // without touching the parked fetch.
+        if (Interlocked.Exchange(ref _batchIterationEpoch.BatchExhaustionProbePending, 0) != 0)
+            pending.TryBufferNext();
+
         FlushConsumedPositions(pending);
         _pausedPendingFetches.Enqueue(_pendingFetches.Dequeue());
     }
