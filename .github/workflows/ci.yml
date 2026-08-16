@@ -66,6 +66,45 @@ jobs:
               - '.editorconfig'
               - '.gitattributes'
 
+  nuget-audit:
+    name: NuGet Vulnerability Audit
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6.0.0
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+          dotnet-quality: 'preview'
+
+      - name: Test vulnerability gate
+        shell: pwsh
+        run: ./scripts/Test-NuGetVulnerabilityAudit.ps1
+
+      - name: Audit direct and transitive dependencies
+        shell: pwsh
+        run: >-
+          ./scripts/Invoke-NuGetVulnerabilityAudit.ps1
+          -SolutionPath Dekaf.sln
+          -OutputPath artifacts/nuget-audit/nuget-vulnerabilities.json
+
+      - name: Upload vulnerability report
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: nuget-vulnerability-report
+          path: artifacts/nuget-audit/nuget-vulnerabilities.json
+          if-no-files-found: warn
+          retention-days: 30
+
   # The ONLY job that compiles the solution. Runs net10.0 unit tests inline and
   # ships the built test binaries to every downstream test job as one tarball
   # (tar preserves the apphost executable bit; single-file upload is fast).
@@ -564,7 +603,7 @@ jobs:
   # build job computed.
   publish:
     name: Publish NuGet
-    needs: [build, unit-net8, leak-gates-debug, aot-smoke, aot-integration-publish, release-matrix, release-matrix-aot, code-quality]
+    needs: [build, unit-net8, leak-gates-debug, aot-smoke, aot-integration-publish, release-matrix, release-matrix-aot, code-quality, nuget-audit]
     if: github.event_name == 'workflow_dispatch' && inputs.publish_nuget == true
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -646,7 +685,7 @@ jobs:
   # release-only jobs skip on PR/push runs).
   ci-passed:
     name: CI Passed
-    needs: [changes, build, unit-net8, leak-gates-debug, integration, aot-smoke, aot-integration-publish, aot-integration-smoke, release-matrix, release-matrix-aot, publish, code-quality]
+    needs: [changes, build, unit-net8, leak-gates-debug, integration, aot-smoke, aot-integration-publish, aot-integration-smoke, release-matrix, release-matrix-aot, publish, code-quality, nuget-audit]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
