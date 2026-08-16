@@ -796,25 +796,6 @@ public sealed class SchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisp
     }
 
     /// <summary>
-    /// Creates a new Schema Registry deserializer with subject-name configuration for read rules.
-    /// </summary>
-    public SchemaRegistryDeserializer(
-        ISchemaRegistryClient schemaRegistry,
-        Func<byte[], Schema, T> deserialize,
-        SchemaRegistryDeserializerConfig config,
-        bool ownsClient = false,
-        ISchemaRegistryRuleExecutor? ruleExecutor = null)
-        : this(
-            schemaRegistry,
-            (ReadOnlyMemory<byte> payload, Schema schema) => deserialize(payload.ToArray(), schema),
-            ownsClient,
-            ruleExecutor,
-            config)
-    {
-        ArgumentNullException.ThrowIfNull(config);
-    }
-
-    /// <summary>
     /// Creates a new Schema Registry deserializer.
     /// </summary>
     /// <param name="schemaRegistry">The Schema Registry client.</param>
