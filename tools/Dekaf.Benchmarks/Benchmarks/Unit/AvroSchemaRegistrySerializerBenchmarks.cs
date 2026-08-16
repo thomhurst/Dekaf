@@ -1,5 +1,6 @@
 using System.Buffers;
 using Avro.Generic;
+using Avro.Specific;
 using BenchmarkDotNet.Attributes;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Avro;
@@ -10,7 +11,7 @@ using RegistrySchema = Dekaf.SchemaRegistry.Schema;
 namespace Dekaf.Benchmarks.Benchmarks.Unit;
 
 /// <summary>
-/// Measures the producer's generic Avro preparation path for stable and equivalent schema instances.
+/// Measures Avro preparation and serialization for stable and equivalent schema instances.
 /// </summary>
 [MemoryDiagnoser(displayGenColumns: false)]
 [MedianColumn]
@@ -35,14 +36,23 @@ public class AvroSchemaRegistrySerializerBenchmarks
     private AvroSchemaRegistrySerializer<GenericRecord> _serializer = null!;
     private AvroSchemaRegistrySerializer<GenericRecord> _missSerializer = null!;
     private AvroSchemaRegistrySerializer<GenericRecord> _equivalentOverflowSerializer = null!;
+    private AvroSchemaRegistrySerializer<GenericRecord> _alternatingOverflowSerializer = null!;
     private AvroSchemaRegistrySerializer<GenericRecord> _overflowSerializer = null!;
+    private AvroSchemaRegistrySerializer<BenchmarkSpecificRecord> _specificOverflowSerializer = null!;
+    private AvroSchemaRegistrySerializer<BenchmarkSpecificRecord> _alternatingSpecificSerializer = null!;
     private BenchmarkSchemaRegistryClient _equivalentOverflowClient = null!;
+    private BenchmarkSchemaRegistryClient _alternatingOverflowClient = null!;
     private BenchmarkSchemaRegistryClient _missClient = null!;
+    private BenchmarkSchemaRegistryClient _specificOverflowClient = null!;
     private GenericRecord[] _distinctRecords = null!;
     private GenericRecord[] _equivalentRecords = null!;
     private GenericRecord[] _equivalentOverflowRecords = null!;
+    private GenericRecord[] _alternatingOverflowRecords = null!;
     private GenericRecord[] _overflowRecords = null!;
     private GenericRecord _stableRecord = null!;
+    private BenchmarkSpecificRecord[] _specificOverflowRecords = null!;
+    private BenchmarkSpecificRecord[] _alternatingSpecificRecords = null!;
+    private ArrayBufferWriter<byte> _specificBuffer = null!;
     private SerializationContext _context;
     private int _overflowRecordIndex;
     private int _recordIndex;
@@ -69,6 +79,10 @@ public class AvroSchemaRegistrySerializerBenchmarks
         for (var i = 0; i < _equivalentOverflowRecords.Length; i++)
             _equivalentOverflowRecords[i] = CreateEquivalentOverflowRecord(i);
 
+        _alternatingOverflowRecords = new GenericRecord[EquivalentOverflowSchemaCount];
+        for (var i = 0; i < _alternatingOverflowRecords.Length; i++)
+            _alternatingOverflowRecords[i] = CreateAlternatingOverflowRecord(i);
+
         _distinctRecords = new GenericRecord[DistinctSchemaCount];
         for (var i = 0; i < _distinctRecords.Length; i++)
             _distinctRecords[i] = CreateDistinctRecord(i);
@@ -79,10 +93,28 @@ public class AvroSchemaRegistrySerializerBenchmarks
             CreateDistinctRecord(DistinctSchemaCount + 1)
         ];
 
+        _specificOverflowRecords = new BenchmarkSpecificRecord[EquivalentOverflowSchemaCount];
+        for (var i = 0; i < _specificOverflowRecords.Length; i++)
+            _specificOverflowRecords[i] = BenchmarkSpecificRecord.CreateEquivalent();
+        _specificBuffer = new ArrayBufferWriter<byte>();
+
+        _alternatingSpecificRecords =
+        [
+            BenchmarkSpecificRecord.CreateLookupHeavy("AlternatingSpecificA"),
+            BenchmarkSpecificRecord.CreateLookupHeavy("AlternatingSpecificB")
+        ];
+        _alternatingSpecificSerializer = new AvroSchemaRegistrySerializer<BenchmarkSpecificRecord>(
+            new BenchmarkSchemaRegistryClient(),
+            new AvroSerializerConfig { MaxCachedSchemas = 1 });
+
         var buffer = new ArrayBufferWriter<byte>();
         _serializer.Serialize(_stableRecord, ref buffer, _context);
         _overflowSerializer.PrepareAsync(_overflowRecords[0], _context).GetAwaiter().GetResult();
         _overflowSerializer.PrepareAsync(_overflowRecords[1], _context).GetAwaiter().GetResult();
+        _specificBuffer.ResetWrittenCount();
+        _alternatingSpecificSerializer.Serialize(_alternatingSpecificRecords[0], ref _specificBuffer, _context);
+        _specificBuffer.ResetWrittenCount();
+        _alternatingSpecificSerializer.Serialize(_alternatingSpecificRecords[1], ref _specificBuffer, _context);
     }
 
     [GlobalCleanup]
@@ -90,6 +122,7 @@ public class AvroSchemaRegistrySerializerBenchmarks
     {
         _serializer.DisposeAsync().GetAwaiter().GetResult();
         _overflowSerializer.DisposeAsync().GetAwaiter().GetResult();
+        _alternatingSpecificSerializer.DisposeAsync().GetAwaiter().GetResult();
     }
 
     [IterationSetup(Target = nameof(PrepareDistinctSchemaMisses))]
@@ -113,6 +146,36 @@ public class AvroSchemaRegistrySerializerBenchmarks
             .GetAwaiter().GetResult();
     }
 
+    [IterationSetup(Target = nameof(PrepareAlternatingOverflowSchemas))]
+    public void SetupAlternatingOverflowSchemas()
+    {
+        _alternatingOverflowClient = new BenchmarkSchemaRegistryClient();
+        _alternatingOverflowSerializer = new AvroSchemaRegistrySerializer<GenericRecord>(
+            _alternatingOverflowClient,
+            new AvroSerializerConfig { MaxCachedSchemas = 1 });
+        _alternatingOverflowSerializer.PrepareAsync(_stableRecord, _context).GetAwaiter().GetResult();
+        _alternatingOverflowSerializer.PrepareAsync(_alternatingOverflowRecords[0], _context)
+            .GetAwaiter().GetResult();
+        _alternatingOverflowSerializer.PrepareAsync(_alternatingOverflowRecords[1], _context)
+            .GetAwaiter().GetResult();
+    }
+
+    [IterationSetup(Target = nameof(SerializeEquivalentSpecificOverflowSchemas))]
+    public void SetupEquivalentSpecificOverflowSchemas()
+    {
+        _specificOverflowClient = new BenchmarkSchemaRegistryClient();
+        _specificOverflowSerializer = new AvroSchemaRegistrySerializer<BenchmarkSpecificRecord>(
+            _specificOverflowClient,
+            new AvroSerializerConfig { MaxCachedSchemas = 1 });
+        _specificBuffer.ResetWrittenCount();
+        _specificOverflowSerializer.Serialize(
+            BenchmarkSpecificRecord.CreateDistinct(),
+            ref _specificBuffer,
+            _context);
+        _specificBuffer.ResetWrittenCount();
+        _specificOverflowSerializer.Serialize(_specificOverflowRecords[0], ref _specificBuffer, _context);
+    }
+
     [IterationCleanup(Target = nameof(PrepareEquivalentOverflowSchemas))]
     public void CleanupEquivalentOverflowSchemas()
     {
@@ -122,6 +185,24 @@ public class AvroSchemaRegistrySerializerBenchmarks
             throw new InvalidOperationException(
                 $"Expected 2 registrations, but observed " +
                 $"{_equivalentOverflowClient.RegistrationCount}.");
+        }
+    }
+
+    [IterationCleanup(Target = nameof(PrepareAlternatingOverflowSchemas))]
+    public void CleanupAlternatingOverflowSchemas()
+    {
+        _alternatingOverflowSerializer.DisposeAsync().GetAwaiter().GetResult();
+    }
+
+    [IterationCleanup(Target = nameof(SerializeEquivalentSpecificOverflowSchemas))]
+    public void CleanupEquivalentSpecificOverflowSchemas()
+    {
+        _specificOverflowSerializer.DisposeAsync().GetAwaiter().GetResult();
+        if (_specificOverflowClient.RegistrationCount != 2)
+        {
+            throw new InvalidOperationException(
+                $"Expected 2 registrations, but observed " +
+                $"{_specificOverflowClient.RegistrationCount}.");
         }
     }
 
@@ -163,6 +244,32 @@ public class AvroSchemaRegistrySerializerBenchmarks
         {
             _equivalentOverflowSerializer.PrepareAsync(_equivalentOverflowRecords[i], _context)
                 .GetAwaiter().GetResult();
+        }
+    }
+
+    [Benchmark(
+        OperationsPerInvoke = EquivalentOverflowSchemaCount - 2,
+        Description = "Prepare alternating equivalent schemas beyond strong cache")]
+    [InvocationCount(1)]
+    public void PrepareAlternatingOverflowSchemas()
+    {
+        for (var i = 2; i < _alternatingOverflowRecords.Length; i++)
+        {
+            _alternatingOverflowSerializer.PrepareAsync(_alternatingOverflowRecords[i], _context)
+                .GetAwaiter().GetResult();
+        }
+    }
+
+    [Benchmark(
+        OperationsPerInvoke = EquivalentOverflowSchemaCount - 1,
+        Description = "Serialize newly parsed equivalent specific schema beyond strong cache")]
+    [InvocationCount(1)]
+    public void SerializeEquivalentSpecificOverflowSchemas()
+    {
+        for (var i = 1; i < _specificOverflowRecords.Length; i++)
+        {
+            _specificBuffer.ResetWrittenCount();
+            _specificOverflowSerializer.Serialize(_specificOverflowRecords[i], ref _specificBuffer, _context);
         }
     }
 
@@ -215,6 +322,87 @@ public class AvroSchemaRegistrySerializerBenchmarks
         var record = new GenericRecord(schema);
         record.Add("id", id);
         return record;
+    }
+
+    [Benchmark(
+        OperationsPerInvoke = EquivalentOverflowSchemaCount,
+        Description = "Serialize alternating exact specific schemas")]
+    [InvocationCount(1)]
+    public void SerializeAlternatingSpecificSchemas()
+    {
+        for (var i = 0; i < EquivalentOverflowSchemaCount; i++)
+        {
+            _specificBuffer.ResetWrittenCount();
+            _alternatingSpecificSerializer.Serialize(
+                _alternatingSpecificRecords[i & 1],
+                ref _specificBuffer,
+                _context);
+        }
+    }
+
+    private static GenericRecord CreateAlternatingOverflowRecord(int id)
+    {
+        var recordName = (id & 1) == 0 ? "AlternatingOverflowA" : "AlternatingOverflowB";
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(
+            $$"""
+            {
+              "type": "record",
+              "name": "{{recordName}}",
+              "namespace": "Dekaf.Benchmarks",
+              "fields": [{ "name": "id", "type": "int" }]
+            }
+            """);
+        var record = new GenericRecord(schema);
+        record.Add("id", id);
+        return record;
+    }
+
+    private sealed class BenchmarkSpecificRecord(AvroSchema schema) : ISpecificRecord
+    {
+        public AvroSchema Schema { get; } = schema;
+
+        internal static BenchmarkSpecificRecord CreateDistinct() => new(
+            AvroSchema.Parse(
+                """
+                {
+                  "type": "record",
+                  "name": "RetainedSpecificRecord",
+                  "namespace": "Dekaf.Benchmarks",
+                  "fields": []
+                }
+                """));
+
+        internal static BenchmarkSpecificRecord CreateEquivalent() => new(
+            AvroSchema.Parse(
+                """
+                {
+                  "type": "record",
+                  "name": "EquivalentSpecificRecord",
+                  "namespace": "Dekaf.Benchmarks",
+                  "fields": []
+                }
+                """));
+
+        internal static BenchmarkSpecificRecord CreateLookupHeavy(string name)
+        {
+            var properties = string.Join(",", Enumerable.Range(0, 64).Select(
+                static index => $"\"property{index}\":\"value{index}\""));
+            return new BenchmarkSpecificRecord(AvroSchema.Parse(
+                $$"""
+                {
+                  "type": "record",
+                  "name": "{{name}}",
+                  "namespace": "Dekaf.Benchmarks",
+                  "fields": [],
+                  {{properties}}
+                }
+                """));
+        }
+
+        public object Get(int fieldPos) => throw new ArgumentOutOfRangeException(nameof(fieldPos));
+
+        public void Put(int fieldPos, object fieldValue) =>
+            throw new ArgumentOutOfRangeException(nameof(fieldPos));
     }
 
     private sealed class BenchmarkSchemaRegistryClient : ISchemaRegistryClient

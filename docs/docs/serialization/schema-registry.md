@@ -159,8 +159,9 @@ var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry,
 
 After the strong-cache limit is reached, additional schema objects use weak-key caches. They remain
 reusable while application records reference them, without making the serializer retain them
-indefinitely. The most recently used schema still has a lock-free reference fast path. Cache entries
-retain schemas and reusable writers, never individual `GenericRecord` values.
+indefinitely. A bounded two-entry hot set gives repeated and alternating overflow schemas a lock-free
+reference fast path. Specific records share one stateless writer; generic records retain a writer per
+logical schema. Cache entries never retain individual `GenericRecord` values.
 
 ## Subject Naming Strategies
 

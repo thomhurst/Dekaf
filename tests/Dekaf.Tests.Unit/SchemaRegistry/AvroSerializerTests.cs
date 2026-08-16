@@ -359,7 +359,7 @@ public sealed class AvroSerializerTests
         serializer.Serialize(record2, ref buffer2, context);
 
         await Assert.That(serializer.CachedGenericWriterCount).IsEqualTo(1);
-        await Assert.That(serializer.CachedSpecificWriterCount).IsEqualTo(0);
+        await Assert.That(AvroSchemaRegistrySerializer<GenericRecord>.CachedSpecificWriterCount).IsEqualTo(0);
     }
 
     [Test]

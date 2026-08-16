@@ -7,8 +7,8 @@ public sealed class AvroSerializerConfig
 {
     /// <summary>
     /// Maximum number of runtime schemas retained strongly by each serializer cache.
-    /// Additional runtime schema objects use weak-key caches, so they remain reusable while
-    /// application records reference them without being retained by the serializer.
+    /// Additional runtime schema objects use weak-key caches plus a two-entry hot set, so repeated
+    /// and alternating schemas remain reusable without unbounded serializer retention.
     /// Must be greater than zero. Default is 1000.
     /// </summary>
     public int MaxCachedSchemas { get; init; } = 1000;

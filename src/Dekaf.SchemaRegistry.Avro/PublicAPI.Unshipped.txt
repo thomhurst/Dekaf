@@ -1,1 +1,3 @@
 #nullable enable
+Dekaf.SchemaRegistry.Avro.AvroSerializerConfig.MaxCachedSchemas.get -> int
+Dekaf.SchemaRegistry.Avro.AvroSerializerConfig.MaxCachedSchemas.init -> void
