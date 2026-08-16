@@ -1,0 +1,72 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+concurrency:
+  group: codeql-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'schedule' }}
+
+jobs:
+  analyze:
+    name: Analyze (csharp)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # GitVersion.MsBuild fails on shallow clones.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+        with:
+          languages: csharp
+          build-mode: manual
+          queries: security-and-quality
+
+      - name: Restore
+        run: |
+          dotnet restore Dekaf.sln
+          dotnet restore tools/Dekaf.Profiling/Dekaf.Profiling.csproj
+          dotnet restore samples/PackageSmoke/Dekaf.PackageSmoke.NetStandard20/Dekaf.PackageSmoke.NetStandard20.csproj
+          dotnet restore samples/PackageSmoke/Dekaf.PackageSmoke.Runner/Dekaf.PackageSmoke.Runner.csproj
+
+      - name: Build all projects and target frameworks
+        run: >-
+          dotnet build Dekaf.sln
+          --configuration Release
+          --no-restore
+          -p:TreatWarningsAsErrors=true
+
+      - name: Build projects outside the solution
+        run: |
+          dotnet build tools/Dekaf.Profiling/Dekaf.Profiling.csproj --configuration Release --no-restore -p:TreatWarningsAsErrors=true
+          dotnet build samples/PackageSmoke/Dekaf.PackageSmoke.NetStandard20/Dekaf.PackageSmoke.NetStandard20.csproj --configuration Release --no-restore -p:TreatWarningsAsErrors=true
+          dotnet build samples/PackageSmoke/Dekaf.PackageSmoke.Runner/Dekaf.PackageSmoke.Runner.csproj --configuration Release --framework net8.0 --no-restore -p:TreatWarningsAsErrors=true
+          dotnet build samples/PackageSmoke/Dekaf.PackageSmoke.Runner/Dekaf.PackageSmoke.Runner.csproj --configuration Release --framework net10.0 --no-restore -p:TreatWarningsAsErrors=true
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+        with:
+          category: /language:csharp
