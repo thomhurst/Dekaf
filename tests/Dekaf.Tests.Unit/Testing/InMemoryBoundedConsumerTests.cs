@@ -1,0 +1,189 @@
+using Dekaf.Consumer;
+using Dekaf.Producer;
+using Dekaf.Testing;
+
+namespace Dekaf.Tests.Unit.Testing;
+
+public sealed class InMemoryBoundedConsumerTests
+{
+    [Test]
+    public async Task SeekToTailAsync_UsesOffsetCountAndClampsToLowWatermark()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("events");
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await ProduceRangeAsync(producer, "events", partition: 0, count: 5);
+        await using var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest });
+        var partition = new TopicPartition("events", 0);
+        consumer.Assign(partition);
+
+        var tail = await consumer.SeekToTailAsync(partition, offsetCount: 2);
+        var values = await CollectValuesAsync(consumer.ConsumeSnapshotAsync());
+        var clamped = await consumer.SeekToTailAsync(partition, offsetCount: int.MaxValue);
+
+        await Assert.That(tail.Offset).IsEqualTo(3L);
+        await Assert.That(values).IsEquivalentTo(["value-3", "value-4"]);
+        await Assert.That(clamped.Offset).IsEqualTo(0L);
+    }
+
+    [Test]
+    public async Task SeekToTailAsync_ZeroSeeksToCapturedEnd()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("events");
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await ProduceRangeAsync(producer, "events", partition: 0, count: 3);
+        await using var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest });
+        var partition = new TopicPartition("events", 0);
+        consumer.Assign(partition);
+
+        var tail = await consumer.SeekToTailAsync(partition, offsetCount: 0);
+        var values = await CollectValuesAsync(consumer.ConsumeSnapshotAsync());
+
+        await Assert.That(tail.Offset).IsEqualTo(3L);
+        await Assert.That(values).IsEmpty();
+    }
+
+    [Test]
+    public async Task ConsumeSnapshotAsync_ExcludesRecordsAppendedAfterCapture()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("events");
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await ProduceRangeAsync(producer, "events", partition: 0, count: 2);
+        await using var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest });
+        consumer.Assign(new TopicPartition("events", 0));
+
+        await using var snapshot = consumer.ConsumeSnapshotAsync().GetAsyncEnumerator();
+        await Assert.That(await snapshot.MoveNextAsync()).IsTrue();
+        var first = snapshot.Current.Value;
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = "events",
+            Partition = 0,
+            Key = "key-2",
+            Value = "value-2"
+        });
+        await Assert.That(await snapshot.MoveNextAsync()).IsTrue();
+        var second = snapshot.Current.Value;
+        await Assert.That(await snapshot.MoveNextAsync()).IsFalse();
+
+        var appended = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1));
+        await Assert.That(new[] { first, second }).IsEquivalentTo(["value-0", "value-1"]);
+        await Assert.That(appended!.Value.Value).IsEqualTo("value-2");
+    }
+
+    [Test]
+    public async Task ConsumeSnapshotAsync_CapturesMultiplePartitionsAndCompletesEmptyOnes()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("events", partitionCount: 3);
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await ProduceRangeAsync(producer, "events", partition: 0, count: 2);
+        await ProduceRangeAsync(producer, "events", partition: 1, count: 2);
+        await using var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest });
+        consumer.Assign(
+            new TopicPartition("events", 0),
+            new TopicPartition("events", 1),
+            new TopicPartition("events", 2));
+
+        var values = await CollectValuesAsync(consumer.ConsumeSnapshotAsync());
+
+        await Assert.That(values).Count().IsEqualTo(4);
+        await Assert.That(values).Contains("value-0");
+        await Assert.That(values).Contains("value-1");
+    }
+
+    [Test]
+    public async Task ConsumeSnapshotAsync_AssignmentChangeThrows()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("events", partitionCount: 2);
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await ProduceRangeAsync(producer, "events", partition: 0, count: 2);
+        await using var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest });
+        consumer.Assign(new TopicPartition("events", 0));
+        await using var snapshot = consumer.ConsumeSnapshotAsync().GetAsyncEnumerator();
+        await Assert.That(await snapshot.MoveNextAsync()).IsTrue();
+
+        consumer.IncrementalAssign([new TopicPartitionOffset("events", 1, 0)]);
+
+        await Assert.That(async () => await snapshot.MoveNextAsync().AsTask())
+            .Throws<InvalidOperationException>();
+    }
+
+    [Test]
+    public async Task ConsumeSnapshotAsync_PauseAfterCaptureThrows()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("events");
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await ProduceRangeAsync(producer, "events", partition: 0, count: 2);
+        await using var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest });
+        var partition = new TopicPartition("events", 0);
+        consumer.Assign(partition);
+        await using var snapshot = consumer.ConsumeSnapshotAsync().GetAsyncEnumerator();
+        await Assert.That(await snapshot.MoveNextAsync()).IsTrue();
+
+        consumer.Pause(partition);
+
+        await Assert.That(async () => await snapshot.MoveNextAsync().AsTask())
+            .Throws<InvalidOperationException>();
+    }
+
+    [Test]
+    public async Task BoundedExtensions_ReachBuiltInCapabilityThroughInterface()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("events");
+        IKafkaConsumer<string, string> consumer = new InMemoryConsumer<string, string>(cluster);
+        await using var disposable = consumer;
+        var partition = new TopicPartition("events", 0);
+        consumer.Partitions.Assign(partition);
+
+        var tail = await consumer.SeekToTailAsync(partition, 0);
+        var values = await CollectValuesAsync(consumer.ConsumeSnapshotAsync());
+
+        await Assert.That(tail.Offset).IsEqualTo(0L);
+        await Assert.That(values).IsEmpty();
+    }
+
+    private static async Task ProduceRangeAsync(
+        InMemoryProducer<string, string> producer,
+        string topic,
+        int partition,
+        int count)
+    {
+        for (var i = 0; i < count; i++)
+        {
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Partition = partition,
+                Key = $"key-{i}",
+                Value = $"value-{i}"
+            });
+        }
+    }
+
+    private static async Task<List<string>> CollectValuesAsync(
+        IAsyncEnumerable<ConsumeResult<string, string>> records)
+    {
+        var values = new List<string>();
+        await foreach (var record in records)
+            values.Add(record.Value);
+        return values;
+    }
+}

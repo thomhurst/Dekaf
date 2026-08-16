@@ -12,12 +12,17 @@ namespace Dekaf.Testing;
 /// </summary>
 public sealed class InMemoryConsumer<TKey, TValue> :
     IKafkaConsumer<TKey, TValue>,
+    IBoundedKafkaConsumer<TKey, TValue>,
     IConsumerPositions,
     IConsumerPartitions,
     IConsumerOffsets,
     IConsumerBatchOffsetStore,
     IConsumerCommitConfiguration
 {
+    private readonly record struct SnapshotPartitionBound(
+        TopicPartition Partition,
+        long EndOffset);
+
     private readonly object _gate = new();
     private readonly InMemoryKafkaCluster _cluster;
     private readonly IDeserializer<TKey> _keyDeserializer;
@@ -39,6 +44,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     // proves it; an unwind (or close) leaves it unstaged so it is redelivered.
     private TopicPartition _inDoubtPartition;
     private long _inDoubtNextOffset = -1;
+    private int _consumerStateVersion;
     private readonly string? _groupId;
     private readonly string? _memberId;
     private string? _subscriptionPattern;
@@ -358,6 +364,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             _positions.Clear();
             _storedOffsets.Clear();
             _inDoubtNextOffset = -1;
+            _consumerStateVersion++;
             UnregisterConsumerGroupMemberUnderLock();
         }
     }
@@ -380,6 +387,109 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 }
             }
         }
+    }
+
+    public async IAsyncEnumerable<ConsumeResult<TKey, TValue>> ConsumeSnapshotAsync(
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        SnapshotPartitionBound[] partitions;
+        int consumerStateVersion;
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            partitions = new SnapshotPartitionBound[_assignment.Count];
+            var partitionIndex = 0;
+            foreach (var partition in _assignment)
+            {
+                if (_paused.Contains(partition))
+                {
+                    throw new InvalidOperationException(
+                        $"Cannot start a snapshot while assigned partition {partition} is paused.");
+                }
+
+                partitions[partitionIndex++] = new SnapshotPartitionBound(
+                    partition,
+                    _cluster.GetWatermarks(partition).High);
+            }
+
+            Array.Sort(partitions, static (left, right) =>
+            {
+                var topicComparison = StringComparer.Ordinal.Compare(
+                    left.Partition.Topic,
+                    right.Partition.Topic);
+                return topicComparison != 0
+                    ? topicComparison
+                    : left.Partition.Partition.CompareTo(right.Partition.Partition);
+            });
+            consumerStateVersion = _consumerStateVersion;
+        }
+
+        var activePartitionIndex = 0;
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            TopicPartition partition;
+            InMemoryRecord record;
+            long position;
+            bool complete;
+            lock (_gate)
+            {
+                if (_consumerStateVersion != consumerStateVersion)
+                {
+                    throw new InvalidOperationException(
+                        "The consumer assignment or pause state changed while a snapshot enumeration was active.");
+                }
+
+                ProveInDoubtRecordUnderLock();
+                if (!TrySelectSnapshotRecordUnderLock(
+                        partitions,
+                        ref activePartitionIndex,
+                        out partition,
+                        out record,
+                        out position))
+                {
+                    if (_options.OffsetCommitMode == OffsetCommitMode.Auto)
+                        CommitStoredOffsets();
+                    complete = true;
+                }
+                else
+                {
+                    complete = false;
+                }
+            }
+
+            if (complete)
+                yield break;
+
+            var result = _hasAsyncDeserializers
+                ? await ToConsumeResultAsync(partition, record, cancellationToken).ConfigureAwait(false)
+                : ToConsumeResult(partition, record);
+
+            if (!TryAdvancePosition(partition, record, position))
+                continue;
+
+            yield return result;
+        }
+    }
+
+    public ValueTask<TopicPartitionOffset> SeekToTailAsync(
+        TopicPartition partition,
+        int offsetCount,
+        CancellationToken cancellationToken = default)
+    {
+        if (offsetCount < 0)
+            throw new ArgumentOutOfRangeException(nameof(offsetCount), "Offset count cannot be negative.");
+
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+        var watermarks = _cluster.GetWatermarks(partition);
+        var resolved = new TopicPartitionOffset(
+            partition.Topic,
+            partition.Partition,
+            Math.Max(watermarks.Low, watermarks.High - offsetCount));
+        Seek(resolved);
+        return ValueTask.FromResult(resolved);
     }
 
     public async ValueTask<ConsumeResult<TKey, TValue>?> ConsumeOneAsync(
@@ -685,6 +795,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             _positions.Clear();
             _storedOffsets.Clear();
             _inDoubtNextOffset = -1;
+            _consumerStateVersion++;
             UnregisterConsumerGroupMemberUnderLock();
         }
     }
@@ -696,14 +807,19 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
         lock (_gate)
         {
+            var changed = false;
             foreach (var offset in partitions)
             {
+                changed = true;
                 var partition = new TopicPartition(offset.Topic, offset.Partition);
                 var position = offset.Offset >= 0 ? offset.Offset : GetStartOffset(partition);
                 DiscardInDoubtRecordUnderLock(partition);
                 _assignment.Add(partition);
                 _positions[partition] = position;
             }
+
+            if (changed)
+                _consumerStateVersion++;
 
             RegisterConsumerGroupMemberUnderLock();
         }
@@ -716,14 +832,19 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
         lock (_gate)
         {
+            var changed = false;
             foreach (var partition in partitions)
             {
+                changed = true;
                 _assignment.Remove(partition);
                 _paused.Remove(partition);
                 _positions.Remove(partition);
                 _storedOffsets.Remove(partition);
                 DiscardInDoubtRecordUnderLock(partition);
             }
+
+            if (changed)
+                _consumerStateVersion++;
 
             RegisterConsumerGroupMemberUnderLock();
         }
@@ -736,8 +857,11 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
         lock (_gate)
         {
+            var changed = false;
             foreach (var partition in partitions)
-                _paused.Add(partition);
+                changed |= _paused.Add(partition);
+            if (changed)
+                _consumerStateVersion++;
         }
     }
 
@@ -748,8 +872,11 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
         lock (_gate)
         {
+            var changed = false;
             foreach (var partition in partitions)
-                _paused.Remove(partition);
+                changed |= _paused.Remove(partition);
+            if (changed)
+                _consumerStateVersion++;
         }
     }
 
@@ -804,6 +931,39 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             result = selectedResult;
             return true;
         }
+    }
+
+    private bool TrySelectSnapshotRecordUnderLock(
+        SnapshotPartitionBound[] partitions,
+        ref int activePartitionIndex,
+        out TopicPartition selectedPartition,
+        out InMemoryRecord selectedRecord,
+        out long selectedPosition)
+    {
+        while (activePartitionIndex < partitions.Length)
+        {
+            var bound = partitions[activePartitionIndex];
+            if (_positions.TryGetValue(bound.Partition, out var position)
+                && position < bound.EndOffset
+                && _cluster.TryRead(bound.Partition, position, out var record)
+                && record.Offset < bound.EndOffset)
+            {
+                selectedPartition = bound.Partition;
+                selectedRecord = record;
+                selectedPosition = position;
+                return true;
+            }
+
+            _positions[bound.Partition] = bound.EndOffset;
+            if (_options.EnableAutoOffsetStore)
+                StoreOffsetUnderLock(bound.Partition, bound.EndOffset);
+            activePartitionIndex++;
+        }
+
+        selectedPartition = default;
+        selectedRecord = null!;
+        selectedPosition = -1;
+        return false;
     }
 
     /// <summary>
@@ -1057,6 +1217,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             _assignment.Add(partition);
             _positions[partition] = position;
         }
+
+        _consumerStateVersion++;
     }
 
     private long GetStartOffset(TopicPartition partition)
