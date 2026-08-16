@@ -38,9 +38,20 @@ public class AvroSchemaRegistrySerializerBenchmarks
         }
         """;
 
+    private const string NullableIntArraySchema =
+        """
+        {
+          "type": "record",
+          "name": "NullableIntArrayBenchmarkRecord",
+          "namespace": "Dekaf.Benchmarks",
+          "fields": [{ "name": "values", "type": { "type": "array", "items": ["null", "int"] } }]
+        }
+        """;
+
     private AvroSchemaRegistrySerializer<GenericRecord> _serializer = null!;
     private GenericRecord[] _equivalentRecords = null!;
     private GenericRecord _intRecord = null!;
+    private GenericRecord _nullableIntArrayRecord = null!;
     private ArrayBufferWriter<byte> _serializeBuffer = null!;
     private GenericRecord _stableRecord = null!;
     private SerializationContext _context;
@@ -62,10 +73,13 @@ public class AvroSchemaRegistrySerializerBenchmarks
 
         _stableRecord = _equivalentRecords[0];
         _intRecord = CreateIntRecord();
+        _nullableIntArrayRecord = CreateNullableIntArrayRecord();
         _serializeBuffer = new ArrayBufferWriter<byte>();
         _serializer.Serialize(_stableRecord, ref _serializeBuffer, _context);
         _serializeBuffer.ResetWrittenCount();
         _serializer.Serialize(_intRecord, ref _serializeBuffer, _context);
+        _serializeBuffer.ResetWrittenCount();
+        _serializer.Serialize(_nullableIntArrayRecord, ref _serializeBuffer, _context);
     }
 
     [GlobalCleanup]
@@ -95,6 +109,13 @@ public class AvroSchemaRegistrySerializerBenchmarks
         _serializer.Serialize(_stableRecord, ref _serializeBuffer, _context);
     }
 
+    [Benchmark(Description = "Serialize nullable-int array generic Avro record")]
+    public void SerializeNullableIntArrayRecord()
+    {
+        _serializeBuffer.ResetWrittenCount();
+        _serializer.Serialize(_nullableIntArrayRecord, ref _serializeBuffer, _context);
+    }
+
     private static GenericRecord CreateRecord(int id)
     {
         var schema = (Avro.RecordSchema)AvroSchema.Parse(RecordSchema);
@@ -109,6 +130,14 @@ public class AvroSchemaRegistrySerializerBenchmarks
         var schema = (Avro.RecordSchema)AvroSchema.Parse(IntRecordSchema);
         var record = new GenericRecord(schema);
         record.Add("id", 42);
+        return record;
+    }
+
+    private static GenericRecord CreateNullableIntArrayRecord()
+    {
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(NullableIntArraySchema);
+        var record = new GenericRecord(schema);
+        record.Add("values", new int?[] { int.MinValue, null, -1, 0, 1, null, int.MaxValue });
         return record;
     }
 

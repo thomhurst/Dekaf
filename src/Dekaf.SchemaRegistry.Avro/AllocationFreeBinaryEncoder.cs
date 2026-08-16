@@ -8,6 +8,8 @@ namespace Dekaf.SchemaRegistry.Avro;
 internal sealed class AllocationFreeBinaryEncoder(Stream stream) : global::Avro.IO.Encoder
 {
     private const int StackBufferSize = 256;
+    private const int MaxUtf8BytesPerChar = 3;
+    private const int MaxStackChars = StackBufferSize / MaxUtf8BytesPerChar;
     private readonly Stream _stream = stream;
 
     public void WriteNull() { }
@@ -60,7 +62,7 @@ internal sealed class AllocationFreeBinaryEncoder(Stream stream) : global::Avro.
 
     internal void WriteString(ReadOnlySpan<char> value)
     {
-        if (value.Length <= StackBufferSize / 3)
+        if (value.Length <= MaxStackChars)
         {
             Span<byte> bytes = stackalloc byte[StackBufferSize];
             var written = Encoding.UTF8.GetBytes(value, bytes);

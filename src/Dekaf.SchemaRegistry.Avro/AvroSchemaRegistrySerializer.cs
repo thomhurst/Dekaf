@@ -488,7 +488,10 @@ public sealed class AvroSchemaRegistrySerializer<
         {
             LastSeenSchema = schema;
             SubjectSchemaIdCache = new SubjectSchemaIdCache();
-            Writer = new AllocationFreeGenericRecordWriter((global::Avro.RecordSchema)schema);
+            Writer = schema is global::Avro.RecordSchema recordSchema
+                ? new AllocationFreeGenericRecordWriter(recordSchema)
+                : throw new global::Avro.AvroException(
+                    $"GenericRecord serialization requires a record schema but received {schema.Tag}.");
         }
 
         internal AvroSchema LastSeenSchema;
