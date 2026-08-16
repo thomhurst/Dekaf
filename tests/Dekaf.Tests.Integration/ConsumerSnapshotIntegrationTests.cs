@@ -70,6 +70,73 @@ public sealed class ConsumerSnapshotIntegrationTests(KafkaTestContainer kafka)
     }
 
     [Test]
+    public async Task ConsumeSnapshotAsync_PrefetchedCursorAheadUsesDeliveredPosition()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
+        await ProduceRangeAsync(topic, partition: 0, count: 5).ConfigureAwait(false);
+        await using var consumer = await CreateConsumerAsync(queuedMinMessages: 10).ConfigureAwait(false);
+        consumer.Partitions.Assign(new TopicPartition(topic, 0));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        var first = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(15), timeout.Token)
+            .ConfigureAwait(false);
+        var remaining = await CollectAsync(consumer.ConsumeSnapshotAsync(timeout.Token)).ConfigureAwait(false);
+
+        await Assert.That(first).IsNotNull();
+        await Assert.That(first!.Value.Offset).IsEqualTo(0L);
+        await Assert.That(remaining.Select(static record => record.Offset))
+            .IsEquivalentTo([1L, 2L, 3L, 4L]);
+    }
+
+    [Test]
+    public async Task ConsumeSnapshotAsync_EarlyDisposeDoesNotLeakSnapshotEofToNormalConsume()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
+        await ProduceRangeAsync(topic, partition: 0, count: 5).ConfigureAwait(false);
+        await using var consumer = await CreateConsumerAsync(queuedMinMessages: 10).ConfigureAwait(false);
+        consumer.Partitions.Assign(new TopicPartition(topic, 0));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var snapshot = consumer.ConsumeSnapshotAsync(timeout.Token).GetAsyncEnumerator();
+
+        await Assert.That(await snapshot.MoveNextAsync()).IsTrue();
+        await Assert.That(snapshot.Current.Offset).IsEqualTo(0L);
+        await snapshot.DisposeAsync();
+        await ProduceRangeAsync(topic, partition: 0, start: 5, count: 1).ConfigureAwait(false);
+
+        var offsets = new List<long>();
+        for (var i = 0; i < 5; i++)
+        {
+            var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(15), timeout.Token)
+                .ConfigureAwait(false);
+            await Assert.That(result).IsNotNull();
+            await Assert.That(result!.Value.IsPartitionEof).IsFalse();
+            offsets.Add(result.Value.Offset);
+        }
+
+        await Assert.That(offsets).IsEquivalentTo([1L, 2L, 3L, 4L, 5L]);
+    }
+
+    [Test]
+    public async Task ConsumeSnapshotAsync_SeekDuringEnumerationThrows()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
+        await ProduceRangeAsync(topic, partition: 0, count: 2).ConfigureAwait(false);
+        await using var consumer = await CreateConsumerAsync(queuedMinMessages: 1).ConfigureAwait(false);
+        var partition = new TopicPartition(topic, 0);
+        consumer.Partitions.Assign(partition);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await using var snapshot = consumer.ConsumeSnapshotAsync(timeout.Token).GetAsyncEnumerator();
+        await Assert.That(await snapshot.MoveNextAsync()).IsTrue();
+
+        await Assert.That(() => consumer.Seek(new TopicPartitionOffset(topic, 0, 0)))
+            .Throws<InvalidOperationException>();
+        await Assert.That(() => consumer.SeekToBeginning(partition))
+            .Throws<InvalidOperationException>();
+        await Assert.That(() => consumer.SeekToEnd(partition))
+            .Throws<InvalidOperationException>();
+    }
+
+    [Test]
     public async Task ConsumeSnapshotAsync_ReadCommittedAbortedOnlyLogCompletesWithoutRecords()
     {
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
@@ -181,6 +248,7 @@ public sealed class ConsumerSnapshotIntegrationTests(KafkaTestContainer kafka)
         {
             while (await snapshot.MoveNextAsync())
             {
+                // Drain until the rebalance invalidates the captured assignment.
             }
         }
         catch (InvalidOperationException)

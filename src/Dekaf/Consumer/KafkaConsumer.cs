@@ -1368,6 +1368,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private readonly object _pausedDirectFetchCancellationSourceLock = new();
     // Cold capability state stays at the tail so normal consume field layout remains stable.
     private SnapshotConsumeState? _activeSnapshot;
+    private int _snapshotOperationActive;
 
     private static readonly long s_preferredReadReplicaMaxAgeTimestampDelta =
         (long)(TimeSpan.FromMinutes(5).TotalSeconds * Stopwatch.Frequency);
@@ -2239,20 +2240,25 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
 
         ThrowIfNotInitialized();
-        await RecordPollAsync(cancellationToken).ConfigureAwait(false);
-        await EnsureAssignmentForPollAsync(cancellationToken).ConfigureAwait(false);
-        var snapshot = await CaptureSnapshotStateAsync(cancellationToken).ConfigureAwait(false);
-        if (snapshot.IsComplete)
-            yield break;
-
-        if (Interlocked.CompareExchange(ref _activeSnapshot, snapshot, null) is not null)
+        lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
         {
-            throw new InvalidOperationException(
-                "Only one snapshot enumeration can be active on a consumer.");
+            if (Interlocked.Exchange(ref _snapshotOperationActive, 1) != 0)
+            {
+                throw new InvalidOperationException(
+                    "Only one snapshot enumeration can be active on a consumer.");
+            }
         }
 
+        SnapshotConsumeState? snapshot = null;
         try
         {
+            await RecordPollAsync(cancellationToken).ConfigureAwait(false);
+            await EnsureAssignmentForPollAsync(cancellationToken).ConfigureAwait(false);
+            snapshot = await CaptureSnapshotStateAsync(cancellationToken).ConfigureAwait(false);
+            if (snapshot.IsComplete)
+                yield break;
+
+            Volatile.Write(ref _activeSnapshot, snapshot);
             ResetFetchBufferForSnapshot(snapshot);
             InvalidatePartitionCache();
             await foreach (var result in ConsumeAsync(cancellationToken).ConfigureAwait(false))
@@ -2309,11 +2315,22 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
         finally
         {
-            if (ReferenceEquals(
-                    Interlocked.CompareExchange(ref _activeSnapshot, null, snapshot),
-                    snapshot))
+            try
             {
-                InvalidatePartitionCache();
+                if (snapshot is not null
+                    && ReferenceEquals(
+                        Interlocked.CompareExchange(ref _activeSnapshot, null, snapshot),
+                        snapshot))
+                {
+                    if (!snapshot.IsComplete)
+                        ResetFetchBufferAfterAbortedSnapshot(snapshot);
+
+                    InvalidatePartitionCache();
+                }
+            }
+            finally
+            {
+                Volatile.Write(ref _snapshotOperationActive, 0);
             }
         }
     }
@@ -2372,8 +2389,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             var partition = partitions[i];
             var endOffset = endOffsets[partition];
+            var startOffset = startOffsets[partition];
             if (endOffset == 0
-                || (_fetchPositions.TryGetValue(partition, out var position) && position >= endOffset))
+                || startOffset >= endOffset)
             {
                 snapshot.Complete(partition);
             }
@@ -2389,8 +2407,29 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // excluded records never reach deserializers.
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
         {
-            ClearFetchBufferForPartitions(snapshot.Assignment);
+            ClearFetchBufferForPartitions(snapshot.Assignment, stagePendingClear: true);
             foreach (var (partition, offset) in snapshot.StartOffsets)
+            {
+                _fetchPositions[partition] = offset;
+                _eofEmitted.TryRemove(partition, out _);
+            }
+        }
+    }
+
+    private void ResetFetchBufferAfterAbortedSnapshot(SnapshotConsumeState snapshot)
+    {
+        lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+        {
+            // Assignment changes own their buffer reset and position initialization.
+            if (!ReferenceEquals(snapshot.Assignment, _assignmentSnapshot))
+                return;
+
+            var resumeOffsets = new Dictionary<TopicPartition, long>(snapshot.StartOffsets.Count);
+            foreach (var (partition, startOffset) in snapshot.StartOffsets)
+                resumeOffsets[partition] = GetPosition(partition) ?? startOffset;
+
+            ClearFetchBufferForPartitions(snapshot.Assignment, stagePendingClear: true);
+            foreach (var (partition, offset) in resumeOffsets)
             {
                 _fetchPositions[partition] = offset;
                 _eofEmitted.TryRemove(partition, out _);
@@ -2407,11 +2446,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (!snapshot.Complete(partition))
             return;
 
-        Seek(new TopicPartitionOffset(
-            partition.Topic,
-            partition.Partition,
-            endOffset,
-            leaderEpoch));
+        LogSeek(partition.Topic, partition.Partition, endOffset);
+        lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+        {
+            SeekLocked(new TopicPartitionOffset(
+                partition.Topic,
+                partition.Partition,
+                endOffset,
+                leaderEpoch));
+        }
         InvalidatePartitionCache();
     }
 
@@ -4095,7 +4138,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
     }
 
-    private bool TryGetActiveConsumedPosition(TopicPartition partition, out long position, out int leaderEpoch)
+    private bool TryGetActiveConsumedPosition(
+        TopicPartition partition,
+        out long position,
+        out int leaderEpoch,
+        bool includeFilteredProgress = true)
     {
         if (_options.OffsetCommitMode == OffsetCommitMode.Auto)
         {
@@ -4118,7 +4165,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         var pending = _pendingFetches.Peek();
-        if (!TryGetConsumedPosition(pending, out var tp, out position, out leaderEpoch) || !tp.Equals(partition))
+        if (!TryGetConsumedPosition(
+                pending,
+                out var tp,
+                out position,
+                out leaderEpoch,
+                includeFilteredProgress)
+            || !tp.Equals(partition))
         {
             position = 0;
             leaderEpoch = -1;
@@ -5782,19 +5835,34 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     public void Seek(TopicPartitionOffset offset)
     {
         LogSeek(offset.Topic, offset.Partition, offset.Offset);
-        var tp = new TopicPartition(offset.Topic, offset.Partition);
         // Keep invalidation, buffer drain, and position replacement atomic with prefetch publication.
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
         {
-            ClearFetchBufferForPartitions([tp], stagePendingClear: true);
+            ThrowIfSnapshotOperationActive();
+            SeekLocked(offset);
+        }
+    }
 
-            if (offset.LeaderEpoch >= 0)
-                SetLastConsumedLeaderEpoch(tp, offset.LeaderEpoch);
-            else
-                ClearLastConsumedLeaderEpoch(tp);
-            SetPosition(tp, offset.Offset, dirty: true);
-            _fetchPositions[tp] = offset.Offset;
-            _eofEmitted.TryRemove(tp, out _);
+    private void SeekLocked(TopicPartitionOffset offset)
+    {
+        var partition = new TopicPartition(offset.Topic, offset.Partition);
+        ClearFetchBufferForPartitions([partition], stagePendingClear: true);
+
+        if (offset.LeaderEpoch >= 0)
+            SetLastConsumedLeaderEpoch(partition, offset.LeaderEpoch);
+        else
+            ClearLastConsumedLeaderEpoch(partition);
+        SetPosition(partition, offset.Offset, dirty: true);
+        _fetchPositions[partition] = offset.Offset;
+        _eofEmitted.TryRemove(partition, out _);
+    }
+
+    private void ThrowIfSnapshotOperationActive()
+    {
+        if (Volatile.Read(ref _snapshotOperationActive) != 0)
+        {
+            throw new InvalidOperationException(
+                "Cannot change consumer position while a snapshot enumeration is active.");
         }
     }
 
@@ -5802,6 +5870,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
         {
+            ThrowIfSnapshotOperationActive();
             ClearFetchBufferForPartitions(partitions, stagePendingClear: true);
 
             foreach (var partition in partitions)
@@ -5818,6 +5887,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
         {
+            ThrowIfSnapshotOperationActive();
             ClearFetchBufferForPartitions(partitions, stagePendingClear: true);
 
             foreach (var partition in partitions)
@@ -6447,7 +6517,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 GetLastConsumedLeaderEpoch(partition),
                 reset);
 
-            if (TryGetActiveConsumedPosition(partition, out var activePosition, out var activeLeaderEpoch))
+            if (TryGetActiveConsumedPosition(
+                    partition,
+                    out var activePosition,
+                    out var activeLeaderEpoch,
+                    includeFilteredProgress: false))
             {
                 resumeOffset = Math.Max(
                     resumeOffset,

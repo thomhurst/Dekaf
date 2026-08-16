@@ -45,6 +45,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private TopicPartition _inDoubtPartition;
     private long _inDoubtNextOffset = -1;
     private int _consumerStateVersion;
+    private bool _snapshotActive;
     private readonly string? _groupId;
     private readonly string? _memberId;
     private string? _subscriptionPattern;
@@ -397,79 +398,102 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         lock (_gate)
         {
             ThrowIfDisposed();
-            partitions = new SnapshotPartitionBound[_assignment.Count];
-            var partitionIndex = 0;
-            foreach (var partition in _assignment)
+            if (_snapshotActive)
             {
-                if (_paused.Contains(partition))
-                {
-                    throw new InvalidOperationException(
-                        $"Cannot start a snapshot while assigned partition {partition} is paused.");
-                }
-
-                partitions[partitionIndex++] = new SnapshotPartitionBound(
-                    partition,
-                    _cluster.GetWatermarks(partition).High);
+                throw new InvalidOperationException(
+                    "Only one snapshot enumeration can be active on a consumer.");
             }
 
-            Array.Sort(partitions, static (left, right) =>
+            _snapshotActive = true;
+            try
             {
-                var topicComparison = StringComparer.Ordinal.Compare(
-                    left.Partition.Topic,
-                    right.Partition.Topic);
-                return topicComparison != 0
-                    ? topicComparison
-                    : left.Partition.Partition.CompareTo(right.Partition.Partition);
-            });
-            consumerStateVersion = _consumerStateVersion;
+                partitions = new SnapshotPartitionBound[_assignment.Count];
+                var partitionIndex = 0;
+                foreach (var partition in _assignment)
+                {
+                    if (_paused.Contains(partition))
+                    {
+                        throw new InvalidOperationException(
+                            $"Cannot start a snapshot while assigned partition {partition} is paused.");
+                    }
+
+                    partitions[partitionIndex++] = new SnapshotPartitionBound(
+                        partition,
+                        _cluster.GetWatermarks(partition).High);
+                }
+
+                Array.Sort(partitions, static (left, right) =>
+                {
+                    var topicComparison = StringComparer.Ordinal.Compare(
+                        left.Partition.Topic,
+                        right.Partition.Topic);
+                    return topicComparison != 0
+                        ? topicComparison
+                        : left.Partition.Partition.CompareTo(right.Partition.Partition);
+                });
+                consumerStateVersion = _consumerStateVersion;
+            }
+            catch
+            {
+                _snapshotActive = false;
+                throw;
+            }
         }
 
-        var activePartitionIndex = 0;
-        while (true)
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            TopicPartition partition;
-            InMemoryRecord record;
-            long position;
-            bool complete;
-            lock (_gate)
+            var activePartitionIndex = 0;
+            while (true)
             {
-                if (_consumerStateVersion != consumerStateVersion)
+                cancellationToken.ThrowIfCancellationRequested();
+
+                TopicPartition partition;
+                InMemoryRecord record;
+                long position;
+                bool complete;
+                lock (_gate)
                 {
-                    throw new InvalidOperationException(
-                        "The consumer assignment or pause state changed while a snapshot enumeration was active.");
+                    if (_consumerStateVersion != consumerStateVersion)
+                    {
+                        throw new InvalidOperationException(
+                            "The consumer assignment or pause state changed while a snapshot enumeration was active.");
+                    }
+
+                    ProveInDoubtRecordUnderLock();
+                    if (!TrySelectSnapshotRecordUnderLock(
+                            partitions,
+                            ref activePartitionIndex,
+                            out partition,
+                            out record,
+                            out position))
+                    {
+                        if (_options.OffsetCommitMode == OffsetCommitMode.Auto)
+                            CommitStoredOffsets();
+                        complete = true;
+                    }
+                    else
+                    {
+                        complete = false;
+                    }
                 }
 
-                ProveInDoubtRecordUnderLock();
-                if (!TrySelectSnapshotRecordUnderLock(
-                        partitions,
-                        ref activePartitionIndex,
-                        out partition,
-                        out record,
-                        out position))
-                {
-                    if (_options.OffsetCommitMode == OffsetCommitMode.Auto)
-                        CommitStoredOffsets();
-                    complete = true;
-                }
-                else
-                {
-                    complete = false;
-                }
+                if (complete)
+                    yield break;
+
+                var result = _hasAsyncDeserializers
+                    ? await ToConsumeResultAsync(partition, record, cancellationToken).ConfigureAwait(false)
+                    : ToConsumeResult(partition, record);
+
+                if (!TryAdvancePosition(partition, record, position))
+                    continue;
+
+                yield return result;
             }
-
-            if (complete)
-                yield break;
-
-            var result = _hasAsyncDeserializers
-                ? await ToConsumeResultAsync(partition, record, cancellationToken).ConfigureAwait(false)
-                : ToConsumeResult(partition, record);
-
-            if (!TryAdvancePosition(partition, record, position))
-                continue;
-
-            yield return result;
+        }
+        finally
+        {
+            lock (_gate)
+                _snapshotActive = false;
         }
     }
 
@@ -726,6 +750,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
         lock (_gate)
         {
+            ThrowIfSnapshotActiveUnderLock();
             var partition = new TopicPartition(offset.Topic, offset.Partition);
             DiscardInDoubtRecordUnderLock(partition);
             _positions[partition] = offset.Offset;
@@ -741,6 +766,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
         lock (_gate)
         {
+            ThrowIfSnapshotActiveUnderLock();
             foreach (var partition in SelectTargetPartitions(partitions))
             {
                 var position = _cluster.GetWatermarks(partition).Low;
@@ -759,6 +785,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
         lock (_gate)
         {
+            ThrowIfSnapshotActiveUnderLock();
             foreach (var partition in SelectTargetPartitions(partitions))
             {
                 var position = _cluster.GetWatermarks(partition).High;
@@ -954,9 +981,13 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 return true;
             }
 
-            _positions[bound.Partition] = bound.EndOffset;
-            if (_options.EnableAutoOffsetStore)
-                StoreOffsetUnderLock(bound.Partition, bound.EndOffset);
+            if (!_positions.TryGetValue(bound.Partition, out position)
+                || position < bound.EndOffset)
+            {
+                _positions[bound.Partition] = bound.EndOffset;
+                if (_options.EnableAutoOffsetStore)
+                    StoreOffsetUnderLock(bound.Partition, bound.EndOffset);
+            }
             activePartitionIndex++;
         }
 
@@ -964,6 +995,15 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         selectedRecord = null!;
         selectedPosition = -1;
         return false;
+    }
+
+    private void ThrowIfSnapshotActiveUnderLock()
+    {
+        if (_snapshotActive)
+        {
+            throw new InvalidOperationException(
+                "Cannot change consumer position while a snapshot enumeration is active.");
+        }
     }
 
     /// <summary>
