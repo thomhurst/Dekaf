@@ -105,7 +105,7 @@ public sealed class AwsKmsProvider : ISchemaRegistryKmsProvider, IDisposable
         {
             throw;
         }
-        catch (AmazonServiceException ex)
+        catch (Exception ex) when (ex is AmazonServiceException or AmazonClientException)
         {
             throw new SchemaRegistryKmsException("AWS KMS wrap failed.", ex);
         }
@@ -142,7 +142,7 @@ public sealed class AwsKmsProvider : ISchemaRegistryKmsProvider, IDisposable
         {
             throw;
         }
-        catch (AmazonServiceException ex)
+        catch (Exception ex) when (ex is AmazonServiceException or AmazonClientException)
         {
             throw new SchemaRegistryKmsException("AWS KMS unwrap failed.", ex);
         }

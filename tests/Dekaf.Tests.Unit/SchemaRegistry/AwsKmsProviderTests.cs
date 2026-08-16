@@ -70,6 +70,31 @@ public class AwsKmsProviderTests
     }
 
     [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task AwsClientFailure_IsSanitizedAndPreservesCause(bool wrap)
+    {
+        var client = Substitute.For<IAmazonKeyManagementService>();
+        var failure = new AmazonClientException("credential provider response: sensitive");
+        client.EncryptAsync(Arg.Any<EncryptRequest>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromException<EncryptResponse>(failure));
+        client.DecryptAsync(Arg.Any<DecryptRequest>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromException<DecryptResponse>(failure));
+        using var provider = new AwsKmsProvider(client);
+
+        var exception = wrap
+            ? await Assert.ThrowsAsync<SchemaRegistryKmsException>(
+                () => provider.WrapKeyAsync(new byte[] { 1 }, CreateKeyReference()).AsTask())
+            : await Assert.ThrowsAsync<SchemaRegistryKmsException>(
+                () => provider.UnwrapKeyAsync(new byte[] { 1 }, CreateKeyReference()).AsTask());
+
+        await Assert.That(exception!.Message)
+            .IsEqualTo(wrap ? "AWS KMS wrap failed." : "AWS KMS unwrap failed.");
+        await Assert.That(exception.Message).DoesNotContain("sensitive");
+        await Assert.That(exception.InnerException).IsSameReferenceAs(failure);
+    }
+
+    [Test]
     public async Task MalformedCiphertext_IsReportedWithoutMaterial()
     {
         var client = Substitute.For<IAmazonKeyManagementService>();
@@ -159,7 +184,7 @@ public class AwsKmsProviderTests
     public async Task OwnedClient_IsDisposedWithProvider()
     {
         var client = Substitute.For<IAmazonKeyManagementService>();
-        var provider = new AwsKmsProvider(client, ownsClient: true);
+        using var provider = new AwsKmsProvider(client, ownsClient: true);
 
         provider.Dispose();
         provider.Dispose();
