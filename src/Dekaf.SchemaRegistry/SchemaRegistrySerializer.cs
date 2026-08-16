@@ -691,7 +691,10 @@ public sealed class SchemaRegistrySerializer<T> :
                     subject,
                     schema,
                     cancellationToken).ConfigureAwait(false);
-            return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(schemaId, schema);
+            var registeredSchema = _ruleExecutor is null
+                ? schema
+                : await _schemaRegistry.GetSchemaAsync(schemaId, cancellationToken).ConfigureAwait(false);
+            return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(schemaId, registeredSchema);
         }
 
         var registered = await _schemaRegistry.GetSchemaBySubjectAsync(

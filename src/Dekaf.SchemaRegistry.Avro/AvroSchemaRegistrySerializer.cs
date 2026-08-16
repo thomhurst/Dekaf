@@ -423,7 +423,10 @@ public sealed class AvroSchemaRegistrySerializer<
                     subject,
                     registrySchema,
                     cancellationToken).ConfigureAwait(false);
-            return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(schemaId, registrySchema);
+            var registeredSchema = _config.RuleExecutor is null
+                ? registrySchema
+                : await _schemaRegistry.GetSchemaAsync(schemaId, cancellationToken).ConfigureAwait(false);
+            return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(schemaId, registeredSchema);
         }
 
         var existing = await _schemaRegistry.GetSchemaBySubjectAsync(

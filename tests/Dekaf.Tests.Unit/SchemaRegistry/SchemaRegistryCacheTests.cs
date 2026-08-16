@@ -30,6 +30,7 @@ public sealed class SchemaRegistryCacheTests
     {
         private readonly ConcurrentDictionary<string, int> _callCounts = new();
         private readonly ConcurrentDictionary<string, int> _idsBySubject = new();
+        private readonly ConcurrentDictionary<int, Schema> _schemasById = new();
         private int _nextId;
 
         /// <summary>
@@ -50,14 +51,19 @@ public sealed class SchemaRegistryCacheTests
         {
             _callCounts.AddOrUpdate(subject, 1, static (_, count) => count + 1);
             var id = _idsBySubject.GetOrAdd(subject, static (_, state) => Interlocked.Increment(ref state._nextId), this);
+            _schemasById[id] = schema;
             return Task.FromResult(id);
         }
 
         public Task<int> RegisterSchemaAsync(string subject, Schema schema, CancellationToken cancellationToken = default)
-            => Task.FromResult(Interlocked.Increment(ref _nextId));
+        {
+            var id = Interlocked.Increment(ref _nextId);
+            _schemasById[id] = schema;
+            return Task.FromResult(id);
+        }
 
         public Task<Schema> GetSchemaAsync(int id, CancellationToken cancellationToken = default)
-            => throw new NotImplementedException();
+            => Task.FromResult(_schemasById[id]);
 
         public Task<RegisteredSchema> GetSchemaBySubjectAsync(string subject, string version = "latest", CancellationToken cancellationToken = default)
             => throw new NotImplementedException();

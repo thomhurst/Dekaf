@@ -1,9 +1,13 @@
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Text;
+using Avro.Generic;
 using Dekaf.Consumer;
 using Dekaf.Producer;
 using Dekaf.SchemaRegistry;
+using Dekaf.SchemaRegistry.Avro;
+using Dekaf.Serialization;
+using AvroSchema = Avro.Schema;
 
 namespace Dekaf.Tests.Integration;
 
@@ -110,6 +114,94 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
             "Read:domain-xor"
         ]);
     }
+
+    [Test]
+    public async Task RegisteredWriteRules_RegistryResolutionModes_JsonAndAvroExecute()
+    {
+        var jsonTopic = await testInfra.CreateTestTopicAsync();
+        var avroTopic = await testInfra.CreateTestTopicAsync();
+        using var registryClient = new SchemaRegistryClient(new SchemaRegistryConfig
+        {
+            Url = testInfra.RegistryUrl
+        });
+        var calls = new ConcurrentQueue<string>();
+        var ruleExecutor = new SchemaRegistryRuleExecutor(
+        [
+            new XorRuleHandler("DOMAIN-XOR", 0x25, calls)
+        ]);
+
+        const string jsonSchemaText = """{ "type": "string", "title": "JsonWriteRule" }""";
+        await registryClient.RegisterSchemaAsync(
+            $"{jsonTopic}-value",
+            CreateSchema(SchemaType.Json, jsonSchemaText));
+        await using var jsonSerializer = new JsonSchemaRegistrySerializer<string>(
+            registryClient,
+            jsonSchemaText,
+            autoRegisterSchemas: false,
+            ruleExecutor: ruleExecutor);
+
+        var jsonOutput = new ArrayBufferWriter<byte>();
+        jsonSerializer.Serialize("json-payload", ref jsonOutput, CreateContext(jsonTopic));
+
+        const string avroSchemaText = """
+            {
+              "type": "record",
+              "name": "AvroWriteRule",
+              "namespace": "Dekaf.Tests.Integration",
+              "fields": [{ "name": "value", "type": "string" }]
+            }
+            """;
+        var avroSchema = (Avro.RecordSchema)AvroSchema.Parse(avroSchemaText);
+        await registryClient.RegisterSchemaAsync(
+            $"{avroTopic}-value",
+            CreateSchema(SchemaType.Avro, avroSchema.ToString()));
+        await using var avroSerializer = new AvroSchemaRegistrySerializer<GenericRecord>(
+            registryClient,
+            new AvroSerializerConfig
+            {
+                AutoRegisterSchemas = false,
+                RuleExecutor = ruleExecutor
+            });
+        var record = new GenericRecord(avroSchema);
+        record.Add("value", "avro-payload");
+
+        var avroOutput = new ArrayBufferWriter<byte>();
+        avroSerializer.Serialize(record, ref avroOutput, CreateContext(avroTopic));
+
+        await using var latestAvroSerializer = new AvroSchemaRegistrySerializer<GenericRecord>(
+            registryClient,
+            new AvroSerializerConfig
+            {
+                UseLatestVersion = true,
+                RuleExecutor = ruleExecutor
+            });
+        var latestAvroOutput = new ArrayBufferWriter<byte>();
+        latestAvroSerializer.Serialize(record, ref latestAvroOutput, CreateContext(avroTopic));
+
+        await Assert.That(calls).IsEquivalentTo([
+            "Write:domain-xor",
+            "Write:domain-xor",
+            "Write:domain-xor"
+        ]);
+    }
+
+    private static Schema CreateSchema(SchemaType schemaType, string schemaString) =>
+        new()
+        {
+            SchemaType = schemaType,
+            SchemaString = schemaString,
+            RuleSet = new SchemaRuleSet
+            {
+                DomainRules = [CreateRule("domain-xor", "DOMAIN-XOR")]
+            }
+        };
+
+    private static SerializationContext CreateContext(string topic) =>
+        new()
+        {
+            Topic = topic,
+            Component = SerializationComponent.Value
+        };
 
     private static SchemaRule CreateRule(string name, string type) =>
         new()
