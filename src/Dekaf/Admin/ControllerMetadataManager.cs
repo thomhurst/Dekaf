@@ -65,10 +65,10 @@ internal sealed class ControllerMetadataManager : IDisposable
             var endpoints = BuildRefreshEndpoints(snapshot, _bootstrapEndpoints);
             var electionStartedAt = Stopwatch.GetTimestamp();
             var electionFailureCount = 0;
+            var electionPending = false;
             while (true)
             {
                 Exception? lastException = null;
-                var electionPending = false;
                 foreach (var endpoint in endpoints)
                 {
                     try

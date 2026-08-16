@@ -55,6 +55,20 @@ public sealed class AdminClientControllerBootstrapTests
     }
 
     [Test]
+    public async Task DescribeClusterAsync_RetainsPendingElectionAcrossRetriableFailure()
+    {
+        await using var context = new ControllerAdminContext(
+            CreateDiscoveryResponse(activeControllerId: -1));
+        context.EnqueueDiscovery(new KafkaException(ErrorCode.RequestTimedOut, "Controller unavailable"));
+        context.EnqueueDiscovery(CreateDiscoveryResponse(activeControllerId: 1));
+
+        var result = await context.Client.DescribeClusterAsync();
+
+        await Assert.That(result.ControllerId).IsEqualTo(1);
+        await Assert.That(context.DiscoveryRequests).IsEqualTo(3);
+    }
+
+    [Test]
     public async Task DescribeMetadataQuorumAsync_RoutesToAdvertisedActiveController()
     {
         await using var context = new ControllerAdminContext();
@@ -256,7 +270,7 @@ public sealed class AdminClientControllerBootstrapTests
     private sealed class ControllerAdminContext : IAsyncDisposable
     {
         private readonly MetadataManager _metadataManager;
-        private readonly Queue<DescribeClusterResponse> _discoveryResponses = new();
+        private readonly Queue<object> _discoveryOutcomes = new();
 
         internal ControllerAdminContext(
             DescribeClusterResponse? discoveryResponse = null,
@@ -278,7 +292,7 @@ public sealed class AdminClientControllerBootstrapTests
                     });
                 });
 
-            _discoveryResponses.Enqueue(discoveryResponse ?? CreateDiscoveryResponse(activeControllerId: 2));
+            _discoveryOutcomes.Enqueue(discoveryResponse ?? CreateDiscoveryResponse(activeControllerId: 2));
             ConfigureDiscovery(BootstrapController);
             ConfigureDiscovery(ActiveController);
             ConfigureDiscovery(OtherController);
@@ -315,7 +329,9 @@ public sealed class AdminClientControllerBootstrapTests
         internal DescribeClusterRequest? LastDiscoveryRequest { get; private set; }
         internal short LastDiscoveryVersion { get; private set; }
 
-        internal void EnqueueDiscovery(DescribeClusterResponse response) => _discoveryResponses.Enqueue(response);
+        internal void EnqueueDiscovery(DescribeClusterResponse response) => _discoveryOutcomes.Enqueue(response);
+
+        internal void EnqueueDiscovery(Exception exception) => _discoveryOutcomes.Enqueue(exception);
 
         public async ValueTask DisposeAsync() => await Client.DisposeAsync().ConfigureAwait(false);
 
@@ -330,10 +346,15 @@ public sealed class AdminClientControllerBootstrapTests
                     DiscoveryRequests++;
                     LastDiscoveryRequest = callInfo.ArgAt<DescribeClusterRequest>(0);
                     LastDiscoveryVersion = callInfo.ArgAt<short>(1);
-                    var response = _discoveryResponses.Count > 1
-                        ? _discoveryResponses.Dequeue()
-                        : _discoveryResponses.Peek();
-                    return ValueTask.FromResult(response);
+                    var outcome = _discoveryOutcomes.Count > 1
+                        ? _discoveryOutcomes.Dequeue()
+                        : _discoveryOutcomes.Peek();
+                    return outcome switch
+                    {
+                        DescribeClusterResponse response => ValueTask.FromResult(response),
+                        Exception exception => ValueTask.FromException<DescribeClusterResponse>(exception),
+                        _ => throw new InvalidOperationException("Unknown controller discovery outcome.")
+                    };
                 });
         }
 
