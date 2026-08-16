@@ -24,6 +24,7 @@ public class SchemaRegistryPreparationBenchmarks
     private SerializationContext _context;
     private SerializationContext _overflowContextA;
     private SerializationContext _overflowContextB;
+    private SerializationContext _overflowContextC;
     private int _overflowContextIndex;
     private int _equivalentDataContractIndex;
     private BenchmarkPayload _jsonValue = null!;
@@ -57,7 +58,7 @@ public class SchemaRegistryPreparationBenchmarks
                 BinaryPrimitives.WriteInt32BigEndian(span, value);
                 writer.Advance(sizeof(int));
             },
-            () => genericSchema,
+            static () => CreateReferencedSchema(),
             subjectNameStrategy: SubjectNameStrategy.RecordName);
         _jsonSerializer = new JsonSchemaRegistrySerializer<BenchmarkPayload>(
             registry,
@@ -81,6 +82,11 @@ public class SchemaRegistryPreparationBenchmarks
             Topic = "schema-preparation-overflow-b",
             Component = SerializationComponent.Value
         };
+        _overflowContextC = new SerializationContext
+        {
+            Topic = "schema-preparation-overflow-c",
+            Component = SerializationComponent.Value
+        };
 
         await _genericSerializer.PrepareAsync(42, _context).ConfigureAwait(false);
         await _jsonSerializer.PrepareAsync(_jsonValue, _context).ConfigureAwait(false);
@@ -96,6 +102,7 @@ public class SchemaRegistryPreparationBenchmarks
         }
         await _genericOverflowSerializer.PrepareAsync(42, _overflowContextA).ConfigureAwait(false);
         await _genericOverflowSerializer.PrepareAsync(42, _overflowContextB).ConfigureAwait(false);
+        await _genericOverflowSerializer.PrepareAsync(42, _overflowContextC).ConfigureAwait(false);
         await _equivalentDataContractCache.ResolveAsync(
             "data-contract-value",
             _dataContractSchemaA,
@@ -131,6 +138,18 @@ public class SchemaRegistryPreparationBenchmarks
         var context = (_overflowContextIndex++ & 1) == 0
             ? _overflowContextA
             : _overflowContextB;
+        return _genericOverflowSerializer.PrepareAsync(42, context);
+    }
+
+    [Benchmark]
+    public ValueTask PrepareGenericThreeWayAfterSubjectCacheTurnover()
+    {
+        var context = (_overflowContextIndex++ % 3) switch
+        {
+            0 => _overflowContextA,
+            1 => _overflowContextB,
+            _ => _overflowContextC
+        };
         return _genericOverflowSerializer.PrepareAsync(42, context);
     }
 

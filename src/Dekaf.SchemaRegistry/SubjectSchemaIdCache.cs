@@ -8,9 +8,10 @@ internal sealed class SubjectSchemaIdCache
     // dynamic topic names cannot grow without bound.
     internal const int MaxCachedEntries = 16_384;
 
-    private readonly ConcurrentDictionary<SubjectSchemaIdCacheKey, SubjectSchemaIdCacheEntry> _cache = new();
-    private SubjectSchemaIdCacheEntry? _last;
-    private OverflowEntries? _overflow;
+    private readonly ConcurrentDictionary<SubjectSchemaIdCacheKey, CachedEntry> _cache = new();
+    private CachedEntry? _last;
+    private CachedEntry? _overflowFirst;
+    private CachedEntry? _overflowSecond;
     private int _cacheCount;
 
     internal int CachedEntryCount => Volatile.Read(ref _cacheCount);
@@ -57,33 +58,34 @@ internal sealed class SubjectSchemaIdCache
         var last = Volatile.Read(ref _last);
         if (last is not null && last.Key.Equals(key))
         {
-            entry = last;
+            entry = last.Value;
             return true;
         }
 
-        var overflow = Volatile.Read(ref _overflow);
-        if (overflow?.Last is { } overflowLast && overflowLast.Key.Equals(key))
+        var overflowFirst = Volatile.Read(ref _overflowFirst);
+        if (overflowFirst is not null && overflowFirst.Key.Equals(key))
         {
-            Volatile.Write(ref _last, overflowLast);
-            entry = overflowLast;
+            Volatile.Write(ref _last, overflowFirst);
+            entry = overflowFirst.Value;
             return true;
         }
 
-        if (overflow?.Previous is { } overflowPrevious && overflowPrevious.Key.Equals(key))
+        var overflowSecond = Volatile.Read(ref _overflowSecond);
+        if (overflowSecond is not null && overflowSecond.Key.Equals(key))
         {
-            Volatile.Write(ref _last, overflowPrevious);
-            entry = overflowPrevious;
+            Volatile.Write(ref _last, overflowSecond);
+            entry = overflowSecond.Value;
             return true;
         }
 
         if (_cache.TryGetValue(key, out var cached))
         {
             Volatile.Write(ref _last, cached);
-            entry = cached;
+            entry = cached.Value;
             return true;
         }
 
-        entry = null!;
+        entry = default;
         return false;
     }
 
@@ -103,9 +105,10 @@ internal sealed class SubjectSchemaIdCache
         var entry = new SubjectSchemaIdCacheEntry(key, subject, schemaId, schema);
         if (TryReserveCacheSlot())
         {
-            if (_cache.TryAdd(key, entry))
+            var cached = new CachedEntry(entry);
+            if (_cache.TryAdd(key, cached))
             {
-                Volatile.Write(ref _last, entry);
+                Volatile.Write(ref _last, cached);
                 return entry;
             }
 
@@ -119,28 +122,43 @@ internal sealed class SubjectSchemaIdCache
 
     private SubjectSchemaIdCacheEntry PublishOverflow(SubjectSchemaIdCacheEntry entry)
     {
-        while (true)
+        var first = Volatile.Read(ref _overflowFirst);
+        if (first is null)
         {
-            var current = Volatile.Read(ref _overflow);
-            if (current?.Last is { } last && last.Key.Equals(entry.Key))
+            var candidate = new CachedEntry(entry);
+            first = Interlocked.CompareExchange(ref _overflowFirst, candidate, null);
+            if (first is null)
             {
-                Volatile.Write(ref _last, last);
-                return last;
-            }
-
-            if (current?.Previous is { } previous && previous.Key.Equals(entry.Key))
-            {
-                Volatile.Write(ref _last, previous);
-                return previous;
-            }
-
-            var updated = new OverflowEntries(entry, current?.Last);
-            if (Interlocked.CompareExchange(ref _overflow, updated, current) == current)
-            {
-                Volatile.Write(ref _last, entry);
+                Volatile.Write(ref _last, candidate);
                 return entry;
             }
         }
+
+        if (first.Key.Equals(entry.Key))
+        {
+            Volatile.Write(ref _last, first);
+            return first.Value;
+        }
+
+        var second = Volatile.Read(ref _overflowSecond);
+        if (second is null)
+        {
+            var candidate = new CachedEntry(entry);
+            second = Interlocked.CompareExchange(ref _overflowSecond, candidate, null);
+            if (second is null)
+            {
+                Volatile.Write(ref _last, candidate);
+                return entry;
+            }
+        }
+
+        if (second.Key.Equals(entry.Key))
+        {
+            Volatile.Write(ref _last, second);
+            return second.Value;
+        }
+
+        return entry;
     }
 
     private bool TryReserveCacheSlot()
@@ -160,23 +178,15 @@ internal sealed class SubjectSchemaIdCache
 
     internal readonly record struct SubjectSchemaIdCacheValue(int SchemaId, Schema? Schema);
 
-    internal sealed class SubjectSchemaIdCacheEntry(
-        SubjectSchemaIdCacheKey key,
-        string? subject,
-        int schemaId,
-        Schema? schema)
-    {
-        internal SubjectSchemaIdCacheKey Key { get; } = key;
-        internal string? Subject { get; } = subject;
-        internal int SchemaId { get; } = schemaId;
-        internal Schema? Schema { get; } = schema;
-    }
+    internal readonly record struct SubjectSchemaIdCacheEntry(
+        SubjectSchemaIdCacheKey Key,
+        string? Subject,
+        int SchemaId,
+        Schema? Schema);
 
-    private sealed class OverflowEntries(
-        SubjectSchemaIdCacheEntry last,
-        SubjectSchemaIdCacheEntry? previous)
+    private sealed class CachedEntry(SubjectSchemaIdCacheEntry value)
     {
-        internal SubjectSchemaIdCacheEntry Last { get; } = last;
-        internal SubjectSchemaIdCacheEntry? Previous { get; } = previous;
+        internal SubjectSchemaIdCacheKey Key => Value.Key;
+        internal SubjectSchemaIdCacheEntry Value { get; } = value;
     }
 }

@@ -155,7 +155,7 @@ public sealed class SchemaRegistryCacheTests
         };
 
     [Test]
-    public async Task SubjectSchemaIdCache_RetainsFixedEntriesAndTwoOverflowEntries()
+    public async Task SubjectSchemaIdCache_RetainsFixedEntriesAndFirstTwoOverflowEntries()
     {
         var cache = new SubjectSchemaIdCache();
 
@@ -172,17 +172,17 @@ public sealed class SchemaRegistryCacheTests
         await Assert.That(cache.CachedEntryCount).IsEqualTo(SubjectSchemaIdCache.MaxCachedEntries);
         await Assert.That(cache.TryGet("topic-0", isKey: false, out _)).IsTrue();
         await Assert.That(cache.TryGet(
-            $"topic-{SubjectSchemaIdCache.MaxCachedEntries + 7}",
+            $"topic-{SubjectSchemaIdCache.MaxCachedEntries}",
             isKey: false,
-            out _)).IsFalse();
+            out _)).IsTrue();
         await Assert.That(cache.TryGet(
-            $"topic-{SubjectSchemaIdCache.MaxCachedEntries + 8}",
+            $"topic-{SubjectSchemaIdCache.MaxCachedEntries + 1}",
             isKey: false,
             out _)).IsTrue();
         await Assert.That(cache.TryGet(
             $"topic-{SubjectSchemaIdCache.MaxCachedEntries + 9}",
             isKey: false,
-            out _)).IsTrue();
+            out _)).IsFalse();
     }
 
     [Test]

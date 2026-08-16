@@ -45,7 +45,7 @@ public sealed class SchemaPreparationTests
     public async Task Generic_PrepareAsync_SubjectCacheTurnoverCompletesFromResolvedSchemaSynchronously()
     {
         using var registry = new MockSchemaRegistryClient();
-        var schema = new Schema { SchemaType = SchemaType.Json, SchemaString = "{}" };
+        var schemaFactoryCalls = 0;
         await using var serializer = new SchemaRegistrySerializer<int>(
             registry,
             static (value, writer) =>
@@ -54,7 +54,11 @@ public sealed class SchemaPreparationTests
                 BinaryPrimitives.WriteInt32BigEndian(span, value);
                 writer.Advance(sizeof(int));
             },
-            () => schema,
+            () =>
+            {
+                Interlocked.Increment(ref schemaFactoryCalls);
+                return CreateReferencedSchema(version: 1);
+            },
             subjectNameStrategy: SubjectNameStrategy.RecordName);
 
         for (var index = 0; index < SubjectSchemaIdCache.MaxCachedEntries; index++)
@@ -64,6 +68,7 @@ public sealed class SchemaPreparationTests
 
         await Assert.That(overflow.IsCompletedSuccessfully).IsTrue();
         await Assert.That((await overflow).SchemaId).IsEqualTo(1);
+        await Assert.That(schemaFactoryCalls).IsEqualTo(1);
         await Assert.That(registry.GetOrRegisterSchemaCallCount).IsEqualTo(1);
     }
 

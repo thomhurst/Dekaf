@@ -375,6 +375,9 @@ public interface ISchemaRegistryCache
 /// </summary>
 public sealed class Schema
 {
+    private int _cachedFingerprint;
+    private int _hasCachedFingerprint;
+
     /// <summary>
     /// The schema type (AVRO, JSON, PROTOBUF).
     /// </summary>
@@ -399,6 +402,18 @@ public sealed class Schema
     /// Optional Schema Registry rule set for data-contract validation, migration, and encryption rules.
     /// </summary>
     public SchemaRuleSet? RuleSet { get; init; }
+
+    internal bool TryGetCachedFingerprint(out int fingerprint)
+    {
+        fingerprint = _cachedFingerprint;
+        return Volatile.Read(ref _hasCachedFingerprint) != 0;
+    }
+
+    internal void CacheFingerprint(int fingerprint)
+    {
+        _cachedFingerprint = fingerprint;
+        Volatile.Write(ref _hasCachedFingerprint, 1);
+    }
 }
 
 /// <summary>

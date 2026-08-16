@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Runtime.CompilerServices;
 
 namespace Dekaf.SchemaRegistry;
 
@@ -403,10 +402,15 @@ internal sealed class SchemaResolutionCache<TValue>
 
 internal static class SchemaFingerprintCache
 {
-    private static readonly ConditionalWeakTable<Schema, Fingerprint> Fingerprints = new();
+    internal static int GetHashCode(Schema schema)
+    {
+        if (schema.TryGetCachedFingerprint(out var cached))
+            return cached;
 
-    internal static int GetHashCode(Schema schema) =>
-        Fingerprints.GetValue(schema, static value => new Fingerprint(ComputeHashCode(value))).HashCode;
+        var fingerprint = ComputeHashCode(schema);
+        schema.CacheFingerprint(fingerprint);
+        return fingerprint;
+    }
 
     private static int ComputeHashCode(Schema schema)
     {
@@ -425,11 +429,6 @@ internal static class SchemaFingerprintCache
         }
 
         return hash.ToHashCode();
-    }
-
-    private sealed class Fingerprint(int hashCode)
-    {
-        internal int HashCode { get; } = hashCode;
     }
 }
 

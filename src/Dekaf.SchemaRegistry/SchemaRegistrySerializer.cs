@@ -44,6 +44,7 @@ public sealed class SchemaRegistrySerializer<T> :
     private readonly bool _useLegacySubjectNames;
     private readonly bool _ownsClient;
     private readonly ISchemaRegistryRuleExecutor? _ruleExecutor;
+    private Schema? _subjectIndependentSchema;
 
     private readonly SchemaResolutionCache<int> _schemaIdCache = new();
     private readonly SubjectSchemaIdCache _subjectSchemaIdCache = new();
@@ -335,7 +336,7 @@ public sealed class SchemaRegistrySerializer<T> :
 
         for (var attempt = 0; attempt < 4; attempt++)
         {
-            var schema = _getSchema(subject);
+            var schema = GetSchema(subject);
             var recordName = SubjectNameResolver.GetRecordName(schema, fallbackRecordName);
             var resolvedSubject = string.Equals(recordName, fallbackRecordName, StringComparison.Ordinal)
                 ? subject
@@ -348,6 +349,19 @@ public sealed class SchemaRegistrySerializer<T> :
         }
 
         throw new InvalidOperationException("The schema callback did not resolve to a stable subject name.");
+    }
+
+    private Schema GetSchema(string subject)
+    {
+        if (!_schemaFactoryIgnoresSubject)
+            return _getSchema(subject);
+
+        var cached = Volatile.Read(ref _subjectIndependentSchema);
+        if (cached is not null)
+            return cached;
+
+        var schema = _getSchema(subject);
+        return Interlocked.CompareExchange(ref _subjectIndependentSchema, schema, null) ?? schema;
     }
 
     private int GetSchemaIdSync(string subject, Schema schema)
