@@ -116,6 +116,16 @@ public sealed class AvroSerializerTests
         }
         """;
 
+    private const string NullableNonIntArraySchema = """
+        {
+          "type": "record",
+          "name": "NullableNonIntArrayRecord",
+          "fields": [
+            { "name": "values", "type": { "type": "array", "items": ["null", "string"] } }
+          ]
+        }
+        """;
+
     private const string LocalTimestampSchema = """
         {
             "type": "record",
@@ -324,6 +334,36 @@ public sealed class AvroSerializerTests
             new Collection<int?>([int.MinValue, null, 0, int.MaxValue]));
         var expectedRecord = new GenericRecord(schema);
         expectedRecord.Add("values", new int?[] { int.MinValue, null, 0, int.MaxValue });
+
+        await AssertSerializedPayloadMatches(serializer, schema, record, expectedRecord);
+    }
+
+    [Test]
+    [Arguments(0, false)]
+    [Arguments(0, true)]
+    [Arguments(1, false)]
+    [Arguments(1, true)]
+    [Arguments(2, false)]
+    [Arguments(2, true)]
+    public async Task Serializer_GenericRecord_NullableUnionWithoutValueBranch_AcceptsEmptyOrNulls(
+        int collectionKind,
+        bool includeNull)
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry);
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(NullableNonIntArraySchema);
+        var nullableValues = includeNull ? new int?[] { null } : [];
+        object values = collectionKind switch
+        {
+            0 => nullableValues,
+            1 => new List<int?>(nullableValues),
+            2 => new Collection<int?>(nullableValues),
+            _ => throw new ArgumentOutOfRangeException(nameof(collectionKind))
+        };
+        var record = new GenericRecord(schema);
+        record.Add("values", values);
+        var expectedRecord = new GenericRecord(schema);
+        expectedRecord.Add("values", includeNull ? new object?[] { null } : []);
 
         await AssertSerializedPayloadMatches(serializer, schema, record, expectedRecord);
     }
