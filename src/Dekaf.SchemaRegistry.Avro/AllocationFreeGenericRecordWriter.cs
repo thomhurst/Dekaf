@@ -1135,10 +1135,26 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
         private void AddLogicalBranch(global::Avro.LogicalSchema schema, UnionBranch branch)
         {
             var type = schema.LogicalType.GetCSharpType(nullible: false);
-            if (type == typeof(DateTime)) _dateTimeBranch = branch;
-            else if (type == typeof(TimeSpan)) _timeSpanBranch = branch;
-            else if (type == typeof(Guid)) _guidBranch = branch;
-            else if (type == typeof(global::Avro.AvroDecimal)) _decimalBranch = branch;
+            if (type == typeof(DateTime))
+            {
+                if (_dateTimeBranch.Schema is null)
+                    _dateTimeBranch = branch;
+            }
+            else if (type == typeof(TimeSpan))
+            {
+                if (_timeSpanBranch.Schema is null)
+                    _timeSpanBranch = branch;
+            }
+            else if (type == typeof(Guid))
+            {
+                if (_guidBranch.Schema is null)
+                    _guidBranch = branch;
+            }
+            else if (type == typeof(global::Avro.AvroDecimal))
+            {
+                if (_decimalBranch.Schema is null)
+                    _decimalBranch = branch;
+            }
             else _typedBranches.TryAdd(type, branch);
         }
 
