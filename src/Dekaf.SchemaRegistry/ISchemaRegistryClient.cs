@@ -51,6 +51,24 @@ public interface ISchemaRegistryClient : IDisposable
     Task<RegisteredSchema> GetSchemaBySubjectAsync(string subject, string version = "latest", CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Looks up an exact schema under a subject without registering it.
+    /// </summary>
+    /// <param name="subject">The subject name.</param>
+    /// <param name="schema">The schema to find.</param>
+    /// <param name="ignoreDeletedSchemas">Whether deleted schemas are excluded from the lookup.</param>
+    /// <param name="normalize">Whether to request Schema Registry normalization.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The matching registered schema, including its actual subject version.</returns>
+    Task<RegisteredSchema> LookupSchemaAsync(
+        string subject,
+        Schema schema,
+        bool ignoreDeletedSchemas = true,
+        bool normalize = false,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException(
+            $"{GetType().Name} does not support exact schema lookup. Implement {nameof(LookupSchemaAsync)} to use Protobuf schema references.");
+
+    /// <summary>
     /// Gets or registers a schema, returning its ID.
     /// This is a convenience method that first checks if the schema exists.
     /// </summary>

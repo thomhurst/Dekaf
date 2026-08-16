@@ -1,0 +1,10 @@
+syntax = "proto3";
+
+package dekaf.tests.references;
+
+option csharp_namespace = "Dekaf.Tests.Integration.Protos";
+
+message SchemaReferenceCommon {
+  string name = 1;
+  int32 revision = 2;
+}

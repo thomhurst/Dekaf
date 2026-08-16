@@ -1,6 +1,5 @@
 using System.Buffers;
 using System.Buffers.Binary;
-using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using Dekaf.Serialization;
 using Google.Protobuf;
@@ -35,10 +34,10 @@ public sealed class ProtobufSchemaRegistrySerializer<
     private readonly ProtobufSerializerConfig _config;
     private readonly bool _ownsClient;
     private readonly MessageDescriptor _descriptor;
-    private readonly ConcurrentDictionary<string, int> _schemaIdCache = new();
     private readonly SubjectSchemaIdCache _subjectSchemaIdCache = new();
-    private readonly Schema _schema;
+    private readonly string _schemaString;
     private readonly byte[] _encodedMessageIndexes;
+    private readonly SubjectSchemaIdCache _resolvedSubjectCache = new();
 
     /// <summary>
     /// Creates a new Protobuf Schema Registry serializer.
@@ -58,13 +57,8 @@ public sealed class ProtobufSchemaRegistrySerializer<
         // Get the message descriptor from the type
         _descriptor = GetMessageDescriptor();
 
-        // Generate the schema string from the descriptor
-        _schema = new Schema
-        {
-            SchemaType = SchemaType.Protobuf,
-            SchemaString = GenerateSchemaString(_descriptor),
-            References = _config.UseSchemaReferences ? GetSchemaReferences(_descriptor) : null
-        };
+        // Schema Registry's canonical Protobuf representation is the serialized FileDescriptorProto.
+        _schemaString = _descriptor.File.SerializedData.ToBase64();
 
         // Pre-encode the immutable message index path once per serializer.
         _encodedMessageIndexes = VarintEncoder.EncodeMessageIndexes(
@@ -125,43 +119,117 @@ public sealed class ProtobufSchemaRegistrySerializer<
         destination.Advance(totalSize);
     }
 
-    private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry GetSchemaForContext(string topic, bool isKey)
-        => _subjectSchemaIdCache.GetOrAdd(
+    private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry GetSchemaForContext(string topic, bool isKey) =>
+        _subjectSchemaIdCache.GetOrAdd(
             topic,
             isKey,
             this,
-            static (serializer, topic, isKey) => serializer.GetSubjectName(topic, isKey),
-            static (serializer, subject) => new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(
-                serializer.GetSchemaIdSync(subject),
-                serializer._schema));
+            static (serializer, resolvedTopic, resolvedIsKey) =>
+                serializer.ResolveSchemaSync(resolvedTopic, resolvedIsKey));
 
-    private int GetSchemaIdSync(string subject)
+    private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry ResolveSchemaSync(string topic, bool isKey)
     {
-        if (_schemaIdCache.TryGetValue(subject, out var cachedId))
-            return cachedId;
+        var subject = GetSubjectName(topic, isKey);
+        // Built-in reference strategies depend only on the import name. A custom strategy may use topic/key.
+        if (!_config.UseSchemaReferences ||
+            _config.UseLatestVersion ||
+            _config.CustomReferenceSubjectNameStrategy is null)
+        {
+            return _resolvedSubjectCache.GetOrAdd(
+                subject,
+                false,
+                new SchemaResolutionState(this, subject, topic, isKey),
+                static (state, _, _) => state.Serializer.ResolveSubjectSchemaSync(
+                    state.Subject,
+                    state.Topic,
+                    state.IsKey));
+        }
 
-        Task<int> task;
+        return ResolveSubjectSchemaSync(subject, topic, isKey);
+    }
+
+    private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry ResolveSubjectSchemaSync(
+        string subject,
+        string topic,
+        bool isKey)
+    {
+        using var timeoutSource = new CancellationTokenSource(SchemaRegistryTimeout);
+        var resolutionTask = ResolveSchemaAsync(subject, topic, isKey, timeoutSource.Token);
+        SubjectSchemaIdCache.SubjectSchemaIdCacheValue resolved;
+        try
+        {
+            resolved = resolutionTask
+                .WaitAsync(timeoutSource.Token)
+                .ConfigureAwait(false)
+                .GetAwaiter()
+                .GetResult();
+        }
+        catch (OperationCanceledException exception) when (timeoutSource.IsCancellationRequested)
+        {
+            ObserveLateFault(resolutionTask);
+            throw new TimeoutException("Schema Registry resolution timed out.", exception);
+        }
+
+        return new SubjectSchemaIdCache.SubjectSchemaIdCacheEntry(
+            new SubjectSchemaIdCache.SubjectSchemaIdCacheKey(topic, isKey),
+            subject,
+            resolved.SchemaId,
+            resolved.Schema);
+    }
+
+    private async Task<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> ResolveSchemaAsync(
+        string subject,
+        string topic,
+        bool isKey,
+        CancellationToken cancellationToken)
+    {
         if (_config.UseLatestVersion)
         {
-            task = _schemaRegistry.GetSchemaBySubjectAsync(subject)
-                .ContinueWith(static t => t.GetAwaiter().GetResult().Id, TaskScheduler.Default);
-        }
-        else if (_config.AutoRegisterSchemas)
-        {
-            task = _config.NormalizeSchemas
-                ? _schemaRegistry.GetOrRegisterSchemaAsync(subject, _schema, normalize: true)
-                : _schemaRegistry.GetOrRegisterSchemaAsync(subject, _schema);
-        }
-        else
-        {
-            task = _schemaRegistry.GetSchemaBySubjectAsync(subject)
-                .ContinueWith(static t => t.GetAwaiter().GetResult().Id, TaskScheduler.Default);
+            var latest = await _schemaRegistry.GetSchemaBySubjectAsync(
+                subject,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+            return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(latest.Id, latest.Schema);
         }
 
-        // Add timeout to prevent indefinite blocking
-        var id = task.WaitAsync(SchemaRegistryTimeout).ConfigureAwait(false).GetAwaiter().GetResult();
-        _schemaIdCache.TryAdd(subject, id);
-        return id;
+        IReadOnlyList<SchemaReference>? references = null;
+        if (_config.UseSchemaReferences)
+        {
+            references = await RegisterOrLookupReferencesAsync(
+                _descriptor.File,
+                topic,
+                isKey,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Protobuf,
+            SchemaString = _schemaString,
+            References = references
+        };
+
+        if (_config.AutoRegisterSchemas)
+        {
+            var id = _config.NormalizeSchemas
+                ? await _schemaRegistry.GetOrRegisterSchemaAsync(
+                    subject,
+                    schema,
+                    normalize: true,
+                    cancellationToken).ConfigureAwait(false)
+                : await _schemaRegistry.GetOrRegisterSchemaAsync(
+                    subject,
+                    schema,
+                    cancellationToken).ConfigureAwait(false);
+            return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(id, schema);
+        }
+
+        var registered = await _schemaRegistry.LookupSchemaAsync(
+            subject,
+            schema,
+            ignoreDeletedSchemas: true,
+            normalize: _config.NormalizeSchemas,
+            cancellationToken).ConfigureAwait(false);
+        return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(registered.Id, registered.Schema);
     }
 
     private string GetSubjectName(string topic, bool isKey)
@@ -196,179 +264,189 @@ public sealed class ProtobufSchemaRegistrySerializer<
         return descriptor;
     }
 
-    private static string GenerateSchemaString(MessageDescriptor descriptor)
+    private async Task<IReadOnlyList<SchemaReference>?> RegisterOrLookupReferencesAsync(
+        FileDescriptor root,
+        string topic,
+        bool isKey,
+        CancellationToken cancellationToken)
     {
-        // Generate proto schema from the file descriptor
-        var fileDescriptor = descriptor.File;
-        return GenerateProtoFromFileDescriptor(fileDescriptor);
+        var state = new ReferenceRegistrationState(topic, isKey);
+        return await ResolveDirectReferencesAsync(root, state, cancellationToken).ConfigureAwait(false);
     }
 
-    private static string GenerateProtoFromFileDescriptor(FileDescriptor fileDescriptor)
+    private async Task<IReadOnlyList<SchemaReference>?> ResolveDirectReferencesAsync(
+        FileDescriptor file,
+        ReferenceRegistrationState state,
+        CancellationToken cancellationToken)
     {
-        var builder = new System.Text.StringBuilder();
-
-        // Syntax
-        builder.AppendLine("syntax = \"proto3\";");
-        builder.AppendLine();
-
-        // Package
-        if (!string.IsNullOrEmpty(fileDescriptor.Package))
+        List<SchemaReference>? references = null;
+        for (var index = 0; index < file.Dependencies.Count; index++)
         {
-            builder.AppendLine($"package {fileDescriptor.Package};");
-            builder.AppendLine();
-        }
-
-        // Dependencies
-        foreach (var dependency in fileDescriptor.Dependencies)
-        {
-            builder.AppendLine($"import \"{dependency.Name}\";");
-        }
-
-        if (fileDescriptor.Dependencies.Count > 0)
-            builder.AppendLine();
-
-        // Messages
-        foreach (var messageType in fileDescriptor.MessageTypes)
-        {
-            GenerateMessageProto(builder, messageType, 0);
-        }
-
-        // Enums at file level
-        foreach (var enumType in fileDescriptor.EnumTypes)
-        {
-            GenerateEnumProto(builder, enumType, 0);
-        }
-
-        return builder.ToString();
-    }
-
-    private static void GenerateMessageProto(System.Text.StringBuilder builder, MessageDescriptor message, int indent)
-    {
-        var indentStr = new string(' ', indent * 2);
-        builder.AppendLine($"{indentStr}message {message.Name} {{");
-
-        // Nested enums
-        foreach (var enumType in message.EnumTypes)
-        {
-            GenerateEnumProto(builder, enumType, indent + 1);
-        }
-
-        // Nested messages
-        foreach (var nestedMessage in message.NestedTypes)
-        {
-            // Skip map entry types
-            if (nestedMessage.GetOptions()?.MapEntry == true)
+            var dependency = file.Dependencies[index];
+            if (_config.SkipKnownTypes && IsKnownType(dependency.Name))
                 continue;
 
-            GenerateMessageProto(builder, nestedMessage, indent + 1);
-        }
-
-        // Fields
-        foreach (var field in message.Fields.InFieldNumberOrder())
-        {
-            var fieldIndent = new string(' ', (indent + 1) * 2);
-            var fieldType = GetProtoFieldType(field);
-            var repeated = field.IsRepeated && !field.IsMap ? "repeated " : "";
-            builder.AppendLine($"{fieldIndent}{repeated}{fieldType} {field.Name} = {field.FieldNumber};");
-        }
-
-        // Oneofs
-        foreach (var oneof in message.Oneofs)
-        {
-            if (oneof.IsSynthetic) continue; // Skip synthetic oneofs (for proto3 optional)
-
-            var oneofIndent = new string(' ', (indent + 1) * 2);
-            builder.AppendLine($"{oneofIndent}oneof {oneof.Name} {{");
-            foreach (var field in oneof.Fields)
-            {
-                var fieldIndent = new string(' ', (indent + 2) * 2);
-                var fieldType = GetProtoFieldType(field);
-                builder.AppendLine($"{fieldIndent}{fieldType} {field.Name} = {field.FieldNumber};");
-            }
-            builder.AppendLine($"{oneofIndent}}}");
-        }
-
-        builder.AppendLine($"{indentStr}}}");
-        builder.AppendLine();
-    }
-
-    private static void GenerateEnumProto(System.Text.StringBuilder builder, EnumDescriptor enumType, int indent)
-    {
-        var indentStr = new string(' ', indent * 2);
-        builder.AppendLine($"{indentStr}enum {enumType.Name} {{");
-
-        foreach (var value in enumType.Values)
-        {
-            var valueIndent = new string(' ', (indent + 1) * 2);
-            builder.AppendLine($"{valueIndent}{value.Name} = {value.Number};");
-        }
-
-        builder.AppendLine($"{indentStr}}}");
-        builder.AppendLine();
-    }
-
-    private static string GetProtoFieldType(FieldDescriptor field)
-    {
-        if (field.IsMap)
-        {
-            var keyType = GetProtoFieldType(field.MessageType.FindFieldByName("key"));
-            var valueType = GetProtoFieldType(field.MessageType.FindFieldByName("value"));
-            return $"map<{keyType}, {valueType}>";
-        }
-
-        return field.FieldType switch
-        {
-            FieldType.Double => "double",
-            FieldType.Float => "float",
-            FieldType.Int64 => "int64",
-            FieldType.UInt64 => "uint64",
-            FieldType.Int32 => "int32",
-            FieldType.Fixed64 => "fixed64",
-            FieldType.Fixed32 => "fixed32",
-            FieldType.Bool => "bool",
-            FieldType.String => "string",
-            FieldType.Group => field.MessageType.FullName,
-            FieldType.Message => field.MessageType.FullName,
-            FieldType.Bytes => "bytes",
-            FieldType.UInt32 => "uint32",
-            FieldType.SFixed32 => "sfixed32",
-            FieldType.SFixed64 => "sfixed64",
-            FieldType.SInt32 => "sint32",
-            FieldType.SInt64 => "sint64",
-            FieldType.Enum => field.EnumType.FullName,
-            _ => "bytes"
-        };
-    }
-
-    private IReadOnlyList<SchemaReference>? GetSchemaReferences(MessageDescriptor descriptor)
-    {
-        var references = new List<SchemaReference>();
-
-        foreach (var dependency in descriptor.File.Dependencies)
-        {
-            // Skip well-known types if configured
-            if (_config.SkipKnownTypes && IsWellKnownType(dependency))
-                continue;
-
-            var refName = _config.ReferenceSubjectNameStrategy == ReferenceSubjectNameStrategy.ReferenceName
-                ? dependency.Name
-                : dependency.Package;
-
-            references.Add(new SchemaReference
+            var registered = await RegisterOrLookupDependencyAsync(
+                dependency,
+                state,
+                cancellationToken).ConfigureAwait(false);
+            (references ??= []).Add(new SchemaReference
             {
                 Name = dependency.Name,
-                Subject = refName,
-                Version = 1 // Assuming version 1 for dependencies
+                Subject = registered.Subject,
+                Version = registered.Version
             });
         }
 
-        return references.Count > 0 ? references : null;
+        return references;
     }
 
-    private static bool IsWellKnownType(FileDescriptor fileDescriptor)
+    private async Task<RegisteredDependency> RegisterOrLookupDependencyAsync(
+        FileDescriptor dependency,
+        ReferenceRegistrationState state,
+        CancellationToken cancellationToken)
     {
-        return fileDescriptor.Name.StartsWith("google/protobuf/", StringComparison.Ordinal);
+        if (state.Completed.TryGetValue(dependency.Name, out var completed))
+            return completed;
+
+        if (!state.Visiting.Add(dependency.Name))
+            throw new InvalidOperationException($"Cyclic Protobuf schema reference detected at '{dependency.Name}'.");
+
+        try
+        {
+            var references = await ResolveDirectReferencesAsync(
+                dependency,
+                state,
+                cancellationToken).ConfigureAwait(false);
+            var schema = new Schema
+            {
+                SchemaType = SchemaType.Protobuf,
+                SchemaString = dependency.SerializedData.ToBase64(),
+                References = references
+            };
+            var subject = GetReferenceSubjectName(state.Topic, dependency.Name, state.IsKey);
+
+            if (_config.AutoRegisterSchemas)
+            {
+                if (_config.NormalizeSchemas)
+                {
+                    await _schemaRegistry.RegisterSchemaAsync(
+                        subject,
+                        schema,
+                        normalize: true,
+                        cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    await _schemaRegistry.RegisterSchemaAsync(
+                        subject,
+                        schema,
+                        cancellationToken).ConfigureAwait(false);
+                }
+            }
+
+            var registered = await _schemaRegistry.LookupSchemaAsync(
+                subject,
+                schema,
+                ignoreDeletedSchemas: true,
+                normalize: _config.NormalizeSchemas,
+                cancellationToken).ConfigureAwait(false);
+            var result = new RegisteredDependency(subject, registered.Version);
+            state.Completed.Add(dependency.Name, result);
+            return result;
+        }
+        finally
+        {
+            state.Visiting.Remove(dependency.Name);
+        }
     }
+
+    private string GetReferenceSubjectName(string topic, string referenceName, bool isKey)
+    {
+        if (_config.CustomReferenceSubjectNameStrategy is not null)
+        {
+            return _config.CustomReferenceSubjectNameStrategy.GetSubjectName(
+                topic,
+                referenceName,
+                isKey);
+        }
+
+        return _config.ReferenceSubjectNameStrategy switch
+        {
+            ReferenceSubjectNameStrategy.ReferenceName => referenceName,
+            ReferenceSubjectNameStrategy.Qualified => (referenceName.EndsWith(".proto", StringComparison.Ordinal)
+                    ? referenceName[..^".proto".Length]
+                    : referenceName)
+                .Replace('/', '.'),
+            _ => throw new InvalidOperationException(
+                $"Unknown Protobuf reference subject name strategy: {_config.ReferenceSubjectNameStrategy}.")
+        };
+    }
+
+    // Keep this exact set aligned with Schema Registry's ProtobufSchema.KNOWN_DEPENDENCIES.
+    private static bool IsKnownType(string referenceName) =>
+        referenceName is
+            "confluent/meta.proto" or
+            "confluent/type/decimal.proto" or
+            "confluent/type/variant.proto" or
+            "google/type/calendar_period.proto" or
+            "google/type/color.proto" or
+            "google/type/date.proto" or
+            "google/type/datetime.proto" or
+            "google/type/dayofweek.proto" or
+            "google/type/decimal.proto" or
+            "google/type/expr.proto" or
+            "google/type/fraction.proto" or
+            "google/type/interval.proto" or
+            "google/type/latlng.proto" or
+            "google/type/money.proto" or
+            "google/type/month.proto" or
+            "google/type/phone_number.proto" or
+            "google/type/postal_address.proto" or
+            "google/type/quaternion.proto" or
+            "google/type/timeofday.proto" or
+            "google/protobuf/any.proto" or
+            "google/protobuf/api.proto" or
+            "google/protobuf/descriptor.proto" or
+            "google/protobuf/duration.proto" or
+            "google/protobuf/empty.proto" or
+            "google/protobuf/field_mask.proto" or
+            "google/protobuf/source_context.proto" or
+            "google/protobuf/struct.proto" or
+            "google/protobuf/timestamp.proto" or
+            "google/protobuf/type.proto" or
+            "google/protobuf/wrappers.proto";
+
+    private static void ObserveLateFault(Task task)
+    {
+        if (task.IsCompleted)
+        {
+            _ = task.Exception;
+            return;
+        }
+
+        _ = task.ContinueWith(
+            static completed => _ = completed.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
+
+    private sealed class ReferenceRegistrationState(string topic, bool isKey)
+    {
+        internal string Topic { get; } = topic;
+        internal bool IsKey { get; } = isKey;
+        internal Dictionary<string, RegisteredDependency> Completed { get; } = new(StringComparer.Ordinal);
+        internal HashSet<string> Visiting { get; } = new(StringComparer.Ordinal);
+    }
+
+    private readonly record struct RegisteredDependency(string Subject, int Version);
+
+    private readonly record struct SchemaResolutionState(
+        ProtobufSchemaRegistrySerializer<T> Serializer,
+        string Subject,
+        string Topic,
+        bool IsKey);
 
     private static int[] CalculateMessageIndexes(MessageDescriptor descriptor)
     {

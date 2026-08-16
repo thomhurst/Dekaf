@@ -6,6 +6,7 @@ using Dekaf.SchemaRegistry.Avro;
 using Dekaf.SchemaRegistry.Protobuf;
 using Dekaf.Serialization;
 using Dekaf.Tests.Integration.Protos;
+using Google.Protobuf;
 using AvroSchema = Avro.Schema;
 using ConfluentSubjectNameStrategy = Confluent.SchemaRegistry.SubjectNameStrategy;
 using DekafSubjectNameStrategy = Dekaf.SchemaRegistry.SubjectNameStrategy;
@@ -101,6 +102,48 @@ public sealed class SchemaRegistrySubjectCompatibilityTests(KafkaWithSchemaRegis
             });
         var destination = new ArrayBufferWriter<byte>();
         dekafSerializer.Serialize(value, ref destination, CreateDekafContext(topic));
+    }
+
+    [Test]
+    public async Task Protobuf_DekafRegisteredReferences_CanBeConsumedByConfluent()
+    {
+        var topic = $"proto-reference-{Guid.NewGuid():N}";
+        using var registryClient = CreateDekafClient();
+        var versionOne = SchemaReferenceCommon.Descriptor.File.ToProto();
+        versionOne.MessageType[0].Field.RemoveAt(1);
+        await registryClient.RegisterSchemaAsync("Protos/reference_common.proto", new Schema
+        {
+            SchemaType = SchemaType.Protobuf,
+            SchemaString = versionOne.ToByteString().ToBase64()
+        });
+
+        await using var serializer = new ProtobufSchemaRegistrySerializer<SchemaReferenceEnvelope>(registryClient);
+        var destination = new ArrayBufferWriter<byte>();
+        var value = new SchemaReferenceEnvelope
+        {
+            Id = "envelope-1",
+            Common = new SchemaReferenceCommon { Name = "shared", Revision = 2 }
+        };
+        serializer.Serialize(value, ref destination, CreateDekafContext(topic));
+
+        var dependency = await registryClient.GetSchemaBySubjectAsync("Protos/reference_common.proto");
+        var root = await registryClient.GetSchemaBySubjectAsync($"{topic}-value");
+        await Assert.That(dependency.Version).IsEqualTo(2);
+        await Assert.That(root.Schema.References).Count().IsEqualTo(1);
+        await Assert.That(root.Schema.References![0].Name).IsEqualTo("Protos/reference_common.proto");
+        await Assert.That(root.Schema.References[0].Version).IsEqualTo(2);
+
+        using var confluentRegistry = CreateConfluentClient();
+        var confluentDeserializer =
+            new Confluent.SchemaRegistry.Serdes.ProtobufDeserializer<SchemaReferenceEnvelope>(confluentRegistry);
+        var roundTrip = await confluentDeserializer.DeserializeAsync(
+            destination.WrittenMemory,
+            isNull: false,
+            new Confluent.Kafka.SerializationContext(MessageComponentType.Value, topic));
+
+        await Assert.That(roundTrip.Id).IsEqualTo(value.Id);
+        await Assert.That(roundTrip.Common.Name).IsEqualTo(value.Common.Name);
+        await Assert.That(roundTrip.Common.Revision).IsEqualTo(value.Common.Revision);
     }
 
     [Test]

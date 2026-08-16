@@ -288,6 +288,46 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         };
     }
 
+    public async Task<RegisteredSchema> LookupSchemaAsync(
+        string subject,
+        Schema schema,
+        bool ignoreDeletedSchemas = true,
+        bool normalize = false,
+        CancellationToken cancellationToken = default)
+    {
+        var effectiveNormalize = normalize || _config.NormalizeSchemas;
+        var request = CreateRegisterSchemaRequest(schema);
+        var path = WithQuery(
+            $"subjects/{Uri.EscapeDataString(subject)}",
+            ("normalize", effectiveNormalize ? "true" : "false"),
+            ("deleted", ignoreDeletedSchemas ? "false" : "true"));
+
+        using var response = await PostAsJsonWithFailoverAsync(
+            path,
+            request,
+            SchemaRegistryJsonContext.Default.RegisterSchemaRequest,
+            cancellationToken).ConfigureAwait(false);
+
+        await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
+
+        var result = await response.Content.ReadFromJsonAsync<GetSubjectVersionResponse>(
+            SchemaRegistryJsonContext.Default.GetSubjectVersionResponse,
+            cancellationToken).ConfigureAwait(false);
+        if (result is null)
+            throw new SchemaRegistryException((int)response.StatusCode, "Schema Registry returned an empty schema response");
+
+        var registeredSchema = CreateSchema(result);
+        CacheSchema(result.Id, subject, schema, effectiveNormalize, schemaById: registeredSchema);
+
+        return new RegisteredSchema
+        {
+            Id = result.Id,
+            Subject = result.Subject,
+            Version = result.Version,
+            Schema = registeredSchema
+        };
+    }
+
     public Task<int> GetOrRegisterSchemaAsync(
         string subject,
         Schema schema,
@@ -338,7 +378,12 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         return id;
     }
 
-    internal void CacheSchema(int id, string? subject, Schema schema, bool normalize = false)
+    internal void CacheSchema(
+        int id,
+        string? subject,
+        Schema schema,
+        bool normalize = false,
+        Schema? schemaById = null)
     {
         if (_maxCachedSchemas == 0)
             return;
@@ -351,7 +396,10 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
                 _idBySchemaCache.Clear();
             }
 
-            _schemaByIdCache.TryAdd(id, schema);
+            if (schemaById is not null)
+                _schemaByIdCache[id] = schemaById;
+            else
+                _schemaByIdCache.TryAdd(id, schema);
             if (subject is not null)
             {
                 _idBySchemaCache.TryAdd((subject, schema, normalize), id);

@@ -55,9 +55,9 @@ public sealed class ProtobufSerializerConfig
 
     /// <summary>
     /// Whether to skip known types when serializing.
-    /// Default is false.
+    /// Default is true, matching Confluent Schema Registry's exact built-in dependency set.
     /// </summary>
-    public bool SkipKnownTypes { get; init; }
+    public bool SkipKnownTypes { get; init; } = true;
 
     /// <summary>
     /// Whether to include references to dependent schemas when registering.
@@ -70,6 +70,12 @@ public sealed class ProtobufSerializerConfig
     /// Default is <see cref="ReferenceSubjectNameStrategy.ReferenceName"/>.
     /// </summary>
     public ReferenceSubjectNameStrategy ReferenceSubjectNameStrategy { get; init; } = ReferenceSubjectNameStrategy.ReferenceName;
+
+    /// <summary>
+    /// Optional custom strategy for dependent-schema subjects. When set, this takes precedence
+    /// over <see cref="ReferenceSubjectNameStrategy"/>.
+    /// </summary>
+    public IReferenceSubjectNameStrategy? CustomReferenceSubjectNameStrategy { get; init; }
 
     /// <summary>
     /// Optional rule executor applied to Protobuf message bytes before the Schema Registry envelope is written.
@@ -89,7 +95,28 @@ public enum ReferenceSubjectNameStrategy
     ReferenceName,
 
     /// <summary>
-    /// Use the qualified record name as the subject name.
+    /// Replace path separators with dots and remove the .proto suffix.
     /// </summary>
-    QualifiedRecordName
+    Qualified,
+
+    /// <summary>
+    /// Use the qualified reference path as the subject name.
+    /// </summary>
+    [Obsolete($"Use {nameof(Qualified)}.")]
+    QualifiedRecordName = Qualified
+}
+
+/// <summary>
+/// Determines the subject under which a referenced Protobuf schema is registered or looked up.
+/// </summary>
+public interface IReferenceSubjectNameStrategy
+{
+    /// <summary>
+    /// Gets the reference subject for a serialization context.
+    /// </summary>
+    /// <param name="topic">Kafka topic.</param>
+    /// <param name="referenceName">Import path from the parent descriptor.</param>
+    /// <param name="isKey">Whether the serialized component is a key.</param>
+    /// <returns>The dependent schema subject.</returns>
+    string GetSubjectName(string topic, string referenceName, bool isKey);
 }
