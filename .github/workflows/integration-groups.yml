@@ -24,6 +24,9 @@ on:
         type: boolean
         default: true
 
+permissions:
+  contents: read
+
 jobs:
   groups:
     name: ${{ matrix.group }} (${{ inputs.framework }}, Kafka ${{ inputs.kafka-tag }})
@@ -57,24 +60,24 @@ jobs:
           free -h
 
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup .NET
         if: inputs.framework != 'aot'
-        uses: actions/setup-dotnet@v6.0.0
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: '10.0.x'
           dotnet-quality: 'preview'
 
       - name: Setup .NET 8 runtime
         if: inputs.framework == 'net8.0'
-        uses: actions/setup-dotnet@v6.0.0
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: '8.0.x'
 
       - name: Download test binaries
         if: inputs.framework != 'aot'
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: test-binaries
 
@@ -84,13 +87,13 @@ jobs:
 
       - name: Download NativeAOT integration executable
         if: inputs.framework == 'aot'
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: native-aot-integration
           path: artifacts/aot/integration
 
       - name: Expose GitHub Actions Runtime
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           script: |
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env['ACTIONS_RUNTIME_TOKEN']);
@@ -117,7 +120,7 @@ jobs:
         run: bash scripts/run-integration-categories.sh ${{ inputs.framework }} "${{ matrix.categories }}"
 
       - name: Upload Test Results
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:
           name: test-results-integration-${{ inputs.framework }}-${{ inputs.kafka-tag }}-${{ matrix.group }}
@@ -127,7 +130,7 @@ jobs:
           retention-days: 7
 
       - name: Upload HangDump artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:
           name: hangdump-artifacts-${{ inputs.framework }}-${{ inputs.kafka-tag }}-${{ matrix.group }}

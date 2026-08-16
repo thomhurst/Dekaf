@@ -59,16 +59,14 @@ jobs:
 
       - name: Setup Bun
         if: steps.workflow-change.outputs.changed != 'true'
-        # oven-sh/setup-bun@v2
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: latest
 
       - name: Run Claude Code Review
         if: steps.workflow-change.outputs.changed != 'true'
         id: claude-review
-        # anthropics/claude-code-action@v1
-        uses: anthropics/claude-code-action@a92e7c70a4da9793dc164451d829089dc057a464
+        uses: anthropics/claude-code-action@a92e7c70a4da9793dc164451d829089dc057a464 # v1
         with:
           
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
