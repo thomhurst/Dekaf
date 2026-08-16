@@ -1,5 +1,7 @@
+using System.Text;
 using Dekaf.Consumer;
 using Dekaf.Producer;
+using Dekaf.Serialization;
 using Dekaf.Testing;
 
 namespace Dekaf.Tests.Unit.Testing;
@@ -185,6 +187,32 @@ public sealed class InMemoryBoundedConsumerTests
     }
 
     [Test]
+    public async Task ConsumeSnapshotAsync_PauseDuringAsyncDeserializationThrowsWithoutAdvancing()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("events");
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await ProduceRangeAsync(producer, "events", partition: 0, count: 1);
+        var deserializer = new BlockingAsyncDeserializer();
+        await using var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            Serializers.String,
+            deserializer,
+            new InMemoryConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest });
+        var partition = new TopicPartition("events", 0);
+        consumer.Assign(partition);
+        await using var snapshot = consumer.ConsumeSnapshotAsync().GetAsyncEnumerator();
+        var moveNext = snapshot.MoveNextAsync().AsTask();
+        await deserializer.WaitUntilEnteredAsync();
+
+        consumer.Pause(partition);
+        deserializer.Release();
+
+        await Assert.That(async () => await moveNext).Throws<InvalidOperationException>();
+        await Assert.That(consumer.GetPosition(partition)).IsEqualTo(0L);
+    }
+
+    [Test]
     public async Task ConsumeSnapshotAsync_SeekDuringEnumerationThrows()
     {
         var cluster = new InMemoryKafkaCluster();
@@ -309,5 +337,27 @@ public sealed class InMemoryBoundedConsumerTests
         await foreach (var record in records)
             values.Add(record.Value);
         return values;
+    }
+
+    private sealed class BlockingAsyncDeserializer : IAsyncDeserializer<string>
+    {
+        private readonly TaskCompletionSource _entered = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _release = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async ValueTask<string> DeserializeAsync(
+            ReadOnlyMemory<byte> data,
+            SerializationContext context,
+            CancellationToken cancellationToken = default)
+        {
+            _entered.TrySetResult();
+            await _release.Task.WaitAsync(cancellationToken);
+            return Encoding.UTF8.GetString(data.Span);
+        }
+
+        public Task WaitUntilEnteredAsync() => _entered.Task;
+
+        public void Release() => _release.TrySetResult();
     }
 }

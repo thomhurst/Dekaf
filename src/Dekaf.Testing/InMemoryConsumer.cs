@@ -486,7 +486,13 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                     ? await ToConsumeResultAsync(partition, record, cancellationToken).ConfigureAwait(false)
                     : ToConsumeResult(partition, record);
 
-                if (!TryAdvancePosition(partition, record, position))
+                if (!TryAdvanceSnapshotPosition(
+                        partition,
+                        record,
+                        position,
+                        consumerStateVersion,
+                        partitions,
+                        ref consumerGroupGeneration))
                     continue;
 
                 yield return result;
@@ -1113,6 +1119,41 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     {
         lock (_gate)
         {
+            if (!_positions.TryGetValue(partition, out var currentPosition) || currentPosition != expectedPosition)
+                return false;
+
+            _positions[partition] = record.Offset + 1;
+            if (_options.OffsetStoreTiming == OffsetStoreTiming.OnDelivery)
+            {
+                if (_options.EnableAutoOffsetStore)
+                    StoreOffsetUnderLock(partition, record.Offset + 1);
+                if (_options.OffsetCommitMode == OffsetCommitMode.Auto)
+                    CommitStoredOffsets();
+            }
+            else
+            {
+                _inDoubtPartition = partition;
+                _inDoubtNextOffset = record.Offset + 1;
+            }
+
+            return true;
+        }
+    }
+
+    private bool TryAdvanceSnapshotPosition(
+        TopicPartition partition,
+        InMemoryRecord record,
+        long expectedPosition,
+        int consumerStateVersion,
+        SnapshotPartitionBound[] partitions,
+        ref int consumerGroupGeneration)
+    {
+        lock (_gate)
+        {
+            ThrowIfSnapshotStateChangedUnderLock(
+                consumerStateVersion,
+                partitions,
+                ref consumerGroupGeneration);
             if (!_positions.TryGetValue(partition, out var currentPosition) || currentPosition != expectedPosition)
                 return false;
 
