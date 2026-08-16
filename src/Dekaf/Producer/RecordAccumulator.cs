@@ -3735,16 +3735,21 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             completionSource, callback, recordSize, startTicks, deadline,
             this, _pendingAppendPool, cancellationToken);
 
-        bool wasQueueEmpty;
+        bool wasQueueEmpty = false;
+        bool enqueueRejected;
         lock (_pendingAppendQueueLock)
         {
-            wasQueueEmpty = _pendingAppends.IsEmpty;
-            _pendingAppends.Enqueue(op);
+            enqueueRejected = Volatile.Read(ref _disposed) != 0;
+            if (!enqueueRejected)
+            {
+                wasQueueEmpty = _pendingAppends.IsEmpty;
+                _pendingAppends.Enqueue(op);
+            }
         }
 
-        // Close TOCTOU window: if DisposeAsync ran between the _disposed check above and the
-        // Enqueue, this op would sit in the queue until its timer fires. Fail it promptly.
-        if (Volatile.Read(ref _disposed) != 0)
+        // DisposeAsync serializes its final drain with this check. Once disposal starts,
+        // ownership cannot enter the queue after that drain has completed.
+        if (enqueueRejected)
         {
             var disposedException = new ObjectDisposedException(nameof(RecordAccumulator));
             if (op.TryFail(disposedException))
@@ -7192,12 +7197,20 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         while (Interlocked.CompareExchange(ref _draining, 1, 0) != 0)
             spinWait.SpinOnce();
 
-        while (_pendingAppends.TryDequeue(out var op))
+        try
         {
-            op.TryFail(new ObjectDisposedException(nameof(RecordAccumulator)));
+            lock (_pendingAppendQueueLock)
+            {
+                while (_pendingAppends.TryDequeue(out var op))
+                {
+                    op.TryFail(new ObjectDisposedException(nameof(RecordAccumulator)));
+                }
+            }
         }
-
-        Volatile.Write(ref _draining, 0);
+        finally
+        {
+            Volatile.Write(ref _draining, 0);
+        }
 
         // Cancel the disposal token to interrupt any remaining blocked operations
         // (e.g., append workers, metadata waits). Do this AFTER graceful shutdown attempt

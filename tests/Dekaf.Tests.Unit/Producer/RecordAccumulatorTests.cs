@@ -605,6 +605,81 @@ public class RecordAccumulatorTests
     }
 
     [Test]
+    public async Task DisposeAsync_SerializesPendingAppendEnqueueWithFinalDrain()
+    {
+        var accumulator = new RecordAccumulator(new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            BufferMemory = 1,
+            BatchSize = 4096,
+            LingerMs = 10,
+            MaxBlockMs = 30_000
+        });
+        var queueLock = GetPrivateField<object>(accumulator, "_pendingAppendQueueLock");
+        var queueLockHeld = false;
+        Task<bool>? disposeTask = null;
+        try
+        {
+            Monitor.Enter(queueLock, ref queueLockHeld);
+            var (appendThread, appendTask) = StartOnDedicatedThread(() =>
+                AppendNullRecordAsync(accumulator).AsTask().GetAwaiter().GetResult());
+
+            var appendReachedQueueLock = SpinWait.SpinUntil(
+                () => accumulator.BufferPressureEvents > 0
+                    && appendThread.ThreadState.HasFlag(System.Threading.ThreadState.WaitSleepJoin),
+                TimeSpan.FromSeconds(5));
+
+            var (disposeThread, startedDisposeTask) = StartOnDedicatedThread(() =>
+            {
+                accumulator.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                return true;
+            });
+            disposeTask = startedDisposeTask;
+            var disposeReachedQueueLock = SpinWait.SpinUntil(
+                () => disposeTask.IsCompleted
+                    || GetPrivateField<int>(accumulator, "_draining") != 0
+                    && disposeThread.ThreadState.HasFlag(System.Threading.ThreadState.WaitSleepJoin),
+                TimeSpan.FromSeconds(5));
+            var disposeCompletedBeforeEnqueue = disposeTask.IsCompleted;
+
+            Monitor.Exit(queueLock);
+            queueLockHeld = false;
+
+            await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+                await appendTask.WaitAsync(TimeSpan.FromSeconds(5)));
+            await disposeTask.WaitAsync(TimeSpan.FromSeconds(5));
+
+            await Assert.That(appendReachedQueueLock).IsTrue();
+            await Assert.That(disposeReachedQueueLock).IsTrue();
+            await Assert.That(accumulator.PendingAppendCountForTest).IsEqualTo(0);
+            await Assert.That(accumulator.BufferedBytes).IsEqualTo(0);
+            await Assert.That(disposeCompletedBeforeEnqueue).IsFalse()
+                .Because("the final pending-append drain must wait for an in-progress enqueue");
+        }
+        finally
+        {
+            if (queueLockHeld)
+                Monitor.Exit(queueLock);
+
+            if (disposeTask is null)
+            {
+                await accumulator.DisposeAsync();
+            }
+            else
+            {
+                try
+                {
+                    await disposeTask.WaitAsync(TimeSpan.FromSeconds(5));
+                }
+                catch
+                {
+                    // Preserve the primary test failure while ensuring disposal was observed.
+                }
+            }
+        }
+    }
+
+    [Test]
     public async Task DisposeAsync_WaitsForAdmissionHandoffBeforeReturningCurrentBatch()
     {
         var accumulator = new RecordAccumulator(
@@ -4528,7 +4603,10 @@ public class RecordAccumulatorTests
         }
     }
 
-    private static Task<T> RunOnDedicatedThread<T>(Func<T> action)
+    private static Task<T> RunOnDedicatedThread<T>(Func<T> action) =>
+        StartOnDedicatedThread(action).Completion;
+
+    private static (Thread Thread, Task<T> Completion) StartOnDedicatedThread<T>(Func<T> action)
     {
         // These tests intentionally block one operation behind another. A dedicated
         // thread keeps that coordination independent of full-suite ThreadPool pressure.
@@ -4549,7 +4627,7 @@ public class RecordAccumulatorTests
             Name = "record-accumulator-test-worker"
         };
         thread.Start();
-        return completion.Task;
+        return (thread, completion.Task);
     }
 
     private sealed class LockAssertingReadOnlyMemoryManager(
