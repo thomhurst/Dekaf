@@ -35,6 +35,7 @@ internal static class AotSmoke
         RunCompressionSmoke();
         RunJsonSmoke();
         await RunSchemaRegistrySmokeAsync();
+        await RunSchemaRegistryCompatibilitySmokeAsync();
         await RunSchemaRegistryPackageSmokeAsync();
         await RunCoreSmokeAsync();
     }
@@ -107,6 +108,23 @@ internal static class AotSmoke
 
         var roundTrip = deserializer.Deserialize(buffer.WrittenMemory, ValueContext);
         Require(roundTrip == payload, "Schema Registry JSON round-trip failed.");
+    }
+
+    private static async Task RunSchemaRegistryCompatibilitySmokeAsync()
+    {
+        using var handler = new CompatibilityConfigurationHandler();
+        using var registry = new SchemaRegistryClient(
+            new SchemaRegistryConfig { Url = "https://schema-registry.example.test" },
+            handler);
+
+        var current = await registry.GetCompatibilityAsync();
+        var updated = await registry.UpdateCompatibilityAsync(
+            SchemaCompatibilityLevel.FullTransitive,
+            "aot/value");
+
+        Require(current == SchemaCompatibilityLevel.Backward, "Compatibility GET smoke failed.");
+        Require(updated == SchemaCompatibilityLevel.FullTransitive, "Compatibility PUT smoke failed.");
+        Require(handler.RequestCount == 2, "Compatibility request count mismatch.");
     }
 
     private static async Task RunSchemaRegistryPackageSmokeAsync()
@@ -253,6 +271,38 @@ internal static class AotSmoke
                 Content = new StringContent(json, Encoding.UTF8, "application/json")
             };
         }
+    }
+
+    private sealed class CompatibilityConfigurationHandler : HttpMessageHandler
+    {
+        internal int RequestCount { get; private set; }
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            RequestCount++;
+            if (RequestCount == 1)
+            {
+                Require(request.Method == HttpMethod.Get, "Compatibility GET method mismatch.");
+                Require(request.RequestUri!.AbsolutePath == "/config", "Compatibility GET path mismatch.");
+                return JsonResponse("""{ "compatibilityLevel": "BACKWARD" }""");
+            }
+
+            Require(request.Method == HttpMethod.Put, "Compatibility PUT method mismatch.");
+            Require(
+                request.RequestUri!.AbsolutePath == "/config/aot%2Fvalue",
+                "Compatibility PUT path mismatch.");
+            var body = await request.Content!.ReadAsStringAsync(cancellationToken);
+            Require(body.Contains("\"compatibility\":\"FULL_TRANSITIVE\"", StringComparison.Ordinal),
+                "Compatibility PUT body mismatch.");
+            return JsonResponse("""{ "compatibility": "FULL_TRANSITIVE" }""");
+        }
+
+        private static HttpResponseMessage JsonResponse(string json) => new(HttpStatusCode.OK)
+        {
+            Content = new StringContent(json, Encoding.UTF8, "application/json")
+        };
     }
 
     private const string AotPayloadJsonSchema = """

@@ -114,10 +114,20 @@ public sealed class SchemaRegistryJsonAotTests
         var compatibilityJson = JsonSerializer.SerializeToUtf8Bytes(
             new CompatibilityResponse { IsCompatible = true },
             SchemaRegistryJsonContext.Default.CompatibilityResponse);
+        var updateCompatibilityJson = JsonSerializer.SerializeToUtf8Bytes(
+            new UpdateCompatibilityRequest { Compatibility = "FULL_TRANSITIVE" },
+            SchemaRegistryJsonContext.Default.UpdateCompatibilityRequest);
+        var getCompatibility = JsonSerializer.Deserialize(
+            """{ "compatibilityLevel": "BACKWARD" }""",
+            SchemaRegistryJsonContext.Default.GetCompatibilityResponse);
+        var updateCompatibility = JsonSerializer.Deserialize(
+            """{ "compatibility": "FORWARD" }""",
+            SchemaRegistryJsonContext.Default.UpdateCompatibilityResponse);
         var errorJson = JsonSerializer.SerializeToUtf8Bytes(
             new ErrorResponse { ErrorCode = 40401, Message = "missing" },
             SchemaRegistryJsonContext.Default.ErrorResponse);
         using var compatibilityDocument = JsonDocument.Parse(compatibilityJson);
+        using var updateCompatibilityDocument = JsonDocument.Parse(updateCompatibilityJson);
         using var errorDocument = JsonDocument.Parse(errorJson);
 
         await Assert.That(roundTrippedRequest!.SchemaType).IsEqualTo("JSON");
@@ -129,6 +139,10 @@ public sealed class SchemaRegistryJsonAotTests
         await Assert.That(subjectResponse.Metadata!.Properties!["owner"]).IsEqualTo("payments");
         await Assert.That(subjectResponse.RuleSet!.EncodingRules![0].Mode).IsEqualTo("WRITEREAD");
         await Assert.That(compatibilityDocument.RootElement.TryGetProperty("is_compatible", out _)).IsTrue();
+        await Assert.That(updateCompatibilityDocument.RootElement.GetProperty("compatibility").GetString())
+            .IsEqualTo("FULL_TRANSITIVE");
+        await Assert.That(getCompatibility!.CompatibilityLevel).IsEqualTo("BACKWARD");
+        await Assert.That(updateCompatibility!.Compatibility).IsEqualTo("FORWARD");
         await Assert.That(errorDocument.RootElement.TryGetProperty("error_code", out _)).IsTrue();
     }
 

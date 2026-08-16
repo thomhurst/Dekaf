@@ -19,6 +19,9 @@ namespace Dekaf.SchemaRegistry;
 [JsonSerializable(typeof(RegisterDekRequestDto))]
 [JsonSerializable(typeof(DekDto))]
 [JsonSerializable(typeof(CompatibilityResponse))]
+[JsonSerializable(typeof(GetCompatibilityResponse))]
+[JsonSerializable(typeof(UpdateCompatibilityRequest))]
+[JsonSerializable(typeof(UpdateCompatibilityResponse))]
 [JsonSerializable(typeof(ErrorResponse))]
 [JsonSerializable(typeof(List<string>))]
 [JsonSerializable(typeof(List<int>))]
@@ -145,6 +148,21 @@ internal sealed class CompatibilityResponse
 {
     [JsonPropertyName("is_compatible")]
     public bool IsCompatible { get; init; }
+}
+
+internal sealed class GetCompatibilityResponse
+{
+    public string? CompatibilityLevel { get; init; }
+}
+
+internal sealed class UpdateCompatibilityRequest
+{
+    public required string Compatibility { get; init; }
+}
+
+internal sealed class UpdateCompatibilityResponse
+{
+    public string? Compatibility { get; init; }
 }
 
 internal sealed class ErrorResponse
