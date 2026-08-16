@@ -1,0 +1,10 @@
+#nullable enable
+Dekaf.Compression.Brotli.BrotliCompressionCodec
+Dekaf.Compression.Brotli.BrotliCompressionCodec.BrotliCompressionCodec(System.IO.Compression.CompressionLevel compressionLevel = System.IO.Compression.CompressionLevel.Fastest) -> void
+Dekaf.Compression.Brotli.BrotliCompressionCodec.Compress(System.Buffers.ReadOnlySequence<byte> source, System.Buffers.IBufferWriter<byte>! destination) -> void
+Dekaf.Compression.Brotli.BrotliCompressionCodec.Decompress(System.Buffers.ReadOnlySequence<byte> source, System.Buffers.IBufferWriter<byte>! destination) -> void
+Dekaf.Compression.Brotli.BrotliCompressionCodec.Type.get -> Dekaf.Protocol.Records.CompressionType
+Dekaf.Compression.Brotli.BrotliCompressionExtensions
+Dekaf.Compression.Brotli.BrotliProducerBuilderExtensions
+static Dekaf.Compression.Brotli.BrotliCompressionExtensions.AddBrotli(this Dekaf.Compression.CompressionCodecRegistry! registry, System.IO.Compression.CompressionLevel compressionLevel = System.IO.Compression.CompressionLevel.Fastest) -> Dekaf.Compression.CompressionCodecRegistry!
+static Dekaf.Compression.Brotli.BrotliProducerBuilderExtensions.UseBrotliCompression<TKey, TValue>(this Dekaf.ProducerBuilder<TKey, TValue>! builder) -> Dekaf.ProducerBuilder<TKey, TValue>!

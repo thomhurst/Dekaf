@@ -1,0 +1,11 @@
+#nullable enable
+Dekaf.Compression.Lz4.Lz4CompressionCodec
+Dekaf.Compression.Lz4.Lz4CompressionCodec.Compress(System.Buffers.ReadOnlySequence<byte> source, System.Buffers.IBufferWriter<byte>! destination) -> void
+Dekaf.Compression.Lz4.Lz4CompressionCodec.Decompress(System.Buffers.ReadOnlySequence<byte> source, System.Buffers.IBufferWriter<byte>! destination) -> void
+Dekaf.Compression.Lz4.Lz4CompressionCodec.Lz4CompressionCodec(K4os.Compression.LZ4.LZ4Level compressionLevel = K4os.Compression.LZ4.LZ4Level.L00_FAST) -> void
+Dekaf.Compression.Lz4.Lz4CompressionCodec.Type.get -> Dekaf.Protocol.Records.CompressionType
+Dekaf.Compression.Lz4.Lz4CompressionExtensions
+Dekaf.Compression.Lz4.Lz4ProducerBuilderExtensions
+static Dekaf.Compression.Lz4.Lz4CompressionExtensions.AddLz4(this Dekaf.Compression.CompressionCodecRegistry! registry, K4os.Compression.LZ4.LZ4Level compressionLevel = K4os.Compression.LZ4.LZ4Level.L00_FAST) -> Dekaf.Compression.CompressionCodecRegistry!
+static Dekaf.Compression.Lz4.Lz4CompressionExtensions.AddLz4(this Dekaf.Compression.CompressionCodecRegistry! registry, int? compressionLevel) -> Dekaf.Compression.CompressionCodecRegistry!
+static Dekaf.Compression.Lz4.Lz4ProducerBuilderExtensions.UseLz4Compression<TKey, TValue>(this Dekaf.ProducerBuilder<TKey, TValue>! builder) -> Dekaf.ProducerBuilder<TKey, TValue>!

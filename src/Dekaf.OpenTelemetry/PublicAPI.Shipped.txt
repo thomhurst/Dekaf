@@ -1,0 +1,5 @@
+#nullable enable
+Dekaf.OpenTelemetry.MeterProviderBuilderExtensions
+Dekaf.OpenTelemetry.TracerProviderBuilderExtensions
+static Dekaf.OpenTelemetry.MeterProviderBuilderExtensions.AddDekafInstrumentation(this OpenTelemetry.Metrics.MeterProviderBuilder! builder) -> OpenTelemetry.Metrics.MeterProviderBuilder!
+static Dekaf.OpenTelemetry.TracerProviderBuilderExtensions.AddDekafInstrumentation(this OpenTelemetry.Trace.TracerProviderBuilder! builder) -> OpenTelemetry.Trace.TracerProviderBuilder!

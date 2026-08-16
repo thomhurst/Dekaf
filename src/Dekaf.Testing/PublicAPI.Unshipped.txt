@@ -1,0 +1,3 @@
+#nullable enable
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.StoreOffsets(System.ReadOnlySpan<Dekaf.TopicPartitionOffset> offsets) -> void
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.StoreOffsets<TOffsets>(TOffsets offsets) -> void

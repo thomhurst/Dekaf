@@ -16,45 +16,24 @@ public record PackedProject(string Name, string Version);
 [DependsOn<GenerateVersionModule>]
 public class PackModule : Module<List<PackedProject>>
 {
-    private static readonly string[] PackageProjects =
-    [
-        "Dekaf",
-        "Dekaf.Compression.Brotli",
-        "Dekaf.Compression.Lz4",
-        "Dekaf.Compression.Snappy",
-        "Dekaf.Compression.Zstd",
-        "Dekaf.Extensions.DependencyInjection",
-        "Dekaf.Extensions.HealthChecks",
-        "Dekaf.Extensions.Hosting",
-        "Dekaf.OpenTelemetry",
-        "Dekaf.Outbox",
-        "Dekaf.Outbox.EntityFrameworkCore",
-        "Dekaf.SchemaRegistry",
-        "Dekaf.SchemaRegistry.Avro",
-        "Dekaf.SchemaRegistry.Protobuf",
-        "Dekaf.Serialization.Json",
-        "Dekaf.Testing"
-    ];
-
     protected override async Task<List<PackedProject>?> ExecuteAsync(IModuleContext context, CancellationToken cancellationToken)
     {
         var versionModule = await context.GetModule<GenerateVersionModule>();
         var version = versionModule.ValueOrDefault?.SemVer ?? "1.0.0";
 
         var packedProjects = new List<PackedProject>();
+        var sourceDirectory = Path.Combine(context.Git().RootDirectory.Path, "src");
+        var projectFiles = Directory
+            .EnumerateFiles(sourceDirectory, "*.csproj", SearchOption.AllDirectories)
+            .Order(StringComparer.Ordinal);
 
-        foreach (var projectName in PackageProjects)
+        foreach (var projectFile in projectFiles)
         {
-            var projectFile = context.Git().RootDirectory.FindFile(x => x.Name == $"{projectName}.csproj");
-
-            if (projectFile is null)
-            {
-                continue;
-            }
+            var projectName = Path.GetFileNameWithoutExtension(projectFile);
 
             await context.DotNet().Pack(new DotNetPackOptions
             {
-                ProjectSolution = projectFile.Path,
+                ProjectSolution = projectFile,
                 Configuration = "Release",
                 NoBuild = true,
                 IncludeSymbols = true,
