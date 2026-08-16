@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 
 namespace Dekaf.SchemaRegistry;
 
@@ -9,6 +10,7 @@ internal sealed class DeserializerSubjectNameCache
     private readonly SubjectNameStrategy _strategy;
     private readonly ISubjectNameStrategy? _customStrategy;
     private readonly bool _useLegacySubjectNames;
+    private readonly ConditionalWeakTable<string, PerTopicSubjectNames> _subjectsByTopicIdentity = new();
     private readonly ConcurrentDictionary<CacheKey, string> _subjects = new();
     private readonly Queue<CacheKey> _subjectOrder = new(MaxCachedSubjectCount);
     private readonly object _subjectsLock = new();
@@ -43,6 +45,17 @@ internal sealed class DeserializerSubjectNameCache
     }
 
     internal string GetSubjectName(
+        int schemaId,
+        Schema? schema,
+        string topic,
+        bool isKey,
+        string fallbackRecordName)
+    {
+        var topicSubjects = _subjectsByTopicIdentity.GetValue(topic, static _ => new PerTopicSubjectNames());
+        return topicSubjects.GetSubjectName(this, schemaId, schema, topic, isKey, fallbackRecordName);
+    }
+
+    private string GetSubjectNameByValue(
         int schemaId,
         Schema? schema,
         string topic,
@@ -87,5 +100,32 @@ internal sealed class DeserializerSubjectNameCache
         }
     }
 
+    private sealed class PerTopicSubjectNames
+    {
+        private readonly ConcurrentDictionary<SchemaKey, string> _subjects = new();
+
+        internal string GetSubjectName(
+            DeserializerSubjectNameCache owner,
+            int schemaId,
+            Schema? schema,
+            string topic,
+            bool isKey,
+            string fallbackRecordName)
+        {
+            var key = new SchemaKey(schemaId, isKey);
+            if (_subjects.TryGetValue(key, out var subject))
+                return subject;
+
+            subject = owner.GetSubjectNameByValue(
+                schemaId,
+                schema,
+                topic,
+                isKey,
+                fallbackRecordName);
+            return _subjects.GetOrAdd(key, subject);
+        }
+    }
+
     private readonly record struct CacheKey(int SchemaId, string Topic, bool IsKey);
+    private readonly record struct SchemaKey(int SchemaId, bool IsKey);
 }
