@@ -154,7 +154,8 @@ public class ConsumeRawBatchTests
         var canContinue = true;
         var batch = new ConsumeRawBatch(
             pending,
-            new BatchIterationGuard(assignmentEpoch, assignmentEpoch.Version, _ => canContinue));
+            new BatchIterationGuard(assignmentEpoch, assignmentEpoch.Version,
+                _ => canContinue ? BatchIterationStatus.Continue : BatchIterationStatus.Stopped));
 
         using var enumerator = batch.GetEnumerator();
 
@@ -187,7 +188,7 @@ public class ConsumeRawBatchTests
                 _ =>
                 {
                     membershipChecks++;
-                    return true;
+                    return BatchIterationStatus.Continue;
                 }));
 
         foreach (var _ in batch)
@@ -216,7 +217,7 @@ public class ConsumeRawBatchTests
                 _ =>
                 {
                     membershipChecks++;
-                    return true;
+                    return BatchIterationStatus.Continue;
                 }));
         using var enumerator = batch.GetEnumerator();
 

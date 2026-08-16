@@ -897,17 +897,20 @@ public sealed class ConsumerLeaderDiscoveryTests
     {
         var consumerType = typeof(KafkaConsumer<string, string>);
         var assignmentMethod = consumerType.GetMethod(
-            "CanContinueBatchIteration",
+            "GetBatchIterationStatus",
             BindingFlags.NonPublic | BindingFlags.Instance)
-            ?? throw new InvalidOperationException("CanContinueBatchIteration method not found");
+            ?? throw new InvalidOperationException("GetBatchIterationStatus method not found");
         var epochField = consumerType.GetField(
             "_batchIterationEpoch",
             BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("_batchIterationEpoch field not found");
 
-        var isAssigned = assignmentMethod.CreateDelegate<Func<TopicPartition, bool>>(consumer);
+        var getStatus = assignmentMethod.CreateDelegate<BatchIterationContinuation>(consumer);
         var epoch = (BatchIterationEpoch)epochField.GetValue(consumer)!;
-        return new BatchIterationGuard(epoch, Volatile.Read(ref epoch.Version), isAssigned);
+        return new BatchIterationGuard(
+            epoch,
+            Volatile.Read(ref epoch.Version),
+            getStatus);
     }
 
     private static async ValueTask InvokeHandleLeaderEpochRefreshAsync(

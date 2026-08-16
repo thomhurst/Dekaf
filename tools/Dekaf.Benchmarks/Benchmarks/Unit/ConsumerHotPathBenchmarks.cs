@@ -20,6 +20,9 @@ public class ConsumerHotPathBenchmarks
     private const int MessageCount = 1_000;
 
     private readonly SingleRecordBatchList _batchList = new();
+    private readonly BatchIterationEpoch _batchIterationEpoch = new();
+    private readonly BatchIterationContinuation _canContinueBatchIteration =
+        static _ => BatchIterationStatus.Continue;
     private readonly CachingStringDeserializer _cachedRepeatedStringValueDeserializer =
         new(Serializers.String, maxCachedBytes: 4 * 1024, maxCachedEntries: 128);
     private CachingStringDeserializer _uniqueValuesCachedStringDeserializer = null!;
@@ -91,6 +94,26 @@ public class ConsumerHotPathBenchmarks
     {
         using var pending = CreatePendingFetchData();
         var batch = new ConsumeRawBatch(pending);
+        var bytes = 0;
+
+        foreach (var record in batch)
+        {
+            bytes += record.Value.Length;
+        }
+
+        return bytes;
+    }
+
+    [Benchmark(OperationsPerInvoke = MessageCount, Description = "Raw batch guarded enumerate")]
+    public int ConsumeRawBatch_GuardedEnumerate()
+    {
+        using var pending = CreatePendingFetchData();
+        var batch = new ConsumeRawBatch(
+            pending,
+            new BatchIterationGuard(
+                _batchIterationEpoch,
+                _batchIterationEpoch.Version,
+                _canContinueBatchIteration));
         var bytes = 0;
 
         foreach (var record in batch)

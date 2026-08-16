@@ -1124,6 +1124,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private readonly SemaphoreSlim _assignmentLock = new(1, 1);
 
     private readonly ConcurrentDictionary<CancellationTokenSource, byte> _activeConsumeCancellationSources = new();
+    private CancellationTokenSource? _pausedDirectFetchCancellationSource;
     private readonly CancellationTokenSource _leaderRefreshCts = new();
     private readonly object _autoCommitStartLock = new();
     private CancellationTokenSource? _autoCommitCts;
@@ -2595,7 +2596,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         new BatchIterationGuard(
                             _batchIterationEpoch,
                             batchIterationVersion,
-                            CanContinueBatchIteration),
+                            GetBatchIterationStatus),
                         _storeOffsetOnDelivery,
                         _options.MaxPollRecords,
                         _rewindBatchAfterDeliveryFailure);
@@ -2749,7 +2750,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         new BatchIterationGuard(
                             _batchIterationEpoch,
                             batchIterationVersion,
-                            CanContinueBatchIteration),
+                            GetBatchIterationStatus),
                         _storeOffsetOnDelivery,
                         _options.MaxPollRecords);
                     batchYielded = true;
@@ -6100,11 +6101,20 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         return recovered;
     }
 
-    private bool CanContinueBatchIteration(TopicPartition partition) =>
-        CanContinueBatchIterationWithPause(partition, out _);
+    private BatchIterationStatus GetBatchIterationStatus(TopicPartition partition)
+    {
+        var canContinue = CanContinueBatchIterationWithPause(partition, out var paused);
+        return canContinue
+            ? BatchIterationStatus.Continue
+            : paused
+                ? BatchIterationStatus.Paused
+                : BatchIterationStatus.Stopped;
+    }
 
     private bool CanContinueBatchIterationWithPause(TopicPartition partition, out bool paused)
     {
+        // Revocation/diverging-epoch discard owns invalid data even when Pause also
+        // contains the partition. Only a still-valid paused record may be redelivered.
         if (HasPendingFetchClear(partition))
         {
             paused = false;
@@ -6246,7 +6256,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         PublishPausedSnapshot();
         UpdateCachesForResumedPartitions(changedPartitions);
+        WakePausedDirectFetch();
         _prefetchBuffer.SignalReader();
+    }
+
+    private void WakePausedDirectFetch()
+    {
+        var consumeCts = Volatile.Read(ref _pausedDirectFetchCancellationSource);
+        if (consumeCts is null)
+            return;
+
+        try { consumeCts.Cancel(); }
+        catch (ObjectDisposedException) { }
     }
 
     private void CancelActiveConsumeOperations()
@@ -7077,6 +7098,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             if (cancellationToken.IsCancellationRequested)
                 consumeCts.Cancel();
 
+            var pausedSnapshotVersion = Volatile.Read(ref _pausedSnapshotVersion);
             var partitionsByBroker = await GroupPartitionsByBrokerAsync(cancellationToken).ConfigureAwait(false);
             var fetchBufferEpoch = Volatile.Read(ref _fetchBufferEpoch);
             var fetchSessionSnapshot = ShouldUseFetchSessions && !_fetchSessions.IsEmpty
@@ -7088,7 +7110,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             var brokerCount = partitionsByBroker.Count;
             if (brokerCount == 0 && fetchSessionSnapshot.Length == 0)
             {
-                await Task.Delay(AllPartitionsPausedDelayMs, cancellationToken).ConfigureAwait(false);
+                await DelayPausedDirectFetchAsync(
+                    pausedSnapshotVersion,
+                    consumeCts,
+                    cancellationToken).ConfigureAwait(false);
                 return;
             }
 
@@ -7129,7 +7154,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                 if (taskCount == 0)
                 {
-                    await Task.Delay(AllPartitionsPausedDelayMs, cancellationToken).ConfigureAwait(false);
+                    await DelayPausedDirectFetchAsync(
+                        pausedSnapshotVersion,
+                        consumeCts,
+                        cancellationToken).ConfigureAwait(false);
                     return;
                 }
 
@@ -7192,6 +7220,39 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             _activeConsumeCancellationSources.TryRemove(consumeCts, out _);
             consumeCts.Dispose();
             _coordinator?.EndForegroundPollActivity();
+        }
+    }
+
+    private async ValueTask DelayPausedDirectFetchAsync(
+        int pausedSnapshotVersion,
+        CancellationTokenSource consumeCts,
+        CancellationToken cancellationToken)
+    {
+        Volatile.Write(ref _pausedDirectFetchCancellationSource, consumeCts);
+        try
+        {
+            // Resume may publish before the waiter is visible. The version check closes
+            // that race; a later Resume cancels consumeCts through the published field.
+            if (Volatile.Read(ref _pausedSnapshotVersion) != pausedSnapshotVersion)
+                return;
+
+            try
+            {
+                await Task.Delay(AllPartitionsPausedDelayMs, consumeCts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (
+                !cancellationToken.IsCancellationRequested
+                && Volatile.Read(ref _pausedSnapshotVersion) != pausedSnapshotVersion)
+            {
+                // Resume is a control-plane wake, not caller cancellation.
+            }
+        }
+        finally
+        {
+            Interlocked.CompareExchange(
+                ref _pausedDirectFetchCancellationSource,
+                null,
+                consumeCts);
         }
     }
 

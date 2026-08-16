@@ -178,10 +178,14 @@ namespace Dekaf.Consumer
                     isKeyNull: record.IsKeyNull,
                     isValueNull: record.IsValueNull);
 
-                if (!_batch._iterationGuard.IsCurrent(pending.TopicPartition, ref _observedVersion))
+                var iterationStatus = _batch._iterationGuard.GetStatusAfterRead(
+                    pending.TopicPartition,
+                    ref _observedVersion);
+                if (iterationStatus != BatchIterationStatus.Continue)
                 {
                     _canContinue = false;
-                    pending.BufferCurrentForRedelivery();
+                    if (iterationStatus == BatchIterationStatus.Paused)
+                        pending.BufferCurrentForRedelivery();
                     return false;
                 }
 

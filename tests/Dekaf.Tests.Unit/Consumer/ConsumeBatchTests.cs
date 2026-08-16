@@ -124,7 +124,8 @@ public class ConsumeBatchTests
             pending,
             Serializers.String,
             Serializers.String,
-            new BatchIterationGuard(assignmentEpoch, assignmentEpoch.Version, _ => canContinue));
+            new BatchIterationGuard(assignmentEpoch, assignmentEpoch.Version,
+                _ => canContinue ? BatchIterationStatus.Continue : BatchIterationStatus.Stopped));
 
         using var enumerator = batch.GetEnumerator();
 
@@ -155,7 +156,7 @@ public class ConsumeBatchTests
                 _ =>
                 {
                     membershipChecks++;
-                    return true;
+                    return BatchIterationStatus.Continue;
                 }));
         using var enumerator = batch.GetEnumerator();
 
@@ -166,6 +167,30 @@ public class ConsumeBatchTests
         await Assert.That(enumerator.Current.Offset).IsEqualTo(1);
         await Assert.That(batch.Count).IsEqualTo(2);
         await Assert.That(membershipChecks).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task ConsumeBatch_RevocationDuringDeserialization_DoesNotBufferCurrentRecord()
+    {
+        using var pending = CreatePendingFetchData("test-topic", partitionIndex: 0, baseOffset: 0, messageCount: 1);
+        var assignmentEpoch = new BatchIterationEpoch();
+        var canContinue = true;
+        var deserializer = new CallbackDeserializer(() =>
+        {
+            canContinue = false;
+            assignmentEpoch.Invalidate();
+        });
+        var batch = new ConsumeBatch<string, string>(
+            pending,
+            Serializers.String,
+            deserializer,
+            new BatchIterationGuard(assignmentEpoch, assignmentEpoch.Version,
+                _ => canContinue ? BatchIterationStatus.Continue : BatchIterationStatus.Stopped));
+
+        using var enumerator = batch.GetEnumerator();
+
+        await Assert.That(enumerator.MoveNext()).IsFalse();
+        await Assert.That(pending.MoveNext()).IsFalse();
     }
 
     [Test]
@@ -221,5 +246,14 @@ public class ConsumeBatchTests
         var pending = PendingFetchData.Create(topic, partitionIndex, new List<RecordBatch> { recordBatch });
         pending.EagerParseAll();
         return pending;
+    }
+
+    private sealed class CallbackDeserializer(Action callback) : IDeserializer<string>
+    {
+        public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
+        {
+            callback();
+            return Serializers.String.Deserialize(data, context);
+        }
     }
 }

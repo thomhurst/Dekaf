@@ -66,19 +66,28 @@ namespace Dekaf.Consumer
         }
     }
 
+    internal enum BatchIterationStatus : byte
+    {
+        Continue,
+        Paused,
+        Stopped
+    }
+
+    internal delegate BatchIterationStatus BatchIterationContinuation(TopicPartition partition);
+
     internal readonly struct BatchIterationGuard(
         BatchIterationEpoch? epoch,
         int capturedVersion,
-        Func<TopicPartition, bool>? canContinue = null)
+        BatchIterationContinuation? getStatus = null)
     {
         public int CapturedVersion => capturedVersion;
 
         public bool CanStart(TopicPartition partition, ref int observedVersion)
         {
             if (epoch is null)
-                return canContinue is null || canContinue(partition);
+                return getStatus is null || getStatus(partition) == BatchIterationStatus.Continue;
 
-            if (canContinue is null)
+            if (getStatus is null)
             {
                 var currentVersion = Volatile.Read(ref epoch.Version);
                 return (currentVersion & 1) == 0 && currentVersion == observedVersion;
@@ -94,7 +103,7 @@ namespace Dekaf.Consumer
                     continue;
                 }
 
-                if (!canContinue(partition))
+                if (getStatus(partition) != BatchIterationStatus.Continue)
                     return false;
 
                 if (Volatile.Read(ref epoch.Version) == currentVersion)
@@ -109,7 +118,7 @@ namespace Dekaf.Consumer
         public bool IsCurrent(TopicPartition partition, ref int observedVersion)
         {
             if (epoch is null)
-                return canContinue is null || canContinue(partition);
+                return getStatus is null || getStatus(partition) == BatchIterationStatus.Continue;
 
             var spin = new SpinWait();
             while (true)
@@ -124,13 +133,42 @@ namespace Dekaf.Consumer
                 if (currentVersion == observedVersion)
                     return true;
 
-                if (canContinue is null || !canContinue(partition))
+                if (getStatus is null || getStatus(partition) != BatchIterationStatus.Continue)
                     return false;
 
                 if (Volatile.Read(ref epoch.Version) == currentVersion)
                 {
                     observedVersion = currentVersion;
                     return true;
+                }
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public BatchIterationStatus GetStatusAfterRead(TopicPartition partition, ref int observedVersion)
+        {
+            if (epoch is null)
+                return getStatus?.Invoke(partition) ?? BatchIterationStatus.Continue;
+
+            var spin = new SpinWait();
+            while (true)
+            {
+                var currentVersion = Volatile.Read(ref epoch.Version);
+                if ((currentVersion & 1) != 0)
+                {
+                    spin.SpinOnce();
+                    continue;
+                }
+
+                if (currentVersion == observedVersion)
+                    return BatchIterationStatus.Continue;
+
+                var status = getStatus?.Invoke(partition) ?? BatchIterationStatus.Stopped;
+                if (Volatile.Read(ref epoch.Version) == currentVersion)
+                {
+                    if (status == BatchIterationStatus.Continue)
+                        observedVersion = currentVersion;
+                    return status;
                 }
             }
         }
@@ -339,10 +377,14 @@ namespace Dekaf.Consumer
                     return false;
                 }
 
-                if (!_batch._iterationGuard.IsCurrent(pending.TopicPartition, ref _observedVersion))
+                var iterationStatus = _batch._iterationGuard.GetStatusAfterRead(
+                    pending.TopicPartition,
+                    ref _observedVersion);
+                if (iterationStatus != BatchIterationStatus.Continue)
                 {
                     _canContinue = false;
-                    pending.BufferCurrentForRedelivery();
+                    if (iterationStatus == BatchIterationStatus.Paused)
+                        pending.BufferCurrentForRedelivery();
                     return false;
                 }
 
