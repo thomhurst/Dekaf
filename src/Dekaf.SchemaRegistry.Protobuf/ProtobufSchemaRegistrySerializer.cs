@@ -323,7 +323,10 @@ public sealed class ProtobufSchemaRegistrySerializer<
                     subject,
                     schema,
                     cancellationToken).ConfigureAwait(false);
-            return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(id, schema);
+            var executionSchema = _config.RuleExecutor is null
+                ? schema
+                : await _schemaRegistry.GetSchemaAsync(id, cancellationToken).ConfigureAwait(false);
+            return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(id, executionSchema);
         }
 
         var registered = await _schemaRegistry.LookupSchemaAsync(

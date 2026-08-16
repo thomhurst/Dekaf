@@ -6,7 +6,10 @@ using Dekaf.Consumer;
 using Dekaf.Producer;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Avro;
+using Dekaf.SchemaRegistry.Protobuf;
 using Dekaf.Serialization;
+using Dekaf.Tests.Integration.Protos;
+using Google.Protobuf;
 using AvroSchema = Avro.Schema;
 
 namespace Dekaf.Tests.Integration;
@@ -116,10 +119,11 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
     }
 
     [Test]
-    public async Task RegisteredWriteRules_RegistryResolutionModes_JsonAndAvroExecute()
+    public async Task RegisteredWriteRules_RegistryResolutionModes_JsonAvroAndProtobufExecute()
     {
         var jsonTopic = await testInfra.CreateTestTopicAsync();
         var avroTopic = await testInfra.CreateTestTopicAsync();
+        var protobufTopic = await testInfra.CreateTestTopicAsync();
         using var registryClient = new SchemaRegistryClient(new SchemaRegistryConfig
         {
             Url = testInfra.RegistryUrl
@@ -178,7 +182,25 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
         var latestAvroOutput = new ArrayBufferWriter<byte>();
         latestAvroSerializer.Serialize(record, ref latestAvroOutput, CreateContext(avroTopic));
 
+        await registryClient.RegisterSchemaAsync(
+            $"{protobufTopic}-value",
+            CreateSchema(
+                SchemaType.Protobuf,
+                SchemaRuleMessage.Descriptor.File.SerializedData.ToBase64()));
+        await using var protobufSerializer = new ProtobufSchemaRegistrySerializer<SchemaRuleMessage>(
+            registryClient,
+            new ProtobufSerializerConfig
+            {
+                RuleExecutor = ruleExecutor
+            });
+        var protobufOutput = new ArrayBufferWriter<byte>();
+        protobufSerializer.Serialize(
+            new SchemaRuleMessage { Value = "protobuf-payload" },
+            ref protobufOutput,
+            CreateContext(protobufTopic));
+
         await Assert.That(calls).IsEquivalentTo([
+            "Write:domain-xor",
             "Write:domain-xor",
             "Write:domain-xor",
             "Write:domain-xor"
@@ -239,4 +261,5 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
             return result;
         }
     }
+
 }
