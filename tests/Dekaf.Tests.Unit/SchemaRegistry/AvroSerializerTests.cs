@@ -248,7 +248,7 @@ public sealed class AvroSerializerTests
         record.Add("enumValue", new GenericEnum((Avro.EnumSchema)schema["enumValue"].Schema, "OFF"));
         record.Add("fixedValue", new GenericFixed((Avro.FixedSchema)schema["fixedValue"].Schema, [1, 2, 3, 4]));
         record.Add("arrayValue", new[] { int.MinValue, -1, 0, 1, int.MaxValue });
-        record.Add("mapValue", new SortedDictionary<string, object>
+        record.Add("mapValue", new Dictionary<string, object>
         {
             ["first"] = "alpha",
             ["second"] = "βeta"
@@ -257,6 +257,21 @@ public sealed class AvroSerializerTests
         record.Add("nestedValue", nested);
 
         await AssertSerializedPayloadMatchesApache(serializer, schema, record);
+    }
+
+    [Test]
+    public async Task Serializer_GenericRecord_NonDictionaryMap_IsRejected()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry);
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(
+            """{"type":"record","name":"MapRecord","fields":[{"name":"mapValue","type":{"type":"map","values":"string"}}]}""");
+        var record = new GenericRecord(schema);
+        record.Add("mapValue", new SortedDictionary<string, object>());
+        var buffer = new ArrayBufferWriter<byte>();
+
+        Assert.Throws<Avro.AvroTypeException>(
+            () => serializer.Serialize(record, ref buffer, CreateContext()));
     }
 
     [Test]
@@ -364,6 +379,31 @@ public sealed class AvroSerializerTests
         record.Add("values", values);
         var expectedRecord = new GenericRecord(schema);
         expectedRecord.Add("values", includeNull ? new object?[] { null } : []);
+
+        await AssertSerializedPayloadMatches(serializer, schema, record, expectedRecord);
+    }
+
+    [Test]
+    [Arguments(0)]
+    [Arguments(1)]
+    [Arguments(2)]
+    public async Task Serializer_GenericRecord_NonNullableUnionWithoutValueBranch_AcceptsEmpty(
+        int collectionKind)
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry);
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(NullableNonIntArraySchema);
+        object values = collectionKind switch
+        {
+            0 => Array.Empty<int>(),
+            1 => new List<int>(),
+            2 => new Collection<int>(),
+            _ => throw new ArgumentOutOfRangeException(nameof(collectionKind))
+        };
+        var record = new GenericRecord(schema);
+        record.Add("values", values);
+        var expectedRecord = new GenericRecord(schema);
+        expectedRecord.Add("values", Array.Empty<object>());
 
         await AssertSerializedPayloadMatches(serializer, schema, record, expectedRecord);
     }

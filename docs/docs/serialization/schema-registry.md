@@ -66,6 +66,12 @@ record.Add("total", 99.99);
 await producer.ProduceAsync("orders", "order-123", record);
 ```
 
+For zero-allocation `GenericRecord` serialization, Avro map values must use
+`Dictionary<string, object>`. Other `IDictionary<string, object>` implementations are rejected
+because their enumeration can allocate per message. Value-type arrays and lists are specialized
+for Avro primitives and built-in logical types; unsupported value-type element representations
+fail instead of silently boxing each element.
+
 ## Protobuf Serialization
 
 ```csharp

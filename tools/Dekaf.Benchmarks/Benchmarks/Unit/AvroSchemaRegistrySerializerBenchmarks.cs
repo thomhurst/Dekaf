@@ -12,7 +12,7 @@ using RegistrySchema = Dekaf.SchemaRegistry.Schema;
 namespace Dekaf.Benchmarks.Benchmarks.Unit;
 
 /// <summary>
-/// Measures the producer's generic Avro preparation path for stable and equivalent schema instances.
+/// Measures the producer's generic Avro path and the unchanged Apache SpecificRecord control.
 /// </summary>
 [MemoryDiagnoser(displayGenColumns: false)]
 public class AvroSchemaRegistrySerializerBenchmarks
@@ -60,6 +60,16 @@ public class AvroSchemaRegistrySerializerBenchmarks
         }
         """;
 
+    private const string DictionaryMapSchema =
+        """
+        {
+          "type": "record",
+          "name": "DictionaryMapBenchmarkRecord",
+          "namespace": "Dekaf.Benchmarks",
+          "fields": [{ "name": "values", "type": { "type": "map", "values": "int" } }]
+        }
+        """;
+
     private AvroSchemaRegistrySerializer<GenericRecord> _serializer = null!;
     private AvroSchemaRegistrySerializer<SpecificBenchmarkRecord> _specificSerializer = null!;
     private GenericRecord[] _equivalentRecords = null!;
@@ -67,6 +77,7 @@ public class AvroSchemaRegistrySerializerBenchmarks
     private GenericRecord _nullableIntArrayRecord = null!;
     private GenericRecord _nullableIntCollectionRecord = null!;
     private GenericRecord _scalarUnionRecord = null!;
+    private GenericRecord _dictionaryMapRecord = null!;
     private SpecificBenchmarkRecord _specificRecord = null!;
     private ArrayBufferWriter<byte> _serializeBuffer = null!;
     private GenericRecord _stableRecord = null!;
@@ -94,6 +105,7 @@ public class AvroSchemaRegistrySerializerBenchmarks
         _nullableIntArrayRecord = CreateNullableIntArrayRecord();
         _nullableIntCollectionRecord = CreateNullableIntCollectionRecord();
         _scalarUnionRecord = CreateScalarUnionRecord();
+        _dictionaryMapRecord = CreateDictionaryMapRecord();
         _specificRecord = new SpecificBenchmarkRecord { Id = 42, Name = "benchmark" };
         _serializeBuffer = new ArrayBufferWriter<byte>();
         _serializer.Serialize(_stableRecord, ref _serializeBuffer, _context);
@@ -103,6 +115,8 @@ public class AvroSchemaRegistrySerializerBenchmarks
         _serializer.Serialize(_nullableIntArrayRecord, ref _serializeBuffer, _context);
         _serializeBuffer.ResetWrittenCount();
         _serializer.Serialize(_scalarUnionRecord, ref _serializeBuffer, _context);
+        _serializeBuffer.ResetWrittenCount();
+        _serializer.Serialize(_dictionaryMapRecord, ref _serializeBuffer, _context);
         _serializeBuffer.ResetWrittenCount();
         _specificSerializer.Serialize(_specificRecord, ref _serializeBuffer, _context);
     }
@@ -159,7 +173,14 @@ public class AvroSchemaRegistrySerializerBenchmarks
         _serializer.Serialize(_scalarUnionRecord, ref _serializeBuffer, _context);
     }
 
-    [Benchmark(Description = "Serialize prepared SpecificRecord")]
+    [Benchmark(Description = "Serialize dictionary-map generic Avro record")]
+    public void SerializeDictionaryMapRecord()
+    {
+        _serializeBuffer.ResetWrittenCount();
+        _serializer.Serialize(_dictionaryMapRecord, ref _serializeBuffer, _context);
+    }
+
+    [Benchmark(Description = "Control: Apache writer prepared SpecificRecord")]
     public void SerializeSpecificRecord()
     {
         _serializeBuffer.ResetWrittenCount();
@@ -206,6 +227,20 @@ public class AvroSchemaRegistrySerializerBenchmarks
         var schema = (Avro.RecordSchema)AvroSchema.Parse(ScalarUnionSchema);
         var record = new GenericRecord(schema);
         record.Add("value", 42);
+        return record;
+    }
+
+    private static GenericRecord CreateDictionaryMapRecord()
+    {
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(DictionaryMapSchema);
+        var record = new GenericRecord(schema);
+        record.Add("values", new Dictionary<string, object>
+        {
+            ["first"] = 1,
+            ["second"] = 2,
+            ["third"] = 3,
+            ["fourth"] = 4
+        });
         return record;
     }
 

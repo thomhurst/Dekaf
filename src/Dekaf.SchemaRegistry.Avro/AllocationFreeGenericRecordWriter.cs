@@ -476,6 +476,9 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
         where T : struct
         where TWriter : struct, IValueWriter<T>
     {
+        if (values.Length == 0)
+            return;
+
         var branch = _writerCache.GetUnion(schema).GetValueBranch(typeof(T));
         for (var i = 0; i < values.Length; i++)
         {
@@ -522,6 +525,9 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
         where T : struct
         where TWriter : struct, IValueWriter<T>
     {
+        if (values.Count == 0)
+            return;
+
         var branch = _writerCache.GetUnion(schema).GetValueBranch(typeof(T));
         for (var i = 0; i < values.Count; i++)
         {
@@ -568,6 +574,9 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
         where T : struct
         where TWriter : struct, IValueWriter<T>
     {
+        if (values.Count == 0)
+            return;
+
         var branch = _writerCache.GetUnion(schema).GetValueBranch(typeof(T));
         for (var i = 0; i < values.Count; i++)
         {
@@ -707,41 +716,19 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
 
     private void WriteMap(global::Avro.MapSchema schema, object? value, AllocationFreeBinaryEncoder encoder)
     {
-        if (value is not IDictionary<string, object> map)
-            throw TypeMismatch(value, "map");
+        if (value is not Dictionary<string, object> map)
+        {
+            throw new global::Avro.AvroTypeException(
+                $"Avro map values must use {typeof(Dictionary<string, object>)} to preserve zero-allocation serialization; received {value?.GetType()}.");
+        }
 
         encoder.WriteMapStart();
         encoder.SetItemCount(map.Count);
-
-        if (value is Dictionary<string, object> dictionary)
+        foreach (var entry in map)
         {
-            foreach (var entry in dictionary)
-            {
-                encoder.StartItem();
-                encoder.WriteString(entry.Key);
-                WriteValue(schema.ValueSchema, entry.Value, encoder);
-            }
-        }
-        else
-        {
-            var count = map.Count;
-            var entries = ArrayPool<KeyValuePair<string, object>>.Shared.Rent(count);
-            try
-            {
-                map.CopyTo(entries, 0);
-                for (var i = 0; i < count; i++)
-                {
-                    var entry = entries[i];
-                    encoder.StartItem();
-                    encoder.WriteString(entry.Key);
-                    WriteValue(schema.ValueSchema, entry.Value, encoder);
-                }
-            }
-            finally
-            {
-                entries.AsSpan(0, count).Clear();
-                ArrayPool<KeyValuePair<string, object>>.Shared.Return(entries);
-            }
+            encoder.StartItem();
+            encoder.WriteString(entry.Key);
+            WriteValue(schema.ValueSchema, entry.Value, encoder);
         }
 
         encoder.WriteMapEnd();
