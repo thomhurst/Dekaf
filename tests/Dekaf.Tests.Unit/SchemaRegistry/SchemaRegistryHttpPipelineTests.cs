@@ -427,6 +427,47 @@ public sealed class SchemaRegistryCertificateMaterialTests
     }
 
     [Test]
+    public async Task Load_ClientPem_EmptyPassword_LoadsEncryptedKeyFromStringAndFiles()
+    {
+        const string password = "";
+        using var certificate = TestCertificateHelper.CreateSelfSignedCertificateWithKey("CN=Empty Password Client");
+        using var rsa = certificate.GetRSAPrivateKey()!;
+        var certificatePem = certificate.ExportCertificatePem();
+        var encryptedPrivateKeyPem = rsa.ExportEncryptedPkcs8PrivateKeyPem(
+            password,
+            new PbeParameters(PbeEncryptionAlgorithm.Aes256Cbc, HashAlgorithmName.SHA256, 10_000));
+        var directory = CreateTemporaryDirectory();
+        var certificatePath = Path.Combine(directory, "client.pem");
+        var keyPath = Path.Combine(directory, "client.key");
+
+        try
+        {
+            await File.WriteAllTextAsync(certificatePath, certificatePem);
+            await File.WriteAllTextAsync(keyPath, encryptedPrivateKeyPem);
+
+            using var inline = SchemaRegistryCertificateMaterial.Load(new SchemaRegistryTlsConfig
+            {
+                ClientCertificatePem = certificatePem,
+                ClientPrivateKeyPem = encryptedPrivateKeyPem,
+                ClientCertificatePassword = password
+            });
+            using var files = SchemaRegistryCertificateMaterial.Load(new SchemaRegistryTlsConfig
+            {
+                ClientCertificatePath = certificatePath,
+                ClientPrivateKeyPath = keyPath,
+                ClientCertificatePassword = password
+            });
+
+            await Assert.That(inline.ClientCertificate!.HasPrivateKey).IsTrue();
+            await Assert.That(files.ClientCertificate!.HasPrivateKey).IsTrue();
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Test]
     public async Task Load_ClientPfx_ValidatesPassword()
     {
         const string password = "pfx-password";

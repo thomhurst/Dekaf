@@ -343,7 +343,7 @@ internal sealed class SchemaRegistryCertificateMaterial : IDisposable
                 if (!File.Exists(config.ClientPrivateKeyPath!))
                     throw new FileNotFoundException("Client private-key file was not found.", config.ClientPrivateKeyPath);
 
-                var certificate = string.IsNullOrEmpty(config.ClientCertificatePassword)
+                var certificate = config.ClientCertificatePassword is null
                     ? X509Certificate2.CreateFromPemFile(config.ClientCertificatePath, config.ClientPrivateKeyPath)
                     : X509Certificate2.CreateFromEncryptedPemFile(
                         config.ClientCertificatePath,
@@ -360,7 +360,7 @@ internal sealed class SchemaRegistryCertificateMaterial : IDisposable
         }
         else if (config.ClientCertificatePem is not null)
         {
-            var certificate = string.IsNullOrEmpty(config.ClientCertificatePassword)
+            var certificate = config.ClientCertificatePassword is null
                 ? X509Certificate2.CreateFromPem(config.ClientCertificatePem, config.ClientPrivateKeyPem)
                 : X509Certificate2.CreateFromEncryptedPem(
                     config.ClientCertificatePem,
