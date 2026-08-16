@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Text;
+using System.Text.Json.Serialization;
 using Avro.Generic;
 using Dekaf.Consumer;
 using Dekaf.Producer;
@@ -141,6 +142,7 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
         await using var jsonSerializer = new JsonSchemaRegistrySerializer<string>(
             registryClient,
             jsonSchemaText,
+            SchemaRegistryRuleJsonContext.Default.String,
             autoRegisterSchemas: false,
             ruleExecutor: ruleExecutor);
 
@@ -262,3 +264,6 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
         }
     }
 }
+
+[JsonSerializable(typeof(string))]
+internal sealed partial class SchemaRegistryRuleJsonContext : JsonSerializerContext;
