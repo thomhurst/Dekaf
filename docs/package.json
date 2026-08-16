@@ -26,6 +26,9 @@
     "@docusaurus/module-type-aliases": "^3.10.2",
     "@docusaurus/types": "^3.10.2"
   },
+  "overrides": {
+    "serialize-javascript": "7.1.0"
+  },
   "browserslist": {
     "production": [
       ">0.5%",
