@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 
 namespace Dekaf.SchemaRegistry;
 
@@ -202,7 +203,11 @@ internal sealed class SchemaResolutionCache<TValue>
             var hash = new HashCode();
             hash.Add(key.Subject, StringComparer.Ordinal);
             hash.Add(key.Scope);
-            if (key.Schema.References is { Count: > 0 })
+            if (key.Schema.Metadata is not null || key.Schema.RuleSet is not null)
+            {
+                hash.Add(SchemaDataContractFingerprintCache.GetHashCode(key.Schema));
+            }
+            else if (key.Schema.References is { Count: > 0 })
             {
                 hash.Add(SchemaFingerprintCache.GetHashCode(key.Schema));
             }
@@ -313,26 +318,23 @@ internal sealed class SchemaResolutionCache<TValue>
             if (count == 0)
                 return true;
 
-            if (left is Dictionary<string, IReadOnlySet<string>> leftDictionary)
+            if (left is not Dictionary<string, IReadOnlySet<string>> leftDictionary ||
+                right is not Dictionary<string, IReadOnlySet<string>> rightDictionary ||
+                !Equals(leftDictionary.Comparer, rightDictionary.Comparer))
             {
-                foreach (var pair in leftDictionary)
-                {
-                    if (!right!.TryGetValue(pair.Key, out var rightTags) ||
-                        !StringSetEquals(pair.Value, rightTags))
-                    {
-                        return false;
-                    }
-                }
-
-                return true;
+                return false;
             }
 
-            if (right is Dictionary<string, IReadOnlySet<string>> rightDictionary)
-                return TagsEqual(rightDictionary, left);
+            foreach (var pair in leftDictionary)
+            {
+                if (!rightDictionary.TryGetValue(pair.Key, out var rightTags) ||
+                    !StringSetEquals(pair.Value, rightTags))
+                {
+                    return false;
+                }
+            }
 
-            // Interface enumeration may box a struct enumerator. Unknown collection
-            // implementations therefore remain distinct instead of allocating here.
-            return false;
+            return true;
         }
 
         private static bool StringDictionaryEquals(
@@ -348,24 +350,23 @@ internal sealed class SchemaResolutionCache<TValue>
             if (count == 0)
                 return true;
 
-            if (left is Dictionary<string, string> leftDictionary)
+            if (left is not Dictionary<string, string> leftDictionary ||
+                right is not Dictionary<string, string> rightDictionary ||
+                !Equals(leftDictionary.Comparer, rightDictionary.Comparer))
             {
-                foreach (var pair in leftDictionary)
-                {
-                    if (!right!.TryGetValue(pair.Key, out var rightValue) ||
-                        !string.Equals(pair.Value, rightValue, StringComparison.Ordinal))
-                    {
-                        return false;
-                    }
-                }
-
-                return true;
+                return false;
             }
 
-            if (right is Dictionary<string, string> rightDictionary)
-                return StringDictionaryEquals(rightDictionary, left);
+            foreach (var pair in leftDictionary)
+            {
+                if (!rightDictionary.TryGetValue(pair.Key, out var rightValue) ||
+                    !string.Equals(pair.Value, rightValue, StringComparison.Ordinal))
+                {
+                    return false;
+                }
+            }
 
-            return false;
+            return true;
         }
 
         private static bool StringSetEquals(
@@ -381,21 +382,20 @@ internal sealed class SchemaResolutionCache<TValue>
             if (count == 0)
                 return true;
 
-            if (left is HashSet<string> leftSet)
+            if (left is not HashSet<string> leftSet ||
+                right is not HashSet<string> rightSet ||
+                !Equals(leftSet.Comparer, rightSet.Comparer))
             {
-                foreach (var value in leftSet)
-                {
-                    if (!right!.Contains(value))
-                        return false;
-                }
-
-                return true;
+                return false;
             }
 
-            if (right is HashSet<string> rightSet)
-                return StringSetEquals(rightSet, left);
+            foreach (var value in leftSet)
+            {
+                if (!rightSet.Contains(value))
+                    return false;
+            }
 
-            return false;
+            return true;
         }
     }
 }
@@ -429,6 +429,161 @@ internal static class SchemaFingerprintCache
         }
 
         return hash.ToHashCode();
+    }
+}
+
+internal static class SchemaDataContractFingerprintCache
+{
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static int GetHashCode(Schema schema)
+    {
+        if (schema.TryGetCachedFingerprint(out var cached))
+            return cached;
+
+        return ComputeAndCacheHashCode(schema);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static int ComputeAndCacheHashCode(Schema schema)
+    {
+        var fingerprint = ComputeHashCode(schema);
+        schema.CacheFingerprint(fingerprint);
+        return fingerprint;
+    }
+
+    private static int ComputeHashCode(Schema schema)
+    {
+        var hash = new HashCode();
+        hash.Add(schema.SchemaType);
+        hash.Add(schema.SchemaString, StringComparer.Ordinal);
+        AddReferences(ref hash, schema.References);
+        AddMetadata(ref hash, schema.Metadata);
+        AddRuleSet(ref hash, schema.RuleSet);
+        return hash.ToHashCode();
+    }
+
+    private static void AddReferences(ref HashCode hash, IReadOnlyList<SchemaReference>? references)
+    {
+        var count = references?.Count ?? 0;
+        hash.Add(count);
+        for (var index = 0; index < count; index++)
+        {
+            var reference = references![index];
+            hash.Add(reference.Name, StringComparer.Ordinal);
+            hash.Add(reference.Subject, StringComparer.Ordinal);
+            hash.Add(reference.Version);
+        }
+    }
+
+    private static void AddMetadata(ref HashCode hash, SchemaMetadata? metadata)
+    {
+        hash.Add(metadata is not null);
+        if (metadata is null)
+            return;
+
+        hash.Add(GetTagsHashCode(metadata.Tags));
+        hash.Add(GetStringDictionaryHashCode(metadata.Properties));
+        hash.Add(GetStringSetHashCode(metadata.Sensitive));
+    }
+
+    private static void AddRuleSet(ref HashCode hash, SchemaRuleSet? ruleSet)
+    {
+        hash.Add(ruleSet is not null);
+        if (ruleSet is null)
+            return;
+
+        hash.Add(ruleSet.EnableAt, StringComparer.Ordinal);
+        AddRules(ref hash, ruleSet.MigrationRules);
+        AddRules(ref hash, ruleSet.DomainRules);
+        AddRules(ref hash, ruleSet.EncodingRules);
+    }
+
+    private static void AddRules(ref HashCode hash, IReadOnlyList<SchemaRule>? rules)
+    {
+        var count = rules?.Count ?? 0;
+        hash.Add(count);
+        for (var index = 0; index < count; index++)
+        {
+            var rule = rules![index];
+            hash.Add(rule.Name, StringComparer.Ordinal);
+            hash.Add(rule.Doc, StringComparer.Ordinal);
+            hash.Add(rule.Kind);
+            hash.Add(rule.Mode);
+            hash.Add(rule.Type, StringComparer.Ordinal);
+            hash.Add(GetStringSetHashCode(rule.Tags));
+            hash.Add(GetStringDictionaryHashCode(rule.Parameters));
+            hash.Add(rule.Expr, StringComparer.Ordinal);
+            hash.Add(rule.OnSuccess, StringComparer.Ordinal);
+            hash.Add(rule.OnFailure, StringComparer.Ordinal);
+            hash.Add(rule.Disabled);
+        }
+    }
+
+    private static int GetTagsHashCode(IReadOnlyDictionary<string, IReadOnlySet<string>>? tags)
+    {
+        var count = tags?.Count ?? 0;
+        if (count == 0)
+            return 0;
+        if (tags is not Dictionary<string, IReadOnlySet<string>> dictionary)
+            return RuntimeHelpers.GetHashCode(tags!);
+
+        var sum = 0;
+        var xor = 0;
+        foreach (var pair in dictionary)
+        {
+            var entryHash = new HashCode();
+            entryHash.Add(pair.Key, dictionary.Comparer);
+            entryHash.Add(GetStringSetHashCode(pair.Value));
+            AccumulateUnordered(entryHash.ToHashCode(), ref sum, ref xor);
+        }
+
+        return HashCode.Combine(dictionary.Comparer, count, sum, xor);
+    }
+
+    private static int GetStringDictionaryHashCode(IReadOnlyDictionary<string, string>? values)
+    {
+        var count = values?.Count ?? 0;
+        if (count == 0)
+            return 0;
+        if (values is not Dictionary<string, string> dictionary)
+            return RuntimeHelpers.GetHashCode(values!);
+
+        var sum = 0;
+        var xor = 0;
+        foreach (var pair in dictionary)
+        {
+            var entryHash = new HashCode();
+            entryHash.Add(pair.Key, dictionary.Comparer);
+            entryHash.Add(pair.Value, StringComparer.Ordinal);
+            AccumulateUnordered(entryHash.ToHashCode(), ref sum, ref xor);
+        }
+
+        return HashCode.Combine(dictionary.Comparer, count, sum, xor);
+    }
+
+    private static int GetStringSetHashCode(IReadOnlySet<string>? values)
+    {
+        var count = values?.Count ?? 0;
+        if (count == 0)
+            return 0;
+        if (values is not HashSet<string> set)
+            return RuntimeHelpers.GetHashCode(values!);
+
+        var sum = 0;
+        var xor = 0;
+        foreach (var value in set)
+        {
+            var valueHash = set.Comparer.GetHashCode(value);
+            AccumulateUnordered(valueHash, ref sum, ref xor);
+        }
+
+        return HashCode.Combine(set.Comparer, count, sum, xor);
+    }
+
+    private static void AccumulateUnordered(int value, ref int sum, ref int xor)
+    {
+        sum = unchecked(sum + value);
+        xor ^= value;
     }
 }
 

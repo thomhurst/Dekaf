@@ -469,6 +469,25 @@ public sealed class SchemaPreparationTests
     }
 
     [Test]
+    public async Task ResolutionCache_FingerprintIncludesMetadataAndRules()
+    {
+        var firstSchema = CreateDataContractSchema(owner: "payments");
+        var equivalentSchema = CreateDataContractSchema(owner: "payments");
+        var differentMetadataSchema = CreateDataContractSchema(owner: "fraud");
+        var differentRuleSchema = CreateDataContractSchema(owner: "payments", ruleType: "CEL");
+
+        var firstFingerprint = SchemaDataContractFingerprintCache.GetHashCode(firstSchema);
+        var equivalentFingerprint = SchemaDataContractFingerprintCache.GetHashCode(equivalentSchema);
+        var differentMetadataFingerprint = SchemaDataContractFingerprintCache.GetHashCode(differentMetadataSchema);
+        var differentRuleFingerprint = SchemaDataContractFingerprintCache.GetHashCode(differentRuleSchema);
+
+        await Assert.That(equivalentFingerprint).IsEqualTo(firstFingerprint);
+        await Assert.That(differentMetadataFingerprint).IsNotEqualTo(firstFingerprint);
+        await Assert.That(differentRuleFingerprint).IsNotEqualTo(firstFingerprint);
+        await Assert.That(SchemaDataContractFingerprintCache.GetHashCode(firstSchema)).IsEqualTo(firstFingerprint);
+    }
+
+    [Test]
     public async Task ResolutionCache_WarmHitCompletesDespiteCanceledWaiter()
     {
         var cache = new SchemaResolutionCache<int>();
@@ -795,7 +814,7 @@ public sealed class SchemaPreparationTests
             ]
         };
 
-    private static Schema CreateDataContractSchema(string owner) =>
+    private static Schema CreateDataContractSchema(string owner, string ruleType = "ENCRYPT") =>
         new()
         {
             SchemaType = SchemaType.Json,
@@ -823,7 +842,7 @@ public sealed class SchemaPreparationTests
                         Doc = "Encrypt the identifier.",
                         Kind = SchemaRuleKind.Transform,
                         Mode = SchemaRuleMode.WriteRead,
-                        Type = "ENCRYPT",
+                        Type = ruleType,
                         Tags = new HashSet<string>(["PII"], StringComparer.Ordinal),
                         Parameters = new Dictionary<string, string>(StringComparer.Ordinal)
                         {

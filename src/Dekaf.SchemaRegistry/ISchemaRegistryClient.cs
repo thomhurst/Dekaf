@@ -1,3 +1,5 @@
+using System.Runtime.CompilerServices;
+
 namespace Dekaf.SchemaRegistry;
 
 /// <summary>
@@ -403,6 +405,7 @@ public sealed class Schema
     /// </summary>
     public SchemaRuleSet? RuleSet { get; init; }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal bool TryGetCachedFingerprint(out int fingerprint)
     {
         fingerprint = _cachedFingerprint;
