@@ -7202,13 +7202,17 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             lock (_pendingAppendQueueLock)
             {
                 while (_pendingAppends.TryDequeue(out var op))
-                {
-                    op.TryFail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                }
+                    _pendingAppendScan.Add(op);
             }
+
+            // TryFail disposes cancellation registrations. Complete outside the queue lock:
+            // an in-flight cancellation callback may be waiting to inspect this queue.
+            foreach (var op in _pendingAppendScan)
+                op.TryFail(new ObjectDisposedException(nameof(RecordAccumulator)));
         }
         finally
         {
+            _pendingAppendScan.Clear();
             Volatile.Write(ref _draining, 0);
         }
 

@@ -671,7 +671,7 @@ public class RecordAccumulatorTests
                 {
                     await disposeTask.WaitAsync(TimeSpan.FromSeconds(5));
                 }
-                catch
+                catch (TimeoutException)
                 {
                     // Preserve the primary test failure while ensuring disposal was observed.
                 }
