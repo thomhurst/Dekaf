@@ -371,6 +371,62 @@ public sealed class ConsumerPauseResumeCacheTests
     }
 
     [Test]
+    public async Task PrefetchDrain_PausePublicationBetweenSamePartitionFetches_PreservesFifo()
+    {
+        var partition = new TopicPartition(PrefetchedTopic, 0);
+        await using var consumer = CreatePrefetchedConsumer();
+        consumer.Assign(partition);
+        var fetchPositions = (ConcurrentDictionary<TopicPartition, long>)
+            GetField("_fetchPositions").GetValue(consumer)!;
+        fetchPositions[partition] = 0;
+        var enqueue = typeof(KafkaConsumer<string, string>).GetMethod(
+            "EnqueuePendingFetch",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("EnqueuePendingFetch method not found");
+        var prepare = typeof(KafkaConsumer<string, string>).GetMethod(
+            "PreparePendingFetchesForDelivery",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("PreparePendingFetchesForDelivery method not found");
+
+        enqueue.Invoke(consumer, [CreatePendingFetch(partition, 10, 1)]);
+        consumer.Pause(partition);
+        enqueue.Invoke(consumer, [CreatePendingFetch(partition, 20, 1)]);
+        consumer.Resume(partition);
+        prepare.Invoke(consumer, null);
+
+        var active = (Queue<PendingFetchData>)GetField("_pendingFetches").GetValue(consumer)!;
+        var ordered = active.ToArray();
+        await Assert.That(ordered).Count().IsEqualTo(2);
+        await Assert.That(ordered[0].GetBatches()[0].BaseOffset).IsEqualTo(10L);
+        await Assert.That(ordered[1].GetBatches()[0].BaseOffset).IsEqualTo(20L);
+    }
+
+    [Test]
+    public async Task BatchIteration_UnassignedPartitionWithStalePause_IsStoppedNotPaused()
+    {
+        var partition = new TopicPartition(PrefetchedTopic, 0);
+        await using var consumer = CreatePrefetchedConsumer(CreatePendingFetch(partition, 10, 1));
+        consumer.Pause(partition);
+        var assignment = (HashSet<TopicPartition>)GetField("_assignment").GetValue(consumer)!;
+        assignment.Remove(partition);
+        var publishAssignment = typeof(KafkaConsumer<string, string>).GetMethod(
+            "PublishAssignmentSnapshot",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("PublishAssignmentSnapshot method not found");
+        publishAssignment.Invoke(consumer, null);
+        var canContinue = typeof(KafkaConsumer<string, string>).GetMethod(
+            "CanContinueBatchIterationWithPause",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("CanContinueBatchIterationWithPause method not found");
+        object?[] arguments = [partition, false];
+
+        var result = (bool)canContinue.Invoke(consumer, arguments)!;
+
+        await Assert.That(result).IsFalse();
+        await Assert.That((bool)arguments[1]!).IsFalse();
+    }
+
+    [Test]
     public async Task ConsumeAsync_PauseDuringDeserialization_ReplaysSuppressedRecordAfterResume()
     {
         var pausedPartition = new TopicPartition(PrefetchedTopic, 0);
@@ -460,6 +516,7 @@ public sealed class ConsumerPauseResumeCacheTests
         await Assert.That(resumed!.Value.Topic).IsEqualTo(partition.Topic);
         await Assert.That(resumed.Value.Partition).IsEqualTo(partition.Partition);
         await Assert.That(resumed.Value.Offset).IsEqualTo(10);
+        await Assert.That(pausedDirectFetchCancellationSource.GetValue(consumer)).IsNull();
     }
 
     [Test]
@@ -488,6 +545,27 @@ public sealed class ConsumerPauseResumeCacheTests
         await Assert.That(resumed!.Value.Topic).IsEqualTo(pausedPartition.Topic);
         await Assert.That(resumed.Value.Partition).IsEqualTo(pausedPartition.Partition);
         await Assert.That(resumed.Value.Offset).IsEqualTo(10);
+    }
+
+    [Test]
+    public async Task ConsumeOneBuffered_PausedHeadContinuesToActiveFetchSynchronously()
+    {
+        var pausedPartition = new TopicPartition(PrefetchedTopic, 0);
+        var activePartition = new TopicPartition(PrefetchedTopic, 1);
+        KafkaConsumer<string, string>? consumer = null;
+        var deserializer = new CallbackOnceDeserializer(() => consumer!.Pause(pausedPartition));
+        var createdConsumer = CreatePrefetchedConsumer(
+            deserializer,
+            CreatePendingFetch(pausedPartition, 10, 1),
+            CreatePendingFetch(activePartition, 20, 1));
+        consumer = createdConsumer;
+        await using var ownedConsumer = createdConsumer;
+
+        var consumed = TryConsumeOneFromPendingFetches(createdConsumer, out var result);
+
+        await Assert.That(consumed).IsTrue();
+        await Assert.That(result.Partition).IsEqualTo(activePartition.Partition);
+        await Assert.That(result.Offset).IsEqualTo(20L);
     }
 
     [Test]
@@ -548,6 +626,27 @@ public sealed class ConsumerPauseResumeCacheTests
         await Assert.That(resumed!.Value.Topic).IsEqualTo(pausedPartition.Topic);
         await Assert.That(resumed.Value.Partition).IsEqualTo(pausedPartition.Partition);
         await Assert.That(resumed.Value.Offset).IsEqualTo(10);
+    }
+
+    [Test]
+    public async Task ConsumeOneBuffered_PausedHeadContinuesToActiveFetchWithAsyncDeserializer()
+    {
+        var pausedPartition = new TopicPartition(PrefetchedTopic, 0);
+        var activePartition = new TopicPartition(PrefetchedTopic, 1);
+        KafkaConsumer<string, string>? consumer = null;
+        var deserializer = new AsyncCallbackOnceDeserializer(() => consumer!.Pause(pausedPartition));
+        var createdConsumer = CreatePrefetchedConsumer(
+            deserializer,
+            CreatePendingFetch(pausedPartition, 10, 1),
+            CreatePendingFetch(activePartition, 20, 1));
+        consumer = createdConsumer;
+        await using var ownedConsumer = createdConsumer;
+
+        var result = await ConsumeOneFromPendingFetchesAsync(createdConsumer);
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(result!.Value.Partition).IsEqualTo(activePartition.Partition);
+        await Assert.That(result.Value.Offset).IsEqualTo(20L);
     }
 
     [Test]
@@ -883,6 +982,34 @@ public sealed class ConsumerPauseResumeCacheTests
     private static FieldInfo GetField(string name) =>
         typeof(KafkaConsumer<string, string>).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)
         ?? throw new InvalidOperationException($"{name} field not found");
+
+    private static bool TryConsumeOneFromPendingFetches(
+        KafkaConsumer<string, string> consumer,
+        out ConsumeResult<string, string> result)
+    {
+        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+            "TryConsumeOneFromPendingFetches",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("TryConsumeOneFromPendingFetches method not found");
+        object?[] arguments = [null];
+        var consumed = (bool)method.Invoke(consumer, arguments)!;
+        result = arguments[0] is ConsumeResult<string, string> consumeResult
+            ? consumeResult
+            : default;
+        return consumed;
+    }
+
+    private static ValueTask<ConsumeResult<string, string>?> ConsumeOneFromPendingFetchesAsync(
+        KafkaConsumer<string, string> consumer)
+    {
+        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+            "ConsumeOneFromPendingFetchesAsync",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("ConsumeOneFromPendingFetchesAsync method not found");
+        return (ValueTask<ConsumeResult<string, string>?>)method.Invoke(
+            consumer,
+            [CancellationToken.None])!;
+    }
 
     private static MetadataManager CreateMetadataManager(IConnectionPool pool)
         => CreateMetadataManager(

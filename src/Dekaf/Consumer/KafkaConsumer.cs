@@ -1198,6 +1198,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private int _lastCoordinatorAssignmentVersion = -1;
     // Deterministic test seam for assignment/revocation snapshot races.
     internal Action? BeforeCoordinatorAssignmentSnapshotForTest { get; set; }
+    // Foreground-applied pause state. Keep at the cold field tail so the normal consume layout
+    // remains stable; only queue admission/reconciliation reads or writes it.
+    private TopicPartitionSet _deliveryPausedSnapshot = new HashSet<TopicPartition>();
+    // Prevent Resume from cancelling a pooled CTS after it has been returned and re-rented.
+    private readonly object _pausedDirectFetchCancellationSourceLock = new();
 
     private static readonly long s_preferredReadReplicaMaxAgeTimestampDelta =
         (long)(TimeSpan.FromMinutes(5).TotalSeconds * Stopwatch.Frequency);
@@ -4481,6 +4486,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
             System.Diagnostics.Activity? activity = null;
             var pendingDisposed = false;
+            var pendingRemoved = false;
             try
             {
                 while (true)
@@ -4554,8 +4560,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         if (iterationStatus != RecordIterationStatus.Continue)
                         {
                             var pausedDuringDelivery = iterationStatus == RecordIterationStatus.Paused;
-                            StopConsumeOneDelivery(pending, pausedDuringDelivery);
-                            return false;
+                            pendingRemoved = StopConsumeOneDelivery(pending, pausedDuringDelivery);
+                            break;
                         }
 
                         if (hasInterceptors)
@@ -4573,8 +4579,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             if (iterationStatus != RecordIterationStatus.Continue)
                             {
                                 var pausedDuringDelivery = iterationStatus == RecordIterationStatus.Paused;
-                                StopConsumeOneDelivery(pending, pausedDuringDelivery);
-                                return false;
+                                pendingRemoved = StopConsumeOneDelivery(pending, pausedDuringDelivery);
+                                break;
                             }
                         }
 
@@ -4611,7 +4617,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 activity?.Dispose();
             }
 
-            if (pendingDisposed)
+            if (pendingDisposed || pendingRemoved)
                 continue;
 
             FlushConsumedPositions(pending);
@@ -4666,6 +4672,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
             System.Diagnostics.Activity? activity = null;
             var pendingDisposed = false;
+            var pendingRemoved = false;
             try
             {
                 while (true)
@@ -4734,8 +4741,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         if (iterationStatus != RecordIterationStatus.Continue)
                         {
                             var pausedDuringDelivery = iterationStatus == RecordIterationStatus.Paused;
-                            StopConsumeOneDelivery(pending, pausedDuringDelivery);
-                            return null;
+                            pendingRemoved = StopConsumeOneDelivery(pending, pausedDuringDelivery);
+                            break;
                         }
 
                         if (hasInterceptors)
@@ -4751,8 +4758,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             if (iterationStatus != RecordIterationStatus.Continue)
                             {
                                 var pausedDuringDelivery = iterationStatus == RecordIterationStatus.Paused;
-                                StopConsumeOneDelivery(pending, pausedDuringDelivery);
-                                return null;
+                                pendingRemoved = StopConsumeOneDelivery(pending, pausedDuringDelivery);
+                                break;
                             }
                         }
 
@@ -4796,7 +4803,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 activity?.Dispose();
             }
 
-            if (pendingDisposed)
+            if (pendingDisposed || pendingRemoved)
                 continue;
 
             FlushConsumedPositions(pending);
@@ -5466,7 +5473,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private void EnqueuePendingFetch(PendingFetchData pending)
     {
-        if (_pausedSnapshot.Contains(pending.TopicPartition))
+        // Route from the foreground-applied snapshot, not the concurrently published one.
+        // A publication that splits a multi-item drain is reconciled afterward as one ordered
+        // queue transition, preserving per-partition FIFO across the pause boundary.
+        if (_deliveryPausedSnapshot.Contains(pending.TopicPartition))
             _pausedPendingFetches.Enqueue(pending);
         else
             _pendingFetches.Enqueue(pending);
@@ -5557,6 +5567,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 _pendingFetches.Enqueue(_pendingFetches.Dequeue());
         }
 
+        _deliveryPausedSnapshot = paused;
         _observedPausedSnapshotVersion = pausedSnapshotVersion;
     }
 
@@ -5639,14 +5650,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private void StopConsumeOneDelivery(PendingFetchData pending, bool paused)
+    private bool StopConsumeOneDelivery(PendingFetchData pending, bool paused)
     {
         HandleStoppedRecordIteration(pending.TopicPartition, paused);
         if (!paused)
-            return;
+        {
+            return _pendingFetches.Count == 0
+                   || !ReferenceEquals(_pendingFetches.Peek(), pending);
+        }
 
         pending.BufferCurrentForRedelivery();
         MovePendingFetchToPaused(pending);
+        return true;
     }
 
     private void StagePendingFetchClear(TopicPartition partition)
@@ -5718,6 +5733,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (removeSet.Count == 0)
             return;
 
+        // Freeze pause routing for this ordered drain. A concurrent Pause/Resume is
+        // reconciled at the next delivery boundary instead of splitting retained
+        // fetches between the active and paused queues.
+        PreparePendingFetchesForDelivery();
+
         foreach (var partition in removeSet)
         {
             ClearActiveConsumedPosition(partition);
@@ -5780,7 +5800,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // Without this, stale data from revoked partitions sitting in the prefetch
         // buffer would be consumed after an incremental unassign (cooperative rebalance),
         // causing data for partitions no longer owned by this consumer to be yielded.
-        DrainPrefetchBufferForPartitions(removeSet);
+        DrainPrefetchBufferForPartitionsCore(removeSet);
 
         ClearPendingEofEventsForPartitions(removeSet);
     }
@@ -6121,8 +6141,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             return false;
         }
 
+        if (!IsCurrentlyAssigned(partition))
+        {
+            paused = false;
+            return false;
+        }
+
         paused = _pausedSnapshot.Contains(partition);
-        return !paused && IsCurrentlyAssigned(partition);
+        return !paused;
     }
 
     private bool IsFetchBufferEpochStale(TopicPartition partition, int fetchBufferEpoch) =>
@@ -6205,6 +6231,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private void DrainPrefetchBufferForPartitions(HashSet<TopicPartition> partitionsToRemove)
     {
+        PreparePendingFetchesForDelivery();
+        DrainPrefetchBufferForPartitionsCore(partitionsToRemove);
+    }
+
+    private void DrainPrefetchBufferForPartitionsCore(HashSet<TopicPartition> partitionsToRemove)
+    {
         // O(n) over the prefetch buffer is acceptable on this infrequent rebalance path.
         while (_prefetchBuffer.TryRead(out var prefetched))
         {
@@ -6262,12 +6294,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private void WakePausedDirectFetch()
     {
-        var consumeCts = Volatile.Read(ref _pausedDirectFetchCancellationSource);
-        if (consumeCts is null)
-            return;
-
-        try { consumeCts.Cancel(); }
-        catch (ObjectDisposedException) { return; }
+        lock (_pausedDirectFetchCancellationSourceLock)
+        {
+            _pausedDirectFetchCancellationSource?.Cancel();
+        }
     }
 
     private void CancelActiveConsumeOperations()
@@ -7218,7 +7248,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         finally
         {
             _activeConsumeCancellationSources.TryRemove(consumeCts, out _);
-            consumeCts.Dispose();
+            lock (_pausedDirectFetchCancellationSourceLock)
+            {
+                if (ReferenceEquals(_pausedDirectFetchCancellationSource, consumeCts))
+                    _pausedDirectFetchCancellationSource = null;
+
+                consumeCts.Dispose();
+            }
             _coordinator?.EndForegroundPollActivity();
         }
     }
@@ -7228,31 +7264,25 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         CancellationTokenSource consumeCts,
         CancellationToken cancellationToken)
     {
-        Volatile.Write(ref _pausedDirectFetchCancellationSource, consumeCts);
+        lock (_pausedDirectFetchCancellationSourceLock)
+        {
+            _pausedDirectFetchCancellationSource = consumeCts;
+        }
+
+        // Resume may publish before the waiter is visible. The version check closes
+        // that race; a later Resume cancels consumeCts through the published field.
+        if (Volatile.Read(ref _pausedSnapshotVersion) != pausedSnapshotVersion)
+            return;
+
         try
         {
-            // Resume may publish before the waiter is visible. The version check closes
-            // that race; a later Resume cancels consumeCts through the published field.
-            if (Volatile.Read(ref _pausedSnapshotVersion) != pausedSnapshotVersion)
-                return;
-
-            try
-            {
-                await Task.Delay(AllPartitionsPausedDelayMs, consumeCts.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (
-                !cancellationToken.IsCancellationRequested
-                && Volatile.Read(ref _pausedSnapshotVersion) != pausedSnapshotVersion)
-            {
-                // Resume is a control-plane wake, not caller cancellation.
-            }
+            await Task.Delay(AllPartitionsPausedDelayMs, consumeCts.Token).ConfigureAwait(false);
         }
-        finally
+        catch (OperationCanceledException) when (
+            !cancellationToken.IsCancellationRequested
+            && Volatile.Read(ref _pausedSnapshotVersion) != pausedSnapshotVersion)
         {
-            Interlocked.CompareExchange(
-                ref _pausedDirectFetchCancellationSource,
-                null,
-                consumeCts);
+            // Resume is a control-plane wake, not caller cancellation.
         }
     }
 
