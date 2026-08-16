@@ -441,6 +441,24 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
             case List<Guid?> values: WriteNullableUnionList<Guid, GuidValueWriter>(schema, values, encoder); return true;
             case List<global::Avro.AvroDecimal> values: WriteUnionList<global::Avro.AvroDecimal, DecimalValueWriter>(schema, values, encoder); return true;
             case List<global::Avro.AvroDecimal?> values: WriteNullableUnionList<global::Avro.AvroDecimal, DecimalValueWriter>(schema, values, encoder); return true;
+            case IList<bool> values: WriteUnionList<bool, BooleanValueWriter>(schema, values, encoder); return true;
+            case IList<bool?> values: WriteNullableUnionList<bool, BooleanValueWriter>(schema, values, encoder); return true;
+            case IList<int> values: WriteUnionList<int, IntValueWriter>(schema, values, encoder); return true;
+            case IList<int?> values: WriteNullableUnionList<int, IntValueWriter>(schema, values, encoder); return true;
+            case IList<long> values: WriteUnionList<long, LongValueWriter>(schema, values, encoder); return true;
+            case IList<long?> values: WriteNullableUnionList<long, LongValueWriter>(schema, values, encoder); return true;
+            case IList<float> values: WriteUnionList<float, FloatValueWriter>(schema, values, encoder); return true;
+            case IList<float?> values: WriteNullableUnionList<float, FloatValueWriter>(schema, values, encoder); return true;
+            case IList<double> values: WriteUnionList<double, DoubleValueWriter>(schema, values, encoder); return true;
+            case IList<double?> values: WriteNullableUnionList<double, DoubleValueWriter>(schema, values, encoder); return true;
+            case IList<DateTime> values: WriteUnionList<DateTime, DateTimeValueWriter>(schema, values, encoder); return true;
+            case IList<DateTime?> values: WriteNullableUnionList<DateTime, DateTimeValueWriter>(schema, values, encoder); return true;
+            case IList<TimeSpan> values: WriteUnionList<TimeSpan, TimeSpanValueWriter>(schema, values, encoder); return true;
+            case IList<TimeSpan?> values: WriteNullableUnionList<TimeSpan, TimeSpanValueWriter>(schema, values, encoder); return true;
+            case IList<Guid> values: WriteUnionList<Guid, GuidValueWriter>(schema, values, encoder); return true;
+            case IList<Guid?> values: WriteNullableUnionList<Guid, GuidValueWriter>(schema, values, encoder); return true;
+            case IList<global::Avro.AvroDecimal> values: WriteUnionList<global::Avro.AvroDecimal, DecimalValueWriter>(schema, values, encoder); return true;
+            case IList<global::Avro.AvroDecimal?> values: WriteNullableUnionList<global::Avro.AvroDecimal, DecimalValueWriter>(schema, values, encoder); return true;
             default: return false;
         }
     }
@@ -505,6 +523,47 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
     private static void WriteNullableUnionList<T, TWriter>(
         global::Avro.UnionSchema schema,
         List<T?> values,
+        AllocationFreeBinaryEncoder encoder)
+        where T : struct
+        where TWriter : struct, IValueWriter<T>
+    {
+        FindUnionBranches<T, TWriter>(schema, out var nullIndex, out var valueIndex, out var valueSchema);
+        for (var i = 0; i < values.Count; i++)
+        {
+            encoder.StartItem();
+            var value = values[i];
+            if (!value.HasValue)
+            {
+                if (nullIndex < 0)
+                    throw TypeMismatch(null, "union");
+                encoder.WriteUnionIndex(nullIndex);
+                continue;
+            }
+
+            encoder.WriteUnionIndex(valueIndex);
+            TWriter.Write(valueSchema, value.GetValueOrDefault(), encoder);
+        }
+    }
+
+    private static void WriteUnionList<T, TWriter>(
+        global::Avro.UnionSchema schema,
+        IList<T> values,
+        AllocationFreeBinaryEncoder encoder)
+        where T : struct
+        where TWriter : struct, IValueWriter<T>
+    {
+        FindUnionBranches<T, TWriter>(schema, out _, out var valueIndex, out var valueSchema);
+        for (var i = 0; i < values.Count; i++)
+        {
+            encoder.StartItem();
+            encoder.WriteUnionIndex(valueIndex);
+            TWriter.Write(valueSchema, values[i], encoder);
+        }
+    }
+
+    private static void WriteNullableUnionList<T, TWriter>(
+        global::Avro.UnionSchema schema,
+        IList<T?> values,
         AllocationFreeBinaryEncoder encoder)
         where T : struct
         where TWriter : struct, IValueWriter<T>

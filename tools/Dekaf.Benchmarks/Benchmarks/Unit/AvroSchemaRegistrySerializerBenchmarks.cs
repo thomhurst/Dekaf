@@ -1,5 +1,7 @@
 using System.Buffers;
+using System.Collections.ObjectModel;
 using Avro.Generic;
+using Avro.Specific;
 using BenchmarkDotNet.Attributes;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Avro;
@@ -49,9 +51,12 @@ public class AvroSchemaRegistrySerializerBenchmarks
         """;
 
     private AvroSchemaRegistrySerializer<GenericRecord> _serializer = null!;
+    private AvroSchemaRegistrySerializer<SpecificBenchmarkRecord> _specificSerializer = null!;
     private GenericRecord[] _equivalentRecords = null!;
     private GenericRecord _intRecord = null!;
     private GenericRecord _nullableIntArrayRecord = null!;
+    private GenericRecord _nullableIntCollectionRecord = null!;
+    private SpecificBenchmarkRecord _specificRecord = null!;
     private ArrayBufferWriter<byte> _serializeBuffer = null!;
     private GenericRecord _stableRecord = null!;
     private SerializationContext _context;
@@ -61,6 +66,8 @@ public class AvroSchemaRegistrySerializerBenchmarks
     public void Setup()
     {
         _serializer = new AvroSchemaRegistrySerializer<GenericRecord>(new BenchmarkSchemaRegistryClient());
+        _specificSerializer = new AvroSchemaRegistrySerializer<SpecificBenchmarkRecord>(
+            new BenchmarkSchemaRegistryClient());
         _context = new SerializationContext
         {
             Topic = "avro-benchmark",
@@ -74,16 +81,24 @@ public class AvroSchemaRegistrySerializerBenchmarks
         _stableRecord = _equivalentRecords[0];
         _intRecord = CreateIntRecord();
         _nullableIntArrayRecord = CreateNullableIntArrayRecord();
+        _nullableIntCollectionRecord = CreateNullableIntCollectionRecord();
+        _specificRecord = new SpecificBenchmarkRecord { Id = 42, Name = "benchmark" };
         _serializeBuffer = new ArrayBufferWriter<byte>();
         _serializer.Serialize(_stableRecord, ref _serializeBuffer, _context);
         _serializeBuffer.ResetWrittenCount();
         _serializer.Serialize(_intRecord, ref _serializeBuffer, _context);
         _serializeBuffer.ResetWrittenCount();
         _serializer.Serialize(_nullableIntArrayRecord, ref _serializeBuffer, _context);
+        _serializeBuffer.ResetWrittenCount();
+        _specificSerializer.Serialize(_specificRecord, ref _serializeBuffer, _context);
     }
 
     [GlobalCleanup]
-    public ValueTask Cleanup() => _serializer.DisposeAsync();
+    public async ValueTask Cleanup()
+    {
+        await _serializer.DisposeAsync().ConfigureAwait(false);
+        await _specificSerializer.DisposeAsync().ConfigureAwait(false);
+    }
 
     [Benchmark(Baseline = true, Description = "Prepare stable generic Avro schema")]
     public ValueTask PrepareStableSchema() => _serializer.PrepareAsync(_stableRecord, _context);
@@ -116,6 +131,20 @@ public class AvroSchemaRegistrySerializerBenchmarks
         _serializer.Serialize(_nullableIntArrayRecord, ref _serializeBuffer, _context);
     }
 
+    [Benchmark(Description = "Serialize nullable-int Collection<T> generic Avro record")]
+    public void SerializeNullableIntCollectionRecord()
+    {
+        _serializeBuffer.ResetWrittenCount();
+        _serializer.Serialize(_nullableIntCollectionRecord, ref _serializeBuffer, _context);
+    }
+
+    [Benchmark(Description = "Serialize prepared SpecificRecord")]
+    public void SerializeSpecificRecord()
+    {
+        _serializeBuffer.ResetWrittenCount();
+        _specificSerializer.Serialize(_specificRecord, ref _serializeBuffer, _context);
+    }
+
     private static GenericRecord CreateRecord(int id)
     {
         var schema = (Avro.RecordSchema)AvroSchema.Parse(RecordSchema);
@@ -139,6 +168,35 @@ public class AvroSchemaRegistrySerializerBenchmarks
         var record = new GenericRecord(schema);
         record.Add("values", new int?[] { int.MinValue, null, -1, 0, 1, null, int.MaxValue });
         return record;
+    }
+
+    private static GenericRecord CreateNullableIntCollectionRecord()
+    {
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(NullableIntArraySchema);
+        var record = new GenericRecord(schema);
+        record.Add(
+            "values",
+            new Collection<int?>([int.MinValue, null, -1, 0, 1, null, int.MaxValue]));
+        return record;
+    }
+
+    private sealed class SpecificBenchmarkRecord : ISpecificRecord
+    {
+        public static readonly AvroSchema _SCHEMA = AvroSchema.Parse(RecordSchema);
+
+        public int Id { get; init; }
+        public string Name { get; init; } = string.Empty;
+        public AvroSchema Schema => _SCHEMA;
+
+        public object Get(int fieldPos) => fieldPos switch
+        {
+            0 => Id,
+            1 => Name,
+            _ => throw new ArgumentOutOfRangeException(nameof(fieldPos))
+        };
+
+        public void Put(int fieldPos, object fieldValue) =>
+            throw new NotSupportedException();
     }
 
     private sealed class BenchmarkSchemaRegistryClient : ISchemaRegistryClient
