@@ -6108,10 +6108,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private bool CanContinueBatchIterationWithPause(TopicPartition partition, out bool paused)
     {
+        if (HasPendingFetchClear(partition))
+        {
+            paused = false;
+            return false;
+        }
+
         paused = _pausedSnapshot.Contains(partition);
-        return !HasPendingFetchClear(partition)
-            && !paused
-            && IsCurrentlyAssigned(partition);
+        return !paused && IsCurrentlyAssigned(partition);
     }
 
     private bool IsFetchBufferEpochStale(TopicPartition partition, int fetchBufferEpoch) =>
@@ -7276,11 +7280,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// </summary>
     private void PublishPausedSnapshot()
     {
-        var snapshot = _paused.Keys.ToHashSet();
         _batchIterationEpoch.BeginPublication();
         try
         {
-            _pausedSnapshot = snapshot;
+            _pausedSnapshot = _paused.Keys.ToHashSet();
             Interlocked.Increment(ref _pausedSnapshotVersion);
         }
         finally

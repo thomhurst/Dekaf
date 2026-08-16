@@ -79,6 +79,87 @@ public sealed class ConsumerPauseResumeCacheTests
     }
 
     [Test]
+    public async Task PauseSnapshot_CapturesMutationAfterWaitingForPublication()
+    {
+        var partition0 = new TopicPartition("topic-a", 0);
+        var partition1 = new TopicPartition("topic-a", 1);
+        var pool = Substitute.For<IConnectionPool>();
+
+        await using var metadataManager = CreateMetadataManager(pool);
+        await using var consumer = CreateConsumer(pool, metadataManager);
+        consumer.Assign(partition0, partition1);
+        var paused = (ConcurrentDictionary<TopicPartition, byte>)GetField("_paused").GetValue(consumer)!;
+        var epoch = (BatchIterationEpoch)GetField("_batchIterationEpoch").GetValue(consumer)!;
+        Exception? publisherFailure = null;
+        var publisher = new Thread(() =>
+        {
+            try
+            {
+                consumer.Pause(partition0);
+            }
+            catch (Exception exception)
+            {
+                publisherFailure = exception;
+            }
+        })
+        {
+            IsBackground = true
+        };
+
+        bool publisherWaiting;
+        epoch.BeginPublication();
+        try
+        {
+            publisher.Start();
+            publisherWaiting = SpinWait.SpinUntil(
+                () => paused.ContainsKey(partition0)
+                    && (publisher.ThreadState & ThreadState.WaitSleepJoin) != 0,
+                TimeSpan.FromSeconds(5));
+            paused.TryAdd(partition1, 0);
+        }
+        finally
+        {
+            epoch.EndPublication();
+        }
+
+        var publisherCompleted = publisher.Join(TimeSpan.FromSeconds(5));
+        var snapshot = (HashSet<TopicPartition>)GetField("_pausedSnapshot").GetValue(consumer)!;
+
+        await Assert.That(publisherWaiting).IsTrue();
+        await Assert.That(publisherCompleted).IsTrue();
+        await Assert.That(publisherFailure).IsNull();
+        await Assert.That(snapshot.Contains(partition0)).IsTrue();
+        await Assert.That(snapshot.Contains(partition1)).IsTrue();
+    }
+
+    [Test]
+    public async Task PausedPartition_WithPendingClear_UsesDiscardPriority()
+    {
+        var partition = new TopicPartition("topic-a", 0);
+        var pool = Substitute.For<IConnectionPool>();
+
+        await using var metadataManager = CreateMetadataManager(pool);
+        await using var consumer = CreateConsumer(pool, metadataManager);
+        consumer.Assign(partition);
+        consumer.Pause(partition);
+        var stagePendingClear = typeof(KafkaConsumer<string, string>).GetMethod(
+            "StagePendingFetchClear",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("StagePendingFetchClear method not found");
+        var canContinueWithPause = typeof(KafkaConsumer<string, string>).GetMethod(
+            "CanContinueBatchIterationWithPause",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("CanContinueBatchIterationWithPause method not found");
+        stagePendingClear.Invoke(consumer, [partition]);
+        object?[] arguments = [partition, false];
+
+        var canContinue = (bool)canContinueWithPause.Invoke(consumer, arguments)!;
+
+        await Assert.That(canContinue).IsFalse();
+        await Assert.That((bool)arguments[1]!).IsFalse();
+    }
+
+    [Test]
     public async Task PauseResume_UpdatesPartitionBrokerCacheIncrementally()
     {
         var partition0 = new TopicPartition("topic-a", 0);
