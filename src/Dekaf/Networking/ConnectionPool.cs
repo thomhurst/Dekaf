@@ -1898,6 +1898,16 @@ public sealed partial class ConnectionPool :
             if (_connectionsByEndpoint.TryGetValue(endpointKey, out var connection))
                 AccumulateConnectionStatus(connection, ref connections);
             _endpointConnectionRuntimeStates.TryGetValue(endpointKey, out var runtimeState);
+            if (endpoint.ConnectionHost is { } connectionHost &&
+                (endpoint.Port != endpoint.ConnectionPort ||
+                 !string.Equals(endpoint.Host, connectionHost, StringComparison.OrdinalIgnoreCase)))
+            {
+                var connectionEndpointKey = new EndpointKey(connectionHost, endpoint.ConnectionPort);
+                if (_connectionsByEndpoint.TryGetValue(connectionEndpointKey, out connection))
+                    AccumulateConnectionStatus(connection, ref connections);
+                if (runtimeState is null)
+                    _endpointConnectionRuntimeStates.TryGetValue(connectionEndpointKey, out runtimeState);
+            }
             result.Add(CreateBrokerConnectionStatus(
                 new BrokerInfo(endpoint.NodeId, endpoint.Host, endpoint.Port),
                 ref connections,

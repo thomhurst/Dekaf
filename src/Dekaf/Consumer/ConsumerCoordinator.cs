@@ -1922,10 +1922,19 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     _state = CoordinatorState.Joining;
                     LogCoordinatorStateTransition(CoordinatorState.Joining);
 
-                    heartbeatResult = await SendConsumerGroupHeartbeatAsync(
-                        isInitial: _memberId is null || _generationId <= 0,
-                        discardIfMembershipChanged: false,
-                        cancellationToken).ConfigureAwait(false);
+                    try
+                    {
+                        heartbeatResult = await SendConsumerGroupHeartbeatAsync(
+                            isInitial: _memberId is null || _generationId <= 0,
+                            discardIfMembershipChanged: false,
+                            cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (Exception ex) when (
+                        ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+                    {
+                        Volatile.Write(ref _lastHeartbeatFailure, ex.Message);
+                        throw;
+                    }
 
                     _state = CoordinatorState.Stable;
                     if (Volatile.Read(ref _foregroundPollActivityCount) != 0)

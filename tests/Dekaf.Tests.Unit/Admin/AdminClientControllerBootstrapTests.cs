@@ -1,4 +1,5 @@
 using Dekaf.Admin;
+using Dekaf.Diagnostics;
 using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
@@ -16,14 +17,16 @@ public sealed class AdminClientControllerBootstrapTests
         await using var context = new ControllerAdminContext();
 
         var result = await context.Client.DescribeClusterAsync();
-        _ = await context.Pool.GetConnectionAsync("controller-2", 19094);
         var status = context.Client.GetStatus();
+        var activeControllerStatus = status.Brokers.Single(static broker => broker.BrokerId == 2);
 
         await Assert.That(result.ClusterId).IsEqualTo("cluster-a");
         await Assert.That(context.Client.ClusterId).IsEqualTo("cluster-a");
         await Assert.That(status.ClusterId).IsEqualTo("cluster-a");
         await Assert.That(status.MetadataLastRefreshedAtUtc).IsNotNull();
         await Assert.That(status.Brokers.Select(static broker => broker.BrokerId)).IsEquivalentTo([1, 2]);
+        await Assert.That(activeControllerStatus.State).IsEqualTo(BrokerConnectionState.Connected);
+        await Assert.That(activeControllerStatus.ConnectionCount).IsEqualTo(1);
         await Assert.That(result.ControllerId).IsEqualTo(2);
         await Assert.That(result.Nodes.Select(static node => node.NodeId)).IsEquivalentTo([1, 2]);
         await Assert.That(async () => { _ = await context.Pool.GetConnectionAsync(1); })

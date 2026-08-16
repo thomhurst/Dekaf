@@ -81,7 +81,12 @@ internal interface IConnectionPoolStatusSource
     void UpdateBrokerStatusSnapshot(int[] brokerIds);
 }
 
-internal readonly record struct ConnectionStatusEndpoint(int NodeId, string Host, int Port);
+internal readonly record struct ConnectionStatusEndpoint(
+    int NodeId,
+    string Host,
+    int Port,
+    string? ConnectionHost = null,
+    int ConnectionPort = 0);
 
 internal interface IConnectionCapabilityObserverPool
 {

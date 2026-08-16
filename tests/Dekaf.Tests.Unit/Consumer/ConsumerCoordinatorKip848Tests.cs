@@ -323,6 +323,8 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
                 await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None))
             .Throws<BrokerVersionException>()
             .WithMessageContaining("Kafka 4.0");
+        await Assert.That(coordinator.CaptureGroupStatus().LastHeartbeatFailure)
+            .Contains("Kafka 4.0");
 
         await noHeartbeatManager.DisposeAsync();
     }

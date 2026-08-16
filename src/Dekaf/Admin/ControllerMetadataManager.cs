@@ -115,6 +115,12 @@ internal sealed class ControllerMetadataManager : IDisposable
                             response.ClusterId,
                             response.ControllerId,
                             controllers,
+                            endpoint with
+                            {
+                                NodeId = endpoint.NodeId >= 0
+                                    ? endpoint.NodeId
+                                    : response.ControllerId
+                            },
                             DateTimeOffset.UtcNow));
                     return;
                 }
@@ -278,9 +284,15 @@ internal sealed record ControllerMetadataSnapshot(
     string? ClusterId,
     int ActiveControllerId,
     IReadOnlyDictionary<int, ControllerEndpoint> Controllers,
+    ControllerEndpoint? DiscoveryConnection,
     DateTimeOffset LastRefreshed)
 {
-    internal static ControllerMetadataSnapshot Empty { get; } = new(null, -1, new Dictionary<int, ControllerEndpoint>(), default);
+    internal static ControllerMetadataSnapshot Empty { get; } = new(
+        null,
+        -1,
+        new Dictionary<int, ControllerEndpoint>(),
+        null,
+        default);
 }
 
 internal sealed record ControllerEndpoint(int NodeId, string Host, int Port, string? Rack);

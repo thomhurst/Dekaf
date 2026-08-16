@@ -177,7 +177,17 @@ public sealed class AdminClient : IAdminClient, IKafkaClientStatusProvider
             var endpoints = new ConnectionStatusEndpoint[snapshot.Controllers.Count];
             var index = 0;
             foreach (var endpoint in snapshot.Controllers.Values)
-                endpoints[index++] = new ConnectionStatusEndpoint(endpoint.NodeId, endpoint.Host, endpoint.Port);
+            {
+                var discoveryConnection = snapshot.DiscoveryConnection;
+                endpoints[index++] = discoveryConnection?.NodeId == endpoint.NodeId
+                    ? new ConnectionStatusEndpoint(
+                        endpoint.NodeId,
+                        endpoint.Host,
+                        endpoint.Port,
+                        discoveryConnection.Host,
+                        discoveryConnection.Port)
+                    : new ConnectionStatusEndpoint(endpoint.NodeId, endpoint.Host, endpoint.Port);
+            }
             brokers = statusSource.GetEndpointConnectionStatus(endpoints);
         }
         return KafkaClientStatusFactory.Capture(
