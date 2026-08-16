@@ -284,6 +284,8 @@ public sealed class SchemaPreparationTests
         try
         {
             await Assert.That(async () => await canceledWaiter).Throws<OperationCanceledException>();
+            await Assert.That(registry.LastGetOrRegisterSchemaCancellationToken.CanBeCanceled).IsTrue();
+            await Assert.That(registry.LastGetOrRegisterSchemaCancellationToken.IsCancellationRequested).IsFalse();
         }
         finally
         {
@@ -292,6 +294,46 @@ public sealed class SchemaPreparationTests
 
         await Assert.That((await successfulWaiter).SchemaId).IsGreaterThan(0);
         await Assert.That(registry.GetOrRegisterSchemaCallCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task Generic_PrepareAsync_UsesIndependentRegistryTimeout()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        registry.BlockNextGetOrRegisterSchema();
+        await using var serializer = CreateGenericSerializer(
+            registry,
+            new Schema { SchemaType = SchemaType.Json, SchemaString = "{}" });
+
+        await AssertRegistryResolutionUsesIndependentTimeoutAsync(registry, serializer, 42);
+    }
+
+    [Test]
+    public async Task Json_PrepareAsync_UsesIndependentRegistryTimeout()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        registry.BlockNextGetOrRegisterSchema();
+        await using var serializer = new JsonSchemaRegistrySerializer<PreparationPayload>(
+            registry,
+            "{\"type\":\"object\"}");
+
+        await AssertRegistryResolutionUsesIndependentTimeoutAsync(
+            registry,
+            serializer,
+            new PreparationPayload { Id = 42 });
+    }
+
+    [Test]
+    public async Task Avro_PrepareAsync_UsesIndependentRegistryTimeout()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        registry.BlockNextGetOrRegisterSchema();
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(registry);
+
+        await AssertRegistryResolutionUsesIndependentTimeoutAsync(
+            registry,
+            serializer,
+            CreateAvroRecord(42));
     }
 
     [Test]
@@ -434,6 +476,32 @@ public sealed class SchemaPreparationTests
                 Topic = "orders",
                 Component = SerializationComponent.Value
             });
+    }
+
+    private static async Task AssertRegistryResolutionUsesIndependentTimeoutAsync<TValue>(
+        MockSchemaRegistryClient registry,
+        IAsyncSerializerPreparer<TValue> serializer,
+        TValue value)
+    {
+        var preparation = serializer.PrepareAsync(
+            value,
+            new SerializationContext
+            {
+                Topic = "orders",
+                Component = SerializationComponent.Value
+            });
+        await registry.WaitForBlockedGetOrRegisterSchemaAsync(TimeSpan.FromSeconds(2));
+
+        try
+        {
+            await Assert.That(registry.LastGetOrRegisterSchemaCancellationToken.CanBeCanceled).IsTrue();
+        }
+        finally
+        {
+            registry.ReleaseBlockedGetOrRegisterSchema();
+        }
+
+        await preparation;
     }
 
     private static void SetField<T>(object target, string name, T value)

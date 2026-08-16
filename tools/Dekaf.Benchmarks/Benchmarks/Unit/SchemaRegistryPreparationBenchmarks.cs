@@ -14,8 +14,8 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 [ShortRunJob]
 public class SchemaRegistryPreparationBenchmarks
 {
-    private ArrayBufferWriter<byte> _genericDestination = new(64);
-    private ArrayBufferWriter<byte> _jsonDestination = new(128);
+    private readonly ArrayBufferWriter<byte> _genericDestination = new(64);
+    private readonly ArrayBufferWriter<byte> _jsonDestination = new(128);
     private SchemaRegistrySerializer<int> _genericSerializer = null!;
     private JsonSchemaRegistrySerializer<BenchmarkPayload> _jsonSerializer = null!;
     private SerializationContext _context;
@@ -51,8 +51,10 @@ public class SchemaRegistryPreparationBenchmarks
 
         await _genericSerializer.PrepareAsync(42, _context).ConfigureAwait(false);
         await _jsonSerializer.PrepareAsync(_jsonValue, _context).ConfigureAwait(false);
-        _genericSerializer.Serialize(42, ref _genericDestination, _context);
-        _jsonSerializer.Serialize(_jsonValue, ref _jsonDestination, _context);
+        var genericDestination = _genericDestination;
+        _genericSerializer.Serialize(42, ref genericDestination, _context);
+        var jsonDestination = _jsonDestination;
+        _jsonSerializer.Serialize(_jsonValue, ref jsonDestination, _context);
     }
 
     [GlobalCleanup]
@@ -69,7 +71,8 @@ public class SchemaRegistryPreparationBenchmarks
     public void SerializeGenericPrepared()
     {
         _genericDestination.Clear();
-        _genericSerializer.Serialize(42, ref _genericDestination, _context);
+        var destination = _genericDestination;
+        _genericSerializer.Serialize(42, ref destination, _context);
     }
 
     [Benchmark]
@@ -79,7 +82,8 @@ public class SchemaRegistryPreparationBenchmarks
     public void SerializeJsonPrepared()
     {
         _jsonDestination.Clear();
-        _jsonSerializer.Serialize(_jsonValue, ref _jsonDestination, _context);
+        var destination = _jsonDestination;
+        _jsonSerializer.Serialize(_jsonValue, ref destination, _context);
     }
 
     private sealed class BenchmarkPayload

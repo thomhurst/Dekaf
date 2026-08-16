@@ -383,7 +383,7 @@ public sealed class JsonSchemaRegistrySerializer<T> :
             _schema,
             this,
             static (serializer, resolvedSubject, schema) =>
-                serializer.FetchSchemaIdAsync(resolvedSubject, schema),
+                serializer.FetchSchemaIdWithTimeoutAsync(resolvedSubject, schema),
             SchemaRegistryTimeout);
 
     private async Task<ResolvedSchemaContext> PrepareCoreAsync(
@@ -397,13 +397,29 @@ public sealed class JsonSchemaRegistrySerializer<T> :
             _schema,
             this,
             static (serializer, resolvedSubject, schema) =>
-                serializer.FetchSchemaIdAsync(resolvedSubject, schema),
+                serializer.FetchSchemaIdWithTimeoutAsync(resolvedSubject, schema),
             cancellationToken).ConfigureAwait(false);
         var entry = _subjectSchemaIdCache.CacheEntry(topic, isKey, subject, schemaId, _schema);
         return ToResolvedContext(entry);
     }
 
-    private async Task<int> FetchSchemaIdAsync(string subject, Schema schema)
+    private async Task<int> FetchSchemaIdWithTimeoutAsync(string subject, Schema schema)
+    {
+        using var timeoutSource = new CancellationTokenSource(SchemaRegistryTimeout);
+        try
+        {
+            return await FetchSchemaIdAsync(subject, schema, timeoutSource.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException exception) when (timeoutSource.IsCancellationRequested)
+        {
+            throw new TimeoutException("Schema Registry resolution timed out.", exception);
+        }
+    }
+
+    private async Task<int> FetchSchemaIdAsync(
+        string subject,
+        Schema schema,
+        CancellationToken cancellationToken)
     {
         if (_autoRegisterSchemas)
         {
@@ -412,16 +428,16 @@ public sealed class JsonSchemaRegistrySerializer<T> :
                     subject,
                     schema,
                     normalize: true,
-                    CancellationToken.None).ConfigureAwait(false)
+                    cancellationToken).ConfigureAwait(false)
                 : await _schemaRegistry.GetOrRegisterSchemaAsync(
                     subject,
                     schema,
-                    CancellationToken.None).ConfigureAwait(false);
+                    cancellationToken).ConfigureAwait(false);
         }
 
         var registered = await _schemaRegistry.GetSchemaBySubjectAsync(
                 subject,
-                cancellationToken: CancellationToken.None)
+                cancellationToken: cancellationToken)
             .ConfigureAwait(false);
         return registered.Id;
     }

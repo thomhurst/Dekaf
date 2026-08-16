@@ -353,7 +353,7 @@ public sealed class AvroSchemaRegistrySerializer<
             schema,
             this,
             static (serializer, resolvedSubject, resolvedSchema) =>
-                serializer.FetchSchemaAsync(resolvedSubject, resolvedSchema),
+                serializer.FetchSchemaWithTimeoutAsync(resolvedSubject, resolvedSchema),
             SchemaRegistryTimeout);
 
     private ValueTask<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> ResolveSchemaAsync(
@@ -365,19 +365,35 @@ public sealed class AvroSchemaRegistrySerializer<
             schema,
             this,
             static (serializer, resolvedSubject, resolvedSchema) =>
-                serializer.FetchSchemaAsync(resolvedSubject, resolvedSchema),
+                serializer.FetchSchemaWithTimeoutAsync(resolvedSubject, resolvedSchema),
             cancellationToken);
+
+    private async Task<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> FetchSchemaWithTimeoutAsync(
+        string subject,
+        RegistrySchema registrySchema)
+    {
+        using var timeoutSource = new CancellationTokenSource(SchemaRegistryTimeout);
+        try
+        {
+            return await FetchSchemaAsync(subject, registrySchema, timeoutSource.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException exception) when (timeoutSource.IsCancellationRequested)
+        {
+            throw new TimeoutException("Schema Registry resolution timed out.", exception);
+        }
+    }
 
     private async Task<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> FetchSchemaAsync(
         string subject,
-        RegistrySchema registrySchema)
+        RegistrySchema registrySchema,
+        CancellationToken cancellationToken)
     {
         if (_config.UseLatestVersion)
         {
             var registered = await _schemaRegistry.GetSchemaBySubjectAsync(
                     subject,
                     "latest",
-                    CancellationToken.None)
+                    cancellationToken)
                 .ConfigureAwait(false);
             return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(
                 registered.Id,
@@ -391,18 +407,18 @@ public sealed class AvroSchemaRegistrySerializer<
                     subject,
                     registrySchema,
                     normalize: true,
-                    CancellationToken.None).ConfigureAwait(false)
+                    cancellationToken).ConfigureAwait(false)
                 : await _schemaRegistry.GetOrRegisterSchemaAsync(
                     subject,
                     registrySchema,
-                    CancellationToken.None).ConfigureAwait(false);
+                    cancellationToken).ConfigureAwait(false);
             return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(schemaId, registrySchema);
         }
 
         var existing = await _schemaRegistry.GetSchemaBySubjectAsync(
                 subject,
                 "latest",
-                CancellationToken.None)
+                cancellationToken)
             .ConfigureAwait(false);
         return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(existing.Id, existing.Schema);
     }

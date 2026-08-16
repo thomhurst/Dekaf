@@ -17,6 +17,7 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
 
     public int GetSchemaCallCount { get; private set; }
     public int GetOrRegisterSchemaCallCount { get; private set; }
+    public CancellationToken LastGetOrRegisterSchemaCancellationToken { get; private set; }
     public int TryGetCachedSchemaCallCount { get; private set; }
     public int GetSchemaFailuresRemaining { get; set; }
     public int GetOrRegisterSchemaFailuresRemaining { get; set; }
@@ -160,6 +161,7 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
     {
         ThrowIfDisposed();
         GetOrRegisterSchemaCallCount++;
+        LastGetOrRegisterSchemaCancellationToken = cancellationToken;
 
         if (_getOrRegisterSchemaRelease is { } release)
         {

@@ -240,7 +240,7 @@ public sealed class ProtobufSchemaRegistrySerializer<
                 resolvedSubject,
                 state.Topic,
                 state.IsKey),
-              timeout);
+            timeout);
 
     private SchemaResolutionScope GetSchemaResolutionScope(string topic, bool isKey) =>
         _config.UseSchemaReferences &&
@@ -555,12 +555,6 @@ public sealed class ProtobufSchemaRegistrySerializer<
     }
 
     private readonly record struct RegisteredDependency(string Subject, int Version);
-
-    private readonly record struct SchemaResolutionState(
-        ProtobufSchemaRegistrySerializer<T> Serializer,
-        string Subject,
-        string Topic,
-        bool IsKey);
 
     private static int[] CalculateMessageIndexes(MessageDescriptor descriptor)
     {
