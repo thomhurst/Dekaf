@@ -13,6 +13,8 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 /// Measures the producer's generic Avro preparation path for stable and equivalent schema instances.
 /// </summary>
 [MemoryDiagnoser(displayGenColumns: false)]
+[MedianColumn]
+[MaxColumn]
 public class AvroSchemaRegistrySerializerBenchmarks
 {
     private const string RecordSchema =
@@ -29,6 +31,7 @@ public class AvroSchemaRegistrySerializerBenchmarks
         """;
 
     private AvroSchemaRegistrySerializer<GenericRecord> _serializer = null!;
+    private GenericRecord[] _distinctRecords = null!;
     private GenericRecord[] _equivalentRecords = null!;
     private GenericRecord _stableRecord = null!;
     private SerializationContext _context;
@@ -49,6 +52,10 @@ public class AvroSchemaRegistrySerializerBenchmarks
             _equivalentRecords[i] = CreateRecord(i);
 
         _stableRecord = _equivalentRecords[0];
+        _distinctRecords = new GenericRecord[64];
+        for (var i = 0; i < _distinctRecords.Length; i++)
+            _distinctRecords[i] = CreateDistinctRecord(i);
+
         var buffer = new ArrayBufferWriter<byte>();
         _serializer.Serialize(_stableRecord, ref buffer, _context);
     }
@@ -66,12 +73,37 @@ public class AvroSchemaRegistrySerializerBenchmarks
         return _serializer.PrepareAsync(_equivalentRecords[_recordIndex], _context);
     }
 
+    [Benchmark(OperationsPerInvoke = 64, Description = "Prepare first-seen generic Avro schema")]
+    public void PrepareDistinctSchemaMisses()
+    {
+        var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(new BenchmarkSchemaRegistryClient());
+        for (var i = 0; i < _distinctRecords.Length; i++)
+            serializer.PrepareAsync(_distinctRecords[i], _context).GetAwaiter().GetResult();
+        serializer.DisposeAsync().GetAwaiter().GetResult();
+    }
+
     private static GenericRecord CreateRecord(int id)
     {
         var schema = (Avro.RecordSchema)AvroSchema.Parse(RecordSchema);
         var record = new GenericRecord(schema);
         record.Add("id", id);
         record.Add("name", "benchmark");
+        return record;
+    }
+
+    private static GenericRecord CreateDistinctRecord(int id)
+    {
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(
+            $$"""
+            {
+              "type": "record",
+              "name": "BenchmarkRecord{{id}}",
+              "namespace": "Dekaf.Benchmarks",
+              "fields": [{ "name": "id", "type": "int" }]
+            }
+            """);
+        var record = new GenericRecord(schema);
+        record.Add("id", id);
         return record;
     }
 

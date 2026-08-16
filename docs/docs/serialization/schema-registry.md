@@ -145,6 +145,22 @@ public class OrderV2
 
 The serializer automatically registers new schema versions and handles compatibility.
 
+For `GenericRecord`, the serializer keys writers, subjects, and schema IDs by the runtime Avro
+schema's logical identity. Equivalent schema instances reuse one cache entry, while different
+versions on the same `TopicName` subject retain their own IDs. Runtime-schema caches are bounded;
+configure the positive limit when applications intentionally produce many distinct schemas:
+
+```csharp
+var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry, new AvroSerializerConfig
+{
+    MaxCachedSchemas = 500 // Default: 1000
+});
+```
+
+After the limit is reached, additional schemas remain correct but are not retained in the shared
+cache. The most recently used schema still has a lock-free reference fast path. Cache entries retain
+schemas and reusable writers, never individual `GenericRecord` values.
+
 ## Subject Naming Strategies
 
 ```csharp

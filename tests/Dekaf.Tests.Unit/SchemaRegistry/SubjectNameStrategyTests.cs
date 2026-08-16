@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Runtime.CompilerServices;
 using Avro.Generic;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Avro;
@@ -177,6 +178,25 @@ public sealed class SubjectNameStrategyTests
     {
         var config = new AvroSerializerConfig();
         await Assert.That(config.AutoRegisterSchemas).IsTrue();
+    }
+
+    [Test]
+    public async Task AvroSerializerConfig_MaxCachedSchemas_DefaultsToOneThousand()
+    {
+        var config = new AvroSerializerConfig();
+        await Assert.That(config.MaxCachedSchemas).IsEqualTo(1000);
+    }
+
+    [Test]
+    [Arguments(0)]
+    [Arguments(-1)]
+    public async Task AvroSerializer_MaxCachedSchemasMustBePositive(int maxCachedSchemas)
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        var config = new AvroSerializerConfig { MaxCachedSchemas = maxCachedSchemas };
+        var create = () => new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry, config);
+
+        await Assert.That(create).Throws<ArgumentOutOfRangeException>();
     }
 
     [Test]
@@ -493,6 +513,84 @@ public sealed class SubjectNameStrategyTests
         await Assert.That(serializer.CachedDynamicSubjectSchemaCount).IsEqualTo(1);
         await Assert.That(serializer.CachedGenericWriterCount).IsEqualTo(1);
         await Assert.That(schemaRegistry.GetOrRegisterSchemaCallCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task AvroSerializer_RuntimeSchemaCaches_StayWithinConfiguredBound()
+    {
+        const int maxCachedSchemas = 4;
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        var config = new AvroSerializerConfig { MaxCachedSchemas = maxCachedSchemas };
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry, config);
+        var context = CreateContext("bounded-topic");
+        var buffer = new ArrayBufferWriter<byte>();
+        GenericRecord? firstRecord = null;
+        var firstSchemaId = 0;
+
+        for (var i = 0; i < 10; i++)
+        {
+            var schema = (Avro.RecordSchema)AvroSchema.Parse(
+                $$"""
+                {
+                  "type": "record",
+                  "name": "BoundedRecord{{i}}",
+                  "namespace": "test",
+                  "fields": [{ "name": "id", "type": "int" }]
+                }
+                """);
+            var record = new GenericRecord(schema);
+            record.Add("id", i);
+            firstRecord ??= record;
+
+            buffer.ResetWrittenCount();
+            serializer.Serialize(record, ref buffer, context);
+            var schemaId = BinaryPrimitives.ReadInt32BigEndian(buffer.WrittenSpan.Slice(1, 4));
+            if (i == 0)
+                firstSchemaId = schemaId;
+        }
+
+        await Assert.That(serializer.CachedDynamicSubjectSchemaCount).IsLessThanOrEqualTo(maxCachedSchemas);
+        await Assert.That(serializer.CachedGenericWriterCount).IsLessThanOrEqualTo(maxCachedSchemas);
+        await Assert.That(serializer.CachedSchemaIdCount).IsEqualTo(maxCachedSchemas);
+        await Assert.That(schemaRegistry.GetOrRegisterSchemaCallCount).IsEqualTo(10);
+
+        buffer.ResetWrittenCount();
+        serializer.Serialize(firstRecord!, ref buffer, context);
+
+        await Assert.That(BinaryPrimitives.ReadInt32BigEndian(buffer.WrittenSpan.Slice(1, 4)))
+            .IsEqualTo(firstSchemaId);
+        await Assert.That(schemaRegistry.GetOrRegisterSchemaCallCount).IsEqualTo(10);
+    }
+
+    [Test]
+    public async Task AvroSerializer_RuntimeSchemaCache_DoesNotRetainRecords()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry);
+        var recordReference = SerializeTransientRecord(serializer, CreateContext("retention-topic"));
+
+        for (var i = 0; i < 3; i++)
+        {
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+        }
+
+        await Assert.That(recordReference.TryGetTarget(out _)).IsFalse();
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static WeakReference<GenericRecord> SerializeTransientRecord(
+        AvroSchemaRegistrySerializer<GenericRecord> serializer,
+        SerializationContext context)
+    {
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(SimpleRecordSchema);
+        var record = new GenericRecord(schema);
+        record.Add("id", 1);
+        record.Add("name", "transient");
+        var buffer = new ArrayBufferWriter<byte>();
+        serializer.Serialize(record, ref buffer, context);
+        return new WeakReference<GenericRecord>(record);
     }
 
     [Test]

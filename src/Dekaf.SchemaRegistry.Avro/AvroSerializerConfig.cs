@@ -6,6 +6,12 @@ namespace Dekaf.SchemaRegistry.Avro;
 public sealed class AvroSerializerConfig
 {
     /// <summary>
+    /// Maximum number of runtime schemas retained by the serializer caches.
+    /// Must be greater than zero. Default is 1000.
+    /// </summary>
+    public int MaxCachedSchemas { get; init; } = 1000;
+
+    /// <summary>
     /// Whether to automatically register schemas with the Schema Registry.
     /// Default is true.
     /// </summary>
