@@ -720,6 +720,41 @@ public sealed class SchemaRegistryCacheTests
     }
 
     [Test]
+    public async Task Client_GetOrRegisterSchema_CachesServerSchemaReferencesById()
+    {
+        using var handler = new QueueingSchemaRegistryHandler()
+            .Enqueue(HttpStatusCode.OK, """
+                {
+                  "subject": "topic-value",
+                  "version": 2,
+                  "id": 42,
+                  "schema": "{ \"$ref\": \"address.json\" }",
+                  "schemaType": "JSON",
+                  "references": [
+                    { "name": "address.json", "subject": "address-value", "version": 1 }
+                  ]
+                }
+                """);
+        using var client = new SchemaRegistryClient(new SchemaRegistryConfig
+        {
+            Url = "http://registry:8081"
+        }, handler);
+        var localSchema = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = """{ "$ref": "address.json" }"""
+        };
+
+        var id = await client.GetOrRegisterSchemaAsync("topic-value", localSchema);
+        var cached = client.TryGetCachedSchema(id, out var schema);
+
+        await Assert.That(cached).IsTrue();
+        await Assert.That(schema).IsNotSameReferenceAs(localSchema);
+        await Assert.That(schema.References).Count().IsEqualTo(1);
+        await Assert.That(schema.References![0].Name).IsEqualTo("address.json");
+    }
+
+    [Test]
     public async Task Deserializer_UsesCachedSchema_AndPassesPayloadWithoutCopy()
     {
         var registry = new MockSchemaRegistryClient();

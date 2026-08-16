@@ -1083,11 +1083,17 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
 
                     t_serializationContext.Topic = topicInfo.Name;
                     t_serializationContext.Component = SerializationComponent.Key;
+                    t_serializationContext.KeyData = ReadOnlyMemory<byte>.Empty;
+                    t_serializationContext.IsNull = record.IsKeyNull;
                     var key = record.IsKeyNull
                         ? default
                         : _keyDeserializer.Deserialize(record.Key, t_serializationContext);
 
                     t_serializationContext.Component = SerializationComponent.Value;
+                    t_serializationContext.KeyData = SerializationContext.NormalizeKeyData(
+                        record.Key,
+                        record.IsKeyNull);
+                    t_serializationContext.IsNull = record.IsValueNull;
                     var value = record.IsValueNull
                         ? default!
                         : _valueDeserializer.Deserialize(record.Value, t_serializationContext);

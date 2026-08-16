@@ -1,0 +1,29 @@
+#nullable enable
+Dekaf.Serialization.Routing.SchemaIdRoutingDeserializer<TBase>
+Dekaf.Serialization.Routing.SchemaIdRoutingDeserializer<TBase>.Deserialize(System.ReadOnlyMemory<byte> data, Dekaf.Serialization.SerializationContext context) -> TBase!
+Dekaf.Serialization.Routing.SchemaIdRoutingDeserializer<TBase>.Freeze() -> Dekaf.Serialization.Routing.SchemaIdRoutingDeserializer<TBase!>!
+Dekaf.Serialization.Routing.SchemaIdRoutingDeserializer<TBase>.IsFrozen.get -> bool
+Dekaf.Serialization.Routing.SchemaIdRoutingDeserializer<TBase>.Register<TDerived>(int schemaId, Dekaf.Serialization.IDeserializer<TDerived!>! deserializer) -> Dekaf.Serialization.Routing.SchemaIdRoutingDeserializer<TBase!>!
+Dekaf.Serialization.Routing.SchemaIdRoutingDeserializer<TBase>.SchemaIdRoutingDeserializer() -> void
+Dekaf.Serialization.Routing.SchemaIdRoutingDeserializer<TBase>.SetFallback(Dekaf.Serialization.IDeserializer<TBase!>! deserializer) -> Dekaf.Serialization.Routing.SchemaIdRoutingDeserializer<TBase!>!
+Dekaf.Serialization.Routing.TopicRoutingDeserializer<TBase>
+Dekaf.Serialization.Routing.TopicRoutingDeserializer<TBase>.Deserialize(System.ReadOnlyMemory<byte> data, Dekaf.Serialization.SerializationContext context) -> TBase!
+Dekaf.Serialization.Routing.TopicRoutingDeserializer<TBase>.Freeze() -> Dekaf.Serialization.Routing.TopicRoutingDeserializer<TBase!>!
+Dekaf.Serialization.Routing.TopicRoutingDeserializer<TBase>.IsFrozen.get -> bool
+Dekaf.Serialization.Routing.TopicRoutingDeserializer<TBase>.Register<TDerived>(string! topic, Dekaf.Serialization.IDeserializer<TDerived!>! deserializer) -> Dekaf.Serialization.Routing.TopicRoutingDeserializer<TBase!>!
+Dekaf.Serialization.Routing.TopicRoutingDeserializer<TBase>.SetFallback(Dekaf.Serialization.IDeserializer<TBase!>! deserializer) -> Dekaf.Serialization.Routing.TopicRoutingDeserializer<TBase!>!
+Dekaf.Serialization.Routing.TopicRoutingDeserializer<TBase>.TopicRoutingDeserializer() -> void
+Dekaf.Serialization.Routing.TopicRoutingSerializer<TBase>
+Dekaf.Serialization.Routing.TopicRoutingSerializer<TBase>.Freeze() -> Dekaf.Serialization.Routing.TopicRoutingSerializer<TBase!>!
+Dekaf.Serialization.Routing.TopicRoutingSerializer<TBase>.IsFrozen.get -> bool
+Dekaf.Serialization.Routing.TopicRoutingSerializer<TBase>.Register<TDerived>(string! topic, Dekaf.Serialization.ISerializer<TDerived!>! serializer) -> Dekaf.Serialization.Routing.TopicRoutingSerializer<TBase!>!
+Dekaf.Serialization.Routing.TopicRoutingSerializer<TBase>.Serialize<TWriter>(TBase! value, ref TWriter destination, Dekaf.Serialization.SerializationContext context) -> void
+Dekaf.Serialization.Routing.TopicRoutingSerializer<TBase>.SetFallback(Dekaf.Serialization.ISerializer<TBase!>! serializer) -> Dekaf.Serialization.Routing.TopicRoutingSerializer<TBase!>!
+Dekaf.Serialization.Routing.TopicRoutingSerializer<TBase>.TopicRoutingSerializer() -> void
+Dekaf.Serialization.Routing.TypeRoutingSerializer<TBase>
+Dekaf.Serialization.Routing.TypeRoutingSerializer<TBase>.Freeze() -> Dekaf.Serialization.Routing.TypeRoutingSerializer<TBase!>!
+Dekaf.Serialization.Routing.TypeRoutingSerializer<TBase>.IsFrozen.get -> bool
+Dekaf.Serialization.Routing.TypeRoutingSerializer<TBase>.Register<TDerived>(Dekaf.Serialization.ISerializer<TDerived!>! serializer) -> Dekaf.Serialization.Routing.TypeRoutingSerializer<TBase!>!
+Dekaf.Serialization.Routing.TypeRoutingSerializer<TBase>.Serialize<TWriter>(TBase! value, ref TWriter destination, Dekaf.Serialization.SerializationContext context) -> void
+Dekaf.Serialization.Routing.TypeRoutingSerializer<TBase>.SetFallback(Dekaf.Serialization.ISerializer<TBase!>! serializer) -> Dekaf.Serialization.Routing.TypeRoutingSerializer<TBase!>!
+Dekaf.Serialization.Routing.TypeRoutingSerializer<TBase>.TypeRoutingSerializer() -> void

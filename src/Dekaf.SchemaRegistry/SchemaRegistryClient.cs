@@ -598,11 +598,10 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         if (result is null)
             throw new SchemaRegistryException((int)response.StatusCode, "Schema Registry returned an empty schema response");
 
-        var id = result.Id;
+        var registeredSchema = CreateSchema(result);
+        CacheSchema(result.Id, subject, schema, effectiveNormalize, schemaById: registeredSchema);
 
-        CacheSchema(id, subject, schema, effectiveNormalize);
-
-        return id;
+        return result.Id;
     }
 
     internal void CacheSchema(
