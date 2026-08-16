@@ -1,6 +1,4 @@
 using System.Collections.Concurrent;
-using System.Runtime.CompilerServices;
-
 namespace Dekaf.SchemaRegistry;
 
 internal sealed class SchemaResolutionCache<TValue>
@@ -38,11 +36,11 @@ internal sealed class SchemaResolutionCache<TValue>
         Func<TState, string, Schema, Task<TValue>> resolve,
         CancellationToken cancellationToken)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-
         var key = new SchemaResolutionKey(subject, schema, scope);
         if (_cache.TryGetValue(key, out var cached))
             return new ValueTask<TValue>(cached);
+
+        cancellationToken.ThrowIfCancellationRequested();
 
         var entry = GetOrAddInFlight(key, state, resolve);
         if (_cache.TryGetValue(key, out cached))
@@ -194,8 +192,8 @@ internal sealed class SchemaResolutionCache<TValue>
             left.Schema.SchemaType == right.Schema.SchemaType &&
             string.Equals(left.Schema.SchemaString, right.Schema.SchemaString, StringComparison.Ordinal) &&
             ReferencesEqual(left.Schema.References, right.Schema.References) &&
-            ReferenceEquals(left.Schema.Metadata, right.Schema.Metadata) &&
-            ReferenceEquals(left.Schema.RuleSet, right.Schema.RuleSet);
+            MetadataEquals(left.Schema.Metadata, right.Schema.Metadata) &&
+            RuleSetEquals(left.Schema.RuleSet, right.Schema.RuleSet);
 
         public int GetHashCode(SchemaResolutionKey key)
         {
@@ -204,9 +202,6 @@ internal sealed class SchemaResolutionCache<TValue>
             hash.Add(key.Scope);
             hash.Add(key.Schema.SchemaType);
             hash.Add(key.Schema.SchemaString, StringComparer.Ordinal);
-            hash.Add(key.Schema.Metadata is null ? 0 : RuntimeHelpers.GetHashCode(key.Schema.Metadata));
-            hash.Add(key.Schema.RuleSet is null ? 0 : RuntimeHelpers.GetHashCode(key.Schema.RuleSet));
-
             if (key.Schema.References is { } references)
             {
                 for (var index = 0; index < references.Count; index++)
@@ -245,6 +240,163 @@ internal sealed class SchemaResolutionCache<TValue>
             }
 
             return true;
+        }
+
+        private static bool MetadataEquals(SchemaMetadata? left, SchemaMetadata? right)
+        {
+            if (ReferenceEquals(left, right))
+                return true;
+            if (left is null || right is null)
+                return false;
+
+            return TagsEqual(left.Tags, right.Tags) &&
+                   StringDictionaryEquals(left.Properties, right.Properties) &&
+                   StringSetEquals(left.Sensitive, right.Sensitive);
+        }
+
+        private static bool RuleSetEquals(SchemaRuleSet? left, SchemaRuleSet? right)
+        {
+            if (ReferenceEquals(left, right))
+                return true;
+            if (left is null || right is null)
+                return false;
+
+            return string.Equals(left.EnableAt, right.EnableAt, StringComparison.Ordinal) &&
+                   RulesEqual(left.MigrationRules, right.MigrationRules) &&
+                   RulesEqual(left.DomainRules, right.DomainRules) &&
+                   RulesEqual(left.EncodingRules, right.EncodingRules);
+        }
+
+        private static bool RulesEqual(
+            IReadOnlyList<SchemaRule>? left,
+            IReadOnlyList<SchemaRule>? right)
+        {
+            if (ReferenceEquals(left, right))
+                return true;
+
+            var count = left?.Count ?? 0;
+            if (count != (right?.Count ?? 0))
+                return false;
+
+            for (var index = 0; index < count; index++)
+            {
+                var leftRule = left![index];
+                var rightRule = right![index];
+                if (!string.Equals(leftRule.Name, rightRule.Name, StringComparison.Ordinal) ||
+                    !string.Equals(leftRule.Doc, rightRule.Doc, StringComparison.Ordinal) ||
+                    leftRule.Kind != rightRule.Kind ||
+                    leftRule.Mode != rightRule.Mode ||
+                    !string.Equals(leftRule.Type, rightRule.Type, StringComparison.Ordinal) ||
+                    !StringSetEquals(leftRule.Tags, rightRule.Tags) ||
+                    !StringDictionaryEquals(leftRule.Parameters, rightRule.Parameters) ||
+                    !string.Equals(leftRule.Expr, rightRule.Expr, StringComparison.Ordinal) ||
+                    !string.Equals(leftRule.OnSuccess, rightRule.OnSuccess, StringComparison.Ordinal) ||
+                    !string.Equals(leftRule.OnFailure, rightRule.OnFailure, StringComparison.Ordinal) ||
+                    leftRule.Disabled != rightRule.Disabled)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static bool TagsEqual(
+            IReadOnlyDictionary<string, IReadOnlySet<string>>? left,
+            IReadOnlyDictionary<string, IReadOnlySet<string>>? right)
+        {
+            if (ReferenceEquals(left, right))
+                return true;
+
+            var count = left?.Count ?? 0;
+            if (count != (right?.Count ?? 0))
+                return false;
+            if (count == 0)
+                return true;
+
+            if (left is Dictionary<string, IReadOnlySet<string>> leftDictionary)
+            {
+                foreach (var pair in leftDictionary)
+                {
+                    if (!right!.TryGetValue(pair.Key, out var rightTags) ||
+                        !StringSetEquals(pair.Value, rightTags))
+                    {
+                        return false;
+                    }
+                }
+
+                return true;
+            }
+
+            if (right is Dictionary<string, IReadOnlySet<string>> rightDictionary)
+                return TagsEqual(rightDictionary, left);
+
+            // Interface enumeration may box a struct enumerator. Unknown collection
+            // implementations therefore remain distinct instead of allocating here.
+            return false;
+        }
+
+        private static bool StringDictionaryEquals(
+            IReadOnlyDictionary<string, string>? left,
+            IReadOnlyDictionary<string, string>? right)
+        {
+            if (ReferenceEquals(left, right))
+                return true;
+
+            var count = left?.Count ?? 0;
+            if (count != (right?.Count ?? 0))
+                return false;
+            if (count == 0)
+                return true;
+
+            if (left is Dictionary<string, string> leftDictionary)
+            {
+                foreach (var pair in leftDictionary)
+                {
+                    if (!right!.TryGetValue(pair.Key, out var rightValue) ||
+                        !string.Equals(pair.Value, rightValue, StringComparison.Ordinal))
+                    {
+                        return false;
+                    }
+                }
+
+                return true;
+            }
+
+            if (right is Dictionary<string, string> rightDictionary)
+                return StringDictionaryEquals(rightDictionary, left);
+
+            return false;
+        }
+
+        private static bool StringSetEquals(
+            IReadOnlySet<string>? left,
+            IReadOnlySet<string>? right)
+        {
+            if (ReferenceEquals(left, right))
+                return true;
+
+            var count = left?.Count ?? 0;
+            if (count != (right?.Count ?? 0))
+                return false;
+            if (count == 0)
+                return true;
+
+            if (left is HashSet<string> leftSet)
+            {
+                foreach (var value in leftSet)
+                {
+                    if (!right!.Contains(value))
+                        return false;
+                }
+
+                return true;
+            }
+
+            if (right is HashSet<string> rightSet)
+                return StringSetEquals(rightSet, left);
+
+            return false;
         }
     }
 }

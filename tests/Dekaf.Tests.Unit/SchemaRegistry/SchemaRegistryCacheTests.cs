@@ -176,6 +176,10 @@ public sealed class SchemaRegistryCacheTests
             isKey: false,
             out _)).IsFalse();
         await Assert.That(cache.TryGet(
+            $"topic-{SubjectSchemaIdCache.MaxCachedEntries + 8}",
+            isKey: false,
+            out _)).IsTrue();
+        await Assert.That(cache.TryGet(
             $"topic-{SubjectSchemaIdCache.MaxCachedEntries + 9}",
             isKey: false,
             out _)).IsTrue();

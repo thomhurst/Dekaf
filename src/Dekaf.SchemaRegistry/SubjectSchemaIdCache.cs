@@ -11,7 +11,6 @@ internal sealed class SubjectSchemaIdCache
     private readonly ConcurrentDictionary<SubjectSchemaIdCacheKey, SubjectSchemaIdCacheEntry> _cache = new();
     private SubjectSchemaIdCacheEntry? _last;
     private SubjectSchemaIdCacheEntry? _overflowLast;
-    private SubjectSchemaIdCacheEntry? _overflowPrevious;
     private int _cacheCount;
 
     internal int CachedEntryCount => Volatile.Read(ref _cacheCount);
@@ -70,7 +69,7 @@ internal sealed class SubjectSchemaIdCache
             return true;
         }
 
-        var overflowPrevious = Volatile.Read(ref _overflowPrevious);
+        var overflowPrevious = overflowLast?.OverflowPrevious;
         if (overflowPrevious is not null && overflowPrevious.Key.Equals(key))
         {
             Volatile.Write(ref _last, overflowPrevious);
@@ -130,14 +129,14 @@ internal sealed class SubjectSchemaIdCache
                 return current;
             }
 
-            var previous = Volatile.Read(ref _overflowPrevious);
+            var previous = current?.OverflowPrevious;
             if (previous is not null && previous.Key.Equals(entry.Key))
             {
                 Volatile.Write(ref _last, previous);
                 return previous;
             }
 
-            Volatile.Write(ref _overflowPrevious, current);
+            entry.OverflowPrevious = current;
             if (ReferenceEquals(
                 Interlocked.CompareExchange(ref _overflowLast, entry, current),
                 current))
@@ -165,9 +164,16 @@ internal sealed class SubjectSchemaIdCache
 
     internal readonly record struct SubjectSchemaIdCacheValue(int SchemaId, Schema? Schema);
 
-    internal sealed record SubjectSchemaIdCacheEntry(
-        SubjectSchemaIdCacheKey Key,
-        string? Subject,
-        int SchemaId,
-        Schema? Schema);
+    internal sealed class SubjectSchemaIdCacheEntry(
+        SubjectSchemaIdCacheKey key,
+        string? subject,
+        int schemaId,
+        Schema? schema)
+    {
+        internal SubjectSchemaIdCacheKey Key { get; } = key;
+        internal string? Subject { get; } = subject;
+        internal int SchemaId { get; } = schemaId;
+        internal Schema? Schema { get; } = schema;
+        internal SubjectSchemaIdCacheEntry? OverflowPrevious { get; set; }
+    }
 }

@@ -396,6 +396,86 @@ public sealed class SchemaPreparationTests
     }
 
     [Test]
+    public async Task ResolutionCache_DeduplicatesEquivalentMetadataAndRulesWithoutCollidingContents()
+    {
+        var cache = new SchemaResolutionCache<int>();
+        var counter = new ResolutionCounter();
+        var firstSchema = CreateDataContractSchema(owner: "payments");
+        var equivalentSchema = CreateDataContractSchema(owner: "payments");
+        var differentSchema = CreateDataContractSchema(owner: "fraud");
+
+        var first = await cache.ResolveAsync(
+            "orders-value",
+            firstSchema,
+            counter,
+            static (state, _, _) => Task.FromResult(Interlocked.Increment(ref state.Count)),
+            CancellationToken.None);
+        var equivalent = await cache.ResolveAsync(
+            "orders-value",
+            equivalentSchema,
+            counter,
+            static (state, _, _) => Task.FromResult(Interlocked.Increment(ref state.Count)),
+            CancellationToken.None);
+        var different = await cache.ResolveAsync(
+            "orders-value",
+            differentSchema,
+            counter,
+            static (state, _, _) => Task.FromResult(Interlocked.Increment(ref state.Count)),
+            CancellationToken.None);
+
+        await Assert.That(equivalent).IsEqualTo(first);
+        await Assert.That(different).IsNotEqualTo(first);
+        await Assert.That(counter.Count).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task ResolutionCache_WarmHitCompletesDespiteCanceledWaiter()
+    {
+        var cache = new SchemaResolutionCache<int>();
+        var counter = new ResolutionCounter();
+        var schema = new Schema { SchemaType = SchemaType.Json, SchemaString = "{}" };
+
+        _ = await cache.ResolveAsync(
+            "orders-value",
+            schema,
+            counter,
+            static (state, _, _) => Task.FromResult(Interlocked.Increment(ref state.Count)),
+            CancellationToken.None);
+
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        var cached = cache.ResolveAsync(
+            "orders-value",
+            schema,
+            counter,
+            static (state, _, _) => Task.FromResult(Interlocked.Increment(ref state.Count)),
+            cancellation.Token);
+
+        await Assert.That(cached.IsCompletedSuccessfully).IsTrue();
+        await Assert.That(await cached).IsEqualTo(1);
+        await Assert.That(counter.Count).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task ResolutionCache_ColdMissHonorsCanceledWaiterBeforeStartingResolution()
+    {
+        var cache = new SchemaResolutionCache<int>();
+        var counter = new ResolutionCounter();
+        var schema = new Schema { SchemaType = SchemaType.Json, SchemaString = "{}" };
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        await Assert.That(async () => await cache.ResolveAsync(
+                "orders-value",
+                schema,
+                counter,
+                static (state, _, _) => Task.FromResult(Interlocked.Increment(ref state.Count)),
+                cancellation.Token))
+            .Throws<OperationCanceledException>();
+        await Assert.That(counter.Count).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task ResolutionCache_EvictsOldestCompletedEntryAtCapacity()
     {
         var cache = new SchemaResolutionCache<int>(maxCachedEntries: 2);
@@ -673,6 +753,48 @@ public sealed class SchemaPreparationTests
                     Version = version
                 }
             ]
+        };
+
+    private static Schema CreateDataContractSchema(string owner) =>
+        new()
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = "{}",
+            Metadata = new SchemaMetadata
+            {
+                Tags = new Dictionary<string, IReadOnlySet<string>>(StringComparer.Ordinal)
+                {
+                    ["$.id"] = new HashSet<string>(["PII"], StringComparer.Ordinal)
+                },
+                Properties = new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["owner"] = owner
+                },
+                Sensitive = new HashSet<string>(["owner"], StringComparer.Ordinal)
+            },
+            RuleSet = new SchemaRuleSet
+            {
+                EnableAt = "1",
+                EncodingRules =
+                [
+                    new SchemaRule
+                    {
+                        Name = "encrypt-id",
+                        Doc = "Encrypt the identifier.",
+                        Kind = SchemaRuleKind.Transform,
+                        Mode = SchemaRuleMode.WriteRead,
+                        Type = "ENCRYPT",
+                        Tags = new HashSet<string>(["PII"], StringComparer.Ordinal),
+                        Parameters = new Dictionary<string, string>(StringComparer.Ordinal)
+                        {
+                            ["encrypt.kek.name"] = "orders-kek"
+                        },
+                        Expr = "true",
+                        OnSuccess = "NONE",
+                        OnFailure = "ERROR"
+                    }
+                ]
+            }
         };
 
     private sealed class ResolutionCounter
