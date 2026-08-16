@@ -1,5 +1,8 @@
+using System.Buffers;
 using System.Diagnostics;
+using System.Text;
 using Dekaf.Diagnostics;
+using Dekaf.Protocol;
 using Dekaf.Serialization;
 
 namespace Dekaf.Tests.Unit.Diagnostics;
@@ -42,6 +45,26 @@ public sealed class TraceContextPropagatorTests
         await Assert.That(traceparent).IsNotNull();
         await Assert.That(traceparent).IsEqualTo(
             $"00-{activity!.TraceId}-{activity.SpanId}-{(activity.Recorded ? "01" : "00")}");
+    }
+
+    [Test]
+    public async Task InjectTraceContext_DeferredHeaderWritesExpectedWireValue()
+    {
+        using var activity = new Activity("trace-wire")
+            .SetIdFormat(ActivityIdFormat.W3C)
+            .Start();
+        var headers = TraceContextPropagator.InjectTraceContext(new Headers(1), activity)!;
+        var header = headers[0];
+        var output = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(output);
+
+        header.Write(ref writer);
+
+        await Assert.That(output.WrittenSpan[0]).IsEqualTo((byte)22);
+        await Assert.That(Encoding.UTF8.GetString(output.WrittenSpan.Slice(1, 11))).IsEqualTo("traceparent");
+        await Assert.That(output.WrittenSpan[12]).IsEqualTo((byte)110);
+        await Assert.That(Encoding.UTF8.GetString(output.WrittenSpan[13..])).IsEqualTo(
+            $"00-{activity.TraceId}-{activity.SpanId}-{(activity.Recorded ? "01" : "00")}");
     }
 
     [Test]

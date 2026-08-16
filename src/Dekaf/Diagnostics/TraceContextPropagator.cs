@@ -13,7 +13,7 @@ internal static class TraceContextPropagator
 {
     private const string TraceparentHeader = "traceparent";
     private const string TracestateHeader = "tracestate";
-    private const int TraceparentLength = 55;
+    internal const int TraceparentLength = 55;
 
     /// <summary>
     /// Injects the current trace context into message headers.
@@ -33,24 +33,7 @@ internal static class TraceContextPropagator
     {
         headers ??= new Headers(2);
 
-        // W3C traceparent: 00-{traceId}-{spanId}-{traceFlags}
-        var traceparent = new byte[TraceparentLength];
-        traceparent[0] = (byte)'0';
-        traceparent[1] = (byte)'0';
-        traceparent[2] = (byte)'-';
-
-        Span<byte> traceId = stackalloc byte[16];
-        activity.TraceId.CopyTo(traceId);
-        WriteLowerHex(traceId, traceparent.AsSpan(3, 32));
-        traceparent[35] = (byte)'-';
-
-        Span<byte> spanId = stackalloc byte[8];
-        activity.SpanId.CopyTo(spanId);
-        WriteLowerHex(spanId, traceparent.AsSpan(36, 16));
-        traceparent[52] = (byte)'-';
-        traceparent[53] = (byte)'0';
-        traceparent[54] = activity.Recorded ? (byte)'1' : (byte)'0';
-        headers.Add(TraceparentHeader, traceparent);
+        headers.Add(Header.CreateDeferredTraceparent(TraceparentHeader, activity));
 
         var traceState = activity.TraceStateString;
         if (!string.IsNullOrEmpty(traceState))
@@ -61,6 +44,36 @@ internal static class TraceContextPropagator
         return headers;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static void WriteTraceparent(Activity activity, Span<byte> destination)
+    {
+        if (destination.Length < TraceparentLength)
+            throw new ArgumentException("The traceparent destination must be at least 55 bytes.", nameof(destination));
+
+        WriteTraceparentUnchecked(activity, destination);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static void WriteTraceparentUnchecked(Activity activity, Span<byte> destination)
+    {
+        destination[0] = (byte)'0';
+        destination[1] = (byte)'0';
+        destination[2] = (byte)'-';
+
+        Span<byte> traceId = stackalloc byte[16];
+        activity.TraceId.CopyTo(traceId);
+        WriteLowerHex(traceId, destination.Slice(3, 32));
+        destination[35] = (byte)'-';
+
+        Span<byte> spanId = stackalloc byte[8];
+        activity.SpanId.CopyTo(spanId);
+        WriteLowerHex(spanId, destination.Slice(36, 16));
+        destination[52] = (byte)'-';
+        destination[53] = (byte)'0';
+        destination[54] = activity.Recorded ? (byte)'1' : (byte)'0';
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static void WriteLowerHex(ReadOnlySpan<byte> source, Span<byte> destination)
     {
         const string HexDigits = "0123456789abcdef";

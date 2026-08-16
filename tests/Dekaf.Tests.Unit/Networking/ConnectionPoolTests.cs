@@ -88,6 +88,7 @@ public sealed class ConnectionPoolTests
     [Test]
     public async Task StatusSnapshot_ReportsConnectionAttemptFailure()
     {
+        long statusTimestamp = 100;
         await using var pool = new ConnectionPool(
             clientId: "status-test",
             connectionOptions: new ConnectionOptions
@@ -97,12 +98,11 @@ public sealed class ConnectionPoolTests
             },
             connectionsPerBroker: 1,
             connectionFactory: (_, _, _, _, _) =>
-                ValueTask.FromException<IKafkaConnection>(new IOException("connection refused")));
+                ValueTask.FromException<IKafkaConnection>(new IOException("connection refused")),
+            statusTimestampProvider: () => Volatile.Read(ref statusTimestamp));
         pool.RegisterBroker(7, "broker-a", 9092);
         var stateChangeTimestamp = GetBrokerStateChangeTimestamp(pool, 7);
-        await Assert.That(SpinWait.SpinUntil(
-            () => MonotonicClock.GetMilliseconds() > stateChangeTimestamp,
-            TimeSpan.FromSeconds(1))).IsTrue();
+        Volatile.Write(ref statusTimestamp, 101);
 
         await Assert.ThrowsAsync<IOException>(async () => await pool.GetConnectionAsync(7));
 
@@ -131,6 +131,32 @@ public sealed class ConnectionPoolTests
         await Assert.That(status.State).IsEqualTo(BrokerConnectionState.Connected);
         await Assert.That(status.ConnectionCount).IsEqualTo(1);
         await Assert.That(status.ConnectedConnectionCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task StatusSnapshot_ReportsControllerEndpointConnectionFailure()
+    {
+        await using var pool = new ConnectionPool(
+            clientId: "status-test",
+            connectionOptions: new ConnectionOptions
+            {
+                ReconnectBackoff = TimeSpan.FromMilliseconds(1),
+                ReconnectBackoffMax = TimeSpan.FromMilliseconds(1)
+            },
+            connectionsPerBroker: 1,
+            connectionFactory: (_, _, _, _, _) =>
+                ValueTask.FromException<IKafkaConnection>(new IOException("controller refused")));
+
+        await Assert.ThrowsAsync<IOException>(async () =>
+            await pool.GetConnectionAsync("controller-a", 19093));
+
+        var status = ((IConnectionPoolStatusSource)pool).GetEndpointConnectionStatus(
+            [new ConnectionStatusEndpoint(2, "controller-a", 19093)]).Single();
+
+        await Assert.That(status.BrokerId).IsEqualTo(2);
+        await Assert.That(status.State).IsEqualTo(BrokerConnectionState.Disconnected);
+        await Assert.That(status.LastError).IsEqualTo("controller refused");
+        await Assert.That(status.LastErrorAtUtc).IsNotNull();
     }
 
     [Test]
@@ -691,6 +717,30 @@ public sealed class ConnectionPoolTests
     }
 
     [Test]
+    public async Task ShrinkConnectionGroupAsync_RecordsExactStatusTransition()
+    {
+        long statusTimestamp = 100;
+        await using var pool = new ConnectionPool(
+            clientId: "status-test",
+            connectionOptions: new ConnectionOptions(),
+            connectionsPerBroker: 3,
+            connectionFactory: (brokerId, host, port, _, _) =>
+                ValueTask.FromResult<IKafkaConnection>(new TestIdleConnection(brokerId, host, port)),
+            statusTimestampProvider: () => Volatile.Read(ref statusTimestamp));
+        pool.RegisterBroker(1, "localhost", 9092);
+        _ = await pool.GetConnectionAsync(1);
+        var stateChangeBeforeShrink = GetBrokerStateChangeTimestamp(pool, 1);
+        Volatile.Write(ref statusTimestamp, 101);
+
+        var removed = await pool.ShrinkConnectionGroupAsync(1, 2);
+
+        await Assert.That(removed).IsNotNull();
+        await Assert.That(GetBrokerStateChangeTimestamp(pool, 1)).IsEqualTo(101);
+        await Assert.That(GetBrokerStateChangeTimestamp(pool, 1)).IsGreaterThan(stateChangeBeforeShrink);
+        await removed!.DisposeAsync();
+    }
+
+    [Test]
     public async Task ConnectionOptions_ConnectionsMaxIdleMs_DefaultsToNineMinutes()
     {
         var options = new ConnectionOptions();
@@ -740,6 +790,7 @@ public sealed class ConnectionPoolTests
     [Test]
     public async Task ReapIdleConnectionsAsync_IdleSingleConnection_DisposesAndRecreates()
     {
+        long statusTimestamp = 100;
         var created = new List<TestIdleConnection>();
         var pool = new ConnectionPool(
             clientId: "test-client",
@@ -750,7 +801,8 @@ public sealed class ConnectionPoolTests
                 var connection = new TestIdleConnection(brokerId, host, port);
                 created.Add(connection);
                 return new ValueTask<IKafkaConnection>(connection);
-            });
+            },
+            statusTimestampProvider: () => Volatile.Read(ref statusTimestamp));
 
         await using (pool)
         {
@@ -758,9 +810,7 @@ public sealed class ConnectionPoolTests
 
             var first = await pool.GetConnectionAsync(1);
             var stateChangeBeforeReap = GetBrokerStateChangeTimestamp(pool, 1);
-            await Assert.That(SpinWait.SpinUntil(
-                () => MonotonicClock.GetMilliseconds() > stateChangeBeforeReap,
-                TimeSpan.FromSeconds(1))).IsTrue();
+            Volatile.Write(ref statusTimestamp, 101);
             created[0].LastUsedTimestampMs = StaleIdleTimestamp();
             var reaped = await pool.ReapIdleConnectionsAsync();
             var stateChangeAfterReap = GetBrokerStateChangeTimestamp(pool, 1);

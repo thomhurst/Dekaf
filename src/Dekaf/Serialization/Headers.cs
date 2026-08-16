@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text;
 using Dekaf.Internal;
@@ -241,6 +242,8 @@ public readonly record struct Header
     private const int MaxCachedKeys = 128;
     private const int MaxCachedKeyBytes = 256;
     private static readonly Utf8StringInternCache s_keyCache = new(MaxCachedKeys, MaxCachedKeyBytes);
+    private readonly ReadOnlyMemory<byte> _value;
+    private readonly Activity? _deferredTraceparentActivity;
 
     /// <summary>
     /// Creates a new header with a byte array value.
@@ -248,7 +251,8 @@ public readonly record struct Header
     public Header(string key, byte[]? value)
     {
         Key = key;
-        Value = value.AsMemory();
+        _value = value.AsMemory();
+        _deferredTraceparentActivity = null;
         IsValueNull = value is null;
     }
 
@@ -258,9 +262,21 @@ public readonly record struct Header
     public Header(string key, ReadOnlyMemory<byte> value, bool isNull = false)
     {
         Key = key;
-        Value = value;
+        _value = value;
+        _deferredTraceparentActivity = null;
         IsValueNull = isNull;
     }
+
+    private Header(string key, Activity traceparentActivity)
+    {
+        Key = key;
+        _value = default;
+        _deferredTraceparentActivity = traceparentActivity;
+        IsValueNull = false;
+    }
+
+    internal static Header CreateDeferredTraceparent(string key, Activity activity) =>
+        new(key, activity);
 
     /// <summary>
     /// The header key.
@@ -270,7 +286,22 @@ public readonly record struct Header
     /// <summary>
     /// The header value as bytes. Check IsValueNull before accessing.
     /// </summary>
-    public ReadOnlyMemory<byte> Value { get; init; }
+    public ReadOnlyMemory<byte> Value
+    {
+        get
+        {
+            if (_deferredTraceparentActivity is null)
+                return _value;
+
+            var value = GC.AllocateUninitializedArray<byte>(
+                Diagnostics.TraceContextPropagator.TraceparentLength);
+            Diagnostics.TraceContextPropagator.WriteTraceparentUnchecked(
+                _deferredTraceparentActivity,
+                value);
+            return value;
+        }
+        init => _value = value;
+    }
 
     /// <summary>
     /// Returns true if the header value is null.
@@ -280,14 +311,36 @@ public readonly record struct Header
     /// <summary>
     /// Gets the value as a byte array. Prefer using Value property to avoid allocation.
     /// </summary>
-    public byte[]? GetValueAsArray() => IsValueNull ? null : Value.ToArray();
+    public byte[]? GetValueAsArray()
+    {
+        if (IsValueNull)
+            return null;
+
+        if (_deferredTraceparentActivity is null)
+            return _value.ToArray();
+
+        var value = GC.AllocateUninitializedArray<byte>(
+            Diagnostics.TraceContextPropagator.TraceparentLength);
+        Diagnostics.TraceContextPropagator.WriteTraceparentUnchecked(
+            _deferredTraceparentActivity,
+            value);
+        return value;
+    }
 
     /// <summary>
     /// Gets the value as a UTF-8 string.
     /// </summary>
     public string? GetValueAsString()
     {
-        return IsValueNull ? null : Encoding.UTF8.GetString(Value.Span);
+        if (IsValueNull)
+            return null;
+
+        if (_deferredTraceparentActivity is null)
+            return Encoding.UTF8.GetString(_value.Span);
+
+        Span<byte> value = stackalloc byte[Diagnostics.TraceContextPropagator.TraceparentLength];
+        Diagnostics.TraceContextPropagator.WriteTraceparentUnchecked(_deferredTraceparentActivity, value);
+        return Encoding.UTF8.GetString(value);
     }
 
     /// <inheritdoc/>
@@ -307,8 +360,22 @@ public readonly record struct Header
         }
         else
         {
-            writer.WriteVarInt(Value.Length);
-            writer.WriteRawBytes(Value.Span);
+            if (_deferredTraceparentActivity is null)
+            {
+                writer.WriteVarInt(_value.Length);
+                writer.WriteRawBytes(_value.Span);
+            }
+            else
+            {
+                writer.WriteVarInt(Diagnostics.TraceContextPropagator.TraceparentLength);
+                var destination = writer.BufferWriter.GetSpan(
+                    Diagnostics.TraceContextPropagator.TraceparentLength);
+                Diagnostics.TraceContextPropagator.WriteTraceparentUnchecked(
+                    _deferredTraceparentActivity,
+                    destination);
+                writer.BufferWriter.Advance(Diagnostics.TraceContextPropagator.TraceparentLength);
+                writer.AddBytesWritten(Diagnostics.TraceContextPropagator.TraceparentLength);
+            }
         }
     }
 
@@ -388,9 +455,21 @@ public readonly record struct Header
         }
         else
         {
-            Record.WriteVarInt(destination, ref offset, Value.Length);
-            Value.Span.CopyTo(destination[offset..]);
-            offset += Value.Length;
+            var valueLength = _deferredTraceparentActivity is null
+                ? _value.Length
+                : Diagnostics.TraceContextPropagator.TraceparentLength;
+            Record.WriteVarInt(destination, ref offset, valueLength);
+            if (_deferredTraceparentActivity is null)
+            {
+                _value.Span.CopyTo(destination[offset..]);
+            }
+            else
+            {
+                Diagnostics.TraceContextPropagator.WriteTraceparentUnchecked(
+                    _deferredTraceparentActivity,
+                    destination.Slice(offset, valueLength));
+            }
+            offset += valueLength;
         }
     }
 
@@ -407,7 +486,10 @@ public readonly record struct Header
         }
         else
         {
-            size += Record.VarIntSize(Value.Length) + Value.Length;
+            var valueLength = _deferredTraceparentActivity is null
+                ? _value.Length
+                : Diagnostics.TraceContextPropagator.TraceparentLength;
+            size += Record.VarIntSize(valueLength) + valueLength;
         }
 
         return size;

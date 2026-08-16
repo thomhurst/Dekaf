@@ -5222,15 +5222,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
         // Use index-based iteration to avoid enumerator boxing allocation
         for (var i = 0; i < count; i++)
-        {
-            var h = headers[i];
-            result[i] = new Header
-            {
-                Key = h.Key,
-                Value = h.Value,
-                IsValueNull = h.IsValueNull
-            };
-        }
+            result[i] = headers[i];
     }
 
     public async ValueTask DisposeAsync()
