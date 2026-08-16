@@ -64,10 +64,33 @@ public sealed class GcpKmsProvider : ISchemaRegistryKmsProvider
         var keyName = ResolveKeyName(keyReference);
         try
         {
+            var request = new EncryptRequest
+            {
+                Name = keyName.ToString(),
+                Plaintext = UnsafeByteOperations.UnsafeWrap(keyMaterial),
+                PlaintextCrc32C = GcpCrc32C.Compute(keyMaterial.Span)
+            };
             var response = await _client
-                .EncryptAsync(keyName, UnsafeByteOperations.UnsafeWrap(keyMaterial), cancellationToken)
+                .EncryptAsync(request, cancellationToken)
                 .ConfigureAwait(false);
-            return CopyAndClearMaterial(response.Ciphertext, "wrap");
+            if (!response.VerifiedPlaintextCrc32C)
+            {
+                ClearMaterial(response.Ciphertext);
+                throw new SchemaRegistryKmsException(
+                    "Google Cloud KMS wrap failed. The service could not verify request integrity.");
+            }
+
+            if (!IsVersionOfKey(response.Name, request.Name))
+            {
+                ClearMaterial(response.Ciphertext);
+                throw new SchemaRegistryKmsException(
+                    "Google Cloud KMS wrap failed. The service used an unexpected key version.");
+            }
+
+            return CopyVerifyAndClearMaterial(
+                response.Ciphertext,
+                response.CiphertextCrc32C,
+                "wrap");
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -76,11 +99,11 @@ public sealed class GcpKmsProvider : ISchemaRegistryKmsProvider
         catch (RpcException ex) when (
             cancellationToken.IsCancellationRequested && ex.StatusCode == StatusCode.Cancelled)
         {
-            throw new OperationCanceledException("Google Cloud KMS wrap was canceled.", ex, cancellationToken);
+            throw new OperationCanceledException("Google Cloud KMS wrap was canceled.", cancellationToken);
         }
-        catch (RpcException ex)
+        catch (RpcException)
         {
-            throw new SchemaRegistryKmsException("Google Cloud KMS wrap failed.", ex);
+            throw new SchemaRegistryKmsException("Google Cloud KMS wrap failed.");
         }
     }
 
@@ -100,10 +123,19 @@ public sealed class GcpKmsProvider : ISchemaRegistryKmsProvider
         var keyName = ResolveKeyName(keyReference);
         try
         {
+            var request = new DecryptRequest
+            {
+                Name = keyName.ToString(),
+                Ciphertext = UnsafeByteOperations.UnsafeWrap(encryptedKeyMaterial),
+                CiphertextCrc32C = GcpCrc32C.Compute(encryptedKeyMaterial.Span)
+            };
             var response = await _client
-                .DecryptAsync(keyName, UnsafeByteOperations.UnsafeWrap(encryptedKeyMaterial), cancellationToken)
+                .DecryptAsync(request, cancellationToken)
                 .ConfigureAwait(false);
-            return CopyAndClearMaterial(response.Plaintext, "unwrap");
+            return CopyVerifyAndClearMaterial(
+                response.Plaintext,
+                response.PlaintextCrc32C,
+                "unwrap");
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -112,11 +144,11 @@ public sealed class GcpKmsProvider : ISchemaRegistryKmsProvider
         catch (RpcException ex) when (
             cancellationToken.IsCancellationRequested && ex.StatusCode == StatusCode.Cancelled)
         {
-            throw new OperationCanceledException("Google Cloud KMS unwrap was canceled.", ex, cancellationToken);
+            throw new OperationCanceledException("Google Cloud KMS unwrap was canceled.", cancellationToken);
         }
-        catch (RpcException ex)
+        catch (RpcException)
         {
-            throw new SchemaRegistryKmsException("Google Cloud KMS unwrap failed.", ex);
+            throw new SchemaRegistryKmsException("Google Cloud KMS unwrap failed.");
         }
     }
 
@@ -146,25 +178,81 @@ public sealed class GcpKmsProvider : ISchemaRegistryKmsProvider
         return keyName;
     }
 
-    private static byte[] CopyAndClearMaterial(ByteString material, string operation)
+    private static byte[] CopyVerifyAndClearMaterial(
+        ByteString material,
+        long? expectedCrc32C,
+        string operation)
     {
-        if (material.IsEmpty)
-        {
-            throw new SchemaRegistryKmsException(
-                $"Google Cloud KMS {operation} failed. The service returned no key material.");
-        }
-
         try
         {
+            if (material.IsEmpty)
+            {
+                throw new SchemaRegistryKmsException(
+                    $"Google Cloud KMS {operation} failed. The service returned no key material.");
+            }
+
+            if (expectedCrc32C is null || GcpCrc32C.Compute(material.Span) != expectedCrc32C)
+            {
+                throw new SchemaRegistryKmsException(
+                    $"Google Cloud KMS {operation} failed. Response integrity validation failed.");
+            }
+
             return material.ToByteArray();
         }
         finally
         {
-            if (MemoryMarshal.TryGetArray(material.Memory, out var segment)
-                && segment.Array is not null)
+            ClearMaterial(material);
+        }
+    }
+
+    private static bool IsVersionOfKey(string versionName, string keyName)
+    {
+        var prefixLength = keyName.Length + "/cryptoKeyVersions/".Length;
+        return versionName.Length > prefixLength
+            && versionName.StartsWith(keyName, StringComparison.Ordinal)
+            && versionName.AsSpan(keyName.Length).StartsWith("/cryptoKeyVersions/", StringComparison.Ordinal);
+    }
+
+    private static void ClearMaterial(ByteString material)
+    {
+        if (MemoryMarshal.TryGetArray(material.Memory, out var segment)
+            && segment.Array is not null)
+        {
+            CryptographicOperations.ZeroMemory(segment.Array.AsSpan(segment.Offset, segment.Count));
+        }
+    }
+
+    private static class GcpCrc32C
+    {
+        private const uint ReversedCastagnoliPolynomial = 0x82F63B78;
+        private static readonly uint[] Table = CreateTable();
+
+        internal static long Compute(ReadOnlySpan<byte> data)
+        {
+            var crc = uint.MaxValue;
+            foreach (var value in data)
+                crc = Table[(crc ^ value) & 0xff] ^ (crc >> 8);
+
+            return crc ^ uint.MaxValue;
+        }
+
+        private static uint[] CreateTable()
+        {
+            var table = new uint[256];
+            for (var index = 0; index < table.Length; index++)
             {
-                CryptographicOperations.ZeroMemory(segment.Array.AsSpan(segment.Offset, segment.Count));
+                var crc = (uint)index;
+                for (var bit = 0; bit < 8; bit++)
+                {
+                    crc = (crc & 1) == 0
+                        ? crc >> 1
+                        : (crc >> 1) ^ ReversedCastagnoliPolynomial;
+                }
+
+                table[index] = crc;
             }
+
+            return table;
         }
     }
 }
