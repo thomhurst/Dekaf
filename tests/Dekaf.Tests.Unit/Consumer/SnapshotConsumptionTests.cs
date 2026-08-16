@@ -125,6 +125,27 @@ public sealed class SnapshotConsumptionTests
     }
 
     [Test]
+    public async Task SnapshotBound_SkipsPostBoundBatchWithoutRecordScan()
+    {
+        var records = new ThrowOnAccessRecordList(count: 1024);
+        var batch = new RecordBatch
+        {
+            BaseOffset = 100,
+            LastOffsetDelta = records.Count - 1,
+            Records = records
+        };
+        using var pending = PendingFetchData.Create(
+            Partition0.Topic,
+            Partition0.Partition,
+            [batch],
+            stopAtOffsetExclusive: 50);
+        pending.EagerParseAll();
+
+        await Assert.That(pending.MoveNext()).IsFalse();
+        await Assert.That(pending.IsExhausted).IsTrue();
+    }
+
+    [Test]
     public async Task DiscardedSnapshotEndMarker_CanBeQueuedAgain()
     {
         var state = new SnapshotConsumeState(new Dictionary<TopicPartition, long>
@@ -152,5 +173,19 @@ public sealed class SnapshotConsumptionTests
             "FlushConsumedPositions",
             BindingFlags.Instance | BindingFlags.NonPublic)!;
         return (bool)method.Invoke(consumer, [pending])!;
+    }
+
+    private sealed class ThrowOnAccessRecordList(int count) : IReadOnlyList<Record>
+    {
+        public int Count { get; } = count;
+
+        public Record this[int index] =>
+            throw new InvalidOperationException($"Record {index} should not be inspected.");
+
+        public IEnumerator<Record> GetEnumerator() =>
+            throw new InvalidOperationException("Records should not be enumerated.");
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() =>
+            GetEnumerator();
     }
 }

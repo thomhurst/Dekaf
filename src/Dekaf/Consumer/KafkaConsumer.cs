@@ -525,19 +525,10 @@ internal sealed class PendingFetchData : IDisposable
         _currentRecordsArrayOffset = batch.GetParsedRecordsOffset();
 
         CurrentBaseOffset = batch.BaseOffset;
-        if (_stopAtOffsetExclusive >= 0)
+        if (_stopAtOffsetExclusive >= 0
+            && CurrentBaseOffset + batch.LastOffsetDelta >= _stopAtOffsetExclusive)
         {
-            while (_currentRecordsCount > 0)
-            {
-                var lastRecordIndex = _currentRecordsCount - 1;
-                var lastRecord = _currentRecordsArray is { } recordsArray
-                    ? recordsArray[_currentRecordsArrayOffset + lastRecordIndex]
-                    : records[lastRecordIndex];
-                if (CurrentBaseOffset + lastRecord.OffsetDelta < _stopAtOffsetExclusive)
-                    break;
-
-                _currentRecordsCount--;
-            }
+            _currentRecordsCount = FindSnapshotRecordCount(records);
         }
 
         CurrentPartitionLeaderEpoch = batch.PartitionLeaderEpoch;
@@ -546,6 +537,31 @@ internal sealed class PendingFetchData : IDisposable
         CurrentTimestampType = (attrs & RecordBatchAttributes.TimestampTypeLogAppendTime) != 0
             ? TimestampType.LogAppendTime
             : TimestampType.CreateTime;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private int FindSnapshotRecordCount(IReadOnlyList<Record> records)
+    {
+        if (CurrentBaseOffset >= _stopAtOffsetExclusive)
+            return 0;
+
+        var low = 0;
+        var high = _currentRecordsCount;
+        // Offset deltas are monotonic within a Kafka record batch, so a lower-bound
+        // search avoids walking every record in the excluded suffix.
+        while (low < high)
+        {
+            var middle = low + ((high - low) >> 1);
+            var offsetDelta = _currentRecordsArray is { } recordsArray
+                ? recordsArray[_currentRecordsArrayOffset + middle].OffsetDelta
+                : records[middle].OffsetDelta;
+            if (CurrentBaseOffset + offsetDelta < _stopAtOffsetExclusive)
+                low = middle + 1;
+            else
+                high = middle;
+        }
+
+        return low;
     }
 
     /// <summary>

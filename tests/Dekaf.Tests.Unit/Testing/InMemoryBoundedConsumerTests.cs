@@ -103,6 +103,47 @@ public sealed class InMemoryBoundedConsumerTests
     }
 
     [Test]
+    public async Task ConsumeSnapshotAsync_GroupMembersCaptureOnlyOwnedPartitions()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("events", partitionCount: 2);
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await ProduceRangeAsync(producer, "events", partition: 0, count: 1);
+        await ProduceRangeAsync(producer, "events", partition: 1, count: 1);
+        await using var first = CreateGroupConsumer(cluster, "a");
+        await using var second = CreateGroupConsumer(cluster, "b");
+        first.Subscribe("events");
+        second.Subscribe("events");
+
+        var firstRecords = await CollectAsync(first.ConsumeSnapshotAsync());
+        var secondRecords = await CollectAsync(second.ConsumeSnapshotAsync());
+
+        await Assert.That(firstRecords).Count().IsEqualTo(1);
+        await Assert.That(secondRecords).Count().IsEqualTo(1);
+        await Assert.That(firstRecords[0].Partition).IsNotEqualTo(secondRecords[0].Partition);
+    }
+
+    [Test]
+    public async Task ConsumeSnapshotAsync_GroupOwnershipChangeThrows()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("events", partitionCount: 2);
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await ProduceRangeAsync(producer, "events", partition: 0, count: 2);
+        await ProduceRangeAsync(producer, "events", partition: 1, count: 2);
+        await using var first = CreateGroupConsumer(cluster, "a");
+        first.Subscribe("events");
+        await using var snapshot = first.ConsumeSnapshotAsync().GetAsyncEnumerator();
+        await Assert.That(await snapshot.MoveNextAsync()).IsTrue();
+
+        await using var second = CreateGroupConsumer(cluster, "b");
+        second.Subscribe("events");
+
+        await Assert.That(async () => await snapshot.MoveNextAsync().AsTask())
+            .Throws<InvalidOperationException>();
+    }
+
+    [Test]
     public async Task ConsumeSnapshotAsync_AssignmentChangeThrows()
     {
         var cluster = new InMemoryKafkaCluster();
@@ -238,6 +279,27 @@ public sealed class InMemoryBoundedConsumerTests
                 Value = $"value-{i}"
             });
         }
+    }
+
+    private static InMemoryConsumer<string, string> CreateGroupConsumer(
+        InMemoryKafkaCluster cluster,
+        string memberId) =>
+        new(
+            cluster,
+            new InMemoryConsumerOptions
+            {
+                GroupId = "snapshot-group",
+                MemberId = memberId,
+                AutoOffsetReset = AutoOffsetReset.Earliest
+            });
+
+    private static async Task<List<ConsumeResult<string, string>>> CollectAsync(
+        IAsyncEnumerable<ConsumeResult<string, string>> records)
+    {
+        var results = new List<ConsumeResult<string, string>>();
+        await foreach (var record in records)
+            results.Add(record);
+        return results;
     }
 
     private static async Task<List<string>> CollectValuesAsync(

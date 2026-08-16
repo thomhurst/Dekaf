@@ -169,13 +169,16 @@ public sealed class ConsumerSnapshotIntegrationTests(KafkaTestContainer kafka)
         var partition = new TopicPartition(topic, 0);
         consumer.Partitions.Assign(partition);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var capturedWatermarks = await WaitForConditionAsync(
+            async () => await consumer.Offsets.QueryWatermarkOffsetsAsync(partition, timeout.Token)
+                .ConfigureAwait(false),
+            static watermarks => watermarks.High >= 4,
+            description: "aborted transaction watermark visibility").ConfigureAwait(false);
 
         var records = await CollectAsync(consumer.ConsumeSnapshotAsync(timeout.Token)).ConfigureAwait(false);
-        var watermarks = await consumer.Offsets.QueryWatermarkOffsetsAsync(partition, timeout.Token)
-            .ConfigureAwait(false);
 
         await Assert.That(records).IsEmpty();
-        await Assert.That(consumer.Positions.GetPosition(partition)).IsEqualTo(watermarks.High);
+        await Assert.That(consumer.Positions.GetPosition(partition)).IsEqualTo(capturedWatermarks.High);
     }
 
     [Test]

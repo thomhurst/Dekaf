@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Text.RegularExpressions;
 using Dekaf.Consumer;
@@ -395,6 +396,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     {
         SnapshotPartitionBound[] partitions;
         int consumerStateVersion;
+        int consumerGroupGeneration;
         lock (_gate)
         {
             ThrowIfDisposed();
@@ -407,9 +409,10 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             _snapshotActive = true;
             try
             {
-                partitions = new SnapshotPartitionBound[_assignment.Count];
+                var assignment = GetCurrentAssignmentUnderLock(out consumerGroupGeneration);
+                partitions = new SnapshotPartitionBound[assignment.Count];
                 var partitionIndex = 0;
-                foreach (var partition in _assignment)
+                foreach (var partition in assignment)
                 {
                     if (_paused.Contains(partition))
                     {
@@ -453,11 +456,10 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 bool complete;
                 lock (_gate)
                 {
-                    if (_consumerStateVersion != consumerStateVersion)
-                    {
-                        throw new InvalidOperationException(
-                            "The consumer assignment or pause state changed while a snapshot enumeration was active.");
-                    }
+                    ThrowIfSnapshotStateChangedUnderLock(
+                        consumerStateVersion,
+                        partitions,
+                        ref consumerGroupGeneration);
 
                     ProveInDoubtRecordUnderLock();
                     if (!TrySelectSnapshotRecordUnderLock(
@@ -1006,6 +1008,40 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         }
     }
 
+    private void ThrowIfSnapshotStateChangedUnderLock(
+        int consumerStateVersion,
+        SnapshotPartitionBound[] partitions,
+        ref int consumerGroupGeneration)
+    {
+        if (_consumerStateVersion != consumerStateVersion)
+            ThrowSnapshotStateChanged();
+
+        if (consumerGroupGeneration < 0
+            || _groupId is null
+            || _memberId is null
+            || _cluster.GetConsumerGroupGeneration(_groupId) == consumerGroupGeneration)
+        {
+            return;
+        }
+
+        var assignment = GetCurrentAssignmentUnderLock(out var currentGeneration);
+        if (assignment.Count != partitions.Length)
+            ThrowSnapshotStateChanged();
+
+        for (var i = 0; i < partitions.Length; i++)
+        {
+            if (!assignment.Contains(partitions[i].Partition))
+                ThrowSnapshotStateChanged();
+        }
+
+        consumerGroupGeneration = currentGeneration;
+    }
+
+    [DoesNotReturn]
+    private static void ThrowSnapshotStateChanged() =>
+        throw new InvalidOperationException(
+            "The consumer assignment or pause state changed while a snapshot enumeration was active.");
+
     /// <summary>
     /// Consume path used when at least one component has an <see cref="IAsyncDeserializer{T}"/>.
     /// Deliberate mirror of <see cref="TryConsumeOne"/>: both drive the same selection and
@@ -1322,12 +1358,21 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             partition.Partition,
             offset);
 
-    private IReadOnlySet<TopicPartition> GetCurrentAssignmentUnderLock()
+    private IReadOnlySet<TopicPartition> GetCurrentAssignmentUnderLock() =>
+        GetCurrentAssignmentUnderLock(out _);
+
+    private IReadOnlySet<TopicPartition> GetCurrentAssignmentUnderLock(out int consumerGroupGeneration)
     {
         if (_groupId is null || _memberId is null)
+        {
+            consumerGroupGeneration = -1;
             return _assignment;
+        }
 
-        var owned = _cluster.GetConsumerGroupAssignment(_groupId, _memberId);
+        var owned = _cluster.GetConsumerGroupAssignment(
+            _groupId,
+            _memberId,
+            out consumerGroupGeneration);
         return owned.Where(_assignment.Contains).ToHashSet();
     }
 

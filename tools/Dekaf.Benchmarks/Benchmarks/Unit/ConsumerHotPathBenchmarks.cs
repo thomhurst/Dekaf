@@ -236,10 +236,22 @@ public class ConsumerHotPathBenchmarks
         return chars;
     }
 
-    private PendingFetchData CreatePendingFetchData(Record[]? records = null)
+    [Benchmark(Description = "Snapshot bound skips post-bound batch")]
+    public bool SnapshotBound_SkipPostBoundBatch()
+    {
+        using var pending = CreatePendingFetchData(
+            baseOffset: MessageCount,
+            stopAtOffsetExclusive: 0);
+        return pending.MoveNext();
+    }
+
+    private PendingFetchData CreatePendingFetchData(
+        Record[]? records = null,
+        long baseOffset = 0,
+        long stopAtOffsetExclusive = -1)
     {
         var recordBatch = RecordBatch.RentFromPool();
-        recordBatch.BaseOffset = 0;
+        recordBatch.BaseOffset = baseOffset;
         recordBatch.BaseTimestamp = _timestampMs;
         recordBatch.MaxTimestamp = _timestampMs + MessageCount - 1;
         recordBatch.LastOffsetDelta = MessageCount - 1;
@@ -247,7 +259,11 @@ public class ConsumerHotPathBenchmarks
         recordBatch.Records = records ?? _records;
 
         _batchList.Batch = recordBatch;
-        var pending = PendingFetchData.Create(_topic, partitionIndex: 0, _batchList);
+        var pending = PendingFetchData.Create(
+            _topic,
+            partitionIndex: 0,
+            _batchList,
+            stopAtOffsetExclusive: stopAtOffsetExclusive);
         pending.EagerParseAll();
         return pending;
     }

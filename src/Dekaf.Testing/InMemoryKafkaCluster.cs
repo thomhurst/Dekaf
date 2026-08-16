@@ -15,6 +15,7 @@ public sealed class InMemoryKafkaCluster
     private readonly Dictionary<string, TopicState> _topics = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<TopicPartition, TopicPartitionOffset>> _consumerGroupOffsets = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<string, HashSet<TopicPartition>>> _consumerGroupMembers = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, int> _consumerGroupGenerations = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<TopicPartition, Dictionary<long, ShareLeaseState>>> _shareLeases = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<TopicPartition, Dictionary<long, int>>> _shareDeliveryCounts = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Exception> _produceFailures = new(StringComparer.Ordinal);
@@ -124,6 +125,7 @@ public sealed class InMemoryKafkaCluster
             }
 
             members[memberId] = partitions;
+            _consumerGroupGenerations[groupId] = _consumerGroupGenerations.GetValueOrDefault(groupId) + 1;
         }
     }
 
@@ -137,24 +139,42 @@ public sealed class InMemoryKafkaCluster
             if (!_consumerGroupMembers.TryGetValue(groupId, out var members))
                 return;
 
-            members.Remove(memberId);
+            if (!members.Remove(memberId))
+                return;
+
+            _consumerGroupGenerations[groupId] = _consumerGroupGenerations.GetValueOrDefault(groupId) + 1;
             if (members.Count == 0)
+            {
                 _consumerGroupMembers.Remove(groupId);
+                _consumerGroupGenerations.Remove(groupId);
+            }
         }
     }
 
-    internal IReadOnlySet<TopicPartition> GetConsumerGroupAssignment(string groupId, string memberId)
+    internal IReadOnlySet<TopicPartition> GetConsumerGroupAssignment(
+        string groupId,
+        string memberId,
+        out int generation)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
         ArgumentException.ThrowIfNullOrWhiteSpace(memberId);
 
         lock (_gate)
         {
+            generation = _consumerGroupGenerations.GetValueOrDefault(groupId);
             var assignments = BuildConsumerGroupAssignments(groupId);
             return assignments.TryGetValue(memberId, out var partitions)
                 ? partitions.ToHashSet()
                 : new HashSet<TopicPartition>();
         }
+    }
+
+    internal int GetConsumerGroupGeneration(string groupId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
+
+        lock (_gate)
+            return _consumerGroupGenerations.GetValueOrDefault(groupId);
     }
 
     public IReadOnlyList<InMemoryRecord> ReadRecords(string topic, int partition = 0)
