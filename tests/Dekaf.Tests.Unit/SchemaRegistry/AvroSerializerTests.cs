@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Collections.ObjectModel;
 using System.Numerics;
 using Avro.Generic;
 using Avro.IO;
@@ -305,6 +306,22 @@ public sealed class AvroSerializerTests
         record.Add("values", useList
             ? new List<int?> { int.MinValue, null, 0, int.MaxValue }
             : new int?[] { int.MinValue, null, 0, int.MaxValue });
+        var expectedRecord = new GenericRecord(schema);
+        expectedRecord.Add("values", new int?[] { int.MinValue, null, 0, int.MaxValue });
+
+        await AssertSerializedPayloadMatches(serializer, schema, record, expectedRecord);
+    }
+
+    [Test]
+    public async Task Serializer_GenericRecord_NullableUnionCollectionIList_MatchesApacheAvroBytes()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry);
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(NullableIntArraySchema);
+        var record = new GenericRecord(schema);
+        record.Add(
+            "values",
+            new Collection<int?>([int.MinValue, null, 0, int.MaxValue]));
         var expectedRecord = new GenericRecord(schema);
         expectedRecord.Add("values", new int?[] { int.MinValue, null, 0, int.MaxValue });
 
