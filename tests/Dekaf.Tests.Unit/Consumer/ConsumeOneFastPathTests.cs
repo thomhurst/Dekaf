@@ -727,7 +727,14 @@ public sealed class ConsumeOneFastPathTests
         if (fetches.Length == 0)
             return consumer;
 
-        AssignTestPartition(consumer);
+        var partitions = fetches
+            .Select(static fetch => fetch.TopicPartition)
+            .Distinct()
+            .ToArray();
+        consumer.Assign(partitions);
+        var fetchPositions = GetFetchPositions(consumer);
+        foreach (var partition in partitions)
+            fetchPositions[partition] = 0;
         var pendingFetches = GetPendingFetches(consumer);
         foreach (var fetch in fetches)
             pendingFetches.Enqueue(fetch);

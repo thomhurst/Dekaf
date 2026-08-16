@@ -137,8 +137,14 @@ namespace Dekaf.Consumer
             {
                 PendingFetchData pending = _batch._pendingFetchData;
 
-                if (!_canContinue || !_batch._iterationGuard.IsCurrent(pending.TopicPartition, ref _observedVersion))
+                if (!_canContinue)
                     return false;
+
+                if (!_batch._iterationGuard.IsCurrent(pending.TopicPartition, ref _observedVersion))
+                {
+                    _canContinue = false;
+                    return false;
+                }
 
                 if (_recordsYielded >= _batch._maxRecords)
                 {
@@ -172,8 +178,16 @@ namespace Dekaf.Consumer
                     isKeyNull: record.IsKeyNull,
                     isValueNull: record.IsValueNull);
 
-                if (!_batch._iterationGuard.IsCurrent(pending.TopicPartition, ref _observedVersion))
+                var iterationStatus = _batch._iterationGuard.GetStatusAfterRead(
+                    pending.TopicPartition,
+                    ref _observedVersion);
+                if (iterationStatus != BatchIterationStatus.Continue)
+                {
+                    _canContinue = false;
+                    if (iterationStatus == BatchIterationStatus.Paused)
+                        pending.BufferCurrentForRedelivery();
                     return false;
+                }
 
                 pending.TrackConsumed(offset, messageBytes);
                 _batch._storeOffsetOnDelivery?.Invoke(
