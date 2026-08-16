@@ -690,7 +690,7 @@ public sealed class SchemaRuleSet
         [CompilerGenerated]
         init
         {
-            _domainRules = value;
+            _domainRules = SnapshotArray(value);
             _domainRuleCountIsFixed = value is null or SchemaRule[];
             UpdateFixedRuleState();
         }
@@ -708,7 +708,7 @@ public sealed class SchemaRuleSet
         [CompilerGenerated]
         init
         {
-            _encodingRules = value;
+            _encodingRules = SnapshotArray(value);
             _encodingRuleCountIsFixed = value is null or SchemaRule[];
             UpdateFixedRuleState();
         }
@@ -731,6 +731,11 @@ public sealed class SchemaRuleSet
 
     private void UpdateFixedRuleState() =>
         _hasFixedDomainOrEncodingRules = _domainRules is { Count: > 0 } || _encodingRules is { Count: > 0 };
+
+    private static IReadOnlyList<SchemaRule>? SnapshotArray(IReadOnlyList<SchemaRule>? rules) =>
+        rules is SchemaRule[] array
+            ? Array.AsReadOnly((SchemaRule[])array.Clone())
+            : rules;
 }
 
 /// <summary>

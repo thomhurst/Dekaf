@@ -1,16 +1,42 @@
-using System.Runtime.CompilerServices;
+using System.Collections.Concurrent;
 using System.Text.Json;
 
 namespace Dekaf.SchemaRegistry;
 
 internal static class SubjectNameResolver
 {
-    private static readonly ConditionalWeakTable<string, TopicSubjects> TopicSubjectNames = new();
+    private const int MaxCachedTopicCount = 1024;
+    private static readonly ConcurrentDictionary<string, TopicSubjects> TopicSubjectNames =
+        new(StringComparer.Ordinal);
+    private static readonly Queue<string> TopicSubjectOrder = new(MaxCachedTopicCount);
+    private static readonly object TopicSubjectNamesLock = new();
 
     internal static string GetTopicSubjectName(string topic, bool isKey)
     {
-        var subjects = TopicSubjectNames.GetValue(topic, static value => new TopicSubjects(value));
+        if (!TopicSubjectNames.TryGetValue(topic, out var subjects))
+            subjects = AddTopicSubjects(topic);
+
         return isKey ? subjects.Key : subjects.Value;
+    }
+
+    private static TopicSubjects AddTopicSubjects(string topic)
+    {
+        lock (TopicSubjectNamesLock)
+        {
+            if (TopicSubjectNames.TryGetValue(topic, out var subjects))
+                return subjects;
+
+            if (TopicSubjectOrder.Count >= MaxCachedTopicCount)
+            {
+                var evictedTopic = TopicSubjectOrder.Dequeue();
+                TopicSubjectNames.TryRemove(evictedTopic, out _);
+            }
+
+            subjects = new TopicSubjects(topic);
+            TopicSubjectNames[topic] = subjects;
+            TopicSubjectOrder.Enqueue(topic);
+            return subjects;
+        }
     }
 
     internal static string GetSubjectName(
