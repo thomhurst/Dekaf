@@ -129,11 +129,22 @@ public sealed class ProtobufSchemaRegistrySerializer<
     private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry ResolveSchemaSync(string topic, bool isKey)
     {
         var subject = GetSubjectName(topic, isKey);
-        var resolved = ResolveSchemaAsync(subject, topic, isKey)
-            .WaitAsync(SchemaRegistryTimeout)
-            .ConfigureAwait(false)
-            .GetAwaiter()
-            .GetResult();
+        using var timeoutSource = new CancellationTokenSource(SchemaRegistryTimeout);
+        var resolutionTask = ResolveSchemaAsync(subject, topic, isKey, timeoutSource.Token);
+        SubjectSchemaIdCache.SubjectSchemaIdCacheValue resolved;
+        try
+        {
+            resolved = resolutionTask
+                .WaitAsync(timeoutSource.Token)
+                .ConfigureAwait(false)
+                .GetAwaiter()
+                .GetResult();
+        }
+        catch (OperationCanceledException exception) when (timeoutSource.IsCancellationRequested)
+        {
+            ObserveLateFault(resolutionTask);
+            throw new TimeoutException("Schema Registry resolution timed out.", exception);
+        }
 
         return new SubjectSchemaIdCache.SubjectSchemaIdCacheEntry(
             new SubjectSchemaIdCache.SubjectSchemaIdCacheKey(topic, isKey),
@@ -145,11 +156,14 @@ public sealed class ProtobufSchemaRegistrySerializer<
     private async Task<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> ResolveSchemaAsync(
         string subject,
         string topic,
-        bool isKey)
+        bool isKey,
+        CancellationToken cancellationToken)
     {
         if (_config.UseLatestVersion)
         {
-            var latest = await _schemaRegistry.GetSchemaBySubjectAsync(subject).ConfigureAwait(false);
+            var latest = await _schemaRegistry.GetSchemaBySubjectAsync(
+                subject,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
             return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(latest.Id, latest.Schema);
         }
 
@@ -159,7 +173,8 @@ public sealed class ProtobufSchemaRegistrySerializer<
             references = await RegisterOrLookupReferencesAsync(
                 _descriptor.File,
                 topic,
-                isKey).ConfigureAwait(false);
+                isKey,
+                cancellationToken).ConfigureAwait(false);
         }
 
         var schema = new Schema
@@ -172,8 +187,15 @@ public sealed class ProtobufSchemaRegistrySerializer<
         if (_config.AutoRegisterSchemas)
         {
             var id = _config.NormalizeSchemas
-                ? await _schemaRegistry.GetOrRegisterSchemaAsync(subject, schema, normalize: true).ConfigureAwait(false)
-                : await _schemaRegistry.GetOrRegisterSchemaAsync(subject, schema).ConfigureAwait(false);
+                ? await _schemaRegistry.GetOrRegisterSchemaAsync(
+                    subject,
+                    schema,
+                    normalize: true,
+                    cancellationToken).ConfigureAwait(false)
+                : await _schemaRegistry.GetOrRegisterSchemaAsync(
+                    subject,
+                    schema,
+                    cancellationToken).ConfigureAwait(false);
             return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(id, schema);
         }
 
@@ -181,7 +203,8 @@ public sealed class ProtobufSchemaRegistrySerializer<
             subject,
             schema,
             ignoreDeletedSchemas: true,
-            normalize: _config.NormalizeSchemas).ConfigureAwait(false);
+            normalize: _config.NormalizeSchemas,
+            cancellationToken).ConfigureAwait(false);
         return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(registered.Id, registered.Schema);
     }
 
@@ -220,15 +243,17 @@ public sealed class ProtobufSchemaRegistrySerializer<
     private async Task<IReadOnlyList<SchemaReference>?> RegisterOrLookupReferencesAsync(
         FileDescriptor root,
         string topic,
-        bool isKey)
+        bool isKey,
+        CancellationToken cancellationToken)
     {
         var state = new ReferenceRegistrationState(topic, isKey);
-        return await ResolveDirectReferencesAsync(root, state).ConfigureAwait(false);
+        return await ResolveDirectReferencesAsync(root, state, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<IReadOnlyList<SchemaReference>?> ResolveDirectReferencesAsync(
         FileDescriptor file,
-        ReferenceRegistrationState state)
+        ReferenceRegistrationState state,
+        CancellationToken cancellationToken)
     {
         List<SchemaReference>? references = null;
         for (var index = 0; index < file.Dependencies.Count; index++)
@@ -237,7 +262,10 @@ public sealed class ProtobufSchemaRegistrySerializer<
             if (_config.SkipKnownTypes && IsKnownType(dependency.Name))
                 continue;
 
-            var registered = await RegisterOrLookupDependencyAsync(dependency, state).ConfigureAwait(false);
+            var registered = await RegisterOrLookupDependencyAsync(
+                dependency,
+                state,
+                cancellationToken).ConfigureAwait(false);
             (references ??= []).Add(new SchemaReference
             {
                 Name = dependency.Name,
@@ -251,7 +279,8 @@ public sealed class ProtobufSchemaRegistrySerializer<
 
     private async Task<RegisteredDependency> RegisterOrLookupDependencyAsync(
         FileDescriptor dependency,
-        ReferenceRegistrationState state)
+        ReferenceRegistrationState state,
+        CancellationToken cancellationToken)
     {
         if (state.Completed.TryGetValue(dependency.Name, out var completed))
             return completed;
@@ -261,7 +290,10 @@ public sealed class ProtobufSchemaRegistrySerializer<
 
         try
         {
-            var references = await ResolveDirectReferencesAsync(dependency, state).ConfigureAwait(false);
+            var references = await ResolveDirectReferencesAsync(
+                dependency,
+                state,
+                cancellationToken).ConfigureAwait(false);
             var schema = new Schema
             {
                 SchemaType = SchemaType.Protobuf,
@@ -277,11 +309,15 @@ public sealed class ProtobufSchemaRegistrySerializer<
                     await _schemaRegistry.RegisterSchemaAsync(
                         subject,
                         schema,
-                        normalize: true).ConfigureAwait(false);
+                        normalize: true,
+                        cancellationToken).ConfigureAwait(false);
                 }
                 else
                 {
-                    await _schemaRegistry.RegisterSchemaAsync(subject, schema).ConfigureAwait(false);
+                    await _schemaRegistry.RegisterSchemaAsync(
+                        subject,
+                        schema,
+                        cancellationToken).ConfigureAwait(false);
                 }
             }
 
@@ -289,7 +325,8 @@ public sealed class ProtobufSchemaRegistrySerializer<
                 subject,
                 schema,
                 ignoreDeletedSchemas: true,
-                normalize: _config.NormalizeSchemas).ConfigureAwait(false);
+                normalize: _config.NormalizeSchemas,
+                cancellationToken).ConfigureAwait(false);
             var result = new RegisteredDependency(subject, registered.Version);
             state.Completed.Add(dependency.Name, result);
             return result;
@@ -313,8 +350,9 @@ public sealed class ProtobufSchemaRegistrySerializer<
         return _config.ReferenceSubjectNameStrategy switch
         {
             ReferenceSubjectNameStrategy.ReferenceName => referenceName,
-            ReferenceSubjectNameStrategy.Qualified => referenceName
-                .Replace(".proto", string.Empty)
+            ReferenceSubjectNameStrategy.Qualified => (referenceName.EndsWith(".proto", StringComparison.Ordinal)
+                    ? referenceName[..^".proto".Length]
+                    : referenceName)
                 .Replace('/', '.'),
             _ => throw new InvalidOperationException(
                 $"Unknown Protobuf reference subject name strategy: {_config.ReferenceSubjectNameStrategy}.")
@@ -325,6 +363,21 @@ public sealed class ProtobufSchemaRegistrySerializer<
         referenceName.StartsWith("confluent/", StringComparison.Ordinal) ||
         referenceName.StartsWith("google/protobuf/", StringComparison.Ordinal) ||
         referenceName.StartsWith("google/type/", StringComparison.Ordinal);
+
+    private static void ObserveLateFault(Task task)
+    {
+        if (task.IsCompleted)
+        {
+            _ = task.Exception;
+            return;
+        }
+
+        _ = task.ContinueWith(
+            static completed => _ = completed.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
 
     private sealed class ReferenceRegistrationState(string topic, bool isKey)
     {

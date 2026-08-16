@@ -416,6 +416,23 @@ public class ProtobufSchemaRegistrySerializerTests
         });
 
         await Assert.That(exception!.ErrorCode).IsEqualTo(errorCode);
+
+        if (config.UseLatestVersion)
+        {
+            await schemaRegistry.Received(1).GetSchemaBySubjectAsync(
+                Arg.Any<string>(),
+                Arg.Any<string>(),
+                Arg.Is<CancellationToken>(static token => token.CanBeCanceled));
+        }
+        else
+        {
+            await schemaRegistry.Received(1).LookupSchemaAsync(
+                Arg.Any<string>(),
+                Arg.Any<Schema>(),
+                true,
+                false,
+                Arg.Is<CancellationToken>(static token => token.CanBeCanceled));
+        }
     }
 
     [Test]

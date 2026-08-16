@@ -76,7 +76,7 @@ public sealed class ProtobufSerializerConfig
     /// Optional custom strategy for dependent-schema subjects. When set, this takes precedence
     /// over <see cref="ReferenceSubjectNameStrategy"/>.
     /// </summary>
-    public ICustomReferenceSubjectNameStrategy? CustomReferenceSubjectNameStrategy { get; init; }
+    public IReferenceSubjectNameStrategy? CustomReferenceSubjectNameStrategy { get; init; }
 
     /// <summary>
     /// Optional rule executor applied to Protobuf message bytes before the Schema Registry envelope is written.
@@ -110,7 +110,7 @@ public enum ReferenceSubjectNameStrategy
 /// <summary>
 /// Determines the subject under which a referenced Protobuf schema is registered or looked up.
 /// </summary>
-public interface ICustomReferenceSubjectNameStrategy
+public interface IReferenceSubjectNameStrategy
 {
     /// <summary>
     /// Gets the reference subject for a serialization context.

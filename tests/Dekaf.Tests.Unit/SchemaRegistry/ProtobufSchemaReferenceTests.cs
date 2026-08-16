@@ -24,11 +24,26 @@ public sealed class ProtobufSchemaReferenceTests
             ref destination,
             new SerializationContext { Topic = "graph", Component = SerializationComponent.Value });
 
+        await schemaRegistry.Received().RegisterSchemaAsync(
+            Arg.Any<string>(),
+            Arg.Any<Schema>(),
+            Arg.Is<CancellationToken>(static token => token.CanBeCanceled));
+        await schemaRegistry.Received().LookupSchemaAsync(
+            Arg.Any<string>(),
+            Arg.Any<Schema>(),
+            true,
+            false,
+            Arg.Is<CancellationToken>(static token => token.CanBeCanceled));
+        await schemaRegistry.Received().GetOrRegisterSchemaAsync(
+            Arg.Any<string>(),
+            Arg.Any<Schema>(),
+            Arg.Is<CancellationToken>(static token => token.CanBeCanceled));
+
         await Assert.That(registrations.Select(static registration => registration.Subject).SequenceEqual([
                 "shared/base.proto",
                 "deps/left.proto",
                 "deps/right.proto",
-                "alpha/common.proto",
+                "vendor.proto/common/user.proto",
                 "beta/common.proto",
                 "graph-value"
             ])).IsTrue();
@@ -43,7 +58,7 @@ public sealed class ProtobufSchemaReferenceTests
         await Assert.That(rootRegistration.Schema.References!.Select(static reference => reference.Name).SequenceEqual([
                 "deps/left.proto",
                 "deps/right.proto",
-                "alpha/common.proto",
+                "vendor.proto/common/user.proto",
                 "beta/common.proto"
             ])).IsTrue();
 
@@ -97,7 +112,7 @@ public sealed class ProtobufSchemaReferenceTests
         await Assert.That(registrations.Select(static registration => registration.Subject).ToArray())
             .Contains("shared.base");
         await Assert.That(registrations.Select(static registration => registration.Subject).ToArray())
-            .Contains("alpha.common");
+            .Contains("vendor.proto.common.user");
         await Assert.That(registrations.Select(static registration => registration.Subject).ToArray())
             .Contains("beta.common");
     }
@@ -186,7 +201,7 @@ public sealed class ProtobufSchemaReferenceTests
 
     private sealed record Registration(string Subject, Schema Schema);
 
-    private sealed class RecordingReferenceStrategy : ICustomReferenceSubjectNameStrategy
+    private sealed class RecordingReferenceStrategy : IReferenceSubjectNameStrategy
     {
         internal List<(string Topic, string ReferenceName, bool IsKey)> Calls { get; } = [];
 
@@ -209,15 +224,15 @@ public sealed class ReferenceGraphMessage : IMessage<ReferenceGraphMessage>, IBu
         var shared = CreateSharedDescriptor();
         var left = CreateImportDescriptor("deps/left.proto", "graph.left", "Left", shared.Name);
         var right = CreateImportDescriptor("deps/right.proto", "graph.right", "Right", shared.Name);
-        var alpha = CreateCommonDescriptor("alpha/common.proto", "graph.alpha", "AlphaCommon");
+        var vendor = CreateCommonDescriptor("vendor.proto/common/user.proto", "graph.vendor", "VendorCommon");
         var beta = CreateCommonDescriptor("beta/common.proto", "graph.beta", "BetaCommon");
-        var root = CreateRootDescriptor(left.Name, right.Name, alpha.Name, beta.Name);
+        var root = CreateRootDescriptor(left.Name, right.Name, vendor.Name, beta.Name);
         var descriptorBytes = new List<ByteString>
         {
             shared.ToByteString(),
             left.ToByteString(),
             right.ToByteString(),
-            alpha.ToByteString(),
+            vendor.ToByteString(),
             beta.ToByteString(),
             TimestampReflection.Descriptor.SerializedData,
             root.ToByteString()
@@ -316,7 +331,7 @@ public sealed class ReferenceGraphMessage : IMessage<ReferenceGraphMessage>, IBu
     private static FileDescriptorProto CreateRootDescriptor(
         string leftName,
         string rightName,
-        string alphaName,
+        string vendorName,
         string betaName)
     {
         var descriptor = new FileDescriptorProto
@@ -328,7 +343,7 @@ public sealed class ReferenceGraphMessage : IMessage<ReferenceGraphMessage>, IBu
         };
         descriptor.Dependency.Add(leftName);
         descriptor.Dependency.Add(rightName);
-        descriptor.Dependency.Add(alphaName);
+        descriptor.Dependency.Add(vendorName);
         descriptor.Dependency.Add(betaName);
         descriptor.Dependency.Add(TimestampReflection.Descriptor.Name);
 
