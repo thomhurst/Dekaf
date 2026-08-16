@@ -155,7 +155,7 @@ public sealed class SchemaRegistryCacheTests
         };
 
     [Test]
-    public async Task SubjectSchemaIdCache_EvictsOldestEntryAtMaxCachedEntries()
+    public async Task SubjectSchemaIdCache_RetainsFixedEntriesAndTwoOverflowEntries()
     {
         var cache = new SubjectSchemaIdCache();
 
@@ -170,11 +170,33 @@ public sealed class SchemaRegistryCacheTests
         }
 
         await Assert.That(cache.CachedEntryCount).IsEqualTo(SubjectSchemaIdCache.MaxCachedEntries);
-        await Assert.That(cache.TryGet("topic-0", isKey: false, out _)).IsFalse();
+        await Assert.That(cache.TryGet("topic-0", isKey: false, out _)).IsTrue();
+        await Assert.That(cache.TryGet(
+            $"topic-{SubjectSchemaIdCache.MaxCachedEntries + 7}",
+            isKey: false,
+            out _)).IsFalse();
         await Assert.That(cache.TryGet(
             $"topic-{SubjectSchemaIdCache.MaxCachedEntries + 9}",
             isKey: false,
             out _)).IsTrue();
+    }
+
+    [Test]
+    public async Task SubjectSchemaIdCache_ConcurrentTurnoverStaysBounded()
+    {
+        var cache = new SubjectSchemaIdCache();
+
+        Parallel.For(
+            0,
+            SubjectSchemaIdCache.MaxCachedEntries + 1_024,
+            index => _ = cache.GetOrAdd(
+                $"concurrent-topic-{index}",
+                isKey: false,
+                state: 0,
+                static (_, topic, isKey) => topic + (isKey ? "-key" : "-value"),
+                static (_, subject) => new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(subject.Length, null)));
+
+        await Assert.That(cache.CachedEntryCount).IsEqualTo(SubjectSchemaIdCache.MaxCachedEntries);
     }
 
     private sealed record JsonPayload(int Id, string Name);

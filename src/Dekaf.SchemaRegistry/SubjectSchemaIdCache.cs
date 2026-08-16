@@ -10,8 +10,8 @@ internal sealed class SubjectSchemaIdCache
 
     private readonly ConcurrentDictionary<SubjectSchemaIdCacheKey, SubjectSchemaIdCacheEntry> _cache = new();
     private SubjectSchemaIdCacheEntry? _last;
-    private readonly Queue<SubjectSchemaIdCacheKey> _evictionQueue = new();
-    private readonly object _cacheMutationLock = new();
+    private SubjectSchemaIdCacheEntry? _overflowLast;
+    private SubjectSchemaIdCacheEntry? _overflowPrevious;
     private int _cacheCount;
 
     internal int CachedEntryCount => Volatile.Read(ref _cacheCount);
@@ -62,6 +62,22 @@ internal sealed class SubjectSchemaIdCache
             return true;
         }
 
+        var overflowLast = Volatile.Read(ref _overflowLast);
+        if (overflowLast is not null && overflowLast.Key.Equals(key))
+        {
+            Volatile.Write(ref _last, overflowLast);
+            entry = overflowLast;
+            return true;
+        }
+
+        var overflowPrevious = Volatile.Read(ref _overflowPrevious);
+        if (overflowPrevious is not null && overflowPrevious.Key.Equals(key))
+        {
+            Volatile.Write(ref _last, overflowPrevious);
+            entry = overflowPrevious;
+            return true;
+        }
+
         if (_cache.TryGetValue(key, out var cached))
         {
             Volatile.Write(ref _last, cached);
@@ -83,33 +99,65 @@ internal sealed class SubjectSchemaIdCache
 
     private SubjectSchemaIdCacheEntry Cache(SubjectSchemaIdCacheKey key, string? subject, int schemaId, Schema? schema)
     {
-        if (_cache.TryGetValue(key, out var existing))
-        {
-            Volatile.Write(ref _last, existing);
+        if (TryGetCached(key, out var existing))
             return existing;
-        }
 
         var entry = new SubjectSchemaIdCacheEntry(key, subject, schemaId, schema);
-        lock (_cacheMutationLock)
+        if (TryReserveCacheSlot())
         {
-            if (_cache.TryGetValue(key, out existing))
+            if (_cache.TryAdd(key, entry))
             {
-                Volatile.Write(ref _last, existing);
+                Volatile.Write(ref _last, entry);
+                return entry;
+            }
+
+            Interlocked.Decrement(ref _cacheCount);
+            if (TryGetCached(key, out existing))
                 return existing;
-            }
+        }
 
-            if (_cacheCount == MaxCachedEntries)
+        return PublishOverflow(entry);
+    }
+
+    private SubjectSchemaIdCacheEntry PublishOverflow(SubjectSchemaIdCacheEntry entry)
+    {
+        while (true)
+        {
+            var current = Volatile.Read(ref _overflowLast);
+            if (current is not null && current.Key.Equals(entry.Key))
             {
-                var oldest = _evictionQueue.Dequeue();
-                _cache.TryRemove(oldest, out _);
-                _cacheCount--;
+                Volatile.Write(ref _last, current);
+                return current;
             }
 
-            _cache.TryAdd(key, entry);
-            _evictionQueue.Enqueue(key);
-            _cacheCount++;
-            Volatile.Write(ref _last, entry);
-            return entry;
+            var previous = Volatile.Read(ref _overflowPrevious);
+            if (previous is not null && previous.Key.Equals(entry.Key))
+            {
+                Volatile.Write(ref _last, previous);
+                return previous;
+            }
+
+            Volatile.Write(ref _overflowPrevious, current);
+            if (ReferenceEquals(
+                Interlocked.CompareExchange(ref _overflowLast, entry, current),
+                current))
+            {
+                Volatile.Write(ref _last, entry);
+                return entry;
+            }
+        }
+    }
+
+    private bool TryReserveCacheSlot()
+    {
+        while (true)
+        {
+            var count = Volatile.Read(ref _cacheCount);
+            if (count >= MaxCachedEntries)
+                return false;
+
+            if (Interlocked.CompareExchange(ref _cacheCount, count + 1, count) == count)
+                return true;
         }
     }
 
