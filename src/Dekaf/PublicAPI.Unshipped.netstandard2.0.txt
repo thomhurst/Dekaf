@@ -1,1 +1,10 @@
 #nullable enable
+Dekaf.Consumer.ConsumerOffsetStoreExtensions
+Dekaf.Consumer.IConsumerBatchOffsetStore
+Dekaf.Consumer.IConsumerBatchOffsetStore.StoreOffsets(System.ReadOnlySpan<Dekaf.TopicPartitionOffset> offsets) -> void
+Dekaf.Consumer.IConsumerBatchOffsetStore.StoreOffsets<TOffsets>(TOffsets offsets) -> void
+Dekaf.Consumer.KafkaConsumer<TKey, TValue>.StoreOffsets(System.ReadOnlySpan<Dekaf.TopicPartitionOffset> offsets) -> void
+Dekaf.Consumer.KafkaConsumer<TKey, TValue>.StoreOffsets<TOffsets>(TOffsets offsets) -> void
+static Dekaf.Consumer.ConsumerOffsetStoreExtensions.StoreOffsets<TKey, TValue>(this Dekaf.Consumer.IKafkaConsumer<TKey, TValue>! consumer, Dekaf.TopicPartitionOffset[]! offsets) -> void
+static Dekaf.Consumer.ConsumerOffsetStoreExtensions.StoreOffsets<TKey, TValue>(this Dekaf.Consumer.IKafkaConsumer<TKey, TValue>! consumer, System.ReadOnlySpan<Dekaf.TopicPartitionOffset> offsets) -> void
+static Dekaf.Consumer.ConsumerOffsetStoreExtensions.StoreOffsets<TKey, TValue, TOffsets>(this Dekaf.Consumer.IKafkaConsumer<TKey, TValue>! consumer, TOffsets offsets) -> void

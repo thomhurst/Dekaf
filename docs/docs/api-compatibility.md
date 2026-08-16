@@ -37,6 +37,8 @@ dotnet pack src/Dekaf/Dekaf.csproj --configuration Release
 Package validation is inherited by every project under `src/`. It compares all
 TFM assets with the released version in `DekafPackageVersion` and checks binary
 breaks, parameter names, attributes, and compatible-framework surface drift.
+Compatible additions are reviewed through the source declaration files rather
+than treated as breaks against the previous release.
 
 ## Update a baseline
 
