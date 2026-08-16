@@ -105,7 +105,7 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
         }
     }
 
-    [Test]
+    [Test, NotInParallel]
     public async Task RetryTopicMessages_NotDue_ResumeAndProcessAcrossPartitions()
     {
         var sourceTopic = await KafkaContainer.CreateTestTopicAsync(partitions: 2);
