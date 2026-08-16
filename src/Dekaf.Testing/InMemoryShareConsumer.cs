@@ -450,7 +450,13 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             _asyncValueDeserializer,
             _valueDeserializer,
             record.IsValueNull ? ReadOnlyMemory<byte>.Empty : record.Value,
-            Context(record.Topic, SerializationComponent.Value, record.Headers, isNull: record.IsValueNull),
+            Context(
+                record.Topic,
+                SerializationComponent.Value,
+                record.Headers,
+                isNull: record.IsValueNull,
+                keyData: record.Key,
+                isKeyNull: record.IsKeyNull),
             cancellationToken).ConfigureAwait(false);
 
         return new ShareConsumeResult<TKey, TValue>
@@ -487,10 +493,22 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
         var value = record.IsValueNull
             ? _valueDeserializer.Deserialize(
                 ReadOnlyMemory<byte>.Empty,
-                Context(record.Topic, SerializationComponent.Value, record.Headers, isNull: true))
+                Context(
+                    record.Topic,
+                    SerializationComponent.Value,
+                    record.Headers,
+                    isNull: true,
+                    keyData: record.Key,
+                    isKeyNull: record.IsKeyNull))
             : _valueDeserializer.Deserialize(
                 record.Value,
-                Context(record.Topic, SerializationComponent.Value, record.Headers, isNull: false));
+                Context(
+                    record.Topic,
+                    SerializationComponent.Value,
+                    record.Headers,
+                    isNull: false,
+                    keyData: record.Key,
+                    isKeyNull: record.IsKeyNull));
 
         return new ShareConsumeResult<TKey, TValue>
         {
@@ -577,12 +595,15 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
         string topic,
         SerializationComponent component,
         IReadOnlyList<Header>? headers,
-        bool isNull) =>
+        bool isNull,
+        ReadOnlyMemory<byte> keyData = default,
+        bool isKeyNull = false) =>
         new()
         {
             Topic = topic,
             Component = component,
             Headers = headers is null ? null : new Headers(headers),
+            KeyData = SerializationContext.NormalizeKeyData(keyData, isKeyNull),
             IsNull = isNull
         };
 
