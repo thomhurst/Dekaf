@@ -493,7 +493,12 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
         where TWriter : struct, IValueWriter<T>
     {
         var union = _writerCache.GetUnion(schema);
-        var branch = union.GetValueBranch(typeof(T));
+        if (!union.TryGetValueBranch(typeof(T), out var branch))
+        {
+            WriteNullableUnionArrayWithoutValueBranch(union, values, encoder);
+            return;
+        }
+
         for (var i = 0; i < values.Length; i++)
         {
             encoder.StartItem();
@@ -505,7 +510,6 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
                 encoder.WriteUnionIndex(union.NullIndex);
                 continue;
             }
-
             encoder.WriteUnionIndex(branch.Index);
             TWriter.Write(branch.Schema, value.GetValueOrDefault(), encoder);
         }
@@ -535,7 +539,12 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
         where TWriter : struct, IValueWriter<T>
     {
         var union = _writerCache.GetUnion(schema);
-        var branch = union.GetValueBranch(typeof(T));
+        if (!union.TryGetValueBranch(typeof(T), out var branch))
+        {
+            WriteNullableUnionListWithoutValueBranch(union, values, encoder);
+            return;
+        }
+
         for (var i = 0; i < values.Count; i++)
         {
             encoder.StartItem();
@@ -547,7 +556,6 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
                 encoder.WriteUnionIndex(union.NullIndex);
                 continue;
             }
-
             encoder.WriteUnionIndex(branch.Index);
             TWriter.Write(branch.Schema, value.GetValueOrDefault(), encoder);
         }
@@ -577,7 +585,12 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
         where TWriter : struct, IValueWriter<T>
     {
         var union = _writerCache.GetUnion(schema);
-        var branch = union.GetValueBranch(typeof(T));
+        if (!union.TryGetValueBranch(typeof(T), out var branch))
+        {
+            WriteNullableUnionListWithoutValueBranch(union, values, encoder);
+            return;
+        }
+
         for (var i = 0; i < values.Count; i++)
         {
             encoder.StartItem();
@@ -589,9 +602,42 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
                 encoder.WriteUnionIndex(union.NullIndex);
                 continue;
             }
-
             encoder.WriteUnionIndex(branch.Index);
             TWriter.Write(branch.Schema, value.GetValueOrDefault(), encoder);
+        }
+    }
+
+    private static void WriteNullableUnionArrayWithoutValueBranch<T>(
+        UnionBranchCache union,
+        T?[] values,
+        AllocationFreeBinaryEncoder encoder)
+        where T : struct
+    {
+        for (var i = 0; i < values.Length; i++)
+        {
+            encoder.StartItem();
+            if (values[i].HasValue)
+                _ = union.GetValueBranch(typeof(T));
+            if (union.NullIndex < 0)
+                throw TypeMismatch(null, "union");
+            encoder.WriteUnionIndex(union.NullIndex);
+        }
+    }
+
+    private static void WriteNullableUnionListWithoutValueBranch<T>(
+        UnionBranchCache union,
+        IList<T?> values,
+        AllocationFreeBinaryEncoder encoder)
+        where T : struct
+    {
+        for (var i = 0; i < values.Count; i++)
+        {
+            encoder.StartItem();
+            if (values[i].HasValue)
+                _ = union.GetValueBranch(typeof(T));
+            if (union.NullIndex < 0)
+                throw TypeMismatch(null, "union");
+            encoder.WriteUnionIndex(union.NullIndex);
         }
     }
 
@@ -947,18 +993,18 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
         private readonly Dictionary<global::Avro.SchemaName, UnionBranch> _recordBranches = new();
         private readonly Dictionary<global::Avro.SchemaName, UnionBranch> _enumBranches = new();
         private readonly Dictionary<global::Avro.SchemaName, UnionBranch> _fixedBranches = new();
-        private UnionBranch _arrayBranch;
-        private UnionBranch _booleanBranch;
-        private UnionBranch _bytesBranch;
+        private readonly UnionBranch _arrayBranch;
+        private readonly UnionBranch _booleanBranch;
+        private readonly UnionBranch _bytesBranch;
         private UnionBranch _dateTimeBranch;
         private UnionBranch _decimalBranch;
-        private UnionBranch _doubleBranch;
-        private UnionBranch _floatBranch;
+        private readonly UnionBranch _doubleBranch;
+        private readonly UnionBranch _floatBranch;
         private UnionBranch _guidBranch;
-        private UnionBranch _intBranch;
-        private UnionBranch _longBranch;
-        private UnionBranch _mapBranch;
-        private UnionBranch _stringBranch;
+        private readonly UnionBranch _intBranch;
+        private readonly UnionBranch _longBranch;
+        private readonly UnionBranch _mapBranch;
+        private readonly UnionBranch _stringBranch;
         private UnionBranch _timeSpanBranch;
 
         public UnionBranchCache(global::Avro.UnionSchema schema)
@@ -1024,6 +1070,22 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
 
         public int NullIndex { get; }
 
+        public bool TryGetValueBranch(Type type, out UnionBranch branch)
+        {
+            if (type == typeof(bool)) branch = _booleanBranch;
+            else if (type == typeof(int)) branch = _intBranch;
+            else if (type == typeof(long)) branch = _longBranch;
+            else if (type == typeof(float)) branch = _floatBranch;
+            else if (type == typeof(double)) branch = _doubleBranch;
+            else if (type == typeof(DateTime)) branch = _dateTimeBranch;
+            else if (type == typeof(TimeSpan)) branch = _timeSpanBranch;
+            else if (type == typeof(Guid)) branch = _guidBranch;
+            else if (type == typeof(global::Avro.AvroDecimal)) branch = _decimalBranch;
+            else if (!_typedBranches.TryGetValue(type, out branch)) branch = default;
+
+            return branch.Schema is not null;
+        }
+
         public UnionBranch GetValueBranch(Type type)
         {
             UnionBranch branch;
@@ -1076,10 +1138,10 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
                     return _arrayBranch;
                 case IDictionary<string, object> when _mapBranch.Schema is not null:
                     return _mapBranch;
-                case var custom when _typedBranches.TryGetValue(custom.GetType(), out var branch):
-                    return branch;
                 default:
-                    throw NoMatch(value);
+                    return _typedBranches.TryGetValue(value.GetType(), out var typedBranch)
+                        ? typedBranch
+                        : throw NoMatch(value);
             }
         }
 
