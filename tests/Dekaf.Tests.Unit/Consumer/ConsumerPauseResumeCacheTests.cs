@@ -315,6 +315,193 @@ public sealed class ConsumerPauseResumeCacheTests
         await Assert.That(records.Current.Offset).IsEqualTo(10);
     }
 
+    private sealed class AsyncCallbackOnceDeserializer(Action callback) : IAsyncDeserializer<string>
+    {
+        private Action? _callback = callback;
+
+        public ValueTask<string> DeserializeAsync(
+            ReadOnlyMemory<byte> data,
+            SerializationContext context,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Interlocked.Exchange(ref _callback, null)?.Invoke();
+            return new ValueTask<string>(Serializers.String.Deserialize(data, context));
+        }
+    }
+
+    [Test]
+    public async Task ConsumeOneAsync_PausedPrefetchedPartition_PreservesRecordAndAllowsOtherPartition()
+    {
+        var pausedPartition = new TopicPartition(PrefetchedTopic, 0);
+        var activePartition = new TopicPartition(PrefetchedTopic, 1);
+        await using var consumer = CreatePrefetchedConsumer(
+            CreatePendingFetch(pausedPartition, 10, 1),
+            CreatePendingFetch(activePartition, 20, 1));
+
+        consumer.Pause(pausedPartition);
+
+        var active = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(5));
+        await Assert.That(active).IsNotNull();
+        await Assert.That(active!.Value.Topic).IsEqualTo(activePartition.Topic);
+        await Assert.That(active.Value.Partition).IsEqualTo(activePartition.Partition);
+        await Assert.That(active.Value.Offset).IsEqualTo(20);
+
+        consumer.Resume(pausedPartition);
+
+        var resumed = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(5));
+        await Assert.That(resumed).IsNotNull();
+        await Assert.That(resumed!.Value.Topic).IsEqualTo(pausedPartition.Topic);
+        await Assert.That(resumed.Value.Partition).IsEqualTo(pausedPartition.Partition);
+        await Assert.That(resumed.Value.Offset).IsEqualTo(10);
+    }
+
+    [Test]
+    public async Task ConsumeOneAsync_PauseDuringDeserialization_ReplaysSuppressedRecordAfterResume()
+    {
+        var pausedPartition = new TopicPartition(PrefetchedTopic, 0);
+        var activePartition = new TopicPartition(PrefetchedTopic, 1);
+        KafkaConsumer<string, string>? consumer = null;
+        var deserializer = new CallbackOnceDeserializer(() => consumer!.Pause(pausedPartition));
+        var createdConsumer = CreatePrefetchedConsumer(
+            deserializer,
+            CreatePendingFetch(pausedPartition, 10, 1),
+            CreatePendingFetch(activePartition, 20, 1));
+        consumer = createdConsumer;
+        await using var ownedConsumer = createdConsumer;
+
+        var active = await createdConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(5));
+        await Assert.That(active).IsNotNull();
+        await Assert.That(active!.Value.Topic).IsEqualTo(activePartition.Topic);
+        await Assert.That(active.Value.Partition).IsEqualTo(activePartition.Partition);
+
+        createdConsumer.Resume(pausedPartition);
+
+        var resumed = await createdConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(5));
+        await Assert.That(resumed).IsNotNull();
+        await Assert.That(resumed!.Value.Topic).IsEqualTo(pausedPartition.Topic);
+        await Assert.That(resumed.Value.Partition).IsEqualTo(pausedPartition.Partition);
+        await Assert.That(resumed.Value.Offset).IsEqualTo(10);
+    }
+
+    [Test]
+    public async Task ConsumeOneAsync_PauseDuringAsyncDeserialization_ReplaysSuppressedRecordAfterResume()
+    {
+        var pausedPartition = new TopicPartition(PrefetchedTopic, 0);
+        var activePartition = new TopicPartition(PrefetchedTopic, 1);
+        KafkaConsumer<string, string>? consumer = null;
+        var deserializer = new AsyncCallbackOnceDeserializer(() => consumer!.Pause(pausedPartition));
+        var createdConsumer = CreatePrefetchedConsumer(
+            deserializer,
+            CreatePendingFetch(pausedPartition, 10, 1),
+            CreatePendingFetch(activePartition, 20, 1));
+        consumer = createdConsumer;
+        await using var ownedConsumer = createdConsumer;
+
+        var active = await createdConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(5));
+        await Assert.That(active).IsNotNull();
+        await Assert.That(active!.Value.Topic).IsEqualTo(activePartition.Topic);
+        await Assert.That(active.Value.Partition).IsEqualTo(activePartition.Partition);
+
+        createdConsumer.Resume(pausedPartition);
+
+        var resumed = await createdConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(5));
+        await Assert.That(resumed).IsNotNull();
+        await Assert.That(resumed!.Value.Topic).IsEqualTo(pausedPartition.Topic);
+        await Assert.That(resumed.Value.Partition).IsEqualTo(pausedPartition.Partition);
+        await Assert.That(resumed.Value.Offset).IsEqualTo(10);
+    }
+
+    [Test]
+    public async Task ConsumeAsync_ResumeBeforePrefetchWaitRegistration_WakesRetainedRecord()
+    {
+        var partition = new TopicPartition(PrefetchedTopic, 0);
+        using var waitEntered = new ManualResetEventSlim();
+        using var releaseWait = new ManualResetEventSlim();
+        var prefetchBuffer = new MpscFetchBuffer(
+            4,
+            afterProducerWaiterCountIncrementedForTesting: null,
+            beforeConsumerWaitSpinForTesting: () =>
+            {
+                waitEntered.Set();
+                releaseWait.Wait();
+            });
+        var retained = CreatePendingFetch(partition, 10, 1);
+        var consumer = new KafkaConsumer<string, string>(
+            new ConsumerOptions
+            {
+                BootstrapServers = ["localhost:9092"],
+                QueuedMinMessages = 2
+            },
+            Serializers.String,
+            Serializers.String);
+        consumer.Assign(partition);
+        GetField("_initialized").SetValue(consumer, true);
+        var fetchPositions = (ConcurrentDictionary<TopicPartition, long>)
+            GetField("_fetchPositions").GetValue(consumer)!;
+        fetchPositions[partition] = 0;
+        var pendingFetches = (Queue<PendingFetchData>)GetField("_pendingFetches").GetValue(consumer)!;
+        pendingFetches.Enqueue(retained);
+        GetField("_pendingFetchDepth").SetValue(consumer, 1);
+        consumer.Pause(partition);
+        GetField("_prefetchTask").SetValue(consumer, Task.CompletedTask);
+        var prefetchBufferField = GetField("_prefetchBuffer");
+        var originalPrefetchBuffer = (MpscFetchBuffer)prefetchBufferField.GetValue(consumer)!;
+        prefetchBufferField.SetValue(consumer, prefetchBuffer);
+        originalPrefetchBuffer.Dispose();
+
+        await using var ownedConsumer = consumer;
+        await using var records = consumer.ConsumeAsync().GetAsyncEnumerator();
+        var moveNext = Task.Run(() => records.MoveNextAsync().AsTask());
+
+        try
+        {
+            await Assert.That(waitEntered.Wait(TimeSpan.FromSeconds(5))).IsTrue();
+            consumer.Resume(partition);
+        }
+        finally
+        {
+            releaseWait.Set();
+        }
+
+        await Assert.That(await moveNext.WaitAsync(TimeSpan.FromSeconds(5))).IsTrue();
+        await Assert.That(records.Current.Topic).IsEqualTo(partition.Topic);
+        await Assert.That(records.Current.Partition).IsEqualTo(partition.Partition);
+        await Assert.That(records.Current.Offset).IsEqualTo(10);
+    }
+
+    [Test]
+    public async Task RebalanceDrain_RoutesRetainedPausedFetchToPausedQueue()
+    {
+        var pausedPartition = new TopicPartition(PrefetchedTopic, 0);
+        var revokedPartition = new TopicPartition(PrefetchedTopic, 1);
+        await using var consumer = CreatePrefetchedConsumer();
+        consumer.Assign(pausedPartition, revokedPartition);
+        consumer.Pause(pausedPartition);
+        var prefetchBuffer = (MpscFetchBuffer)GetField("_prefetchBuffer").GetValue(consumer)!;
+        var retained = CreatePendingFetch(pausedPartition, 10, 1);
+        var revoked = CreatePendingFetch(revokedPartition, 20, 1);
+        await Assert.That(prefetchBuffer.TryWrite(retained)).IsTrue();
+        await Assert.That(prefetchBuffer.TryWrite(revoked)).IsTrue();
+        GetField("_prefetchedBytes").SetValue(
+            consumer,
+            KafkaConsumer<string, string>.EstimatePendingFetchBytes(retained)
+            + KafkaConsumer<string, string>.EstimatePendingFetchBytes(revoked));
+        var drain = typeof(KafkaConsumer<string, string>).GetMethod(
+            "DrainPrefetchBufferForPartitions",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("DrainPrefetchBufferForPartitions method not found");
+
+        drain.Invoke(consumer, [new HashSet<TopicPartition> { revokedPartition }]);
+
+        var active = (Queue<PendingFetchData>)GetField("_pendingFetches").GetValue(consumer)!;
+        var paused = (Queue<PendingFetchData>)GetField("_pausedPendingFetches").GetValue(consumer)!;
+        await Assert.That(active).IsEmpty();
+        await Assert.That(paused.Count).IsEqualTo(1);
+        await Assert.That(paused.Peek().TopicPartition).IsEqualTo(pausedPartition);
+        await Assert.That((int)GetField("_pendingFetchDepth").GetValue(consumer)!).IsEqualTo(1);
+    }
+
     [Test]
     public async Task ConsumeAsync_RevocationDuringPrefetchWait_SuppressesRevokedPartition()
     {
@@ -421,16 +608,17 @@ public sealed class ConsumerPauseResumeCacheTests
         await using var batches = createdConsumer.ConsumeBatchAsync().GetAsyncEnumerator();
 
         await Assert.That(await batches.MoveNextAsync()).IsTrue();
-        await Assert.That(batches.Current.ToArray()).IsEmpty();
-        await Assert.That(await batches.MoveNextAsync()).IsTrue();
-        await Assert.That(batches.Current.Partition).IsEqualTo(activePartition.Partition);
-        _ = batches.Current.ToArray();
-
+        var interrupted = batches.Current.GetEnumerator();
+        await Assert.That(interrupted.MoveNext()).IsFalse();
         createdConsumer.Resume(pausedPartition);
-
+        await Assert.That(interrupted.MoveNext()).IsFalse();
         await Assert.That(await batches.MoveNextAsync()).IsTrue();
         await Assert.That(batches.Current.Partition).IsEqualTo(pausedPartition.Partition);
         await Assert.That(batches.Current.Single().Offset).IsEqualTo(10);
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(batches.Current.Partition).IsEqualTo(activePartition.Partition);
+        _ = batches.Current.ToArray();
     }
 
     [Test]
@@ -483,6 +671,17 @@ public sealed class ConsumerPauseResumeCacheTests
     private static KafkaConsumer<string, string> CreatePrefetchedConsumer(
         IDeserializer<string> valueDeserializer,
         params PendingFetchData[] fetches)
+        => CreatePrefetchedConsumer(valueDeserializer, null, fetches);
+
+    private static KafkaConsumer<string, string> CreatePrefetchedConsumer(
+        IAsyncDeserializer<string> asyncValueDeserializer,
+        params PendingFetchData[] fetches)
+        => CreatePrefetchedConsumer(Serializers.String, asyncValueDeserializer, fetches);
+
+    private static KafkaConsumer<string, string> CreatePrefetchedConsumer(
+        IDeserializer<string> valueDeserializer,
+        IAsyncDeserializer<string>? asyncValueDeserializer,
+        params PendingFetchData[] fetches)
     {
         var consumer = new KafkaConsumer<string, string>(
             new ConsumerOptions
@@ -491,7 +690,8 @@ public sealed class ConsumerPauseResumeCacheTests
                 QueuedMinMessages = 1
             },
             Serializers.String,
-            valueDeserializer);
+            valueDeserializer,
+            asyncValueDeserializer: asyncValueDeserializer);
         var partitions = fetches
             .Select(static fetch => fetch.TopicPartition)
             .Distinct()

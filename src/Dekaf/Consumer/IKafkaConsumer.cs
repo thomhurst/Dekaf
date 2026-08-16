@@ -345,12 +345,15 @@ public interface IConsumerPartitions
     /// </summary>
     /// <remarks>
     /// Records already fetched for a paused partition are retained but suppressed by
+    /// <see cref="IKafkaConsumer{TKey,TValue}.ConsumeOneAsync"/>,
     /// <see cref="IKafkaConsumer{TKey,TValue}.ConsumeAsync"/>,
     /// <see cref="IKafkaConsumer{TKey,TValue}.ConsumeBatchAsync"/>, and
     /// <see cref="IKafkaConsumer{TKey,TValue}.ConsumeRawBatchAsync"/> until
     /// <see cref="Resume"/> is called. Records whose final delivery check completed before
     /// a concurrent pause belong to the in-progress consume operation; the pause applies
-    /// at the next record-delivery boundary.
+    /// at the next record-delivery boundary. If pause wins the final delivery check after
+    /// deserialization or interceptor execution, the suppressed record is replayed after
+    /// resume; deserializers and interceptors must therefore tolerate repeated execution.
     /// </remarks>
     void Pause(params TopicPartition[] partitions);
 

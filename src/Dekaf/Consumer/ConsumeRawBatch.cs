@@ -174,6 +174,7 @@ namespace Dekaf.Consumer
 
                 if (!_batch._iterationGuard.IsCurrent(pending.TopicPartition, ref _observedVersion))
                 {
+                    _canContinue = false;
                     pending.BufferCurrentForRedelivery();
                     return false;
                 }

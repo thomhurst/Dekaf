@@ -659,6 +659,41 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
     }
 
     [Test]
+    public async Task ConsumeOneAsync_PauseSuppressesPrefetchedRecordsUntilResume()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2);
+        var pausedPartition = new TopicPartition(topic, 0);
+        var activePartition = new TopicPartition(topic, 1);
+        await using var producer = await CreatePauseTestProducerAsync();
+        await ProducePauseTestRecordsAsync(producer, topic, partition: 0, start: 0, count: 3);
+        await using var consumer = await CreatePauseTestConsumerAsync();
+        consumer.Assign(pausedPartition, activePartition);
+        consumer.Seek(new TopicPartitionOffset(topic, 0, 0));
+        consumer.Seek(new TopicPartitionOffset(topic, 1, 0));
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        var first = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cancellation.Token);
+        await Assert.That(first).IsNotNull();
+        await Assert.That(first!.Value.Partition).IsEqualTo(0);
+        await Assert.That(first.Value.Offset).IsEqualTo(0);
+
+        consumer.Pause(pausedPartition);
+        await ProducePauseTestRecordsAsync(producer, topic, partition: 1, start: 100, count: 1);
+
+        var active = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cancellation.Token);
+        await Assert.That(active).IsNotNull();
+        await Assert.That(active!.Value.Partition).IsEqualTo(1);
+        await Assert.That(active.Value.Offset).IsEqualTo(0);
+
+        consumer.Resume(pausedPartition);
+
+        var resumed = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cancellation.Token);
+        await Assert.That(resumed).IsNotNull();
+        await Assert.That(resumed!.Value.Partition).IsEqualTo(0);
+        await Assert.That(resumed.Value.Offset).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task ConsumeBatchAsync_PauseSuppressesPrefetchedRecordsUntilResume()
     {
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2);
