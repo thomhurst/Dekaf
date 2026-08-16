@@ -12,6 +12,7 @@ using Dekaf.Compression.Snappy;
 using Dekaf.Compression.Zstd;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Avro;
+using Dekaf.SchemaRegistry.Json;
 using Dekaf.SchemaRegistry.Protobuf;
 using Dekaf.Security.Sasl;
 using Dekaf.Serialization;
@@ -95,14 +96,20 @@ internal static class AotSmoke
         using var registry = new InMemorySchemaRegistry();
         var payload = new AotPayload(8, "schema-registry");
         var buffer = new ArrayBufferWriter<byte>();
+        var validation = new JsonSchemaValidationOptions
+        {
+            ValidatorFactory = new JsonSchemaNetValidatorFactory(registry)
+        };
 
         await using var serializer = new JsonSchemaRegistrySerializer<AotPayload>(
             registry,
             AotPayloadJsonSchema,
-            AotJsonContext.Default.AotPayload);
+            AotJsonContext.Default.AotPayload,
+            validation);
         await using var deserializer = new JsonSchemaRegistryDeserializer<AotPayload>(
             registry,
-            AotJsonContext.Default.AotPayload);
+            AotJsonContext.Default.AotPayload,
+            validation);
 
         serializer.Serialize(payload, ref buffer, ValueContext);
 

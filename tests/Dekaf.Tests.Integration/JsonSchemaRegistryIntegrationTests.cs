@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 using Dekaf.Consumer;
 using Dekaf.Producer;
 using Dekaf.SchemaRegistry;
+using Dekaf.SchemaRegistry.Json;
 
 namespace Dekaf.Tests.Integration;
 
@@ -22,6 +23,19 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
                 "Amount": { "type": "number" }
             },
             "required": ["OrderId", "CustomerName", "Amount"]
+        }
+        """;
+
+    private const string CamelCaseTestOrderSchema = """
+        {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+                "orderId": { "type": "integer" },
+                "customerName": { "type": "string", "minLength": 1 },
+                "amount": { "type": "number", "minimum": 0 }
+            },
+            "required": ["orderId", "customerName", "amount"]
         }
         """;
 
@@ -137,6 +151,73 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
         await Assert.That(consumed!.OrderId).IsEqualTo(3003);
         await Assert.That(consumed.CustomerName).IsEqualTo("Clara");
         await Assert.That(consumed.Amount).IsEqualTo(42.50m);
+    }
+
+    [Test]
+    public async Task JsonSchemaValidation_RegisteredSchema_RoundTripsAndRejectsInvalidWrite()
+    {
+        var topic = await testInfra.CreateTestTopicAsync();
+        using var registryClient = new SchemaRegistryClient(new SchemaRegistryConfig
+        {
+            Url = testInfra.RegistryUrl
+        });
+        var validation = new JsonSchemaValidationOptions
+        {
+            ValidatorFactory = new JsonSchemaNetValidatorFactory(
+                registryClient,
+                new JsonSchemaNetValidatorOptions
+                {
+                    DefaultDialect = JsonSchemaDialect.Draft202012
+                })
+        };
+        await using var producer = await Kafka.CreateProducer<string, TestOrder>()
+            .WithBootstrapServers(testInfra.BootstrapServers)
+            .UseJsonSchemaRegistry(
+                registryClient,
+                CamelCaseTestOrderSchema,
+                JsonSchemaRegistryIntegrationJsonContext.Default.TestOrder,
+                validation)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        await producer.ProduceAsync(new ProducerMessage<string, TestOrder>
+        {
+            Topic = topic,
+            Key = "valid",
+            Value = new TestOrder { OrderId = 4004, CustomerName = "Dana", Amount = 5.25m }
+        });
+
+        var exception = await Assert.ThrowsAsync<JsonSchemaValidationException>(
+            () => producer.ProduceAsync(new ProducerMessage<string, TestOrder>
+            {
+                Topic = topic,
+                Key = "invalid",
+                Value = new TestOrder { OrderId = 4005, CustomerName = "", Amount = -1m }
+            }).AsTask());
+        await Assert.That(exception!.SchemaId).IsGreaterThan(0);
+
+        await using var consumer = await Kafka.CreateConsumer<string, TestOrder>()
+            .WithBootstrapServers(testInfra.BootstrapServers)
+            .WithGroupId($"json-sr-validation-{Guid.NewGuid():N}")
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .UseJsonSchemaRegistry(
+                registryClient,
+                JsonSchemaRegistryIntegrationJsonContext.Default.TestOrder,
+                validation)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        consumer.Subscribe(topic);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        TestOrder? consumed = null;
+
+        await foreach (var message in consumer.ConsumeAsync(cts.Token))
+        {
+            consumed = message.Value;
+            break;
+        }
+
+        await Assert.That(consumed).IsNotNull();
+        await Assert.That(consumed!.OrderId).IsEqualTo(4004);
     }
 
     [Test]

@@ -1,0 +1,16 @@
+#nullable enable
+Dekaf.SchemaRegistry.Json.JsonSchemaDialect
+Dekaf.SchemaRegistry.Json.JsonSchemaDialect.Draft201909 = 1 -> Dekaf.SchemaRegistry.Json.JsonSchemaDialect
+Dekaf.SchemaRegistry.Json.JsonSchemaDialect.Draft202012 = 2 -> Dekaf.SchemaRegistry.Json.JsonSchemaDialect
+Dekaf.SchemaRegistry.Json.JsonSchemaDialect.Draft7 = 0 -> Dekaf.SchemaRegistry.Json.JsonSchemaDialect
+Dekaf.SchemaRegistry.Json.JsonSchemaNetValidatorFactory
+Dekaf.SchemaRegistry.Json.JsonSchemaNetValidatorFactory.GetOrCreate(Dekaf.SchemaRegistry.Schema! schema) -> Dekaf.SchemaRegistry.IJsonSchemaValidator!
+Dekaf.SchemaRegistry.Json.JsonSchemaNetValidatorFactory.JsonSchemaNetValidatorFactory(Dekaf.SchemaRegistry.ISchemaRegistryClient! schemaRegistry, Dekaf.SchemaRegistry.Json.JsonSchemaNetValidatorOptions? options = null) -> void
+Dekaf.SchemaRegistry.Json.JsonSchemaNetValidatorOptions
+Dekaf.SchemaRegistry.Json.JsonSchemaNetValidatorOptions.DefaultDialect.get -> Dekaf.SchemaRegistry.Json.JsonSchemaDialect
+Dekaf.SchemaRegistry.Json.JsonSchemaNetValidatorOptions.DefaultDialect.init -> void
+Dekaf.SchemaRegistry.Json.JsonSchemaNetValidatorOptions.JsonSchemaNetValidatorOptions() -> void
+Dekaf.SchemaRegistry.Json.JsonSchemaNetValidatorOptions.ReferenceResolutionTimeout.get -> System.TimeSpan
+Dekaf.SchemaRegistry.Json.JsonSchemaNetValidatorOptions.ReferenceResolutionTimeout.init -> void
+Dekaf.SchemaRegistry.Json.JsonSchemaNetValidatorOptions.RequireFormatValidation.get -> bool
+Dekaf.SchemaRegistry.Json.JsonSchemaNetValidatorOptions.RequireFormatValidation.init -> void
