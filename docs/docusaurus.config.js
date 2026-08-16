@@ -85,8 +85,18 @@ const config = {
             label: 'Documentation',
           },
           {
+            href: 'https://www.nuget.org/packages/Dekaf',
+            label: 'NuGet',
+            position: 'right',
+          },
+          {
             href: 'https://github.com/thomhurst/Dekaf',
             label: 'GitHub',
+            position: 'right',
+          },
+          {
+            href: 'https://github.com/sponsors/thomhurst',
+            label: '❤️ Sponsor',
             position: 'right',
           },
         ],
