@@ -1511,7 +1511,7 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         // The original defect (#2529) was counters wired onto a path production traffic never
         // took, so this drives the real send loop end to end rather than calling CompleteSend
         // directly: enqueue -> serialize -> scripted ack -> per-batch counter emission.
-        const string topic = "test-topic";
+        const string topic = "sent-counter-test-topic";
         // Resolve instrument names before the listener starts (static-initializer re-entry
         // landmine — see FireAndForgetDeliveryErrorMetricTests).
         var messagesSentName = DekafMetrics.MessagesSent.Name;
@@ -2988,9 +2988,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         var reroutedCount = 0;
         var firstBatch = CreateTestBatch(valueTaskSourcePool, topic, partition: 0);
         var secondBatch = CreateTestBatch(valueTaskSourcePool, topic, partition: 1);
-        var injectPreemptedSibling = 1;
-        BrokerSender? sender = null;
-        sender = CreateSender(
+        using var waveCoalesceStarted = new ManualResetEventSlim();
+        using var bulkPublishCompleted = new ManualResetEventSlim();
+        var sender = CreateSender(
             pool,
             options,
             accumulator,
@@ -3003,9 +3003,10 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             },
             onWaveCoalesceStarted: () =>
             {
-                if (Interlocked.Exchange(ref injectPreemptedSibling, 0) != 0)
-                    sender!.Enqueue(secondBatch);
-            });
+                waveCoalesceStarted.Set();
+                bulkPublishCompleted.Wait(cancellationToken);
+            },
+            onBulkFirstBatchPublished: () => waveCoalesceStarted.Wait(cancellationToken));
 
         // Model producer-thread preemption after publishing the first of two bulk events.
         // Pre-seeding the known wave width makes the sender enter its coalescing hook; the
@@ -3018,9 +3019,22 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
 
         try
         {
-            sender.Enqueue(firstBatch);
+            var bulkPublish = Task.Run(
+                () =>
+                {
+                    try
+                    {
+                        sender.EnqueueBulk([firstBatch, secondBatch]);
+                    }
+                    finally
+                    {
+                        bulkPublishCompleted.Set();
+                    }
+                },
+                CancellationToken.None);
 
             await rerouted.Task.WaitAsync(cancellationToken);
+            await bulkPublish.WaitAsync(cancellationToken);
 
             await Assert.That(staleConnection.SendPipelinedAfterWriteCalls).IsEqualTo(1);
             await Assert.That(Volatile.Read(ref metadataRequests)).IsEqualTo(1);
@@ -3029,6 +3043,8 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         }
         finally
         {
+            waveCoalesceStarted.Set();
+            bulkPublishCompleted.Set();
             await sender.DisposeAsync();
             await accumulator.DisposeAsync();
             await valueTaskSourcePool.DisposeAsync();
