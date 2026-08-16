@@ -71,9 +71,6 @@ internal sealed class SubjectSchemaIdCache
         return false;
     }
 
-    internal int Cache(string topic, bool isKey, string subject, int schemaId, Schema? schema) =>
-        Cache(new SubjectSchemaIdCacheKey(topic, isKey), subject, schemaId, schema).SchemaId;
-
     internal SubjectSchemaIdCacheEntry CacheEntry(
         string topic,
         bool isKey,

@@ -370,6 +370,109 @@ public sealed class SchemaPreparationTests
     }
 
     [Test]
+    public async Task ResolutionCache_EvictsOldestCompletedEntryAtCapacity()
+    {
+        var cache = new SchemaResolutionCache<int>(maxCachedEntries: 2);
+        var counter = new ResolutionCounter();
+        var schema = new Schema { SchemaType = SchemaType.Json, SchemaString = "{}" };
+
+        await cache.ResolveAsync(
+            "orders-a",
+            schema,
+            counter,
+            static (state, _, _) => Task.FromResult(Interlocked.Increment(ref state.Count)),
+            CancellationToken.None);
+        await cache.ResolveAsync(
+            "orders-b",
+            schema,
+            counter,
+            static (state, _, _) => Task.FromResult(Interlocked.Increment(ref state.Count)),
+            CancellationToken.None);
+        await cache.ResolveAsync(
+            "orders-c",
+            schema,
+            counter,
+            static (state, _, _) => Task.FromResult(Interlocked.Increment(ref state.Count)),
+            CancellationToken.None);
+        var reloaded = await cache.ResolveAsync(
+            "orders-a",
+            schema,
+            counter,
+            static (state, _, _) => Task.FromResult(Interlocked.Increment(ref state.Count)),
+            CancellationToken.None);
+        var retained = cache.ResolveAsync(
+            "orders-c",
+            schema,
+            counter,
+            static (state, _, _) => Task.FromResult(Interlocked.Increment(ref state.Count)),
+            CancellationToken.None);
+
+        await Assert.That(reloaded).IsEqualTo(4);
+        await Assert.That(retained.IsCompletedSuccessfully).IsTrue();
+        await Assert.That(await retained).IsEqualTo(3);
+        await Assert.That(counter.Count).IsEqualTo(4);
+        await Assert.That(cache.CachedEntryCount).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task ResolutionCache_CoalescesConcurrentMissWhenAtCapacity()
+    {
+        var cache = new SchemaResolutionCache<int>(maxCachedEntries: 1);
+        var schema = new Schema { SchemaType = SchemaType.Json, SchemaString = "{}" };
+        await cache.ResolveAsync(
+            "cached",
+            schema,
+            0,
+            static (_, _, _) => Task.FromResult(1),
+            CancellationToken.None);
+
+        var counter = new ResolutionCounter();
+        var completion = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var state = (Counter: counter, Completion: completion);
+        var first = cache.ResolveAsync(
+            "new",
+            schema,
+            state,
+            static (arguments, _, _) =>
+            {
+                Interlocked.Increment(ref arguments.Counter.Count);
+                return arguments.Completion.Task;
+            },
+            CancellationToken.None).AsTask();
+        var second = cache.ResolveAsync(
+            "new",
+            schema,
+            state,
+            static (arguments, _, _) =>
+            {
+                Interlocked.Increment(ref arguments.Counter.Count);
+                return arguments.Completion.Task;
+            },
+            CancellationToken.None).AsTask();
+
+        await Assert.That(counter.Count).IsEqualTo(1);
+        completion.SetResult(42);
+        await Task.WhenAll(first, second);
+        var cached = cache.ResolveAsync(
+            "new",
+            schema,
+            state,
+            static (arguments, _, _) =>
+            {
+                Interlocked.Increment(ref arguments.Counter.Count);
+                return arguments.Completion.Task;
+            },
+            CancellationToken.None);
+
+        await Assert.That(first.Result).IsEqualTo(42);
+        await Assert.That(second.Result).IsEqualTo(42);
+        await Assert.That(cached.IsCompletedSuccessfully).IsTrue();
+        await Assert.That(await cached).IsEqualTo(42);
+        await Assert.That(counter.Count).IsEqualTo(1);
+        await Assert.That(cache.CachedEntryCount).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task ResolutionCache_CanceledResolutionDoesNotPoisonRetry()
     {
         var cache = new SchemaResolutionCache<int>();

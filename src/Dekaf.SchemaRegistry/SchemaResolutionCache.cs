@@ -5,9 +5,20 @@ namespace Dekaf.SchemaRegistry;
 
 internal sealed class SchemaResolutionCache<TValue>
 {
-    private readonly ConcurrentDictionary<SchemaResolutionKey, Entry> _cache =
+    private readonly ConcurrentDictionary<SchemaResolutionKey, TValue> _cache =
         new(SchemaResolutionKeyComparer.Instance);
+    private readonly ConcurrentDictionary<SchemaResolutionKey, Entry> _inFlight =
+        new(SchemaResolutionKeyComparer.Instance);
+    private readonly Queue<SchemaResolutionKey> _evictionQueue = new();
+    private readonly object _cacheMutationLock = new();
+    private readonly int _maxCachedEntries;
     private int _cacheCount;
+
+    internal SchemaResolutionCache(int maxCachedEntries = SubjectSchemaIdCache.MaxCachedEntries)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxCachedEntries);
+        _maxCachedEntries = maxCachedEntries;
+    }
 
     internal int CachedEntryCount => Volatile.Read(ref _cacheCount);
 
@@ -29,7 +40,18 @@ internal sealed class SchemaResolutionCache<TValue>
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        var task = GetOrAdd(subject, schema, scope, state, resolve).Resolution.Value;
+        var key = new SchemaResolutionKey(subject, schema, scope);
+        if (_cache.TryGetValue(key, out var cached))
+            return new ValueTask<TValue>(cached);
+
+        var entry = GetOrAddInFlight(key, state, resolve);
+        if (_cache.TryGetValue(key, out cached))
+        {
+            RemoveInFlight(key, entry);
+            return new ValueTask<TValue>(cached);
+        }
+
+        var task = entry.Resolution.Value;
         if (task.IsCompletedSuccessfully)
             return new ValueTask<TValue>(task.Result);
 
@@ -52,36 +74,37 @@ internal sealed class SchemaResolutionCache<TValue>
         Func<TState, string, Schema, Task<TValue>> resolve,
         TimeSpan timeout)
     {
-        var task = GetOrAdd(subject, schema, scope, state, resolve).Resolution.Value;
+        var key = new SchemaResolutionKey(subject, schema, scope);
+        if (_cache.TryGetValue(key, out var cached))
+            return cached;
+
+        var entry = GetOrAddInFlight(key, state, resolve);
+        if (_cache.TryGetValue(key, out cached))
+        {
+            RemoveInFlight(key, entry);
+            return cached;
+        }
+
+        var task = entry.Resolution.Value;
         return task.IsCompletedSuccessfully
             ? task.Result
             : task.WaitAsync(timeout).ConfigureAwait(false).GetAwaiter().GetResult();
     }
 
-    private Entry GetOrAdd<TState>(
-        string subject,
-        Schema schema,
-        SchemaResolutionScope scope,
+    private Entry GetOrAddInFlight<TState>(
+        SchemaResolutionKey key,
         TState state,
-        Func<TState, string, Schema, Task<TValue>> resolve)
-    {
-        var key = new SchemaResolutionKey(subject, schema, scope);
-        if (_cache.TryGetValue(key, out var cached))
-            return cached;
+        Func<TState, string, Schema, Task<TValue>> resolve) =>
+        _inFlight.GetOrAdd(
+            key,
+            static (cacheKey, arguments) => Entry.Create(
+                arguments.Owner,
+                cacheKey,
+                arguments.State,
+                arguments.Resolve),
+            (Owner: this, State: state, Resolve: resolve));
 
-        var entry = Entry.Create(this, key, state, resolve);
-        if (!TryReserveSlot())
-            return entry;
-
-        entry.IsCached = true;
-        if (_cache.TryAdd(key, entry))
-            return entry;
-
-        Interlocked.Decrement(ref _cacheCount);
-        return _cache.TryGetValue(key, out cached) ? cached : entry;
-    }
-
-    private async Task<TValue> ResolveAndEvictOnFailureAsync<TState>(
+    private async Task<TValue> ResolveAndCacheAsync<TState>(
         SchemaResolutionKey key,
         Entry entry,
         TState state,
@@ -89,31 +112,39 @@ internal sealed class SchemaResolutionCache<TValue>
     {
         try
         {
-            return await resolve(state, key.Subject, key.Schema).ConfigureAwait(false);
+            var value = await resolve(state, key.Subject, key.Schema).ConfigureAwait(false);
+            CacheSuccessfulResolution(key, value);
+            return value;
         }
-        catch
+        finally
         {
-            if (entry.IsCached &&
-                ((ICollection<KeyValuePair<SchemaResolutionKey, Entry>>)_cache)
-                .Remove(new KeyValuePair<SchemaResolutionKey, Entry>(key, entry)))
-            {
-                Interlocked.Decrement(ref _cacheCount);
-            }
-
-            throw;
+            RemoveInFlight(key, entry);
         }
     }
 
-    private bool TryReserveSlot()
-    {
-        while (true)
-        {
-            var count = Volatile.Read(ref _cacheCount);
-            if (count >= SubjectSchemaIdCache.MaxCachedEntries)
-                return false;
+    private void RemoveInFlight(SchemaResolutionKey key, Entry entry) =>
+        ((ICollection<KeyValuePair<SchemaResolutionKey, Entry>>)_inFlight)
+        .Remove(new KeyValuePair<SchemaResolutionKey, Entry>(key, entry));
 
-            if (Interlocked.CompareExchange(ref _cacheCount, count + 1, count) == count)
-                return true;
+    private void CacheSuccessfulResolution(SchemaResolutionKey key, TValue value)
+    {
+        lock (_cacheMutationLock)
+        {
+            if (_cache.ContainsKey(key))
+                return;
+
+            if (_cacheCount == _maxCachedEntries)
+            {
+                var oldest = _evictionQueue.Dequeue();
+                _cache.TryRemove(oldest, out _);
+                _cacheCount--;
+            }
+
+            if (_cache.TryAdd(key, value))
+            {
+                _evictionQueue.Enqueue(key);
+                _cacheCount++;
+            }
         }
     }
 
@@ -131,11 +162,10 @@ internal sealed class SchemaResolutionCache<TValue>
         {
             var entry = new Entry();
             entry.Resolution = new Lazy<Task<TValue>>(
-                () => ObserveFault(owner.ResolveAndEvictOnFailureAsync(key, entry, state, resolve)));
+                () => ObserveFault(owner.ResolveAndCacheAsync(key, entry, state, resolve)));
             return entry;
         }
 
-        internal bool IsCached;
         internal Lazy<Task<TValue>> Resolution { get; private set; } = null!;
 
         private static Task<TValue> ObserveFault(Task<TValue> task)
@@ -197,13 +227,15 @@ internal sealed class SchemaResolutionCache<TValue>
         {
             if (ReferenceEquals(left, right))
                 return true;
-            if (left is null || right is null || left.Count != right.Count)
+
+            var count = left?.Count ?? 0;
+            if (count != (right?.Count ?? 0))
                 return false;
 
-            for (var index = 0; index < left.Count; index++)
+            for (var index = 0; index < count; index++)
             {
-                var leftReference = left[index];
-                var rightReference = right[index];
+                var leftReference = left![index];
+                var rightReference = right![index];
                 if (!string.Equals(leftReference.Name, rightReference.Name, StringComparison.Ordinal) ||
                     !string.Equals(leftReference.Subject, rightReference.Subject, StringComparison.Ordinal) ||
                     leftReference.Version != rightReference.Version)
