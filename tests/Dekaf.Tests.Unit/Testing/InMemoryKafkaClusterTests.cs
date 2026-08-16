@@ -250,12 +250,12 @@ public sealed class InMemoryKafkaClusterTests
         await consumer.CommitAsync();
         await Assert.That(await admin.ListConsumerGroupOffsetsAsync("workers")).IsEmpty();
 
-        TopicPartitionOffset[] offsets =
+        var offsets = new StructOffsetList(
         [
             new("jobs", 0, 1),
             new("tasks", 0, 2),
             new("jobs", 0, 3)
-        ];
+        ]);
         consumer.StoreOffsets(offsets);
         await consumer.CommitAsync();
 
@@ -890,5 +890,17 @@ public sealed class InMemoryKafkaClusterTests
             default:
                 throw new ArgumentOutOfRangeException(nameof(seekOperation), seekOperation, null);
         }
+    }
+
+    private readonly struct StructOffsetList(TopicPartitionOffset[] offsets) : IReadOnlyList<TopicPartitionOffset>
+    {
+        public int Count => offsets.Length;
+
+        public TopicPartitionOffset this[int index] => offsets[index];
+
+        public IEnumerator<TopicPartitionOffset> GetEnumerator() =>
+            ((IEnumerable<TopicPartitionOffset>)offsets).GetEnumerator();
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => offsets.GetEnumerator();
     }
 }
