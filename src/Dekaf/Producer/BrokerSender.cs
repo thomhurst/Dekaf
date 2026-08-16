@@ -162,7 +162,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly Action? _onPipelinedResponseAcquired;
     private readonly Action? _onWaveCoalesceStarted;
     private readonly Action? _onIdleWaitStarted;
-    private readonly Action? _onBulkFirstBatchPublished;
     private readonly Func<long> _getTimestamp;
     private readonly Func<int, CancellationToken, ValueTask> _delayForThrottle;
     private readonly TimeSpan _disposalDrainTimeout;
@@ -355,7 +354,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         public bool TryClaim() => Interlocked.Exchange(ref _claimed, 1) == 0;
     }
 
-    private enum SendLoopEventType : byte
+    internal enum SendLoopEventType : byte
     {
         NewBatch,
         ResponseReady, // Lightweight signal: a response task completed, poll _pendingResponsesByConnection
@@ -379,7 +378,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     }
 
     [StructLayout(LayoutKind.Auto)]
-    private readonly struct SendLoopEvent
+    internal readonly struct SendLoopEvent
     {
         public readonly SendLoopEventType Type;
         public readonly ReadyBatch? Batch;
@@ -937,7 +936,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         Action? onPipelinedResponseAcquired = null,
         Action? onWaveCoalesceStarted = null,
         Action? onIdleWaitStarted = null,
-        Action? onBulkFirstBatchPublished = null)
+        Channel<SendLoopEvent>? eventChannel = null)
     {
         _unackedBudget = unackedBudget;
         _brokerId = brokerId;
@@ -964,14 +963,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _onPipelinedResponseAcquired = onPipelinedResponseAcquired;
         _onWaveCoalesceStarted = onWaveCoalesceStarted;
         _onIdleWaitStarted = onIdleWaitStarted;
-        _onBulkFirstBatchPublished = onBulkFirstBatchPublished;
         _disposalDrainTimeout = disposalDrainTimeout ?? DisposalDrainTimeout;
 
-        _eventChannel = Channel.CreateUnbounded<SendLoopEvent>(new UnboundedChannelOptions
-        {
-            SingleReader = true,
-            SingleWriter = false
-        });
+        _eventChannel = eventChannel ??
+            Channel.CreateUnbounded<SendLoopEvent>(new UnboundedChannelOptions
+            {
+                SingleReader = true,
+                SingleWriter = false
+            });
         _transactionEnrollmentCompleted = error =>
             _eventChannel.Writer.TryWrite(SendLoopEvent.TransactionEnrollmentReady(error));
 
@@ -1157,25 +1156,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             }
             else
             {
-                if (batches.Count > 0)
+                for (var i = 0; i < batches.Count; i++)
                 {
-                    _enqueuedPartitions.Add(batches[0].TopicPartition);
-                    if (!writer.TryWrite(SendLoopEvent.NewBatch(batches[0])))
+                    _enqueuedPartitions.Add(batches[i].TopicPartition);
+                    if (!writer.TryWrite(SendLoopEvent.NewBatch(batches[i])))
                     {
-                        rejectedIndex = 0;
-                    }
-                    else
-                    {
-                        _onBulkFirstBatchPublished?.Invoke();
-                        for (var i = 1; i < batches.Count; i++)
-                        {
-                            _enqueuedPartitions.Add(batches[i].TopicPartition);
-                            if (!writer.TryWrite(SendLoopEvent.NewBatch(batches[i])))
-                            {
-                                rejectedIndex = i;
-                                break;
-                            }
-                        }
+                        rejectedIndex = i;
+                        break;
                     }
                 }
             }

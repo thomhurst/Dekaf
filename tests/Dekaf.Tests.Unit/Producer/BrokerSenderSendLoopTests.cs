@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using System.Reflection;
+using System.Threading.Channels;
 using System.Threading.Tasks.Sources;
 using Dekaf.Compression;
 using Dekaf.Diagnostics;
@@ -2990,6 +2991,8 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         var secondBatch = CreateTestBatch(valueTaskSourcePool, topic, partition: 1);
         using var waveCoalesceStarted = new ManualResetEventSlim();
         using var bulkPublishCompleted = new ManualResetEventSlim();
+        var eventChannel = new FirstWriteBlockingChannel<BrokerSender.SendLoopEvent>(
+            () => waveCoalesceStarted.Wait(cancellationToken));
         var sender = CreateSender(
             pool,
             options,
@@ -3006,7 +3009,7 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
                 waveCoalesceStarted.Set();
                 bulkPublishCompleted.Wait(cancellationToken);
             },
-            onBulkFirstBatchPublished: () => waveCoalesceStarted.Wait(cancellationToken));
+            eventChannel: eventChannel);
 
         // Model producer-thread preemption after publishing the first of two bulk events.
         // Pre-seeding the known wave width makes the sender enter its coalescing hook; the
@@ -3048,6 +3051,41 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             await sender.DisposeAsync();
             await accumulator.DisposeAsync();
             await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    private sealed class FirstWriteBlockingChannel<T> : Channel<T>
+    {
+        internal FirstWriteBlockingChannel(Action afterFirstWrite)
+        {
+            var inner = Channel.CreateUnbounded<T>(new UnboundedChannelOptions
+            {
+                SingleReader = true,
+                SingleWriter = false
+            });
+            Reader = inner.Reader;
+            Writer = new FirstWriteBlockingWriter(inner.Writer, afterFirstWrite);
+        }
+
+        private sealed class FirstWriteBlockingWriter(
+            ChannelWriter<T> inner,
+            Action afterFirstWrite) : ChannelWriter<T>
+        {
+            private Action? _afterFirstWrite = afterFirstWrite;
+
+            public override bool TryComplete(Exception? error = null) => inner.TryComplete(error);
+
+            public override bool TryWrite(T item)
+            {
+                var written = inner.TryWrite(item);
+                if (written)
+                    Interlocked.Exchange(ref _afterFirstWrite, null)?.Invoke();
+
+                return written;
+            }
+
+            public override ValueTask<bool> WaitToWriteAsync(CancellationToken cancellationToken = default) =>
+                inner.WaitToWriteAsync(cancellationToken);
         }
     }
 
