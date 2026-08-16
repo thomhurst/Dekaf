@@ -17,7 +17,13 @@ dotnet add package Dekaf.SchemaRegistry.Avro
 
 # For Protobuf serialization
 dotnet add package Dekaf.SchemaRegistry.Protobuf
+
+# Optional JSON Schema payload validation
+dotnet add package Dekaf.SchemaRegistry.Json
 ```
+
+`Dekaf.SchemaRegistry` keeps JSON validation disabled by default and does not depend on a JSON
+Schema engine. Install `Dekaf.SchemaRegistry.Json` only in applications that enable validation.
 
 ## Avro Serialization
 
@@ -82,6 +88,78 @@ the assigned version for every non-well-known imported `.proto` schema, includin
 registration. The interface's default implementation throws `NotSupportedException` to identify
 custom clients that need updating. Set `UseSchemaReferences = false` only to retain the legacy
 registration behavior that omits references.
+
+## JSON Schema validation
+
+JSON Schema Registry serialization does not validate payloads unless a
+`JsonSchemaValidationOptions` instance is supplied. Enable validation independently for writes,
+reads, or both:
+
+```csharp
+using Dekaf.SchemaRegistry;
+using Dekaf.SchemaRegistry.Json;
+
+var registry = new SchemaRegistryClient(new SchemaRegistryConfig
+{
+    Url = "http://localhost:8081"
+});
+
+var validation = new JsonSchemaValidationOptions
+{
+    ValidatorFactory = new StreamingJsonSchemaValidatorFactory(registry),
+    Mode = JsonSchemaValidationMode.Both
+};
+
+var producer = await Kafka.CreateProducer<string, Order>()
+    .WithBootstrapServers("localhost:9092")
+    .UseJsonSchemaRegistry(
+        registry,
+        orderSchema,
+        jsonOptions: null,
+        validationOptions: validation)
+    .BuildAsync();
+
+var consumer = await Kafka.CreateConsumer<string, Order>()
+    .WithBootstrapServers("localhost:9092")
+    .WithGroupId("orders")
+    .UseJsonSchemaRegistry(
+        registry,
+        jsonOptions: null,
+        validationOptions: validation)
+    .BuildAsync();
+```
+
+`JsonSchemaValidationMode.Serialize` validates plaintext JSON immediately after serialization and
+before write rules. `Deserialize` validates after read rules and before JSON deserialization. This
+ordering lets encryption and migration rules transform the wire payload without validating
+ciphertext or a pre-migration shape.
+
+Streaming validators are compiled once per exact registered `Schema` object and weakly cached. The
+serializer fetches the complete registered schema after registration or lookup, so write validation
+includes Schema Registry `references`. The deserializer compiles once when each schema ID is first
+encountered. References are resolved by subject and version with a configurable 30-second default
+timeout. Relative references resolve from the effective `$id`; internal JSON Pointer references are
+supported directly.
+
+The allocation-free evaluator supports the common structural and scalar assertion subset of Draft
+7, 2019-09, and 2020-12: types and nullability, object properties and required fields, additional
+properties, arrays and tuple items, size limits, and numeric limits. Unsupported assertion keywords
+fail during cold validator compilation instead of being silently ignored. Configure reference
+resolution and schema nesting limits when needed:
+
+```csharp
+var factory = new StreamingJsonSchemaValidatorFactory(registry, new StreamingJsonSchemaValidatorOptions
+{
+    ReferenceResolutionTimeout = TimeSpan.FromSeconds(10),
+    MaxSchemaDepth = 192
+});
+```
+
+Invalid payloads throw `JsonSchemaValidationException`. `SchemaId`, `Keyword`, and `JsonPath`
+identify the failure. Exception messages never include payload contents. Validation has measurable
+CPU cost when enabled because each payload must be parsed and evaluated. Steady-state validation is
+zero-allocation; disabled serializers remain validation-neutral and do not load the optional JSON
+Schema package.
 
 ## Schema Registry Configuration
 

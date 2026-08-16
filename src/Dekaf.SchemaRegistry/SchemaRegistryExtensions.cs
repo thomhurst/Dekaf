@@ -32,6 +32,31 @@ public static class SchemaRegistryExtensions
             autoRegisterSchemas: autoRegisterSchemas);
 
     /// <summary>
+    /// Configures JSON Schema Registry serialization with payload validation.
+    /// </summary>
+    [RequiresUnreferencedCode("JsonSerializerOptions-based JSON serialization uses reflection. Use the JsonTypeInfo<TValue> overload for NativeAOT.")]
+    [RequiresDynamicCode("JsonSerializerOptions-based JSON serialization may require runtime code generation. Use the JsonTypeInfo<TValue> overload for NativeAOT.")]
+    public static ProducerBuilder<TKey, TValue> UseJsonSchemaRegistry<TKey, TValue>(
+        this ProducerBuilder<TKey, TValue> builder,
+        ISchemaRegistryClient schemaRegistry,
+        string jsonSchema,
+        JsonSerializerOptions? jsonOptions,
+        JsonSchemaValidationOptions validationOptions,
+        SubjectNameStrategy subjectNameStrategy = SubjectNameStrategy.TopicName,
+        bool autoRegisterSchemas = true)
+    {
+        var serializer = new JsonSchemaRegistrySerializer<TValue>(
+            schemaRegistry,
+            jsonSchema,
+            jsonOptions,
+            validationOptions,
+            subjectNameStrategy,
+            autoRegisterSchemas);
+
+        return builder.WithValueSerializer(serializer);
+    }
+
+    /// <summary>
     /// Configures the producer to use JSON Schema Registry serialization for values.
     /// </summary>
     /// <typeparam name="TKey">Key type.</typeparam>
@@ -86,6 +111,29 @@ public static class SchemaRegistryExtensions
             autoRegisterSchemas: autoRegisterSchemas);
 
     /// <summary>
+    /// Configures NativeAOT-safe JSON Schema Registry serialization with payload validation.
+    /// </summary>
+    public static ProducerBuilder<TKey, TValue> UseJsonSchemaRegistry<TKey, TValue>(
+        this ProducerBuilder<TKey, TValue> builder,
+        ISchemaRegistryClient schemaRegistry,
+        string jsonSchema,
+        JsonTypeInfo<TValue> jsonTypeInfo,
+        JsonSchemaValidationOptions validationOptions,
+        SubjectNameStrategy subjectNameStrategy = SubjectNameStrategy.TopicName,
+        bool autoRegisterSchemas = true)
+    {
+        var serializer = new JsonSchemaRegistrySerializer<TValue>(
+            schemaRegistry,
+            jsonSchema,
+            jsonTypeInfo,
+            validationOptions,
+            subjectNameStrategy,
+            autoRegisterSchemas);
+
+        return builder.WithValueSerializer(serializer);
+    }
+
+    /// <summary>
     /// Configures the producer to use NativeAOT-safe JSON Schema Registry serialization for values.
     /// </summary>
     /// <typeparam name="TKey">Key type.</typeparam>
@@ -137,6 +185,25 @@ public static class SchemaRegistryExtensions
         var deserializer = new JsonSchemaRegistryDeserializer<TValue>(
             schemaRegistry,
             jsonOptions);
+
+        return builder.WithValueDeserializer(deserializer);
+    }
+
+    /// <summary>
+    /// Configures JSON Schema Registry deserialization with payload validation.
+    /// </summary>
+    [RequiresUnreferencedCode("JsonSerializerOptions-based JSON deserialization uses reflection. Use the JsonTypeInfo<TValue> overload for NativeAOT.")]
+    [RequiresDynamicCode("JsonSerializerOptions-based JSON deserialization may require runtime code generation. Use the JsonTypeInfo<TValue> overload for NativeAOT.")]
+    public static ConsumerBuilder<TKey, TValue> UseJsonSchemaRegistry<TKey, TValue>(
+        this ConsumerBuilder<TKey, TValue> builder,
+        ISchemaRegistryClient schemaRegistry,
+        JsonSerializerOptions? jsonOptions,
+        JsonSchemaValidationOptions validationOptions)
+    {
+        var deserializer = new JsonSchemaRegistryDeserializer<TValue>(
+            schemaRegistry,
+            jsonOptions,
+            validationOptions);
 
         return builder.WithValueDeserializer(deserializer);
     }
@@ -219,6 +286,23 @@ public static class SchemaRegistryExtensions
         var deserializer = new JsonSchemaRegistryDeserializer<TValue>(
             schemaRegistry,
             jsonTypeInfo);
+
+        return builder.WithValueDeserializer(deserializer);
+    }
+
+    /// <summary>
+    /// Configures NativeAOT-safe JSON Schema Registry deserialization with payload validation.
+    /// </summary>
+    public static ConsumerBuilder<TKey, TValue> UseJsonSchemaRegistry<TKey, TValue>(
+        this ConsumerBuilder<TKey, TValue> builder,
+        ISchemaRegistryClient schemaRegistry,
+        JsonTypeInfo<TValue> jsonTypeInfo,
+        JsonSchemaValidationOptions validationOptions)
+    {
+        var deserializer = new JsonSchemaRegistryDeserializer<TValue>(
+            schemaRegistry,
+            jsonTypeInfo,
+            validationOptions);
 
         return builder.WithValueDeserializer(deserializer);
     }

@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>Dekaf.SchemaRegistry.Json</PackageId>
+    <PackageValidationBaselineVersion></PackageValidationBaselineVersion>
+    <Description>Optional JSON Schema validation for Dekaf Schema Registry serializers</Description>
+    <PackageTags>kafka;schema-registry;json-schema;validation</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Dekaf.SchemaRegistry\Dekaf.SchemaRegistry.csproj" />
+  </ItemGroup>
+
+</Project>
