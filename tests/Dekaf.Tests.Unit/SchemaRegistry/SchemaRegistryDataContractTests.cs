@@ -91,6 +91,46 @@ public sealed class SchemaRegistryDataContractTests
         await Assert.That(rule.Expr).IsEqualTo("message.name");
     }
 
+    [Test]
+    public async Task LookupSchemaAsync_PostsExactSchemaAndReturnsRegisteredVersion()
+    {
+        var handler = new CapturingSchemaRegistryHandler("""
+            {
+              "subject": "shared/common.proto",
+              "version": 4,
+              "id": 42,
+              "schema": "descriptor-base64",
+              "schemaType": "PROTOBUF"
+            }
+            """);
+        using var client = new SchemaRegistryClient(new SchemaRegistryConfig
+        {
+            Url = "http://schema-registry.local"
+        }, handler);
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Protobuf,
+            SchemaString = "descriptor-base64"
+        };
+
+        var registered = await client.LookupSchemaAsync(
+            "shared/common.proto",
+            schema,
+            ignoreDeletedSchemas: true,
+            normalize: true);
+
+        await Assert.That(registered.Id).IsEqualTo(42);
+        await Assert.That(registered.Version).IsEqualTo(4);
+        await Assert.That(handler.LastRequestUri!.AbsolutePath)
+            .IsEqualTo("/subjects/shared%2Fcommon.proto");
+        await Assert.That(handler.LastRequestUri.Query).IsEqualTo("?normalize=true&deleted=false");
+        using var document = JsonDocument.Parse(handler.LastRequestBody!);
+        await Assert.That(document.RootElement.GetProperty("schema").GetString())
+            .IsEqualTo("descriptor-base64");
+        await Assert.That(document.RootElement.GetProperty("schemaType").GetString())
+            .IsEqualTo("PROTOBUF");
+    }
+
     private static Schema CreateDataContractSchema() => new()
     {
         SchemaType = SchemaType.Json,
@@ -131,11 +171,13 @@ public sealed class SchemaRegistryDataContractTests
     private sealed class CapturingSchemaRegistryHandler(string responseContent) : HttpMessageHandler
     {
         public string? LastRequestBody { get; private set; }
+        public Uri? LastRequestUri { get; private set; }
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
+            LastRequestUri = request.RequestUri;
             if (request.Content is not null)
                 LastRequestBody = await request.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
 

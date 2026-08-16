@@ -131,6 +131,31 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
         });
     }
 
+    public Task<RegisteredSchema> LookupSchemaAsync(
+        string subject,
+        Schema schema,
+        bool ignoreDeletedSchemas = true,
+        bool normalize = false,
+        CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+
+        if (!_schemasBySubject.TryGetValue(subject, out var list))
+            throw new SchemaRegistryException(40401, $"Subject '{subject}' not found");
+
+        var entry = list.FirstOrDefault(candidate => SchemasAreEquivalent(candidate.Schema, schema));
+        if (entry == default)
+            throw new SchemaRegistryException(40403, $"Schema not found under subject '{subject}'");
+
+        return Task.FromResult(new RegisteredSchema
+        {
+            Id = entry.Id,
+            Subject = subject,
+            Version = entry.Version,
+            Schema = entry.Schema
+        });
+    }
+
     public async Task<int> GetOrRegisterSchemaAsync(string subject, Schema schema, CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
@@ -148,16 +173,46 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
             throw new SchemaRegistryException(50002, "Transient schema registration failure");
         }
 
-        // Check if schema already exists (using semantic comparison for JSON schemas)
+        // Check whether an equivalent schema is already registered under this subject.
         if (_schemasBySubject.TryGetValue(subject, out var list))
         {
-            var existing = list.FirstOrDefault(e => SchemasAreEquivalent(e.Schema.SchemaString, schema.SchemaString));
+            var existing = list.FirstOrDefault(e => SchemasAreEquivalent(e.Schema, schema));
             if (existing != default)
                 return existing.Id;
         }
 
         // Register new schema
         return await RegisterSchemaAsync(subject, schema, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static bool SchemasAreEquivalent(Schema left, Schema right)
+    {
+        if (left.SchemaType != right.SchemaType ||
+            !SchemasAreEquivalent(left.SchemaString, right.SchemaString))
+        {
+            return false;
+        }
+
+        var leftReferences = left.References;
+        var rightReferences = right.References;
+        if (leftReferences is null || rightReferences is null)
+            return leftReferences is null && rightReferences is null;
+        if (leftReferences.Count != rightReferences.Count)
+            return false;
+
+        for (var index = 0; index < leftReferences.Count; index++)
+        {
+            var leftReference = leftReferences[index];
+            var rightReference = rightReferences[index];
+            if (leftReference.Name != rightReference.Name ||
+                leftReference.Subject != rightReference.Subject ||
+                leftReference.Version != rightReference.Version)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     public Task<IReadOnlyList<string>> GetAllSubjectsAsync(CancellationToken cancellationToken = default)

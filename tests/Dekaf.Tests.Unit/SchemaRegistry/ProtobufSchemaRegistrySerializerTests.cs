@@ -294,7 +294,8 @@ public class ProtobufSchemaRegistrySerializerTests
         // Assert
         await Assert.That(capturedSchema).IsNotNull();
         await Assert.That(capturedSchema!.SchemaType).IsEqualTo(SchemaType.Protobuf);
-        await Assert.That(capturedSchema.SchemaString).Contains("message TestMessage");
+        await Assert.That(capturedSchema.SchemaString)
+            .IsEqualTo(TestMessage.Descriptor.File.SerializedData.ToBase64());
     }
 
     [Test]
@@ -309,7 +310,12 @@ public class ProtobufSchemaRegistrySerializerTests
             Version = 1,
             Schema = new Schema { SchemaType = SchemaType.Protobuf, SchemaString = "syntax = \"proto3\";" }
         };
-        schemaRegistry.GetSchemaBySubjectAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+        schemaRegistry.LookupSchemaAsync(
+                Arg.Any<string>(),
+                Arg.Any<Schema>(),
+                true,
+                false,
+                Arg.Any<CancellationToken>())
             .Returns(Task.FromResult(registeredSchema));
 
         var config = new ProtobufSerializerConfig { AutoRegisterSchemas = false };
@@ -321,8 +327,13 @@ public class ProtobufSchemaRegistrySerializerTests
         var buffer = new ArrayBufferWriter<byte>();
         serializer.Serialize(message, ref buffer, CreateContext());
 
-        // Assert - should call GetSchemaBySubjectAsync, not GetOrRegisterSchemaAsync
-        await schemaRegistry.Received(1).GetSchemaBySubjectAsync(Arg.Any<string>(), "latest", Arg.Any<CancellationToken>());
+        // Assert - should look up the exact descriptor, not register or select an unrelated latest version.
+        await schemaRegistry.Received(1).LookupSchemaAsync(
+            Arg.Any<string>(),
+            Arg.Any<Schema>(),
+            true,
+            false,
+            Arg.Any<CancellationToken>());
         await schemaRegistry.DidNotReceive().GetOrRegisterSchemaAsync(Arg.Any<string>(), Arg.Any<Schema>(), Arg.Any<CancellationToken>());
     }
 
@@ -376,8 +387,21 @@ public class ProtobufSchemaRegistrySerializerTests
         int errorCode)
     {
         var schemaRegistry = Substitute.For<ISchemaRegistryClient>();
-        schemaRegistry.GetSchemaBySubjectAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
-            .Returns(Task.FromException<RegisteredSchema>(new SchemaRegistryException(errorCode, "lookup failed")));
+        if (config.UseLatestVersion)
+        {
+            schemaRegistry.GetSchemaBySubjectAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+                .Returns(Task.FromException<RegisteredSchema>(new SchemaRegistryException(errorCode, "lookup failed")));
+        }
+        else
+        {
+            schemaRegistry.LookupSchemaAsync(
+                    Arg.Any<string>(),
+                    Arg.Any<Schema>(),
+                    true,
+                    false,
+                    Arg.Any<CancellationToken>())
+                .Returns(Task.FromException<RegisteredSchema>(new SchemaRegistryException(errorCode, "lookup failed")));
+        }
 
         await using var serializer = new ProtobufSchemaRegistrySerializer<TestMessage>(schemaRegistry, config);
 
