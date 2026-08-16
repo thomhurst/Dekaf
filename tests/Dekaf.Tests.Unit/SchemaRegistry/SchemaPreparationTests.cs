@@ -107,7 +107,7 @@ public sealed class SchemaPreparationTests
     }
 
     [Test]
-    public async Task Generic_PrepareAsync_SubjectFactoryRetainsThreeOverflowSubjects()
+    public async Task Generic_PrepareAsync_SubjectFactoryRetainsNewestOverflowSubject()
     {
         using var registry = new MockSchemaRegistryClient();
         var schemaFactoryCalls = 0;
@@ -129,11 +129,14 @@ public sealed class SchemaPreparationTests
         for (var index = 0; index < SubjectSchemaIdCache.MaxCachedEntries; index++)
             _ = await serializer.PrepareAsync($"topic-{index}", 42);
 
+        for (var index = 0; index < 4; index++)
+            _ = await serializer.PrepareAsync($"overflow-{index}", 42);
+
         for (var index = 0; index < 30; index++)
-            _ = await serializer.PrepareAsync($"overflow-{index % 3}", 42);
+            _ = await serializer.PrepareAsync("overflow-4", 42);
 
         await Assert.That(schemaFactoryCalls)
-            .IsEqualTo(SubjectSchemaIdCache.MaxCachedEntries + 3);
+            .IsEqualTo(SubjectSchemaIdCache.MaxCachedEntries + 5);
     }
 
     [Test]

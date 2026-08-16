@@ -4,6 +4,8 @@ namespace Dekaf.SchemaRegistry;
 
 internal sealed class SubjectSchemaIdCache
 {
+    private const int OverflowCapacity = 4;
+
     // Match CachingStringDeserializer: fixed topic sets stay cached,
     // dynamic topic names cannot grow without bound.
     internal const int MaxCachedEntries = 16_384;
@@ -15,6 +17,7 @@ internal sealed class SubjectSchemaIdCache
     private CachedEntry? _overflowThird;
     private CachedEntry? _overflowFourth;
     private int _cacheCount;
+    private int _overflowCursor = -1;
 
     internal int CachedEntryCount => Volatile.Read(ref _cacheCount);
 
@@ -212,6 +215,15 @@ internal sealed class SubjectSchemaIdCache
             return fourth.Value;
         }
 
+        var replacement = new CachedEntry(entry);
+        _ = (Interlocked.Increment(ref _overflowCursor) & (OverflowCapacity - 1)) switch
+        {
+            0 => Interlocked.Exchange(ref _overflowFirst, replacement),
+            1 => Interlocked.Exchange(ref _overflowSecond, replacement),
+            2 => Interlocked.Exchange(ref _overflowThird, replacement),
+            _ => Interlocked.Exchange(ref _overflowFourth, replacement)
+        };
+        Volatile.Write(ref _last, replacement);
         return entry;
     }
 

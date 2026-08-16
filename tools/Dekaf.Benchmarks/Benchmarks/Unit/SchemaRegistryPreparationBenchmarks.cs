@@ -27,6 +27,8 @@ public class SchemaRegistryPreparationBenchmarks
     private SerializationContext _overflowContextA;
     private SerializationContext _overflowContextB;
     private SerializationContext _overflowContextC;
+    private SerializationContext _overflowContextD;
+    private SerializationContext _overflowContextE;
     private int _overflowContextIndex;
     private int _equivalentDataContractIndex;
     private int _distinctDataContractIndex;
@@ -103,6 +105,16 @@ public class SchemaRegistryPreparationBenchmarks
             Topic = "schema-preparation-overflow-c",
             Component = SerializationComponent.Value
         };
+        _overflowContextD = new SerializationContext
+        {
+            Topic = "schema-preparation-overflow-d",
+            Component = SerializationComponent.Value
+        };
+        _overflowContextE = new SerializationContext
+        {
+            Topic = "schema-preparation-overflow-e",
+            Component = SerializationComponent.Value
+        };
 
         await _genericSerializer.PrepareAsync(42, _context).ConfigureAwait(false);
         await _jsonSerializer.PrepareAsync(_jsonValue, _context).ConfigureAwait(false);
@@ -119,6 +131,8 @@ public class SchemaRegistryPreparationBenchmarks
         await _genericOverflowSerializer.PrepareAsync(42, _overflowContextA).ConfigureAwait(false);
         await _genericOverflowSerializer.PrepareAsync(42, _overflowContextB).ConfigureAwait(false);
         await _genericOverflowSerializer.PrepareAsync(42, _overflowContextC).ConfigureAwait(false);
+        await _genericOverflowSerializer.PrepareAsync(42, _overflowContextD).ConfigureAwait(false);
+        await _genericOverflowSerializer.PrepareAsync(42, _overflowContextE).ConfigureAwait(false);
         await _equivalentDataContractCache.ResolveAsync(
             "data-contract-value",
             _dataContractSchemaA,
@@ -168,6 +182,10 @@ public class SchemaRegistryPreparationBenchmarks
         };
         return _genericOverflowSerializer.PrepareAsync(42, context);
     }
+
+    [Benchmark]
+    public ValueTask PrepareGenericNewestAfterSubjectCacheTurnover() =>
+        _genericOverflowSerializer.PrepareAsync(42, _overflowContextE);
 
     [Benchmark]
     public ValueTask<int> ResolveEquivalentDataContractSchema()

@@ -378,6 +378,7 @@ public sealed class SchemaRegistrySerializer<T> :
         private readonly ConcurrentDictionary<string, FactorySchema> _cache = new(StringComparer.Ordinal);
         private readonly CachedSubjectSchema?[] _overflow = new CachedSubjectSchema?[OverflowCapacity];
         private int _cacheCount;
+        private int _overflowCursor = -1;
 
         internal FactorySchema GetOrAdd(
             string subject,
@@ -439,6 +440,9 @@ public sealed class SchemaRegistrySerializer<T> :
                     return cached.Value;
             }
 
+            candidate ??= new CachedSubjectSchema(subject, factorySchema);
+            var replacementIndex = Interlocked.Increment(ref _overflowCursor) & (OverflowCapacity - 1);
+            _ = Interlocked.Exchange(ref _overflow[replacementIndex], candidate);
             return factorySchema;
         }
 
