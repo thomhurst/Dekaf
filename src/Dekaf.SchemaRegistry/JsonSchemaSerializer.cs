@@ -450,21 +450,35 @@ public sealed class JsonSchemaRegistrySerializer<T> :
         }
 
         var payload = payloadBuffer.WrittenMemory;
-        if (_validatorFactory is not null)
-            _validatorFactory.GetOrCreate(schemaEntry.Schema!).Validate(payload.Span, schemaId);
-        if (_ruleExecutor is not null)
+        var validator = _validatorFactory?.GetOrCreate(schemaEntry.Schema!);
+        if (_ruleExecutor is null)
         {
-            payload = _ruleExecutor.TransformSerializedPayload(
-                payload,
-                new SchemaRegistryRuleContext
-                {
-                    Topic = context.Topic,
-                    Component = context.Component,
-                    SchemaId = schemaId,
-                    Subject = schemaEntry.Subject,
-                    Schema = schemaEntry.Schema,
-                    PayloadFormat = SchemaRegistryPayloadFormat.Json
-                });
+            validator?.Validate(payload.Span, schemaId);
+        }
+        else
+        {
+            var ruleContext = new SchemaRegistryRuleContext
+            {
+                Topic = context.Topic,
+                Component = context.Component,
+                SchemaId = schemaId,
+                Subject = schemaEntry.Subject,
+                Schema = schemaEntry.Schema,
+                PayloadFormat = SchemaRegistryPayloadFormat.Json
+            };
+            if (_ruleExecutor is SchemaRegistryRuleExecutor builtInRuleExecutor && validator is not null)
+            {
+                payload = builtInRuleExecutor.TransformSerializedPayload(
+                    payload,
+                    ruleContext,
+                    validator,
+                    schemaId);
+            }
+            else
+            {
+                validator?.Validate(payload.Span, schemaId);
+                payload = _ruleExecutor.TransformSerializedPayload(payload, ruleContext);
+            }
         }
 
         // Write wire format: [0x00] [schema ID] [JSON payload]

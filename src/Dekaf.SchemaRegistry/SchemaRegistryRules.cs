@@ -329,6 +329,59 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         SchemaRegistryRuleContext context)
         => ApplyRules(payload, context, SchemaRegistryRuleDirection.Write);
 
+    internal ReadOnlyMemory<byte> TransformSerializedPayload(
+        ReadOnlyMemory<byte> payload,
+        SchemaRegistryRuleContext context,
+        IJsonSchemaValidator validator,
+        int schemaId)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(validator);
+
+        var ruleSet = context.Schema?.RuleSet;
+        if (ruleSet is null || !ruleSet.HasDomainOrEncodingRules)
+        {
+            validator.Validate(payload.Span, schemaId);
+            return payload;
+        }
+
+        switch (ruleSet.EnableAt)
+        {
+            case null or "" or "ALL" or "CLIENT":
+                break;
+            case "GATEWAY" or "SERVER" or "NONE":
+                validator.Validate(payload.Span, schemaId);
+                return payload;
+            case { } enabledEnvironment:
+                throw new SchemaRegistryRuleException(
+                    $"Unknown Schema Registry rule execution environment '{enabledEnvironment}'.");
+        }
+
+        if (ruleSet.HasFixedRuleCollections)
+        {
+            var plan = _executionPlans.GetValue(ruleSet, _createExecutionPlan);
+            payload = ApplyRules(
+                payload,
+                context,
+                plan.WriteSteps,
+                start: 0,
+                count: plan.WriteDomainStepCount,
+                SchemaRegistryRuleDirection.Write);
+            validator.Validate(payload.Span, schemaId);
+            return ApplyRules(
+                payload,
+                context,
+                plan.WriteSteps,
+                start: plan.WriteDomainStepCount,
+                count: plan.WriteSteps.Length - plan.WriteDomainStepCount,
+                SchemaRegistryRuleDirection.Write);
+        }
+
+        payload = ApplyRules(payload, context, ruleSet.DomainRules, SchemaRegistryRuleDirection.Write);
+        validator.Validate(payload.Span, schemaId);
+        return ApplyRules(payload, context, ruleSet.EncodingRules, SchemaRegistryRuleDirection.Write);
+    }
+
     /// <inheritdoc />
     public ReadOnlyMemory<byte> TransformDeserializedPayload(
         ReadOnlyMemory<byte> payload,
@@ -453,8 +506,18 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         SchemaRegistryRuleContext context,
         RuleExecutionStep[] steps,
         SchemaRegistryRuleDirection direction)
+        => ApplyRules(payload, context, steps, start: 0, steps.Length, direction);
+
+    private ReadOnlyMemory<byte> ApplyRules(
+        ReadOnlyMemory<byte> payload,
+        SchemaRegistryRuleContext context,
+        RuleExecutionStep[] steps,
+        int start,
+        int count,
+        SchemaRegistryRuleDirection direction)
     {
-        for (var i = 0; i < steps.Length; i++)
+        var end = start + count;
+        for (var i = start; i < end; i++)
         {
             ref readonly var step = ref steps[i];
             payload = ApplyRule(payload, context, step.Rule, step.Handler, direction);
@@ -522,12 +585,13 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
     {
         var writeSteps = new List<RuleExecutionStep>();
         AddExecutionSteps(writeSteps, ruleSet.DomainRules, SchemaRegistryRuleDirection.Write, reverse: false);
+        var writeDomainStepCount = writeSteps.Count;
         AddExecutionSteps(writeSteps, ruleSet.EncodingRules, SchemaRegistryRuleDirection.Write, reverse: false);
 
         var readSteps = new List<RuleExecutionStep>();
         AddExecutionSteps(readSteps, ruleSet.EncodingRules, SchemaRegistryRuleDirection.Read, reverse: true);
         AddExecutionSteps(readSteps, ruleSet.DomainRules, SchemaRegistryRuleDirection.Read, reverse: true);
-        return new RuleExecutionPlan([.. writeSteps], [.. readSteps]);
+        return new RuleExecutionPlan([.. writeSteps], writeDomainStepCount, [.. readSteps]);
     }
 
     private void AddExecutionSteps(
@@ -662,6 +726,7 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
 
     private sealed record RuleExecutionPlan(
         RuleExecutionStep[] WriteSteps,
+        int WriteDomainStepCount,
         RuleExecutionStep[] ReadSteps);
 
     private readonly record struct RuleExecutionStep(

@@ -13,6 +13,7 @@ public class SchemaRegistryRuleExecutorBenchmarks
     private readonly byte[] _payload = "benchmark-payload"u8.ToArray();
     private readonly SchemaRegistryRuleExecutor _executor = new([PassThroughRuleHandler.Instance]);
     private readonly SchemaRegistryRuleExecutor _celExecutor = new([new CelSchemaRegistryRuleHandler()]);
+    private readonly IJsonSchemaValidator _validator = NoOpJsonSchemaValidator.Instance;
     private readonly SchemaRegistryRuleExecutor _multipleHandlerExecutor = new(
     [
         new PassThroughRuleHandler("A"),
@@ -60,6 +61,18 @@ public class SchemaRegistryRuleExecutorBenchmarks
         });
     private readonly SchemaRegistryRuleContext _activeDomainRuleWithInactiveRules = CreateContext(
         CreatePassThroughSchema(inactiveRuleCount: 32));
+    private readonly SchemaRegistryRuleContext _activeDomainAndEncodingRules = CreateContext(
+        new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = "{}",
+            RuleSet = new SchemaRuleSet
+            {
+                HasFixedRuleCollections = true,
+                DomainRules = [CreatePassThroughRule("domain-rule")],
+                EncodingRules = [CreatePassThroughRule("encoding-rule")]
+            }
+        });
     private readonly SchemaRegistryRuleContext _activeCelCondition = CreateContext(
         CreateCelSchema(
             SchemaRuleKind.Condition,
@@ -72,6 +85,7 @@ public class SchemaRegistryRuleExecutorBenchmarks
     {
         _executor.TransformSerializedPayload(_payload, _activeDomainRule);
         _executor.TransformSerializedPayload(_payload, _activeDomainRuleWithInactiveRules);
+        _executor.TransformSerializedPayload(_payload, _activeDomainAndEncodingRules, _validator, schemaId: 1);
         _multipleHandlerExecutor.TransformSerializedPayload(_payload, _activeDomainRule);
         _celExecutor.TransformSerializedPayload(_payload, _activeCelCondition);
         _celExecutor.TransformSerializedPayload(_payload, _activeCelTransform);
@@ -96,6 +110,10 @@ public class SchemaRegistryRuleExecutorBenchmarks
     [Benchmark]
     public ReadOnlyMemory<byte> ActiveDomainRuleAfterInactiveRules() =>
         _executor.TransformSerializedPayload(_payload, _activeDomainRuleWithInactiveRules);
+
+    [Benchmark]
+    public ReadOnlyMemory<byte> ActiveDomainAndEncodingRulesWithValidation() =>
+        _executor.TransformSerializedPayload(_payload, _activeDomainAndEncodingRules, _validator, schemaId: 1);
 
     [Benchmark]
     public ReadOnlyMemory<byte> ActiveCelDomainCondition() =>
@@ -169,6 +187,15 @@ public class SchemaRegistryRuleExecutorBenchmarks
         };
     }
 
+    private static SchemaRule CreatePassThroughRule(string name) =>
+        new()
+        {
+            Name = name,
+            Kind = SchemaRuleKind.Transform,
+            Mode = SchemaRuleMode.Write,
+            Type = PassThroughRuleHandler.RuleType
+        };
+
     private static SchemaRegistryRuleContext CreateContext(Schema schema) =>
         new()
         {
@@ -197,5 +224,14 @@ public class SchemaRegistryRuleExecutorBenchmarks
         public ReadOnlyMemory<byte> TransformDeserializedPayload(
             ReadOnlyMemory<byte> payload,
             SchemaRegistryRuleHandlerContext context) => payload;
+    }
+
+    private sealed class NoOpJsonSchemaValidator : IJsonSchemaValidator
+    {
+        public static NoOpJsonSchemaValidator Instance { get; } = new();
+
+        public void Validate(ReadOnlySpan<byte> payload, int schemaId)
+        {
+        }
     }
 }
