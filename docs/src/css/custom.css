@@ -1,65 +1,91 @@
-/**
- * Dekaf Documentation Custom Styles
- */
+@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap');
 
 :root {
-  --ifm-color-primary: #6d4c41;
-  --ifm-color-primary-dark: #5d4037;
-  --ifm-color-primary-darker: #4e342e;
-  --ifm-color-primary-darkest: #3e2723;
-  --ifm-color-primary-light: #8d6e63;
-  --ifm-color-primary-lighter: #a1887f;
-  --ifm-color-primary-lightest: #bcaaa4;
-  --ifm-code-font-size: 95%;
-  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
+  --ifm-color-primary: #6951e8;
+  --ifm-color-primary-dark: #563cdb;
+  --ifm-color-primary-darker: #4d35d0;
+  --ifm-color-primary-darkest: #3e2aaa;
+  --ifm-color-primary-light: #7d68ed;
+  --ifm-color-primary-lighter: #8976ef;
+  --ifm-color-primary-lightest: #b4a9f6;
+  --ifm-background-color: #f4f6fb;
+  --ifm-background-surface-color: #fff;
+  --ifm-font-family-base: 'Manrope', system-ui, sans-serif;
+  --ifm-heading-font-family: 'Space Grotesk', system-ui, sans-serif;
+  --ifm-code-font-size: 92%;
+  --ifm-navbar-height: 4.25rem;
+  --ifm-global-radius: 7px;
+  --ifm-footer-background-color: #080b15;
+  --dekaf-paper: #f4f6fb;
+  --dekaf-surface: #fff;
+  --dekaf-surface-hover: #fafbff;
+  --dekaf-text: #111526;
+  --dekaf-muted: #626b80;
+  --dekaf-border: #dfe3ed;
+  --dekaf-violet: #6951e8;
+  --dekaf-cyan: #159fd2;
+  --dekaf-font-display: 'Space Grotesk', system-ui, sans-serif;
+  --dekaf-font-body: 'Manrope', system-ui, sans-serif;
+  --dekaf-font-mono: 'DM Mono', ui-monospace, monospace;
+  --docusaurus-highlighted-code-line-bg: rgba(105, 81, 232, 0.1);
 }
 
 [data-theme='dark'] {
-  --ifm-color-primary: #a1887f;
-  --ifm-color-primary-dark: #8d6e63;
-  --ifm-color-primary-darker: #795548;
-  --ifm-color-primary-darkest: #6d4c41;
-  --ifm-color-primary-light: #bcaaa4;
-  --ifm-color-primary-lighter: #d7ccc8;
-  --ifm-color-primary-lightest: #efebe9;
-  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.3);
+  --ifm-color-primary: #9a86ff;
+  --ifm-color-primary-dark: #8068ff;
+  --ifm-color-primary-darker: #745cff;
+  --ifm-color-primary-darkest: #482cff;
+  --ifm-color-primary-light: #b4a4ff;
+  --ifm-color-primary-lighter: #c0b2ff;
+  --ifm-color-primary-lightest: #e6e0ff;
+  --ifm-background-color: #0d1220;
+  --ifm-background-surface-color: #131a2b;
+  --dekaf-paper: #0d1220;
+  --dekaf-surface: #131a2b;
+  --dekaf-surface-hover: #182136;
+  --dekaf-text: #f1f3fb;
+  --dekaf-muted: #9aa5be;
+  --dekaf-border: #29334b;
+  --dekaf-violet: #a18eff;
+  --dekaf-cyan: #4ac8f5;
+  --docusaurus-highlighted-code-line-bg: rgba(154, 134, 255, 0.18);
 }
 
-/* Hero section styling */
-.hero--primary {
-  --ifm-hero-background-color: #4e342e;
-  --ifm-hero-text-color: #fff;
+body {
+  font-family: var(--dekaf-font-body);
+  font-synthesis: none;
 }
 
-/* Code block enhancements */
-.prism-code {
-  font-size: 14px;
+.navbar {
+  border-bottom: 1px solid rgba(120, 130, 155, 0.18);
+  box-shadow: none;
 }
 
-/* Better table styling */
-table {
-  display: table;
-  width: 100%;
-}
+.navbar__inner { max-width: 1440px; margin: 0 auto; }
+.navbar__title { font-family: var(--dekaf-font-display); font-size: 1.08rem; letter-spacing: -0.025em; }
+.navbar__logo { height: 2.15rem; }
+.navbar__item { font-size: 0.9rem; font-weight: 600; }
+.navbar__link:hover, .navbar__link--active { color: var(--ifm-color-primary); }
 
-th, td {
-  padding: 12px;
-}
+.theme-doc-sidebar-container,
+.table-of-contents { font-size: 0.88rem; }
 
-/* Admonition tweaks */
-.admonition {
-  margin-bottom: 1.5em;
-}
+.menu__link { border-radius: 6px; }
+.theme-doc-markdown h1,
+.theme-doc-markdown h2,
+.theme-doc-markdown h3 { letter-spacing: -0.025em; }
 
-/* Feature cards on homepage */
-.feature-card {
-  padding: 1.5rem;
-  border-radius: 8px;
-  background: var(--ifm-card-background-color);
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-  margin-bottom: 1rem;
-}
+code { border-color: var(--dekaf-border); font-family: var(--dekaf-font-mono); }
+.prism-code { font-family: var(--dekaf-font-mono); font-size: 13px; }
 
-[data-theme='dark'] .feature-card {
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+table { display: table; width: 100%; }
+th, td { padding: 12px; }
+.admonition { margin-bottom: 1.5em; }
+
+.footer { border-top: 1px solid #20283c; }
+.footer__title { color: #f0f2fa; font-family: var(--dekaf-font-display); }
+.footer__link-item, .footer__copyright { color: #929db7; }
+
+@media (max-width: 996px) {
+  :root { --ifm-navbar-height: 3.75rem; }
 }
