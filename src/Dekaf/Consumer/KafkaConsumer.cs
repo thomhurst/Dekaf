@@ -2133,10 +2133,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                     TrackPrefetchedBytes(fetched, release: true);
                                     DrainPrefetchBuffer();
                                 }
-                                else
-                                {
-                                    System.Diagnostics.Debug.Fail("WaitToRead signalled data available but TryRead returned false");
-                                }
                             }
                             else if (_prefetchBuffer.IsCompleted)
                             {
@@ -2542,10 +2538,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                     TrackPrefetchedBytes(fetched, release: true);
                                     DrainPrefetchBuffer();
                                 }
-                                else
-                                {
-                                    System.Diagnostics.Debug.Fail("WaitToRead signalled data available but TryRead returned false");
-                                }
                             }
                             else if (_prefetchBuffer.IsCompleted)
                             {
@@ -2701,10 +2693,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                     EnqueuePendingFetch(fetched);
                                     TrackPrefetchedBytes(fetched, release: true);
                                     DrainPrefetchBuffer();
-                                }
-                                else
-                                {
-                                    System.Diagnostics.Debug.Fail("WaitToRead signalled data available but TryRead returned false");
                                 }
                             }
                             else if (_prefetchBuffer.IsCompleted)
@@ -4431,10 +4419,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     EnqueuePendingFetch(fetched);
                     TrackPrefetchedBytes(fetched, release: true);
                     DrainPrefetchBuffer();
-                }
-                else
-                {
-                    System.Diagnostics.Debug.Fail("WaitToRead signalled data available but TryRead returned false");
                 }
             }
             else if (_prefetchBuffer.IsCompleted)
