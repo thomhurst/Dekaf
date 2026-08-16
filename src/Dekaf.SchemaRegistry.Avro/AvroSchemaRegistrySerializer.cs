@@ -48,16 +48,23 @@ public sealed class AvroSchemaRegistrySerializer<
     private readonly ISchemaRegistryClient _schemaRegistry;
     private readonly AvroSerializerConfig _config;
     private readonly bool _ownsClient;
-    private readonly ConcurrentDictionary<SchemaIdCacheKey, Lazy<Task<int>>> _schemaIdCache = new();
+    private readonly ConcurrentDictionary<SchemaIdCacheKey, int> _schemaIdCache = new();
+    private readonly ConcurrentDictionary<SchemaIdCacheKey, Lazy<Task<int>>> _inFlightSchemaIds = new();
     private readonly SubjectSchemaIdCache _subjectSchemaIdCache = new();
     private readonly ConcurrentDictionary<DynamicSchemaKey, DynamicSchemaCache> _dynamicSchemaCaches =
         new(DynamicSchemaKeyComparer.Instance);
     private readonly ConcurrentDictionary<AvroSchema, DynamicSchemaCache> _dynamicSchemaCachesByReference =
         new(AvroSchemaReferenceComparer.Instance);
+    private readonly ConcurrentDictionary<DynamicSchemaKey, DynamicSchemaCache> _overflowDynamicSchemaCaches =
+        new(DynamicSchemaKeyComparer.Instance);
     private readonly ConditionalWeakTable<AvroSchema, DynamicSchemaCache> _weakDynamicSchemaCaches = new();
+    private readonly Queue<DynamicSchemaKey> _overflowDynamicSchemaOrder = new();
+    private readonly object _dynamicSchemaCacheMutationLock = new();
     private readonly int _maxCachedSchemas;
+    private readonly int _maxOverflowLogicalSchemas;
     private readonly AvroSchema? _writerSchema;
     private int _dynamicSchemaCacheCount;
+    private int _overflowDynamicSchemaCacheCount;
     private int _schemaIdCacheCount;
     private DynamicSchemaCache? _lastDynamicSchemaCache;
     private DynamicSchemaCache? _previousDynamicSchemaCache;
@@ -77,6 +84,7 @@ public sealed class AvroSchemaRegistrySerializer<
         _config = config ?? new AvroSerializerConfig();
         ArgumentOutOfRangeException.ThrowIfLessThan(_config.MaxCachedSchemas, 1);
         _maxCachedSchemas = _config.MaxCachedSchemas;
+        _maxOverflowLogicalSchemas = Math.Max(3, _maxCachedSchemas);
         _ownsClient = ownsClient;
 
         // Try to get schema from type T if it's a specific record
@@ -87,6 +95,7 @@ public sealed class AvroSchemaRegistrySerializer<
     internal static int CachedSpecificWriterCount =>
         typeof(ISpecificRecord).IsAssignableFrom(typeof(T)) ? 1 : 0;
     internal int CachedDynamicSubjectSchemaCount => _dynamicSchemaCaches.Count;
+    internal int CachedOverflowLogicalSchemaCount => Volatile.Read(ref _overflowDynamicSchemaCacheCount);
     internal int CachedSchemaIdCount => Volatile.Read(ref _schemaIdCacheCount);
 
     /// <summary>
@@ -321,7 +330,16 @@ public sealed class AvroSchemaRegistrySerializer<
 
     private int GetSchemaIdCached(string subject, RegistrySchema schema)
     {
-        var lazyTask = GetOrAddSchemaIdLazy(subject, schema);
+        var key = new SchemaIdCacheKey(subject, schema.SchemaString);
+        if (_schemaIdCache.TryGetValue(key, out var cached))
+            return cached;
+
+        var lazyTask = GetOrAddInFlightSchemaId(key, schema);
+        if (_schemaIdCache.TryGetValue(key, out cached))
+        {
+            RemoveInFlightSchemaId(key, lazyTask);
+            return cached;
+        }
 
         // If the task is already completed, this returns immediately without blocking.
         // If this is the first access, it will block waiting for the schema fetch.
@@ -337,7 +355,15 @@ public sealed class AvroSchemaRegistrySerializer<
         // Slow path: first fetch or concurrent access during first fetch.
         // This blocks the calling thread, but only happens once per subject.
         // Add timeout to prevent indefinite hanging.
-        return task.WaitAsync(SchemaRegistryTimeout).ConfigureAwait(false).GetAwaiter().GetResult();
+        try
+        {
+            return task.WaitAsync(SchemaRegistryTimeout).ConfigureAwait(false).GetAwaiter().GetResult();
+        }
+        catch (TimeoutException)
+        {
+            ObserveFault(task);
+            throw;
+        }
     }
 
     private async Task<int> GetOrFetchSchemaIdAsync(
@@ -347,35 +373,49 @@ public sealed class AvroSchemaRegistrySerializer<
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        var lazyTask = GetOrAddSchemaIdLazy(subject, schema);
-
-        return await lazyTask.Value.WaitAsync(cancellationToken).ConfigureAwait(false);
-    }
-
-    private Lazy<Task<int>> GetOrAddSchemaIdLazy(string subject, RegistrySchema schema)
-    {
         var key = new SchemaIdCacheKey(subject, schema.SchemaString);
-        while (true)
+        if (_schemaIdCache.TryGetValue(key, out var cached))
+            return cached;
+
+        var lazyTask = GetOrAddInFlightSchemaId(key, schema);
+        if (_schemaIdCache.TryGetValue(key, out cached))
         {
-            if (_schemaIdCache.TryGetValue(key, out var cached))
-                return cached;
+            RemoveInFlightSchemaId(key, lazyTask);
+            return cached;
+        }
 
-            var created = CreateSchemaIdLazy(key, schema);
-            if (!TryReserveCacheSlot(ref _schemaIdCacheCount))
-                return created;
-
-            if (_schemaIdCache.TryAdd(key, created))
-                return created;
-
-            Interlocked.Decrement(ref _schemaIdCacheCount);
+        var task = lazyTask.Value;
+        try
+        {
+            return await task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            ObserveFault(task);
+            throw;
         }
     }
+
+    private Lazy<Task<int>> GetOrAddInFlightSchemaId(SchemaIdCacheKey key, RegistrySchema schema) =>
+        _inFlightSchemaIds.GetOrAdd(
+            key,
+            static (cacheKey, state) => state.Owner.CreateSchemaIdLazy(cacheKey, state.Schema),
+            (Owner: this, Schema: schema));
 
     private Lazy<Task<int>> CreateSchemaIdLazy(SchemaIdCacheKey key, RegistrySchema schema)
     {
         Lazy<Task<int>>? entry = null;
         entry = new Lazy<Task<int>>(() => FetchSchemaIdAsync(key, schema, entry!));
         return entry;
+    }
+
+    private static void ObserveFault(Task<int> task)
+    {
+        _ = task.ContinueWith(
+            static completed => _ = completed.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously | TaskContinuationOptions.OnlyOnFaulted,
+            TaskScheduler.Default);
     }
 
     private readonly record struct SchemaIdCacheKey(string Subject, string SchemaString);
@@ -388,18 +428,18 @@ public sealed class AvroSchemaRegistrySerializer<
         var subject = key.Subject;
         try
         {
+            int schemaId;
             if (_config.UseLatestVersion)
             {
                 // Use latest schema from registry
                 var registered = await _schemaRegistry.GetSchemaBySubjectAsync(subject, "latest", CancellationToken.None)
                     .ConfigureAwait(false);
-                return registered.Id;
+                schemaId = registered.Id;
             }
-
-            if (_config.AutoRegisterSchemas)
+            else if (_config.AutoRegisterSchemas)
             {
                 // Register schema if auto-register is enabled
-                return _config.NormalizeSchemas
+                schemaId = _config.NormalizeSchemas
                     ? await _schemaRegistry.GetOrRegisterSchemaAsync(
                         subject,
                         registrySchema,
@@ -410,22 +450,31 @@ public sealed class AvroSchemaRegistrySerializer<
                         registrySchema,
                         CancellationToken.None).ConfigureAwait(false);
             }
-
-            // Get existing schema ID from registry
-            var existing = await _schemaRegistry.GetSchemaBySubjectAsync(subject, "latest", CancellationToken.None)
-                .ConfigureAwait(false);
-            return existing.Id;
-        }
-        catch
-        {
-            if (((ICollection<KeyValuePair<SchemaIdCacheKey, Lazy<Task<int>>>>)_schemaIdCache)
-                .Remove(new KeyValuePair<SchemaIdCacheKey, Lazy<Task<int>>>(key, entry)))
+            else
             {
-                Interlocked.Decrement(ref _schemaIdCacheCount);
+                // Get existing schema ID from registry
+                var existing = await _schemaRegistry.GetSchemaBySubjectAsync(subject, "latest", CancellationToken.None)
+                    .ConfigureAwait(false);
+                schemaId = existing.Id;
             }
-            throw;
+
+            if (TryReserveCacheSlot(ref _schemaIdCacheCount))
+            {
+                if (!_schemaIdCache.TryAdd(key, schemaId))
+                    Interlocked.Decrement(ref _schemaIdCacheCount);
+            }
+
+            return schemaId;
+        }
+        finally
+        {
+            RemoveInFlightSchemaId(key, entry);
         }
     }
+
+    private void RemoveInFlightSchemaId(SchemaIdCacheKey key, Lazy<Task<int>> entry) =>
+        ((ICollection<KeyValuePair<SchemaIdCacheKey, Lazy<Task<int>>>>)_inFlightSchemaIds)
+        .Remove(new KeyValuePair<SchemaIdCacheKey, Lazy<Task<int>>>(key, entry));
 
     private static RegistrySchema CreateRegistrySchema(AvroSchema avroSchema)
     {
@@ -475,11 +524,16 @@ public sealed class AvroSchemaRegistrySerializer<
             var lastSchema = Volatile.Read(ref last.LastSeenSchema);
             if (ReferenceEquals(lastSchema, schema))
                 return last;
+
+            var previous = Volatile.Read(ref _previousDynamicSchemaCache);
+            if (previous is not null && ReferenceEquals(Volatile.Read(ref previous.LastSeenSchema), schema))
+                return PublishStrongDynamicSchemaCache(previous, schema);
+
             if (AvroSchemaLogicalComparer.Instance.Equals(lastSchema, schema))
                 return PublishLastDynamicSchemaCache(last, schema);
         }
 
-        return GetDynamicSchemaCacheSlow(schema, last, lookupStrongReference: false);
+        return GetDynamicSchemaCacheSlow(schema, last);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -489,21 +543,19 @@ public sealed class AvroSchemaRegistrySerializer<
         if (last is not null && ReferenceEquals(Volatile.Read(ref last.LastSeenSchema), schema))
             return last;
 
-        return GetDynamicSchemaCacheSlow(schema, last, lookupStrongReference: true);
+        return GetDynamicSchemaCacheSlow(schema, last);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     private DynamicSchemaCache GetDynamicSchemaCacheSlow(
         AvroSchema schema,
-        DynamicSchemaCache? last,
-        bool lookupStrongReference)
+        DynamicSchemaCache? last)
     {
         var previous = Volatile.Read(ref _previousDynamicSchemaCache);
         if (previous is not null && ReferenceEquals(Volatile.Read(ref previous.LastSeenSchema), schema))
             return PublishOverflowDynamicSchemaCache(previous, schema);
 
-        if (lookupStrongReference &&
-            _dynamicSchemaCachesByReference.TryGetValue(schema, out var strongEntry))
+        if (_dynamicSchemaCachesByReference.TryGetValue(schema, out var strongEntry))
         {
             return PublishStrongDynamicSchemaCache(strongEntry, schema);
         }
@@ -511,8 +563,7 @@ public sealed class AvroSchemaRegistrySerializer<
         if (_weakDynamicSchemaCaches.TryGetValue(schema, out var weakEntry))
             return PublishOverflowDynamicSchemaCache(weakEntry, schema);
 
-        if (lookupStrongReference &&
-            last is not null &&
+        if (last is not null &&
             AvroSchemaLogicalComparer.Instance.Equals(last.Key.Schema, schema))
         {
             return PublishLastDynamicSchemaCache(last, schema);
@@ -520,44 +571,51 @@ public sealed class AvroSchemaRegistrySerializer<
         if (previous is not null && AvroSchemaLogicalComparer.Instance.Equals(previous.Key.Schema, schema))
             return PublishOverflowDynamicSchemaCache(previous, schema);
 
-        return AddDynamicSchemaCache(schema, DynamicSchemaKey.Create(schema), lookupStrongReference);
+        var key = DynamicSchemaKey.Create(schema);
+        if (_dynamicSchemaCaches.TryGetValue(key, out var logicalEntry))
+            return PublishStrongDynamicSchemaCache(logicalEntry, schema);
+
+        if (_overflowDynamicSchemaCaches.TryGetValue(key, out var overflowEntry))
+            return PublishOverflowDynamicSchemaCache(overflowEntry, schema);
+
+        return AddDynamicSchemaCache(schema, key);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     private DynamicSchemaCache AddDynamicSchemaCache(
         AvroSchema schema,
-        DynamicSchemaKey key,
-        bool cacheStrongReference)
+        DynamicSchemaKey key)
     {
-        while (true)
+        lock (_dynamicSchemaCacheMutationLock)
         {
             if (_dynamicSchemaCaches.TryGetValue(key, out var existingLogicalEntry))
                 return PublishStrongDynamicSchemaCache(existingLogicalEntry, schema);
 
-            if (!TryReserveCacheSlot(ref _dynamicSchemaCacheCount))
+            if (_overflowDynamicSchemaCaches.TryGetValue(key, out var existingOverflowEntry))
+                return PublishOverflowDynamicSchemaCache(existingOverflowEntry, schema);
+
+            if (_dynamicSchemaCacheCount < _maxCachedSchemas)
             {
-                if (_dynamicSchemaCaches.TryGetValue(key, out var concurrentEntry))
-                    return PublishStrongDynamicSchemaCache(concurrentEntry, schema);
-
-                if (_weakDynamicSchemaCaches.TryGetValue(schema, out var existingWeakEntry))
-                    return PublishOverflowDynamicSchemaCache(existingWeakEntry, schema);
-
-                var createdWeakEntry = new DynamicSchemaCache(key, isStrong: false);
-                if (_weakDynamicSchemaCaches.TryAdd(schema, createdWeakEntry))
-                    return PublishOverflowDynamicSchemaCache(createdWeakEntry, schema);
-
-                continue;
-            }
-
-            var created = new DynamicSchemaCache(key, isStrong: true);
-            if (_dynamicSchemaCaches.TryAdd(key, created))
-            {
-                if (cacheStrongReference)
-                    _dynamicSchemaCachesByReference.TryAdd(schema, created);
+                var created = new DynamicSchemaCache(key, isStrong: true);
+                _dynamicSchemaCaches.TryAdd(key, created);
+                _dynamicSchemaCachesByReference.TryAdd(schema, created);
+                _dynamicSchemaCacheCount++;
                 return PublishStrongDynamicSchemaCache(created, schema);
             }
 
-            Interlocked.Decrement(ref _dynamicSchemaCacheCount);
+            if (_overflowDynamicSchemaCacheCount == _maxOverflowLogicalSchemas)
+            {
+                var oldest = _overflowDynamicSchemaOrder.Dequeue();
+                _overflowDynamicSchemaCaches.TryRemove(oldest, out _);
+                _overflowDynamicSchemaCacheCount--;
+            }
+
+            var overflow = new DynamicSchemaCache(key, isStrong: false);
+            _overflowDynamicSchemaCaches.TryAdd(key, overflow);
+            _overflowDynamicSchemaOrder.Enqueue(key);
+            _overflowDynamicSchemaCacheCount++;
+            _weakDynamicSchemaCaches.TryAdd(schema, overflow);
+            return PublishOverflowDynamicSchemaCache(overflow, schema);
         }
     }
 
@@ -588,8 +646,12 @@ public sealed class AvroSchemaRegistrySerializer<
     private DynamicSchemaCache PublishStrongDynamicSchemaCache(DynamicSchemaCache entry, AvroSchema schema)
     {
         Volatile.Write(ref entry.LastSeenSchema, schema);
-        Volatile.Write(ref _previousDynamicSchemaCache, null);
-        Volatile.Write(ref _lastDynamicSchemaCache, entry);
+        var last = Volatile.Read(ref _lastDynamicSchemaCache);
+        if (!ReferenceEquals(last, entry))
+        {
+            Volatile.Write(ref _previousDynamicSchemaCache, last);
+            Volatile.Write(ref _lastDynamicSchemaCache, entry);
+        }
         return entry;
     }
 

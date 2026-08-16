@@ -558,6 +558,7 @@ public sealed class SubjectNameStrategyTests
         }
 
         await Assert.That(serializer.CachedDynamicSubjectSchemaCount).IsLessThanOrEqualTo(maxCachedSchemas);
+        await Assert.That(serializer.CachedOverflowLogicalSchemaCount).IsLessThanOrEqualTo(maxCachedSchemas);
         await Assert.That(serializer.CachedGenericWriterCount).IsLessThanOrEqualTo(maxCachedSchemas);
         await Assert.That(serializer.CachedSchemaIdCount).IsEqualTo(maxCachedSchemas);
         await Assert.That(schemaRegistry.GetOrRegisterSchemaCallCount).IsEqualTo(10);
@@ -614,7 +615,7 @@ public sealed class SubjectNameStrategyTests
     }
 
     [Test]
-    public async Task AvroSerializer_AlternatingEquivalentOverflowSchemas_ReuseSubjectCaches()
+    public async Task AvroSerializer_ThreeRotatingOverflowSchemas_ReuseSubjectCaches()
     {
         using var schemaRegistry = new MockSchemaRegistryClient();
         var config = new AvroSerializerConfig { MaxCachedSchemas = 1 };
@@ -626,16 +627,45 @@ public sealed class SubjectNameStrategyTests
 
         for (var i = 0; i < 100; i++)
         {
-            var recordName = (i & 1) == 0 ? "AlternatingOverflowA" : "AlternatingOverflowB";
+            var recordName = (i % 3) switch
+            {
+                0 => "RotatingOverflowA",
+                1 => "RotatingOverflowB",
+                _ => "RotatingOverflowC"
+            };
             var record = RuntimeGenericRecord.Create(recordName, i);
             buffer.ResetWrittenCount();
             serializer.Serialize(record, ref buffer, context);
         }
 
         await Assert.That(serializer.CachedDynamicSubjectSchemaCount).IsEqualTo(1);
+        await Assert.That(serializer.CachedOverflowLogicalSchemaCount).IsEqualTo(3);
         await Assert.That(serializer.CachedGenericWriterCount).IsEqualTo(1);
         await Assert.That(serializer.CachedSchemaIdCount).IsEqualTo(1);
-        await Assert.That(schemaRegistry.GetOrRegisterSchemaCallCount).IsEqualTo(3);
+        await Assert.That(schemaRegistry.GetOrRegisterSchemaCallCount).IsEqualTo(4);
+    }
+
+    [Test]
+    public async Task AvroSerializer_CoalescesConcurrentOverflowSchemaIdResolution()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        var config = new AvroSerializerConfig { MaxCachedSchemas = 1 };
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry, config);
+        var retained = RuntimeGenericRecord.Create("RetainedSchemaIdRecord", 0);
+        var overflow = RuntimeGenericRecord.Create("OverflowSchemaIdRecord", 1);
+        await serializer.WarmupAsync("overflow-single-flight", retained);
+
+        schemaRegistry.BlockNextGetOrRegisterSchema();
+        var first = serializer.WarmupAsync("overflow-single-flight", overflow);
+        await schemaRegistry.WaitForBlockedGetOrRegisterSchemaAsync(TimeSpan.FromSeconds(5));
+        var second = serializer.WarmupAsync("overflow-single-flight", overflow);
+
+        await Assert.That(schemaRegistry.GetOrRegisterSchemaCallCount).IsEqualTo(2);
+        schemaRegistry.ReleaseBlockedGetOrRegisterSchema();
+        var schemaIds = await Task.WhenAll(first, second);
+
+        await Assert.That(schemaIds[0]).IsEqualTo(schemaIds[1]);
+        await Assert.That(schemaRegistry.GetOrRegisterSchemaCallCount).IsEqualTo(2);
     }
 
     [Test]
@@ -735,6 +765,11 @@ public sealed class SubjectNameStrategyTests
 
         buffer.ResetWrittenCount();
         serializer.Serialize(retainedRecord, ref buffer, context);
+        for (var i = 2; i < 5; i++)
+        {
+            buffer.ResetWrittenCount();
+            serializer.Serialize(RuntimeSpecificRecord.Create(i), ref buffer, context);
+        }
 
         for (var i = 0; i < 3; i++)
             ForceFullCollection();
@@ -773,6 +808,11 @@ public sealed class SubjectNameStrategyTests
 
         buffer.ResetWrittenCount();
         serializer.Serialize(retainedRecord, ref buffer, context);
+        for (var i = 0; i < 3; i++)
+        {
+            buffer.ResetWrittenCount();
+            serializer.Serialize(RuntimeGenericRecord.Create($"OverflowEvictionRecord{i}", i), ref buffer, context);
+        }
 
         for (var i = 0; i < 3; i++)
             ForceFullCollection();
