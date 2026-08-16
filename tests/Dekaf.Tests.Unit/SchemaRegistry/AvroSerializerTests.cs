@@ -649,6 +649,51 @@ public sealed class AvroSerializerTests
     }
 
     [Test]
+    public async Task Serializer_PrepareAsync_WithRuleExecutor_CachesRegisteredRuleMetadata()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        var registeredSchema = new RegistrySchema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = SimpleRecordSchema,
+            RuleSet = new SchemaRuleSet
+            {
+                DomainRules =
+                [
+                    new SchemaRule
+                    {
+                        Name = "registered-rule",
+                        Kind = SchemaRuleKind.Transform,
+                        Mode = SchemaRuleMode.Write,
+                        Type = "TEST"
+                    }
+                ]
+            }
+        };
+        await schemaRegistry.RegisterSchemaAsync("prepare-rules-value", registeredSchema);
+        var ruleExecutor = new CapturingRuleExecutor();
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(
+            schemaRegistry,
+            new AvroSerializerConfig
+            {
+                AutoRegisterSchemas = false,
+                RuleExecutor = ruleExecutor
+            });
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(SimpleRecordSchema);
+        var record = new GenericRecord(schema);
+        record.Add("id", 1);
+        record.Add("name", "rules");
+        var context = CreateContext("prepare-rules");
+
+        await serializer.PrepareAsync(record, context);
+        var buffer = new ArrayBufferWriter<byte>();
+        serializer.Serialize(record, ref buffer, context);
+
+        await Assert.That(ruleExecutor.SerializeContext!.Schema).IsSameReferenceAs(registeredSchema);
+        await Assert.That(schemaRegistry.GetSchemaCallCount).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task Deserializer_WarmupAsync_RetriesAfterTransientSchemaFetchFailure()
     {
         using var schemaRegistry = new MockSchemaRegistryClient

@@ -171,8 +171,17 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
         var record = new GenericRecord(avroSchema);
         record.Add("value", "avro-payload");
 
-        var avroOutput = new ArrayBufferWriter<byte>();
-        avroSerializer.Serialize(record, ref avroOutput, CreateContext(avroTopic));
+        await using var avroProducer = await Kafka.CreateProducer<string, GenericRecord>()
+            .WithBootstrapServers(testInfra.BootstrapServers)
+            .WithValueSerializer(avroSerializer)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        await avroProducer.ProduceAsync(new ProducerMessage<string, GenericRecord>
+        {
+            Topic = avroTopic,
+            Key = "key",
+            Value = record
+        });
 
         await using var latestAvroSerializer = new AvroSchemaRegistrySerializer<GenericRecord>(
             registryClient,
