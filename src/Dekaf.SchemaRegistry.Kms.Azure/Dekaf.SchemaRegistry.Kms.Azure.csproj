@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>Dekaf.SchemaRegistry.Kms.Azure</PackageId>
+    <Description>Azure Key Vault provider for Dekaf Schema Registry client-side field-level encryption</Description>
+    <PackageTags>kafka;schema-registry;encryption;azure;key-vault</PackageTags>
+    <PackageValidationBaselineVersion></PackageValidationBaselineVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Dekaf.Tests.Unit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Azure.Identity" />
+    <PackageReference Include="Azure.Security.KeyVault.Keys" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Dekaf.SchemaRegistry\Dekaf.SchemaRegistry.csproj" />
+  </ItemGroup>
+
+</Project>
