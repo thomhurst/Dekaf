@@ -6,7 +6,9 @@ namespace Dekaf.SchemaRegistry.Avro;
 public sealed class AvroSerializerConfig
 {
     /// <summary>
-    /// Maximum number of runtime schemas retained by the serializer caches.
+    /// Maximum number of runtime schemas retained strongly by each serializer cache.
+    /// Additional runtime schema objects use weak-key caches, so they remain reusable while
+    /// application records reference them without being retained by the serializer.
     /// Must be greater than zero. Default is 1000.
     /// </summary>
     public int MaxCachedSchemas { get; init; } = 1000;

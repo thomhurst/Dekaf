@@ -51,12 +51,15 @@ public sealed class AvroSchemaRegistrySerializer<
     private readonly SubjectSchemaIdCache _subjectSchemaIdCache = new();
     private readonly ConcurrentDictionary<AvroSchema, DynamicSchemaCache> _dynamicSchemaCaches =
         new(AvroSchemaLogicalComparer.Instance);
+    private readonly ConditionalWeakTable<AvroSchema, DynamicSchemaCache> _weakDynamicSchemaCaches = new();
     private readonly ConcurrentDictionary<AvroSchema, SpecificDefaultWriter> _specificWriters =
         new(AvroSchemaReferenceComparer.Instance);
+    private readonly ConditionalWeakTable<AvroSchema, SpecificDefaultWriter> _weakSpecificWriters = new();
     private readonly int _maxCachedSchemas;
     private readonly AvroSchema? _writerSchema;
     private int _dynamicSchemaCacheCount;
     private int _schemaIdCacheCount;
+    private int _specificWriterCount;
     private DynamicSchemaCache? _lastDynamicSchemaCache;
 
     /// <summary>
@@ -309,9 +312,7 @@ public sealed class AvroSchemaRegistrySerializer<
         switch (value)
         {
             case ISpecificRecord specificRecord:
-                var specificWriter = _specificWriters.GetOrAdd(
-                    specificRecord.Schema,
-                    static schema => new SpecificDefaultWriter(schema));
+                var specificWriter = GetSpecificWriter(specificRecord.Schema);
                 specificWriter.Write(specificRecord.Schema, specificRecord, encoder);
                 break;
 
@@ -469,6 +470,40 @@ public sealed class AvroSchemaRegistrySerializer<
         GetDynamicSchemaCache(schema).Writer;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private SpecificDefaultWriter GetSpecificWriter(AvroSchema schema)
+    {
+        if (_specificWriters.TryGetValue(schema, out var writer))
+            return writer;
+
+        return AddSpecificWriter(schema);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private SpecificDefaultWriter AddSpecificWriter(AvroSchema schema)
+    {
+        while (true)
+        {
+            if (!TryReserveCacheSlot(ref _specificWriterCount))
+            {
+                if (_specificWriters.TryGetValue(schema, out var concurrentWriter))
+                    return concurrentWriter;
+
+                return _weakSpecificWriters.GetValue(
+                    schema,
+                    static key => new SpecificDefaultWriter(key));
+            }
+
+            var created = new SpecificDefaultWriter(schema);
+            if (_specificWriters.TryAdd(schema, created))
+                return created;
+
+            Interlocked.Decrement(ref _specificWriterCount);
+            if (_specificWriters.TryGetValue(schema, out var existing))
+                return existing;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private DynamicSchemaCache GetDynamicSchemaCache(AvroSchema schema)
     {
         var last = Volatile.Read(ref _lastDynamicSchemaCache);
@@ -486,10 +521,18 @@ public sealed class AvroSchemaRegistrySerializer<
     {
         while (true)
         {
-            var created = new DynamicSchemaCache(schema);
             if (!TryReserveCacheSlot(ref _dynamicSchemaCacheCount))
-                return PublishDynamicSchemaCache(created, schema);
+            {
+                if (_dynamicSchemaCaches.TryGetValue(schema, out var concurrentEntry))
+                    return PublishDynamicSchemaCache(concurrentEntry, schema);
 
+                var weakEntry = _weakDynamicSchemaCaches.GetValue(
+                    schema,
+                    static key => new DynamicSchemaCache(key));
+                return PublishDynamicSchemaCache(weakEntry, schema);
+            }
+
+            var created = new DynamicSchemaCache(schema);
             if (_dynamicSchemaCaches.TryAdd(schema, created))
                 return PublishDynamicSchemaCache(created, schema);
 

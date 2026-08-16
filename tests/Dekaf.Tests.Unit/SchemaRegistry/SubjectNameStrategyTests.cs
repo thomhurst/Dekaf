@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
 using Avro.Generic;
+using Avro.Specific;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Avro;
 using Dekaf.SchemaRegistry.Protobuf;
@@ -525,7 +526,9 @@ public sealed class SubjectNameStrategyTests
         var context = CreateContext("bounded-topic");
         var buffer = new ArrayBufferWriter<byte>();
         GenericRecord? firstRecord = null;
+        GenericRecord? overflowRecord = null;
         var firstSchemaId = 0;
+        var overflowSchemaId = 0;
 
         for (var i = 0; i < 10; i++)
         {
@@ -547,6 +550,11 @@ public sealed class SubjectNameStrategyTests
             var schemaId = BinaryPrimitives.ReadInt32BigEndian(buffer.WrittenSpan.Slice(1, 4));
             if (i == 0)
                 firstSchemaId = schemaId;
+            if (i == 9)
+            {
+                overflowRecord = record;
+                overflowSchemaId = schemaId;
+            }
         }
 
         await Assert.That(serializer.CachedDynamicSubjectSchemaCount).IsLessThanOrEqualTo(maxCachedSchemas);
@@ -559,7 +567,73 @@ public sealed class SubjectNameStrategyTests
 
         await Assert.That(BinaryPrimitives.ReadInt32BigEndian(buffer.WrittenSpan.Slice(1, 4)))
             .IsEqualTo(firstSchemaId);
+
+        buffer.ResetWrittenCount();
+        serializer.Serialize(overflowRecord!, ref buffer, context);
+
+        await Assert.That(BinaryPrimitives.ReadInt32BigEndian(buffer.WrittenSpan.Slice(1, 4)))
+            .IsEqualTo(overflowSchemaId);
         await Assert.That(schemaRegistry.GetOrRegisterSchemaCallCount).IsEqualTo(10);
+    }
+
+    [Test]
+    public async Task AvroSerializer_SpecificWriterCache_StaysWithinConfiguredBound()
+    {
+        const int maxCachedSchemas = 2;
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        var config = new AvroSerializerConfig { MaxCachedSchemas = maxCachedSchemas };
+        await using var serializer = new AvroSchemaRegistrySerializer<RuntimeSpecificRecord>(
+            schemaRegistry,
+            config);
+        var context = CreateContext("bounded-specific-topic");
+        var buffer = new ArrayBufferWriter<byte>();
+        RuntimeSpecificRecord? firstRecord = null;
+        RuntimeSpecificRecord? overflowRecord = null;
+
+        for (var i = 0; i < 5; i++)
+        {
+            var record = RuntimeSpecificRecord.Create(i);
+            firstRecord ??= record;
+            overflowRecord = record;
+            buffer.ResetWrittenCount();
+            serializer.Serialize(record, ref buffer, context);
+        }
+
+        await Assert.That(serializer.CachedSpecificWriterCount).IsEqualTo(maxCachedSchemas);
+        await Assert.That(serializer.CachedDynamicSubjectSchemaCount).IsEqualTo(maxCachedSchemas);
+        await Assert.That(serializer.CachedSchemaIdCount).IsEqualTo(maxCachedSchemas);
+        await Assert.That(schemaRegistry.GetOrRegisterSchemaCallCount).IsEqualTo(5);
+
+        buffer.ResetWrittenCount();
+        serializer.Serialize(firstRecord!, ref buffer, context);
+        buffer.ResetWrittenCount();
+        serializer.Serialize(overflowRecord!, ref buffer, context);
+
+        await Assert.That(schemaRegistry.GetOrRegisterSchemaCallCount).IsEqualTo(5);
+    }
+
+    [Test]
+    public async Task AvroSerializer_WeakSpecificOverflowCache_DoesNotRetainSchema()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        var config = new AvroSerializerConfig { MaxCachedSchemas = 1 };
+        await using var serializer = new AvroSchemaRegistrySerializer<RuntimeSpecificRecord>(
+            schemaRegistry,
+            config);
+        var context = CreateContext("weak-specific-overflow-topic");
+        var retainedRecord = RuntimeSpecificRecord.Create(0);
+        var buffer = new ArrayBufferWriter<byte>();
+        serializer.Serialize(retainedRecord, ref buffer, context);
+        var overflowReferences = SerializeTransientSpecificOverflowRecord(serializer, context);
+
+        buffer.ResetWrittenCount();
+        serializer.Serialize(retainedRecord, ref buffer, context);
+
+        for (var i = 0; i < 3; i++)
+            ForceFullCollection();
+
+        await Assert.That(overflowReferences.Record.TryGetTarget(out _)).IsFalse();
+        await Assert.That(overflowReferences.Schema.TryGetTarget(out _)).IsFalse();
     }
 
     [Test]
@@ -570,13 +644,34 @@ public sealed class SubjectNameStrategyTests
         var recordReference = SerializeTransientRecord(serializer, CreateContext("retention-topic"));
 
         for (var i = 0; i < 3; i++)
-        {
-            GC.Collect();
-            GC.WaitForPendingFinalizers();
-            GC.Collect();
-        }
+            ForceFullCollection();
 
         await Assert.That(recordReference.TryGetTarget(out _)).IsFalse();
+    }
+
+    [Test]
+    public async Task AvroSerializer_WeakOverflowCache_DoesNotRetainSchema()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        var config = new AvroSerializerConfig { MaxCachedSchemas = 1 };
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry, config);
+        var context = CreateContext("weak-overflow-topic");
+        var retainedSchema = (Avro.RecordSchema)AvroSchema.Parse(SimpleRecordSchema);
+        var retainedRecord = new GenericRecord(retainedSchema);
+        retainedRecord.Add("id", 1);
+        retainedRecord.Add("name", "retained");
+        var buffer = new ArrayBufferWriter<byte>();
+        serializer.Serialize(retainedRecord, ref buffer, context);
+        var overflowReferences = SerializeTransientOverflowRecord(serializer, context);
+
+        buffer.ResetWrittenCount();
+        serializer.Serialize(retainedRecord, ref buffer, context);
+
+        for (var i = 0; i < 3; i++)
+            ForceFullCollection();
+
+        await Assert.That(overflowReferences.Record.TryGetTarget(out _)).IsFalse();
+        await Assert.That(overflowReferences.Schema.TryGetTarget(out _)).IsFalse();
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -591,6 +686,49 @@ public sealed class SubjectNameStrategyTests
         var buffer = new ArrayBufferWriter<byte>();
         serializer.Serialize(record, ref buffer, context);
         return new WeakReference<GenericRecord>(record);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static (WeakReference<GenericRecord> Record, WeakReference<AvroSchema> Schema)
+        SerializeTransientOverflowRecord(
+            AvroSchemaRegistrySerializer<GenericRecord> serializer,
+            SerializationContext context)
+    {
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(
+            """
+            {
+              "type": "record",
+              "name": "TransientOverflowRecord",
+              "namespace": "test",
+              "fields": [{ "name": "id", "type": "int" }]
+            }
+            """);
+        var record = new GenericRecord(schema);
+        record.Add("id", 2);
+        var buffer = new ArrayBufferWriter<byte>();
+        serializer.Serialize(record, ref buffer, context);
+        return (new WeakReference<GenericRecord>(record), new WeakReference<AvroSchema>(schema));
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static (WeakReference<RuntimeSpecificRecord> Record, WeakReference<AvroSchema> Schema)
+        SerializeTransientSpecificOverflowRecord(
+            AvroSchemaRegistrySerializer<RuntimeSpecificRecord> serializer,
+            SerializationContext context)
+    {
+        var record = RuntimeSpecificRecord.Create(1);
+        var buffer = new ArrayBufferWriter<byte>();
+        serializer.Serialize(record, ref buffer, context);
+        return (new WeakReference<RuntimeSpecificRecord>(record), new WeakReference<AvroSchema>(record.Schema));
+    }
+
+    private static void ForceFullCollection()
+    {
+        // lgtm[cs/call-to-gc-collect] Weak-reference tests require deterministic full collection.
+        GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true);
+        GC.WaitForPendingFinalizers();
+        // lgtm[cs/call-to-gc-collect] Collect objects finalized by the first pass.
+        GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true);
     }
 
     [Test]
@@ -816,6 +954,36 @@ public sealed class SubjectNameStrategyTests
         {
             var suffix = isKey ? "key" : "value";
             return $"{_prefix}.{topic}-{suffix}";
+        }
+    }
+
+    private sealed class RuntimeSpecificRecord(AvroSchema schema, int id) : ISpecificRecord
+    {
+        public AvroSchema Schema { get; } = schema;
+        private int Id { get; set; } = id;
+
+        internal static RuntimeSpecificRecord Create(int id)
+        {
+            var schema = AvroSchema.Parse(
+                $$"""
+                {
+                  "type": "record",
+                  "name": "SpecificRecord{{id}}",
+                  "namespace": "test",
+                  "fields": [{ "name": "id", "type": "int" }]
+                }
+                """);
+            return new RuntimeSpecificRecord(schema, id);
+        }
+
+        public object Get(int fieldPos) => fieldPos == 0
+            ? Id
+            : throw new ArgumentOutOfRangeException(nameof(fieldPos));
+
+        public void Put(int fieldPos, object fieldValue)
+        {
+            ArgumentOutOfRangeException.ThrowIfNotEqual(fieldPos, 0);
+            Id = (int)fieldValue;
         }
     }
 }
