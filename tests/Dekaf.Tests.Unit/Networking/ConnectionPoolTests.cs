@@ -108,6 +108,20 @@ public sealed class ConnectionPoolTests
     }
 
     [Test]
+    public async Task StatusSnapshot_ExcludesBrokersRemovedByMetadata()
+    {
+        await using var pool = new ConnectionPool("status-test");
+        pool.RegisterBroker(1, "removed-broker", 9092);
+        pool.RegisterBroker(2, "current-broker", 9093);
+        var statusSource = (IConnectionPoolStatusSource)pool;
+
+        statusSource.UpdateBrokerStatusSnapshot([2]);
+        var status = statusSource.GetBrokerConnectionStatus();
+
+        await Assert.That(status.Select(static broker => broker.BrokerId)).IsEquivalentTo([2]);
+    }
+
+    [Test]
     public async Task GetConnectionAsync_DisposedPool_ThrowsObjectDisposedException()
     {
         var pool = new ConnectionPool("test-client");

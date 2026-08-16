@@ -400,6 +400,55 @@ public class MetadataManagerTests
     }
 
     [Test]
+    public async Task InitializeAsync_PublishesAuthoritativeBrokerStatusSnapshot()
+    {
+        var connection = Substitute.For<IKafkaConnection>();
+        connection.IsConnected.Returns(true);
+        connection.BrokerId.Returns(-1);
+        connection.Host.Returns("localhost");
+        connection.Port.Returns(9092);
+        connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
+                Arg.Any<ApiVersionsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new ApiVersionsResponse
+            {
+                ErrorCode = ErrorCode.None,
+                ApiKeys =
+                [
+                    new ApiVersion(
+                        ApiKey.Metadata,
+                        MetadataRequest.LowestSupportedVersion,
+                        MetadataRequest.HighestSupportedVersion)
+                ]
+            });
+        connection.SendAsync<MetadataRequest, MetadataResponse>(
+                Arg.Any<MetadataRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(
+                CreateMetadataResponse((1, "broker-1", 9092), (3, "broker-3", 9094)),
+                CreateMetadataResponse((3, "broker-3", 9094)));
+        await using var pool = new ConnectionPool(
+            "metadata-status-test",
+            new ConnectionOptions(),
+            connectionsPerBroker: 1,
+            connectionFactory: (_, _, _, _, _) => ValueTask.FromResult(connection));
+        await using var manager = new MetadataManager(
+            pool,
+            ["localhost:9092"],
+            new MetadataOptions { EnableBackgroundRefresh = false });
+
+        await manager.InitializeAsync();
+        var initial = ((IConnectionPoolStatusSource)pool).GetBrokerConnectionStatus();
+        await manager.RefreshMetadataAsync();
+        var refreshed = ((IConnectionPoolStatusSource)pool).GetBrokerConnectionStatus();
+
+        await Assert.That(initial.Select(static broker => broker.BrokerId)).IsEquivalentTo([1, 3]);
+        await Assert.That(refreshed.Select(static broker => broker.BrokerId)).IsEquivalentTo([3]);
+    }
+
+    [Test]
     public async Task InitializeAsync_VersionlessConnection_UsesCompatibleApiVersionsV3()
     {
         var pool = Substitute.For<IConnectionPool>();

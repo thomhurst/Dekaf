@@ -69,6 +69,7 @@ public sealed partial class ConnectionPool :
     private readonly Func<long>? _timestampProvider;
 
     private readonly ConcurrentDictionary<int, BrokerInfo> _brokers = new();
+    private int[]? _brokerStatusSnapshot;
     private readonly ConcurrentDictionary<int, BrokerConnectionRuntimeState> _brokerConnectionRuntimeStates = new();
     private readonly ConcurrentDictionary<EndpointKey, IKafkaConnection> _connectionsByEndpoint = new();
     private readonly ConcurrentDictionary<int, IKafkaConnection> _connectionsById = new();
@@ -1825,55 +1826,82 @@ public sealed partial class ConnectionPool :
     {
         var capturedAtUtc = DateTimeOffset.UtcNow;
         var capturedAtTimestampMs = Dekaf.MonotonicClock.GetMilliseconds();
-        var result = new List<BrokerConnectionStatus>(_brokers.Count);
+        var brokerIds = Volatile.Read(ref _brokerStatusSnapshot);
+        var result = new List<BrokerConnectionStatus>(brokerIds?.Length ?? _brokers.Count);
 
-        foreach (var broker in _brokers.Values)
+        if (brokerIds is null)
         {
-            var connections = default(ConnectionStatusAccumulator);
-
-            _connectionGroupsById.TryGetValue(broker.BrokerId, out var group);
-            if (group is not null)
+            foreach (var broker in _brokers.Values)
             {
-                for (var i = 0; i < group.Length; i++)
-                    AccumulateConnectionStatus(group[i], ref connections);
+                result.Add(CaptureBrokerConnectionStatus(
+                    broker, capturedAtTimestampMs, capturedAtUtc));
             }
-            if (_connectionsById.TryGetValue(broker.BrokerId, out var connection)
-                && !ContainsReference(group, connection))
+        }
+        else
+        {
+            for (var i = 0; i < brokerIds.Length; i++)
             {
-                AccumulateConnectionStatus(connection, ref connections);
+                if (_brokers.TryGetValue(brokerIds[i], out var broker))
+                {
+                    result.Add(CaptureBrokerConnectionStatus(
+                        broker, capturedAtTimestampMs, capturedAtUtc));
+                }
             }
-
-            _brokerConnectionRuntimeStates.TryGetValue(broker.BrokerId, out var runtimeState);
-            var lastErrorTimestampMs = runtimeState?.LastErrorTimestampMs ?? 0;
-            connections.LastStateChangeTimestampMs = Math.Max(
-                connections.LastStateChangeTimestampMs,
-                runtimeState?.LastStateChangeTimestampMs ?? 0);
-
-            result.Add(new BrokerConnectionStatus
-            {
-                BrokerId = broker.BrokerId,
-                Host = broker.Host,
-                Port = broker.Port,
-                State = connections.ConnectedCount == 0
-                    ? BrokerConnectionState.Disconnected
-                    : connections.ConnectedCount == connections.ConnectionCount
-                        ? BrokerConnectionState.Connected
-                        : BrokerConnectionState.PartiallyConnected,
-                ConnectionCount = connections.ConnectionCount,
-                ConnectedConnectionCount = connections.ConnectedCount,
-                PendingRequestCount = connections.PendingRequestCount,
-                LastSuccessfulRequestAtUtc = ToUtcTimestamp(
-                    connections.LastSuccessfulRequestTimestampMs, capturedAtTimestampMs, capturedAtUtc),
-                LastConnectionStateChangeAtUtc = ToUtcTimestamp(
-                    connections.LastStateChangeTimestampMs, capturedAtTimestampMs, capturedAtUtc),
-                LastErrorAtUtc = ToUtcTimestamp(
-                    lastErrorTimestampMs, capturedAtTimestampMs, capturedAtUtc),
-                LastError = runtimeState?.LastError
-            });
         }
 
         result.Sort(static (left, right) => left.BrokerId.CompareTo(right.BrokerId));
         return result.AsReadOnly();
+    }
+
+    void IConnectionPoolStatusSource.UpdateBrokerStatusSnapshot(int[] brokerIds) =>
+        Volatile.Write(ref _brokerStatusSnapshot, brokerIds);
+
+    private BrokerConnectionStatus CaptureBrokerConnectionStatus(
+        BrokerInfo broker,
+        long capturedAtTimestampMs,
+        DateTimeOffset capturedAtUtc)
+    {
+        var connections = default(ConnectionStatusAccumulator);
+
+        _connectionGroupsById.TryGetValue(broker.BrokerId, out var group);
+        if (group is not null)
+        {
+            for (var i = 0; i < group.Length; i++)
+                AccumulateConnectionStatus(group[i], ref connections);
+        }
+        if (_connectionsById.TryGetValue(broker.BrokerId, out var connection)
+            && !ContainsReference(group, connection))
+        {
+            AccumulateConnectionStatus(connection, ref connections);
+        }
+
+        _brokerConnectionRuntimeStates.TryGetValue(broker.BrokerId, out var runtimeState);
+        var lastErrorTimestampMs = runtimeState?.LastErrorTimestampMs ?? 0;
+        connections.LastStateChangeTimestampMs = Math.Max(
+            connections.LastStateChangeTimestampMs,
+            runtimeState?.LastStateChangeTimestampMs ?? 0);
+
+        return new BrokerConnectionStatus
+        {
+            BrokerId = broker.BrokerId,
+            Host = broker.Host,
+            Port = broker.Port,
+            State = connections.ConnectedCount == 0
+                ? BrokerConnectionState.Disconnected
+                : connections.ConnectedCount == connections.ConnectionCount
+                    ? BrokerConnectionState.Connected
+                    : BrokerConnectionState.PartiallyConnected,
+            ConnectionCount = connections.ConnectionCount,
+            ConnectedConnectionCount = connections.ConnectedCount,
+            PendingRequestCount = connections.PendingRequestCount,
+            LastSuccessfulRequestAtUtc = ToUtcTimestamp(
+                connections.LastSuccessfulRequestTimestampMs, capturedAtTimestampMs, capturedAtUtc),
+            LastConnectionStateChangeAtUtc = ToUtcTimestamp(
+                connections.LastStateChangeTimestampMs, capturedAtTimestampMs, capturedAtUtc),
+            LastErrorAtUtc = ToUtcTimestamp(
+                lastErrorTimestampMs, capturedAtTimestampMs, capturedAtUtc),
+            LastError = runtimeState?.LastError
+        };
     }
 
     private static void AccumulateConnectionStatus(

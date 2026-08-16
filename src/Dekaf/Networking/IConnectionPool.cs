@@ -74,6 +74,8 @@ internal interface IConnectionPoolDiagnostics
 internal interface IConnectionPoolStatusSource
 {
     IReadOnlyList<Diagnostics.BrokerConnectionStatus> GetBrokerConnectionStatus();
+
+    void UpdateBrokerStatusSnapshot(int[] brokerIds);
 }
 
 internal interface IConnectionCapabilityObserverPool

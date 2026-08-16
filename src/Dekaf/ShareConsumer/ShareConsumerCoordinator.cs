@@ -308,17 +308,9 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
         bool isInitial,
         CancellationToken cancellationToken)
     {
-        using var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
-            _coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
+        using var connectionLease = await LeaseHeartbeatConnectionAsync(cancellationToken)
             .ConfigureAwait(false);
         var connection = connectionLease.Connection;
-
-        if (!_metadataManager.HasApiKey(connection, ApiKey.ShareGroupHeartbeat))
-        {
-            throw new BrokerVersionException(
-                "The target Kafka broker does not support the ShareGroupHeartbeat API " +
-                "(KIP-932, introduced in Kafka 4.0). Share group consumption requires Kafka 4.0 or later.");
-        }
 
         var version = _metadataManager.GetNegotiatedApiVersion(
             connection,
@@ -393,6 +385,32 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
         }
 
         return false;
+    }
+
+    private async ValueTask<KafkaConnectionLease> LeaseHeartbeatConnectionAsync(
+        CancellationToken cancellationToken)
+    {
+        var connectionLease = default(KafkaConnectionLease);
+        try
+        {
+            connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
+                _coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
+                .ConfigureAwait(false);
+            if (!_metadataManager.HasApiKey(connectionLease.Connection, ApiKey.ShareGroupHeartbeat))
+            {
+                throw new BrokerVersionException(
+                    "The target Kafka broker does not support the ShareGroupHeartbeat API " +
+                    "(KIP-932, introduced in Kafka 4.0). Share group consumption requires Kafka 4.0 or later.");
+            }
+
+            return connectionLease;
+        }
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            connectionLease.Dispose();
+            Volatile.Write(ref _lastHeartbeatFailure, ex.Message);
+            throw;
+        }
     }
 
     /// <summary>

@@ -1078,6 +1078,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 {
                     RegisterBroker(broker.NodeId, broker.Host, broker.Port);
                 }
+                PublishBrokerStatusSnapshot(response.Brokers);
 
                 LogMetadataRefreshed(response.Brokers.Count, response.Topics.Count);
 
@@ -1334,6 +1335,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 {
                     RegisterBroker(broker.NodeId, broker.Host, broker.Port);
                 }
+                PublishBrokerStatusSnapshot(response.Brokers);
 
                 LogRebootstrapSuccessful(response.Brokers.Count, host, port);
 
@@ -1367,6 +1369,24 @@ public sealed partial class MetadataManager : IAsyncDisposable
     {
         _connectionPool.RegisterBroker(brokerId, host, port);
         Volatile.Read(ref _additionalBrokerRegistrationTarget)?.RegisterBroker(brokerId, host, port);
+    }
+
+    private void PublishBrokerStatusSnapshot(IReadOnlyList<BrokerMetadata> brokers)
+    {
+        var brokerIds = new int[brokers.Count];
+        for (var i = 0; i < brokers.Count; i++)
+            brokerIds[i] = brokers[i].NodeId;
+
+        UpdateBrokerStatusSnapshot(_connectionPool, brokerIds);
+        var additionalPool = Volatile.Read(ref _additionalBrokerRegistrationTarget);
+        if (additionalPool is not null)
+            UpdateBrokerStatusSnapshot(additionalPool, brokerIds);
+    }
+
+    private static void UpdateBrokerStatusSnapshot(IConnectionPool connectionPool, int[] brokerIds)
+    {
+        if (connectionPool is IConnectionPoolStatusSource statusSource)
+            statusSource.UpdateBrokerStatusSnapshot(brokerIds);
     }
 
     /// <summary>
