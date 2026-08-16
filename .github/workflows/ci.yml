@@ -100,7 +100,7 @@ jobs:
         shell: pwsh
         run: >-
           ./scripts/Invoke-NuGetVulnerabilityAudit.ps1
-          -SolutionPath Dekaf.sln
+          -RepositoryRoot .
           -OutputPath artifacts/nuget-audit/nuget-vulnerabilities.json
 
       - name: Upload vulnerability report
