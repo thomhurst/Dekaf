@@ -82,6 +82,8 @@ public interface ISchemaRegistryRuleExecutor
     /// <remarks>
     /// The <paramref name="payload" /> memory is valid only for the synchronous duration of this call.
     /// Implementations that retain the bytes or use them after returning must copy the payload.
+    /// Returned memory may use reusable storage and must be consumed before the next transform call
+    /// on the same thread; callers that retain it must copy it.
     /// </remarks>
     ReadOnlyMemory<byte> TransformSerializedPayload(
         ReadOnlyMemory<byte> payload,
@@ -93,6 +95,8 @@ public interface ISchemaRegistryRuleExecutor
     /// <remarks>
     /// The <paramref name="payload" /> memory is valid only for the synchronous duration of this call.
     /// Implementations that retain the bytes or use them after returning must copy the payload.
+    /// Returned memory may use reusable storage and must be consumed before the next transform call
+    /// on the same thread; callers that retain it must copy it.
     /// The <see cref="SchemaRegistryRuleContext.Schema" /> property can be <see langword="null" />
     /// when deserializer schema validation is skipped.
     /// </remarks>
@@ -200,6 +204,10 @@ public interface ISchemaRegistryRuleHandler
     /// <summary>
     /// Applies a write-side transform for the rule.
     /// </summary>
+    /// <remarks>
+    /// Returned memory may use reusable storage and must be consumed before the next transform call
+    /// on the same thread; callers that retain it must copy it.
+    /// </remarks>
     ReadOnlyMemory<byte> TransformSerializedPayload(
         ReadOnlyMemory<byte> payload,
         SchemaRegistryRuleHandlerContext context);
@@ -207,6 +215,10 @@ public interface ISchemaRegistryRuleHandler
     /// <summary>
     /// Applies a read-side transform for the rule.
     /// </summary>
+    /// <remarks>
+    /// Returned memory may use reusable storage and must be consumed before the next transform call
+    /// on the same thread; callers that retain it must copy it.
+    /// </remarks>
     ReadOnlyMemory<byte> TransformDeserializedPayload(
         ReadOnlyMemory<byte> payload,
         SchemaRegistryRuleHandlerContext context);

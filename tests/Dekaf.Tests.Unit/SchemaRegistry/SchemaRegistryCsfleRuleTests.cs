@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Dekaf.SchemaRegistry;
@@ -34,6 +35,51 @@ public sealed class SchemaRegistryCsfleRuleTests
         await Assert.That(encrypted1.Span.StartsWith("DKFLE1"u8)).IsFalse();
         await Assert.That(decrypted.ToArray()).IsEquivalentTo(payload);
         await Assert.That(client.RegisterDekCallCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task TransformSerializedPayload_AesGcm_IsCompatibleWithPlatformImplementation()
+    {
+        var key = Enumerable.Range(0, 32).Select(static value => (byte)value).ToArray();
+        var client = CreateDekClient();
+        client.AddDek(new Dek
+        {
+            KekName = "payments-kek",
+            Subject = "orders-value",
+            Version = 1,
+            Algorithm = DekAlgorithm.Aes256Gcm,
+            KeyMaterial = Convert.ToBase64String(key)
+        });
+        var handler = CreateHandler(client);
+        var context = CreateHandlerContext(CreateRule());
+        var payload = "platform-compatible payload"u8.ToArray();
+
+        var encrypted = handler.TransformSerializedPayload(payload, context).ToArray();
+        var platformPlaintext = new byte[payload.Length];
+        using (var aes = new AesGcm(key, 16))
+        {
+            aes.Decrypt(
+                encrypted.AsSpan(0, 12),
+                encrypted.AsSpan(12, payload.Length),
+                encrypted.AsSpan(12 + payload.Length, 16),
+                platformPlaintext);
+        }
+
+        var platformCiphertext = new byte[12 + payload.Length + 16];
+        RandomNumberGenerator.Fill(platformCiphertext.AsSpan(0, 12));
+        using (var aes = new AesGcm(key, 16))
+        {
+            aes.Encrypt(
+                platformCiphertext.AsSpan(0, 12),
+                payload,
+                platformCiphertext.AsSpan(12, payload.Length),
+                platformCiphertext.AsSpan(12 + payload.Length, 16));
+        }
+
+        var handlerPlaintext = handler.TransformDeserializedPayload(platformCiphertext, context);
+
+        await Assert.That(platformPlaintext).IsEquivalentTo(payload);
+        await Assert.That(handlerPlaintext.ToArray()).IsEquivalentTo(payload);
     }
 
     [Test]
@@ -75,6 +121,66 @@ public sealed class SchemaRegistryCsfleRuleTests
         using var encryptedJson = JsonDocument.Parse(encrypted);
         await Assert.That(encryptedJson.RootElement.GetProperty("ssn").ValueKind).IsEqualTo(JsonValueKind.Null);
         await Assert.That(Encoding.UTF8.GetString(decrypted.Span)).IsEqualTo(Encoding.UTF8.GetString(payload));
+    }
+
+    [Test]
+    public async Task TransformSerializedPayload_TaggedNestedArrayField_PreservesEscapedUtf8()
+    {
+        var client = CreateDekClient();
+        var handler = CreateHandler(client);
+        var rule = CreateRule(tags: new HashSet<string>(StringComparer.Ordinal) { "PII" });
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = "{}",
+            Metadata = new SchemaMetadata
+            {
+                Tags = new Dictionary<string, IReadOnlySet<string>>(StringComparer.Ordinal)
+                {
+                    ["$.items[1].secret"] = new HashSet<string>(StringComparer.Ordinal) { "PII" }
+                }
+            },
+            RuleSet = new SchemaRuleSet { DomainRules = [rule] }
+        };
+        var context = CreateHandlerContext(rule, schema);
+        var payload = "{\"items\":[{\"secret\":\"plain\"},{\"secret\":\"line\\n\\\"雪\"}]}"u8.ToArray();
+
+        var encrypted = handler.TransformSerializedPayload(payload, context);
+        var decrypted = handler.TransformDeserializedPayload(encrypted, context);
+
+        using var encryptedJson = JsonDocument.Parse(encrypted);
+        using var decryptedJson = JsonDocument.Parse(decrypted);
+        await Assert.That(encryptedJson.RootElement.GetProperty("items")[0].GetProperty("secret").GetString())
+            .IsEqualTo("plain");
+        await Assert.That(encryptedJson.RootElement.GetProperty("items")[1].GetProperty("secret").GetString())
+            .IsNotEqualTo("line\n\"雪");
+        await Assert.That(decryptedJson.RootElement.GetProperty("items")[1].GetProperty("secret").GetString())
+            .IsEqualTo("line\n\"雪");
+    }
+
+    [Test]
+    public async Task TransformSerializedPayload_TaggedObject_ThrowsRuleException()
+    {
+        var rule = CreateRule(tags: new HashSet<string>(StringComparer.Ordinal) { "PII" });
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = "{}",
+            Metadata = new SchemaMetadata
+            {
+                Tags = new Dictionary<string, IReadOnlySet<string>>(StringComparer.Ordinal)
+                {
+                    ["$"] = new HashSet<string>(StringComparer.Ordinal) { "PII" }
+                }
+            },
+            RuleSet = new SchemaRuleSet { DomainRules = [rule] }
+        };
+        var handler = CreateHandler(CreateDekClient());
+        var context = CreateHandlerContext(rule, schema);
+
+        await Assert.That(() => handler.TransformSerializedPayload("{}"u8.ToArray(), context))
+            .Throws<SchemaRegistryRuleException>()
+            .WithMessageContaining("StartObject");
     }
 
     [Test]
