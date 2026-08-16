@@ -67,21 +67,32 @@ internal sealed class DeserializerSubjectNameCache
         Schema? schema,
         string topic,
         bool isKey,
-        string fallbackRecordName)
+        string fallbackRecordName,
+        out bool added)
     {
         var key = new CacheKey(schemaId, topic, isKey);
         if (_subjects.TryGetValue(key, out var subject))
+        {
+            added = false;
             return subject;
+        }
 
-        return AddSubject(key, schema, fallbackRecordName);
+        return AddSubject(key, schema, fallbackRecordName, out added);
     }
 
-    private string AddSubject(CacheKey key, Schema? schema, string fallbackRecordName)
+    private string AddSubject(
+        CacheKey key,
+        Schema? schema,
+        string fallbackRecordName,
+        out bool added)
     {
         lock (_subjectsLock)
         {
             if (_subjects.TryGetValue(key, out var subject))
+            {
+                added = false;
                 return subject;
+            }
 
             if (_subjectOrder.Count >= MaxCachedSubjectCount)
             {
@@ -103,6 +114,7 @@ internal sealed class DeserializerSubjectNameCache
 
             _subjects[key] = subject;
             _subjectOrder.Enqueue(key);
+            added = true;
             return subject;
         }
     }
@@ -112,7 +124,6 @@ internal sealed class DeserializerSubjectNameCache
         private const int MaxCachedSchemaCount = 64;
 
         private readonly ConcurrentDictionary<SchemaKey, string> _subjects = new();
-        private readonly Queue<SchemaKey> _subjectOrder = new(MaxCachedSchemaCount);
         private readonly object _subjectsLock = new();
 
         internal string GetSubjectName(
@@ -132,25 +143,24 @@ internal sealed class DeserializerSubjectNameCache
                 schema,
                 topic,
                 isKey,
-                fallbackRecordName);
-            return AddSubject(key, subject);
+                fallbackRecordName,
+                out var added);
+            return added ? TryAddSubject(key, subject) : subject;
         }
 
-        private string AddSubject(SchemaKey key, string subject)
+        private string TryAddSubject(SchemaKey key, string subject)
         {
             lock (_subjectsLock)
             {
                 if (_subjects.TryGetValue(key, out var cachedSubject))
                     return cachedSubject;
 
-                if (_subjectOrder.Count >= MaxCachedSchemaCount)
-                {
-                    var evictedKey = _subjectOrder.Dequeue();
-                    _subjects.TryRemove(evictedKey, out _);
-                }
+                // Overflow remains in the bounded value cache instead of evicting an
+                // identity entry and turning rotating schema IDs into lock contention.
+                if (_subjects.Count >= MaxCachedSchemaCount)
+                    return subject;
 
                 _subjects[key] = subject;
-                _subjectOrder.Enqueue(key);
                 return subject;
             }
         }

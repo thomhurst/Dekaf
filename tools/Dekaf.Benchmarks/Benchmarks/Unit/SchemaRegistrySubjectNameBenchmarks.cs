@@ -10,6 +10,7 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 public class SchemaRegistrySubjectNameBenchmarks
 {
     private const int HighCardinalityTopicCount = 2048;
+    private const string RotatingSchemaTopic = "rotating-schema-topic";
     private readonly string[] _equalTopics =
     [
         new string("benchmark-topic".AsSpan()),
@@ -52,6 +53,16 @@ public class SchemaRegistrySubjectNameBenchmarks
                 isKey: false,
                 fallbackRecordName: "FallbackRecord");
         }
+
+        for (var schemaId = 0; schemaId < 65; schemaId++)
+        {
+            _recordSubjectNames.GetSubjectName(
+                schemaId,
+                _schema,
+                RotatingSchemaTopic,
+                isKey: false,
+                fallbackRecordName: "FallbackRecord");
+        }
     }
 
     [Benchmark]
@@ -76,6 +87,13 @@ public class SchemaRegistrySubjectNameBenchmarks
     [Benchmark]
     public string CreateDistinctEqualTopicInstance() =>
         new("benchmark-topic".AsSpan());
+
+    [Benchmark]
+    public string ResolveTopicSubjectFromNewEqualTopicInstance()
+    {
+        var topic = new string("benchmark-topic".AsSpan());
+        return SubjectNameResolver.GetTopicSubjectName(topic, isKey: false);
+    }
 
     [Benchmark]
     public string ResolveConfiguredSubjectFromNewEqualTopicInstance()
@@ -106,6 +124,23 @@ public class SchemaRegistrySubjectNameBenchmarks
             topic,
             isKey: false,
             fallbackRecordName: "FallbackRecord");
+    }
+
+    [Benchmark(OperationsPerInvoke = 65)]
+    public string ResolveConfiguredSubjectAcross65SchemaIds()
+    {
+        var subject = string.Empty;
+        for (var schemaId = 0; schemaId < 65; schemaId++)
+        {
+            subject = _recordSubjectNames.GetSubjectName(
+                schemaId,
+                _schema,
+                RotatingSchemaTopic,
+                isKey: false,
+                fallbackRecordName: "FallbackRecord");
+        }
+
+        return subject;
     }
 
     private static string[] CreateTopics()

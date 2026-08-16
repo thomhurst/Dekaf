@@ -261,5 +261,4 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
             return result;
         }
     }
-
 }

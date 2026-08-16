@@ -87,7 +87,7 @@ public sealed class SubjectNameResolverTests
     }
 
     [Test]
-    public async Task DeserializerSubjectNameCache_BoundsSchemasForStableTopic()
+    public async Task DeserializerSubjectNameCache_OverflowRetainsIdentityEntries()
     {
         const int schemaCount = 1025;
         var strategy = new CountingRecordSubjectNameStrategy();
@@ -108,7 +108,7 @@ public sealed class SubjectNameResolverTests
 
         cache.GetSubjectName(0, schema, topic, isKey: false, "Fallback");
 
-        await Assert.That(strategy.CallCount).IsEqualTo(schemaCount + 1);
+        await Assert.That(strategy.CallCount).IsEqualTo(schemaCount);
     }
 
     private sealed class CountingRecordSubjectNameStrategy : ISubjectNameStrategy

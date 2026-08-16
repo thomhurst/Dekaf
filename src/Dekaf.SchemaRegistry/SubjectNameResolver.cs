@@ -13,9 +13,25 @@ internal static class SubjectNameResolver
     private static readonly Queue<string> TopicSubjectOrder = new(MaxCachedTopicCount);
     private static readonly object TopicSubjectNamesLock = new();
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static string GetTopicSubjectName(string topic, bool isKey)
     {
-        var subjects = TopicSubjectsByIdentity.GetValue(topic, static value => GetOrAddTopicSubjects(value));
+        if (TopicSubjectsByIdentity.TryGetValue(topic, out var subjects))
+            return isKey ? subjects.Key : subjects.Value;
+
+        return GetTopicSubjectNameSlow(topic, isKey);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static string GetTopicSubjectNameSlow(string topic, bool isKey)
+    {
+        if (!TopicSubjectNames.TryGetValue(topic, out var subjects) || subjects.ShouldPromoteIdentity(topic))
+        {
+            subjects = TopicSubjectsByIdentity.GetValue(
+                topic,
+                static value => GetOrAddTopicSubjects(value));
+        }
+
         return isKey ? subjects.Key : subjects.Value;
     }
 
@@ -120,7 +136,21 @@ internal static class SubjectNameResolver
 
     private sealed class TopicSubjects(string topic)
     {
+        private string? _candidateIdentity;
+
         public string Key { get; } = topic + "-key";
         public string Value { get; } = topic + "-value";
+
+        internal bool ShouldPromoteIdentity(string topic)
+        {
+            var candidate = Volatile.Read(ref _candidateIdentity);
+            if (ReferenceEquals(candidate, topic))
+                return true;
+
+            // One-shot equal strings stay in the bounded value cache. Repeated identities
+            // earn the faster weak identity entry on their second observation.
+            Volatile.Write(ref _candidateIdentity, topic);
+            return false;
+        }
     }
 }
