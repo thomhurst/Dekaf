@@ -58,6 +58,7 @@ jobs:
               - 'samples/**'
               - '.github/workflows/**'
               - '.github/scripts/**'
+              - '.config/**'
               - '*.sln'
               - '*.props'
               - '*.targets'
@@ -89,7 +90,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ~/.nuget/packages
-          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/Directory.Packages.props', '**/Directory.Build.props', '**/Directory.Build.targets') }}
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/Directory.Packages.props', '**/Directory.Build.props', '**/Directory.Build.targets', '**/.config/dotnet-tools.json') }}
           restore-keys: nuget-${{ runner.os }}-
 
       - name: Test vulnerability gate
