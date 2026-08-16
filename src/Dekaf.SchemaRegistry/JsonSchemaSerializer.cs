@@ -46,6 +46,7 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
     private readonly string _recordName;
     private readonly bool _ownsClient;
     private readonly ISchemaRegistryRuleExecutor? _ruleExecutor;
+    private readonly IJsonSchemaValidator? _validator;
 
     private readonly ConcurrentDictionary<string, int> _schemaIdCache = new();
     private readonly SubjectSchemaIdCache _subjectSchemaIdCache = new();
@@ -75,6 +76,36 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
             ruleExecutor,
             normalizeSchemas)
     {
+    }
+
+    /// <summary>
+    /// Creates a new JSON Schema Registry serializer with optional payload validation.
+    /// </summary>
+    [RequiresUnreferencedCode("JsonSerializerOptions-based JSON serialization uses reflection. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
+    [RequiresDynamicCode("JsonSerializerOptions-based JSON serialization may require runtime code generation. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
+    public JsonSchemaRegistrySerializer(
+        ISchemaRegistryClient schemaRegistry,
+        string jsonSchema,
+        JsonSchemaValidationOptions validationOptions,
+        JsonSerializerOptions? jsonOptions = null,
+        SubjectNameStrategy subjectNameStrategy = SubjectNameStrategy.TopicName,
+        bool autoRegisterSchemas = true,
+        bool ownsClient = false,
+        ISchemaRegistryRuleExecutor? ruleExecutor = null,
+        bool normalizeSchemas = false)
+        : this(
+            schemaRegistry,
+            jsonSchema,
+            useLegacySubjectNames: false,
+            jsonOptions,
+            subjectNameStrategy,
+            autoRegisterSchemas,
+            ownsClient,
+            ruleExecutor,
+            normalizeSchemas)
+    {
+        ArgumentNullException.ThrowIfNull(validationOptions);
+        _validator = validationOptions.CreateSerializerValidator(_schema);
     }
 
     /// <summary>
@@ -145,6 +176,34 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
     }
 
     /// <summary>
+    /// Creates a new NativeAOT-safe JSON Schema Registry serializer with optional payload validation.
+    /// </summary>
+    public JsonSchemaRegistrySerializer(
+        ISchemaRegistryClient schemaRegistry,
+        string jsonSchema,
+        JsonTypeInfo<T> jsonTypeInfo,
+        JsonSchemaValidationOptions validationOptions,
+        SubjectNameStrategy subjectNameStrategy = SubjectNameStrategy.TopicName,
+        bool autoRegisterSchemas = true,
+        bool ownsClient = false,
+        ISchemaRegistryRuleExecutor? ruleExecutor = null,
+        bool normalizeSchemas = false)
+        : this(
+            schemaRegistry,
+            jsonSchema,
+            jsonTypeInfo,
+            useLegacySubjectNames: false,
+            subjectNameStrategy,
+            autoRegisterSchemas,
+            ownsClient,
+            ruleExecutor,
+            normalizeSchemas)
+    {
+        ArgumentNullException.ThrowIfNull(validationOptions);
+        _validator = validationOptions.CreateSerializerValidator(_schema);
+    }
+
+    /// <summary>
     /// Creates a new NativeAOT-safe JSON Schema Registry serializer.
     /// </summary>
     /// <param name="schemaRegistry">The Schema Registry client.</param>
@@ -185,6 +244,35 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
     }
 
     /// <summary>
+    /// Creates a new JSON Schema Registry serializer with a custom subject strategy and payload validation.
+    /// </summary>
+    [RequiresUnreferencedCode("JsonSerializerOptions-based JSON serialization uses reflection. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
+    [RequiresDynamicCode("JsonSerializerOptions-based JSON serialization may require runtime code generation. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
+    public JsonSchemaRegistrySerializer(
+        ISchemaRegistryClient schemaRegistry,
+        string jsonSchema,
+        ISubjectNameStrategy customSubjectNameStrategy,
+        JsonSchemaValidationOptions validationOptions,
+        JsonSerializerOptions? jsonOptions = null,
+        bool autoRegisterSchemas = true,
+        bool ownsClient = false,
+        ISchemaRegistryRuleExecutor? ruleExecutor = null,
+        bool normalizeSchemas = false)
+        : this(
+            schemaRegistry,
+            jsonSchema,
+            customSubjectNameStrategy,
+            jsonOptions,
+            autoRegisterSchemas,
+            ownsClient,
+            ruleExecutor,
+            normalizeSchemas)
+    {
+        ArgumentNullException.ThrowIfNull(validationOptions);
+        _validator = validationOptions.CreateSerializerValidator(_schema);
+    }
+
+    /// <summary>
     /// Creates a new JSON Schema Registry serializer with a custom subject name strategy.
     /// </summary>
     /// <param name="schemaRegistry">The Schema Registry client.</param>
@@ -221,6 +309,33 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
             SchemaString = jsonSchema
         };
         _recordName = SubjectNameResolver.GetRecordName(_schema, typeof(T).FullName ?? typeof(T).Name);
+    }
+
+    /// <summary>
+    /// Creates a new NativeAOT-safe JSON Schema Registry serializer with a custom subject strategy and payload validation.
+    /// </summary>
+    public JsonSchemaRegistrySerializer(
+        ISchemaRegistryClient schemaRegistry,
+        string jsonSchema,
+        ISubjectNameStrategy customSubjectNameStrategy,
+        JsonTypeInfo<T> jsonTypeInfo,
+        JsonSchemaValidationOptions validationOptions,
+        bool autoRegisterSchemas = true,
+        bool ownsClient = false,
+        ISchemaRegistryRuleExecutor? ruleExecutor = null,
+        bool normalizeSchemas = false)
+        : this(
+            schemaRegistry,
+            jsonSchema,
+            customSubjectNameStrategy,
+            jsonTypeInfo,
+            autoRegisterSchemas,
+            ownsClient,
+            ruleExecutor,
+            normalizeSchemas)
+    {
+        ArgumentNullException.ThrowIfNull(validationOptions);
+        _validator = validationOptions.CreateSerializerValidator(_schema);
     }
 
     /// <summary>
@@ -295,6 +410,7 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
         }
 
         var payload = payloadBuffer.WrittenMemory;
+        _validator?.Validate(payload.Span, schemaId);
         if (_ruleExecutor is not null)
         {
             payload = _ruleExecutor.TransformSerializedPayload(
@@ -430,6 +546,8 @@ public sealed class JsonSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
     private readonly JsonTypeInfo<T>? _jsonTypeInfo;
     private readonly bool _ownsClient;
     private readonly ISchemaRegistryRuleExecutor? _ruleExecutor;
+    private readonly IJsonSchemaValidatorFactory? _validatorFactory;
+    private ValidatorCacheEntry? _lastValidator;
 
     /// <summary>
     /// Creates a new JSON Schema Registry deserializer.
@@ -453,6 +571,23 @@ public sealed class JsonSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
     }
 
     /// <summary>
+    /// Creates a new JSON Schema Registry deserializer with optional payload validation.
+    /// </summary>
+    [RequiresUnreferencedCode("JsonSerializerOptions-based JSON deserialization uses reflection. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
+    [RequiresDynamicCode("JsonSerializerOptions-based JSON deserialization may require runtime code generation. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
+    public JsonSchemaRegistryDeserializer(
+        ISchemaRegistryClient schemaRegistry,
+        JsonSchemaValidationOptions validationOptions,
+        JsonSerializerOptions? jsonOptions = null,
+        bool ownsClient = false,
+        ISchemaRegistryRuleExecutor? ruleExecutor = null)
+        : this(schemaRegistry, jsonOptions, ownsClient, ruleExecutor)
+    {
+        ArgumentNullException.ThrowIfNull(validationOptions);
+        _validatorFactory = validationOptions.GetDeserializerFactory();
+    }
+
+    /// <summary>
     /// Creates a new NativeAOT-safe JSON Schema Registry deserializer.
     /// </summary>
     /// <param name="schemaRegistry">The Schema Registry client.</param>
@@ -469,6 +604,21 @@ public sealed class JsonSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
         _deserializePayload = DeserializeWithTypeInfo;
         _ownsClient = ownsClient;
         _ruleExecutor = ruleExecutor;
+    }
+
+    /// <summary>
+    /// Creates a new NativeAOT-safe JSON Schema Registry deserializer with optional payload validation.
+    /// </summary>
+    public JsonSchemaRegistryDeserializer(
+        ISchemaRegistryClient schemaRegistry,
+        JsonTypeInfo<T> jsonTypeInfo,
+        JsonSchemaValidationOptions validationOptions,
+        bool ownsClient = false,
+        ISchemaRegistryRuleExecutor? ruleExecutor = null)
+        : this(schemaRegistry, jsonTypeInfo, ownsClient, ruleExecutor)
+    {
+        ArgumentNullException.ThrowIfNull(validationOptions);
+        _validatorFactory = validationOptions.GetDeserializerFactory();
     }
 
     public T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
@@ -502,7 +652,27 @@ public sealed class JsonSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
                 });
         }
 
+        if (_validatorFactory is not null)
+            GetValidator(schema).Validate(payload.Span, schemaId);
+
         return _deserializePayload(payload.Span);
+    }
+
+    private IJsonSchemaValidator GetValidator(Schema schema)
+    {
+        var cached = Volatile.Read(ref _lastValidator);
+        if (cached is not null && ReferenceEquals(cached.Schema, schema))
+            return cached.Validator;
+
+        var validator = _validatorFactory!.GetOrCreate(schema);
+        Volatile.Write(ref _lastValidator, new ValidatorCacheEntry(schema, validator));
+        return validator;
+    }
+
+    private sealed class ValidatorCacheEntry(Schema schema, IJsonSchemaValidator validator)
+    {
+        public Schema Schema { get; } = schema;
+        public IJsonSchemaValidator Validator { get; } = validator;
     }
 
     public ValueTask DisposeAsync()

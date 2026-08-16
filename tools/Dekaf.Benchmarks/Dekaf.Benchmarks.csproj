@@ -13,6 +13,7 @@
     <ProjectReference Include="..\..\src\Dekaf.Compression.Zstd\Dekaf.Compression.Zstd.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.Serialization.Json\Dekaf.Serialization.Json.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Avro\Dekaf.SchemaRegistry.Avro.csproj" />
+    <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Json\Dekaf.SchemaRegistry.Json.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Protobuf\Dekaf.SchemaRegistry.Protobuf.csproj" />
   </ItemGroup>
 
