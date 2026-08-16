@@ -1,0 +1,9 @@
+#nullable enable
+Dekaf.SchemaRegistry.Kms.Gcp.GcpKmsProvider
+Dekaf.SchemaRegistry.Kms.Gcp.GcpKmsProvider.GcpKmsProvider() -> void
+Dekaf.SchemaRegistry.Kms.Gcp.GcpKmsProvider.GcpKmsProvider(Google.Cloud.Kms.V1.KeyManagementServiceClient! client, string! type = "gcp-kms") -> void
+Dekaf.SchemaRegistry.Kms.Gcp.GcpKmsProvider.Type.get -> string!
+Dekaf.SchemaRegistry.Kms.Gcp.GcpKmsProvider.UnwrapKeyAsync(System.ReadOnlyMemory<byte> encryptedKeyMaterial, Dekaf.SchemaRegistry.SchemaRegistryKmsKeyReference! keyReference, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<byte[]!>
+Dekaf.SchemaRegistry.Kms.Gcp.GcpKmsProvider.WrapKeyAsync(System.ReadOnlyMemory<byte> keyMaterial, Dekaf.SchemaRegistry.SchemaRegistryKmsKeyReference! keyReference, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<byte[]!>
+const Dekaf.SchemaRegistry.Kms.Gcp.GcpKmsProvider.DefaultType = "gcp-kms" -> string!
+const Dekaf.SchemaRegistry.Kms.Gcp.GcpKmsProvider.KeyUriPrefix = "gcp-kms://" -> string!
