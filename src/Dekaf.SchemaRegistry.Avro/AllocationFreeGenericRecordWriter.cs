@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Collections;
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using global::Avro.Generic;
 using global::Avro.Util;
 
@@ -12,11 +13,12 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
     private static readonly DateTime UnixEpoch = new(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
     private static readonly DateTime LocalUnixEpoch = new(1970, 1, 1, 0, 0, 0, DateTimeKind.Unspecified);
     private readonly global::Avro.RecordSchema _schema = schema;
+    private readonly WriterCache _writerCache = WriterCache.Create(schema);
 
     internal void Write(GenericRecord record, AllocationFreeBinaryEncoder encoder) =>
-        WriteRecord(ReferenceEquals(record.Schema, _schema) ? _schema : record.Schema, record, encoder);
+        WriteRecord(_schema, record, encoder, validateSchema: false);
 
-    private static void WriteValue(global::Avro.Schema schema, object? value, AllocationFreeBinaryEncoder encoder)
+    private void WriteValue(global::Avro.Schema schema, object? value, AllocationFreeBinaryEncoder encoder)
     {
         switch (schema.Tag)
         {
@@ -102,10 +104,14 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
         }
     }
 
-    private static void WriteRecord(global::Avro.RecordSchema schema, object? value, AllocationFreeBinaryEncoder encoder)
+    private void WriteRecord(
+        global::Avro.RecordSchema schema,
+        object? value,
+        AllocationFreeBinaryEncoder encoder,
+        bool validateSchema = true)
     {
         if (value is not GenericRecord record ||
-            (!ReferenceEquals(record.Schema, schema) && !record.Schema.Equals(schema)))
+            (validateSchema && !ReferenceEquals(record.Schema, schema) && !record.Schema.Equals(schema)))
             throw TypeMismatch(value, "record");
 
         var fields = schema.Fields;
@@ -134,7 +140,7 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
         encoder.WriteFixed(fixedValue.Value);
     }
 
-    private static void WriteArray(global::Avro.ArraySchema schema, object? value, AllocationFreeBinaryEncoder encoder)
+    private void WriteArray(global::Avro.ArraySchema schema, object? value, AllocationFreeBinaryEncoder encoder)
     {
         encoder.WriteArrayStart();
         switch (value)
@@ -154,7 +160,7 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
         encoder.WriteArrayEnd();
     }
 
-    private static void WriteTypedArray(global::Avro.Schema itemSchema, Array array, AllocationFreeBinaryEncoder encoder)
+    private void WriteTypedArray(global::Avro.Schema itemSchema, Array array, AllocationFreeBinaryEncoder encoder)
     {
         if (itemSchema is global::Avro.UnionSchema unionSchema &&
             TryWriteValueTypeUnionArray(unionSchema, array, encoder))
@@ -276,7 +282,7 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
         }
     }
 
-    private static void WriteTypedList(global::Avro.Schema itemSchema, IList list, AllocationFreeBinaryEncoder encoder)
+    private void WriteTypedList(global::Avro.Schema itemSchema, IList list, AllocationFreeBinaryEncoder encoder)
     {
         if (itemSchema is global::Avro.UnionSchema unionSchema &&
             TryWriteValueTypeUnionList(unionSchema, list, encoder))
@@ -387,7 +393,7 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
         }
     }
 
-    private static bool TryWriteValueTypeUnionArray(
+    private bool TryWriteValueTypeUnionArray(
         global::Avro.UnionSchema schema,
         Array array,
         AllocationFreeBinaryEncoder encoder)
@@ -416,7 +422,7 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
         }
     }
 
-    private static bool TryWriteValueTypeUnionList(
+    private bool TryWriteValueTypeUnionList(
         global::Avro.UnionSchema schema,
         IList list,
         AllocationFreeBinaryEncoder encoder)
@@ -463,244 +469,197 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
         }
     }
 
-    private static void WriteUnionArray<T, TWriter>(
+    private void WriteUnionArray<T, TWriter>(
         global::Avro.UnionSchema schema,
         T[] values,
         AllocationFreeBinaryEncoder encoder)
         where T : struct
         where TWriter : struct, IValueWriter<T>
     {
-        FindUnionBranches<T, TWriter>(schema, out _, out var valueIndex, out var valueSchema);
+        var branch = _writerCache.GetUnion(schema).GetValueBranch(typeof(T));
         for (var i = 0; i < values.Length; i++)
         {
             encoder.StartItem();
-            encoder.WriteUnionIndex(valueIndex);
-            TWriter.Write(valueSchema, values[i], encoder);
+            encoder.WriteUnionIndex(branch.Index);
+            TWriter.Write(branch.Schema, values[i], encoder);
         }
     }
 
-    private static void WriteNullableUnionArray<T, TWriter>(
+    private void WriteNullableUnionArray<T, TWriter>(
         global::Avro.UnionSchema schema,
         T?[] values,
         AllocationFreeBinaryEncoder encoder)
         where T : struct
         where TWriter : struct, IValueWriter<T>
     {
-        FindUnionBranches<T, TWriter>(schema, out var nullIndex, out var valueIndex, out var valueSchema);
+        var union = _writerCache.GetUnion(schema);
+        var branch = union.GetValueBranch(typeof(T));
         for (var i = 0; i < values.Length; i++)
         {
             encoder.StartItem();
             var value = values[i];
             if (!value.HasValue)
             {
-                if (nullIndex < 0)
+                if (union.NullIndex < 0)
                     throw TypeMismatch(null, "union");
-                encoder.WriteUnionIndex(nullIndex);
+                encoder.WriteUnionIndex(union.NullIndex);
                 continue;
             }
 
-            encoder.WriteUnionIndex(valueIndex);
-            TWriter.Write(valueSchema, value.GetValueOrDefault(), encoder);
+            encoder.WriteUnionIndex(branch.Index);
+            TWriter.Write(branch.Schema, value.GetValueOrDefault(), encoder);
         }
     }
 
-    private static void WriteUnionList<T, TWriter>(
+    private void WriteUnionList<T, TWriter>(
         global::Avro.UnionSchema schema,
         List<T> values,
         AllocationFreeBinaryEncoder encoder)
         where T : struct
         where TWriter : struct, IValueWriter<T>
     {
-        FindUnionBranches<T, TWriter>(schema, out _, out var valueIndex, out var valueSchema);
+        var branch = _writerCache.GetUnion(schema).GetValueBranch(typeof(T));
         for (var i = 0; i < values.Count; i++)
         {
             encoder.StartItem();
-            encoder.WriteUnionIndex(valueIndex);
-            TWriter.Write(valueSchema, values[i], encoder);
+            encoder.WriteUnionIndex(branch.Index);
+            TWriter.Write(branch.Schema, values[i], encoder);
         }
     }
 
-    private static void WriteNullableUnionList<T, TWriter>(
+    private void WriteNullableUnionList<T, TWriter>(
         global::Avro.UnionSchema schema,
         List<T?> values,
         AllocationFreeBinaryEncoder encoder)
         where T : struct
         where TWriter : struct, IValueWriter<T>
     {
-        FindUnionBranches<T, TWriter>(schema, out var nullIndex, out var valueIndex, out var valueSchema);
+        var union = _writerCache.GetUnion(schema);
+        var branch = union.GetValueBranch(typeof(T));
         for (var i = 0; i < values.Count; i++)
         {
             encoder.StartItem();
             var value = values[i];
             if (!value.HasValue)
             {
-                if (nullIndex < 0)
+                if (union.NullIndex < 0)
                     throw TypeMismatch(null, "union");
-                encoder.WriteUnionIndex(nullIndex);
+                encoder.WriteUnionIndex(union.NullIndex);
                 continue;
             }
 
-            encoder.WriteUnionIndex(valueIndex);
-            TWriter.Write(valueSchema, value.GetValueOrDefault(), encoder);
+            encoder.WriteUnionIndex(branch.Index);
+            TWriter.Write(branch.Schema, value.GetValueOrDefault(), encoder);
         }
     }
 
-    private static void WriteUnionList<T, TWriter>(
+    private void WriteUnionList<T, TWriter>(
         global::Avro.UnionSchema schema,
         IList<T> values,
         AllocationFreeBinaryEncoder encoder)
         where T : struct
         where TWriter : struct, IValueWriter<T>
     {
-        FindUnionBranches<T, TWriter>(schema, out _, out var valueIndex, out var valueSchema);
+        var branch = _writerCache.GetUnion(schema).GetValueBranch(typeof(T));
         for (var i = 0; i < values.Count; i++)
         {
             encoder.StartItem();
-            encoder.WriteUnionIndex(valueIndex);
-            TWriter.Write(valueSchema, values[i], encoder);
+            encoder.WriteUnionIndex(branch.Index);
+            TWriter.Write(branch.Schema, values[i], encoder);
         }
     }
 
-    private static void WriteNullableUnionList<T, TWriter>(
+    private void WriteNullableUnionList<T, TWriter>(
         global::Avro.UnionSchema schema,
         IList<T?> values,
         AllocationFreeBinaryEncoder encoder)
         where T : struct
         where TWriter : struct, IValueWriter<T>
     {
-        FindUnionBranches<T, TWriter>(schema, out var nullIndex, out var valueIndex, out var valueSchema);
+        var union = _writerCache.GetUnion(schema);
+        var branch = union.GetValueBranch(typeof(T));
         for (var i = 0; i < values.Count; i++)
         {
             encoder.StartItem();
             var value = values[i];
             if (!value.HasValue)
             {
-                if (nullIndex < 0)
+                if (union.NullIndex < 0)
                     throw TypeMismatch(null, "union");
-                encoder.WriteUnionIndex(nullIndex);
+                encoder.WriteUnionIndex(union.NullIndex);
                 continue;
             }
 
-            encoder.WriteUnionIndex(valueIndex);
-            TWriter.Write(valueSchema, value.GetValueOrDefault(), encoder);
+            encoder.WriteUnionIndex(branch.Index);
+            TWriter.Write(branch.Schema, value.GetValueOrDefault(), encoder);
         }
-    }
-
-    private static void FindUnionBranches<T, TWriter>(
-        global::Avro.UnionSchema schema,
-        out int nullIndex,
-        out int valueIndex,
-        out global::Avro.Schema valueSchema)
-        where T : struct
-        where TWriter : struct, IValueWriter<T>
-    {
-        nullIndex = -1;
-        valueIndex = -1;
-        valueSchema = null!;
-        for (var i = 0; i < schema.Count; i++)
-        {
-            var branch = schema[i];
-            if (branch.Tag == global::Avro.Schema.Type.Null)
-                nullIndex = i;
-            else if (valueIndex < 0 && TWriter.Matches(branch))
-            {
-                valueIndex = i;
-                valueSchema = branch;
-            }
-        }
-
-        if (valueIndex < 0)
-            throw new global::Avro.AvroTypeException($"Union {schema} has no branch for {typeof(T)}.");
     }
 
     private interface IValueWriter<T>
     {
-        static abstract bool Matches(global::Avro.Schema schema);
         static abstract void Write(global::Avro.Schema schema, T value, AllocationFreeBinaryEncoder encoder);
     }
 
     private readonly struct BooleanValueWriter : IValueWriter<bool>
     {
-        public static bool Matches(global::Avro.Schema schema) => schema.Tag == global::Avro.Schema.Type.Boolean;
         public static void Write(global::Avro.Schema schema, bool value, AllocationFreeBinaryEncoder encoder) => encoder.WriteBoolean(value);
     }
 
     private readonly struct IntValueWriter : IValueWriter<int>
     {
-        public static bool Matches(global::Avro.Schema schema) => schema.Tag == global::Avro.Schema.Type.Int;
         public static void Write(global::Avro.Schema schema, int value, AllocationFreeBinaryEncoder encoder) => encoder.WriteInt(value);
     }
 
     private readonly struct LongValueWriter : IValueWriter<long>
     {
-        public static bool Matches(global::Avro.Schema schema) => schema.Tag == global::Avro.Schema.Type.Long;
         public static void Write(global::Avro.Schema schema, long value, AllocationFreeBinaryEncoder encoder) => encoder.WriteLong(value);
     }
 
     private readonly struct FloatValueWriter : IValueWriter<float>
     {
-        public static bool Matches(global::Avro.Schema schema) => schema.Tag == global::Avro.Schema.Type.Float;
         public static void Write(global::Avro.Schema schema, float value, AllocationFreeBinaryEncoder encoder) => encoder.WriteFloat(value);
     }
 
     private readonly struct DoubleValueWriter : IValueWriter<double>
     {
-        public static bool Matches(global::Avro.Schema schema) => schema.Tag == global::Avro.Schema.Type.Double;
         public static void Write(global::Avro.Schema schema, double value, AllocationFreeBinaryEncoder encoder) => encoder.WriteDouble(value);
     }
 
     private readonly struct StringValueWriter : IValueWriter<string>
     {
-        public static bool Matches(global::Avro.Schema schema) => schema.Tag == global::Avro.Schema.Type.String;
         public static void Write(global::Avro.Schema schema, string value, AllocationFreeBinaryEncoder encoder) => encoder.WriteString(value);
     }
 
     private readonly struct BytesValueWriter : IValueWriter<byte[]>
     {
-        public static bool Matches(global::Avro.Schema schema) => schema.Tag == global::Avro.Schema.Type.Bytes;
         public static void Write(global::Avro.Schema schema, byte[] value, AllocationFreeBinaryEncoder encoder) => encoder.WriteBytes(value);
     }
 
     private readonly struct DateTimeValueWriter : IValueWriter<DateTime>
     {
-        public static bool Matches(global::Avro.Schema schema) =>
-            schema is global::Avro.LogicalSchema logicalSchema &&
-            logicalSchema.LogicalType is Date or TimestampMillisecond or LocalTimestampMillisecond or
-                TimestampMicrosecond or LocalTimestampMicrosecond;
-
         public static void Write(global::Avro.Schema schema, DateTime value, AllocationFreeBinaryEncoder encoder) =>
             WriteDateTime((global::Avro.LogicalSchema)schema, value, encoder);
     }
 
     private readonly struct TimeSpanValueWriter : IValueWriter<TimeSpan>
     {
-        public static bool Matches(global::Avro.Schema schema) =>
-            schema is global::Avro.LogicalSchema logicalSchema &&
-            logicalSchema.LogicalType is TimeMillisecond or TimeMicrosecond;
-
         public static void Write(global::Avro.Schema schema, TimeSpan value, AllocationFreeBinaryEncoder encoder) =>
             WriteTimeSpan((global::Avro.LogicalSchema)schema, value, encoder);
     }
 
     private readonly struct GuidValueWriter : IValueWriter<Guid>
     {
-        public static bool Matches(global::Avro.Schema schema) =>
-            schema is global::Avro.LogicalSchema { LogicalType: Uuid };
-
         public static void Write(global::Avro.Schema schema, Guid value, AllocationFreeBinaryEncoder encoder) =>
             WriteUuid((global::Avro.LogicalSchema)schema, value, encoder);
     }
 
     private readonly struct DecimalValueWriter : IValueWriter<global::Avro.AvroDecimal>
     {
-        public static bool Matches(global::Avro.Schema schema) =>
-            schema is global::Avro.LogicalSchema { LogicalType: global::Avro.Util.Decimal };
-
         public static void Write(global::Avro.Schema schema, global::Avro.AvroDecimal value, AllocationFreeBinaryEncoder encoder) =>
             WriteDecimal((global::Avro.LogicalSchema)schema, value, encoder);
     }
 
-    private static void WriteMap(global::Avro.MapSchema schema, object? value, AllocationFreeBinaryEncoder encoder)
+    private void WriteMap(global::Avro.MapSchema schema, object? value, AllocationFreeBinaryEncoder encoder)
     {
         if (value is not IDictionary<string, object> map)
             throw TypeMismatch(value, "map");
@@ -742,55 +701,14 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
         encoder.WriteMapEnd();
     }
 
-    private static void WriteUnion(global::Avro.UnionSchema schema, object? value, AllocationFreeBinaryEncoder encoder)
+    private void WriteUnion(global::Avro.UnionSchema schema, object? value, AllocationFreeBinaryEncoder encoder)
     {
-        for (var i = 0; i < schema.Count; i++)
-        {
-            var branch = schema[i];
-            if (!Matches(branch, value))
-                continue;
-
-            encoder.WriteUnionIndex(i);
-            WriteValue(branch, value, encoder);
-            return;
-        }
-
-        throw new global::Avro.AvroException($"Cannot find a union match for {value?.GetType()} in {schema}.");
+        var branch = _writerCache.GetUnion(schema).Resolve(value);
+        encoder.WriteUnionIndex(branch.Index);
+        WriteValue(branch.Schema, value, encoder);
     }
 
-    private static bool Matches(global::Avro.Schema schema, object? value)
-    {
-        if (value is null)
-            return schema.Tag == global::Avro.Schema.Type.Null;
-
-        return schema.Tag switch
-        {
-            global::Avro.Schema.Type.Null => false,
-            global::Avro.Schema.Type.Boolean => value is bool,
-            global::Avro.Schema.Type.Int => value is int,
-            global::Avro.Schema.Type.Long => value is long,
-            global::Avro.Schema.Type.Float => value is float,
-            global::Avro.Schema.Type.Double => value is double,
-            global::Avro.Schema.Type.Bytes => value is byte[],
-            global::Avro.Schema.Type.String => value is string,
-            global::Avro.Schema.Type.Record or global::Avro.Schema.Type.Error =>
-                value is GenericRecord record &&
-                record.Schema.SchemaName.Equals(((global::Avro.RecordSchema)schema).SchemaName),
-            global::Avro.Schema.Type.Enumeration =>
-                value is GenericEnum genericEnum &&
-                genericEnum.Schema.SchemaName.Equals(((global::Avro.EnumSchema)schema).SchemaName),
-            global::Avro.Schema.Type.Array => value is (Array or IList) and not byte[],
-            global::Avro.Schema.Type.Map => value is IDictionary<string, object>,
-            global::Avro.Schema.Type.Union => false,
-            global::Avro.Schema.Type.Fixed =>
-                value is GenericFixed fixedValue &&
-                fixedValue.Schema.SchemaName.Equals(((global::Avro.FixedSchema)schema).SchemaName),
-            global::Avro.Schema.Type.Logical => ((global::Avro.LogicalSchema)schema).LogicalType.IsInstanceOfLogicalType(value),
-            _ => throw new global::Avro.AvroException($"Unknown Avro schema type {schema.Tag}.")
-        };
-    }
-
-    private static void WriteLogical(
+    private void WriteLogical(
         global::Avro.LogicalSchema schema,
         object? value,
         AllocationFreeBinaryEncoder encoder)
@@ -956,6 +874,239 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
     {
         if (value < TimeSpan.Zero || value >= TimeSpan.FromDays(1))
             throw new ArgumentOutOfRangeException(nameof(value), "Avro time values must be within one day.");
+    }
+
+    private sealed class WriterCache
+    {
+        private readonly Dictionary<global::Avro.UnionSchema, UnionBranchCache> _unions =
+            new(ReferenceComparer<global::Avro.UnionSchema>.Instance);
+        private UnionBranchCache? _lastUnion;
+
+        public static WriterCache Create(global::Avro.Schema schema)
+        {
+            var cache = new WriterCache();
+            var visited = new HashSet<global::Avro.Schema>(ReferenceComparer<global::Avro.Schema>.Instance);
+            cache.AddSchema(schema, visited);
+            return cache;
+        }
+
+        public UnionBranchCache GetUnion(global::Avro.UnionSchema schema)
+        {
+            var last = Volatile.Read(ref _lastUnion);
+            if (last is not null && ReferenceEquals(last.Schema, schema))
+                return last;
+
+            var union = _unions[schema];
+            Volatile.Write(ref _lastUnion, union);
+            return union;
+        }
+
+        private void AddSchema(
+            global::Avro.Schema schema,
+            HashSet<global::Avro.Schema> visited)
+        {
+            if (!visited.Add(schema))
+                return;
+
+            switch (schema.Tag)
+            {
+                case global::Avro.Schema.Type.Record:
+                case global::Avro.Schema.Type.Error:
+                    var fields = ((global::Avro.RecordSchema)schema).Fields;
+                    for (var i = 0; i < fields.Count; i++)
+                        AddSchema(fields[i].Schema, visited);
+                    break;
+
+                case global::Avro.Schema.Type.Array:
+                    AddSchema(((global::Avro.ArraySchema)schema).ItemSchema, visited);
+                    break;
+
+                case global::Avro.Schema.Type.Map:
+                    AddSchema(((global::Avro.MapSchema)schema).ValueSchema, visited);
+                    break;
+
+                case global::Avro.Schema.Type.Union:
+                    var union = (global::Avro.UnionSchema)schema;
+                    _unions.Add(union, new UnionBranchCache(union));
+                    for (var i = 0; i < union.Count; i++)
+                        AddSchema(union[i], visited);
+                    break;
+
+                case global::Avro.Schema.Type.Logical:
+                    var logical = (global::Avro.LogicalSchema)schema;
+                    AddSchema(logical.BaseSchema, visited);
+                    break;
+            }
+        }
+    }
+
+    private sealed class UnionBranchCache
+    {
+        private readonly global::Avro.UnionSchema _schema;
+        private readonly Dictionary<Type, UnionBranch> _typedBranches = new();
+        private readonly Dictionary<global::Avro.SchemaName, UnionBranch> _recordBranches = new();
+        private readonly Dictionary<global::Avro.SchemaName, UnionBranch> _enumBranches = new();
+        private readonly Dictionary<global::Avro.SchemaName, UnionBranch> _fixedBranches = new();
+        private UnionBranch _arrayBranch;
+        private UnionBranch _booleanBranch;
+        private UnionBranch _bytesBranch;
+        private UnionBranch _dateTimeBranch;
+        private UnionBranch _decimalBranch;
+        private UnionBranch _doubleBranch;
+        private UnionBranch _floatBranch;
+        private UnionBranch _guidBranch;
+        private UnionBranch _intBranch;
+        private UnionBranch _longBranch;
+        private UnionBranch _mapBranch;
+        private UnionBranch _stringBranch;
+        private UnionBranch _timeSpanBranch;
+
+        public UnionBranchCache(global::Avro.UnionSchema schema)
+        {
+            _schema = schema;
+            NullIndex = -1;
+            for (var i = 0; i < schema.Count; i++)
+            {
+                var branch = schema[i];
+                var resolved = new UnionBranch(i, branch);
+                switch (branch.Tag)
+                {
+                    case global::Avro.Schema.Type.Null:
+                        NullIndex = i;
+                        break;
+                    case global::Avro.Schema.Type.Boolean:
+                        _booleanBranch = resolved;
+                        break;
+                    case global::Avro.Schema.Type.Int:
+                        _intBranch = resolved;
+                        break;
+                    case global::Avro.Schema.Type.Long:
+                        _longBranch = resolved;
+                        break;
+                    case global::Avro.Schema.Type.Float:
+                        _floatBranch = resolved;
+                        break;
+                    case global::Avro.Schema.Type.Double:
+                        _doubleBranch = resolved;
+                        break;
+                    case global::Avro.Schema.Type.Bytes:
+                        _bytesBranch = resolved;
+                        break;
+                    case global::Avro.Schema.Type.String:
+                        _stringBranch = resolved;
+                        break;
+                    case global::Avro.Schema.Type.Record:
+                    case global::Avro.Schema.Type.Error:
+                        _recordBranches.TryAdd(((global::Avro.RecordSchema)branch).SchemaName, resolved);
+                        break;
+                    case global::Avro.Schema.Type.Enumeration:
+                        _enumBranches.TryAdd(((global::Avro.EnumSchema)branch).SchemaName, resolved);
+                        break;
+                    case global::Avro.Schema.Type.Fixed:
+                        _fixedBranches.TryAdd(((global::Avro.FixedSchema)branch).SchemaName, resolved);
+                        break;
+                    case global::Avro.Schema.Type.Array:
+                        if (_arrayBranch.Schema is null)
+                            _arrayBranch = resolved;
+                        break;
+                    case global::Avro.Schema.Type.Map:
+                        if (_mapBranch.Schema is null)
+                            _mapBranch = resolved;
+                        break;
+                    case global::Avro.Schema.Type.Logical:
+                        AddLogicalBranch((global::Avro.LogicalSchema)branch, resolved);
+                        break;
+                }
+            }
+        }
+
+        public global::Avro.UnionSchema Schema => _schema;
+
+        public int NullIndex { get; }
+
+        public UnionBranch GetValueBranch(Type type)
+        {
+            UnionBranch branch;
+            if (type == typeof(bool)) branch = _booleanBranch;
+            else if (type == typeof(int)) branch = _intBranch;
+            else if (type == typeof(long)) branch = _longBranch;
+            else if (type == typeof(float)) branch = _floatBranch;
+            else if (type == typeof(double)) branch = _doubleBranch;
+            else if (type == typeof(DateTime)) branch = _dateTimeBranch;
+            else if (type == typeof(TimeSpan)) branch = _timeSpanBranch;
+            else if (type == typeof(Guid)) branch = _guidBranch;
+            else if (type == typeof(global::Avro.AvroDecimal)) branch = _decimalBranch;
+            else if (!_typedBranches.TryGetValue(type, out branch)) branch = default;
+
+            if (branch.Schema is not null)
+                return branch;
+
+            throw new global::Avro.AvroTypeException($"Union {_schema} has no branch for {type}.");
+        }
+
+        public UnionBranch Resolve(object? value)
+        {
+            if (value is null)
+            {
+                if (NullIndex >= 0)
+                    return new UnionBranch(NullIndex, _schema[NullIndex]);
+                throw NoMatch(value);
+            }
+
+            switch (value)
+            {
+                case bool when _booleanBranch.Schema is not null: return _booleanBranch;
+                case int when _intBranch.Schema is not null: return _intBranch;
+                case long when _longBranch.Schema is not null: return _longBranch;
+                case float when _floatBranch.Schema is not null: return _floatBranch;
+                case double when _doubleBranch.Schema is not null: return _doubleBranch;
+                case byte[] when _bytesBranch.Schema is not null: return _bytesBranch;
+                case string when _stringBranch.Schema is not null: return _stringBranch;
+                case DateTime when _dateTimeBranch.Schema is not null: return _dateTimeBranch;
+                case TimeSpan when _timeSpanBranch.Schema is not null: return _timeSpanBranch;
+                case Guid when _guidBranch.Schema is not null: return _guidBranch;
+                case global::Avro.AvroDecimal when _decimalBranch.Schema is not null: return _decimalBranch;
+                case GenericRecord record when _recordBranches.TryGetValue(record.Schema.SchemaName, out var branch):
+                    return branch;
+                case GenericEnum genericEnum when _enumBranches.TryGetValue(genericEnum.Schema.SchemaName, out var branch):
+                    return branch;
+                case GenericFixed fixedValue when _fixedBranches.TryGetValue(fixedValue.Schema.SchemaName, out var branch):
+                    return branch;
+                case (Array or IList) and not byte[] when _arrayBranch.Schema is not null:
+                    return _arrayBranch;
+                case IDictionary<string, object> when _mapBranch.Schema is not null:
+                    return _mapBranch;
+                case var custom when _typedBranches.TryGetValue(custom.GetType(), out var branch):
+                    return branch;
+                default:
+                    throw NoMatch(value);
+            }
+        }
+
+        private void AddLogicalBranch(global::Avro.LogicalSchema schema, UnionBranch branch)
+        {
+            var type = schema.LogicalType.GetCSharpType(nullible: false);
+            if (type == typeof(DateTime)) _dateTimeBranch = branch;
+            else if (type == typeof(TimeSpan)) _timeSpanBranch = branch;
+            else if (type == typeof(Guid)) _guidBranch = branch;
+            else if (type == typeof(global::Avro.AvroDecimal)) _decimalBranch = branch;
+            else _typedBranches.TryAdd(type, branch);
+        }
+
+        private global::Avro.AvroException NoMatch(object? value) =>
+            new($"Cannot find a union match for {value?.GetType()} in {_schema}.");
+    }
+
+    private readonly record struct UnionBranch(int Index, global::Avro.Schema Schema);
+
+    private sealed class ReferenceComparer<T> : IEqualityComparer<T>
+        where T : class
+    {
+        public static readonly ReferenceComparer<T> Instance = new();
+
+        public bool Equals(T? left, T? right) => ReferenceEquals(left, right);
+
+        public int GetHashCode(T value) => RuntimeHelpers.GetHashCode(value);
     }
 
     private static global::Avro.AvroException TypeMismatch(object? value, string schemaType) =>

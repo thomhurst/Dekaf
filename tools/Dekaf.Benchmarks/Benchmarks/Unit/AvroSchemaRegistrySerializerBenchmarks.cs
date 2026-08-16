@@ -50,12 +50,23 @@ public class AvroSchemaRegistrySerializerBenchmarks
         }
         """;
 
+    private const string ScalarUnionSchema =
+        """
+        {
+          "type": "record",
+          "name": "ScalarUnionBenchmarkRecord",
+          "namespace": "Dekaf.Benchmarks",
+          "fields": [{ "name": "value", "type": ["null", "int", "string"] }]
+        }
+        """;
+
     private AvroSchemaRegistrySerializer<GenericRecord> _serializer = null!;
     private AvroSchemaRegistrySerializer<SpecificBenchmarkRecord> _specificSerializer = null!;
     private GenericRecord[] _equivalentRecords = null!;
     private GenericRecord _intRecord = null!;
     private GenericRecord _nullableIntArrayRecord = null!;
     private GenericRecord _nullableIntCollectionRecord = null!;
+    private GenericRecord _scalarUnionRecord = null!;
     private SpecificBenchmarkRecord _specificRecord = null!;
     private ArrayBufferWriter<byte> _serializeBuffer = null!;
     private GenericRecord _stableRecord = null!;
@@ -82,6 +93,7 @@ public class AvroSchemaRegistrySerializerBenchmarks
         _intRecord = CreateIntRecord();
         _nullableIntArrayRecord = CreateNullableIntArrayRecord();
         _nullableIntCollectionRecord = CreateNullableIntCollectionRecord();
+        _scalarUnionRecord = CreateScalarUnionRecord();
         _specificRecord = new SpecificBenchmarkRecord { Id = 42, Name = "benchmark" };
         _serializeBuffer = new ArrayBufferWriter<byte>();
         _serializer.Serialize(_stableRecord, ref _serializeBuffer, _context);
@@ -89,6 +101,8 @@ public class AvroSchemaRegistrySerializerBenchmarks
         _serializer.Serialize(_intRecord, ref _serializeBuffer, _context);
         _serializeBuffer.ResetWrittenCount();
         _serializer.Serialize(_nullableIntArrayRecord, ref _serializeBuffer, _context);
+        _serializeBuffer.ResetWrittenCount();
+        _serializer.Serialize(_scalarUnionRecord, ref _serializeBuffer, _context);
         _serializeBuffer.ResetWrittenCount();
         _specificSerializer.Serialize(_specificRecord, ref _serializeBuffer, _context);
     }
@@ -138,6 +152,13 @@ public class AvroSchemaRegistrySerializerBenchmarks
         _serializer.Serialize(_nullableIntCollectionRecord, ref _serializeBuffer, _context);
     }
 
+    [Benchmark(Description = "Serialize scalar-union generic Avro record")]
+    public void SerializeScalarUnionRecord()
+    {
+        _serializeBuffer.ResetWrittenCount();
+        _serializer.Serialize(_scalarUnionRecord, ref _serializeBuffer, _context);
+    }
+
     [Benchmark(Description = "Serialize prepared SpecificRecord")]
     public void SerializeSpecificRecord()
     {
@@ -177,6 +198,14 @@ public class AvroSchemaRegistrySerializerBenchmarks
         record.Add(
             "values",
             new Collection<int?>([int.MinValue, null, -1, 0, 1, null, int.MaxValue]));
+        return record;
+    }
+
+    private static GenericRecord CreateScalarUnionRecord()
+    {
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(ScalarUnionSchema);
+        var record = new GenericRecord(schema);
+        record.Add("value", 42);
         return record;
     }
 
