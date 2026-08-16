@@ -710,6 +710,26 @@ public sealed class OffsetStoreTimingTests
     }
 
     [Test]
+    public async Task ConsumeOneAsync_PauseBeforeNextPoll_StagesProcessedRecord()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20,
+                CreateRecord(0, "a", "one"),
+                CreateRecord(1, "b", "two"))
+        ]);
+        await using var consumer = CreateInitializedConsumer(OffsetCommitMode.Auto, fetch);
+        var tp = new TopicPartition(Topic, Partition);
+
+        await Assert.That(await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), CancellationToken.None)).IsNotNull();
+
+        consumer.Pause(tp);
+        await Assert.That(await consumer.ConsumeOneAsync(TimeSpan.FromMilliseconds(100), CancellationToken.None)).IsNull();
+
+        await Assert.That(GetDirtyStoredOffsets(consumer)[tp]).IsEqualTo(21L);
+    }
+
+    [Test]
     public async Task CommitAsync_ThenClose_DoesNotRegressActiveConsumedOffset()
     {
         var requests = new List<OffsetCommitRequest>();

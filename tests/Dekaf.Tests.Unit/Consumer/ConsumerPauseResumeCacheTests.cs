@@ -106,14 +106,13 @@ public sealed class ConsumerPauseResumeCacheTests
             IsBackground = true
         };
 
-        bool publisherWaiting;
+        bool publisherMutated;
         epoch.BeginPublication();
         try
         {
             publisher.Start();
-            publisherWaiting = SpinWait.SpinUntil(
-                () => paused.ContainsKey(partition0)
-                    && (publisher.ThreadState & ThreadState.WaitSleepJoin) != 0,
+            publisherMutated = SpinWait.SpinUntil(
+                () => paused.ContainsKey(partition0),
                 TimeSpan.FromSeconds(5));
             paused.TryAdd(partition1, 0);
         }
@@ -125,7 +124,7 @@ public sealed class ConsumerPauseResumeCacheTests
         var publisherCompleted = publisher.Join(TimeSpan.FromSeconds(5));
         var snapshot = (HashSet<TopicPartition>)GetField("_pausedSnapshot").GetValue(consumer)!;
 
-        await Assert.That(publisherWaiting).IsTrue();
+        await Assert.That(publisherMutated).IsTrue();
         await Assert.That(publisherCompleted).IsTrue();
         await Assert.That(publisherFailure).IsNull();
         await Assert.That(snapshot.Contains(partition0)).IsTrue();

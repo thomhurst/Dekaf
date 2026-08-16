@@ -5499,6 +5499,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private void MovePendingFetchToPaused(PendingFetchData pending)
     {
         Debug.Assert(_pendingFetches.Count > 0 && ReferenceEquals(_pendingFetches.Peek(), pending));
+        pending.MarkYieldedProcessed();
+        FlushConsumedPositions(pending);
         _pausedPendingFetches.Enqueue(_pendingFetches.Dequeue());
     }
 
@@ -5563,11 +5565,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         count = _pendingFetches.Count;
         for (var i = 0; i < count; i++)
         {
-            var pending = _pendingFetches.Dequeue();
+            var pending = _pendingFetches.Peek();
             if (paused.Contains(pending.TopicPartition))
-                _pausedPendingFetches.Enqueue(pending);
+                MovePendingFetchToPaused(pending);
             else
-                _pendingFetches.Enqueue(pending);
+                _pendingFetches.Enqueue(_pendingFetches.Dequeue());
         }
 
         _observedPausedSnapshotVersion = pausedSnapshotVersion;

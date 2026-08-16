@@ -115,21 +115,26 @@ public class ConsumeBatchTests
     }
 
     [Test]
-    public async Task ConsumeBatch_StopsEnumerationWhenPartitionIsNoLongerAssigned()
+    public async Task ConsumeBatch_RemainsCompletedAfterPartitionReturns()
     {
         using var pending = CreatePendingFetchData("test-topic", partitionIndex: 0, baseOffset: 0, messageCount: 3);
         var assignmentEpoch = new BatchIterationEpoch();
+        var canContinue = true;
         var batch = new ConsumeBatch<string, string>(
             pending,
             Serializers.String,
             Serializers.String,
-            new BatchIterationGuard(assignmentEpoch, assignmentEpoch.Version));
+            new BatchIterationGuard(assignmentEpoch, assignmentEpoch.Version, _ => canContinue));
 
         using var enumerator = batch.GetEnumerator();
 
         await Assert.That(enumerator.MoveNext()).IsTrue();
+        canContinue = false;
         assignmentEpoch.Invalidate();
 
+        await Assert.That(enumerator.MoveNext()).IsFalse();
+        canContinue = true;
+        assignmentEpoch.Invalidate();
         await Assert.That(enumerator.MoveNext()).IsFalse();
         await Assert.That(batch.Count).IsEqualTo(1);
     }

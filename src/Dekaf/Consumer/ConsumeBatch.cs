@@ -278,8 +278,14 @@ namespace Dekaf.Consumer
             {
                 PendingFetchData pending = _batch._pendingFetchData;
 
-                if (!_canContinue || !_batch._iterationGuard.IsCurrent(pending.TopicPartition, ref _observedVersion))
+                if (!_canContinue)
                     return false;
+
+                if (!_batch._iterationGuard.IsCurrent(pending.TopicPartition, ref _observedVersion))
+                {
+                    _canContinue = false;
+                    return false;
+                }
 
                 if (_recordsYielded >= _batch._maxRecords)
                 {
