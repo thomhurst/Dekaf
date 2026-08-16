@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Numerics;
 using Avro.Generic;
 using Avro.IO;
 using Dekaf.SchemaRegistry;
@@ -24,6 +25,76 @@ public sealed class AvroSerializerTests
             "fields": [
                 { "name": "id", "type": "int" },
                 { "name": "name", "type": "string" }
+            ]
+        }
+        """;
+
+    private const string AllFieldTypesSchema = """
+        {
+            "type": "record",
+            "name": "AllFieldTypes",
+            "namespace": "test",
+            "fields": [
+                { "name": "nullValue", "type": "null" },
+                { "name": "booleanValue", "type": "boolean" },
+                { "name": "intValue", "type": "int" },
+                { "name": "longValue", "type": "long" },
+                { "name": "floatValue", "type": "float" },
+                { "name": "doubleValue", "type": "double" },
+                { "name": "bytesValue", "type": "bytes" },
+                { "name": "stringValue", "type": "string" },
+                { "name": "enumValue", "type": { "type": "enum", "name": "State", "symbols": ["ON", "OFF"] } },
+                { "name": "fixedValue", "type": { "type": "fixed", "name": "Hash", "size": 4 } },
+                { "name": "arrayValue", "type": { "type": "array", "items": "int" } },
+                { "name": "mapValue", "type": { "type": "map", "values": "string" } },
+                { "name": "unionValue", "type": ["null", "string"] },
+                {
+                    "name": "nestedValue",
+                    "type": {
+                        "type": "record",
+                        "name": "Nested",
+                        "fields": [{ "name": "value", "type": "long" }]
+                    }
+                }
+            ]
+        }
+        """;
+
+    private const string LogicalFieldTypesSchema = """
+        {
+            "type": "record",
+            "name": "LogicalFieldTypes",
+            "namespace": "test",
+            "fields": [
+                { "name": "dateValue", "type": { "type": "int", "logicalType": "date" } },
+                { "name": "timeMillisValue", "type": { "type": "int", "logicalType": "time-millis" } },
+                { "name": "timeMicrosValue", "type": { "type": "long", "logicalType": "time-micros" } },
+                { "name": "timestampMillisValue", "type": { "type": "long", "logicalType": "timestamp-millis" } },
+                { "name": "timestampMicrosValue", "type": { "type": "long", "logicalType": "timestamp-micros" } },
+                { "name": "localTimestampMillisValue", "type": { "type": "long", "logicalType": "local-timestamp-millis" } },
+                { "name": "localTimestampMicrosValue", "type": { "type": "long", "logicalType": "local-timestamp-micros" } },
+                { "name": "uuidValue", "type": { "type": "string", "logicalType": "uuid" } },
+                {
+                    "name": "dateArrayValue",
+                    "type": { "type": "array", "items": { "type": "int", "logicalType": "date" } }
+                },
+                {
+                    "name": "decimalBytesValue",
+                    "type": { "type": "bytes", "logicalType": "decimal", "precision": 8, "scale": 2 }
+                },
+                {
+                    "name": "fixedSeedValue",
+                    "type": { "type": "fixed", "name": "DecimalFixed", "size": 8 }
+                },
+                {
+                    "name": "decimalFixedValue",
+                    "type": {
+                        "type": "DecimalFixed",
+                        "logicalType": "decimal",
+                        "precision": 16,
+                        "scale": 2
+                    }
+                }
             ]
         }
         """;
@@ -96,6 +167,70 @@ public sealed class AvroSerializerTests
 
         var schemaId = BinaryPrimitives.ReadInt32BigEndian(data.Span.Slice(1, 4));
         await Assert.That(schemaId).IsGreaterThan(0);
+    }
+
+    [Test]
+    public async Task Serializer_GenericRecord_AllFieldTypes_MatchesApacheAvroBytes()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry);
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(AllFieldTypesSchema);
+        var record = new GenericRecord(schema);
+        var nestedSchema = (Avro.RecordSchema)schema["nestedValue"].Schema;
+        var nested = new GenericRecord(nestedSchema);
+        nested.Add("value", 9_876_543_210L);
+
+        record.Add("nullValue", null!);
+        record.Add("booleanValue", true);
+        record.Add("intValue", -123_456);
+        record.Add("longValue", 9_876_543_210L);
+        record.Add("floatValue", -123.25f);
+        record.Add("doubleValue", Math.PI);
+        record.Add("bytesValue", new byte[] { 0, 1, 127, 128, 255 });
+        record.Add("stringValue", string.Concat(Enumerable.Repeat("Grüße 🌍 ", 40)));
+        record.Add("enumValue", new GenericEnum((Avro.EnumSchema)schema["enumValue"].Schema, "OFF"));
+        record.Add("fixedValue", new GenericFixed((Avro.FixedSchema)schema["fixedValue"].Schema, [1, 2, 3, 4]));
+        record.Add("arrayValue", new[] { int.MinValue, -1, 0, 1, int.MaxValue });
+        record.Add("mapValue", new SortedDictionary<string, object>
+        {
+            ["first"] = "alpha",
+            ["second"] = "βeta"
+        });
+        record.Add("unionValue", "selected");
+        record.Add("nestedValue", nested);
+
+        await AssertSerializedPayloadMatchesApache(serializer, schema, record);
+    }
+
+    [Test]
+    public async Task Serializer_GenericRecord_LogicalFieldTypes_MatchesApacheAvroBytes()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry);
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(LogicalFieldTypesSchema);
+        var record = new GenericRecord(schema);
+        var timestamp = new DateTime(2026, 8, 16, 14, 23, 45, 678, DateTimeKind.Utc).AddTicks(9_010);
+
+        record.Add("dateValue", new DateTime(2026, 8, 16, 0, 0, 0, DateTimeKind.Utc));
+        record.Add("timeMillisValue", new TimeSpan(0, 14, 23, 45, 678));
+        record.Add("timeMicrosValue", new TimeSpan(0, 14, 23, 45, 678).Add(TimeSpan.FromTicks(9_010)));
+        record.Add("timestampMillisValue", timestamp);
+        record.Add("timestampMicrosValue", timestamp);
+        record.Add("localTimestampMillisValue", timestamp);
+        record.Add("localTimestampMicrosValue", timestamp);
+        record.Add("uuidValue", Guid.Parse("00112233-4455-6677-8899-aabbccddeeff"));
+        record.Add("dateArrayValue", new[]
+        {
+            new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+            new DateTime(2026, 8, 16, 0, 0, 0, DateTimeKind.Utc)
+        });
+        record.Add("decimalBytesValue", new Avro.AvroDecimal(new BigInteger(-12_345), 2));
+        record.Add(
+            "fixedSeedValue",
+            new GenericFixed((Avro.FixedSchema)schema["fixedSeedValue"].Schema, new byte[8]));
+        record.Add("decimalFixedValue", new Avro.AvroDecimal(new BigInteger(98_765), 2));
+
+        await AssertSerializedPayloadMatchesApache(serializer, schema, record);
     }
 
     [Test]
@@ -722,5 +857,18 @@ public sealed class AvroSerializerTests
         BinaryPrimitives.WriteInt32BigEndian(wireFormat.AsSpan(1, 4), schemaId);
         avroPayload.CopyTo(wireFormat.AsSpan(5));
         return wireFormat;
+    }
+
+    private static async Task AssertSerializedPayloadMatchesApache(
+        AvroSchemaRegistrySerializer<GenericRecord> serializer,
+        Avro.RecordSchema schema,
+        GenericRecord record)
+    {
+        var expected = SerializeAvroRecord(record, schema);
+        var buffer = new ArrayBufferWriter<byte>();
+
+        serializer.Serialize(record, ref buffer, CreateContext());
+
+        await Assert.That(buffer.WrittenSpan.Slice(5).SequenceEqual(expected)).IsTrue();
     }
 }

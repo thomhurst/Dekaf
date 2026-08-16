@@ -297,7 +297,7 @@ public sealed class AvroSchemaRegistrySerializer<
         return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(GetSchemaIdCached(subject, schema), schema);
     }
 
-    private void WriteAvroValue(T value, BinaryEncoder encoder)
+    private void WriteAvroValue(T value, AllocationFreeBinaryEncoder encoder)
     {
         switch (value)
         {
@@ -446,7 +446,7 @@ public sealed class AvroSchemaRegistrySerializer<
         return GetDynamicSchemaCache(schema).SubjectSchemaIdCache;
     }
 
-    private GenericDatumWriter<GenericRecord> GetGenericWriter(AvroSchema schema) =>
+    private AllocationFreeGenericRecordWriter GetGenericWriter(AvroSchema schema) =>
         GetDynamicSchemaCache(schema).Writer;
 
     private DynamicSchemaCache GetDynamicSchemaCache(AvroSchema schema)
@@ -469,12 +469,12 @@ public sealed class AvroSchemaRegistrySerializer<
         {
             LastSeenSchema = schema;
             SubjectSchemaIdCache = new SubjectSchemaIdCache();
-            Writer = new GenericDatumWriter<GenericRecord>(schema);
+            Writer = new AllocationFreeGenericRecordWriter((global::Avro.RecordSchema)schema);
         }
 
         internal AvroSchema LastSeenSchema;
         internal SubjectSchemaIdCache SubjectSchemaIdCache { get; }
-        internal GenericDatumWriter<GenericRecord> Writer { get; }
+        internal AllocationFreeGenericRecordWriter Writer { get; }
     }
 
     private static AvroSchema? GetSchemaFromType()
