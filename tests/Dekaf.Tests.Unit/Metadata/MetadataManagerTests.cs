@@ -449,7 +449,7 @@ public class MetadataManagerTests
     }
 
     [Test]
-    public async Task RefreshMetadataAsync_RebootstrapRequired_PreservesTrustedBrokerStatus()
+    public async Task RefreshMetadataAsync_RebootstrapRequired_PreservesStatusAndRegistersFallbackRouting()
     {
         var connection = Substitute.For<IKafkaConnection>();
         connection.IsConnected.Returns(true);
@@ -505,9 +505,11 @@ public class MetadataManagerTests
         var trustedStatus = ((IConnectionPoolStatusSource)pool).GetBrokerConnectionStatus();
         await manager.RefreshMetadataAsync();
         var rejectedStatus = ((IConnectionPoolStatusSource)pool).GetBrokerConnectionStatus();
+        var fallbackConnection = await pool.GetConnectionAsync(99);
 
         await Assert.That(trustedStatus.Select(static broker => broker.BrokerId)).IsEquivalentTo([1]);
         await Assert.That(rejectedStatus.Select(static broker => broker.BrokerId)).IsEquivalentTo([1]);
+        await Assert.That(fallbackConnection).IsSameReferenceAs(connection);
     }
 
     [Test]

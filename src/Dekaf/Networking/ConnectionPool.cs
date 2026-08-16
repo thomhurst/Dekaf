@@ -2275,8 +2275,11 @@ public sealed partial class ConnectionPool :
         {
             LogClosingAllConnections();
 
-            foreach (var runtimeState in _brokerConnectionRuntimeStates.Values)
-                runtimeState.RecordStateChange();
+            foreach (var brokerId in _connectionsById.Keys)
+            {
+                if (_brokerConnectionRuntimeStates.TryGetValue(brokerId, out var runtimeState))
+                    runtimeState.RecordStateChange();
+            }
 
             var tasks = new List<ValueTask>();
 
@@ -2291,12 +2294,19 @@ public sealed partial class ConnectionPool :
             }
 
             // Close connection groups (used when _connectionsPerBroker > 1)
-            foreach (var connectionGroup in _connectionGroupsById.Values)
+            foreach (var (brokerId, connectionGroup) in _connectionGroupsById)
             {
+                var runtimeState = !_connectionsById.ContainsKey(brokerId)
+                    && _brokerConnectionRuntimeStates.TryGetValue(brokerId, out var trackedRuntimeState)
+                        ? trackedRuntimeState
+                        : null;
+
                 foreach (var connection in connectionGroup)
                 {
                     if (connection is not null)
                     {
+                        runtimeState?.RecordStateChange();
+                        runtimeState = null;
                         tasks.Add(connection.DisposeAsync());
                     }
                 }

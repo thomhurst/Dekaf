@@ -1070,13 +1070,16 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 // metadata for other topics. Full-cluster requests replace the snapshot.
                 // This matches the Java client's incremental metadata update behavior.
                 _metadata.Update(response, mergeTopics: topics is not null);
+                // The accepted fallback snapshot must remain usable for routing even when its
+                // cluster identity and diagnostic broker set are not trusted.
+                foreach (var broker in response.Brokers)
+                    RegisterBroker(broker.NodeId, broker.Host, broker.Port);
+
                 if (response.ErrorCode != ErrorCode.RebootstrapRequired)
                 {
                     UpdateMetadataClusterId(response.ClusterId);
 
                     // Only trusted metadata may replace connection-routing diagnostics.
-                    foreach (var broker in response.Brokers)
-                        RegisterBroker(broker.NodeId, broker.Host, broker.Port);
                     PublishBrokerStatusSnapshot(response.Brokers);
                 }
 

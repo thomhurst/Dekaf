@@ -158,6 +158,28 @@ public sealed class ConnectionPoolTests
     }
 
     [Test]
+    public async Task StatusSnapshot_RecordsOnlyRepresentedBrokerClosures()
+    {
+        long statusTimestamp = 100;
+        var connection = new TestIdleConnection(7, "broker-a", 9092);
+        await using var pool = new ConnectionPool(
+            clientId: "status-test",
+            connectionOptions: new ConnectionOptions(),
+            connectionsPerBroker: 1,
+            connectionFactory: (_, _, _, _, _) => ValueTask.FromResult<IKafkaConnection>(connection),
+            statusTimestampProvider: () => Volatile.Read(ref statusTimestamp));
+        pool.RegisterBroker(7, "broker-a", 9092);
+        pool.RegisterBroker(8, "broker-b", 9093);
+        _ = await pool.GetConnectionAsync(7);
+        Volatile.Write(ref statusTimestamp, 101);
+
+        await pool.CloseAllAsync();
+
+        await Assert.That(GetBrokerStateChangeTimestamp(pool, 7)).IsEqualTo(101);
+        await Assert.That(GetBrokerStateChangeTimestamp(pool, 8)).IsEqualTo(100);
+    }
+
+    [Test]
     public async Task StatusSnapshot_ReportsControllerEndpointConnectionFailure()
     {
         await using var pool = new ConnectionPool(
