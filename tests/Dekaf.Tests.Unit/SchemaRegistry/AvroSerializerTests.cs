@@ -5,6 +5,7 @@ using System.Numerics;
 using System.Text;
 using Avro.Generic;
 using Avro.IO;
+using Avro.Specific;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Avro;
 using Dekaf.Serialization;
@@ -29,6 +30,35 @@ public sealed class AvroSerializerTests
             "fields": [
                 { "name": "id", "type": "int" },
                 { "name": "name", "type": "string" }
+            ]
+        }
+        """;
+
+    private const string SpecificScalarRecordSchema = """
+        {
+            "type": "record",
+            "name": "SpecificScalarRecord",
+            "namespace": "test",
+            "fields": [
+                { "name": "nothing", "type": "null" },
+                { "name": "enabled", "type": "boolean" },
+                { "name": "count", "type": "int" },
+                { "name": "sequence", "type": "long" },
+                { "name": "ratio", "type": "float" },
+                { "name": "total", "type": "double" },
+                { "name": "name", "type": "string" },
+                { "name": "payload", "type": "bytes" }
+            ]
+        }
+        """;
+
+    private const string SpecificArrayRecordSchema = """
+        {
+            "type": "record",
+            "name": "SpecificArrayRecord",
+            "namespace": "test",
+            "fields": [
+                { "name": "values", "type": { "type": "array", "items": "int" } }
             ]
         }
         """;
@@ -1300,6 +1330,41 @@ public sealed class AvroSerializerTests
     }
 
     [Test]
+    public async Task Serializer_SpecificRecord_ScalarFieldsMatchApacheAvroBytes()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        await using var serializer = new AvroSchemaRegistrySerializer<SpecificScalarRecord>(schemaRegistry);
+        var record = new SpecificScalarRecord
+        {
+            Enabled = true,
+            Count = -42,
+            Sequence = long.MaxValue,
+            Ratio = 1.25f,
+            Total = -123.5,
+            Name = "specific",
+            Payload = [0, 1, 127, 255]
+        };
+        var expected = SerializeSpecificAvroRecord(record);
+        var buffer = new ArrayBufferWriter<byte>();
+
+        serializer.Serialize(record, ref buffer, CreateContext());
+
+        await Assert.That(buffer.WrittenSpan.Slice(5).SequenceEqual(expected)).IsTrue();
+        await Assert.That(serializer.CachedSpecificWriterCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task Serializer_SpecificRecord_UnsupportedFieldFailsDuringPreparation()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+
+        var exception = Assert.Throws<NotSupportedException>(
+            () => GC.KeepAlive(new AvroSchemaRegistrySerializer<SpecificArrayRecord>(schemaRegistry)));
+
+        await Assert.That(exception!.Message).Contains("schema type Array is not supported");
+    }
+
+    [Test]
     public async Task Serializer_UsesTopicNameStrategy_ByDefault()
     {
         // Arrange
@@ -1674,6 +1739,14 @@ public sealed class AvroSerializerTests
         await Assert.That(buffer.WrittenSpan.Slice(5).SequenceEqual(expected)).IsTrue();
     }
 
+    private static byte[] SerializeSpecificAvroRecord(ISpecificRecord record)
+    {
+        using var stream = new MemoryStream();
+        var writer = new SpecificDefaultWriter(record.Schema);
+        writer.Write(record.Schema, record, new BinaryEncoder(stream));
+        return stream.ToArray();
+    }
+
     private static async Task AssertSerializedPayloadMatches(
         AvroSchemaRegistrySerializer<GenericRecord> serializer,
         Avro.RecordSchema schema,
@@ -1801,5 +1874,48 @@ public sealed class AvroSerializerTests
 
         public override bool IsInstanceOfLogicalType(object logicalValue) =>
             logicalValue is string value && value.StartsWith("text-", StringComparison.Ordinal);
+    }
+
+    private sealed class SpecificScalarRecord : ISpecificRecord
+    {
+        public static readonly AvroSchema _SCHEMA = AvroSchema.Parse(SpecificScalarRecordSchema);
+
+        public bool Enabled { get; init; }
+        public int Count { get; init; }
+        public long Sequence { get; init; }
+        public float Ratio { get; init; }
+        public double Total { get; init; }
+        public string Name { get; init; } = string.Empty;
+        public byte[] Payload { get; init; } = [];
+        public AvroSchema Schema => _SCHEMA;
+
+        public object? Get(int fieldPos) => fieldPos switch
+        {
+            0 => null,
+            1 => Enabled,
+            2 => Count,
+            3 => Sequence,
+            4 => Ratio,
+            5 => Total,
+            6 => Name,
+            7 => Payload,
+            _ => throw new ArgumentOutOfRangeException(nameof(fieldPos))
+        };
+
+        public void Put(int fieldPos, object fieldValue) => throw new NotSupportedException();
+    }
+
+    private sealed class SpecificArrayRecord : ISpecificRecord
+    {
+        public static readonly AvroSchema _SCHEMA = AvroSchema.Parse(SpecificArrayRecordSchema);
+
+        public int[] Values { get; init; } = [];
+        public AvroSchema Schema => _SCHEMA;
+
+        public object Get(int fieldPos) => fieldPos == 0
+            ? Values
+            : throw new ArgumentOutOfRangeException(nameof(fieldPos));
+
+        public void Put(int fieldPos, object fieldValue) => throw new NotSupportedException();
     }
 }

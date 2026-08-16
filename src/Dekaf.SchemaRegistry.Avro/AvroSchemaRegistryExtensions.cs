@@ -20,7 +20,9 @@ public static class AvroSchemaRegistryExtensions
     /// <returns>The builder for chaining.</returns>
     public static ProducerBuilder<TKey, TValue> UseAvroSchemaRegistry<
         TKey,
-        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicFields)] TValue>(
+        [DynamicallyAccessedMembers(
+            DynamicallyAccessedMemberTypes.PublicFields |
+            DynamicallyAccessedMemberTypes.PublicProperties)] TValue>(
         this ProducerBuilder<TKey, TValue> builder,
         ISchemaRegistryClient schemaRegistry,
         AvroSerializerConfig? config = null)
@@ -41,7 +43,9 @@ public static class AvroSchemaRegistryExtensions
     /// <param name="config">Optional Avro serializer configuration.</param>
     /// <returns>The builder for chaining.</returns>
     public static ProducerBuilder<TKey, TValue> UseAvroSchemaRegistryKey<
-        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicFields)] TKey,
+        [DynamicallyAccessedMembers(
+            DynamicallyAccessedMemberTypes.PublicFields |
+            DynamicallyAccessedMemberTypes.PublicProperties)] TKey,
         TValue>(
         this ProducerBuilder<TKey, TValue> builder,
         ISchemaRegistryClient schemaRegistry,
