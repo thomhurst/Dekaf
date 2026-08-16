@@ -134,10 +134,12 @@ public sealed class ClientStatusIntegrationTests(KafkaTestContainer kafka) : Kaf
         {
             await foreach (var _ in consumer.ConsumeAsync(cancellationToken))
             {
+                // Polling drives group coordination; records are irrelevant to this status test.
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            return;
         }
     }
 }

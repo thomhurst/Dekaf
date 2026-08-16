@@ -120,10 +120,10 @@ public sealed class KafkaClientStatusTests
             {
                 for (var i = 0; i < 1_000; i++)
                 {
-                    foreach (var identity in identities)
+                    foreach (var identity in identities.Where(static identity => identity.ClusterId != "cluster-status"))
                     {
-                        if (identity.ClusterId != "cluster-status")
-                            throw new InvalidOperationException("Observed an unpublished cluster identity.");
+                        throw new InvalidOperationException(
+                            $"Observed unpublished cluster identity '{identity.ClusterId ?? "<null>"}'.");
                     }
                 }
             }));

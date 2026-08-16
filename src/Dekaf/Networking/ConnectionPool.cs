@@ -1829,42 +1829,24 @@ public sealed partial class ConnectionPool :
 
         foreach (var broker in _brokers.Values)
         {
-            var connectionCount = 0;
-            var connectedCount = 0;
-            var pendingRequestCount = 0;
-            var lastSuccessfulRequestTimestampMs = 0L;
-            var lastStateChangeTimestampMs = 0L;
+            var connections = default(ConnectionStatusAccumulator);
 
             _connectionGroupsById.TryGetValue(broker.BrokerId, out var group);
             if (group is not null)
             {
-                connectionCount += group.Length;
                 for (var i = 0; i < group.Length; i++)
-                {
-                    AccumulateConnectionStatus(
-                        group[i],
-                        ref connectedCount,
-                        ref pendingRequestCount,
-                        ref lastSuccessfulRequestTimestampMs,
-                        ref lastStateChangeTimestampMs);
-                }
+                    AccumulateConnectionStatus(group[i], ref connections);
             }
             if (_connectionsById.TryGetValue(broker.BrokerId, out var connection)
                 && !ContainsReference(group, connection))
             {
-                connectionCount++;
-                AccumulateConnectionStatus(
-                    connection,
-                    ref connectedCount,
-                    ref pendingRequestCount,
-                    ref lastSuccessfulRequestTimestampMs,
-                    ref lastStateChangeTimestampMs);
+                AccumulateConnectionStatus(connection, ref connections);
             }
 
             _brokerConnectionRuntimeStates.TryGetValue(broker.BrokerId, out var runtimeState);
             var lastErrorTimestampMs = runtimeState?.LastErrorTimestampMs ?? 0;
-            lastStateChangeTimestampMs = Math.Max(
-                lastStateChangeTimestampMs,
+            connections.LastStateChangeTimestampMs = Math.Max(
+                connections.LastStateChangeTimestampMs,
                 runtimeState?.LastStateChangeTimestampMs ?? 0);
 
             result.Add(new BrokerConnectionStatus
@@ -1872,18 +1854,18 @@ public sealed partial class ConnectionPool :
                 BrokerId = broker.BrokerId,
                 Host = broker.Host,
                 Port = broker.Port,
-                State = connectedCount == 0
+                State = connections.ConnectedCount == 0
                     ? BrokerConnectionState.Disconnected
-                    : connectedCount == connectionCount
+                    : connections.ConnectedCount == connections.ConnectionCount
                         ? BrokerConnectionState.Connected
                         : BrokerConnectionState.PartiallyConnected,
-                ConnectionCount = connectionCount,
-                ConnectedConnectionCount = connectedCount,
-                PendingRequestCount = pendingRequestCount,
+                ConnectionCount = connections.ConnectionCount,
+                ConnectedConnectionCount = connections.ConnectedCount,
+                PendingRequestCount = connections.PendingRequestCount,
                 LastSuccessfulRequestAtUtc = ToUtcTimestamp(
-                    lastSuccessfulRequestTimestampMs, capturedAtTimestampMs, capturedAtUtc),
+                    connections.LastSuccessfulRequestTimestampMs, capturedAtTimestampMs, capturedAtUtc),
                 LastConnectionStateChangeAtUtc = ToUtcTimestamp(
-                    lastStateChangeTimestampMs, capturedAtTimestampMs, capturedAtUtc),
+                    connections.LastStateChangeTimestampMs, capturedAtTimestampMs, capturedAtUtc),
                 LastErrorAtUtc = ToUtcTimestamp(
                     lastErrorTimestampMs, capturedAtTimestampMs, capturedAtUtc),
                 LastError = runtimeState?.LastError
@@ -1896,26 +1878,33 @@ public sealed partial class ConnectionPool :
 
     private static void AccumulateConnectionStatus(
         IKafkaConnection connection,
-        ref int connectedCount,
-        ref int pendingRequestCount,
-        ref long lastSuccessfulRequestTimestampMs,
-        ref long lastStateChangeTimestampMs)
+        ref ConnectionStatusAccumulator status)
     {
+        status.ConnectionCount++;
         if (connection.IsConnected)
-            connectedCount++;
+            status.ConnectedCount++;
 
         if (connection is IIdleTrackedKafkaConnection idleTracked)
-            pendingRequestCount += idleTracked.PendingRequestCount;
+            status.PendingRequestCount += idleTracked.PendingRequestCount;
 
         if (connection is not IKafkaConnectionStatusSource statusSource)
             return;
 
-        lastSuccessfulRequestTimestampMs = Math.Max(
-            lastSuccessfulRequestTimestampMs,
+        status.LastSuccessfulRequestTimestampMs = Math.Max(
+            status.LastSuccessfulRequestTimestampMs,
             statusSource.LastSuccessfulRequestTimestampMs);
-        lastStateChangeTimestampMs = Math.Max(
-            lastStateChangeTimestampMs,
+        status.LastStateChangeTimestampMs = Math.Max(
+            status.LastStateChangeTimestampMs,
             statusSource.LastConnectionStateChangeTimestampMs);
+    }
+
+    private struct ConnectionStatusAccumulator
+    {
+        public int ConnectionCount;
+        public int ConnectedCount;
+        public int PendingRequestCount;
+        public long LastSuccessfulRequestTimestampMs;
+        public long LastStateChangeTimestampMs;
     }
 
     private static bool ContainsReference(IKafkaConnection[]? connections, IKafkaConnection candidate)

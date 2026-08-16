@@ -99,13 +99,7 @@ public sealed class ConnectionPoolTests
                 ValueTask.FromException<IKafkaConnection>(new IOException("connection refused")));
         pool.RegisterBroker(7, "broker-a", 9092);
 
-        try
-        {
-            _ = await pool.GetConnectionAsync(7);
-        }
-        catch (IOException)
-        {
-        }
+        await Assert.ThrowsAsync<IOException>(async () => await pool.GetConnectionAsync(7));
 
         var status = ((IConnectionPoolStatusSource)pool).GetBrokerConnectionStatus().Single();
         await Assert.That(status.State).IsEqualTo(BrokerConnectionState.Disconnected);
