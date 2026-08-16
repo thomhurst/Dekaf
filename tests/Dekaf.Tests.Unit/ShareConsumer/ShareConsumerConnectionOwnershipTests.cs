@@ -42,6 +42,41 @@ public sealed class ShareConsumerConnectionOwnershipTests
     }
 
     [Test]
+    public async Task HeartbeatVersionNegotiationFailure_IsReportedByStatus()
+    {
+        var options = CreateOptions();
+        var connection = new LeaseTrackingConnection(
+            new ApiVersion(
+                ApiKey.ShareGroupHeartbeat,
+                (short)(ShareGroupHeartbeatRequest.HighestSupportedVersion + 1),
+                (short)(ShareGroupHeartbeatRequest.HighestSupportedVersion + 1)));
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionByIndexAsync(1, 1, Arg.Any<CancellationToken>())
+            .Returns(connection);
+        await using var metadataManager = new MetadataManager(pool, options.BootstrapServers);
+        await using var coordinator = new ShareConsumerCoordinator(
+            options,
+            pool,
+            metadataManager,
+            getConnectionCount: () => 2);
+        typeof(ShareConsumerCoordinator).GetField(
+            "_coordinatorId",
+            BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(coordinator, 1);
+        var method = typeof(ShareConsumerCoordinator).GetMethod(
+            "SendShareGroupHeartbeatAsync",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var heartbeat = (ValueTask<bool>)method.Invoke(
+            coordinator,
+            [false, CancellationToken.None])!;
+
+        await Assert.ThrowsAsync<BrokerVersionException>(async () => await heartbeat);
+
+        await Assert.That(coordinator.CaptureGroupStatus().LastHeartbeatFailure)
+            .Contains("Broker does not support ShareGroupHeartbeat");
+        await Assert.That(connection.LeaseCount).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task LeaveGroupAsync_HoldsConnectionLeaseThroughRequest()
     {
         var options = CreateOptions();

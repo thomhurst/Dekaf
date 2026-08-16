@@ -312,12 +312,6 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
             .ConfigureAwait(false);
         var connection = connectionLease.Connection;
 
-        var version = _metadataManager.GetNegotiatedApiVersion(
-            connection,
-            ApiKey.ShareGroupHeartbeat,
-            ShareGroupHeartbeatRequest.LowestSupportedVersion,
-            ShareGroupHeartbeatRequest.HighestSupportedVersion);
-
         // Share groups always use client-generated UUID v4 member IDs.
         // Generate once when _memberId is null; subsequent heartbeats reuse the stored ID.
         _memberId ??= Guid.NewGuid().ToString();
@@ -341,10 +335,16 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
         ShareGroupHeartbeatResponse response;
         try
         {
+            var version = _metadataManager.GetNegotiatedApiVersion(
+                connection,
+                ApiKey.ShareGroupHeartbeat,
+                ShareGroupHeartbeatRequest.LowestSupportedVersion,
+                ShareGroupHeartbeatRequest.HighestSupportedVersion);
             response = await connection.SendAsync<ShareGroupHeartbeatRequest, ShareGroupHeartbeatResponse>(
                 request, version, cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+        catch (Exception ex) when (
+            ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             Volatile.Write(ref _lastHeartbeatFailure, ex.Message);
             throw;
@@ -405,7 +405,8 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
 
             return connectionLease;
         }
-        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+        catch (Exception ex) when (
+            ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             connectionLease.Dispose();
             Volatile.Write(ref _lastHeartbeatFailure, ex.Message);
