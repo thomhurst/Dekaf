@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using Dekaf.Compression;
+using Dekaf.Diagnostics;
 using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
@@ -24,7 +25,9 @@ namespace Dekaf.ShareConsumer;
 /// record-level acknowledgement. Records are acquired with locks and must be acknowledged
 /// (accepted, released, or rejected).
 /// </summary>
-internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareConsumer<TKey, TValue>
+internal sealed partial class KafkaShareConsumer<TKey, TValue> :
+    IKafkaShareConsumer<TKey, TValue>,
+    IKafkaClientStatusProvider
 {
     private readonly ShareConsumerOptions _options;
     private readonly IDeserializer<TKey> _keyDeserializer;
@@ -163,6 +166,22 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
     public StringSet Subscription => _subscriptionSnapshot;
     public TopicPartitionSet Assignment => _assignmentSnapshot;
     public string? MemberId => _coordinator.MemberId;
+
+    /// <inheritdoc />
+    public string? ClusterId => _metadataManager.ClusterId;
+
+    /// <inheritdoc />
+    public KafkaClientStatus GetStatus()
+    {
+        var stopped = Volatile.Read(ref _closed) != 0 || Volatile.Read(ref _disposed) != 0;
+        return KafkaClientStatusFactory.Capture(
+            KafkaClientRole.ShareConsumer,
+            _connectionPool,
+            _metadataManager,
+            stopped,
+            consumerGroup: _coordinator.CaptureGroupStatus());
+    }
+
     public int? AcquisitionLockTimeoutMs
     {
         get

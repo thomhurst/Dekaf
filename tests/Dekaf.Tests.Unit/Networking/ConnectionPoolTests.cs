@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Reflection;
+using Dekaf.Diagnostics;
 using Dekaf.Errors;
 using Dekaf.Networking;
 using Dekaf.Protocol;
@@ -17,6 +18,100 @@ namespace Dekaf.Tests.Unit.Networking;
 public sealed class ConnectionPoolTests
 {
     private const int IdleThresholdMs = 60000;
+
+    [Test]
+    public async Task StatusSnapshot_ReportsPerBrokerConnectionStateAndRequestFreshness()
+    {
+        var connection = new TestIdleConnection(7, "broker-a", 9092)
+        {
+            PendingRequestCount = 3,
+            LastSuccessfulRequestTimestampMs = MonotonicClock.GetMilliseconds() - 25
+        };
+        await using var pool = new ConnectionPool(
+            clientId: "status-test",
+            connectionOptions: new ConnectionOptions(),
+            connectionsPerBroker: 1,
+            connectionFactory: (_, _, _, _, _) => ValueTask.FromResult<IKafkaConnection>(connection));
+        pool.RegisterBroker(7, "broker-a", 9092);
+
+        var disconnected = ((IConnectionPoolStatusSource)pool).GetBrokerConnectionStatus().Single();
+        await Assert.That(disconnected.State).IsEqualTo(BrokerConnectionState.Disconnected);
+        await Assert.That(disconnected.ConnectionCount).IsEqualTo(0);
+
+        _ = await pool.GetConnectionAsync(7);
+        var connected = ((IConnectionPoolStatusSource)pool).GetBrokerConnectionStatus().Single();
+
+        await Assert.That(connected.State).IsEqualTo(BrokerConnectionState.Connected);
+        await Assert.That(connected.ConnectionCount).IsEqualTo(1);
+        await Assert.That(connected.ConnectedConnectionCount).IsEqualTo(1);
+        await Assert.That(connected.PendingRequestCount).IsEqualTo(3);
+        await Assert.That(connected.LastSuccessfulRequestAtUtc).IsNotNull();
+        await Assert.That(connected.LastConnectionStateChangeAtUtc).IsNotNull();
+    }
+
+    [Test]
+    public async Task StatusSnapshot_ConcurrentReadsRemainSafeDuringConnectionStateChanges()
+    {
+        var connection = new TestIdleConnection(7, "broker-a", 9092);
+        await using var pool = new ConnectionPool(
+            clientId: "status-test",
+            connectionOptions: new ConnectionOptions(),
+            connectionsPerBroker: 1,
+            connectionFactory: (_, _, _, _, _) => ValueTask.FromResult<IKafkaConnection>(connection));
+        pool.RegisterBroker(7, "broker-a", 9092);
+        _ = await pool.GetConnectionAsync(7);
+
+        var readers = Enumerable.Range(0, Environment.ProcessorCount)
+            .Select(_ => Task.Run(() =>
+            {
+                for (var i = 0; i < 1_000; i++)
+                {
+                    var status = ((IConnectionPoolStatusSource)pool).GetBrokerConnectionStatus();
+                    if (status.Count != 1 || status[0].BrokerId != 7)
+                        throw new InvalidOperationException("Broker status snapshot was inconsistent.");
+                }
+            }));
+        var writer = Task.Run(() =>
+        {
+            for (var i = 0; i < 1_000; i++)
+            {
+                connection.PendingRequestCount = i & 7;
+                connection.LastSuccessfulRequestTimestampMs = MonotonicClock.GetMilliseconds();
+                pool.RegisterBroker(7, "broker-a", 9092);
+            }
+        });
+
+        await Task.WhenAll(readers.Append(writer));
+    }
+
+    [Test]
+    public async Task StatusSnapshot_ReportsConnectionAttemptFailure()
+    {
+        await using var pool = new ConnectionPool(
+            clientId: "status-test",
+            connectionOptions: new ConnectionOptions
+            {
+                ReconnectBackoff = TimeSpan.FromMilliseconds(1),
+                ReconnectBackoffMax = TimeSpan.FromMilliseconds(1)
+            },
+            connectionsPerBroker: 1,
+            connectionFactory: (_, _, _, _, _) =>
+                ValueTask.FromException<IKafkaConnection>(new IOException("connection refused")));
+        pool.RegisterBroker(7, "broker-a", 9092);
+
+        try
+        {
+            _ = await pool.GetConnectionAsync(7);
+        }
+        catch (IOException)
+        {
+        }
+
+        var status = ((IConnectionPoolStatusSource)pool).GetBrokerConnectionStatus().Single();
+        await Assert.That(status.State).IsEqualTo(BrokerConnectionState.Disconnected);
+        await Assert.That(status.LastErrorAtUtc).IsNotNull();
+        await Assert.That(status.LastError).IsEqualTo("Connection attempt failed.");
+    }
 
     [Test]
     public async Task GetConnectionAsync_DisposedPool_ThrowsObjectDisposedException()
@@ -2162,6 +2257,7 @@ public sealed class ConnectionPoolTests
     internal sealed class TestIdleConnection(int brokerId, string host, int port) :
         IKafkaConnection,
         IIdleTrackedKafkaConnection,
+        IKafkaConnectionStatusSource,
         IRetirableKafkaConnection
     {
         private int _connected = 1;
@@ -2170,6 +2266,8 @@ public sealed class ConnectionPoolTests
         private int _disposeCount;
         private int _leaseCount;
         private int _retirementState;
+        private long _lastSuccessfulRequestTimestampMs;
+        private long _lastConnectionStateChangeTimestampMs = MonotonicClock.GetMilliseconds();
 
         public int BrokerId { get; } = brokerId;
         public string Host { get; } = host;
@@ -2192,12 +2290,24 @@ public sealed class ConnectionPoolTests
 
         public Func<int>? PendingRequestCountProvider { get; set; }
 
+        public long LastSuccessfulRequestTimestampMs
+        {
+            get => Volatile.Read(ref _lastSuccessfulRequestTimestampMs);
+            set => Volatile.Write(ref _lastSuccessfulRequestTimestampMs, value);
+        }
+
         long IIdleTrackedKafkaConnection.LastUsedTimestampMs => LastUsedTimestampMs;
 
         int IIdleTrackedKafkaConnection.PendingRequestCount =>
             PendingRequestCountProvider?.Invoke() ?? PendingRequestCount;
 
         void IIdleTrackedKafkaConnection.Touch() => LastUsedTimestampMs = Environment.TickCount64;
+
+        long IKafkaConnectionStatusSource.LastSuccessfulRequestTimestampMs =>
+            LastSuccessfulRequestTimestampMs;
+
+        long IKafkaConnectionStatusSource.LastConnectionStateChangeTimestampMs =>
+            Volatile.Read(ref _lastConnectionStateChangeTimestampMs);
 
         int IRetirableKafkaConnection.LeaseCount => Volatile.Read(ref _leaseCount);
 
@@ -2267,6 +2377,7 @@ public sealed class ConnectionPoolTests
         public ValueTask DisposeAsync()
         {
             Interlocked.Increment(ref _disposeCount);
+            Volatile.Write(ref _lastConnectionStateChangeTimestampMs, MonotonicClock.GetMilliseconds());
             Volatile.Write(ref _connected, 0);
             return ValueTask.CompletedTask;
         }

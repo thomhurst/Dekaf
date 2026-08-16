@@ -50,6 +50,7 @@ public sealed class ConsumeActivityTests
         await Assert.That(activity!.Kind).IsEqualTo(ActivityKind.Consumer);
         await Assert.That(activity.GetTagItem("messaging.message.body.size")).IsEqualTo(512);
         await Assert.That(activity.GetTagItem("messaging.kafka.message.tombstone")).IsNull();
+        await Assert.That(activity.GetTagItem("messaging.kafka.cluster.id")).IsNull();
     }
 
     [Test]

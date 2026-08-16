@@ -218,6 +218,8 @@ public sealed partial class MetadataManager : IAsyncDisposable
     /// </summary>
     public ClusterMetadata Metadata => _metadata;
 
+    internal string? ClusterId => Volatile.Read(ref _trustedMetadataClusterId);
+
     /// <summary>
     /// Returns true if the broker reported support for the given API key during version negotiation.
     /// </summary>

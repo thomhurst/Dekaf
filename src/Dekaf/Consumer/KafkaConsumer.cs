@@ -6,6 +6,7 @@ using Dekaf.Errors;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using Dekaf.Compression;
+using Dekaf.Diagnostics;
 using Dekaf.Internal;
 using Dekaf.Metadata;
 using Dekaf.Networking;
@@ -872,6 +873,7 @@ internal static class ConsumerFetchPools
 /// <typeparam name="TValue">Value type.</typeparam>
 public sealed partial class KafkaConsumer<TKey, TValue> :
     IKafkaConsumer<TKey, TValue>,
+    IKafkaClientStatusProvider,
     IConsumerGroupLiveness,
     IConsumerPositions,
     IConsumerPartitions,
@@ -1743,6 +1745,40 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     }
 
     public string? MemberId => _coordinator?.MemberId;
+
+    /// <inheritdoc />
+    public string? ClusterId => _metadataManager.ClusterId;
+
+    /// <inheritdoc />
+    public KafkaClientStatus GetStatus()
+    {
+        var stopped = Volatile.Read(ref _closed) != 0 || Volatile.Read(ref _consumerDisposed) != 0;
+        var hasConsumerGroup = _topicPattern is not null || _subscriptionSnapshot.Count != 0;
+        var consumerGroup = hasConsumerGroup
+            ? _coordinator?.CaptureGroupStatus()
+            : null;
+        if (consumerGroup is null)
+        {
+            var assignment = _assignmentSnapshot;
+            consumerGroup = new ConsumerGroupStatus
+            {
+                HasConsumerGroup = false,
+                State = CoordinatorState.Unjoined,
+                CoordinatorId = -1,
+                GenerationOrMemberEpoch = -1,
+                HeartbeatInterval = TimeSpan.Zero,
+                Assignment = KafkaClientStatusFactory.CopyAssignment(assignment, assignment.Count)
+            };
+        }
+
+        return KafkaClientStatusFactory.Capture(
+            KafkaClientRole.Consumer,
+            _connectionPool,
+            _metadataManager,
+            stopped,
+            consumerGroup: consumerGroup);
+    }
+
     public TopicPartitionSet Paused => _pausedSnapshot;
     public IConsumerPositions Positions => this;
     public IConsumerPartitions Partitions => this;
@@ -8317,6 +8353,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageBodySize, isTombstone ? 0 : valueLength);
             if (isTombstone)
                 activity.SetTag(Diagnostics.DekafDiagnostics.MessagingKafkaTombstone, Diagnostics.DekafDiagnostics.BoxedTrue);
+            var clusterId = _metadataManager.ClusterId;
+            if (clusterId is not null)
+                activity.SetTag(Diagnostics.DekafDiagnostics.MessagingKafkaClusterId, clusterId);
             if (_options.ClientId is not null)
                 activity.SetTag(Diagnostics.DekafDiagnostics.MessagingClientId, _options.ClientId);
             if (_options.GroupId is not null)

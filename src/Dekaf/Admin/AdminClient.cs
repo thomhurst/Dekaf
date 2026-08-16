@@ -3,6 +3,7 @@ using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
 using System.Runtime.CompilerServices;
 using System.Text;
+using Dekaf.Diagnostics;
 using Dekaf.Internal;
 using Dekaf.Metadata;
 using Dekaf.Networking;
@@ -19,7 +20,7 @@ namespace Dekaf.Admin;
 /// <summary>
 /// Kafka administrative client implementation.
 /// </summary>
-public sealed class AdminClient : IAdminClient
+public sealed class AdminClient : IAdminClient, IKafkaClientStatusProvider
 {
     private const string MetadataQuorumTopic = "__cluster_metadata";
     private const int MetadataQuorumPartition = 0;
@@ -150,6 +151,16 @@ public sealed class AdminClient : IAdminClient
     }
 
     public ClusterMetadata Metadata => _metadataManager.Metadata;
+
+    /// <inheritdoc />
+    public string? ClusterId => _metadataManager.ClusterId;
+
+    /// <inheritdoc />
+    public KafkaClientStatus GetStatus() => KafkaClientStatusFactory.Capture(
+        KafkaClientRole.Admin,
+        _connectionPool,
+        _metadataManager,
+        Volatile.Read(ref _disposed) != 0);
 
     private static void ValidateBootstrapOptions(AdminClientOptions options)
     {

@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using Dekaf.Diagnostics;
 using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
@@ -178,6 +179,26 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 : Stopwatch.GetElapsedTime(lastHeartbeatTimestamp),
             HeartbeatInterval: TimeSpan.FromMilliseconds(Math.Max(_heartbeatIntervalMs, 1)),
             LastHeartbeatFailure: Volatile.Read(ref _lastHeartbeatFailure));
+    }
+
+    internal ConsumerGroupStatus CaptureGroupStatus()
+    {
+        var assignment = _assignedPartitions;
+        var lastHeartbeatTimestamp = Volatile.Read(ref _lastSuccessfulHeartbeatTimestamp);
+        return new ConsumerGroupStatus
+        {
+            HasConsumerGroup = true,
+            State = _state,
+            CoordinatorId = _coordinatorId,
+            MemberId = _memberId,
+            GenerationOrMemberEpoch = _generationId,
+            HeartbeatInterval = TimeSpan.FromMilliseconds(Math.Max(_heartbeatIntervalMs, 1)),
+            TimeSinceLastHeartbeat = lastHeartbeatTimestamp == 0
+                ? null
+                : Stopwatch.GetElapsedTime(lastHeartbeatTimestamp),
+            LastHeartbeatFailure = Volatile.Read(ref _lastHeartbeatFailure),
+            Assignment = KafkaClientStatusFactory.CopyAssignment(assignment, assignment.Count)
+        };
     }
 
     internal ValueTask RecordPollAsync(CancellationToken cancellationToken)

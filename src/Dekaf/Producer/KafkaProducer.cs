@@ -24,7 +24,12 @@ namespace Dekaf.Producer;
 /// </summary>
 /// <typeparam name="TKey">Key type.</typeparam>
 /// <typeparam name="TValue">Value type.</typeparam>
-public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>, IProducerDiagnostics, IProducerFastPath<TKey, TValue>, IBudgetedInstance
+public sealed partial class KafkaProducer<TKey, TValue> :
+    IKafkaProducer<TKey, TValue>,
+    IKafkaClientStatusProvider,
+    IProducerDiagnostics,
+    IProducerFastPath<TKey, TValue>,
+    IBudgetedInstance
 {
     internal ValueTask CloseConnectionsForTestingAsync() => _connectionPool.CloseAllAsync();
 
@@ -92,6 +97,23 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     private int _disposed;
 
     internal bool IsDisposed => Volatile.Read(ref _disposed) != 0;
+
+    /// <inheritdoc />
+    public string? ClusterId => _metadataManager.ClusterId;
+
+    /// <inheritdoc />
+    public KafkaClientStatus GetStatus() => KafkaClientStatusFactory.Capture(
+        KafkaClientRole.Producer,
+        _connectionPool,
+        _metadataManager,
+        Volatile.Read(ref _disposed) != 0,
+        producer: new ProducerBacklogStatus(
+            _accumulator.BufferedBytes,
+            _accumulator.MaxBufferMemory,
+            _accumulator.UnsealedBatchCount,
+            _accumulator.DispatchQueuedBatchCount,
+            _accumulator.InFlightBatchCount,
+            _accumulator.BufferPressureEvents));
 
     // Idempotent / transaction state
     // Memory ordering: _idempotentInitialized is volatile (acquire/release semantics).
@@ -1616,6 +1638,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingDestinationName, message.Topic);
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingOperationName, Diagnostics.DekafDiagnostics.OperationNameSend);
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingOperationType, Diagnostics.DekafDiagnostics.OperationTypeSend);
+            var clusterId = _metadataManager.ClusterId;
+            if (clusterId is not null)
+                activity.SetTag(Diagnostics.DekafDiagnostics.MessagingKafkaClusterId, clusterId);
             if (_options.ClientId is not null)
                 activity.SetTag(Diagnostics.DekafDiagnostics.MessagingClientId, _options.ClientId);
             if (message.Key is string stringKey)
