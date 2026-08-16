@@ -1279,6 +1279,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal Action? PurgeAppendWaitObservedForTest;
     internal Action? AfterLingerQueueSnapshotForTest;
     internal Action<TopicPartition>? AfterFlushPartitionVisitedForTest;
+    internal Action? BeforeCompletedBatchEnqueueForTest;
 
     /// <summary>
     /// True after CloseAsync has been called. Used by the sender loop to know
@@ -4816,6 +4817,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private ReadyBatch? CompleteDetachedBatchAndEnqueue(PartitionDeque pd, PartitionBatch batchToComplete)
     {
         ReadyBatch? readyBatch;
+        ReadyBatch? rejectedBatch = null;
         var bytesToRelease = 0;
         try
         {
@@ -4838,19 +4840,49 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     pd,
                     readyBatch.TopicPartition.Topic,
                     readyBatch.TopicPartition.Partition));
+
+            BeforeCompletedBatchEnqueueForTest?.Invoke();
         }
 
         {
             using var guard = new SpinLockGuard(ref pd.Lock);
             if (readyBatch is not null)
-                EnqueueCompletedBatchUnderLock(pd, readyBatch);
+            {
+                // Disposal's final deque drain takes this same lock. Either publication wins
+                // first and that drain owns the batch, or disposal wins and we fail it here.
+                if (Volatile.Read(ref _disposed) != 0)
+                {
+                    rejectedBatch = readyBatch;
+                    readyBatch = null;
+                }
+                else
+                {
+                    EnqueueCompletedBatchUnderLock(pd, readyBatch);
+                }
+            }
             ClearRotationInProgressUnderLock(pd);
         }
+
+        if (rejectedBatch is not null)
+            FailCompletedBatchRejectedByDisposal(rejectedBatch);
 
         if (bytesToRelease > 0)
             ReleaseMemory(bytesToRelease);
 
         return readyBatch;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void FailCompletedBatchRejectedByDisposal(ReadyBatch batch)
+    {
+        batch.ClearUnstartedPreSerializationTask();
+        ReleaseUntrackedBudget(batch);
+        FailBatchAndCleanup(
+            batch,
+            new ObjectDisposedException(nameof(RecordAccumulator)),
+            beforeFailure: null,
+            removeFromPipeline: false,
+            returnToPool: true);
     }
 
     /// <summary>
