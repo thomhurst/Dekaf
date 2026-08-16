@@ -15,6 +15,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     IConsumerPositions,
     IConsumerPartitions,
     IConsumerOffsets,
+    IConsumerBatchOffsetStore,
     IConsumerCommitConfiguration
 {
     private readonly object _gate = new();
@@ -512,15 +513,11 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             _storedOffsets[new TopicPartition(offset.Topic, offset.Partition)] = offset.Offset;
     }
 
-    public void StoreOffsets(TopicPartitionOffset[] offsets)
+    public void StoreOffsets<TOffsets>(TOffsets offsets)
+        where TOffsets : IReadOnlyList<TopicPartitionOffset>
     {
-        ArgumentNullException.ThrowIfNull(offsets);
-        StoreOffsets(offsets.AsSpan());
-    }
-
-    public void StoreOffsets(IReadOnlyList<TopicPartitionOffset> offsets)
-    {
-        ArgumentNullException.ThrowIfNull(offsets);
+        if (offsets is null)
+            throw new ArgumentNullException(nameof(offsets));
         ThrowIfDisposed();
 
         var count = offsets.Count;

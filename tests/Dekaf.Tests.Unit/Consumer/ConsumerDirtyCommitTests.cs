@@ -344,6 +344,24 @@ public sealed class ConsumerDirtyCommitTests
     }
 
     [Test]
+    public async Task StoreOffsets_StructBackedList_StagesOffsetsWithoutInterfaceConversion()
+    {
+        TopicPartitionOffset[] expected =
+        [
+            new("topic-a", 0, 10, leaderEpoch: 3),
+            new("topic-a", 1, 20, leaderEpoch: 4)
+        ];
+        var offsets = new StructOffsetList(expected);
+        var requests = new List<OffsetCommitRequest>();
+        await using var consumer = CreateConsumer(requests, ErrorCode.None);
+
+        consumer.StoreOffsets(offsets);
+        await CommitStoredOffsetsAsync(consumer);
+
+        await Assert.That(GetCommittedOffsets(requests.Single())).IsEquivalentTo(expected);
+    }
+
+    [Test]
     public async Task StoreOffsets_ConcurrentCalls_DoNotCorruptStoredState()
     {
         const int partitionCount = 64;
@@ -1058,5 +1076,17 @@ public sealed class ConsumerDirtyCommitTests
             .ThenBy(static offset => offset.Partition)
             .ThenBy(static offset => offset.Offset)
             .ToArray();
+    }
+
+    private readonly struct StructOffsetList(TopicPartitionOffset[] offsets) : IReadOnlyList<TopicPartitionOffset>
+    {
+        public int Count => offsets.Length;
+
+        public TopicPartitionOffset this[int index] => offsets[index];
+
+        public IEnumerator<TopicPartitionOffset> GetEnumerator() =>
+            ((IEnumerable<TopicPartitionOffset>)offsets).GetEnumerator();
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => offsets.GetEnumerator();
     }
 }

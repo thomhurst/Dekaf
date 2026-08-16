@@ -14,6 +14,7 @@ public class OffsetStoreBenchmarks
     private IKafkaConsumer<byte[], byte[]> _consumer = null!;
     private TopicPartitionOffset[] _offsets = null!;
     private IReadOnlyList<TopicPartitionOffset> _offsetList = null!;
+    private StructOffsetList _structOffsets;
 
     [Params(1, 8, 64)]
     public int PartitionCount { get; set; }
@@ -29,6 +30,7 @@ public class OffsetStoreBenchmarks
             _offsets[partition] = new TopicPartitionOffset("offset-store-benchmark", partition, 42, leaderEpoch: 3);
 
         _offsetList = _offsets.ToList();
+        _structOffsets = new StructOffsetList(_offsets);
         _consumer.StoreOffsets(_offsets);
     }
 
@@ -47,6 +49,21 @@ public class OffsetStoreBenchmarks
 
     [Benchmark]
     public void ListBatch() => _consumer.StoreOffsets(_offsetList);
+
+    [Benchmark]
+    public void StructListBatch() => _consumer.StoreOffsets(_structOffsets);
+
+    private readonly struct StructOffsetList(TopicPartitionOffset[] offsets) : IReadOnlyList<TopicPartitionOffset>
+    {
+        public int Count => offsets.Length;
+
+        public TopicPartitionOffset this[int index] => offsets[index];
+
+        public IEnumerator<TopicPartitionOffset> GetEnumerator() =>
+            ((IEnumerable<TopicPartitionOffset>)offsets).GetEnumerator();
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => offsets.GetEnumerator();
+    }
 }
 
 /// <summary>

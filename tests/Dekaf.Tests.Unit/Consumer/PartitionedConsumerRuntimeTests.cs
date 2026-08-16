@@ -12,6 +12,37 @@ namespace Dekaf.Tests.Unit.Consumer;
 public sealed class PartitionedConsumerRuntimeTests
 {
     [Test]
+    public async Task StoreOffsets_LegacyConsumerFallback_AcceptsStructBackedList()
+    {
+        var implementation = new TestConsumer();
+        IKafkaConsumer<string, string> consumer = implementation;
+        TopicPartitionOffset[] expected =
+        [
+            new("topic-a", 0, 10),
+            new("topic-a", 1, 20)
+        ];
+
+        consumer.StoreOffsets(new StructOffsetList(expected));
+
+        await Assert.That(implementation.StoredOffsets).IsEquivalentTo(expected);
+    }
+
+    [Test]
+    public async Task StoreOffsets_LegacyConsumerFallback_ValidatesBeforeMutation()
+    {
+        var implementation = new TestConsumer();
+        IKafkaConsumer<string, string> consumer = implementation;
+        var offsets = new StructOffsetList(
+        [
+            new TopicPartitionOffset("topic-a", 0, 10),
+            new TopicPartitionOffset("", 1, 20)
+        ]);
+
+        await Assert.That(() => consumer.StoreOffsets(offsets)).Throws<ArgumentException>();
+        await Assert.That(implementation.StoredOffsets).IsEmpty();
+    }
+
+    [Test]
     public async Task RunPartitionedAsync_RoutesAssignedPartitionsInOrderAndConcurrently()
     {
         var firstPartition = new TopicPartition("topic-a", 0);
@@ -1222,6 +1253,8 @@ public sealed class PartitionedConsumerRuntimeTests
 
         public List<TopicPartitionOffset[]> CommitCalls { get; } = [];
 
+        public List<TopicPartitionOffset> StoredOffsets { get; } = [];
+
         public int ConsumeOneCalls => Volatile.Read(ref _consumeOneCalls);
 
         public int ConsumeBatchCalls => Volatile.Read(ref _consumeBatchCalls);
@@ -1393,18 +1426,8 @@ public sealed class PartitionedConsumerRuntimeTests
 
         public void StoreOffset(TopicPartitionOffset offset)
         {
-        }
-
-        public void StoreOffsets(TopicPartitionOffset[] offsets)
-        {
-        }
-
-        public void StoreOffsets(IReadOnlyList<TopicPartitionOffset> offsets)
-        {
-        }
-
-        public void StoreOffsets(ReadOnlySpan<TopicPartitionOffset> offsets)
-        {
+            lock (_gate)
+                StoredOffsets.Add(offset);
         }
 
         public ValueTask CloseAsync(CancellationToken cancellationToken = default)
@@ -1699,6 +1722,18 @@ public sealed class PartitionedConsumerRuntimeTests
                     consumer.RemoveRebalanceListener(listener);
             }
         }
+    }
+
+    private readonly struct StructOffsetList(TopicPartitionOffset[] offsets) : IReadOnlyList<TopicPartitionOffset>
+    {
+        public int Count => offsets.Length;
+
+        public TopicPartitionOffset this[int index] => offsets[index];
+
+        public IEnumerator<TopicPartitionOffset> GetEnumerator() =>
+            ((IEnumerable<TopicPartitionOffset>)offsets).GetEnumerator();
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => offsets.GetEnumerator();
     }
 
     private sealed class CapturingLoggerFactory : ILoggerFactory

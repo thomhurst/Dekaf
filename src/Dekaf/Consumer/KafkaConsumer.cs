@@ -5,9 +5,6 @@ using System.Diagnostics.Metrics;
 using Dekaf.Errors;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
-#if !NETSTANDARD2_0
-using System.Runtime.InteropServices;
-#endif
 using Dekaf.Compression;
 using Dekaf.Internal;
 using Dekaf.Metadata;
@@ -871,6 +868,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     IConsumerRebalanceEventSource,
     IConsumerLoggerFactorySource,
     IConsumerCommitConfiguration,
+    IConsumerBatchOffsetStore,
     DeadLetter.IRawRecordAccessor,
     IBudgetedInstance
 {
@@ -5112,29 +5110,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         StoreOffsetCore(new TopicPartition(offset.Topic, offset.Partition), offset.Offset, offset.LeaderEpoch);
     }
 
-    public void StoreOffsets(TopicPartitionOffset[] offsets)
+    public void StoreOffsets<TOffsets>(TOffsets offsets)
+        where TOffsets : IReadOnlyList<TopicPartitionOffset>
     {
-        ArgumentNullException.ThrowIfNull(offsets);
-        StoreOffsets(offsets.AsSpan());
-    }
-
-    public void StoreOffsets(IReadOnlyList<TopicPartitionOffset> offsets)
-    {
-        ArgumentNullException.ThrowIfNull(offsets);
-
-        if (offsets is TopicPartitionOffset[] array)
-        {
-            StoreOffsets(array.AsSpan());
-            return;
-        }
-
-#if !NETSTANDARD2_0
-        if (offsets is List<TopicPartitionOffset> list)
-        {
-            StoreOffsets(CollectionsMarshal.AsSpan(list));
-            return;
-        }
-#endif
+        if (offsets is null)
+            throw new ArgumentNullException(nameof(offsets));
 
         var count = offsets.Count;
         for (var index = 0; index < count; index++)
