@@ -10,9 +10,7 @@ internal sealed class SubjectSchemaIdCache
 
     private readonly ConcurrentDictionary<SubjectSchemaIdCacheKey, SubjectSchemaIdCacheEntry> _cache = new();
     private SubjectSchemaIdCacheEntry? _last;
-    private SubjectSchemaIdCacheEntry? _overflowLast;
-    private SubjectSchemaIdCacheEntry? _overflowPrevious;
-    private int _overflowVersion;
+    private OverflowEntries? _overflow;
     private int _cacheCount;
 
     internal int CachedEntryCount => Volatile.Read(ref _cacheCount);
@@ -63,15 +61,15 @@ internal sealed class SubjectSchemaIdCache
             return true;
         }
 
-        ReadOverflowEntries(out var overflowLast, out var overflowPrevious);
-        if (overflowLast is not null && overflowLast.Key.Equals(key))
+        var overflow = Volatile.Read(ref _overflow);
+        if (overflow?.Last is { } overflowLast && overflowLast.Key.Equals(key))
         {
             Volatile.Write(ref _last, overflowLast);
             entry = overflowLast;
             return true;
         }
 
-        if (overflowPrevious is not null && overflowPrevious.Key.Equals(key))
+        if (overflow?.Previous is { } overflowPrevious && overflowPrevious.Key.Equals(key))
         {
             Volatile.Write(ref _last, overflowPrevious);
             entry = overflowPrevious;
@@ -121,61 +119,27 @@ internal sealed class SubjectSchemaIdCache
 
     private SubjectSchemaIdCacheEntry PublishOverflow(SubjectSchemaIdCacheEntry entry)
     {
-        var spinner = new SpinWait();
         while (true)
         {
-            var version = Volatile.Read(ref _overflowVersion);
-            if ((version & 1) != 0 ||
-                Interlocked.CompareExchange(ref _overflowVersion, unchecked(version + 1), version) != version)
+            var current = Volatile.Read(ref _overflow);
+            if (current?.Last is { } last && last.Key.Equals(entry.Key))
             {
-                spinner.SpinOnce();
-                continue;
+                Volatile.Write(ref _last, last);
+                return last;
             }
 
-            var current = Volatile.Read(ref _overflowLast);
-            if (current is not null && current.Key.Equals(entry.Key))
-            {
-                Volatile.Write(ref _last, current);
-                Volatile.Write(ref _overflowVersion, unchecked(version + 2));
-                return current;
-            }
-
-            var previous = Volatile.Read(ref _overflowPrevious);
-            if (previous is not null && previous.Key.Equals(entry.Key))
+            if (current?.Previous is { } previous && previous.Key.Equals(entry.Key))
             {
                 Volatile.Write(ref _last, previous);
-                Volatile.Write(ref _overflowVersion, unchecked(version + 2));
                 return previous;
             }
 
-            Volatile.Write(ref _overflowPrevious, current);
-            Volatile.Write(ref _overflowLast, entry);
-            Volatile.Write(ref _last, entry);
-            Volatile.Write(ref _overflowVersion, unchecked(version + 2));
-            return entry;
-        }
-    }
-
-    private void ReadOverflowEntries(
-        out SubjectSchemaIdCacheEntry? last,
-        out SubjectSchemaIdCacheEntry? previous)
-    {
-        var spinner = new SpinWait();
-        while (true)
-        {
-            var version = Volatile.Read(ref _overflowVersion);
-            if ((version & 1) != 0)
+            var updated = new OverflowEntries(entry, current?.Last);
+            if (Interlocked.CompareExchange(ref _overflow, updated, current) == current)
             {
-                spinner.SpinOnce();
-                continue;
+                Volatile.Write(ref _last, entry);
+                return entry;
             }
-
-            last = Volatile.Read(ref _overflowLast);
-            previous = Volatile.Read(ref _overflowPrevious);
-            if (version == Volatile.Read(ref _overflowVersion))
-                return;
-
-            spinner.SpinOnce();
         }
     }
 
@@ -206,5 +170,13 @@ internal sealed class SubjectSchemaIdCache
         internal string? Subject { get; } = subject;
         internal int SchemaId { get; } = schemaId;
         internal Schema? Schema { get; } = schema;
+    }
+
+    private sealed class OverflowEntries(
+        SubjectSchemaIdCacheEntry last,
+        SubjectSchemaIdCacheEntry? previous)
+    {
+        internal SubjectSchemaIdCacheEntry Last { get; } = last;
+        internal SubjectSchemaIdCacheEntry? Previous { get; } = previous;
     }
 }

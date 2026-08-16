@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Collections;
 using System.Reflection;
 using Avro.Generic;
 using Dekaf.Producer;
@@ -393,6 +394,40 @@ public sealed class SchemaPreparationTests
         await Assert.That(equivalent).IsEqualTo(first);
         await Assert.That(different).IsNotEqualTo(first);
         await Assert.That(counter.Count).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task ResolutionCache_ComputesReferenceFingerprintOncePerSchema()
+    {
+        var cache = new SchemaResolutionCache<int>();
+        var references = new CountingSchemaReferenceList(
+            [new SchemaReference { Name = "dependency.proto", Subject = "dependency.proto", Version = 1 }]);
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Protobuf,
+            SchemaString = "root",
+            References = references
+        };
+
+        _ = await cache.ResolveAsync(
+            "orders-value",
+            schema,
+            0,
+            static (_, _, _) => Task.FromResult(1),
+            CancellationToken.None);
+        var readsAfterResolution = references.IndexerReadCount;
+        for (var index = 0; index < 100; index++)
+        {
+            _ = await cache.ResolveAsync(
+                "orders-value",
+                schema,
+                0,
+                static (_, _, _) => Task.FromResult(2),
+                CancellationToken.None);
+        }
+
+        await Assert.That(readsAfterResolution).IsGreaterThan(0);
+        await Assert.That(references.IndexerReadCount).IsEqualTo(readsAfterResolution);
     }
 
     [Test]
@@ -800,6 +835,29 @@ public sealed class SchemaPreparationTests
     private sealed class ResolutionCounter
     {
         internal int Count;
+    }
+
+    private sealed class CountingSchemaReferenceList(IReadOnlyList<SchemaReference> values) :
+        IReadOnlyList<SchemaReference>
+    {
+        private int _indexerReadCount;
+
+        internal int IndexerReadCount => Volatile.Read(ref _indexerReadCount);
+
+        public int Count => values.Count;
+
+        public SchemaReference this[int index]
+        {
+            get
+            {
+                Interlocked.Increment(ref _indexerReadCount);
+                return values[index];
+            }
+        }
+
+        public IEnumerator<SchemaReference> GetEnumerator() => values.GetEnumerator();
+
+        IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
     }
 
     private sealed class PreparationPayload

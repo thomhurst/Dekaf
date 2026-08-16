@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
+
 namespace Dekaf.SchemaRegistry;
 
 internal sealed class SchemaResolutionCache<TValue>
@@ -189,28 +191,26 @@ internal sealed class SchemaResolutionCache<TValue>
         public bool Equals(SchemaResolutionKey left, SchemaResolutionKey right) =>
             string.Equals(left.Subject, right.Subject, StringComparison.Ordinal) &&
             left.Scope.Equals(right.Scope) &&
-            left.Schema.SchemaType == right.Schema.SchemaType &&
-            string.Equals(left.Schema.SchemaString, right.Schema.SchemaString, StringComparison.Ordinal) &&
-            ReferencesEqual(left.Schema.References, right.Schema.References) &&
-            MetadataEquals(left.Schema.Metadata, right.Schema.Metadata) &&
-            RuleSetEquals(left.Schema.RuleSet, right.Schema.RuleSet);
+            (ReferenceEquals(left.Schema, right.Schema) ||
+             left.Schema.SchemaType == right.Schema.SchemaType &&
+             string.Equals(left.Schema.SchemaString, right.Schema.SchemaString, StringComparison.Ordinal) &&
+             ReferencesEqual(left.Schema.References, right.Schema.References) &&
+             MetadataEquals(left.Schema.Metadata, right.Schema.Metadata) &&
+             RuleSetEquals(left.Schema.RuleSet, right.Schema.RuleSet));
 
         public int GetHashCode(SchemaResolutionKey key)
         {
             var hash = new HashCode();
             hash.Add(key.Subject, StringComparer.Ordinal);
             hash.Add(key.Scope);
-            hash.Add(key.Schema.SchemaType);
-            hash.Add(key.Schema.SchemaString, StringComparer.Ordinal);
-            if (key.Schema.References is { } references)
+            if (key.Schema.References is { Count: > 0 })
             {
-                for (var index = 0; index < references.Count; index++)
-                {
-                    var reference = references[index];
-                    hash.Add(reference.Name, StringComparer.Ordinal);
-                    hash.Add(reference.Subject, StringComparer.Ordinal);
-                    hash.Add(reference.Version);
-                }
+                hash.Add(SchemaFingerprintCache.GetHashCode(key.Schema));
+            }
+            else
+            {
+                hash.Add(key.Schema.SchemaType);
+                hash.Add(key.Schema.SchemaString, StringComparer.Ordinal);
             }
 
             return hash.ToHashCode();
@@ -398,6 +398,38 @@ internal sealed class SchemaResolutionCache<TValue>
 
             return false;
         }
+    }
+}
+
+internal static class SchemaFingerprintCache
+{
+    private static readonly ConditionalWeakTable<Schema, Fingerprint> Fingerprints = new();
+
+    internal static int GetHashCode(Schema schema) =>
+        Fingerprints.GetValue(schema, static value => new Fingerprint(ComputeHashCode(value))).HashCode;
+
+    private static int ComputeHashCode(Schema schema)
+    {
+        var hash = new HashCode();
+        hash.Add(schema.SchemaType);
+        hash.Add(schema.SchemaString, StringComparer.Ordinal);
+        if (schema.References is { } references)
+        {
+            for (var index = 0; index < references.Count; index++)
+            {
+                var reference = references[index];
+                hash.Add(reference.Name, StringComparer.Ordinal);
+                hash.Add(reference.Subject, StringComparer.Ordinal);
+                hash.Add(reference.Version);
+            }
+        }
+
+        return hash.ToHashCode();
+    }
+
+    private sealed class Fingerprint(int hashCode)
+    {
+        internal int HashCode { get; } = hashCode;
     }
 }
 

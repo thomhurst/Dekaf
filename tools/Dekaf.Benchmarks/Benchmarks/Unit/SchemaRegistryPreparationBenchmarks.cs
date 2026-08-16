@@ -17,6 +17,7 @@ public class SchemaRegistryPreparationBenchmarks
     private readonly ArrayBufferWriter<byte> _genericDestination = new(64);
     private readonly ArrayBufferWriter<byte> _jsonDestination = new(128);
     private readonly SchemaResolutionCache<int> _equivalentDataContractCache = new(maxCachedEntries: 1);
+    private readonly SchemaResolutionCache<int> _referencedSchemaCache = new();
     private SchemaRegistrySerializer<int> _genericSerializer = null!;
     private SchemaRegistrySerializer<int> _genericOverflowSerializer = null!;
     private JsonSchemaRegistrySerializer<BenchmarkPayload> _jsonSerializer = null!;
@@ -28,6 +29,7 @@ public class SchemaRegistryPreparationBenchmarks
     private BenchmarkPayload _jsonValue = null!;
     private Schema _dataContractSchemaA = null!;
     private Schema _dataContractSchemaB = null!;
+    private Schema _referencedSchema = null!;
 
     [GlobalSetup]
     public async Task Setup()
@@ -63,6 +65,7 @@ public class SchemaRegistryPreparationBenchmarks
         _jsonValue = new BenchmarkPayload { Id = 42 };
         _dataContractSchemaA = CreateDataContractSchema();
         _dataContractSchemaB = CreateDataContractSchema();
+        _referencedSchema = CreateReferencedSchema();
         _context = new SerializationContext
         {
             Topic = "schema-preparation-benchmark",
@@ -96,6 +99,12 @@ public class SchemaRegistryPreparationBenchmarks
         await _equivalentDataContractCache.ResolveAsync(
             "data-contract-value",
             _dataContractSchemaA,
+            0,
+            static (_, _, _) => Task.FromResult(1),
+            CancellationToken.None).ConfigureAwait(false);
+        await _referencedSchemaCache.ResolveAsync(
+            "referenced-value",
+            _referencedSchema,
             0,
             static (_, _, _) => Task.FromResult(1),
             CancellationToken.None).ConfigureAwait(false);
@@ -138,6 +147,15 @@ public class SchemaRegistryPreparationBenchmarks
             static (_, _, _) => Task.FromResult(1),
             CancellationToken.None);
     }
+
+    [Benchmark]
+    public ValueTask<int> ResolveReferencedSchemaCached() =>
+        _referencedSchemaCache.ResolveAsync(
+            "referenced-value",
+            _referencedSchema,
+            0,
+            static (_, _, _) => Task.FromResult(1),
+            CancellationToken.None);
 
     [Benchmark]
     public void SerializeGenericPrepared()
@@ -199,6 +217,27 @@ public class SchemaRegistryPreparationBenchmarks
                 ]
             }
         };
+
+    private static Schema CreateReferencedSchema()
+    {
+        var references = new SchemaReference[32];
+        for (var index = 0; index < references.Length; index++)
+        {
+            references[index] = new SchemaReference
+            {
+                Name = $"dependency-{index}.proto",
+                Subject = $"dependency-{index}.proto",
+                Version = index + 1
+            };
+        }
+
+        return new Schema
+        {
+            SchemaType = SchemaType.Protobuf,
+            SchemaString = "root",
+            References = references
+        };
+    }
 
     private sealed class BenchmarkSchemaRegistryClient : ISchemaRegistryClient
     {
