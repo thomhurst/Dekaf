@@ -73,6 +73,7 @@ public sealed partial class ConnectionPool :
     private int[]? _brokerStatusSnapshot;
     private readonly ConcurrentDictionary<int, BrokerConnectionRuntimeState> _brokerConnectionRuntimeStates = new();
     private readonly ConcurrentDictionary<EndpointKey, BrokerConnectionRuntimeState> _endpointConnectionRuntimeStates = new();
+    private long _connectionFailureSequence;
     private readonly ConcurrentDictionary<EndpointKey, IKafkaConnection> _connectionsByEndpoint = new();
     private readonly ConcurrentDictionary<int, IKafkaConnection> _connectionsById = new();
     // Per-endpoint semaphores to deduplicate concurrent single-connection creation
@@ -1545,10 +1546,11 @@ public sealed partial class ConnectionPool :
         int port,
         string error)
     {
+        var failureSequence = Interlocked.Increment(ref _connectionFailureSequence);
         if (brokerId >= 0)
-            GetBrokerConnectionRuntimeState(brokerId).RecordFailure(error);
+            GetBrokerConnectionRuntimeState(brokerId).RecordFailure(error, failureSequence);
         else
-            GetEndpointConnectionRuntimeState(new EndpointKey(host, port)).RecordFailure(error);
+            GetEndpointConnectionRuntimeState(new EndpointKey(host, port)).RecordFailure(error, failureSequence);
 
         var state = _reconnectBackoffs.GetOrAdd(setupKey, static _ => new ReconnectBackoffState());
 
@@ -1903,19 +1905,17 @@ public sealed partial class ConnectionPool :
                 AccumulateConnectionStatus(connection, ref connections);
             _endpointConnectionRuntimeStates.TryGetValue(endpointKey, out var runtimeState);
             AccumulateRuntimeState(runtimeState, ref connections);
-            if (endpoint.ConnectionHost is { } connectionHost &&
-                (endpoint.Port != endpoint.ConnectionPort ||
-                 !string.Equals(endpoint.Host, connectionHost, StringComparison.OrdinalIgnoreCase)))
+            if (endpoint.ConnectionHost is { } connectionHost)
             {
                 var connectionEndpointKey = new EndpointKey(connectionHost, endpoint.ConnectionPort);
-                if (_connectionsByEndpoint.TryGetValue(connectionEndpointKey, out connection))
-                    AccumulateConnectionStatus(connection, ref connections);
-                _endpointConnectionRuntimeStates.TryGetValue(connectionEndpointKey, out var connectionRuntimeState);
-                AccumulateRuntimeState(connectionRuntimeState, ref connections);
-                if (connectionRuntimeState?.LastErrorTimestampMs >
-                    (runtimeState?.LastErrorTimestampMs ?? 0))
+                if (connectionEndpointKey != endpointKey)
                 {
-                    runtimeState = connectionRuntimeState;
+                    if (_connectionsByEndpoint.TryGetValue(connectionEndpointKey, out connection))
+                        AccumulateConnectionStatus(connection, ref connections);
+                    _endpointConnectionRuntimeStates.TryGetValue(connectionEndpointKey, out var connectionRuntimeState);
+                    AccumulateRuntimeState(connectionRuntimeState, ref connections);
+                    if (HasLaterFailure(connectionRuntimeState, runtimeState))
+                        runtimeState = connectionRuntimeState;
                 }
             }
             result.Add(CreateBrokerConnectionStatus(
@@ -1928,6 +1928,20 @@ public sealed partial class ConnectionPool :
 
         result.Sort(static (left, right) => left.BrokerId.CompareTo(right.BrokerId));
         return result.AsReadOnly();
+    }
+
+    private static bool HasLaterFailure(
+        BrokerConnectionRuntimeState? candidate,
+        BrokerConnectionRuntimeState? current)
+    {
+        if (candidate is null)
+            return false;
+
+        var candidateTimestamp = candidate.LastErrorTimestampMs;
+        var currentTimestamp = current?.LastErrorTimestampMs ?? 0;
+        return candidateTimestamp > currentTimestamp ||
+               (candidateTimestamp == currentTimestamp &&
+                candidate.LastErrorSequence > (current?.LastErrorSequence ?? 0));
     }
 
     void IConnectionPoolStatusSource.UpdateBrokerStatusSnapshot(int[] brokerIds) =>
@@ -2554,20 +2568,23 @@ public sealed partial class ConnectionPool :
         private readonly Func<long> _timestampProvider = timestampProvider;
         private long _lastStateChangeTimestampMs = recordInitialState ? timestampProvider() : 0;
         private long _lastErrorTimestampMs;
+        private long _lastErrorSequence;
         private string? _lastError;
 
         public long LastStateChangeTimestampMs => Volatile.Read(ref _lastStateChangeTimestampMs);
         public long LastErrorTimestampMs => Volatile.Read(ref _lastErrorTimestampMs);
+        public long LastErrorSequence => Volatile.Read(ref _lastErrorSequence);
         public string? LastError => Volatile.Read(ref _lastError);
 
         public void RecordStateChange() =>
             Volatile.Write(ref _lastStateChangeTimestampMs, _timestampProvider());
 
-        public void RecordFailure(string error)
+        public void RecordFailure(string error, long sequence)
         {
             var timestampMs = _timestampProvider();
             Volatile.Write(ref _lastError, error);
             Volatile.Write(ref _lastErrorTimestampMs, timestampMs);
+            Volatile.Write(ref _lastErrorSequence, sequence);
         }
     }
 

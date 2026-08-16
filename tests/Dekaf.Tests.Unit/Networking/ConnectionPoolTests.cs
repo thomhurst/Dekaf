@@ -225,7 +225,6 @@ public sealed class ConnectionPoolTests
         Volatile.Write(ref statusTimestamp, 101);
         await Assert.ThrowsAsync<IOException>(async () =>
             await pool.GetConnectionAsync("controller-a", 19093));
-        Volatile.Write(ref statusTimestamp, 102);
         await Assert.ThrowsAsync<IOException>(async () =>
             await pool.GetConnectionAsync("controller-alias", 29093));
 
@@ -239,6 +238,36 @@ public sealed class ConnectionPoolTests
 
         await Assert.That(status.LastConnectionStateChangeAtUtc).IsNull();
         await Assert.That(status.LastError).IsEqualTo("controller-alias refused");
+        await Assert.That(status.LastErrorAtUtc).IsNotNull();
+    }
+
+    [Test]
+    public async Task StatusSnapshot_ResolvesControllerEndpointAliasWithDifferentHostnameCasing()
+    {
+        await using var pool = new ConnectionPool(
+            clientId: "status-test",
+            connectionOptions: new ConnectionOptions
+            {
+                ReconnectBackoff = TimeSpan.FromMilliseconds(1),
+                ReconnectBackoffMax = TimeSpan.FromMilliseconds(1)
+            },
+            connectionsPerBroker: 1,
+            connectionFactory: (_, host, _, _, _) =>
+                ValueTask.FromException<IKafkaConnection>(new IOException($"{host} refused")));
+
+        await Assert.ThrowsAsync<IOException>(async () =>
+            await pool.GetConnectionAsync("CONTROLLER-A", 19093));
+
+        var status = ((IConnectionPoolStatusSource)pool).GetEndpointConnectionStatus(
+            [new ConnectionStatusEndpoint(
+                2,
+                "controller-a",
+                19093,
+                "CONTROLLER-A",
+                19093)]).Single();
+
+        await Assert.That(status.State).IsEqualTo(BrokerConnectionState.Disconnected);
+        await Assert.That(status.LastError).IsEqualTo("CONTROLLER-A refused");
         await Assert.That(status.LastErrorAtUtc).IsNotNull();
     }
 
