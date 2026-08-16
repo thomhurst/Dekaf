@@ -36,15 +36,6 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
     }
 
     /// <summary>
-    /// Creates a Schema Registry client over a caller-owned <see cref="HttpClient"/>.
-    /// Disposing this instance does not dispose <paramref name="httpClient"/>.
-    /// </summary>
-    public SchemaRegistryClient(SchemaRegistryConfig config, HttpClient httpClient)
-        : this(config, CreateCallerOwnedHttpClientHandler(config, httpClient), oauthBearerTokenProviderFactory: null)
-    {
-    }
-
-    /// <summary>
     /// Creates a Schema Registry client over a caller-owned <see cref="HttpMessageHandler"/>.
     /// Disposing this instance does not dispose <paramref name="handler"/>.
     /// </summary>
@@ -144,17 +135,6 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             certificateMaterial?.Dispose();
             throw;
         }
-    }
-
-    private static HttpMessageHandler CreateCallerOwnedHttpClientHandler(
-        SchemaRegistryConfig? config,
-        HttpClient? httpClient)
-    {
-        ArgumentNullException.ThrowIfNull(config);
-        ArgumentNullException.ThrowIfNull(httpClient);
-        ValidateConfig(config);
-        ValidateCustomPipelineConfig(config);
-        return new NonDisposingHttpClientHandler(httpClient);
     }
 
     private static HttpMessageHandler CreateCallerOwnedHttpMessageHandler(
@@ -1373,7 +1353,7 @@ public sealed class SchemaRegistryConfig
 
     /// <summary>
     /// TLS certificate, trust, validation, and protocol settings for the default HTTP pipeline.
-    /// Cannot be combined with a caller-supplied HTTP client or handler.
+    /// Cannot be combined with a caller-supplied HTTP handler.
     /// </summary>
     public SchemaRegistryTlsConfig? Tls { get; init; }
 

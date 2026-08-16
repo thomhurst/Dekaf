@@ -280,9 +280,6 @@ internal sealed class SchemaRegistryCertificateMaterial : IDisposable
             }
         }
 
-        if (string.Equals(extension, ".cer", StringComparison.OrdinalIgnoreCase))
-            return [LoadCertificateFromFile(path)];
-
         var collection = new X509Certificate2Collection();
         try
         {
@@ -290,8 +287,11 @@ internal sealed class SchemaRegistryCertificateMaterial : IDisposable
             if (collection.Count != 0)
                 return collection;
 
-            if (string.Equals(extension, ".crt", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(extension, ".crt", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(extension, ".cer", StringComparison.OrdinalIgnoreCase))
+            {
                 return [LoadCertificateFromFile(path)];
+            }
 
             throw new ArgumentException("The CA certificate file contains no certificates.", nameof(path));
         }
@@ -310,7 +310,6 @@ internal sealed class SchemaRegistryCertificateMaterial : IDisposable
         if (config.ClientCertificate is not null)
             return [config.ClientCertificate];
 
-        X509Certificate2? certificate = null;
         if (config.ClientCertificatePath is not null)
         {
             if (!File.Exists(config.ClientCertificatePath))
@@ -344,31 +343,82 @@ internal sealed class SchemaRegistryCertificateMaterial : IDisposable
                 if (!File.Exists(config.ClientPrivateKeyPath!))
                     throw new FileNotFoundException("Client private-key file was not found.", config.ClientPrivateKeyPath);
 
-                certificate = string.IsNullOrEmpty(config.ClientCertificatePassword)
+                var certificate = string.IsNullOrEmpty(config.ClientCertificatePassword)
                     ? X509Certificate2.CreateFromPemFile(config.ClientCertificatePath, config.ClientPrivateKeyPath)
                     : X509Certificate2.CreateFromEncryptedPemFile(
                         config.ClientCertificatePath,
                         config.ClientCertificatePassword,
                         config.ClientPrivateKeyPath);
                 certificate = PrepareWindowsClientCertificate(certificate);
+                var certificates = LoadPemClientCertificates(
+                    certificate,
+                    config.ClientCertificatePath,
+                    sourceIsFile: true);
+                ownsCertificates = true;
+                return certificates;
             }
         }
         else if (config.ClientCertificatePem is not null)
         {
-            certificate = string.IsNullOrEmpty(config.ClientCertificatePassword)
+            var certificate = string.IsNullOrEmpty(config.ClientCertificatePassword)
                 ? X509Certificate2.CreateFromPem(config.ClientCertificatePem, config.ClientPrivateKeyPem)
                 : X509Certificate2.CreateFromEncryptedPem(
                     config.ClientCertificatePem,
                     config.ClientPrivateKeyPem,
                     config.ClientCertificatePassword);
             certificate = PrepareWindowsClientCertificate(certificate);
+            var certificates = LoadPemClientCertificates(
+                certificate,
+                config.ClientCertificatePem,
+                sourceIsFile: false);
+            ownsCertificates = true;
+            return certificates;
         }
 
-        if (certificate is null)
-            return null;
+        return null;
+    }
 
-        ownsCertificates = true;
-        return [certificate];
+    private static X509Certificate2Collection LoadPemClientCertificates(
+        X509Certificate2 clientCertificate,
+        string certificateSource,
+        bool sourceIsFile)
+    {
+        var certificates = new X509Certificate2Collection();
+        try
+        {
+            if (sourceIsFile)
+                certificates.ImportFromPemFile(certificateSource);
+            else
+                certificates.ImportFromPem(certificateSource);
+
+            ReplacePublicCertificate(certificates, clientCertificate);
+            return certificates;
+        }
+        catch
+        {
+            DisposeCertificates(certificates);
+            clientCertificate.Dispose();
+            throw;
+        }
+    }
+
+    private static void ReplacePublicCertificate(
+        X509Certificate2Collection certificates,
+        X509Certificate2 clientCertificate)
+    {
+        for (var index = 0; index < certificates.Count; index++)
+        {
+            var certificate = certificates[index];
+            if (!certificate.RawDataMemory.Span.SequenceEqual(clientCertificate.RawDataMemory.Span))
+                continue;
+
+            certificates.RemoveAt(index);
+            certificate.Dispose();
+            certificates.Insert(index, clientCertificate);
+            return;
+        }
+
+        throw new ArgumentException("The client certificate PEM bundle does not contain the certificate matching the private key.");
     }
 
     private static X509Certificate2? SelectClientCertificate(X509Certificate2Collection? certificates)

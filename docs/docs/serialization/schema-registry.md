@@ -105,12 +105,12 @@ var schemaRegistry = new CachedSchemaRegistryClient(config);
 
 ### HTTP pipeline customization
 
-`SchemaRegistryClient` accepts a caller-owned `HttpClient` or `HttpMessageHandler`, or a handler
-factory whose returned handler Dekaf owns. This supports DI-managed clients and custom tracing,
-retry, authentication, and policy handlers without adding a dependency on `Microsoft.Extensions.Http`:
+`SchemaRegistryClient` accepts a caller-owned `HttpMessageHandler`, or a handler factory whose
+returned handler Dekaf owns. This supports custom tracing, retry, authentication, and policy
+handlers without adding a dependency on `Microsoft.Extensions.Http`:
 
 ```csharp
-var httpClient = httpClientFactory.CreateClient("schema-registry");
+var handler = new EnterprisePolicyHandler(new SocketsHttpHandler());
 using var schemaRegistry = new SchemaRegistryClient(
     new SchemaRegistryConfig
     {
@@ -121,19 +121,19 @@ using var schemaRegistry = new SchemaRegistryClient(
             ["X-Tenant"] = "orders"
         }
     },
-    httpClient);
+    handler);
 ```
 
-Disposing `SchemaRegistryClient` never disposes a directly supplied `HttpClient` or
-`HttpMessageHandler`. The `Func<HttpMessageHandler>` overload transfers ownership of the returned
-handler to Dekaf. Authentication, timeout, failover, default headers, and the Schema Registry
+Disposing `SchemaRegistryClient` never disposes a directly supplied `HttpMessageHandler`. The
+`Func<HttpMessageHandler>` overload transfers ownership of the returned handler to Dekaf.
+Authentication, timeout, failover, default headers, and the Schema Registry
 `Accept` header remain active around every custom pipeline. Content headers such as `Content-Type`
 cannot be configured as default request headers. `Accept` and `User-Agent` are also managed by
 Dekaf and cannot be supplied through `DefaultHeaders`. When `UserAgent` is not set, Dekaf sends a
 versioned `Dekaf.SchemaRegistry/{version}` value. `RequestTimeoutMs` must be positive, or `-1` for
 an infinite timeout.
 
-A custom client or handler owns proxy and TLS behavior completely. Therefore `Tls`, `Proxy`,
+A custom handler owns proxy and TLS behavior completely. Therefore `Tls`, `Proxy`,
 `UseProxy = false`, and the legacy `ClientCertificate` property cannot be combined with a custom
 pipeline. The default pipeline supports the platform proxy or an explicit `IWebProxy`:
 

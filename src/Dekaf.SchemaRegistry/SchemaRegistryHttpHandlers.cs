@@ -24,22 +24,6 @@ internal sealed class NonDisposingHttpMessageHandler : HttpMessageHandler
     }
 }
 
-internal sealed class NonDisposingHttpClientHandler : HttpMessageHandler
-{
-    private readonly HttpClient _httpClient;
-
-    internal NonDisposingHttpClientHandler(HttpClient httpClient)
-    {
-        ArgumentNullException.ThrowIfNull(httpClient);
-        _httpClient = httpClient;
-    }
-
-    protected override Task<HttpResponseMessage> SendAsync(
-        HttpRequestMessage request,
-        CancellationToken cancellationToken) =>
-        _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-}
-
 internal sealed class CertificateOwningHttpMessageHandler(
     HttpMessageHandler innerHandler,
     SchemaRegistryCertificateMaterial certificateMaterial)

@@ -57,20 +57,6 @@ public sealed class SchemaRegistryHttpPipelineTests
     }
 
     [Test]
-    public async Task Client_CallerOwnedHttpClient_IsNotDisposed()
-    {
-        var handler = new TrackingHandler();
-        using var httpClient = new HttpClient(handler, disposeHandler: true);
-        var client = new SchemaRegistryClient(NewConfig(), httpClient);
-
-        client.Dispose();
-        using var response = await httpClient.GetAsync("http://schema-registry.local/subjects");
-
-        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
-        await Assert.That(handler.IsDisposed).IsFalse();
-    }
-
-    [Test]
     public async Task Client_FactoryHandler_IsDisposed()
     {
         var handler = new TrackingHandler();
@@ -86,8 +72,6 @@ public sealed class SchemaRegistryHttpPipelineTests
     {
         var factoryHandler = new TrackingHandler();
         var callerHandler = new TrackingHandler();
-        var httpClientHandler = new TrackingHandler();
-        using var httpClient = new HttpClient(httpClientHandler, disposeHandler: true);
         var invalidConfig = new SchemaRegistryConfig
         {
             Url = "http://schema-registry.local",
@@ -98,13 +82,8 @@ public sealed class SchemaRegistryHttpPipelineTests
             .Throws<ArgumentException>();
         await Assert.That(() => new SchemaRegistryClient(invalidConfig, callerHandler))
             .Throws<ArgumentException>();
-        await Assert.That(() => new SchemaRegistryClient(invalidConfig, httpClient))
-            .Throws<ArgumentException>();
-
         await Assert.That(factoryHandler.IsDisposed).IsTrue();
         await Assert.That(callerHandler.IsDisposed).IsFalse();
-        using var response = await httpClient.GetAsync("http://schema-registry.local/subjects");
-        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
     }
 
     [Test]
@@ -226,6 +205,22 @@ public sealed class SchemaRegistryHttpPipelineTests
             .IsSameReferenceAs(callback);
     }
 
+    [Test]
+    public async Task DefaultPipeline_WiresClientCertificate()
+    {
+        using var certificate = TestCertificateHelper.CreateSelfSignedCertificateWithKey("CN=Client");
+        using var handler = SchemaRegistryClient.CreateConfiguredHttpHandler(new SchemaRegistryConfig
+        {
+            Url = "https://schema-registry.local",
+            Tls = new SchemaRegistryTlsConfig { ClientCertificate = certificate }
+        });
+
+        var certificates = UnwrapSocketsHandler(handler).SslOptions.ClientCertificates;
+        await Assert.That(certificates).IsNotNull();
+        await Assert.That(certificates!.Count).IsEqualTo(1);
+        await Assert.That(certificates[0].GetCertHashString()).IsEqualTo(certificate.Thumbprint);
+    }
+
     private static SchemaRegistryConfig NewConfig() => new() { Url = "http://schema-registry.local" };
 
     private static SocketsHttpHandler UnwrapSocketsHandler(HttpMessageHandler handler) =>
@@ -283,6 +278,33 @@ public sealed class SchemaRegistryCertificateMaterialTests
 
         await Assert.That(material.CaCertificates).IsNotNull();
         await Assert.That(material.CaCertificates!.Count).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task Load_CaCerPemBundle_LoadsEveryCertificate()
+    {
+        var directory = Directory.CreateTempSubdirectory("dekaf-schema-registry-ca-cer-");
+        try
+        {
+            using var first = TestCertificateHelper.CreateCaCertificate("CN=First CER CA");
+            using var second = TestCertificateHelper.CreateCaCertificate("CN=Second CER CA");
+            var path = Path.Combine(directory.FullName, "ca.cer");
+            await File.WriteAllTextAsync(
+                path,
+                first.ExportCertificatePem() + Environment.NewLine + second.ExportCertificatePem());
+
+            using var material = SchemaRegistryCertificateMaterial.Load(new SchemaRegistryTlsConfig
+            {
+                CaCertificatePath = path
+            });
+
+            await Assert.That(material.CaCertificates).IsNotNull();
+            await Assert.That(material.CaCertificates!.Count).IsEqualTo(2);
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
+        }
     }
 
     [Test]
@@ -466,6 +488,41 @@ public sealed class SchemaRegistryCertificateMaterialTests
         finally
         {
             Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Test]
+    public async Task Load_ClientPemBundle_PreservesIntermediateCertificates()
+    {
+        var directory = Directory.CreateTempSubdirectory("dekaf-schema-registry-client-pem-");
+        try
+        {
+            using var root = TestCertificateHelper.CreateCaCertificate("CN=PEM Root");
+            using var intermediate = TestCertificateHelper.CreateCaCertificate("CN=PEM Intermediate", root);
+            using var client = TestCertificateHelper.CreateSignedCertificate("CN=PEM Client", intermediate);
+            using var clientKey = client.GetRSAPrivateKey();
+            var certificatePath = Path.Combine(directory.FullName, "client.pem");
+            var keyPath = Path.Combine(directory.FullName, "client-key.pem");
+            await File.WriteAllTextAsync(
+                certificatePath,
+                client.ExportCertificatePem() + Environment.NewLine + intermediate.ExportCertificatePem());
+            await File.WriteAllTextAsync(keyPath, clientKey!.ExportPkcs8PrivateKeyPem());
+
+            using var material = SchemaRegistryCertificateMaterial.Load(new SchemaRegistryTlsConfig
+            {
+                ClientCertificatePath = certificatePath,
+                ClientPrivateKeyPath = keyPath
+            });
+
+            await Assert.That(material.ClientCertificate!.Thumbprint).IsEqualTo(client.Thumbprint);
+            await Assert.That(material.ClientIntermediateCertificates).IsNotNull();
+            await Assert.That(material.ClientIntermediateCertificates!.Count).IsEqualTo(1);
+            await Assert.That(material.ClientIntermediateCertificates[0].Thumbprint)
+                .IsEqualTo(intermediate.Thumbprint);
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
         }
     }
 
