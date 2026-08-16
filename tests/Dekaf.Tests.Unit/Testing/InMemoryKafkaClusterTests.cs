@@ -224,6 +224,47 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
+    public async Task Consumer_BatchOffsetStore_MatchesOrderedValidationAndCommitSemantics()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions
+            {
+                GroupId = "workers",
+                OffsetCommitMode = OffsetCommitMode.Manual,
+                EnableAutoOffsetStore = false
+            });
+        var admin = new InMemoryAdminClient(cluster);
+        consumer.Assign(
+            new TopicPartition("jobs", 0),
+            new TopicPartition("tasks", 0));
+        TopicPartitionOffset[] invalidOffsets =
+        [
+            new("jobs", 0, 1),
+            new("jobs", -1, 2)
+        ];
+
+        await Assert.That(() => consumer.StoreOffsets(invalidOffsets))
+            .Throws<ArgumentOutOfRangeException>();
+        await consumer.CommitAsync();
+        await Assert.That(await admin.ListConsumerGroupOffsetsAsync("workers")).IsEmpty();
+
+        TopicPartitionOffset[] offsets =
+        [
+            new("jobs", 0, 1),
+            new("tasks", 0, 2),
+            new("jobs", 0, 3)
+        ];
+        consumer.StoreOffsets(offsets);
+        await consumer.CommitAsync();
+
+        var committed = await admin.ListConsumerGroupOffsetsAsync("workers");
+        await Assert.That(committed[new TopicPartition("jobs", 0)]).IsEqualTo(3);
+        await Assert.That(committed[new TopicPartition("tasks", 0)]).IsEqualTo(2);
+    }
+
+    [Test]
     [Arguments("Seek")]
     [Arguments("SeekToBeginning")]
     [Arguments("SeekToEnd")]

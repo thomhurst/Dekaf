@@ -178,6 +178,239 @@ public sealed class ConsumerDirtyCommitTests
     }
 
     [Test]
+    public async Task StoreOffsets_EmptyBatch_DoesNotStageOffsets()
+    {
+        var requests = new List<OffsetCommitRequest>();
+        await using var consumer = CreateConsumer(requests, ErrorCode.None);
+
+        consumer.StoreOffsets(ReadOnlySpan<TopicPartitionOffset>.Empty);
+
+        await CommitStoredOffsetsAsync(consumer);
+
+        await Assert.That(requests).IsEmpty();
+    }
+
+    [Test]
+    public async Task StoreOffsets_Array_StagesOneAndManyPartitions()
+    {
+        var requests = new List<OffsetCommitRequest>();
+        await using var consumer = CreateConsumer(requests, ErrorCode.None);
+        TopicPartitionOffset[] singleOffset =
+        [
+            new("topic-a", 0, 10, leaderEpoch: 3)
+        ];
+        TopicPartitionOffset[] offsets =
+        [
+            new("topic-a", 1, 20, leaderEpoch: 4),
+            new("topic-b", 0, 30)
+        ];
+
+        consumer.StoreOffsets(singleOffset);
+        await CommitStoredOffsetsAsync(consumer);
+        consumer.StoreOffsets(offsets);
+        await CommitStoredOffsetsAsync(consumer);
+
+        await Assert.That(requests).Count().IsEqualTo(2);
+        await Assert.That(GetCommittedOffsets(requests[0])).IsEquivalentTo(singleOffset);
+        await Assert.That(GetCommittedOffsets(requests[1])).IsEquivalentTo(offsets);
+    }
+
+    [Test]
+    public async Task StoreOffsets_DuplicatePartition_LastEntryWinsAndNegativeEpochClearsPriorEpoch()
+    {
+        var requests = new List<OffsetCommitRequest>();
+        await using var consumer = CreateConsumer(requests, ErrorCode.None);
+        consumer.StoreOffset(new TopicPartitionOffset("topic-a", 0, 5, leaderEpoch: 2));
+        consumer.StoreOffsets(
+        [
+            new TopicPartitionOffset("topic-a", 0, 9, leaderEpoch: 7)
+        ]);
+
+        await CommitStoredOffsetsAsync(consumer);
+
+        await Assert.That(GetCommittedOffsets(requests[0])).IsEquivalentTo(
+        [
+            new TopicPartitionOffset("topic-a", 0, 9, leaderEpoch: 7)
+        ]);
+
+        TopicPartitionOffset[] offsets =
+        [
+            new TopicPartitionOffset("topic-a", 0, 10, leaderEpoch: 8),
+            new TopicPartitionOffset("topic-a", 0, 11)
+        ];
+
+        consumer.StoreOffsets(offsets);
+
+        await CommitStoredOffsetsAsync(consumer);
+
+        await Assert.That(GetCommittedOffsets(requests[1])).IsEquivalentTo(
+        [
+            new TopicPartitionOffset("topic-a", 0, 11)
+        ]);
+    }
+
+    [Test]
+    public async Task StoreOffsets_InvalidEntry_StagesNothing()
+    {
+        var requests = new List<OffsetCommitRequest>();
+        await using var consumer = CreateConsumer(requests, ErrorCode.None);
+        TopicPartitionOffset[] offsets =
+        [
+            new("topic-a", 0, 10),
+            new("", 1, 20),
+            new("topic-a", 2, 30)
+        ];
+
+        await Assert.That(() => consumer.StoreOffsets(offsets))
+            .Throws<ArgumentException>();
+
+        await CommitStoredOffsetsAsync(consumer);
+
+        await Assert.That(requests).IsEmpty();
+    }
+
+    [Test]
+    public async Task StoreOffsets_NullCollection_ThrowsWithoutStaging()
+    {
+        var requests = new List<OffsetCommitRequest>();
+        await using var consumer = CreateConsumer(requests, ErrorCode.None);
+
+        await Assert.That(() => consumer.StoreOffsets((TopicPartitionOffset[])null!))
+            .Throws<ArgumentNullException>();
+        await Assert.That(() => consumer.StoreOffsets((IReadOnlyList<TopicPartitionOffset>)null!))
+            .Throws<ArgumentNullException>();
+
+        await CommitStoredOffsetsAsync(consumer);
+
+        await Assert.That(requests).IsEmpty();
+    }
+
+    [Test]
+    [Arguments(null, 0, 0, typeof(ArgumentException))]
+    [Arguments("", 0, 0, typeof(ArgumentException))]
+    [Arguments("topic-a", -1, 0, typeof(ArgumentOutOfRangeException))]
+    [Arguments("topic-a", 0, -1, typeof(ArgumentOutOfRangeException))]
+    public async Task StoreOffset_InvalidValue_ThrowsWithoutStaging(
+        string? topic,
+        int partition,
+        long offset,
+        Type exceptionType)
+    {
+        var requests = new List<OffsetCommitRequest>();
+        await using var consumer = CreateConsumer(requests, ErrorCode.None);
+
+        var exception = Assert.Throws(
+            exceptionType,
+            () => consumer.StoreOffset(new TopicPartitionOffset(topic!, partition, offset)));
+
+        await Assert.That(exception).IsNotNull();
+        await CommitStoredOffsetsAsync(consumer);
+        await Assert.That(requests).IsEmpty();
+    }
+
+    [Test]
+    public async Task StoreOffsets_ArrayListAndSpan_StageIdenticalOffsets()
+    {
+        TopicPartitionOffset[] offsets =
+        [
+            new("topic-a", 0, 10, leaderEpoch: 3),
+            new("topic-a", 1, 20, leaderEpoch: 4)
+        ];
+        var requests = new List<OffsetCommitRequest>();
+
+        await using (var arrayConsumer = CreateConsumer(requests, ErrorCode.None))
+        {
+            arrayConsumer.StoreOffsets(offsets);
+            await CommitStoredOffsetsAsync(arrayConsumer);
+        }
+
+        await using (var listConsumer = CreateConsumer(requests, ErrorCode.None))
+        {
+            IReadOnlyList<TopicPartitionOffset> list = offsets.ToList();
+            listConsumer.StoreOffsets(list);
+            await CommitStoredOffsetsAsync(listConsumer);
+        }
+
+        await using (var spanConsumer = CreateConsumer(requests, ErrorCode.None))
+        {
+            ReadOnlySpan<TopicPartitionOffset> span = offsets;
+            spanConsumer.StoreOffsets(span);
+            await CommitStoredOffsetsAsync(spanConsumer);
+        }
+
+        await Assert.That(requests).Count().IsEqualTo(3);
+        foreach (var request in requests)
+            await Assert.That(GetCommittedOffsets(request)).IsEquivalentTo(offsets);
+    }
+
+    [Test]
+    public async Task StoreOffsets_ConcurrentCalls_DoNotCorruptStoredState()
+    {
+        const int partitionCount = 64;
+        var requests = new List<OffsetCommitRequest>();
+        await using var consumer = CreateConsumer(requests, ErrorCode.None);
+
+        Parallel.For(0, partitionCount, partition =>
+        {
+            TopicPartitionOffset[] offsets = [new("topic-a", partition, partition + 1)];
+            consumer.StoreOffsets(offsets);
+        });
+
+        await CommitStoredOffsetsAsync(consumer);
+
+        var committed = GetCommittedOffsets(requests.Single());
+        await Assert.That(committed).Count().IsEqualTo(partitionCount);
+        for (var partition = 0; partition < partitionCount; partition++)
+        {
+            await Assert.That(committed).Contains(
+                new TopicPartitionOffset("topic-a", partition, partition + 1));
+        }
+    }
+
+    [Test]
+    public async Task StoreOffsets_ParameterlessCommit_CommitsStagedBatch()
+    {
+        var requests = new List<OffsetCommitRequest>();
+        await using var consumer = CreateConsumer(
+            requests,
+            ErrorCode.None,
+            OffsetCommitMode.Manual,
+            enableAutoOffsetStore: false);
+        TopicPartitionOffset[] offsets =
+        [
+            new("topic-a", 0, 10),
+            new("topic-a", 1, 20)
+        ];
+
+        consumer.StoreOffsets(offsets);
+        await consumer.CommitAsync(CancellationToken.None);
+
+        await Assert.That(GetCommittedOffsets(requests.Single())).IsEquivalentTo(offsets);
+    }
+
+    [Test]
+    public async Task StoreOffsets_AutoCommitCycle_CommitsStagedBatch()
+    {
+        var requests = new List<OffsetCommitRequest>();
+        await using var consumer = CreateConsumer(
+            requests,
+            ErrorCode.None,
+            OffsetCommitMode.Auto,
+            enableAutoOffsetStore: false);
+        TopicPartitionOffset[] offsets =
+        [
+            new("topic-a", 0, 10),
+            new("topic-a", 1, 20)
+        ];
+        SetCoordinatorState(consumer, CoordinatorState.Stable);
+
+        consumer.StoreOffsets(offsets);
+        await RunAutoCommitCycleAsync(consumer);
+
+        await Assert.That(GetCommittedOffsets(requests.Single())).IsEquivalentTo(offsets);
+    }
+
+    [Test]
     public async Task CloseAsync_UnknownCoordinator_RediscoversAndCommitsPendingOffset()
     {
         var requests = new List<OffsetCommitRequest>();

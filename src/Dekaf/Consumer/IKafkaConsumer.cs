@@ -166,9 +166,46 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     void StoreOffset(ConsumeResult<TKey, TValue> result);
 
     /// <summary>
-    /// Stores an offset for the automatic commit loop.
+    /// Stores a next offset for the automatic commit loop.
     /// </summary>
+    /// <remarks>
+    /// This method only stages the offset locally. Broker persistence is controlled by automatic
+    /// commit or <see cref="CommitAsync(CancellationToken)"/>.
+    /// </remarks>
     void StoreOffset(TopicPartitionOffset offset);
+
+    /// <summary>
+    /// Stores next offsets from an array for the automatic commit loop without allocating.
+    /// </summary>
+    /// <remarks>
+    /// Input is validated before any offset is changed. Duplicate topic-partitions use the last
+    /// entry. A non-negative leader epoch stores or replaces the staged epoch; a negative epoch
+    /// clears it. Publication is ordered but is not globally atomic relative to concurrent commit
+    /// snapshots. This method only stages offsets locally; it performs no broker I/O.
+    /// </remarks>
+    void StoreOffsets(TopicPartitionOffset[] offsets);
+
+    /// <summary>
+    /// Stores next offsets from a list for the automatic commit loop without copying the collection.
+    /// </summary>
+    /// <remarks>
+    /// Input is validated before any offset is changed. Duplicate topic-partitions use the last
+    /// entry. A non-negative leader epoch stores or replaces the staged epoch; a negative epoch
+    /// clears it. Publication is ordered but is not globally atomic relative to concurrent commit
+    /// snapshots. This method only stages offsets locally; it performs no broker I/O.
+    /// </remarks>
+    void StoreOffsets(IReadOnlyList<TopicPartitionOffset> offsets);
+
+    /// <summary>
+    /// Stores next offsets from a span for the automatic commit loop without allocating.
+    /// </summary>
+    /// <remarks>
+    /// Input is validated before any offset is changed. Duplicate topic-partitions use the last
+    /// entry. A non-negative leader epoch stores or replaces the staged epoch; a negative epoch
+    /// clears it. Publication is ordered but is not globally atomic relative to concurrent commit
+    /// snapshots. This method only stages offsets locally; it performs no broker I/O.
+    /// </remarks>
+    void StoreOffsets(ReadOnlySpan<TopicPartitionOffset> offsets);
 
     /// <summary>
     /// Gracefully closes the consumer: stops background tasks (heartbeat, auto-commit, prefetch),

@@ -506,9 +506,52 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     public void StoreOffset(TopicPartitionOffset offset)
     {
         ThrowIfDisposed();
+        TopicPartitionOffsetValidator.Validate(offset, nameof(offset));
 
         lock (_gate)
             _storedOffsets[new TopicPartition(offset.Topic, offset.Partition)] = offset.Offset;
+    }
+
+    public void StoreOffsets(TopicPartitionOffset[] offsets)
+    {
+        ArgumentNullException.ThrowIfNull(offsets);
+        StoreOffsets(offsets.AsSpan());
+    }
+
+    public void StoreOffsets(IReadOnlyList<TopicPartitionOffset> offsets)
+    {
+        ArgumentNullException.ThrowIfNull(offsets);
+        ThrowIfDisposed();
+
+        var count = offsets.Count;
+        for (var index = 0; index < count; index++)
+            TopicPartitionOffsetValidator.Validate(offsets[index], nameof(offsets));
+
+        lock (_gate)
+        {
+            for (var index = 0; index < count; index++)
+            {
+                var offset = offsets[index];
+                _storedOffsets[new TopicPartition(offset.Topic, offset.Partition)] = offset.Offset;
+            }
+        }
+    }
+
+    public void StoreOffsets(ReadOnlySpan<TopicPartitionOffset> offsets)
+    {
+        ThrowIfDisposed();
+
+        for (var index = 0; index < offsets.Length; index++)
+            TopicPartitionOffsetValidator.Validate(offsets[index], nameof(offsets));
+
+        lock (_gate)
+        {
+            for (var index = 0; index < offsets.Length; index++)
+            {
+                ref readonly var offset = ref offsets[index];
+                _storedOffsets[new TopicPartition(offset.Topic, offset.Partition)] = offset.Offset;
+            }
+        }
     }
 
     public ValueTask CloseAsync(CancellationToken cancellationToken = default) =>

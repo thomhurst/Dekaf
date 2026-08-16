@@ -1395,6 +1395,18 @@ public sealed class PartitionedConsumerRuntimeTests
         {
         }
 
+        public void StoreOffsets(TopicPartitionOffset[] offsets)
+        {
+        }
+
+        public void StoreOffsets(IReadOnlyList<TopicPartitionOffset> offsets)
+        {
+        }
+
+        public void StoreOffsets(ReadOnlySpan<TopicPartitionOffset> offsets)
+        {
+        }
+
         public ValueTask CloseAsync(CancellationToken cancellationToken = default)
             => ValueTask.CompletedTask;
 

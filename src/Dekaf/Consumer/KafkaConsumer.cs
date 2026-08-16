@@ -5,6 +5,9 @@ using System.Diagnostics.Metrics;
 using Dekaf.Errors;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
+#if !NETSTANDARD2_0
+using System.Runtime.InteropServices;
+#endif
 using Dekaf.Compression;
 using Dekaf.Internal;
 using Dekaf.Metadata;
@@ -5097,16 +5100,63 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (result.IsPartitionEof)
             return;
 
-        StoreOffset(new TopicPartitionOffset(
-            result.Topic,
-            result.Partition,
+        StoreOffsetCore(
+            new TopicPartition(result.Topic, result.Partition),
             checked(result.Offset + 1),
-            result.LeaderEpoch ?? -1));
+            result.LeaderEpoch ?? -1);
     }
 
     public void StoreOffset(TopicPartitionOffset offset)
     {
+        TopicPartitionOffsetValidator.Validate(offset, nameof(offset));
         StoreOffsetCore(new TopicPartition(offset.Topic, offset.Partition), offset.Offset, offset.LeaderEpoch);
+    }
+
+    public void StoreOffsets(TopicPartitionOffset[] offsets)
+    {
+        ArgumentNullException.ThrowIfNull(offsets);
+        StoreOffsets(offsets.AsSpan());
+    }
+
+    public void StoreOffsets(IReadOnlyList<TopicPartitionOffset> offsets)
+    {
+        ArgumentNullException.ThrowIfNull(offsets);
+
+        if (offsets is TopicPartitionOffset[] array)
+        {
+            StoreOffsets(array.AsSpan());
+            return;
+        }
+
+#if !NETSTANDARD2_0
+        if (offsets is List<TopicPartitionOffset> list)
+        {
+            StoreOffsets(CollectionsMarshal.AsSpan(list));
+            return;
+        }
+#endif
+
+        var count = offsets.Count;
+        for (var index = 0; index < count; index++)
+            TopicPartitionOffsetValidator.Validate(offsets[index], nameof(offsets));
+
+        for (var index = 0; index < count; index++)
+        {
+            var offset = offsets[index];
+            StoreOffsetCore(new TopicPartition(offset.Topic, offset.Partition), offset.Offset, offset.LeaderEpoch);
+        }
+    }
+
+    public void StoreOffsets(ReadOnlySpan<TopicPartitionOffset> offsets)
+    {
+        for (var index = 0; index < offsets.Length; index++)
+            TopicPartitionOffsetValidator.Validate(offsets[index], nameof(offsets));
+
+        for (var index = 0; index < offsets.Length; index++)
+        {
+            ref readonly var offset = ref offsets[index];
+            StoreOffsetCore(new TopicPartition(offset.Topic, offset.Partition), offset.Offset, offset.LeaderEpoch);
+        }
     }
 
     public async ValueTask<long?> GetCommittedOffsetAsync(TopicPartition partition, CancellationToken cancellationToken = default)
