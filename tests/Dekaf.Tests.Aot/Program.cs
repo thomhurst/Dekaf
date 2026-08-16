@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Net;
 using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json.Serialization;
 using Avro.Specific;
@@ -34,10 +35,36 @@ internal static class AotSmoke
     {
         RunCompressionSmoke();
         RunJsonSmoke();
+        RunSchemaRegistryHttpPipelineConstructionSmoke();
         await RunSchemaRegistrySmokeAsync();
         await RunSchemaRegistryCompatibilitySmokeAsync();
         await RunSchemaRegistryPackageSmokeAsync();
         await RunCoreSmokeAsync();
+    }
+
+    private static void RunSchemaRegistryHttpPipelineConstructionSmoke()
+    {
+        using var key = RSA.Create(2048);
+        var request = new CertificateRequest(
+            "CN=Dekaf NativeAOT Schema Registry CA",
+            key,
+            HashAlgorithmName.SHA256,
+            RSASignaturePadding.Pkcs1);
+        request.CertificateExtensions.Add(new X509BasicConstraintsExtension(true, false, 0, true));
+        using var certificate = request.CreateSelfSigned(
+            DateTimeOffset.UtcNow.AddDays(-1),
+            DateTimeOffset.UtcNow.AddDays(1));
+        using var defaultPipeline = new SchemaRegistryClient(new SchemaRegistryConfig
+        {
+            Url = "https://schema-registry.example.test",
+            Tls = new SchemaRegistryTlsConfig
+            {
+                CaCertificatePem = certificate.ExportCertificatePem()
+            }
+        });
+        using var factoryPipeline = new SchemaRegistryClient(
+            new SchemaRegistryConfig { Url = "https://schema-registry.example.test" },
+            static () => new CompatibilityConfigurationHandler());
     }
 
     private static async Task RunCoreSmokeAsync()

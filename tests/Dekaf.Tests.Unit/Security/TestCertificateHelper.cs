@@ -112,6 +112,23 @@ internal static class TestCertificateHelper
             new DateTimeOffset(2034, 1, 1, 0, 0, 0, TimeSpan.Zero));
     }
 
+    internal static X509Certificate2 CreateCaCertificate(string subjectName, X509Certificate2 issuer)
+    {
+        using var rsa = CreateRsaKey();
+        var request = new CertificateRequest(subjectName, rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        request.CertificateExtensions.Add(new X509BasicConstraintsExtension(true, false, 0, true));
+        request.CertificateExtensions.Add(new X509KeyUsageExtension(
+            X509KeyUsageFlags.KeyCertSign | X509KeyUsageFlags.CrlSign,
+            true));
+
+        using var certificate = request.Create(
+            issuer,
+            new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero),
+            new DateTimeOffset(2034, 1, 1, 0, 0, 0, TimeSpan.Zero),
+            DeriveSerialNumber(subjectName));
+        return certificate.CopyWithPrivateKey(rsa);
+    }
+
     /// <summary>
     /// Creates a CA certificate with custom validity dates.
     /// Useful for expired certificate tests.
@@ -152,7 +169,10 @@ internal static class TestCertificateHelper
     /// Creates a leaf certificate signed by the given issuer CA.
     /// Returns a certificate with its private key attached.
     /// </summary>
-    internal static X509Certificate2 CreateSignedCertificate(string subjectName, X509Certificate2 issuer)
+    internal static X509Certificate2 CreateSignedCertificate(
+        string subjectName,
+        X509Certificate2 issuer,
+        string? enhancedKeyUsageOid = null)
     {
         using var rsa = CreateRsaKey();
         var request = new CertificateRequest(subjectName, rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
@@ -168,6 +188,13 @@ internal static class TestCertificateHelper
             new X509KeyUsageExtension(
                 X509KeyUsageFlags.DigitalSignature | X509KeyUsageFlags.KeyEncipherment,
                 critical: true));
+
+        if (enhancedKeyUsageOid is not null)
+        {
+            request.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(
+                [new Oid(enhancedKeyUsageOid)],
+                critical: true));
+        }
 
         var notBefore = new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero);
         var notAfter = new DateTimeOffset(2034, 1, 1, 0, 0, 0, TimeSpan.Zero);

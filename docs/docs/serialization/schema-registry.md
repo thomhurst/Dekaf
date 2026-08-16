@@ -103,6 +103,89 @@ var config = new SchemaRegistryConfig
 var schemaRegistry = new CachedSchemaRegistryClient(config);
 ```
 
+### HTTP pipeline customization
+
+`SchemaRegistryClient` accepts a caller-owned `HttpClient` or `HttpMessageHandler`, or a handler
+factory whose returned handler Dekaf owns. This supports DI-managed clients and custom tracing,
+retry, authentication, and policy handlers without adding a dependency on `Microsoft.Extensions.Http`:
+
+```csharp
+var httpClient = httpClientFactory.CreateClient("schema-registry");
+using var schemaRegistry = new SchemaRegistryClient(
+    new SchemaRegistryConfig
+    {
+        Url = "https://schema-registry.example.com",
+        UserAgent = "orders-service/2.1",
+        DefaultHeaders = new Dictionary<string, string>
+        {
+            ["X-Tenant"] = "orders"
+        }
+    },
+    httpClient);
+```
+
+Disposing `SchemaRegistryClient` never disposes a directly supplied `HttpClient` or
+`HttpMessageHandler`. The `Func<HttpMessageHandler>` overload transfers ownership of the returned
+handler to Dekaf. Authentication, timeout, failover, default headers, and the Schema Registry
+`Accept` header remain active around every custom pipeline. Content headers such as `Content-Type`
+cannot be configured as default request headers. `Accept` and `User-Agent` are also managed by
+Dekaf and cannot be supplied through `DefaultHeaders`. When `UserAgent` is not set, Dekaf sends a
+versioned `Dekaf.SchemaRegistry/{version}` value. `RequestTimeoutMs` must be positive, or `-1` for
+an infinite timeout.
+
+A custom client or handler owns proxy and TLS behavior completely. Therefore `Tls`, `Proxy`,
+`UseProxy = false`, and the legacy `ClientCertificate` property cannot be combined with a custom
+pipeline. The default pipeline supports the platform proxy or an explicit `IWebProxy`:
+
+```csharp
+var config = new SchemaRegistryConfig
+{
+    Url = "https://schema-registry.example.com",
+    Proxy = new WebProxy("http://proxy.example.com:8080")
+};
+```
+
+### Schema Registry TLS
+
+The default pipeline supports caller-owned in-memory certificates and Dekaf-owned file or PEM
+material through `SchemaRegistryTlsConfig`:
+
+```csharp
+var config = new SchemaRegistryConfig
+{
+    Url = "https://schema-registry.example.com",
+    Tls = new SchemaRegistryTlsConfig
+    {
+        CaCertificatePath = "/run/secrets/schema-registry-ca", // PEM bundle or directory
+        ClientCertificatePem = clientCertificatePem,
+        ClientPrivateKeyPem = clientPrivateKeyPem,
+        ClientCertificatePassword = privateKeyPassword,
+        CheckCertificateRevocation = true
+    }
+};
+```
+
+Exactly one CA source and one client-certificate source may be configured. CA sources are a single
+certificate, a collection, a PEM string, or a file/directory path. Directories load only `.pem`,
+`.crt`, `.cer`, `.pfx`, and `.p12` files, in ordinal path order; an empty directory or any malformed
+candidate fails client construction. PEM bundles load every certificate. Self-signed configured
+certificates and explicitly configured intermediate CAs are trust anchors. Server-provided
+intermediates are available to chain building without becoming trusted roots.
+
+Client sources are an in-memory certificate with a private key, a PFX/P12 file, a PEM certificate
+plus separate key files, or PEM certificate/key strings. Encrypted PEM keys and password-protected
+PFX files use `ClientCertificatePassword`. Caller-provided certificate objects remain caller-owned;
+Dekaf disposes every certificate it loads. A client PFX/P12 may contain its intermediate chain;
+Dekaf retains and presents those intermediates with the leaf certificate. Passwords and private-key
+text are never included in validation exceptions.
+
+TLS material is loaded once when the client is constructed and applies identically to every
+failover URL. To rotate file- or string-backed material, construct a new `SchemaRegistryClient` and
+dispose the old instance after in-flight operations complete. `RemoteCertificateValidationCallback`
+owns validation when set; otherwise `ValidateServerCertificate`,
+`ValidateServerCertificateHostName`, custom roots, revocation, and protocol settings are enforced by
+the default pipeline.
+
 ## Consumer
 
 ```csharp
