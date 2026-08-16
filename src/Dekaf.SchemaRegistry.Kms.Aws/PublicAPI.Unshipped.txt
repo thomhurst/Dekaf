@@ -1,0 +1,12 @@
+#nullable enable
+Dekaf.SchemaRegistry.Kms.Aws.AwsKmsProvider
+Dekaf.SchemaRegistry.Kms.Aws.AwsKmsProvider.AwsKmsProvider() -> void
+Dekaf.SchemaRegistry.Kms.Aws.AwsKmsProvider.AwsKmsProvider(Amazon.KeyManagementService.AmazonKeyManagementServiceConfig! config) -> void
+Dekaf.SchemaRegistry.Kms.Aws.AwsKmsProvider.AwsKmsProvider(Amazon.KeyManagementService.IAmazonKeyManagementService! client, bool ownsClient = false) -> void
+Dekaf.SchemaRegistry.Kms.Aws.AwsKmsProvider.AwsKmsProvider(Amazon.RegionEndpoint! region) -> void
+Dekaf.SchemaRegistry.Kms.Aws.AwsKmsProvider.Dispose() -> void
+Dekaf.SchemaRegistry.Kms.Aws.AwsKmsProvider.Type.get -> string!
+Dekaf.SchemaRegistry.Kms.Aws.AwsKmsProvider.UnwrapKeyAsync(System.ReadOnlyMemory<byte> encryptedKeyMaterial, Dekaf.SchemaRegistry.SchemaRegistryKmsKeyReference! keyReference, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<byte[]!>
+Dekaf.SchemaRegistry.Kms.Aws.AwsKmsProvider.WrapKeyAsync(System.ReadOnlyMemory<byte> keyMaterial, Dekaf.SchemaRegistry.SchemaRegistryKmsKeyReference! keyReference, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<byte[]!>
+const Dekaf.SchemaRegistry.Kms.Aws.AwsKmsProvider.DefaultType = "aws-kms" -> string!
+const Dekaf.SchemaRegistry.Kms.Aws.AwsKmsProvider.KeyUriPrefix = "aws-kms://" -> string!

@@ -361,6 +361,38 @@ request/response buffers are zeroed before release. Credential and returned-toke
 managed .NET strings and cannot be zeroed; source them from a secret-delivery mechanism and limit
 their lifetime accordingly.
 
+## AWS KMS for client-side field-level encryption
+
+Install `Dekaf.SchemaRegistry.Kms.Aws` only in applications that use AWS KMS. The AWS SDK dependency
+stays out of `Dekaf.SchemaRegistry` and other serializer packages.
+
+```csharp
+using Amazon;
+using Dekaf.SchemaRegistry;
+using Dekaf.SchemaRegistry.Kms.Aws;
+
+using var awsKms = new AwsKmsProvider(RegionEndpoint.EUWest2);
+var csfle = new SchemaRegistryCsfleRuleHandler(schemaRegistry, [awsKms]);
+var rules = new SchemaRegistryRuleExecutor([csfle]);
+```
+
+`AwsKmsProvider()` uses the AWS SDK default credential and region provider chains. The region
+constructor fixes the KMS endpoint while retaining the default credential chain. For custom
+endpoints, retry settings, or other SDK options, pass an `AmazonKeyManagementServiceConfig`. For
+explicit credentials or application-managed client lifetimes, construct an
+`AmazonKeyManagementServiceClient` and pass it as `IAmazonKeyManagementService`; injected clients
+remain caller-owned unless `ownsClient: true` is specified.
+
+The AWS SDK default credential chain checks explicitly configured client credentials first, then
+environment credentials, web-identity/container credentials, shared AWS profiles, and instance
+metadata as applicable to the host. Prefer short-lived workload credentials over long-lived access
+keys. The principal needs `kms:Encrypt` and `kms:Decrypt` for each configured key.
+
+Schema Registry key references may contain a raw key ARN/alias or a Confluent-compatible
+`aws-kms://` URI. Configure the provider's region or endpoint to match the key. The provider forwards
+cancellation to the AWS SDK, is safe for concurrent use, never logs key material or ciphertext, and
+clears temporary plaintext buffers where the runtime exposes them.
+
 ## Consumer
 
 ```csharp
