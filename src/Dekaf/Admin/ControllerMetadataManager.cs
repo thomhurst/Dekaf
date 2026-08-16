@@ -1,8 +1,11 @@
+using System.Diagnostics;
 using System.Runtime.ExceptionServices;
+using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
+using Dekaf.Retry;
 
 namespace Dekaf.Admin;
 
@@ -14,7 +17,7 @@ internal sealed class ControllerMetadataManager : IDisposable
     private readonly IConnectionPool _connectionPool;
     private readonly MetadataManager _versionManager;
     private readonly IReadOnlyList<ControllerEndpoint> _bootstrapEndpoints;
-    private readonly TimeSpan _refreshInterval;
+    private readonly MetadataOptions _options;
     private readonly SemaphoreSlim _refreshLock = new(1, 1);
     private ControllerMetadataSnapshot _snapshot = ControllerMetadataSnapshot.Empty;
     private int _disposed;
@@ -23,15 +26,18 @@ internal sealed class ControllerMetadataManager : IDisposable
         IConnectionPool connectionPool,
         MetadataManager versionManager,
         IReadOnlyList<string> bootstrapControllers,
-        TimeSpan refreshInterval)
+        MetadataOptions options)
     {
-        if (refreshInterval < TimeSpan.Zero)
-            throw new ArgumentOutOfRangeException(nameof(refreshInterval), "Controller metadata refresh interval must not be negative.");
+        ArgumentNullException.ThrowIfNull(options);
+        if (options.MetadataRefreshInterval < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                "Controller metadata refresh interval must not be negative.");
 
         _connectionPool = connectionPool;
         _versionManager = versionManager;
         _bootstrapEndpoints = ParseEndpoints(bootstrapControllers);
-        _refreshInterval = refreshInterval;
+        _options = options;
     }
 
     internal ControllerMetadataSnapshot Snapshot => Volatile.Read(ref _snapshot);
@@ -56,86 +62,118 @@ internal sealed class ControllerMetadataManager : IDisposable
             if (!force && !IsRefreshDue(snapshot))
                 return;
 
-            Exception? lastException = null;
             var endpoints = BuildRefreshEndpoints(snapshot, _bootstrapEndpoints);
-            foreach (var endpoint in endpoints)
+            var electionStartedAt = Stopwatch.GetTimestamp();
+            var electionFailureCount = 0;
+            while (true)
             {
-                try
+                Exception? lastException = null;
+                var electionPending = false;
+                foreach (var endpoint in endpoints)
                 {
-                    using var lease = await _connectionPool.LeaseConnectionAsync(
-                        endpoint.Host,
-                        endpoint.Port,
-                        cancellationToken).ConfigureAwait(false);
-                    var connection = lease.Connection;
-                    var version = _versionManager.GetNegotiatedApiVersion(
-                        connection,
-                        ApiKey.DescribeCluster,
-                        1,
-                        DescribeClusterRequest.HighestSupportedVersion);
-                    var response = await connection.SendAsync<DescribeClusterRequest, DescribeClusterResponse>(
-                        new DescribeClusterRequest { EndpointType = DescribeClusterEndpointType.Controller },
-                        version,
-                        cancellationToken).ConfigureAwait(false);
-
-                    if (response.ErrorCode != ErrorCode.None)
+                    try
                     {
-                        throw KafkaException.FromErrorCode(
-                            response.ErrorCode,
-                            response.ErrorMessage ?? $"Controller discovery failed: {response.ErrorCode}");
-                    }
+                        using var lease = await _connectionPool.LeaseConnectionAsync(
+                            endpoint.Host,
+                            endpoint.Port,
+                            cancellationToken).ConfigureAwait(false);
+                        var connection = lease.Connection;
+                        var version = _versionManager.GetNegotiatedApiVersion(
+                            connection,
+                            ApiKey.DescribeCluster,
+                            1,
+                            DescribeClusterRequest.HighestSupportedVersion);
+                        var response = await connection.SendAsync<DescribeClusterRequest, DescribeClusterResponse>(
+                            new DescribeClusterRequest { EndpointType = DescribeClusterEndpointType.Controller },
+                            version,
+                            cancellationToken).ConfigureAwait(false);
 
-                    if (response.EndpointType != DescribeClusterEndpointType.Controller)
+                        if (response.ErrorCode != ErrorCode.None)
+                        {
+                            throw KafkaException.FromErrorCode(
+                                response.ErrorCode,
+                                response.ErrorMessage ?? $"Controller discovery failed: {response.ErrorCode}");
+                        }
+
+                        if (response.EndpointType != DescribeClusterEndpointType.Controller)
+                        {
+                            throw new KafkaException(
+                                ErrorCode.MismatchedEndpointType,
+                                $"Controller bootstrap endpoint {endpoint.Host}:{endpoint.Port} returned endpoint type {response.EndpointType}.");
+                        }
+
+                        if (response.ControllerId < 0)
+                        {
+                            electionPending = true;
+                            lastException = new KafkaException(
+                                ErrorCode.UnknownControllerId,
+                                "Controller discovery did not return an active controller ID.");
+                            continue;
+                        }
+
+                        var controllers = new Dictionary<int, ControllerEndpoint>(response.Nodes.Count);
+                        foreach (var node in response.Nodes)
+                            controllers[node.NodeId] = new ControllerEndpoint(node.NodeId, node.Host, node.Port, node.Rack);
+
+                        if (!controllers.ContainsKey(response.ControllerId))
+                        {
+                            throw new KafkaException(
+                                ErrorCode.UnknownControllerId,
+                                $"Controller discovery omitted active controller {response.ControllerId}.");
+                        }
+
+                        Volatile.Write(
+                            ref _snapshot,
+                            new ControllerMetadataSnapshot(
+                                response.ClusterId,
+                                response.ControllerId,
+                                controllers,
+                                DateTimeOffset.UtcNow));
+                        return;
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                     {
-                        throw new KafkaException(
-                            ErrorCode.MismatchedEndpointType,
-                            $"Controller bootstrap endpoint {endpoint.Host}:{endpoint.Port} returned endpoint type {response.EndpointType}.");
+                        throw;
                     }
-
-                    if (response.ControllerId < 0)
+                    catch (KafkaException ex) when (!ex.IsRetriable)
                     {
-                        throw new KafkaException(
-                            ErrorCode.UnknownControllerId,
-                            "Controller discovery did not return an active controller ID.");
+                        throw;
                     }
-
-                    var controllers = new Dictionary<int, ControllerEndpoint>(response.Nodes.Count);
-                    foreach (var node in response.Nodes)
-                        controllers[node.NodeId] = new ControllerEndpoint(node.NodeId, node.Host, node.Port, node.Rack);
-
-                    if (!controllers.ContainsKey(response.ControllerId))
+                    catch (Exception ex)
                     {
-                        throw new KafkaException(
-                            ErrorCode.UnknownControllerId,
-                            $"Controller discovery omitted active controller {response.ControllerId}.");
+                        lastException = ex;
                     }
-
-                    Volatile.Write(
-                        ref _snapshot,
-                        new ControllerMetadataSnapshot(
-                            response.ClusterId,
-                            response.ControllerId,
-                            controllers,
-                            DateTimeOffset.UtcNow));
-                    return;
                 }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+
+                if (!electionPending)
                 {
-                    throw;
+                    if (lastException is not null)
+                        ExceptionDispatchInfo.Capture(lastException).Throw();
+
+                    throw new InvalidOperationException("Unable to discover an active KRaft controller.");
                 }
-                catch (KafkaException ex) when (!ex.IsRetriable)
+
+                if (electionFailureCount >= _options.MaxInitRetries)
+                    ExceptionDispatchInfo.Capture(lastException!).Throw();
+
+                var elapsed = Stopwatch.GetElapsedTime(electionStartedAt);
+                var remainingMs = _options.InitTimeoutMs - elapsed.TotalMilliseconds;
+                if (remainingMs <= 0)
                 {
-                    throw;
+                    throw new KafkaTimeoutException(
+                        TimeoutKind.Metadata,
+                        elapsed,
+                        TimeSpan.FromMilliseconds(_options.InitTimeoutMs),
+                        $"Controller discovery did not return an active controller within {_options.InitTimeoutMs}ms.",
+                        lastException!);
                 }
-                catch (Exception ex)
-                {
-                    lastException = ex;
-                }
+
+                var backoffMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(
+                    _options.RetryBackoffMs,
+                    _options.RetryBackoffMaxMs,
+                    ++electionFailureCount);
+                await Task.Delay((int)Math.Min(backoffMs, remainingMs), cancellationToken).ConfigureAwait(false);
             }
-
-            if (lastException is not null)
-                ExceptionDispatchInfo.Capture(lastException).Throw();
-
-            throw new InvalidOperationException("Unable to discover an active KRaft controller.");
         }
         finally
         {
@@ -241,7 +279,7 @@ internal sealed class ControllerMetadataManager : IDisposable
 
     private bool IsRefreshDue(ControllerMetadataSnapshot snapshot) =>
         snapshot.LastRefreshed == default
-        || DateTimeOffset.UtcNow - snapshot.LastRefreshed >= _refreshInterval;
+        || DateTimeOffset.UtcNow - snapshot.LastRefreshed >= _options.MetadataRefreshInterval;
 
     private static ArgumentException InvalidEndpoint(string? value) =>
         new($"Invalid controller bootstrap endpoint '{value}'. Expected host:port.");

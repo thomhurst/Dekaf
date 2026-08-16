@@ -100,7 +100,7 @@ public sealed class AdminClient : IAdminClient
                 _connectionPool,
                 _metadataManager,
                 options.BootstrapControllers,
-                metadataOptions.MetadataRefreshInterval);
+                metadataOptions);
         }
 
         _telemetryManager = new ClientTelemetryManager(
@@ -133,11 +133,16 @@ public sealed class AdminClient : IAdminClient
                     "Controller bootstrap endpoints require an independently owned AdminClient connection pool.");
             }
 
+            metadataOptions ??= new MetadataOptions
+            {
+                RetryBackoffMs = options.RetryBackoffMs,
+                RetryBackoffMaxMs = options.RetryBackoffMaxMs
+            };
             _controllerMetadataManager = new ControllerMetadataManager(
                 _connectionPool,
                 _metadataManager,
                 options.BootstrapControllers,
-                metadataOptions?.MetadataRefreshInterval ?? TimeSpan.FromMinutes(15));
+                metadataOptions);
         }
         _telemetryMetricCollector = new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Admin);
         _telemetryMetricCollector.RegisterMetricsForSubscription(options.ApplicationMetrics);

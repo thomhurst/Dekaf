@@ -42,6 +42,19 @@ public sealed class AdminClientControllerBootstrapTests
     }
 
     [Test]
+    public async Task DescribeClusterAsync_RetriesWhileControllerElectionIsPending()
+    {
+        await using var context = new ControllerAdminContext(
+            CreateDiscoveryResponse(activeControllerId: -1));
+        context.EnqueueDiscovery(CreateDiscoveryResponse(activeControllerId: 1));
+
+        var result = await context.Client.DescribeClusterAsync();
+
+        await Assert.That(result.ControllerId).IsEqualTo(1);
+        await Assert.That(context.DiscoveryRequests).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task DescribeMetadataQuorumAsync_RoutesToAdvertisedActiveController()
     {
         await using var context = new ControllerAdminContext();
@@ -111,7 +124,7 @@ public sealed class AdminClientControllerBootstrapTests
                 pool,
                 metadataManager,
                 ["controller-1:9093", "invalid"],
-                TimeSpan.FromMinutes(15)))
+                new MetadataOptions()))
             .Throws<ArgumentException>();
 
         await Assert.That(exception!.Message).Contains("invalid");
@@ -135,6 +148,7 @@ public sealed class AdminClientControllerBootstrapTests
 
         await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.MismatchedEndpointType);
         await Assert.That(exception.Message).Contains("Expected broker endpoint");
+        await Assert.That(context.DiscoveryRequests).IsEqualTo(1);
     }
 
     [Test]
@@ -286,7 +300,9 @@ public sealed class AdminClientControllerBootstrapTests
                 ownsResources: true,
                 metadataOptions: new MetadataOptions
                 {
-                    MetadataRefreshInterval = refreshInterval ?? TimeSpan.FromMinutes(15)
+                    MetadataRefreshInterval = refreshInterval ?? TimeSpan.FromMinutes(15),
+                    RetryBackoffMs = 1,
+                    RetryBackoffMaxMs = 1
                 });
         }
 
