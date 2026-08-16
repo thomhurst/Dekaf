@@ -34,6 +34,9 @@ public class OffsetStoreBenchmarks
         _consumer.StoreOffsets(_offsets);
     }
 
+    [GlobalCleanup]
+    public ValueTask Cleanup() => _consumer.DisposeAsync();
+
     [Benchmark(Baseline = true)]
     public void RepeatedSingle()
     {
@@ -99,6 +102,9 @@ public class ConsumeResultOffsetStoreBenchmarks
             valueDeserializer: null);
         _consumer.StoreOffset(_result);
     }
+
+    [GlobalCleanup]
+    public ValueTask Cleanup() => _consumer.DisposeAsync();
 
     [Benchmark]
     public void StoreOffset() => _consumer.StoreOffset(_result);

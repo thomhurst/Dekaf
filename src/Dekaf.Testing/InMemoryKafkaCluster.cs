@@ -13,7 +13,7 @@ public sealed class InMemoryKafkaCluster
 {
     private readonly object _gate = new();
     private readonly Dictionary<string, TopicState> _topics = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, Dictionary<TopicPartition, long>> _consumerGroupOffsets = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Dictionary<TopicPartition, TopicPartitionOffset>> _consumerGroupOffsets = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<string, HashSet<TopicPartition>>> _consumerGroupMembers = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<TopicPartition, Dictionary<long, ShareLeaseState>>> _shareLeases = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<TopicPartition, Dictionary<long, int>>> _shareDeliveryCounts = new(StringComparer.Ordinal);
@@ -403,6 +403,19 @@ public sealed class InMemoryKafkaCluster
         {
             return _consumerGroupOffsets.TryGetValue(groupId, out var offsets) &&
                    offsets.TryGetValue(topicPartition, out var offset)
+                ? offset.Offset
+                : null;
+        }
+    }
+
+    internal TopicPartitionOffset? GetCommittedOffsetInfo(
+        string groupId,
+        TopicPartition topicPartition)
+    {
+        lock (_gate)
+        {
+            return _consumerGroupOffsets.TryGetValue(groupId, out var offsets) &&
+                   offsets.TryGetValue(topicPartition, out var offset)
                 ? offset
                 : null;
         }
@@ -419,7 +432,7 @@ public sealed class InMemoryKafkaCluster
         lock (_gate)
         {
             return _consumerGroupOffsets.TryGetValue(groupId, out var offsets)
-                ? new Dictionary<TopicPartition, long>(offsets)
+                ? offsets.ToDictionary(static item => item.Key, static item => item.Value.Offset)
                 : new Dictionary<TopicPartition, long>();
         }
     }
@@ -608,7 +621,7 @@ public sealed class InMemoryKafkaCluster
         }
 
         foreach (var offset in offsets)
-            groupOffsets[new TopicPartition(offset.Topic, offset.Partition)] = offset.Offset;
+            groupOffsets[new TopicPartition(offset.Topic, offset.Partition)] = offset;
     }
 
     private Dictionary<long, ShareLeaseState>? GetShareLeasePartition(

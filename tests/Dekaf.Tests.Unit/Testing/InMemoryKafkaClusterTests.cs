@@ -252,9 +252,9 @@ public sealed class InMemoryKafkaClusterTests
 
         var offsets = new StructOffsetList(
         [
-            new("jobs", 0, 1),
-            new("tasks", 0, 2),
-            new("jobs", 0, 3)
+            new("jobs", 0, 1, leaderEpoch: 1),
+            new("tasks", 0, 2, leaderEpoch: 2),
+            new("jobs", 0, 3, leaderEpoch: 3)
         ]);
         consumer.StoreOffsets(offsets);
         await consumer.CommitAsync();
@@ -262,6 +262,27 @@ public sealed class InMemoryKafkaClusterTests
         var committed = await admin.ListConsumerGroupOffsetsAsync("workers");
         await Assert.That(committed[new TopicPartition("jobs", 0)]).IsEqualTo(3);
         await Assert.That(committed[new TopicPartition("tasks", 0)]).IsEqualTo(2);
+        await Assert.That(cluster.GetCommittedOffsetInfo("workers", new TopicPartition("jobs", 0))!.Value.LeaderEpoch)
+            .IsEqualTo(3);
+        await Assert.That(cluster.GetCommittedOffsetInfo("workers", new TopicPartition("tasks", 0))!.Value.LeaderEpoch)
+            .IsEqualTo(2);
+
+        TopicPartitionOffset[] spanOffsets =
+        [
+            new("jobs", 0, 4, leaderEpoch: 4),
+            new("tasks", 0, 5, leaderEpoch: 5)
+        ];
+        consumer.StoreOffsets(spanOffsets.AsSpan());
+        await consumer.CommitAsync();
+        await Assert.That(cluster.GetCommittedOffsetInfo("workers", new TopicPartition("jobs", 0))!.Value.LeaderEpoch)
+            .IsEqualTo(4);
+        await Assert.That(cluster.GetCommittedOffsetInfo("workers", new TopicPartition("tasks", 0))!.Value.LeaderEpoch)
+            .IsEqualTo(5);
+
+        consumer.StoreOffset(new TopicPartitionOffset("jobs", 0, 6, leaderEpoch: -1));
+        await consumer.CommitAsync();
+        await Assert.That(cluster.GetCommittedOffsetInfo("workers", new TopicPartition("jobs", 0))!.Value.LeaderEpoch)
+            .IsEqualTo(-1);
     }
 
     [Test]

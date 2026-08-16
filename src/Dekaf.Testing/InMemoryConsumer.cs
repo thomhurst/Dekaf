@@ -33,7 +33,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private readonly HashSet<TopicPartition> _assignment = [];
     private readonly HashSet<TopicPartition> _paused = [];
     private readonly Dictionary<TopicPartition, long> _positions = [];
-    private readonly Dictionary<TopicPartition, long> _storedOffsets = [];
+    private readonly Dictionary<TopicPartition, TopicPartitionOffset> _storedOffsets = [];
     // In-doubt record under OffsetStoreTiming.AfterProcessing: delivered but not yet proven
     // processed. Staged for commit only when the next consume call or an explicit commit
     // proves it; an unwind (or close) leaves it unstaged so it is redelivered.
@@ -510,7 +510,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         TopicPartitionOffsetValidator.Validate(offset, nameof(offset));
 
         lock (_gate)
-            _storedOffsets[new TopicPartition(offset.Topic, offset.Partition)] = offset.Offset;
+            StoreOffsetUnderLock(offset);
     }
 
     public void StoreOffsets<TOffsets>(TOffsets offsets)
@@ -527,10 +527,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         lock (_gate)
         {
             for (var index = 0; index < count; index++)
-            {
-                var offset = offsets[index];
-                _storedOffsets[new TopicPartition(offset.Topic, offset.Partition)] = offset.Offset;
-            }
+                StoreOffsetUnderLock(offsets[index]);
         }
     }
 
@@ -544,10 +541,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         lock (_gate)
         {
             for (var index = 0; index < offsets.Length; index++)
-            {
-                ref readonly var offset = ref offsets[index];
-                _storedOffsets[new TopicPartition(offset.Topic, offset.Partition)] = offset.Offset;
-            }
+                StoreOffsetUnderLock(offsets[index]);
         }
     }
 
@@ -626,7 +620,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             DiscardInDoubtRecordUnderLock(partition);
             _positions[partition] = offset.Offset;
             if (_options.EnableAutoOffsetStore)
-                _storedOffsets[partition] = offset.Offset;
+                StoreOffsetUnderLock(partition, offset.Offset);
         }
     }
 
@@ -643,7 +637,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 DiscardInDoubtRecordUnderLock(partition);
                 _positions[partition] = position;
                 if (_options.EnableAutoOffsetStore)
-                    _storedOffsets[partition] = position;
+                    StoreOffsetUnderLock(partition, position);
             }
         }
     }
@@ -661,7 +655,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 DiscardInDoubtRecordUnderLock(partition);
                 _positions[partition] = position;
                 if (_options.EnableAutoOffsetStore)
-                    _storedOffsets[partition] = position;
+                    StoreOffsetUnderLock(partition, position);
             }
         }
     }
@@ -890,7 +884,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             if (_options.OffsetStoreTiming == OffsetStoreTiming.OnDelivery)
             {
                 if (_options.EnableAutoOffsetStore)
-                    _storedOffsets[partition] = record.Offset + 1;
+                    StoreOffsetUnderLock(partition, record.Offset + 1);
                 if (_options.OffsetCommitMode == OffsetCommitMode.Auto)
                     CommitStoredOffsets();
             }
@@ -914,7 +908,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             return;
 
         if (_options.EnableAutoOffsetStore)
-            _storedOffsets[_inDoubtPartition] = _inDoubtNextOffset;
+            StoreOffsetUnderLock(_inDoubtPartition, _inDoubtNextOffset);
 
         _inDoubtNextOffset = -1;
 
@@ -1097,7 +1091,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private void CommitStoredOffsets()
         => CommitOffsetsFrom(_storedOffsets);
 
-    private void CommitOffsetsFrom(Dictionary<TopicPartition, long> positions)
+    private void CommitOffsetsFrom(Dictionary<TopicPartition, TopicPartitionOffset> positions)
     {
         if (_groupId is null)
             return;
@@ -1105,15 +1099,24 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         var assignment = GetCurrentAssignmentUnderLock();
         var offsets = positions
             .Where(item => assignment.Contains(item.Key))
-            .Select(item => new TopicPartitionOffset(
-                item.Key.Topic,
-                item.Key.Partition,
-                item.Value))
+            .Select(static item => item.Value)
             .ToArray();
 
         if (offsets.Length > 0)
             _cluster.CommitOffsets(_groupId, offsets);
     }
+
+    private void StoreOffsetUnderLock(TopicPartitionOffset offset)
+    {
+        var partition = new TopicPartition(offset.Topic, offset.Partition);
+        _storedOffsets[partition] = offset;
+    }
+
+    private void StoreOffsetUnderLock(TopicPartition partition, long offset)
+        => _storedOffsets[partition] = new TopicPartitionOffset(
+            partition.Topic,
+            partition.Partition,
+            offset);
 
     private IReadOnlySet<TopicPartition> GetCurrentAssignmentUnderLock()
     {
