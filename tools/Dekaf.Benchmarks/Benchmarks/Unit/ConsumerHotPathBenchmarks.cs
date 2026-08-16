@@ -142,6 +142,28 @@ public class ConsumerHotPathBenchmarks
         return bytes;
     }
 
+    [Benchmark(OperationsPerInvoke = MessageCount, Description = "Typed batch raw bytes guarded enumerate")]
+    public int ConsumeBatch_RawBytes_GuardedEnumerate()
+    {
+        using var pending = CreatePendingFetchData();
+        var batch = new ConsumeBatch<Ignore, ReadOnlyMemory<byte>>(
+            pending,
+            Serializers.Ignore,
+            Serializers.RawBytes,
+            new BatchIterationGuard(
+                _batchIterationEpoch,
+                _batchIterationEpoch.Version,
+                _canContinueBatchIteration));
+        var bytes = 0;
+
+        foreach (var result in batch)
+        {
+            bytes += result.Value.Length;
+        }
+
+        return bytes;
+    }
+
     [Benchmark(OperationsPerInvoke = MessageCount, Description = "Typed batch string deserialize")]
     public int ConsumeBatch_String_Deserialize()
     {

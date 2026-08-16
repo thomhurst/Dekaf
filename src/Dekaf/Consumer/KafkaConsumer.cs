@@ -6267,7 +6267,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             return;
 
         try { consumeCts.Cancel(); }
-        catch (ObjectDisposedException) { }
+        catch (ObjectDisposedException) { return; }
     }
 
     private void CancelActiveConsumeOperations()
@@ -6275,7 +6275,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         foreach (var cts in _activeConsumeCancellationSources.Keys)
         {
             try { cts.Cancel(); }
-            catch (ObjectDisposedException) { }
+            catch (ObjectDisposedException) { continue; }
         }
     }
 
