@@ -1675,6 +1675,8 @@ public sealed partial class ConnectionPool :
             return false;
         }
 
+        if (connection.BrokerId >= 0)
+            RecordBrokerConnectionStateChange(connection.BrokerId);
         return true;
     }
 
@@ -1704,9 +1706,17 @@ public sealed partial class ConnectionPool :
         var result = await DisposeIdleConnectionAsync(connection, index, now).ConfigureAwait(false);
         if (!result.Reaped && result.CanRestore && connection.IsConnected)
             Interlocked.CompareExchange(ref group[index], connection, null!);
+        else if (result.Reaped)
+            RecordBrokerConnectionStateChange(brokerId);
 
         return result.Reaped;
     }
+
+    private void RecordBrokerConnectionStateChange(int brokerId) =>
+        _brokerConnectionRuntimeStates.GetOrAdd(
+                brokerId,
+                static _ => new BrokerConnectionRuntimeState(Dekaf.MonotonicClock.GetMilliseconds()))
+            .RecordStateChange();
 
     private bool IsIdleReapable(IKafkaConnection connection, long now)
     {
@@ -1853,6 +1863,29 @@ public sealed partial class ConnectionPool :
         return result.AsReadOnly();
     }
 
+    IReadOnlyList<BrokerConnectionStatus> IConnectionPoolStatusSource.GetEndpointConnectionStatus(
+        IReadOnlyList<ConnectionStatusEndpoint> endpoints)
+    {
+        var capturedAtUtc = DateTimeOffset.UtcNow;
+        var capturedAtTimestampMs = Dekaf.MonotonicClock.GetMilliseconds();
+        var result = new List<BrokerConnectionStatus>(endpoints.Count);
+        for (var i = 0; i < endpoints.Count; i++)
+        {
+            var endpoint = endpoints[i];
+            var connections = default(ConnectionStatusAccumulator);
+            if (_connectionsByEndpoint.TryGetValue(new EndpointKey(endpoint.Host, endpoint.Port), out var connection))
+                AccumulateConnectionStatus(connection, ref connections);
+            result.Add(CreateBrokerConnectionStatus(
+                new BrokerInfo(endpoint.NodeId, endpoint.Host, endpoint.Port),
+                ref connections,
+                capturedAtTimestampMs,
+                capturedAtUtc));
+        }
+
+        result.Sort(static (left, right) => left.BrokerId.CompareTo(right.BrokerId));
+        return result.AsReadOnly();
+    }
+
     void IConnectionPoolStatusSource.UpdateBrokerStatusSnapshot(int[] brokerIds) =>
         Volatile.Write(ref _brokerStatusSnapshot, brokerIds);
 
@@ -1879,6 +1912,19 @@ public sealed partial class ConnectionPool :
             AccumulateConnectionStatus(connection, ref connections);
         }
 
+        return CreateBrokerConnectionStatus(
+            broker,
+            ref connections,
+            capturedAtTimestampMs,
+            capturedAtUtc);
+    }
+
+    private BrokerConnectionStatus CreateBrokerConnectionStatus(
+        BrokerInfo broker,
+        ref ConnectionStatusAccumulator connections,
+        long capturedAtTimestampMs,
+        DateTimeOffset capturedAtUtc)
+    {
         _brokerConnectionRuntimeStates.TryGetValue(broker.BrokerId, out var runtimeState);
         var lastErrorTimestampMs = runtimeState?.LastErrorTimestampMs ?? 0;
         connections.LastStateChangeTimestampMs = Math.Max(
@@ -2449,7 +2495,6 @@ public sealed partial class ConnectionPool :
             var timestampMs = Dekaf.MonotonicClock.GetMilliseconds();
             Volatile.Write(ref _lastError, error);
             Volatile.Write(ref _lastErrorTimestampMs, timestampMs);
-            Volatile.Write(ref _lastStateChangeTimestampMs, timestampMs);
         }
     }
 

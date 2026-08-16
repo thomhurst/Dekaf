@@ -99,6 +99,10 @@ public sealed class ConnectionPoolTests
             connectionFactory: (_, _, _, _, _) =>
                 ValueTask.FromException<IKafkaConnection>(new IOException("connection refused")));
         pool.RegisterBroker(7, "broker-a", 9092);
+        var stateChangeTimestamp = GetBrokerStateChangeTimestamp(pool, 7);
+        await Assert.That(SpinWait.SpinUntil(
+            () => MonotonicClock.GetMilliseconds() > stateChangeTimestamp,
+            TimeSpan.FromSeconds(1))).IsTrue();
 
         await Assert.ThrowsAsync<IOException>(async () => await pool.GetConnectionAsync(7));
 
@@ -106,6 +110,27 @@ public sealed class ConnectionPoolTests
         await Assert.That(status.State).IsEqualTo(BrokerConnectionState.Disconnected);
         await Assert.That(status.LastErrorAtUtc).IsNotNull();
         await Assert.That(status.LastError).IsEqualTo("connection refused");
+        await Assert.That(GetBrokerStateChangeTimestamp(pool, 7)).IsEqualTo(stateChangeTimestamp);
+    }
+
+    [Test]
+    public async Task StatusSnapshot_ReportsControllerEndpointConnection()
+    {
+        var connection = new TestIdleConnection(-1, "controller-a", 19093);
+        await using var pool = new ConnectionPool(
+            clientId: "status-test",
+            connectionOptions: new ConnectionOptions(),
+            connectionsPerBroker: 1,
+            connectionFactory: (_, _, _, _, _) => ValueTask.FromResult<IKafkaConnection>(connection));
+        _ = await pool.GetConnectionAsync("controller-a", 19093);
+
+        var status = ((IConnectionPoolStatusSource)pool).GetEndpointConnectionStatus(
+            [new ConnectionStatusEndpoint(2, "controller-a", 19093)]).Single();
+
+        await Assert.That(status.BrokerId).IsEqualTo(2);
+        await Assert.That(status.State).IsEqualTo(BrokerConnectionState.Connected);
+        await Assert.That(status.ConnectionCount).IsEqualTo(1);
+        await Assert.That(status.ConnectedConnectionCount).IsEqualTo(1);
     }
 
     [Test]
@@ -732,14 +757,20 @@ public sealed class ConnectionPoolTests
             pool.RegisterBroker(1, "localhost", 9092);
 
             var first = await pool.GetConnectionAsync(1);
+            var stateChangeBeforeReap = GetBrokerStateChangeTimestamp(pool, 1);
+            await Assert.That(SpinWait.SpinUntil(
+                () => MonotonicClock.GetMilliseconds() > stateChangeBeforeReap,
+                TimeSpan.FromSeconds(1))).IsTrue();
             created[0].LastUsedTimestampMs = StaleIdleTimestamp();
             var reaped = await pool.ReapIdleConnectionsAsync();
+            var stateChangeAfterReap = GetBrokerStateChangeTimestamp(pool, 1);
             var second = await pool.GetConnectionAsync(1);
 
             await Assert.That(reaped).IsEqualTo(1);
             await Assert.That(created.Count).IsEqualTo(2);
             await Assert.That(created[0].DisposeCount).IsEqualTo(1);
             await Assert.That(first).IsNotSameReferenceAs(second);
+            await Assert.That(stateChangeAfterReap).IsGreaterThan(stateChangeBeforeReap);
 
             var diagnostic = pool.GetConnectionReapDiagnosticsSnapshot().Single();
             await Assert.That(diagnostic.BrokerId).IsEqualTo(1);
@@ -2220,6 +2251,24 @@ public sealed class ConnectionPoolTests
         PrincipalName = "principal",
         Expiration = DateTimeOffset.UtcNow.AddHours(1)
     };
+
+    private static long GetBrokerStateChangeTimestamp(ConnectionPool pool, int brokerId)
+    {
+        var statesField = typeof(ConnectionPool).GetField(
+            "_brokerConnectionRuntimeStates",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Connection runtime-state field was not found.");
+        var states = statesField.GetValue(pool)
+            ?? throw new InvalidOperationException("Connection runtime-state dictionary was null.");
+        var indexer = states.GetType().GetProperty("Item")
+            ?? throw new InvalidOperationException("Connection runtime-state indexer was not found.");
+        var state = indexer.GetValue(states, [brokerId])
+            ?? throw new InvalidOperationException($"Connection runtime state for broker {brokerId} was not found.");
+        var timestampProperty = state.GetType().GetProperty("LastStateChangeTimestampMs")
+            ?? throw new InvalidOperationException("Connection state-change timestamp property was not found.");
+        return (long)(timestampProperty.GetValue(state)
+            ?? throw new InvalidOperationException("Connection state-change timestamp was null."));
+    }
 
     private static MemoryPool<byte> GetSharedPipeMemoryPool(ConnectionPool pool)
     {

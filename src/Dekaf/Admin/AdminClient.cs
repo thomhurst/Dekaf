@@ -171,12 +171,22 @@ public sealed class AdminClient : IAdminClient, IKafkaClientStatusProvider
         }
 
         var snapshot = controllerMetadataManager.Snapshot;
+        IReadOnlyList<BrokerConnectionStatus> brokers = Array.Empty<BrokerConnectionStatus>();
+        if (_connectionPool is IConnectionPoolStatusSource statusSource)
+        {
+            var endpoints = new ConnectionStatusEndpoint[snapshot.Controllers.Count];
+            var index = 0;
+            foreach (var endpoint in snapshot.Controllers.Values)
+                endpoints[index++] = new ConnectionStatusEndpoint(endpoint.NodeId, endpoint.Host, endpoint.Port);
+            brokers = statusSource.GetEndpointConnectionStatus(endpoints);
+        }
         return KafkaClientStatusFactory.Capture(
             KafkaClientRole.Admin,
             _connectionPool,
             snapshot.ClusterId,
             snapshot.LastRefreshed,
-            stopped);
+            stopped,
+            brokers: brokers);
     }
 
     private static void ValidateBootstrapOptions(AdminClientOptions options)

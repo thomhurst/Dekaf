@@ -75,8 +75,13 @@ internal interface IConnectionPoolStatusSource
 {
     IReadOnlyList<Diagnostics.BrokerConnectionStatus> GetBrokerConnectionStatus();
 
+    IReadOnlyList<Diagnostics.BrokerConnectionStatus> GetEndpointConnectionStatus(
+        IReadOnlyList<ConnectionStatusEndpoint> endpoints);
+
     void UpdateBrokerStatusSnapshot(int[] brokerIds);
 }
+
+internal readonly record struct ConnectionStatusEndpoint(int NodeId, string Host, int Port);
 
 internal interface IConnectionCapabilityObserverPool
 {

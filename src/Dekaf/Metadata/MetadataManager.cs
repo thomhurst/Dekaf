@@ -1071,14 +1071,14 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 // This matches the Java client's incremental metadata update behavior.
                 _metadata.Update(response, mergeTopics: topics is not null);
                 if (response.ErrorCode != ErrorCode.RebootstrapRequired)
+                {
                     UpdateMetadataClusterId(response.ClusterId);
 
-                // Register brokers with connection pool
-                foreach (var broker in response.Brokers)
-                {
-                    RegisterBroker(broker.NodeId, broker.Host, broker.Port);
+                    // Only trusted metadata may replace connection-routing diagnostics.
+                    foreach (var broker in response.Brokers)
+                        RegisterBroker(broker.NodeId, broker.Host, broker.Port);
+                    PublishBrokerStatusSnapshot(response.Brokers);
                 }
-                PublishBrokerStatusSnapshot(response.Brokers);
 
                 LogMetadataRefreshed(response.Brokers.Count, response.Topics.Count);
 

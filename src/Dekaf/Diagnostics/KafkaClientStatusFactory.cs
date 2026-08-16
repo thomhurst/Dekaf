@@ -29,7 +29,8 @@ internal static class KafkaClientStatusFactory
         DateTimeOffset metadataLastRefreshed,
         bool isStopped,
         ProducerBacklogStatus? producer = null,
-        ConsumerGroupStatus? consumerGroup = null)
+        ConsumerGroupStatus? consumerGroup = null,
+        IReadOnlyList<BrokerConnectionStatus>? brokers = null)
     {
         return new KafkaClientStatus
         {
@@ -40,9 +41,10 @@ internal static class KafkaClientStatusFactory
                 ? null
                 : metadataLastRefreshed,
             IsStopped = isStopped,
-            Brokers = connectionPool is IConnectionPoolStatusSource statusSource
-                ? statusSource.GetBrokerConnectionStatus()
-                : Array.Empty<BrokerConnectionStatus>(),
+            Brokers = brokers
+                ?? (connectionPool is IConnectionPoolStatusSource statusSource
+                    ? statusSource.GetBrokerConnectionStatus()
+                    : Array.Empty<BrokerConnectionStatus>()),
             Producer = producer,
             ConsumerGroup = consumerGroup
         };

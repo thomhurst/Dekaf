@@ -449,6 +449,68 @@ public class MetadataManagerTests
     }
 
     [Test]
+    public async Task RefreshMetadataAsync_RebootstrapRequired_PreservesTrustedBrokerStatus()
+    {
+        var connection = Substitute.For<IKafkaConnection>();
+        connection.IsConnected.Returns(true);
+        connection.BrokerId.Returns(-1);
+        connection.Host.Returns("bootstrap");
+        connection.Port.Returns(9092);
+        await using var pool = new ConnectionPool(
+            "metadata-status-test",
+            new ConnectionOptions(),
+            connectionsPerBroker: 1,
+            connectionFactory: (_, _, _, _, _) => ValueTask.FromResult(connection));
+        connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
+                Arg.Any<ApiVersionsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new ApiVersionsResponse
+            {
+                ErrorCode = ErrorCode.None,
+                ApiKeys =
+                [
+                    new ApiVersion(
+                        ApiKey.Metadata,
+                        MetadataRequest.LowestSupportedVersion,
+                        MetadataRequest.HighestSupportedVersion)
+                ]
+            });
+        var rejected = new MetadataResponse
+        {
+            ErrorCode = ErrorCode.RebootstrapRequired,
+            Brokers =
+            [
+                new BrokerMetadata { NodeId = 99, Host = "untrusted", Port = 9199 }
+            ],
+            Topics = Array.Empty<TopicMetadata>()
+        };
+        connection.SendAsync<MetadataRequest, MetadataResponse>(
+                Arg.Any<MetadataRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(
+                CreateMetadataResponse((1, "trusted", 9092)),
+                rejected);
+        await using var manager = new MetadataManager(
+            pool,
+            ["bootstrap:9092"],
+            new MetadataOptions
+            {
+                EnableBackgroundRefresh = false,
+                MetadataRecoveryStrategy = MetadataRecoveryStrategy.None
+            });
+
+        await manager.InitializeAsync();
+        var trustedStatus = ((IConnectionPoolStatusSource)pool).GetBrokerConnectionStatus();
+        await manager.RefreshMetadataAsync();
+        var rejectedStatus = ((IConnectionPoolStatusSource)pool).GetBrokerConnectionStatus();
+
+        await Assert.That(trustedStatus.Select(static broker => broker.BrokerId)).IsEquivalentTo([1]);
+        await Assert.That(rejectedStatus.Select(static broker => broker.BrokerId)).IsEquivalentTo([1]);
+    }
+
+    [Test]
     public async Task InitializeAsync_VersionlessConnection_UsesCompatibleApiVersionsV3()
     {
         var pool = Substitute.For<IConnectionPool>();

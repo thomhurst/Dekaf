@@ -16,14 +16,18 @@ public sealed class AdminClientControllerBootstrapTests
         await using var context = new ControllerAdminContext();
 
         var result = await context.Client.DescribeClusterAsync();
+        _ = await context.Pool.GetConnectionAsync("controller-2", 19094);
+        var status = context.Client.GetStatus();
 
         await Assert.That(result.ClusterId).IsEqualTo("cluster-a");
         await Assert.That(context.Client.ClusterId).IsEqualTo("cluster-a");
-        await Assert.That(context.Client.GetStatus().ClusterId).IsEqualTo("cluster-a");
-        await Assert.That(context.Client.GetStatus().MetadataLastRefreshedAtUtc).IsNotNull();
+        await Assert.That(status.ClusterId).IsEqualTo("cluster-a");
+        await Assert.That(status.MetadataLastRefreshedAtUtc).IsNotNull();
+        await Assert.That(status.Brokers.Select(static broker => broker.BrokerId)).IsEquivalentTo([1, 2]);
         await Assert.That(result.ControllerId).IsEqualTo(2);
         await Assert.That(result.Nodes.Select(static node => node.NodeId)).IsEquivalentTo([1, 2]);
-        context.Pool.DidNotReceiveWithAnyArgs().RegisterBroker(default, default!, default);
+        await Assert.That(async () => { _ = await context.Pool.GetConnectionAsync(1); })
+            .Throws<InvalidOperationException>();
         await Assert.That(context.DiscoveryRequests).IsEqualTo(1);
         await Assert.That(context.LastDiscoveryRequest!.EndpointType)
             .IsEqualTo(DescribeClusterEndpointType.Controller);
@@ -166,8 +170,6 @@ public sealed class AdminClientControllerBootstrapTests
             Arg.Any<DescribeQuorumRequest>(),
             Arg.Any<short>(),
             Arg.Any<CancellationToken>());
-        await context.Pool.DidNotReceiveWithAnyArgs()
-            .GetConnectionAsync(default(int), default);
     }
 
     [Test]
@@ -254,11 +256,12 @@ public sealed class AdminClientControllerBootstrapTests
             BootstrapController = CreateConnection("seed", 9093);
             ActiveController = CreateConnection("controller-2", 19094);
             OtherController = CreateConnection("controller-1", 19093);
-            Pool = Substitute.For<IConnectionPool>();
-            Pool.GetConnectionAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
-                .Returns(callInfo =>
+            Pool = new ConnectionPool(
+                "controller-admin-test",
+                new ConnectionOptions(),
+                connectionsPerBroker: 1,
+                connectionFactory: (_, host, _, _, _) =>
                 {
-                    var host = callInfo.ArgAt<string>(0);
                     return ValueTask.FromResult(host switch
                     {
                         "controller-1" => OtherController,
