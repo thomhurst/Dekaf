@@ -100,6 +100,9 @@ on:
         type: boolean
         default: true
 
+permissions:
+  contents: read
+
 # Scoped per lane+event so a cheap single-lane dispatch is not queued for hours
 # behind a full-matrix run. Publishing runs share the all-schedule group because
 # they update the same docs/history branch; other lanes use isolated VMs and
@@ -339,17 +342,17 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Checkout exact baseline
         if: matrix.baseline_sha != ''
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ matrix.baseline_sha }}
           path: baseline-source
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v6.0.0
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: '10.0.x'
 
@@ -616,7 +619,7 @@ jobs:
 
       - name: Upload Results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: results-${{ matrix.scenario }}-${{ matrix.brokers }}brokers${{ matrix.artifact_suffix }}
           path: |
@@ -626,7 +629,7 @@ jobs:
 
       - name: Upload exact baseline A-B-A controls
         if: always() && matrix.baseline_sha != ''
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: aba-controls-${{ matrix.scenario }}-${{ matrix.brokers }}brokers
           path: aba-results/
@@ -646,15 +649,15 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v6.0.0
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: '10.0.x'
 
       - name: Download All Results
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: results-*
           path: ./all-results
@@ -785,7 +788,7 @@ jobs:
 
       - name: Upload Merged Results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: stress-test-results-merged
           path: merged-results/
@@ -809,10 +812,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Download Merged Results
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: stress-test-results-merged
           path: ./results
@@ -826,7 +829,7 @@ jobs:
 
       - name: Create Pull Request
         id: create-pr
-        uses: peter-evans/create-pull-request@v8
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8
         with:
           commit-message: 'docs: Update stress test results'
           title: 'docs: Update stress test results'
