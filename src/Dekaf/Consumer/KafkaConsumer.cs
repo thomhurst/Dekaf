@@ -297,11 +297,11 @@ internal sealed class PendingFetchData : IDisposable
         return instance;
     }
 
-    private void AttachParsedRecordSlab(IReadOnlyList<RecordBatch> batches)
+    private void AttachParsedRecordSlab(IReadOnlyList<RecordBatch> batches, int batchCount)
     {
         var totalRecordCount = 0;
 
-        for (var i = 0; i < batches.Count; i++)
+        for (var i = 0; i < batchCount; i++)
         {
             var recordCount = batches[i].UnparsedLazyRecordCount;
             if (recordCount < 0 || recordCount > RecordBatch.MaxReasonableLazyRecordCount - totalRecordCount)
@@ -318,7 +318,7 @@ internal sealed class PendingFetchData : IDisposable
         _parsedRecordSlabOwner = slabPool;
         slab.AsSpan(0, totalRecordCount).Clear();
         var offset = 0;
-        for (var i = 0; i < batches.Count; i++)
+        for (var i = 0; i < batchCount; i++)
         {
             var batch = batches[i];
             var recordCount = batch.UnparsedLazyRecordCount;
@@ -468,7 +468,8 @@ internal sealed class PendingFetchData : IDisposable
     public IReadOnlyList<RecordBatch> GetBatches() => _batches;
 
     /// <summary>
-    /// Eagerly parses all records in all batches at once.
+    /// Eagerly parses all records in consumable batches at once. Snapshot batches wholly at
+    /// or beyond the captured end remain unparsed because they can never produce a record.
     /// Call before sequential consumption to avoid per-record lazy parse overhead
     /// (disposed check + bounds check + EnsureParsedUpTo call per indexer access).
     /// This is a per-batch cost amortized over all records in the batch.
@@ -484,11 +485,24 @@ internal sealed class PendingFetchData : IDisposable
         if (Interlocked.Exchange(ref _error, null) is { } error)
             throw error;
 
-        AttachParsedRecordSlab(_batches);
+        var batchCount = _batches.Count;
+        if (_stopAtOffsetExclusive >= 0)
+        {
+            for (var i = 0; i < batchCount; i++)
+            {
+                if (_batches[i].BaseOffset < _stopAtOffsetExclusive)
+                    continue;
+
+                batchCount = i;
+                break;
+            }
+        }
+
+        AttachParsedRecordSlab(_batches, batchCount);
 
         try
         {
-            for (var i = 0; i < _batches.Count; i++)
+            for (var i = 0; i < batchCount; i++)
             {
                 var batch = _batches[i];
                 batch.EnsureAllRecordsParsed();
@@ -1385,6 +1399,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     // Cold capability state stays at the tail so normal consume field layout remains stable.
     private SnapshotConsumeState? _activeSnapshot;
     private int _snapshotOperationActive;
+    private readonly object _snapshotStateGate = new();
 
     private static readonly long s_preferredReadReplicaMaxAgeTimestampDelta =
         (long)(TimeSpan.FromMinutes(5).TotalSeconds * Stopwatch.Frequency);
@@ -2270,6 +2285,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             await RecordPollAsync(cancellationToken).ConfigureAwait(false);
             await EnsureAssignmentForPollAsync(cancellationToken).ConfigureAwait(false);
+            ProvePriorDeliveryForSnapshot();
             snapshot = await CaptureSnapshotStateAsync(cancellationToken).ConfigureAwait(false);
             if (snapshot.IsComplete)
                 yield break;
@@ -2432,6 +2448,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
     }
 
+    private void ProvePriorDeliveryForSnapshot()
+    {
+        lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+        {
+            if (_pendingFetches.Count == 0)
+                return;
+
+            var priorPending = _pendingFetches.Peek();
+            priorPending.MarkYieldedProcessed();
+            FlushConsumedPositions(priorPending);
+        }
+    }
+
     private void ResetFetchBufferAfterAbortedSnapshot(SnapshotConsumeState snapshot)
     {
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
@@ -2459,17 +2488,21 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         long endOffset,
         int leaderEpoch)
     {
-        if (!snapshot.Complete(partition))
-            return;
-
-        LogSeek(partition.Topic, partition.Partition, endOffset);
-        lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+        lock (_snapshotStateGate)
         {
-            SeekLocked(new TopicPartitionOffset(
-                partition.Topic,
-                partition.Partition,
-                endOffset,
-                leaderEpoch));
+            snapshot.ThrowIfConsumerStateChanged(_assignmentSnapshot, _pausedSnapshot);
+            if (!snapshot.Complete(partition))
+                return;
+
+            LogSeek(partition.Topic, partition.Partition, endOffset);
+            lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+            {
+                SeekLocked(new TopicPartitionOffset(
+                    partition.Topic,
+                    partition.Partition,
+                    endOffset,
+                    leaderEpoch));
+            }
         }
         InvalidatePartitionCache();
     }
@@ -2762,7 +2795,21 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                 }
                             }
 
-                            TrackConsumedPosition(pending, offset, messageBytes);
+                            if (hasAsyncDeserializers &&
+                                Volatile.Read(ref _activeSnapshot) is { } deserializedSnapshot)
+                            {
+                                lock (_snapshotStateGate)
+                                {
+                                    deserializedSnapshot.ThrowIfConsumerStateChanged(
+                                        _assignmentSnapshot,
+                                        _pausedSnapshot);
+                                    TrackConsumedPosition(pending, offset, messageBytes);
+                                }
+                            }
+                            else
+                            {
+                                TrackConsumedPosition(pending, offset, messageBytes);
+                            }
                             // Committable state advances only at fetch-boundary flushes; see
                             // AutoCommitLoopAsync for the offset-safety contract this preserves.
 
@@ -7887,14 +7934,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private void PublishAssignmentSnapshot()
     {
         var assignmentSnapshot = new HashSet<TopicPartition>(_assignment);
-        _batchIterationEpoch.BeginPublication();
-        try
+        lock (_snapshotStateGate)
         {
-            _assignmentSnapshot = assignmentSnapshot;
-        }
-        finally
-        {
-            _batchIterationEpoch.EndPublication();
+            _batchIterationEpoch.BeginPublication();
+            try
+            {
+                _assignmentSnapshot = assignmentSnapshot;
+            }
+            finally
+            {
+                _batchIterationEpoch.EndPublication();
+            }
         }
         Interlocked.Increment(ref _assignmentEnsureVersion);
         Volatile.Write(ref _lastCoordinatorAssignmentVersion, -1);
@@ -7916,15 +7966,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// </summary>
     private void PublishPausedSnapshot()
     {
-        _batchIterationEpoch.BeginPublication();
-        try
+        var pausedSnapshot = _paused.Keys.ToHashSet();
+        lock (_snapshotStateGate)
         {
-            _pausedSnapshot = _paused.Keys.ToHashSet();
-            Interlocked.Increment(ref _pausedSnapshotVersion);
-        }
-        finally
-        {
-            _batchIterationEpoch.EndPublication();
+            _batchIterationEpoch.BeginPublication();
+            try
+            {
+                _pausedSnapshot = pausedSnapshot;
+                Interlocked.Increment(ref _pausedSnapshotVersion);
+            }
+            finally
+            {
+                _batchIterationEpoch.EndPublication();
+            }
         }
     }
 

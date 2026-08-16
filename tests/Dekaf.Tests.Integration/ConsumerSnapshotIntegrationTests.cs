@@ -1,7 +1,9 @@
+using System.Text;
 using Dekaf.Admin;
 using Dekaf.Consumer;
 using Dekaf.Producer;
 using Dekaf.Protocol.Messages;
+using Dekaf.Serialization;
 
 namespace Dekaf.Tests.Integration;
 
@@ -134,6 +136,90 @@ public sealed class ConsumerSnapshotIntegrationTests(KafkaTestContainer kafka)
             .Throws<InvalidOperationException>();
         await Assert.That(() => consumer.SeekToEnd(partition))
             .Throws<InvalidOperationException>();
+    }
+
+    [Test]
+    public async Task ConsumeSnapshotAsync_PauseDuringAsyncDeserializationDoesNotAdvance()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
+        await ProduceRangeAsync(topic, partition: 0, count: 1).ConfigureAwait(false);
+        var deserializer = new BlockingAsyncDeserializer(blockOnCall: 1);
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithQueuedMinMessages(1)
+            .WithValueDeserializer(deserializer)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync().ConfigureAwait(false);
+        var partition = new TopicPartition(topic, 0);
+        consumer.Partitions.Assign(partition);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await using var snapshot = consumer.ConsumeSnapshotAsync(timeout.Token).GetAsyncEnumerator();
+        var moveNext = snapshot.MoveNextAsync().AsTask();
+        await deserializer.WaitUntilBlockedAsync(timeout.Token).ConfigureAwait(false);
+
+        consumer.Partitions.Pause(partition);
+        deserializer.Release();
+
+        await Assert.That(async () => await moveNext.ConfigureAwait(false))
+            .Throws<InvalidOperationException>();
+        await Assert.That(consumer.Positions.GetPosition(partition)).IsEqualTo(0L);
+    }
+
+    [Test]
+    public async Task ConsumeSnapshotAsync_StateChangeAfterFinalYieldThrows()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
+        await ProduceRangeAsync(topic, partition: 0, count: 1).ConfigureAwait(false);
+        await using var consumer = await CreateConsumerAsync(queuedMinMessages: 1).ConfigureAwait(false);
+        var partition = new TopicPartition(topic, 0);
+        consumer.Partitions.Assign(partition);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await using var snapshot = consumer.ConsumeSnapshotAsync(timeout.Token).GetAsyncEnumerator();
+        await Assert.That(await snapshot.MoveNextAsync()).IsTrue();
+
+        consumer.Partitions.Pause(partition);
+
+        await Assert.That(async () => await snapshot.MoveNextAsync().AsTask())
+            .Throws<InvalidOperationException>();
+    }
+
+    [Test]
+    public async Task ConsumeSnapshotAsync_CanceledStartProvesPriorDelivery()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
+        await ProduceRangeAsync(topic, partition: 0, count: 2).ConfigureAwait(false);
+        var groupId = $"snapshot-prior-delivery-{Guid.NewGuid():N}";
+        var deserializer = new BlockingAsyncDeserializer(blockOnCall: 2);
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId(groupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithQueuedMinMessages(1)
+            .WithValueDeserializer(deserializer)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync().ConfigureAwait(false);
+        var partition = new TopicPartition(topic, 0);
+        consumer.Subscribe(topic);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        await using (var normal = consumer.ConsumeAsync(timeout.Token).GetAsyncEnumerator())
+        {
+            await Assert.That(await normal.MoveNextAsync()).IsTrue();
+            await Assert.That(normal.Current.Offset).IsEqualTo(0L);
+        }
+
+        using var snapshotCancellation = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token);
+        await using var snapshot = consumer.ConsumeSnapshotAsync(snapshotCancellation.Token).GetAsyncEnumerator();
+        var moveNext = snapshot.MoveNextAsync().AsTask();
+        await deserializer.WaitUntilBlockedAsync(timeout.Token).ConfigureAwait(false);
+        snapshotCancellation.Cancel();
+        deserializer.Release();
+        await Assert.That(async () => await moveNext.ConfigureAwait(false))
+            .Throws<OperationCanceledException>();
+
+        await consumer.CommitAsync(timeout.Token).ConfigureAwait(false);
+        var committed = await consumer.GetCommittedOffsetAsync(partition, timeout.Token).ConfigureAwait(false);
+        await Assert.That(committed).IsEqualTo(1L);
     }
 
     [Test]
@@ -327,5 +413,33 @@ public sealed class ConsumerSnapshotIntegrationTests(KafkaTestContainer kafka)
 
         public Task WaitForRevocationAsync(CancellationToken cancellationToken) =>
             _revoked.Task.WaitAsync(cancellationToken);
+    }
+
+    private sealed class BlockingAsyncDeserializer(int blockOnCall) : IAsyncDeserializer<string>
+    {
+        private readonly TaskCompletionSource _blocked = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _release = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _callCount;
+
+        public async ValueTask<string> DeserializeAsync(
+            ReadOnlyMemory<byte> data,
+            SerializationContext context,
+            CancellationToken cancellationToken = default)
+        {
+            if (Interlocked.Increment(ref _callCount) == blockOnCall)
+            {
+                _blocked.TrySetResult();
+                await _release.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            return Encoding.UTF8.GetString(data.Span);
+        }
+
+        public Task WaitUntilBlockedAsync(CancellationToken cancellationToken) =>
+            _blocked.Task.WaitAsync(cancellationToken);
+
+        public void Release() => _release.TrySetResult();
     }
 }

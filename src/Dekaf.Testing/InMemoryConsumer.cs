@@ -458,8 +458,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 {
                     ThrowIfSnapshotStateChangedUnderLock(
                         consumerStateVersion,
-                        partitions,
-                        ref consumerGroupGeneration);
+                        consumerGroupGeneration);
 
                     ProveInDoubtRecordUnderLock();
                     if (!TrySelectSnapshotRecordUnderLock(
@@ -491,8 +490,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                         record,
                         position,
                         consumerStateVersion,
-                        partitions,
-                        ref consumerGroupGeneration))
+                        consumerGroupGeneration))
                     continue;
 
                 yield return result;
@@ -1016,8 +1014,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
     private void ThrowIfSnapshotStateChangedUnderLock(
         int consumerStateVersion,
-        SnapshotPartitionBound[] partitions,
-        ref int consumerGroupGeneration)
+        int consumerGroupGeneration)
     {
         if (_consumerStateVersion != consumerStateVersion)
             ThrowSnapshotStateChanged();
@@ -1030,17 +1027,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             return;
         }
 
-        var assignment = GetCurrentAssignmentUnderLock(out var currentGeneration);
-        if (assignment.Count != partitions.Length)
-            ThrowSnapshotStateChanged();
-
-        for (var i = 0; i < partitions.Length; i++)
-        {
-            if (!assignment.Contains(partitions[i].Partition))
-                ThrowSnapshotStateChanged();
-        }
-
-        consumerGroupGeneration = currentGeneration;
+        ThrowSnapshotStateChanged();
     }
 
     [DoesNotReturn]
@@ -1145,15 +1132,13 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         InMemoryRecord record,
         long expectedPosition,
         int consumerStateVersion,
-        SnapshotPartitionBound[] partitions,
-        ref int consumerGroupGeneration)
+        int consumerGroupGeneration)
     {
         lock (_gate)
         {
             ThrowIfSnapshotStateChangedUnderLock(
                 consumerStateVersion,
-                partitions,
-                ref consumerGroupGeneration);
+                consumerGroupGeneration);
             if (!_positions.TryGetValue(partition, out var currentPosition) || currentPosition != expectedPosition)
                 return false;
 

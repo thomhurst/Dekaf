@@ -146,6 +146,27 @@ public sealed class InMemoryBoundedConsumerTests
     }
 
     [Test]
+    public async Task ConsumeSnapshotAsync_GroupAssignmentAbaChangeThrows()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("events");
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await ProduceRangeAsync(producer, "events", partition: 0, count: 3);
+        await using var first = CreateGroupConsumer(cluster, "a");
+        first.Subscribe("events");
+        await using var snapshot = first.ConsumeSnapshotAsync().GetAsyncEnumerator();
+        await Assert.That(await snapshot.MoveNextAsync()).IsTrue();
+
+        await using (var second = CreateGroupConsumer(cluster, "b"))
+        {
+            second.Subscribe("events");
+        }
+
+        await Assert.That(async () => await snapshot.MoveNextAsync().AsTask())
+            .Throws<InvalidOperationException>();
+    }
+
+    [Test]
     public async Task ConsumeSnapshotAsync_AssignmentChangeThrows()
     {
         var cluster = new InMemoryKafkaCluster();

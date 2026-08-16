@@ -146,6 +146,28 @@ public sealed class SnapshotConsumptionTests
     }
 
     [Test]
+    public async Task SnapshotBound_DoesNotEagerlyParseWholePostBoundLazyBatch()
+    {
+        var records = LazyRecordList.Create(new byte[] { 0x02 }, count: 1024);
+        var batch = new RecordBatch
+        {
+            BaseOffset = 100,
+            LastOffsetDelta = records.Count - 1,
+            Records = records
+        };
+        using var pending = PendingFetchData.Create(
+            Partition0.Topic,
+            Partition0.Partition,
+            [batch],
+            stopAtOffsetExclusive: 50);
+
+        pending.EagerParseAll();
+
+        await Assert.That(pending.MoveNext()).IsFalse();
+        await Assert.That(pending.IsExhausted).IsTrue();
+    }
+
+    [Test]
     public async Task DiscardedSnapshotEndMarker_CanBeQueuedAgain()
     {
         var state = new SnapshotConsumeState(new Dictionary<TopicPartition, long>
