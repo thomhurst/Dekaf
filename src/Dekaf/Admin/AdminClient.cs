@@ -153,14 +153,31 @@ public sealed class AdminClient : IAdminClient, IKafkaClientStatusProvider
     public ClusterMetadata Metadata => _metadataManager.Metadata;
 
     /// <inheritdoc />
-    public string? ClusterId => _metadataManager.ClusterId;
+    public string? ClusterId => _controllerMetadataManager is { } controllerMetadataManager
+        ? controllerMetadataManager.Snapshot.ClusterId
+        : _metadataManager.ClusterId;
 
     /// <inheritdoc />
-    public KafkaClientStatus GetStatus() => KafkaClientStatusFactory.Capture(
-        KafkaClientRole.Admin,
-        _connectionPool,
-        _metadataManager,
-        Volatile.Read(ref _disposed) != 0);
+    public KafkaClientStatus GetStatus()
+    {
+        var stopped = Volatile.Read(ref _disposed) != 0;
+        if (_controllerMetadataManager is not { } controllerMetadataManager)
+        {
+            return KafkaClientStatusFactory.Capture(
+                KafkaClientRole.Admin,
+                _connectionPool,
+                _metadataManager,
+                stopped);
+        }
+
+        var snapshot = controllerMetadataManager.Snapshot;
+        return KafkaClientStatusFactory.Capture(
+            KafkaClientRole.Admin,
+            _connectionPool,
+            snapshot.ClusterId,
+            snapshot.LastRefreshed,
+            stopped);
+    }
 
     private static void ValidateBootstrapOptions(AdminClientOptions options)
     {

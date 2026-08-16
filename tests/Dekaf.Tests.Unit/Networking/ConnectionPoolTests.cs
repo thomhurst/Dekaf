@@ -110,7 +110,7 @@ public sealed class ConnectionPoolTests
         var status = ((IConnectionPoolStatusSource)pool).GetBrokerConnectionStatus().Single();
         await Assert.That(status.State).IsEqualTo(BrokerConnectionState.Disconnected);
         await Assert.That(status.LastErrorAtUtc).IsNotNull();
-        await Assert.That(status.LastError).IsEqualTo("Connection attempt failed.");
+        await Assert.That(status.LastError).IsEqualTo("connection refused");
     }
 
     [Test]
@@ -1032,6 +1032,10 @@ public sealed class ConnectionPoolTests
             await Assert.That(connection1).IsSameReferenceAs(scaledConnections[1]);
             await Assert.That(connection2).IsSameReferenceAs(scaledConnections[2]);
             await Assert.That(connection0).IsNotSameReferenceAs(originalSingleConnection);
+
+            var status = ((IConnectionPoolStatusSource)pool).GetBrokerConnectionStatus().Single();
+            await Assert.That(status.ConnectionCount).IsEqualTo(scaledCount + 1);
+            await Assert.That(status.ConnectedConnectionCount).IsEqualTo(scaledCount + 1);
         }
     }
 

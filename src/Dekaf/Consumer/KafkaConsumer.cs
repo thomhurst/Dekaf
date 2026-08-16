@@ -1753,7 +1753,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     public KafkaClientStatus GetStatus()
     {
         var stopped = Volatile.Read(ref _closed) != 0 || Volatile.Read(ref _consumerDisposed) != 0;
-        var hasConsumerGroup = _topicPattern is not null || _subscriptionSnapshot.Count != 0;
+        var hasConsumerGroup = _topicFilter is not null
+            || _topicPattern is not null
+            || _subscriptionSnapshot.Count != 0;
         var consumerGroup = hasConsumerGroup
             ? _coordinator?.CaptureGroupStatus()
             : null;

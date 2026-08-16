@@ -12,16 +12,33 @@ internal static class KafkaClientStatusFactory
         MetadataManager metadataManager,
         bool isStopped,
         ProducerBacklogStatus? producer = null,
+        ConsumerGroupStatus? consumerGroup = null) =>
+        Capture(
+            role,
+            connectionPool,
+            metadataManager.ClusterId,
+            metadataManager.Metadata.LastRefreshed,
+            isStopped,
+            producer,
+            consumerGroup);
+
+    public static KafkaClientStatus Capture(
+        KafkaClientRole role,
+        IConnectionPool connectionPool,
+        string? clusterId,
+        DateTimeOffset metadataLastRefreshed,
+        bool isStopped,
+        ProducerBacklogStatus? producer = null,
         ConsumerGroupStatus? consumerGroup = null)
     {
-        var metadata = metadataManager.Metadata;
-        var lastRefreshed = metadata.LastRefreshed;
         return new KafkaClientStatus
         {
             CapturedAtUtc = DateTimeOffset.UtcNow,
             Role = role,
-            ClusterId = metadataManager.ClusterId,
-            MetadataLastRefreshedAtUtc = lastRefreshed == default ? null : lastRefreshed,
+            ClusterId = clusterId,
+            MetadataLastRefreshedAtUtc = metadataLastRefreshed == default
+                ? null
+                : metadataLastRefreshed,
             IsStopped = isStopped,
             Brokers = connectionPool is IConnectionPoolStatusSource statusSource
                 ? statusSource.GetBrokerConnectionStatus()

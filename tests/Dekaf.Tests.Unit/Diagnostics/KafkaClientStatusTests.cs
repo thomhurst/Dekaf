@@ -74,6 +74,25 @@ public sealed class KafkaClientStatusTests
     }
 
     [Test]
+    public async Task ConsumerStatus_TopicFilterReportsGroupParticipation()
+    {
+        await using var consumer = new KafkaConsumer<string, string>(
+            new ConsumerOptions
+            {
+                BootstrapServers = ["localhost:9092"],
+                ClientId = "status-consumer",
+                GroupId = "filter-group"
+            },
+            Serializers.String,
+            Serializers.String);
+        consumer.Subscribe(static topic => topic.StartsWith("orders-", StringComparison.Ordinal));
+
+        var group = consumer.GetStatus().ConsumerGroup!;
+
+        await Assert.That(group.HasConsumerGroup).IsTrue();
+    }
+
+    [Test]
     public async Task SharedClients_ReportCachedClusterIdentityDuringConcurrentRefreshes()
     {
         await using var client = Kafka.Connect("localhost:9092");

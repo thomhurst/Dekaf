@@ -616,9 +616,10 @@ public sealed partial class ConnectionPool :
             success = true;
             return connections[0];
         }
-        catch when (!cancellationToken.IsCancellationRequested)
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
         {
-            RecordConnectionAttemptFailure(setupKey, brokerId, brokerInfo.Host, brokerInfo.Port);
+            RecordConnectionAttemptFailure(
+                setupKey, brokerId, brokerInfo.Host, brokerInfo.Port, ex.Message);
             throw;
         }
         finally
@@ -741,13 +742,13 @@ public sealed partial class ConnectionPool :
                     ThrowIfGroupConnectionDisconnected(connection, brokerId);
                 }
             }
-            catch
+            catch (Exception ex)
             {
                 // Close any successfully created connections to avoid leaking TCP handles.
                 await DisposeCompletedTaskConnectionsAsync(tasks).ConfigureAwait(false);
                 if (!cancellationToken.IsCancellationRequested)
                     RecordConnectionAttemptFailure(
-                        setupKey, brokerId, brokerInfo.Host, brokerInfo.Port);
+                        setupKey, brokerId, brokerInfo.Host, brokerInfo.Port, ex.Message);
                 throw;
             }
 
@@ -916,12 +917,14 @@ public sealed partial class ConnectionPool :
                 try { await connection.DisposeAsync().ConfigureAwait(false); }
                 catch { /* best-effort cleanup of a disconnected replacement */ }
 
+                var exception = CreateDisconnectedGroupConnectionException(brokerId);
                 RecordReconnectFailure(
                     new ConnectionSetupKey(brokerId, brokerInfo.Host, brokerInfo.Port),
                     brokerId,
                     brokerInfo.Host,
-                    brokerInfo.Port);
-                throw CreateDisconnectedGroupConnectionException(brokerId);
+                    brokerInfo.Port,
+                    exception.Message);
+                throw exception;
             }
 
             // Acquire _scaleLock to protect the array write against concurrent
@@ -1179,7 +1182,12 @@ public sealed partial class ConnectionPool :
                 try { await connection.DisposeAsync().ConfigureAwait(false); }
                 catch { /* best-effort cleanup */ }
 
-                RecordReconnectFailure(setupKey, brokerId, host, port);
+                RecordReconnectFailure(
+                    setupKey,
+                    brokerId,
+                    host,
+                    port,
+                    "Connection closed during setup.");
             }
 
             throw new InvalidOperationException($"Failed to create connection after {MaxRetries} retries");
@@ -1311,22 +1319,24 @@ public sealed partial class ConnectionPool :
         {
             timeoutCts.Cancel();
             ObserveLateConnectionSetup(connectionTask);
+            var exception = CreateConnectionSetupTimeoutException(timeout, brokerId, host, port);
             if (recordFailure)
-                RecordConnectionAttemptFailure(setupKey, brokerId, host, port);
-            throw CreateConnectionSetupTimeoutException(timeout, brokerId, host, port);
+                RecordConnectionAttemptFailure(setupKey, brokerId, host, port, exception.Message);
+            throw exception;
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !callerCancellationToken.IsCancellationRequested)
         {
             ObserveLateConnectionSetup(connectionTask);
+            var exception = CreateConnectionSetupTimeoutException(timeout, brokerId, host, port);
             if (recordFailure)
-                RecordConnectionAttemptFailure(setupKey, brokerId, host, port);
-            throw CreateConnectionSetupTimeoutException(timeout, brokerId, host, port);
+                RecordConnectionAttemptFailure(setupKey, brokerId, host, port, exception.Message);
+            throw exception;
         }
-        catch (OperationCanceledException) when (operationCancellationToken.IsCancellationRequested && !callerCancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException ex) when (operationCancellationToken.IsCancellationRequested && !callerCancellationToken.IsCancellationRequested)
         {
             ObserveLateConnectionSetup(connectionTask);
             if (recordFailure)
-                RecordConnectionAttemptFailure(setupKey, brokerId, host, port);
+                RecordConnectionAttemptFailure(setupKey, brokerId, host, port, ex.Message);
             throw;
         }
         catch (OperationCanceledException) when (callerCancellationToken.IsCancellationRequested)
@@ -1336,11 +1346,11 @@ public sealed partial class ConnectionPool :
             ObserveLateConnectionSetup(connectionTask, trackDisposal: false);
             throw;
         }
-        catch (Exception)
+        catch (Exception ex)
         {
             ObserveLateConnectionSetup(connectionTask);
             if (recordFailure)
-                RecordConnectionAttemptFailure(setupKey, brokerId, host, port);
+                RecordConnectionAttemptFailure(setupKey, brokerId, host, port, ex.Message);
             throw;
         }
     }
@@ -1429,10 +1439,11 @@ public sealed partial class ConnectionPool :
         ConnectionSetupKey setupKey,
         int brokerId,
         string host,
-        int port)
+        int port,
+        string error)
     {
         RecordConnectionSetupFailure(setupKey);
-        RecordReconnectFailure(setupKey, brokerId, host, port);
+        RecordReconnectFailure(setupKey, brokerId, host, port, error);
     }
 
     private void ResetConnectionSetupTimeout(ConnectionSetupKey setupKey)
@@ -1521,14 +1532,19 @@ public sealed partial class ConnectionPool :
         }
     }
 
-    private void RecordReconnectFailure(ConnectionSetupKey setupKey, int brokerId, string host, int port)
+    private void RecordReconnectFailure(
+        ConnectionSetupKey setupKey,
+        int brokerId,
+        string host,
+        int port,
+        string error)
     {
         if (brokerId >= 0)
         {
             _brokerConnectionRuntimeStates.GetOrAdd(
                     brokerId,
                     static _ => new BrokerConnectionRuntimeState(Dekaf.MonotonicClock.GetMilliseconds()))
-                .RecordFailure();
+                .RecordFailure(error);
         }
 
         var state = _reconnectBackoffs.GetOrAdd(setupKey, static _ => new ReconnectBackoffState());
@@ -1819,9 +1835,10 @@ public sealed partial class ConnectionPool :
             var lastSuccessfulRequestTimestampMs = 0L;
             var lastStateChangeTimestampMs = 0L;
 
-            if (_connectionGroupsById.TryGetValue(broker.BrokerId, out var group))
+            _connectionGroupsById.TryGetValue(broker.BrokerId, out var group);
+            if (group is not null)
             {
-                connectionCount = group.Length;
+                connectionCount += group.Length;
                 for (var i = 0; i < group.Length; i++)
                 {
                     AccumulateConnectionStatus(
@@ -1832,9 +1849,10 @@ public sealed partial class ConnectionPool :
                         ref lastStateChangeTimestampMs);
                 }
             }
-            else if (_connectionsById.TryGetValue(broker.BrokerId, out var connection))
+            if (_connectionsById.TryGetValue(broker.BrokerId, out var connection)
+                && !ContainsReference(group, connection))
             {
-                connectionCount = 1;
+                connectionCount++;
                 AccumulateConnectionStatus(
                     connection,
                     ref connectedCount,
@@ -1898,6 +1916,20 @@ public sealed partial class ConnectionPool :
         lastStateChangeTimestampMs = Math.Max(
             lastStateChangeTimestampMs,
             statusSource.LastConnectionStateChangeTimestampMs);
+    }
+
+    private static bool ContainsReference(IKafkaConnection[]? connections, IKafkaConnection candidate)
+    {
+        if (connections is null)
+            return false;
+
+        for (var i = 0; i < connections.Length; i++)
+        {
+            if (ReferenceEquals(connections[i], candidate))
+                return true;
+        }
+
+        return false;
     }
 
     private static DateTimeOffset? ToUtcTimestamp(
@@ -2391,10 +2423,10 @@ public sealed partial class ConnectionPool :
         public void RecordStateChange() =>
             Volatile.Write(ref _lastStateChangeTimestampMs, Dekaf.MonotonicClock.GetMilliseconds());
 
-        public void RecordFailure()
+        public void RecordFailure(string error)
         {
             var timestampMs = Dekaf.MonotonicClock.GetMilliseconds();
-            Volatile.Write(ref _lastError, "Connection attempt failed.");
+            Volatile.Write(ref _lastError, error);
             Volatile.Write(ref _lastErrorTimestampMs, timestampMs);
             Volatile.Write(ref _lastStateChangeTimestampMs, timestampMs);
         }

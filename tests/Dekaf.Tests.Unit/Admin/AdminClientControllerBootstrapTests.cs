@@ -18,6 +18,9 @@ public sealed class AdminClientControllerBootstrapTests
         var result = await context.Client.DescribeClusterAsync();
 
         await Assert.That(result.ClusterId).IsEqualTo("cluster-a");
+        await Assert.That(context.Client.ClusterId).IsEqualTo("cluster-a");
+        await Assert.That(context.Client.GetStatus().ClusterId).IsEqualTo("cluster-a");
+        await Assert.That(context.Client.GetStatus().MetadataLastRefreshedAtUtc).IsNotNull();
         await Assert.That(result.ControllerId).IsEqualTo(2);
         await Assert.That(result.Nodes.Select(static node => node.NodeId)).IsEquivalentTo([1, 2]);
         context.Pool.DidNotReceiveWithAnyArgs().RegisterBroker(default, default!, default);
