@@ -15,6 +15,13 @@ const config = {
 
   headTags: [
     {
+      tagName: 'meta',
+      attributes: {
+        name: 'algolia-site-verification',
+        content: '6EB30557717AAEE5',
+      },
+    },
+    {
       tagName: 'script',
       attributes: {},
       innerHTML: `window.tlumaConfig = {
