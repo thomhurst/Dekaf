@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Collections.ObjectModel;
+using System.Text;
 using Avro.Generic;
 using Avro.Specific;
 using BenchmarkDotNet.Attributes;
@@ -70,6 +71,22 @@ public class AvroSchemaRegistrySerializerBenchmarks
         }
         """;
 
+    private const string ConditionalLogicalUnionSchema =
+        """
+        {
+          "type": "record",
+          "name": "ConditionalLogicalUnionBenchmarkRecord",
+          "namespace": "Dekaf.Benchmarks",
+          "fields": [{
+            "name": "value",
+            "type": [
+              { "type": "bytes", "logicalType": "dekaf-benchmark-string-bytes" },
+              "string"
+            ]
+          }]
+        }
+        """;
+
     private AvroSchemaRegistrySerializer<GenericRecord> _serializer = null!;
     private AvroSchemaRegistrySerializer<SpecificBenchmarkRecord> _specificSerializer = null!;
     private GenericRecord[] _equivalentRecords = null!;
@@ -78,6 +95,7 @@ public class AvroSchemaRegistrySerializerBenchmarks
     private GenericRecord _nullableIntCollectionRecord = null!;
     private GenericRecord _scalarUnionRecord = null!;
     private GenericRecord _dictionaryMapRecord = null!;
+    private GenericRecord _conditionalLogicalUnionRecord = null!;
     private SpecificBenchmarkRecord _specificRecord = null!;
     private ArrayBufferWriter<byte> _serializeBuffer = null!;
     private GenericRecord _stableRecord = null!;
@@ -87,6 +105,7 @@ public class AvroSchemaRegistrySerializerBenchmarks
     [GlobalSetup]
     public void Setup()
     {
+        Avro.Util.LogicalTypeFactory.Instance.Register(new BenchmarkStringBytesLogicalType());
         _serializer = new AvroSchemaRegistrySerializer<GenericRecord>(new BenchmarkSchemaRegistryClient());
         _specificSerializer = new AvroSchemaRegistrySerializer<SpecificBenchmarkRecord>(
             new BenchmarkSchemaRegistryClient());
@@ -106,6 +125,7 @@ public class AvroSchemaRegistrySerializerBenchmarks
         _nullableIntCollectionRecord = CreateNullableIntCollectionRecord();
         _scalarUnionRecord = CreateScalarUnionRecord();
         _dictionaryMapRecord = CreateDictionaryMapRecord();
+        _conditionalLogicalUnionRecord = CreateConditionalLogicalUnionRecord();
         _specificRecord = new SpecificBenchmarkRecord { Id = 42, Name = "benchmark" };
         _serializeBuffer = new ArrayBufferWriter<byte>();
         _serializer.Serialize(_stableRecord, ref _serializeBuffer, _context);
@@ -117,6 +137,8 @@ public class AvroSchemaRegistrySerializerBenchmarks
         _serializer.Serialize(_scalarUnionRecord, ref _serializeBuffer, _context);
         _serializeBuffer.ResetWrittenCount();
         _serializer.Serialize(_dictionaryMapRecord, ref _serializeBuffer, _context);
+        _serializeBuffer.ResetWrittenCount();
+        _serializer.Serialize(_conditionalLogicalUnionRecord, ref _serializeBuffer, _context);
         _serializeBuffer.ResetWrittenCount();
         _specificSerializer.Serialize(_specificRecord, ref _serializeBuffer, _context);
     }
@@ -178,6 +200,13 @@ public class AvroSchemaRegistrySerializerBenchmarks
     {
         _serializeBuffer.ResetWrittenCount();
         _serializer.Serialize(_dictionaryMapRecord, ref _serializeBuffer, _context);
+    }
+
+    [Benchmark(Description = "Serialize conditional-logical union fallback")]
+    public void SerializeConditionalLogicalUnionFallback()
+    {
+        _serializeBuffer.ResetWrittenCount();
+        _serializer.Serialize(_conditionalLogicalUnionRecord, ref _serializeBuffer, _context);
     }
 
     [Benchmark(Description = "Control: Apache writer prepared SpecificRecord")]
@@ -244,6 +273,29 @@ public class AvroSchemaRegistrySerializerBenchmarks
         return record;
     }
 
+    private static GenericRecord CreateConditionalLogicalUnionRecord()
+    {
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(ConditionalLogicalUnionSchema);
+        var record = new GenericRecord(schema);
+        record.Add("value", "primitive-value");
+        return record;
+    }
+
+    private sealed class BenchmarkStringBytesLogicalType()
+        : Avro.Util.LogicalType("dekaf-benchmark-string-bytes")
+    {
+        public override object ConvertToBaseValue(object logicalValue, Avro.LogicalSchema schema) =>
+            Encoding.UTF8.GetBytes((string)logicalValue);
+
+        public override object ConvertToLogicalValue(object baseValue, Avro.LogicalSchema schema) =>
+            Encoding.UTF8.GetString((byte[])baseValue);
+
+        public override Type GetCSharpType(bool nullible) => typeof(string);
+
+        public override bool IsInstanceOfLogicalType(object logicalValue) =>
+            logicalValue is string value && value.StartsWith("logical-", StringComparison.Ordinal);
+    }
+
     private sealed class SpecificBenchmarkRecord : ISpecificRecord
     {
         public static readonly AvroSchema _SCHEMA = AvroSchema.Parse(RecordSchema);
@@ -263,7 +315,7 @@ public class AvroSchemaRegistrySerializerBenchmarks
             throw new NotSupportedException();
     }
 
-    private sealed class BenchmarkSchemaRegistryClient : ISchemaRegistryClient
+    internal sealed class BenchmarkSchemaRegistryClient : ISchemaRegistryClient
     {
         public Task<int> RegisterSchemaAsync(
             string subject,
@@ -302,5 +354,87 @@ public class AvroSchemaRegistrySerializerBenchmarks
             CancellationToken cancellationToken = default) => throw new NotSupportedException();
 
         public void Dispose() { }
+    }
+}
+
+[MemoryDiagnoser(displayGenColumns: false)]
+public class AvroMultipleConditionalUnionBenchmarks
+{
+    private const string SchemaText =
+        """
+        {
+          "type": "record",
+          "name": "MultipleConditionalUnionBenchmarkRecord",
+          "namespace": "Dekaf.Benchmarks",
+          "fields": [{
+            "name": "value",
+            "type": [
+              { "type": "bytes", "logicalType": "dekaf-benchmark-multi-string-bytes" },
+              { "type": "string", "logicalType": "dekaf-benchmark-multi-string-text" }
+            ]
+          }]
+        }
+        """;
+
+    private AvroSchemaRegistrySerializer<GenericRecord> _serializer = null!;
+    private GenericRecord _record = null!;
+    private ArrayBufferWriter<byte> _buffer = null!;
+    private SerializationContext _context;
+
+    [GlobalSetup]
+    public void Setup()
+    {
+        Avro.Util.LogicalTypeFactory.Instance.Register(new MultiStringBytesLogicalType());
+        Avro.Util.LogicalTypeFactory.Instance.Register(new MultiStringTextLogicalType());
+        _serializer = new AvroSchemaRegistrySerializer<GenericRecord>(
+            new AvroSchemaRegistrySerializerBenchmarks.BenchmarkSchemaRegistryClient());
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(SchemaText);
+        _record = new GenericRecord(schema);
+        _record.Add("value", "text-value");
+        _buffer = new ArrayBufferWriter<byte>();
+        _context = new SerializationContext
+        {
+            Topic = "avro-multiple-conditional-benchmark",
+            Component = SerializationComponent.Value
+        };
+        _serializer.Serialize(_record, ref _buffer, _context);
+    }
+
+    [GlobalCleanup]
+    public async ValueTask Cleanup() => await _serializer.DisposeAsync().ConfigureAwait(false);
+
+    [Benchmark(Description = "Serialize second custom-logical union branch")]
+    public void SerializeSecondConditionalBranch()
+    {
+        _buffer.ResetWrittenCount();
+        _serializer.Serialize(_record, ref _buffer, _context);
+    }
+
+    private sealed class MultiStringBytesLogicalType()
+        : Avro.Util.LogicalType("dekaf-benchmark-multi-string-bytes")
+    {
+        public override object ConvertToBaseValue(object logicalValue, Avro.LogicalSchema schema) =>
+            Encoding.UTF8.GetBytes((string)logicalValue);
+
+        public override object ConvertToLogicalValue(object baseValue, Avro.LogicalSchema schema) =>
+            Encoding.UTF8.GetString((byte[])baseValue);
+
+        public override Type GetCSharpType(bool nullible) => typeof(string);
+
+        public override bool IsInstanceOfLogicalType(object logicalValue) =>
+            logicalValue is string value && value.StartsWith("bytes-", StringComparison.Ordinal);
+    }
+
+    private sealed class MultiStringTextLogicalType()
+        : Avro.Util.LogicalType("dekaf-benchmark-multi-string-text")
+    {
+        public override object ConvertToBaseValue(object logicalValue, Avro.LogicalSchema schema) => logicalValue;
+
+        public override object ConvertToLogicalValue(object baseValue, Avro.LogicalSchema schema) => baseValue;
+
+        public override Type GetCSharpType(bool nullible) => typeof(string);
+
+        public override bool IsInstanceOfLogicalType(object logicalValue) =>
+            logicalValue is string value && value.StartsWith("text-", StringComparison.Ordinal);
     }
 }

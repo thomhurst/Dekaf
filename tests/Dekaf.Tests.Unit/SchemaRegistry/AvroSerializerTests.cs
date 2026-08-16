@@ -364,6 +364,36 @@ public sealed class AvroSerializerTests
     }
 
     [Test]
+    public async Task Serializer_GenericRecord_MultipleCustomLogicalBranchesUseFirstMatchingPredicate()
+    {
+        Avro.Util.LogicalTypeFactory.Instance.Register(new StringBytesLogicalType());
+        Avro.Util.LogicalTypeFactory.Instance.Register(new StringTextLogicalType());
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry);
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(
+            $$"""
+            {
+                "type": "record",
+                "name": "MultipleCustomLogicalUnionRecord",
+                "fields": [{
+                    "name": "value",
+                    "type": [
+                        { "type": "bytes", "logicalType": "{{StringBytesLogicalType.LogicalName}}" },
+                        { "type": "string", "logicalType": "{{StringTextLogicalType.LogicalName}}" }
+                    ]
+                }]
+            }
+            """);
+        var bytesRecord = new GenericRecord(schema);
+        bytesRecord.Add("value", "logical-bytes");
+        var textRecord = new GenericRecord(schema);
+        textRecord.Add("value", "text-value");
+
+        await AssertSerializedPayloadMatchesApache(serializer, schema, bytesRecord);
+        await AssertSerializedPayloadMatchesApache(serializer, schema, textRecord);
+    }
+
+    [Test]
     public async Task Serializer_GenericRecord_CustomLogicalValueTypeUnionArray_IsRejected()
     {
         Avro.Util.LogicalTypeFactory.Instance.Register(new IntBytesLogicalType());
@@ -1224,5 +1254,19 @@ public sealed class AvroSerializerTests
         public override Type GetCSharpType(bool nullible) => typeof(int);
 
         public override bool IsInstanceOfLogicalType(object logicalValue) => logicalValue is int;
+    }
+
+    private sealed class StringTextLogicalType() : Avro.Util.LogicalType(LogicalName)
+    {
+        internal const string LogicalName = "dekaf-string-text";
+
+        public override object ConvertToBaseValue(object logicalValue, Avro.LogicalSchema schema) => logicalValue;
+
+        public override object ConvertToLogicalValue(object baseValue, Avro.LogicalSchema schema) => baseValue;
+
+        public override Type GetCSharpType(bool nullible) => typeof(string);
+
+        public override bool IsInstanceOfLogicalType(object logicalValue) =>
+            logicalValue is string value && value.StartsWith("text-", StringComparison.Ordinal);
     }
 }
