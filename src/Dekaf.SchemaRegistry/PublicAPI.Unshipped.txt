@@ -1,1 +1,13 @@
 #nullable enable
+Dekaf.SchemaRegistry.ISchemaRegistryClient.GetCompatibilityAsync(string? subject = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Dekaf.SchemaRegistry.SchemaCompatibilityLevel>!
+Dekaf.SchemaRegistry.ISchemaRegistryClient.UpdateCompatibilityAsync(Dekaf.SchemaRegistry.SchemaCompatibilityLevel level, string? subject = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Dekaf.SchemaRegistry.SchemaCompatibilityLevel>!
+Dekaf.SchemaRegistry.SchemaCompatibilityLevel
+Dekaf.SchemaRegistry.SchemaCompatibilityLevel.Backward = 1 -> Dekaf.SchemaRegistry.SchemaCompatibilityLevel
+Dekaf.SchemaRegistry.SchemaCompatibilityLevel.BackwardTransitive = 2 -> Dekaf.SchemaRegistry.SchemaCompatibilityLevel
+Dekaf.SchemaRegistry.SchemaCompatibilityLevel.Forward = 3 -> Dekaf.SchemaRegistry.SchemaCompatibilityLevel
+Dekaf.SchemaRegistry.SchemaCompatibilityLevel.ForwardTransitive = 4 -> Dekaf.SchemaRegistry.SchemaCompatibilityLevel
+Dekaf.SchemaRegistry.SchemaCompatibilityLevel.Full = 5 -> Dekaf.SchemaRegistry.SchemaCompatibilityLevel
+Dekaf.SchemaRegistry.SchemaCompatibilityLevel.FullTransitive = 6 -> Dekaf.SchemaRegistry.SchemaCompatibilityLevel
+Dekaf.SchemaRegistry.SchemaCompatibilityLevel.None = 0 -> Dekaf.SchemaRegistry.SchemaCompatibilityLevel
+Dekaf.SchemaRegistry.SchemaRegistryClient.GetCompatibilityAsync(string? subject = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Dekaf.SchemaRegistry.SchemaCompatibilityLevel>!
+Dekaf.SchemaRegistry.SchemaRegistryClient.UpdateCompatibilityAsync(Dekaf.SchemaRegistry.SchemaCompatibilityLevel level, string? subject = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Dekaf.SchemaRegistry.SchemaCompatibilityLevel>!
