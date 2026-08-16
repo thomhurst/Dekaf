@@ -884,6 +884,25 @@ public sealed class ConsumerPauseResumeCacheTests
     }
 
     [Test]
+    public async Task ConsumeBatchAsync_SeekAfterPausedFinalRecord_DoesNotProbeDisposedFetch()
+    {
+        var partition = new TopicPartition(PrefetchedTopic, 0);
+        await using var consumer = CreatePrefetchedConsumer(CreatePendingFetch(partition, 10, 1));
+        var batches = consumer.ConsumeBatchAsync().GetAsyncEnumerator();
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        using (var records = batches.Current.GetEnumerator())
+        {
+            await Assert.That(records.MoveNext()).IsTrue();
+            consumer.Pause(partition);
+            await Assert.That(records.MoveNext()).IsFalse();
+        }
+
+        consumer.Seek(new TopicPartitionOffset(partition.Topic, partition.Partition, 100));
+        await batches.DisposeAsync();
+    }
+
+    [Test]
     public async Task ConsumeRawBatchAsync_PausedPrefetchedPartition_PreservesRecordsAndAllowsOtherPartition()
     {
         var pausedPartition = new TopicPartition(PrefetchedTopic, 0);
@@ -935,6 +954,25 @@ public sealed class ConsumerPauseResumeCacheTests
         await Assert.That(await batches.MoveNextAsync()).IsTrue();
         await Assert.That(batches.Current.TopicPartition).IsEqualTo(activePartition);
         await Assert.That(batches.Current.Single().Offset).IsEqualTo(20);
+    }
+
+    [Test]
+    public async Task ConsumeRawBatchAsync_SeekAfterPausedFinalRecord_DoesNotProbeDisposedFetch()
+    {
+        var partition = new TopicPartition(PrefetchedTopic, 0);
+        await using var consumer = CreatePrefetchedConsumer(CreatePendingFetch(partition, 10, 1));
+        var batches = consumer.ConsumeRawBatchAsync().GetAsyncEnumerator();
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        using (var records = batches.Current.GetEnumerator())
+        {
+            await Assert.That(records.MoveNext()).IsTrue();
+            consumer.Pause(partition);
+            await Assert.That(records.MoveNext()).IsFalse();
+        }
+
+        consumer.Seek(new TopicPartitionOffset(partition.Topic, partition.Partition, 100));
+        await batches.DisposeAsync();
     }
 
     private static KafkaConsumer<string, string> CreateConsumer(

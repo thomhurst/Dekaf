@@ -2794,14 +2794,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         bool disposePending,
         bool yieldedBatchProcessed)
     {
-        if (Interlocked.Exchange(ref _batchIterationEpoch.BatchExhaustionProbePending, 0) != 0)
-            pending.TryBufferNext();
+        var exhaustionProbePending = Interlocked.Exchange(
+            ref _batchIterationEpoch.BatchExhaustionProbePending,
+            0) != 0;
 
         if (Volatile.Read(ref _pendingFetchesVersion) != pendingFetchesVersion)
             return;
 
         if (_pendingFetches.Count == 0 || !ReferenceEquals(_pendingFetches.Peek(), pending))
             return;
+
+        if (exhaustionProbePending)
+            pending.TryBufferNext();
 
         if (yieldedBatchProcessed)
             pending.MarkYieldedProcessed();
@@ -5497,7 +5501,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private void MovePendingFetchToPaused(PendingFetchData pending)
     {
         Debug.Assert(_pendingFetches.Count > 0 && ReferenceEquals(_pendingFetches.Peek(), pending));
-        pending.MarkYieldedProcessed();
         FlushConsumedPositions(pending);
         _pausedPendingFetches.Enqueue(_pendingFetches.Dequeue());
     }
@@ -5523,6 +5526,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             PreparePendingFetchesForDelivery();
             return;
         }
+
+        // A new ConsumeOne call proves the prior result before pause reconciliation can
+        // move its fetch out of the active queue. Generic queue reconciliation must not
+        // infer processing for streaming APIs, whose continuation owns that proof.
+        if (_pendingFetches.Count > 0)
+            _pendingFetches.Peek().MarkYieldedProcessed();
 
         while (true)
         {

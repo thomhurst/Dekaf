@@ -81,6 +81,28 @@ public sealed class OffsetStoreTimingTests
     }
 
     [Test]
+    public async Task ConsumeAsync_PauseThenSeekOtherPartition_DoesNotStageInDoubtRecord()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20,
+                CreateRecord(0, "a", "one"),
+                CreateRecord(1, "b", "two"))
+        ]);
+        await using var consumer = CreateInitializedConsumer(OffsetCommitMode.Auto, fetch);
+        var tp = new TopicPartition(Topic, Partition);
+        await using var records = consumer.ConsumeAsync(CancellationToken.None).GetAsyncEnumerator();
+
+        await Assert.That(await records.MoveNextAsync()).IsTrue();
+        await Assert.That(records.Current.Offset).IsEqualTo(20L);
+
+        consumer.Pause(tp);
+        consumer.Seek(new TopicPartitionOffset(Topic, Partition + 1, 100));
+
+        await Assert.That(GetDirtyStoredOffsets(consumer).ContainsKey(tp)).IsFalse();
+    }
+
+    [Test]
     public async Task ConsumeOne_DeserializerFailure_RewindsForRedelivery()
     {
         var fetch = PendingFetchData.Create(Topic, Partition,
