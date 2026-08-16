@@ -306,6 +306,31 @@ public sealed class AvroSerializerTests
     }
 
     [Test]
+    public async Task Serializer_GenericRecord_LogicalUnion_UsesFirstCompatibleBranch()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry);
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(
+            """
+            {
+                "type": "record",
+                "name": "LogicalUnionRecord",
+                "fields": [{
+                    "name": "value",
+                    "type": [
+                        { "type": "int", "logicalType": "date" },
+                        { "type": "long", "logicalType": "timestamp-millis" }
+                    ]
+                }]
+            }
+            """);
+        var record = new GenericRecord(schema);
+        record.Add("value", new DateTime(2026, 8, 16, 0, 0, 0, DateTimeKind.Utc));
+
+        await AssertSerializedPayloadMatchesApache(serializer, schema, record);
+    }
+
+    [Test]
     public async Task Serializer_GenericRecord_ListArray_MatchesApacheAvroBytes()
     {
         using var schemaRegistry = new MockSchemaRegistryClient();
