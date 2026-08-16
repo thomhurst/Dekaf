@@ -1,3 +1,4 @@
+using Dekaf.Admin;
 using Dekaf.Consumer;
 using Dekaf.Producer;
 
@@ -522,5 +523,78 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
         }
 
         await Assert.That(committedOffset).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task StoreOffsets_MultiplePartitions_StagesLocallyThenCommitsBatch()
+    {
+        const int partitionCount = 3;
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: partitionCount).ConfigureAwait(false);
+        var groupId = $"batch-store-{Guid.NewGuid():N}";
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("batch-store-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        for (var partition = 0; partition < partitionCount; partition++)
+        {
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Partition = partition,
+                Key = $"key-{partition}",
+                Value = $"value-{partition}"
+            }, CancellationToken.None).ConfigureAwait(false);
+        }
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("batch-store-consumer")
+            .WithGroupId(groupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithOffsetCommitMode(OffsetCommitMode.Manual)
+            .WithAutoOffsetStore(false)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        consumer.Subscribe(topic);
+
+        var consumed = new List<ConsumeResult<string, string>>(partitionCount);
+        using var consumeCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        while (consumed.Count < partitionCount)
+        {
+            var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), consumeCts.Token)
+                .ConfigureAwait(false);
+            await Assert.That(result).IsNotNull();
+            consumed.Add(result!.Value);
+        }
+
+        TopicPartitionOffset[] offsets = consumed
+            .Select(static result => new TopicPartitionOffset(
+                result.Topic,
+                result.Partition,
+                checked(result.Offset + 1),
+                result.LeaderEpoch ?? -1))
+            .ToArray();
+        consumer.StoreOffsets(offsets);
+
+        await using var admin = new AdminClientBuilder()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("batch-store-admin")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .Build();
+        var beforeCommit = await admin.ListConsumerGroupOffsetsAsync(groupId).ConfigureAwait(false);
+        await Assert.That(beforeCommit).IsEmpty();
+
+        await consumer.CommitAsync(CancellationToken.None).ConfigureAwait(false);
+
+        var committed = await admin.ListConsumerGroupOffsetsAsync(groupId).ConfigureAwait(false);
+        await Assert.That(committed).Count().IsEqualTo(partitionCount);
+        foreach (var offset in offsets)
+        {
+            await Assert.That(committed[new TopicPartition(offset.Topic, offset.Partition)])
+                .IsEqualTo(offset.Offset);
+        }
     }
 }

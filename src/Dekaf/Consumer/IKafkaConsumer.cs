@@ -166,8 +166,12 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     void StoreOffset(ConsumeResult<TKey, TValue> result);
 
     /// <summary>
-    /// Stores an offset for the automatic commit loop.
+    /// Stores a next offset for the automatic commit loop.
     /// </summary>
+    /// <remarks>
+    /// This method only stages the offset locally. Broker persistence is controlled by automatic
+    /// commit or <see cref="CommitAsync(CancellationToken)"/>.
+    /// </remarks>
     void StoreOffset(TopicPartitionOffset offset);
 
     /// <summary>
@@ -208,6 +212,31 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// The operation exceeds <see cref="ConsumerOptions.DefaultApiTimeoutMs"/>.
     /// </exception>
     ValueTask CloseAsync(ConsumerCloseOptions options, CancellationToken cancellationToken = default);
+}
+
+/// <summary>
+/// Optional capability for allocation-free batch offset storage.
+/// </summary>
+/// <remarks>
+/// Dekaf's built-in consumers implement this interface. The separate capability keeps existing
+/// <see cref="IKafkaConsumer{TKey,TValue}"/> implementations binary compatible while
+/// <see cref="ConsumerOffsetStoreExtensions"/> provides the batch API on every consumer.
+/// Input is validated before any offset is changed. Duplicate topic-partitions use the last entry.
+/// A non-negative leader epoch stores or replaces the staged epoch; a negative epoch clears it.
+/// Publication is ordered but is not globally atomic relative to concurrent commit snapshots.
+/// Storage is local and synchronous; broker persistence remains controlled by automatic commit or
+/// <see cref="IKafkaConsumer{TKey,TValue}.CommitAsync(CancellationToken)"/>.
+/// </remarks>
+public interface IConsumerBatchOffsetStore
+{
+    /// <summary>Stores next offsets from a span for the automatic commit loop.</summary>
+    void StoreOffsets(ReadOnlySpan<TopicPartitionOffset> offsets);
+
+    /// <summary>Stores next offsets from an indexed collection without boxing value-type collections.</summary>
+    /// <typeparam name="TOffsets">The indexed collection type.</typeparam>
+    /// <param name="offsets">The next offsets to stage.</param>
+    void StoreOffsets<TOffsets>(TOffsets offsets)
+        where TOffsets : IReadOnlyList<TopicPartitionOffset>;
 }
 
 /// <summary>

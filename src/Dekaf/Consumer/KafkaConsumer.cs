@@ -868,6 +868,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     IConsumerRebalanceEventSource,
     IConsumerLoggerFactorySource,
     IConsumerCommitConfiguration,
+    IConsumerBatchOffsetStore,
     DeadLetter.IRawRecordAccessor,
     IBudgetedInstance
 {
@@ -5097,16 +5098,45 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (result.IsPartitionEof)
             return;
 
-        StoreOffset(new TopicPartitionOffset(
-            result.Topic,
-            result.Partition,
+        StoreOffsetCore(
+            new TopicPartition(result.Topic, result.Partition),
             checked(result.Offset + 1),
-            result.LeaderEpoch ?? -1));
+            result.LeaderEpoch ?? -1);
     }
 
     public void StoreOffset(TopicPartitionOffset offset)
     {
+        TopicPartitionOffsetValidator.Validate(offset, nameof(offset));
         StoreOffsetCore(new TopicPartition(offset.Topic, offset.Partition), offset.Offset, offset.LeaderEpoch);
+    }
+
+    public void StoreOffsets<TOffsets>(TOffsets offsets)
+        where TOffsets : IReadOnlyList<TopicPartitionOffset>
+    {
+        if (offsets is null)
+            throw new ArgumentNullException(nameof(offsets));
+
+        var count = offsets.Count;
+        for (var index = 0; index < count; index++)
+            TopicPartitionOffsetValidator.Validate(offsets[index], nameof(offsets));
+
+        for (var index = 0; index < count; index++)
+        {
+            var offset = offsets[index];
+            StoreOffsetCore(new TopicPartition(offset.Topic, offset.Partition), offset.Offset, offset.LeaderEpoch);
+        }
+    }
+
+    public void StoreOffsets(ReadOnlySpan<TopicPartitionOffset> offsets)
+    {
+        for (var index = 0; index < offsets.Length; index++)
+            TopicPartitionOffsetValidator.Validate(offsets[index], nameof(offsets));
+
+        for (var index = 0; index < offsets.Length; index++)
+        {
+            ref readonly var offset = ref offsets[index];
+            StoreOffsetCore(new TopicPartition(offset.Topic, offset.Partition), offset.Offset, offset.LeaderEpoch);
+        }
     }
 
     public async ValueTask<long?> GetCommittedOffsetAsync(TopicPartition partition, CancellationToken cancellationToken = default)

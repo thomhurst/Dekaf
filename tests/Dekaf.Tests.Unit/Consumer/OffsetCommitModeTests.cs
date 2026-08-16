@@ -74,7 +74,7 @@ public class OffsetCommitModeTests
     }
 
     [Test]
-    public async Task IKafkaConsumer_CommitAsync_MethodExists()
+    public async Task ConsumerOffsetStoreApi_PreservesInterfaceAndExposesBatchExtensions()
     {
         // Verify the interface has the CommitAsync methods defined
         var interfaceType = typeof(IKafkaConsumer<string, string>);
@@ -97,6 +97,9 @@ public class OffsetCommitModeTests
         await Assert.That(commitAsyncWithOffsets).IsNotNull();
         await Assert.That(storeOffset).IsNotNull();
         await Assert.That(storeSpecificOffset).IsNotNull();
+        await Assert.That(interfaceType.GetMethods().Any(static method => method.Name == "StoreOffsets")).IsFalse();
+        await Assert.That(typeof(ConsumerOffsetStoreExtensions).GetMethods()
+            .Count(static method => method.Name == "StoreOffsets")).IsEqualTo(3);
     }
 
     [Test]
