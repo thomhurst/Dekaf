@@ -14,6 +14,9 @@ namespace Dekaf.Consumer
         // One-read hot-path marker. Cleared only after ConsumeOne applies every change from
         // a stable epoch, so validating one partition cannot hide a change for another.
         public int ConsumeOneDeliveryChangesPending;
+        // Set only when a batch iterator stops before reading because its partition paused.
+        // Batch completion probes once to distinguish a remaining record from exhaustion.
+        public int BatchExhaustionProbePending;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Invalidate()
@@ -103,8 +106,13 @@ namespace Dekaf.Consumer
                     continue;
                 }
 
-                if (getStatus(partition) != BatchIterationStatus.Continue)
+                var status = getStatus(partition);
+                if (status != BatchIterationStatus.Continue)
+                {
+                    if (status == BatchIterationStatus.Paused)
+                        Volatile.Write(ref epoch.BatchExhaustionProbePending, 1);
                     return false;
+                }
 
                 if (Volatile.Read(ref epoch.Version) == currentVersion)
                 {
@@ -133,8 +141,13 @@ namespace Dekaf.Consumer
                 if (currentVersion == observedVersion)
                     return true;
 
-                if (getStatus is null || getStatus(partition) != BatchIterationStatus.Continue)
+                var status = getStatus?.Invoke(partition) ?? BatchIterationStatus.Stopped;
+                if (status != BatchIterationStatus.Continue)
+                {
+                    if (status == BatchIterationStatus.Paused)
+                        Volatile.Write(ref epoch.BatchExhaustionProbePending, 1);
                     return false;
+                }
 
                 if (Volatile.Read(ref epoch.Version) == currentVersion)
                 {

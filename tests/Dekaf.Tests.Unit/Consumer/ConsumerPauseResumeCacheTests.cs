@@ -859,6 +859,31 @@ public sealed class ConsumerPauseResumeCacheTests
     }
 
     [Test]
+    public async Task ConsumeBatchAsync_PauseAfterFinalRecord_SkipsExhaustedBatchAfterResume()
+    {
+        var pausedPartition = new TopicPartition(PrefetchedTopic, 0);
+        var activePartition = new TopicPartition(PrefetchedTopic, 1);
+        await using var consumer = CreatePrefetchedConsumer(
+            CreatePendingFetch(pausedPartition, 10, 1),
+            CreatePendingFetch(activePartition, 20, 1));
+        await using var batches = consumer.ConsumeBatchAsync().GetAsyncEnumerator();
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        using (var records = batches.Current.GetEnumerator())
+        {
+            await Assert.That(records.MoveNext()).IsTrue();
+            consumer.Pause(pausedPartition);
+            await Assert.That(records.MoveNext()).IsFalse();
+        }
+
+        consumer.Resume(pausedPartition);
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(batches.Current.TopicPartition).IsEqualTo(activePartition);
+        await Assert.That(batches.Current.Single().Offset).IsEqualTo(20);
+    }
+
+    [Test]
     public async Task ConsumeRawBatchAsync_PausedPrefetchedPartition_PreservesRecordsAndAllowsOtherPartition()
     {
         var pausedPartition = new TopicPartition(PrefetchedTopic, 0);
@@ -885,6 +910,31 @@ public sealed class ConsumerPauseResumeCacheTests
         await Assert.That(resumedOffsets[1]).IsEqualTo(11);
         await Assert.That(await batches.MoveNextAsync()).IsTrue();
         await Assert.That(batches.Current.Single().Offset).IsEqualTo(12);
+    }
+
+    [Test]
+    public async Task ConsumeRawBatchAsync_PauseAfterFinalRecord_SkipsExhaustedBatchAfterResume()
+    {
+        var pausedPartition = new TopicPartition(PrefetchedTopic, 0);
+        var activePartition = new TopicPartition(PrefetchedTopic, 1);
+        await using var consumer = CreatePrefetchedConsumer(
+            CreatePendingFetch(pausedPartition, 10, 1),
+            CreatePendingFetch(activePartition, 20, 1));
+        await using var batches = consumer.ConsumeRawBatchAsync().GetAsyncEnumerator();
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        using (var records = batches.Current.GetEnumerator())
+        {
+            await Assert.That(records.MoveNext()).IsTrue();
+            consumer.Pause(pausedPartition);
+            await Assert.That(records.MoveNext()).IsFalse();
+        }
+
+        consumer.Resume(pausedPartition);
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(batches.Current.TopicPartition).IsEqualTo(activePartition);
+        await Assert.That(batches.Current.Single().Offset).IsEqualTo(20);
     }
 
     private static KafkaConsumer<string, string> CreateConsumer(

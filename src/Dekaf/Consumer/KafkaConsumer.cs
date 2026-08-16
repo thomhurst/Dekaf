@@ -2794,6 +2794,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         bool disposePending,
         bool yieldedBatchProcessed)
     {
+        if (Interlocked.Exchange(ref _batchIterationEpoch.BatchExhaustionProbePending, 0) != 0)
+            pending.TryBufferNext();
+
         if (Volatile.Read(ref _pendingFetchesVersion) != pendingFetchesVersion)
             return;
 
