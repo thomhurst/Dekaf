@@ -99,6 +99,24 @@ public struct SerializationContext
     public Headers? Headers { get; set; }
 
     /// <summary>
+    /// Raw record-key bytes available while deserializing a consumed value.
+    /// </summary>
+    /// <remarks>
+    /// The memory may reference a pooled receive buffer and is valid only for the duration of the
+    /// current <see cref="IDeserializer{T}.Deserialize"/> or async deserializer call. Deserializers
+    /// must not retain it. This property is empty for key deserialization and serialization.
+    /// </remarks>
+    public ReadOnlyMemory<byte> KeyData { get; set; }
+
+    /// <summary>
+    /// Whether <see cref="KeyData"/> represents a null consumed record key.
+    /// </summary>
+    public readonly bool IsKeyNull => KeyData.Equals(default(ReadOnlyMemory<byte>));
+
+    internal static ReadOnlyMemory<byte> NormalizeKeyData(ReadOnlyMemory<byte> keyData, bool isKeyNull) =>
+        isKeyNull ? default : keyData.IsEmpty ? Array.Empty<byte>() : keyData;
+
+    /// <summary>
     /// Whether the original data was null (as opposed to empty).
     /// This allows deserializers to distinguish between null values and empty byte arrays.
     /// </summary>

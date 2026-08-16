@@ -52,6 +52,7 @@ const sidebars = {
         'serialization/built-in',
         'serialization/json',
         'serialization/schema-registry',
+        'serialization/routing',
         'serialization/custom',
       ],
     },
