@@ -99,6 +99,52 @@ public sealed class AvroSerializerTests
         }
         """;
 
+    private const string IntListSchema = """
+        {
+            "type": "record",
+            "name": "IntListRecord",
+            "fields": [{ "name": "values", "type": { "type": "array", "items": "int" } }]
+        }
+        """;
+
+    private const string NullableIntArraySchema = """
+        {
+            "type": "record",
+            "name": "NullableIntArrayRecord",
+            "fields": [{ "name": "values", "type": { "type": "array", "items": ["null", "int"] } }]
+        }
+        """;
+
+    private const string LocalTimestampSchema = """
+        {
+            "type": "record",
+            "name": "LocalTimestampRecord",
+            "fields": [{
+                "name": "value",
+                "type": { "type": "long", "logicalType": "local-timestamp-micros" }
+            }]
+        }
+        """;
+
+    private const string TinyDecimalSchema = """
+        {
+            "type": "record",
+            "name": "TinyDecimalRecord",
+            "fields": [
+                { "name": "seed", "type": { "type": "fixed", "name": "TinyDecimal", "size": 1 } },
+                {
+                    "name": "value",
+                    "type": {
+                        "type": "TinyDecimal",
+                        "logicalType": "decimal",
+                        "precision": 2,
+                        "scale": 0
+                    }
+                }
+            ]
+        }
+        """;
+
     private static SerializationContext CreateContext(string topic = "test-topic", bool isKey = false) =>
         new()
         {
@@ -231,6 +277,79 @@ public sealed class AvroSerializerTests
         record.Add("decimalFixedValue", new Avro.AvroDecimal(new BigInteger(98_765), 2));
 
         await AssertSerializedPayloadMatchesApache(serializer, schema, record);
+    }
+
+    [Test]
+    public async Task Serializer_GenericRecord_ListArray_MatchesApacheAvroBytes()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry);
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(IntListSchema);
+        var record = new GenericRecord(schema);
+        record.Add("values", new List<int> { int.MinValue, -1, 0, 1, int.MaxValue });
+        var expectedRecord = new GenericRecord(schema);
+        expectedRecord.Add("values", new[] { int.MinValue, -1, 0, 1, int.MaxValue });
+
+        await AssertSerializedPayloadMatches(serializer, schema, record, expectedRecord);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Serializer_GenericRecord_NullableUnionCollection_MatchesApacheAvroBytes(bool useList)
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry);
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(NullableIntArraySchema);
+        var record = new GenericRecord(schema);
+        record.Add("values", useList
+            ? new List<int?> { int.MinValue, null, 0, int.MaxValue }
+            : new int?[] { int.MinValue, null, 0, int.MaxValue });
+        var expectedRecord = new GenericRecord(schema);
+        expectedRecord.Add("values", new int?[] { int.MinValue, null, 0, int.MaxValue });
+
+        await AssertSerializedPayloadMatches(serializer, schema, record, expectedRecord);
+    }
+
+    [Test]
+    public async Task Serializer_GenericRecord_LocalTimestamp_PreservesWallClock()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry);
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(LocalTimestampSchema);
+        var value = new DateTime(2026, 8, 16, 14, 23, 45, 678, DateTimeKind.Local).AddTicks(9_010);
+        var record = new GenericRecord(schema);
+        record.Add("value", value);
+        var buffer = new ArrayBufferWriter<byte>();
+
+        serializer.Serialize(record, ref buffer, CreateContext());
+
+        using var payload = new MemoryStream(buffer.WrittenSpan.Slice(5).ToArray());
+        var decoder = new BinaryDecoder(payload);
+        var expected = (DateTime.SpecifyKind(value, DateTimeKind.Unspecified) -
+                        new DateTime(1970, 1, 1)).Ticks / 10;
+        await Assert.That(decoder.ReadLong()).IsEqualTo(expected);
+    }
+
+    [Test]
+    [Arguments(128)]
+    [Arguments(-129)]
+    public async Task Serializer_GenericRecord_FixedDecimalOverflow_IsRejected(int unscaledValue)
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry);
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(TinyDecimalSchema);
+        var record = new GenericRecord(schema);
+        record.Add("seed", new GenericFixed((Avro.FixedSchema)schema["seed"].Schema, [0]));
+        record.Add("value", new Avro.AvroDecimal(new BigInteger(unscaledValue), 0));
+
+        await Assert.That(Serialize).Throws<ArgumentOutOfRangeException>();
+
+        void Serialize()
+        {
+            var buffer = new ArrayBufferWriter<byte>();
+            serializer.Serialize(record, ref buffer, CreateContext());
+        }
     }
 
     [Test]
@@ -868,6 +987,20 @@ public sealed class AvroSerializerTests
         var buffer = new ArrayBufferWriter<byte>();
 
         serializer.Serialize(record, ref buffer, CreateContext());
+
+        await Assert.That(buffer.WrittenSpan.Slice(5).SequenceEqual(expected)).IsTrue();
+    }
+
+    private static async Task AssertSerializedPayloadMatches(
+        AvroSchemaRegistrySerializer<GenericRecord> serializer,
+        Avro.RecordSchema schema,
+        GenericRecord actualRecord,
+        GenericRecord expectedRecord)
+    {
+        var expected = SerializeAvroRecord(expectedRecord, schema);
+        var buffer = new ArrayBufferWriter<byte>();
+
+        serializer.Serialize(actualRecord, ref buffer, CreateContext());
 
         await Assert.That(buffer.WrittenSpan.Slice(5).SequenceEqual(expected)).IsTrue();
     }

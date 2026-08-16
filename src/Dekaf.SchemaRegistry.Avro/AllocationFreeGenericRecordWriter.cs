@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Collections;
 using System.Globalization;
 using global::Avro.Generic;
 using global::Avro.Util;
@@ -9,6 +10,7 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
 {
     private const int StackBufferSize = 256;
     private static readonly DateTime UnixEpoch = new(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+    private static readonly DateTime LocalUnixEpoch = new(1970, 1, 1, 0, 0, 0, DateTimeKind.Unspecified);
     private readonly global::Avro.RecordSchema _schema = schema;
 
     internal void Write(GenericRecord record, AllocationFreeBinaryEncoder encoder) =>
@@ -134,19 +136,32 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
 
     private static void WriteArray(global::Avro.ArraySchema schema, object? value, AllocationFreeBinaryEncoder encoder)
     {
-        if (value is not Array array)
-            throw TypeMismatch(value, "array");
-
         encoder.WriteArrayStart();
-        encoder.SetItemCount(array.Length);
-
-        WriteTypedArray(schema.ItemSchema, array, encoder);
+        switch (value)
+        {
+            case Array array:
+                encoder.SetItemCount(array.Length);
+                WriteTypedArray(schema.ItemSchema, array, encoder);
+                break;
+            case IList list:
+                encoder.SetItemCount(list.Count);
+                WriteTypedList(schema.ItemSchema, list, encoder);
+                break;
+            default:
+                throw TypeMismatch(value, "array");
+        }
 
         encoder.WriteArrayEnd();
     }
 
     private static void WriteTypedArray(global::Avro.Schema itemSchema, Array array, AllocationFreeBinaryEncoder encoder)
     {
+        if (itemSchema is global::Avro.UnionSchema unionSchema &&
+            TryWriteValueTypeUnionArray(unionSchema, array, encoder))
+        {
+            return;
+        }
+
         switch (itemSchema.Tag)
         {
             case global::Avro.Schema.Type.Boolean when array is bool[] booleans:
@@ -248,11 +263,382 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
             return;
         }
 
+        if (array.GetType().GetElementType()?.IsValueType == true)
+        {
+            throw new global::Avro.AvroTypeException(
+                $"Array element type {array.GetType().GetElementType()} is not supported for Avro {itemSchema.Tag} items.");
+        }
+
         for (var i = 0; i < array.Length; i++)
         {
             encoder.StartItem();
             WriteValue(itemSchema, array.GetValue(i), encoder);
         }
+    }
+
+    private static void WriteTypedList(global::Avro.Schema itemSchema, IList list, AllocationFreeBinaryEncoder encoder)
+    {
+        if (itemSchema is global::Avro.UnionSchema unionSchema &&
+            TryWriteValueTypeUnionList(unionSchema, list, encoder))
+        {
+            return;
+        }
+
+        switch (itemSchema.Tag)
+        {
+            case global::Avro.Schema.Type.Boolean when list is List<bool> values:
+                WriteListItems<bool, BooleanValueWriter>(itemSchema, values, encoder);
+                return;
+            case global::Avro.Schema.Type.Int when list is List<int> values:
+                WriteListItems<int, IntValueWriter>(itemSchema, values, encoder);
+                return;
+            case global::Avro.Schema.Type.Long when list is List<long> values:
+                WriteListItems<long, LongValueWriter>(itemSchema, values, encoder);
+                return;
+            case global::Avro.Schema.Type.Float when list is List<float> values:
+                WriteListItems<float, FloatValueWriter>(itemSchema, values, encoder);
+                return;
+            case global::Avro.Schema.Type.Double when list is List<double> values:
+                WriteListItems<double, DoubleValueWriter>(itemSchema, values, encoder);
+                return;
+            case global::Avro.Schema.Type.String when list is List<string> values:
+                WriteListItems<string, StringValueWriter>(itemSchema, values, encoder);
+                return;
+            case global::Avro.Schema.Type.Bytes when list is List<byte[]> values:
+                WriteListItems<byte[], BytesValueWriter>(itemSchema, values, encoder);
+                return;
+            case global::Avro.Schema.Type.Logical when list is List<DateTime> values:
+                WriteListItems<DateTime, DateTimeValueWriter>(itemSchema, values, encoder);
+                return;
+            case global::Avro.Schema.Type.Logical when list is List<TimeSpan> values:
+                WriteListItems<TimeSpan, TimeSpanValueWriter>(itemSchema, values, encoder);
+                return;
+            case global::Avro.Schema.Type.Logical when list is List<Guid> values:
+                WriteListItems<Guid, GuidValueWriter>(itemSchema, values, encoder);
+                return;
+            case global::Avro.Schema.Type.Logical when list is List<global::Avro.AvroDecimal> values:
+                WriteListItems<global::Avro.AvroDecimal, DecimalValueWriter>(itemSchema, values, encoder);
+                return;
+            case global::Avro.Schema.Type.Boolean when list is IList<bool> values:
+                WriteListItems<bool, BooleanValueWriter>(itemSchema, values, encoder);
+                return;
+            case global::Avro.Schema.Type.Int when list is IList<int> values:
+                WriteListItems<int, IntValueWriter>(itemSchema, values, encoder);
+                return;
+            case global::Avro.Schema.Type.Long when list is IList<long> values:
+                WriteListItems<long, LongValueWriter>(itemSchema, values, encoder);
+                return;
+            case global::Avro.Schema.Type.Float when list is IList<float> values:
+                WriteListItems<float, FloatValueWriter>(itemSchema, values, encoder);
+                return;
+            case global::Avro.Schema.Type.Double when list is IList<double> values:
+                WriteListItems<double, DoubleValueWriter>(itemSchema, values, encoder);
+                return;
+            case global::Avro.Schema.Type.String when list is IList<string> values:
+                WriteListItems<string, StringValueWriter>(itemSchema, values, encoder);
+                return;
+            case global::Avro.Schema.Type.Bytes when list is IList<byte[]> values:
+                WriteListItems<byte[], BytesValueWriter>(itemSchema, values, encoder);
+                return;
+            case global::Avro.Schema.Type.Logical when list is IList<DateTime> values:
+                WriteListItems<DateTime, DateTimeValueWriter>(itemSchema, values, encoder);
+                return;
+            case global::Avro.Schema.Type.Logical when list is IList<TimeSpan> values:
+                WriteListItems<TimeSpan, TimeSpanValueWriter>(itemSchema, values, encoder);
+                return;
+            case global::Avro.Schema.Type.Logical when list is IList<Guid> values:
+                WriteListItems<Guid, GuidValueWriter>(itemSchema, values, encoder);
+                return;
+            case global::Avro.Schema.Type.Logical when list is IList<global::Avro.AvroDecimal> values:
+                WriteListItems<global::Avro.AvroDecimal, DecimalValueWriter>(itemSchema, values, encoder);
+                return;
+        }
+
+        for (var i = 0; i < list.Count; i++)
+        {
+            encoder.StartItem();
+            WriteValue(itemSchema, list[i], encoder);
+        }
+    }
+
+    private static void WriteListItems<T, TWriter>(
+        global::Avro.Schema itemSchema,
+        List<T> values,
+        AllocationFreeBinaryEncoder encoder)
+        where TWriter : struct, IValueWriter<T>
+    {
+        for (var i = 0; i < values.Count; i++)
+        {
+            encoder.StartItem();
+            TWriter.Write(itemSchema, values[i], encoder);
+        }
+    }
+
+    private static void WriteListItems<T, TWriter>(
+        global::Avro.Schema itemSchema,
+        IList<T> values,
+        AllocationFreeBinaryEncoder encoder)
+        where TWriter : struct, IValueWriter<T>
+    {
+        for (var i = 0; i < values.Count; i++)
+        {
+            encoder.StartItem();
+            TWriter.Write(itemSchema, values[i], encoder);
+        }
+    }
+
+    private static bool TryWriteValueTypeUnionArray(
+        global::Avro.UnionSchema schema,
+        Array array,
+        AllocationFreeBinaryEncoder encoder)
+    {
+        switch (array)
+        {
+            case bool[] values: WriteUnionArray<bool, BooleanValueWriter>(schema, values, encoder); return true;
+            case bool?[] values: WriteNullableUnionArray<bool, BooleanValueWriter>(schema, values, encoder); return true;
+            case int[] values: WriteUnionArray<int, IntValueWriter>(schema, values, encoder); return true;
+            case int?[] values: WriteNullableUnionArray<int, IntValueWriter>(schema, values, encoder); return true;
+            case long[] values: WriteUnionArray<long, LongValueWriter>(schema, values, encoder); return true;
+            case long?[] values: WriteNullableUnionArray<long, LongValueWriter>(schema, values, encoder); return true;
+            case float[] values: WriteUnionArray<float, FloatValueWriter>(schema, values, encoder); return true;
+            case float?[] values: WriteNullableUnionArray<float, FloatValueWriter>(schema, values, encoder); return true;
+            case double[] values: WriteUnionArray<double, DoubleValueWriter>(schema, values, encoder); return true;
+            case double?[] values: WriteNullableUnionArray<double, DoubleValueWriter>(schema, values, encoder); return true;
+            case DateTime[] values: WriteUnionArray<DateTime, DateTimeValueWriter>(schema, values, encoder); return true;
+            case DateTime?[] values: WriteNullableUnionArray<DateTime, DateTimeValueWriter>(schema, values, encoder); return true;
+            case TimeSpan[] values: WriteUnionArray<TimeSpan, TimeSpanValueWriter>(schema, values, encoder); return true;
+            case TimeSpan?[] values: WriteNullableUnionArray<TimeSpan, TimeSpanValueWriter>(schema, values, encoder); return true;
+            case Guid[] values: WriteUnionArray<Guid, GuidValueWriter>(schema, values, encoder); return true;
+            case Guid?[] values: WriteNullableUnionArray<Guid, GuidValueWriter>(schema, values, encoder); return true;
+            case global::Avro.AvroDecimal[] values: WriteUnionArray<global::Avro.AvroDecimal, DecimalValueWriter>(schema, values, encoder); return true;
+            case global::Avro.AvroDecimal?[] values: WriteNullableUnionArray<global::Avro.AvroDecimal, DecimalValueWriter>(schema, values, encoder); return true;
+            default: return false;
+        }
+    }
+
+    private static bool TryWriteValueTypeUnionList(
+        global::Avro.UnionSchema schema,
+        IList list,
+        AllocationFreeBinaryEncoder encoder)
+    {
+        switch (list)
+        {
+            case List<bool> values: WriteUnionList<bool, BooleanValueWriter>(schema, values, encoder); return true;
+            case List<bool?> values: WriteNullableUnionList<bool, BooleanValueWriter>(schema, values, encoder); return true;
+            case List<int> values: WriteUnionList<int, IntValueWriter>(schema, values, encoder); return true;
+            case List<int?> values: WriteNullableUnionList<int, IntValueWriter>(schema, values, encoder); return true;
+            case List<long> values: WriteUnionList<long, LongValueWriter>(schema, values, encoder); return true;
+            case List<long?> values: WriteNullableUnionList<long, LongValueWriter>(schema, values, encoder); return true;
+            case List<float> values: WriteUnionList<float, FloatValueWriter>(schema, values, encoder); return true;
+            case List<float?> values: WriteNullableUnionList<float, FloatValueWriter>(schema, values, encoder); return true;
+            case List<double> values: WriteUnionList<double, DoubleValueWriter>(schema, values, encoder); return true;
+            case List<double?> values: WriteNullableUnionList<double, DoubleValueWriter>(schema, values, encoder); return true;
+            case List<DateTime> values: WriteUnionList<DateTime, DateTimeValueWriter>(schema, values, encoder); return true;
+            case List<DateTime?> values: WriteNullableUnionList<DateTime, DateTimeValueWriter>(schema, values, encoder); return true;
+            case List<TimeSpan> values: WriteUnionList<TimeSpan, TimeSpanValueWriter>(schema, values, encoder); return true;
+            case List<TimeSpan?> values: WriteNullableUnionList<TimeSpan, TimeSpanValueWriter>(schema, values, encoder); return true;
+            case List<Guid> values: WriteUnionList<Guid, GuidValueWriter>(schema, values, encoder); return true;
+            case List<Guid?> values: WriteNullableUnionList<Guid, GuidValueWriter>(schema, values, encoder); return true;
+            case List<global::Avro.AvroDecimal> values: WriteUnionList<global::Avro.AvroDecimal, DecimalValueWriter>(schema, values, encoder); return true;
+            case List<global::Avro.AvroDecimal?> values: WriteNullableUnionList<global::Avro.AvroDecimal, DecimalValueWriter>(schema, values, encoder); return true;
+            default: return false;
+        }
+    }
+
+    private static void WriteUnionArray<T, TWriter>(
+        global::Avro.UnionSchema schema,
+        T[] values,
+        AllocationFreeBinaryEncoder encoder)
+        where T : struct
+        where TWriter : struct, IValueWriter<T>
+    {
+        FindUnionBranches<T, TWriter>(schema, out _, out var valueIndex, out var valueSchema);
+        for (var i = 0; i < values.Length; i++)
+        {
+            encoder.StartItem();
+            encoder.WriteUnionIndex(valueIndex);
+            TWriter.Write(valueSchema, values[i], encoder);
+        }
+    }
+
+    private static void WriteNullableUnionArray<T, TWriter>(
+        global::Avro.UnionSchema schema,
+        T?[] values,
+        AllocationFreeBinaryEncoder encoder)
+        where T : struct
+        where TWriter : struct, IValueWriter<T>
+    {
+        FindUnionBranches<T, TWriter>(schema, out var nullIndex, out var valueIndex, out var valueSchema);
+        for (var i = 0; i < values.Length; i++)
+        {
+            encoder.StartItem();
+            var value = values[i];
+            if (!value.HasValue)
+            {
+                if (nullIndex < 0)
+                    throw TypeMismatch(null, "union");
+                encoder.WriteUnionIndex(nullIndex);
+                continue;
+            }
+
+            encoder.WriteUnionIndex(valueIndex);
+            TWriter.Write(valueSchema, value.GetValueOrDefault(), encoder);
+        }
+    }
+
+    private static void WriteUnionList<T, TWriter>(
+        global::Avro.UnionSchema schema,
+        List<T> values,
+        AllocationFreeBinaryEncoder encoder)
+        where T : struct
+        where TWriter : struct, IValueWriter<T>
+    {
+        FindUnionBranches<T, TWriter>(schema, out _, out var valueIndex, out var valueSchema);
+        for (var i = 0; i < values.Count; i++)
+        {
+            encoder.StartItem();
+            encoder.WriteUnionIndex(valueIndex);
+            TWriter.Write(valueSchema, values[i], encoder);
+        }
+    }
+
+    private static void WriteNullableUnionList<T, TWriter>(
+        global::Avro.UnionSchema schema,
+        List<T?> values,
+        AllocationFreeBinaryEncoder encoder)
+        where T : struct
+        where TWriter : struct, IValueWriter<T>
+    {
+        FindUnionBranches<T, TWriter>(schema, out var nullIndex, out var valueIndex, out var valueSchema);
+        for (var i = 0; i < values.Count; i++)
+        {
+            encoder.StartItem();
+            var value = values[i];
+            if (!value.HasValue)
+            {
+                if (nullIndex < 0)
+                    throw TypeMismatch(null, "union");
+                encoder.WriteUnionIndex(nullIndex);
+                continue;
+            }
+
+            encoder.WriteUnionIndex(valueIndex);
+            TWriter.Write(valueSchema, value.GetValueOrDefault(), encoder);
+        }
+    }
+
+    private static void FindUnionBranches<T, TWriter>(
+        global::Avro.UnionSchema schema,
+        out int nullIndex,
+        out int valueIndex,
+        out global::Avro.Schema valueSchema)
+        where T : struct
+        where TWriter : struct, IValueWriter<T>
+    {
+        nullIndex = -1;
+        valueIndex = -1;
+        valueSchema = null!;
+        for (var i = 0; i < schema.Count; i++)
+        {
+            var branch = schema[i];
+            if (branch.Tag == global::Avro.Schema.Type.Null)
+                nullIndex = i;
+            else if (valueIndex < 0 && TWriter.Matches(branch))
+            {
+                valueIndex = i;
+                valueSchema = branch;
+            }
+        }
+
+        if (valueIndex < 0)
+            throw new global::Avro.AvroTypeException($"Union {schema} has no branch for {typeof(T)}.");
+    }
+
+    private interface IValueWriter<T>
+    {
+        static abstract bool Matches(global::Avro.Schema schema);
+        static abstract void Write(global::Avro.Schema schema, T value, AllocationFreeBinaryEncoder encoder);
+    }
+
+    private readonly struct BooleanValueWriter : IValueWriter<bool>
+    {
+        public static bool Matches(global::Avro.Schema schema) => schema.Tag == global::Avro.Schema.Type.Boolean;
+        public static void Write(global::Avro.Schema schema, bool value, AllocationFreeBinaryEncoder encoder) => encoder.WriteBoolean(value);
+    }
+
+    private readonly struct IntValueWriter : IValueWriter<int>
+    {
+        public static bool Matches(global::Avro.Schema schema) => schema.Tag == global::Avro.Schema.Type.Int;
+        public static void Write(global::Avro.Schema schema, int value, AllocationFreeBinaryEncoder encoder) => encoder.WriteInt(value);
+    }
+
+    private readonly struct LongValueWriter : IValueWriter<long>
+    {
+        public static bool Matches(global::Avro.Schema schema) => schema.Tag == global::Avro.Schema.Type.Long;
+        public static void Write(global::Avro.Schema schema, long value, AllocationFreeBinaryEncoder encoder) => encoder.WriteLong(value);
+    }
+
+    private readonly struct FloatValueWriter : IValueWriter<float>
+    {
+        public static bool Matches(global::Avro.Schema schema) => schema.Tag == global::Avro.Schema.Type.Float;
+        public static void Write(global::Avro.Schema schema, float value, AllocationFreeBinaryEncoder encoder) => encoder.WriteFloat(value);
+    }
+
+    private readonly struct DoubleValueWriter : IValueWriter<double>
+    {
+        public static bool Matches(global::Avro.Schema schema) => schema.Tag == global::Avro.Schema.Type.Double;
+        public static void Write(global::Avro.Schema schema, double value, AllocationFreeBinaryEncoder encoder) => encoder.WriteDouble(value);
+    }
+
+    private readonly struct StringValueWriter : IValueWriter<string>
+    {
+        public static bool Matches(global::Avro.Schema schema) => schema.Tag == global::Avro.Schema.Type.String;
+        public static void Write(global::Avro.Schema schema, string value, AllocationFreeBinaryEncoder encoder) => encoder.WriteString(value);
+    }
+
+    private readonly struct BytesValueWriter : IValueWriter<byte[]>
+    {
+        public static bool Matches(global::Avro.Schema schema) => schema.Tag == global::Avro.Schema.Type.Bytes;
+        public static void Write(global::Avro.Schema schema, byte[] value, AllocationFreeBinaryEncoder encoder) => encoder.WriteBytes(value);
+    }
+
+    private readonly struct DateTimeValueWriter : IValueWriter<DateTime>
+    {
+        public static bool Matches(global::Avro.Schema schema) =>
+            schema is global::Avro.LogicalSchema logicalSchema &&
+            logicalSchema.LogicalType is Date or TimestampMillisecond or LocalTimestampMillisecond or
+                TimestampMicrosecond or LocalTimestampMicrosecond;
+
+        public static void Write(global::Avro.Schema schema, DateTime value, AllocationFreeBinaryEncoder encoder) =>
+            WriteDateTime((global::Avro.LogicalSchema)schema, value, encoder);
+    }
+
+    private readonly struct TimeSpanValueWriter : IValueWriter<TimeSpan>
+    {
+        public static bool Matches(global::Avro.Schema schema) =>
+            schema is global::Avro.LogicalSchema logicalSchema &&
+            logicalSchema.LogicalType is TimeMillisecond or TimeMicrosecond;
+
+        public static void Write(global::Avro.Schema schema, TimeSpan value, AllocationFreeBinaryEncoder encoder) =>
+            WriteTimeSpan((global::Avro.LogicalSchema)schema, value, encoder);
+    }
+
+    private readonly struct GuidValueWriter : IValueWriter<Guid>
+    {
+        public static bool Matches(global::Avro.Schema schema) =>
+            schema is global::Avro.LogicalSchema { LogicalType: Uuid };
+
+        public static void Write(global::Avro.Schema schema, Guid value, AllocationFreeBinaryEncoder encoder) =>
+            WriteUuid((global::Avro.LogicalSchema)schema, value, encoder);
+    }
+
+    private readonly struct DecimalValueWriter : IValueWriter<global::Avro.AvroDecimal>
+    {
+        public static bool Matches(global::Avro.Schema schema) =>
+            schema is global::Avro.LogicalSchema { LogicalType: global::Avro.Util.Decimal };
+
+        public static void Write(global::Avro.Schema schema, global::Avro.AvroDecimal value, AllocationFreeBinaryEncoder encoder) =>
+            WriteDecimal((global::Avro.LogicalSchema)schema, value, encoder);
     }
 
     private static void WriteMap(global::Avro.MapSchema schema, object? value, AllocationFreeBinaryEncoder encoder)
@@ -334,7 +720,7 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
             global::Avro.Schema.Type.Enumeration =>
                 value is GenericEnum genericEnum &&
                 genericEnum.Schema.SchemaName.Equals(((global::Avro.EnumSchema)schema).SchemaName),
-            global::Avro.Schema.Type.Array => value is Array and not byte[],
+            global::Avro.Schema.Type.Array => value is (Array or IList) and not byte[],
             global::Avro.Schema.Type.Map => value is IDictionary<string, object>,
             global::Avro.Schema.Type.Union => false,
             global::Avro.Schema.Type.Fixed =>
@@ -396,11 +782,17 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
             case Date:
                 encoder.WriteInt((value.Date - UnixEpoch).Days);
                 return;
-            case TimestampMillisecond or LocalTimestampMillisecond:
+            case TimestampMillisecond:
                 encoder.WriteLong((long)(value.ToUniversalTime() - UnixEpoch).TotalMilliseconds);
                 return;
-            case TimestampMicrosecond or LocalTimestampMicrosecond:
+            case TimestampMicrosecond:
                 encoder.WriteLong((value.ToUniversalTime() - UnixEpoch).Ticks / 10);
+                return;
+            case LocalTimestampMillisecond:
+                encoder.WriteLong((long)(AsLocalWallClock(value) - LocalUnixEpoch).TotalMilliseconds);
+                return;
+            case LocalTimestampMicrosecond:
+                encoder.WriteLong((AsLocalWallClock(value) - LocalUnixEpoch).Ticks / 10);
                 return;
             default:
                 throw TypeMismatch(value, schema.LogicalTypeName);
@@ -448,7 +840,7 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
         var scaleProperty = schema.GetProperty("scale");
         var schemaScale = string.IsNullOrEmpty(scaleProperty)
             ? 0
-            : int.Parse(scaleProperty, CultureInfo.CurrentCulture);
+            : int.Parse(scaleProperty, CultureInfo.InvariantCulture);
         if (value.Scale != schemaScale)
         {
             throw new ArgumentOutOfRangeException(
@@ -477,8 +869,15 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
                 return;
             }
 
+            if (written > fixedSize)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(value),
+                    $"The decimal value requires {written} bytes and cannot fit in a fixed size of {fixedSize} bytes.");
+            }
+
             var fixedBytes = bytes.Slice(0, fixedSize);
-            var source = raw.Slice(Math.Max(0, written - fixedSize), Math.Min(written, fixedSize));
+            var source = raw.Slice(0, written);
             var paddingLength = fixedSize - source.Length;
             source.CopyTo(fixedBytes.Slice(paddingLength));
             fixedBytes.Slice(0, paddingLength).Fill(value.UnscaledValue.Sign < 0 ? byte.MaxValue : (byte)0);
@@ -490,6 +889,9 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
                 ArrayPool<byte>.Shared.Return(rented);
         }
     }
+
+    private static DateTime AsLocalWallClock(DateTime value) =>
+        DateTime.SpecifyKind(value, DateTimeKind.Unspecified);
 
     private static void ValidateTime(TimeSpan value)
     {
