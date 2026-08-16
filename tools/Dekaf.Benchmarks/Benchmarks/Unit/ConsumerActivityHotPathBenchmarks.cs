@@ -10,7 +10,9 @@ using Dekaf.Serialization;
 namespace Dekaf.Benchmarks.Benchmarks.Unit;
 
 /// <summary>
-/// Broker-free allocation gate for the sampled, no-producer-context consumer activity path.
+/// Broker-free cost benchmark for the sampled, no-producer-context consumer activity path.
+/// Activity sampling intentionally creates a diagnostic span; the zero-listener consume path
+/// remains the zero-allocation hot-path gate.
 /// </summary>
 [MemoryDiagnoser]
 [SimpleJob(RunStrategy.Throughput, launchCount: 1, warmupCount: 5, iterationCount: 10)]

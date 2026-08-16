@@ -2284,8 +2284,9 @@ public sealed partial class ConnectionPool :
             // _connectionsPerBroker == 1). A pool configured for one connection can hold
             // BOTH a single connection and a connection group for the same broker once
             // adaptive scaling creates a group — both collections are disposed below.
-            foreach (var connection in _connectionsByEndpoint.Values)
+            foreach (var (endpoint, connection) in _connectionsByEndpoint)
             {
+                GetEndpointConnectionRuntimeState(endpoint).RecordStateChange();
                 tasks.Add(connection.DisposeAsync());
             }
 

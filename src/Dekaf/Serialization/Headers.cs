@@ -288,6 +288,8 @@ public readonly record struct Header
     /// </summary>
     public ReadOnlyMemory<byte> Value
     {
+        // Preserve the metadata emitted by the previously shipped auto-property accessors.
+        [CompilerGenerated]
         get
         {
             if (_deferredTraceparentActivity is null)
@@ -300,6 +302,7 @@ public readonly record struct Header
                 value);
             return value;
         }
+        [CompilerGenerated]
         init => _value = value;
     }
 

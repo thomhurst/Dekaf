@@ -134,6 +134,30 @@ public sealed class ConnectionPoolTests
     }
 
     [Test]
+    public async Task StatusSnapshot_RecordsControllerEndpointClosure()
+    {
+        long statusTimestamp = 100;
+        var connection = new TestIdleConnection(-1, "controller-a", 19093);
+        await using var pool = new ConnectionPool(
+            clientId: "status-test",
+            connectionOptions: new ConnectionOptions(),
+            connectionsPerBroker: 1,
+            connectionFactory: (_, _, _, _, _) => ValueTask.FromResult<IKafkaConnection>(connection),
+            statusTimestampProvider: () => Volatile.Read(ref statusTimestamp));
+        _ = await pool.GetConnectionAsync("controller-a", 19093);
+        Volatile.Write(ref statusTimestamp, 101);
+
+        await pool.CloseAllAsync();
+
+        var status = ((IConnectionPoolStatusSource)pool).GetEndpointConnectionStatus(
+            [new ConnectionStatusEndpoint(2, "controller-a", 19093)]).Single();
+        await Assert.That(status.State).IsEqualTo(BrokerConnectionState.Disconnected);
+        await Assert.That(status.ConnectionCount).IsEqualTo(0);
+        await Assert.That(status.LastConnectionStateChangeAtUtc).IsNotNull();
+        await Assert.That(GetEndpointStateChangeTimestamp(pool, "controller-a", 19093)).IsEqualTo(101);
+    }
+
+    [Test]
     public async Task StatusSnapshot_ReportsControllerEndpointConnectionFailure()
     {
         await using var pool = new ConnectionPool(
@@ -2314,6 +2338,27 @@ public sealed class ConnectionPoolTests
             ?? throw new InvalidOperationException("Connection runtime-state indexer was not found.");
         var state = indexer.GetValue(states, [brokerId])
             ?? throw new InvalidOperationException($"Connection runtime state for broker {brokerId} was not found.");
+        var timestampProperty = state.GetType().GetProperty("LastStateChangeTimestampMs")
+            ?? throw new InvalidOperationException("Connection state-change timestamp property was not found.");
+        return (long)(timestampProperty.GetValue(state)
+            ?? throw new InvalidOperationException("Connection state-change timestamp was null."));
+    }
+
+    private static long GetEndpointStateChangeTimestamp(ConnectionPool pool, string host, int port)
+    {
+        var statesField = typeof(ConnectionPool).GetField(
+            "_endpointConnectionRuntimeStates",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Endpoint runtime-state field was not found.");
+        var states = statesField.GetValue(pool)
+            ?? throw new InvalidOperationException("Endpoint runtime-state dictionary was null.");
+        var keyType = states.GetType().GetGenericArguments()[0];
+        var key = Activator.CreateInstance(keyType, host, port)
+            ?? throw new InvalidOperationException("Endpoint runtime-state key was not created.");
+        var indexer = states.GetType().GetProperty("Item")
+            ?? throw new InvalidOperationException("Endpoint runtime-state indexer was not found.");
+        var state = indexer.GetValue(states, [key])
+            ?? throw new InvalidOperationException($"Connection runtime state for endpoint {host}:{port} was not found.");
         var timestampProperty = state.GetType().GetProperty("LastStateChangeTimestampMs")
             ?? throw new InvalidOperationException("Connection state-change timestamp property was not found.");
         return (long)(timestampProperty.GetValue(state)
