@@ -22,6 +22,7 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
         var calls = new ConcurrentQueue<string>();
         var ruleExecutor = new SchemaRegistryRuleExecutor(
         [
+            new CelSchemaRegistryRuleHandler(),
             new XorRuleHandler("DOMAIN-XOR", 0x25, calls),
             new XorRuleHandler("ENCODING-XOR", 0x5A, calls)
         ]);
@@ -31,7 +32,18 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
             SchemaString = """{ "type": "string" }""",
             RuleSet = new SchemaRuleSet
             {
-                DomainRules = [CreateRule("domain-xor", "DOMAIN-XOR")],
+                DomainRules =
+                [
+                    new SchemaRule
+                    {
+                        Name = "subject-condition",
+                        Kind = SchemaRuleKind.Condition,
+                        Mode = SchemaRuleMode.WriteRead,
+                        Type = "CEL",
+                        Expr = $"subject == \"{topic}-value\""
+                    },
+                    CreateRule("domain-xor", "DOMAIN-XOR")
+                ],
                 EncodingRules = [CreateRule("encoding-xor", "ENCODING-XOR")]
             }
         };
@@ -84,7 +96,7 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
         var registered = await registryClient.GetSchemaBySubjectAsync($"{topic}-value");
         var registeredById = await registryClient.GetSchemaAsync(registered.Id);
         await Assert.That(consumed).IsEqualTo("domain-rule-payload");
-        await Assert.That(registeredById.RuleSet!.DomainRules).Count().IsEqualTo(1);
+        await Assert.That(registeredById.RuleSet!.DomainRules).Count().IsEqualTo(2);
         await Assert.That(registeredById.RuleSet.EncodingRules).Count().IsEqualTo(1);
         await Assert.That(calls).IsEquivalentTo([
             "Write:domain-xor",

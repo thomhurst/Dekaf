@@ -726,6 +726,9 @@ public sealed class SchemaRuleSet
             ? _hasFixedDomainOrEncodingRules
             : _domainRules is { Count: > 0 } || _encodingRules is { Count: > 0 };
 
+    internal bool HasFixedRuleCollections =>
+        _domainRuleCountIsFixed && _encodingRuleCountIsFixed;
+
     private void UpdateFixedRuleState() =>
         _hasFixedDomainOrEncodingRules = _domainRules is { Count: > 0 } || _encodingRules is { Count: > 0 };
 }

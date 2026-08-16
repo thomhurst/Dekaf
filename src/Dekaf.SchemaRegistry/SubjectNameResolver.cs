@@ -1,9 +1,18 @@
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 
 namespace Dekaf.SchemaRegistry;
 
 internal static class SubjectNameResolver
 {
+    private static readonly ConditionalWeakTable<string, TopicSubjects> TopicSubjectNames = new();
+
+    internal static string GetTopicSubjectName(string topic, bool isKey)
+    {
+        var subjects = TopicSubjectNames.GetValue(topic, static value => new TopicSubjects(value));
+        return isKey ? subjects.Key : subjects.Value;
+    }
+
     internal static string GetSubjectName(
         SubjectNameStrategy strategy,
         string topic,
@@ -78,5 +87,11 @@ internal static class SubjectNameResolver
             return recordName;
 
         throw new InvalidOperationException($"{strategy} requires a fully-qualified record name.");
+    }
+
+    private sealed class TopicSubjects(string topic)
+    {
+        public string Key { get; } = topic + "-key";
+        public string Value { get; } = topic + "-value";
     }
 }

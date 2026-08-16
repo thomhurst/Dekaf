@@ -17,6 +17,7 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleHandler
 {
     private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
     private static readonly ConditionalWeakTable<SchemaRule, ParsedCelExpression> ParsedExpressions = new();
+    private static readonly ConditionalWeakTable<string, byte[]> Utf8Values = new();
 
     /// <inheritdoc />
     public string Type => "CEL";
@@ -55,18 +56,19 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleHandler
             return payload;
         }
 
-        if (value.Kind == CelValueKind.String)
-            return StrictUtf8.GetBytes(value.String);
+        if (value.Kind is CelValueKind.String or CelValueKind.Utf8String)
+            return GetUtf8Memory(value);
 
         throw new SchemaRegistryRuleException(
             $"CEL transform rule '{context.Rule.Name}' returned {value.Kind.ToString().ToLowerInvariant()}; only string transform results are supported.");
     }
 
-    private static string PayloadAsString(ReadOnlyMemory<byte> payload)
+    private static CelValue PayloadAsUtf8(ReadOnlyMemory<byte> payload)
     {
         try
         {
-            return StrictUtf8.GetString(payload.Span);
+            _ = StrictUtf8.GetCharCount(payload.Span);
+            return CelValue.FromUtf8(payload);
         }
         catch (DecoderFallbackException ex)
         {
@@ -100,6 +102,7 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleHandler
         Null,
         Boolean,
         String,
+        Utf8String,
         Number
     }
 
@@ -107,15 +110,19 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleHandler
         CelValueKind Kind,
         bool Boolean,
         string String,
+        ReadOnlyMemory<byte> Utf8,
         long Number)
     {
-        public static CelValue Null { get; } = new(CelValueKind.Null, false, string.Empty, 0);
-        public static CelValue True { get; } = new(CelValueKind.Boolean, true, string.Empty, 0);
-        public static CelValue False { get; } = new(CelValueKind.Boolean, false, string.Empty, 0);
+        public static CelValue Null { get; } = new(CelValueKind.Null, false, string.Empty, default, 0);
+        public static CelValue True { get; } = new(CelValueKind.Boolean, true, string.Empty, default, 0);
+        public static CelValue False { get; } = new(CelValueKind.Boolean, false, string.Empty, default, 0);
         public static CelValue FromBoolean(bool value) => value ? True : False;
         public static CelValue FromString(string? value) =>
-            value is null ? Null : new CelValue(CelValueKind.String, false, value, 0);
-        public static CelValue FromNumber(long value) => new(CelValueKind.Number, false, string.Empty, value);
+            value is null ? Null : new CelValue(CelValueKind.String, false, value, default, 0);
+        public static CelValue FromUtf8(ReadOnlyMemory<byte> value) =>
+            new(CelValueKind.Utf8String, false, string.Empty, value, 0);
+        public static CelValue FromNumber(long value) =>
+            new(CelValueKind.Number, false, string.Empty, default, value);
     }
 
     private readonly record struct CelEvaluationContext(
@@ -161,16 +168,16 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleHandler
             var payloadContext = context.RuleContext.PayloadContext;
             return identifier switch
             {
-                "message" or "payload" => CelValue.FromString(PayloadAsString(context.Payload)),
+                "message" or "payload" => PayloadAsUtf8(context.Payload),
                 "topic" => CelValue.FromString(payloadContext.Topic),
                 "subject" => CelValue.FromString(payloadContext.Subject),
                 "schemaId" => CelValue.FromNumber(payloadContext.SchemaId),
                 "component" => CelValue.FromString(FormatComponent(payloadContext.Component)),
-                "format" or "payloadFormat" => CelValue.FromString(payloadContext.PayloadFormat.ToString()),
+                "format" or "payloadFormat" => CelValue.FromString(FormatPayloadFormat(payloadContext.PayloadFormat)),
                 "rule.name" => CelValue.FromString(context.RuleContext.Rule.Name),
                 "rule.type" => CelValue.FromString(context.RuleContext.Rule.Type),
-                "rule.mode" => CelValue.FromString(context.RuleContext.Rule.Mode.ToString()),
-                "rule.kind" => CelValue.FromString(context.RuleContext.Rule.Kind.ToString()),
+                "rule.mode" => CelValue.FromString(FormatRuleMode(context.RuleContext.Rule.Mode)),
+                "rule.kind" => CelValue.FromString(FormatRuleKind(context.RuleContext.Rule.Kind)),
                 _ when identifier.StartsWith("metadata.", StringComparison.Ordinal) =>
                     CelValue.FromString(GetMetadataProperty(context, identifier["metadata.".Length..])),
                 _ => throw Unsupported($"Unsupported CEL identifier '{identifier}'.")
@@ -185,26 +192,23 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleHandler
             {
                 "metadata" => CelValue.FromString(GetMetadataProperty(
                     context,
-                    ExpectStringArgument(name, arguments, 0, 1, context))),
+                    ExpectUtf16Argument(name, arguments, 0, 1, context))),
                 "hasMetadata" => CelValue.FromBoolean(GetMetadataProperty(
                     context,
-                    ExpectStringArgument(name, arguments, 0, 1, context)) is not null),
+                    ExpectUtf16Argument(name, arguments, 0, 1, context)) is not null),
                 "hasTag" or "tagged" => CelValue.FromBoolean(HasTag(
                     context,
+                    ExpectUtf16Argument(name, arguments, 0, 2, context),
+                    ExpectUtf16Argument(name, arguments, 1, 2, context))),
+                "contains" => CelValue.FromBoolean(Contains(
                     ExpectStringArgument(name, arguments, 0, 2, context),
                     ExpectStringArgument(name, arguments, 1, 2, context))),
-                "contains" => CelValue.FromBoolean(
-                    ExpectStringArgument(name, arguments, 0, 2, context).Contains(
-                        ExpectStringArgument(name, arguments, 1, 2, context),
-                        StringComparison.Ordinal)),
-                "startsWith" => CelValue.FromBoolean(
-                    ExpectStringArgument(name, arguments, 0, 2, context).StartsWith(
-                        ExpectStringArgument(name, arguments, 1, 2, context),
-                        StringComparison.Ordinal)),
-                "endsWith" => CelValue.FromBoolean(
-                    ExpectStringArgument(name, arguments, 0, 2, context).EndsWith(
-                        ExpectStringArgument(name, arguments, 1, 2, context),
-                        StringComparison.Ordinal)),
+                "startsWith" => CelValue.FromBoolean(StartsWith(
+                    ExpectStringArgument(name, arguments, 0, 2, context),
+                    ExpectStringArgument(name, arguments, 1, 2, context))),
+                "endsWith" => CelValue.FromBoolean(EndsWith(
+                    ExpectStringArgument(name, arguments, 0, 2, context),
+                    ExpectStringArgument(name, arguments, 1, 2, context))),
                 _ => throw Unsupported($"Unsupported CEL function '{name}'.")
             };
     }
@@ -258,7 +262,7 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleHandler
         return tags.TryGetValue(path, out var pathTags) && pathTags.Contains(tag);
     }
 
-    private static string ExpectStringArgument(
+    private static CelValue ExpectStringArgument(
         string functionName,
         IReadOnlyList<CelNode> arguments,
         int index,
@@ -272,8 +276,25 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleHandler
         }
 
         var value = arguments[index].Evaluate(context);
-        if (value.Kind != CelValueKind.String)
+        if (value.Kind is not (CelValueKind.String or CelValueKind.Utf8String))
             throw Unsupported($"CEL function '{functionName}' argument {index + 1} must be a string.");
+
+        return value;
+    }
+
+    private static string ExpectUtf16Argument(
+        string functionName,
+        IReadOnlyList<CelNode> arguments,
+        int index,
+        int expectedCount,
+        CelEvaluationContext context)
+    {
+        var value = ExpectStringArgument(functionName, arguments, index, expectedCount, context);
+        if (value.Kind != CelValueKind.String)
+        {
+            throw Unsupported(
+                $"CEL function '{functionName}' argument {index + 1} must be a context or literal string.");
+        }
 
         return value.String;
     }
@@ -541,6 +562,9 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleHandler
 
     private static bool AreEqual(CelValue left, CelValue right)
     {
+        if (IsString(left) && IsString(right))
+            return StringEquals(left, right);
+
         if (left.Kind != right.Kind)
             return false;
 
@@ -548,11 +572,50 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleHandler
         {
             CelValueKind.Null => true,
             CelValueKind.Boolean => left.Boolean == right.Boolean,
-            CelValueKind.String => string.Equals(left.String, right.String, StringComparison.Ordinal),
             CelValueKind.Number => left.Number == right.Number,
             _ => false
         };
     }
+
+    private static bool StringEquals(CelValue left, CelValue right)
+    {
+        if (left.Kind == CelValueKind.String && right.Kind == CelValueKind.String)
+            return string.Equals(left.String, right.String, StringComparison.Ordinal);
+
+        return GetUtf8Memory(left).Span.SequenceEqual(GetUtf8Memory(right).Span);
+    }
+
+    private static bool Contains(CelValue value, CelValue candidate)
+    {
+        if (value.Kind == CelValueKind.String && candidate.Kind == CelValueKind.String)
+            return value.String.Contains(candidate.String, StringComparison.Ordinal);
+
+        return GetUtf8Memory(value).Span.IndexOf(GetUtf8Memory(candidate).Span) >= 0;
+    }
+
+    private static bool StartsWith(CelValue value, CelValue candidate)
+    {
+        if (value.Kind == CelValueKind.String && candidate.Kind == CelValueKind.String)
+            return value.String.StartsWith(candidate.String, StringComparison.Ordinal);
+
+        return GetUtf8Memory(value).Span.StartsWith(GetUtf8Memory(candidate).Span);
+    }
+
+    private static bool EndsWith(CelValue value, CelValue candidate)
+    {
+        if (value.Kind == CelValueKind.String && candidate.Kind == CelValueKind.String)
+            return value.String.EndsWith(candidate.String, StringComparison.Ordinal);
+
+        return GetUtf8Memory(value).Span.EndsWith(GetUtf8Memory(candidate).Span);
+    }
+
+    private static bool IsString(CelValue value) =>
+        value.Kind is CelValueKind.String or CelValueKind.Utf8String;
+
+    private static ReadOnlyMemory<byte> GetUtf8Memory(CelValue value) =>
+        value.Kind == CelValueKind.Utf8String
+            ? value.Utf8
+            : Utf8Values.GetValue(value.String, static text => StrictUtf8.GetBytes(text));
 
     private static bool AsBoolean(CelValue value)
     {
@@ -564,6 +627,36 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleHandler
 
     private static string FormatComponent(SerializationComponent component) =>
         component == SerializationComponent.Key ? "key" : "value";
+
+    private static string FormatPayloadFormat(SchemaRegistryPayloadFormat format) =>
+        format switch
+        {
+            SchemaRegistryPayloadFormat.Custom => "Custom",
+            SchemaRegistryPayloadFormat.Json => "Json",
+            SchemaRegistryPayloadFormat.Avro => "Avro",
+            SchemaRegistryPayloadFormat.Protobuf => "Protobuf",
+            _ => throw Unsupported($"Unsupported payload format '{format}'.")
+        };
+
+    private static string FormatRuleMode(SchemaRuleMode mode) =>
+        mode switch
+        {
+            SchemaRuleMode.Upgrade => "Upgrade",
+            SchemaRuleMode.Downgrade => "Downgrade",
+            SchemaRuleMode.UpDown => "UpDown",
+            SchemaRuleMode.Read => "Read",
+            SchemaRuleMode.Write => "Write",
+            SchemaRuleMode.WriteRead => "WriteRead",
+            _ => throw Unsupported($"Unsupported rule mode '{mode}'.")
+        };
+
+    private static string FormatRuleKind(SchemaRuleKind kind) =>
+        kind switch
+        {
+            SchemaRuleKind.Transform => "Transform",
+            SchemaRuleKind.Condition => "Condition",
+            _ => throw Unsupported($"Unsupported rule kind '{kind}'.")
+        };
 
     private static bool IsIdentifierStart(char ch) => char.IsLetter(ch) || ch == '_';
 

@@ -466,6 +466,7 @@ public sealed class SchemaRegistryCacheTests
         await Assert.That(result).IsEqualTo("plain");
         await Assert.That(executor.DeserializeContext).IsNotNull();
         await Assert.That(executor.DeserializeContext!.PayloadFormat).IsEqualTo(SchemaRegistryPayloadFormat.Custom);
+        await Assert.That(executor.DeserializeContext.Subject).IsEqualTo("topic-value");
         await Assert.That(executor.DeserializeContext.SchemaId).IsEqualTo(schemaId);
         await Assert.That(executor.DeserializeContext.Schema).IsSameReferenceAs(schema);
     }
@@ -947,6 +948,7 @@ public sealed class SchemaRegistryCacheTests
         await Assert.That(result).IsEqualTo("plain");
         await Assert.That(executor.DeserializeContext).IsNotNull();
         await Assert.That(executor.DeserializeContext!.PayloadFormat).IsEqualTo(SchemaRegistryPayloadFormat.Json);
+        await Assert.That(executor.DeserializeContext.Subject).IsEqualTo("topic-value");
         await Assert.That(executor.DeserializeContext.SchemaId).IsEqualTo(schemaId);
         await Assert.That(executor.DeserializeContext.Schema).IsSameReferenceAs(schema);
     }

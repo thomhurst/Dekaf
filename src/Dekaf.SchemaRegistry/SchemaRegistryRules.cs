@@ -271,6 +271,8 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
 
     private readonly FrozenDictionary<string, ISchemaRegistryRuleHandler> _handlers;
     private readonly Dictionary<RuleActionName, ISchemaRegistryRuleAction> _actions;
+    private readonly ConditionalWeakTable<SchemaRuleSet, RuleExecutionPlan> _executionPlans = new();
+    private readonly ConditionalWeakTable<SchemaRuleSet, RuleExecutionPlan>.CreateValueCallback _createExecutionPlan;
 
     /// <summary>
     /// Creates a Schema Registry rule executor.
@@ -318,6 +320,7 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         }
 
         _actions = actionDictionary;
+        _createExecutionPlan = CreateExecutionPlan;
     }
 
     /// <inheritdoc />
@@ -345,13 +348,23 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
 
         switch (ruleSet.EnableAt)
         {
-            case null or "ALL" or "CLIENT":
+            case null or "" or "ALL" or "CLIENT":
                 break;
             case "GATEWAY" or "SERVER" or "NONE":
                 return payload;
             case { } enabledEnvironment:
                 throw new SchemaRegistryRuleException(
                     $"Unknown Schema Registry rule execution environment '{enabledEnvironment}'.");
+        }
+
+        if (ruleSet.HasFixedRuleCollections)
+        {
+            var plan = _executionPlans.GetValue(ruleSet, _createExecutionPlan);
+            return ApplyRules(
+                payload,
+                context,
+                direction == SchemaRegistryRuleDirection.Write ? plan.WriteSteps : plan.ReadSteps,
+                direction);
         }
 
         var domainRules = ruleSet.DomainRules;
@@ -433,6 +446,111 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         }
 
         return payload;
+    }
+
+    private ReadOnlyMemory<byte> ApplyRules(
+        ReadOnlyMemory<byte> payload,
+        SchemaRegistryRuleContext context,
+        RuleExecutionStep[] steps,
+        SchemaRegistryRuleDirection direction)
+    {
+        for (var i = 0; i < steps.Length; i++)
+        {
+            ref readonly var step = ref steps[i];
+            payload = ApplyRule(payload, context, step.Rule, step.Handler, direction);
+        }
+
+        return payload;
+    }
+
+    private ReadOnlyMemory<byte> ApplyRule(
+        ReadOnlyMemory<byte> payload,
+        SchemaRegistryRuleContext context,
+        SchemaRule rule,
+        ISchemaRegistryRuleHandler? handler,
+        SchemaRegistryRuleDirection direction)
+    {
+        var handlerContext = RentHandlerContext(context, rule, direction);
+        try
+        {
+            SchemaRegistryRuleException? failure = null;
+            var transformedPayload = payload;
+            if (handler is null)
+            {
+                failure = new SchemaRegistryRuleException(
+                    $"No Schema Registry rule handler is registered for rule type '{rule.Type}' (rule '{rule.Name}').");
+            }
+            else
+            {
+                try
+                {
+                    transformedPayload = direction == SchemaRegistryRuleDirection.Write
+                        ? handler.TransformSerializedPayload(payload, handlerContext)
+                        : handler.TransformDeserializedPayload(payload, handlerContext);
+                }
+                catch (SchemaRegistryRuleException ex)
+                {
+                    failure = ex;
+                }
+                catch (Exception ex) when (ex is not SchemaRegistryRuleException)
+                {
+                    failure = new SchemaRegistryRuleException(
+                        $"Schema Registry rule '{rule.Name}' of type '{rule.Type}' failed during {direction.ToString().ToLowerInvariant()} transform.",
+                        ex);
+                }
+            }
+
+            if (failure is null)
+            {
+                payload = transformedPayload;
+                RunAction(rule.OnSuccess, defaultAction: null, payload, handlerContext, exception: null);
+            }
+            else
+            {
+                RunAction(rule.OnFailure, defaultAction: "ERROR", payload, handlerContext, failure);
+            }
+
+            return payload;
+        }
+        finally
+        {
+            ReturnHandlerContext(handlerContext);
+        }
+    }
+
+    private RuleExecutionPlan CreateExecutionPlan(SchemaRuleSet ruleSet)
+    {
+        var writeSteps = new List<RuleExecutionStep>();
+        AddExecutionSteps(writeSteps, ruleSet.DomainRules, SchemaRegistryRuleDirection.Write, reverse: false);
+        AddExecutionSteps(writeSteps, ruleSet.EncodingRules, SchemaRegistryRuleDirection.Write, reverse: false);
+
+        var readSteps = new List<RuleExecutionStep>();
+        AddExecutionSteps(readSteps, ruleSet.EncodingRules, SchemaRegistryRuleDirection.Read, reverse: true);
+        AddExecutionSteps(readSteps, ruleSet.DomainRules, SchemaRegistryRuleDirection.Read, reverse: true);
+        return new RuleExecutionPlan([.. writeSteps], [.. readSteps]);
+    }
+
+    private void AddExecutionSteps(
+        List<RuleExecutionStep> destination,
+        IReadOnlyList<SchemaRule>? rules,
+        SchemaRegistryRuleDirection direction,
+        bool reverse)
+    {
+        if (rules is null)
+            return;
+
+        var index = reverse ? rules.Count - 1 : 0;
+        var end = reverse ? -1 : rules.Count;
+        var step = reverse ? -1 : 1;
+        for (; index != end; index += step)
+        {
+            var rule = rules[index];
+            if (!IsActiveRule(rule, direction))
+                continue;
+
+            _handlers.TryGetValue(rule.Type, out var handler);
+            destination.Add(new RuleExecutionStep(rule, handler));
+        }
     }
 
     private static SchemaRegistryRuleHandlerContext RentHandlerContext(
@@ -541,6 +659,14 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
             ? rule.Mode is SchemaRuleMode.Write or SchemaRuleMode.WriteRead
             : rule.Mode is SchemaRuleMode.Read or SchemaRuleMode.WriteRead;
     }
+
+    private sealed record RuleExecutionPlan(
+        RuleExecutionStep[] WriteSteps,
+        RuleExecutionStep[] ReadSteps);
+
+    private readonly record struct RuleExecutionStep(
+        SchemaRule Rule,
+        ISchemaRegistryRuleHandler? Handler);
 
     private readonly struct RuleActionName : IEquatable<RuleActionName>
     {

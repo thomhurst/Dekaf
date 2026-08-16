@@ -228,6 +228,7 @@ public sealed class AvroSerializerTests
         await Assert.That((string)result["name"]!).IsEqualTo("plain");
         await Assert.That(executor.DeserializeContext).IsNotNull();
         await Assert.That(executor.DeserializeContext!.PayloadFormat).IsEqualTo(SchemaRegistryPayloadFormat.Avro);
+        await Assert.That(executor.DeserializeContext.Subject).IsEqualTo("test-topic-value");
         await Assert.That(executor.DeserializeContext.SchemaId).IsEqualTo(schemaId);
         await Assert.That(executor.DeserializeContext.Schema).IsSameReferenceAs(schemaObj);
     }

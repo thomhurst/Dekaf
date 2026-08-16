@@ -183,6 +183,20 @@ public sealed class SchemaRegistryRuleExecutorTests
     }
 
     [Test]
+    public async Task TransformSerializedPayload_EmptyEnableAt_AppliesRules()
+    {
+        var calls = new List<string>();
+        var executor = new SchemaRegistryRuleExecutor([new AppendingRuleHandler("A", calls)]);
+        var schema = CreateSchema(
+            domainRules: [CreateRule("client-rule", "A", SchemaRuleMode.Write)],
+            enableAt: string.Empty);
+
+        _ = executor.TransformSerializedPayload("payload"u8.ToArray(), CreateContext(schema));
+
+        await Assert.That(calls).IsEquivalentTo(["Write:client-rule:Json"]);
+    }
+
+    [Test]
     [Arguments("GATEWAY")]
     [Arguments("SERVER")]
     [Arguments("NONE")]

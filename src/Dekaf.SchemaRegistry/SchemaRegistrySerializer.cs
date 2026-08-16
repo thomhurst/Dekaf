@@ -830,6 +830,9 @@ public sealed class SchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisp
                     Topic = context.Topic,
                     Component = context.Component,
                     SchemaId = schemaId,
+                    Subject = SubjectNameResolver.GetTopicSubjectName(
+                        context.Topic,
+                        context.Component == SerializationComponent.Key),
                     Schema = schema,
                     PayloadFormat = SchemaRegistryPayloadFormat.Custom
                 });

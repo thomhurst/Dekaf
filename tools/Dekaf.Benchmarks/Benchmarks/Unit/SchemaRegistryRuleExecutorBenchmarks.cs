@@ -12,6 +12,7 @@ public class SchemaRegistryRuleExecutorBenchmarks
 {
     private readonly byte[] _payload = "benchmark-payload"u8.ToArray();
     private readonly SchemaRegistryRuleExecutor _executor = new([PassThroughRuleHandler.Instance]);
+    private readonly SchemaRegistryRuleExecutor _celExecutor = new([new CelSchemaRegistryRuleHandler()]);
     private readonly SchemaRegistryRuleExecutor _multipleHandlerExecutor = new(
     [
         new PassThroughRuleHandler("A"),
@@ -55,12 +56,23 @@ public class SchemaRegistryRuleExecutorBenchmarks
                 ]
             }
         });
+    private readonly SchemaRegistryRuleContext _activeDomainRuleWithInactiveRules = CreateContext(
+        CreatePassThroughSchema(inactiveRuleCount: 32));
+    private readonly SchemaRegistryRuleContext _activeCelCondition = CreateContext(
+        CreateCelSchema(
+            SchemaRuleKind.Condition,
+            "contains(message, \"mark\") && payload == \"benchmark-payload\" && format == \"Json\""));
+    private readonly SchemaRegistryRuleContext _activeCelTransform = CreateContext(
+        CreateCelSchema(SchemaRuleKind.Transform, "metadata(\"replacement\")"));
 
     [GlobalSetup]
     public void WarmHandlerContextPool()
     {
         _executor.TransformSerializedPayload(_payload, _activeDomainRule);
+        _executor.TransformSerializedPayload(_payload, _activeDomainRuleWithInactiveRules);
         _multipleHandlerExecutor.TransformSerializedPayload(_payload, _activeDomainRule);
+        _celExecutor.TransformSerializedPayload(_payload, _activeCelCondition);
+        _celExecutor.TransformSerializedPayload(_payload, _activeCelTransform);
     }
 
     [Benchmark(Baseline = true)]
@@ -78,6 +90,77 @@ public class SchemaRegistryRuleExecutorBenchmarks
     [Benchmark]
     public ReadOnlyMemory<byte> ActiveDomainRuleMultipleHandlers() =>
         _multipleHandlerExecutor.TransformSerializedPayload(_payload, _activeDomainRule);
+
+    [Benchmark]
+    public ReadOnlyMemory<byte> ActiveDomainRuleAfterInactiveRules() =>
+        _executor.TransformSerializedPayload(_payload, _activeDomainRuleWithInactiveRules);
+
+    [Benchmark]
+    public ReadOnlyMemory<byte> ActiveCelDomainCondition() =>
+        _celExecutor.TransformSerializedPayload(_payload, _activeCelCondition);
+
+    [Benchmark]
+    public ReadOnlyMemory<byte> ActiveCelDomainTransform() =>
+        _celExecutor.TransformSerializedPayload(_payload, _activeCelTransform);
+
+    private static Schema CreateCelSchema(SchemaRuleKind kind, string expression) =>
+        new()
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = "{}",
+            Metadata = new SchemaMetadata
+            {
+                Properties = new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["replacement"] = "rewritten-payload"
+                }
+            },
+            RuleSet = new SchemaRuleSet
+            {
+                DomainRules =
+                [
+                    new SchemaRule
+                    {
+                        Name = "benchmark-cel-rule",
+                        Kind = kind,
+                        Mode = SchemaRuleMode.Write,
+                        Type = "CEL",
+                        Expr = expression
+                    }
+                ]
+            }
+        };
+
+    private static Schema CreatePassThroughSchema(int inactiveRuleCount)
+    {
+        var rules = new SchemaRule[inactiveRuleCount + 1];
+        for (var i = 0; i < inactiveRuleCount; i++)
+        {
+            rules[i] = new SchemaRule
+            {
+                Name = "inactive-rule",
+                Kind = SchemaRuleKind.Transform,
+                Mode = SchemaRuleMode.Write,
+                Type = "MISSING",
+                Disabled = true
+            };
+        }
+
+        rules[^1] = new SchemaRule
+        {
+            Name = "benchmark-rule",
+            Kind = SchemaRuleKind.Transform,
+            Mode = SchemaRuleMode.Write,
+            Type = PassThroughRuleHandler.RuleType
+        };
+
+        return new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = "{}",
+            RuleSet = new SchemaRuleSet { DomainRules = rules }
+        };
+    }
 
     private static SchemaRegistryRuleContext CreateContext(Schema schema) =>
         new()
