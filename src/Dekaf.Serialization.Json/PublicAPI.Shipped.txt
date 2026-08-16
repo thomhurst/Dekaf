@@ -1,0 +1,15 @@
+#nullable enable
+Dekaf.Serialization.Json.JsonSerializer<T>
+Dekaf.Serialization.Json.JsonSerializer<T>.Deserialize(System.ReadOnlyMemory<byte> data, Dekaf.Serialization.SerializationContext context) -> T
+Dekaf.Serialization.Json.JsonSerializer<T>.JsonSerializer(System.Text.Json.JsonSerializerOptions? options = null) -> void
+Dekaf.Serialization.Json.JsonSerializer<T>.JsonSerializer(System.Text.Json.Serialization.Metadata.JsonTypeInfo<T>! typeInfo) -> void
+Dekaf.Serialization.Json.JsonSerializer<T>.Serialize<TWriter>(T value, ref TWriter destination, Dekaf.Serialization.SerializationContext context) -> void
+Dekaf.Serialization.Json.JsonSerializerExtensions
+static Dekaf.Serialization.Json.JsonSerializerExtensions.UseJsonDeserializer<TKey, TValue>(this Dekaf.ConsumerBuilder<TKey, TValue>! builder, System.Text.Json.JsonSerializerOptions? options = null) -> Dekaf.ConsumerBuilder<TKey, TValue>!
+static Dekaf.Serialization.Json.JsonSerializerExtensions.UseJsonDeserializer<TKey, TValue>(this Dekaf.ConsumerBuilder<TKey, TValue>! builder, System.Text.Json.Serialization.Metadata.JsonTypeInfo<TValue>! typeInfo) -> Dekaf.ConsumerBuilder<TKey, TValue>!
+static Dekaf.Serialization.Json.JsonSerializerExtensions.UseJsonKeyDeserializer<TKey, TValue>(this Dekaf.ConsumerBuilder<TKey, TValue>! builder, System.Text.Json.JsonSerializerOptions? options = null) -> Dekaf.ConsumerBuilder<TKey, TValue>!
+static Dekaf.Serialization.Json.JsonSerializerExtensions.UseJsonKeyDeserializer<TKey, TValue>(this Dekaf.ConsumerBuilder<TKey, TValue>! builder, System.Text.Json.Serialization.Metadata.JsonTypeInfo<TKey>! typeInfo) -> Dekaf.ConsumerBuilder<TKey, TValue>!
+static Dekaf.Serialization.Json.JsonSerializerExtensions.UseJsonKeySerializer<TKey, TValue>(this Dekaf.ProducerBuilder<TKey, TValue>! builder, System.Text.Json.JsonSerializerOptions? options = null) -> Dekaf.ProducerBuilder<TKey, TValue>!
+static Dekaf.Serialization.Json.JsonSerializerExtensions.UseJsonKeySerializer<TKey, TValue>(this Dekaf.ProducerBuilder<TKey, TValue>! builder, System.Text.Json.Serialization.Metadata.JsonTypeInfo<TKey>! typeInfo) -> Dekaf.ProducerBuilder<TKey, TValue>!
+static Dekaf.Serialization.Json.JsonSerializerExtensions.UseJsonSerializer<TKey, TValue>(this Dekaf.ProducerBuilder<TKey, TValue>! builder, System.Text.Json.JsonSerializerOptions? options = null) -> Dekaf.ProducerBuilder<TKey, TValue>!
+static Dekaf.Serialization.Json.JsonSerializerExtensions.UseJsonSerializer<TKey, TValue>(this Dekaf.ProducerBuilder<TKey, TValue>! builder, System.Text.Json.Serialization.Metadata.JsonTypeInfo<TValue>! typeInfo) -> Dekaf.ProducerBuilder<TKey, TValue>!

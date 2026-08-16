@@ -1,0 +1,239 @@
+#nullable enable
+Dekaf.Testing.InMemoryAdminClient
+Dekaf.Testing.InMemoryAdminClient.AbortTransactionAsync(Dekaf.Admin.AbortTransactionSpec! transaction, Dekaf.Admin.AbortTransactionOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Admin.AbortTransactionResultInfo!>
+Dekaf.Testing.InMemoryAdminClient.AddRaftVoterAsync(int voterId, System.Guid voterDirectoryId, System.Collections.Generic.IEnumerable<Dekaf.Admin.RaftVoterEndpoint!>! endpoints, Dekaf.Admin.AddRaftVoterOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.InMemoryAdminClient.AlterClientQuotasAsync(System.Collections.Generic.IEnumerable<Dekaf.Admin.ClientQuotaAlteration!>! alterations, Dekaf.Admin.AlterClientQuotasOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.InMemoryAdminClient.AlterConfigsAsync(System.Collections.Generic.IReadOnlyDictionary<Dekaf.Admin.ConfigResource!, System.Collections.Generic.IReadOnlyList<Dekaf.Admin.ConfigEntry!>!>! configs, Dekaf.Admin.AlterConfigsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.InMemoryAdminClient.AlterConsumerGroupOffsetsAsync(string! groupId, System.Collections.Generic.IEnumerable<Dekaf.TopicPartitionOffset>! offsets, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.InMemoryAdminClient.AlterPartitionReassignmentsAsync(System.Collections.Generic.IReadOnlyDictionary<Dekaf.TopicPartition, Dekaf.Admin.Optional<Dekaf.Admin.NewPartitionReassignment!>>! reassignments, Dekaf.Admin.AlterPartitionReassignmentsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.InMemoryAdminClient.AlterReplicaLogDirsAsync(System.Collections.Generic.IReadOnlyDictionary<Dekaf.Admin.TopicPartitionReplica, string!>! replicaAssignments, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<Dekaf.Admin.TopicPartitionReplica, Dekaf.Admin.AlterReplicaLogDirResultInfo!>!>
+Dekaf.Testing.InMemoryAdminClient.AlterShareGroupOffsetsAsync(string! groupId, System.Collections.Generic.IEnumerable<Dekaf.Admin.ShareGroupOffsetAlteration!>! offsets, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.InMemoryAdminClient.AlterUserScramCredentialsAsync(System.Collections.Generic.IEnumerable<Dekaf.Admin.UserScramCredentialAlteration!>! alterations, Dekaf.Admin.AlterUserScramCredentialsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.InMemoryAdminClient.CreateAclsAsync(System.Collections.Generic.IEnumerable<Dekaf.Admin.AclBinding!>! aclBindings, Dekaf.Admin.CreateAclsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.InMemoryAdminClient.CreateDelegationTokenAsync(Dekaf.Admin.DelegationTokenPrincipal? owner = null, System.Collections.Generic.IEnumerable<Dekaf.Admin.DelegationTokenPrincipal>? renewers = null, System.TimeSpan? maxLifetime = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Admin.DelegationToken!>
+Dekaf.Testing.InMemoryAdminClient.CreatePartitionsAsync(System.Collections.Generic.IReadOnlyDictionary<string!, int>! newPartitionCounts, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.InMemoryAdminClient.CreateTopicsAsync(System.Collections.Generic.IEnumerable<Dekaf.Admin.NewTopic!>! topics, Dekaf.Admin.CreateTopicsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.InMemoryAdminClient.DeleteAclsAsync(System.Collections.Generic.IEnumerable<Dekaf.Admin.AclBindingFilter!>! filters, Dekaf.Admin.DeleteAclsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyList<Dekaf.Admin.AclBinding!>!>
+Dekaf.Testing.InMemoryAdminClient.DeleteConsumerGroupOffsetsAsync(string! groupId, System.Collections.Generic.IEnumerable<Dekaf.TopicPartition>! partitions, Dekaf.Admin.DeleteConsumerGroupOffsetsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.InMemoryAdminClient.DeleteConsumerGroupsAsync(System.Collections.Generic.IEnumerable<string!>! groupIds, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.InMemoryAdminClient.DeleteRecordsAsync(System.Collections.Generic.IReadOnlyDictionary<Dekaf.TopicPartition, long>! offsets, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<Dekaf.TopicPartition, long>!>
+Dekaf.Testing.InMemoryAdminClient.DeleteShareGroupOffsetsAsync(string! groupId, System.Collections.Generic.IEnumerable<string!>! topics, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.InMemoryAdminClient.DeleteTopicsAsync(System.Collections.Generic.IEnumerable<string!>! topicNames, Dekaf.Admin.DeleteTopicsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.InMemoryAdminClient.DescribeAclsAsync(Dekaf.Admin.AclBindingFilter! filter, Dekaf.Admin.DescribeAclsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyList<Dekaf.Admin.AclBinding!>!>
+Dekaf.Testing.InMemoryAdminClient.DescribeClientQuotasAsync(Dekaf.Admin.ClientQuotaFilter! filter, Dekaf.Admin.DescribeClientQuotasOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<Dekaf.Admin.ClientQuotaEntity!, System.Collections.Generic.IReadOnlyDictionary<string!, double>!>!>
+Dekaf.Testing.InMemoryAdminClient.DescribeClusterAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Admin.ClusterDescription!>
+Dekaf.Testing.InMemoryAdminClient.DescribeConfigsAsync(System.Collections.Generic.IEnumerable<Dekaf.Admin.ConfigResource!>! resources, Dekaf.Admin.DescribeConfigsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<Dekaf.Admin.ConfigResource!, System.Collections.Generic.IReadOnlyList<Dekaf.Admin.ConfigEntry!>!>!>
+Dekaf.Testing.InMemoryAdminClient.DescribeConsumerGroupsAsync(System.Collections.Generic.IEnumerable<string!>! groupIds, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.GroupDescription!>!>
+Dekaf.Testing.InMemoryAdminClient.DescribeDelegationTokensAsync(System.Collections.Generic.IEnumerable<Dekaf.Admin.DelegationTokenPrincipal>? owners = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyList<Dekaf.Admin.DelegationToken!>!>
+Dekaf.Testing.InMemoryAdminClient.DescribeFeaturesAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Admin.FeatureMetadata!>
+Dekaf.Testing.InMemoryAdminClient.DescribeLogDirsAsync(System.Collections.Generic.IEnumerable<int>! brokerIds, System.Collections.Generic.IEnumerable<Dekaf.TopicPartition>? partitions = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<int, System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.LogDirDescription!>!>!>
+Dekaf.Testing.InMemoryAdminClient.DescribeMetadataQuorumAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Admin.MetadataQuorumDescription!>
+Dekaf.Testing.InMemoryAdminClient.DescribeProducersAsync(System.Collections.Generic.IEnumerable<Dekaf.TopicPartition>! partitions, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<Dekaf.TopicPartition, Dekaf.Admin.DescribeProducersResultInfo!>!>
+Dekaf.Testing.InMemoryAdminClient.DescribeShareGroupOffsetsAsync(string! groupId, System.Collections.Generic.IEnumerable<Dekaf.TopicPartition>? partitions = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyList<Dekaf.Admin.ShareGroupOffsetDescription!>!>
+Dekaf.Testing.InMemoryAdminClient.DescribeShareGroupsAsync(System.Collections.Generic.IEnumerable<string!>! groupIds, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.ShareGroupDescription!>!>
+Dekaf.Testing.InMemoryAdminClient.DescribeStreamsGroupsAsync(System.Collections.Generic.IEnumerable<string!>! groupIds, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.StreamsGroupDescription!>!>
+Dekaf.Testing.InMemoryAdminClient.DescribeTopicPartitionsAsync(System.Collections.Generic.IEnumerable<string!>! topicNames, Dekaf.Admin.DescribeTopicPartitionsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.TopicDescription!>!>
+Dekaf.Testing.InMemoryAdminClient.DescribeTopicPartitionsPageAsync(System.Collections.Generic.IEnumerable<string!>! topicNames, Dekaf.Admin.DescribeTopicPartitionsPageOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Admin.DescribeTopicPartitionsPage!>
+Dekaf.Testing.InMemoryAdminClient.DescribeTopicsAsync(System.Collections.Generic.IEnumerable<string!>! topicNames, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.TopicDescription!>!>
+Dekaf.Testing.InMemoryAdminClient.DescribeTransactionsAsync(System.Collections.Generic.IEnumerable<string!>! transactionalIds, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.TransactionDescription!>!>
+Dekaf.Testing.InMemoryAdminClient.DescribeUserScramCredentialsAsync(System.Collections.Generic.IEnumerable<string!>? users = null, Dekaf.Admin.DescribeUserScramCredentialsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<string!, System.Collections.Generic.IReadOnlyList<Dekaf.Admin.ScramCredentialInfo!>!>!>
+Dekaf.Testing.InMemoryAdminClient.DisposeAsync() -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.InMemoryAdminClient.ElectLeadersAsync(Dekaf.Admin.ElectionType electionType, System.Collections.Generic.IEnumerable<Dekaf.TopicPartition>? partitions = null, Dekaf.Admin.ElectLeadersOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<Dekaf.TopicPartition, Dekaf.Admin.ElectLeadersResultInfo!>!>
+Dekaf.Testing.InMemoryAdminClient.ExpireDelegationTokenAsync(byte[]! hmac, System.TimeSpan? expiryTimePeriod = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.DateTimeOffset>
+Dekaf.Testing.InMemoryAdminClient.FenceProducersAsync(System.Collections.Generic.IEnumerable<string!>! transactionalIds, Dekaf.Admin.FenceProducersOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.FenceProducersResultInfo!>!>
+Dekaf.Testing.InMemoryAdminClient.InMemoryAdminClient(Dekaf.Testing.InMemoryKafkaCluster! cluster) -> void
+Dekaf.Testing.InMemoryAdminClient.IncrementalAlterConfigsAsync(System.Collections.Generic.IReadOnlyDictionary<Dekaf.Admin.ConfigResource!, System.Collections.Generic.IReadOnlyList<Dekaf.Admin.ConfigAlter!>!>! configs, Dekaf.Admin.IncrementalAlterConfigsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.InMemoryAdminClient.ListClientMetricsResourcesAsync(Dekaf.Admin.ListClientMetricsResourcesOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyList<Dekaf.Admin.ClientMetricsResourceListing!>!>
+Dekaf.Testing.InMemoryAdminClient.ListConfigResourcesAsync(Dekaf.Admin.ListConfigResourcesOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyList<Dekaf.Admin.ConfigResourceListing!>!>
+Dekaf.Testing.InMemoryAdminClient.ListConsumerGroupOffsetsAsync(string! groupId, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<Dekaf.TopicPartition, long>!>
+Dekaf.Testing.InMemoryAdminClient.ListConsumerGroupsAsync(Dekaf.Admin.ListConsumerGroupsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyList<Dekaf.Admin.GroupListing!>!>
+Dekaf.Testing.InMemoryAdminClient.ListOffsetsAsync(System.Collections.Generic.IEnumerable<Dekaf.Admin.TopicPartitionOffsetSpec!>! specs, Dekaf.Admin.ListOffsetsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<Dekaf.TopicPartition, Dekaf.Admin.ListOffsetsResultInfo!>!>
+Dekaf.Testing.InMemoryAdminClient.ListPartitionReassignmentsAsync(System.Collections.Generic.IEnumerable<Dekaf.TopicPartition>? partitions = null, Dekaf.Admin.ListPartitionReassignmentsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<Dekaf.TopicPartition, Dekaf.Admin.PartitionReassignment!>!>
+Dekaf.Testing.InMemoryAdminClient.ListShareGroupsAsync(Dekaf.Admin.ListShareGroupsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyList<Dekaf.Admin.GroupListing!>!>
+Dekaf.Testing.InMemoryAdminClient.ListStreamsGroupsAsync(Dekaf.Admin.ListStreamsGroupsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyList<Dekaf.Admin.GroupListing!>!>
+Dekaf.Testing.InMemoryAdminClient.ListTopicsAsync(Dekaf.Admin.ListTopicsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyList<Dekaf.Admin.TopicListing!>!>
+Dekaf.Testing.InMemoryAdminClient.ListTransactionsAsync(Dekaf.Admin.ListTransactionsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Admin.ListTransactionsResult!>
+Dekaf.Testing.InMemoryAdminClient.Metadata.get -> Dekaf.Metadata.ClusterMetadata!
+Dekaf.Testing.InMemoryAdminClient.RegisterMetricForSubscription(Dekaf.Telemetry.ApplicationTelemetryMetric! metric) -> void
+Dekaf.Testing.InMemoryAdminClient.RemoveMembersFromConsumerGroupAsync(string! groupId, System.Collections.Generic.IEnumerable<Dekaf.Admin.ConsumerGroupMemberToRemove!>! members, Dekaf.Admin.RemoveMembersFromConsumerGroupOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Admin.RemoveMembersFromConsumerGroupResult!>
+Dekaf.Testing.InMemoryAdminClient.RemoveRaftVoterAsync(int voterId, System.Guid voterDirectoryId, Dekaf.Admin.RemoveRaftVoterOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.InMemoryAdminClient.RenewDelegationTokenAsync(byte[]! hmac, System.TimeSpan? renewPeriod = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.DateTimeOffset>
+Dekaf.Testing.InMemoryAdminClient.UnregisterBrokerAsync(int brokerId, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.InMemoryAdminClient.UnregisterMetricFromSubscription(string! name) -> void
+Dekaf.Testing.InMemoryAdminClient.UpdateFeaturesAsync(System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.FeatureUpdate!>! updates, Dekaf.Admin.UpdateFeaturesOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.FeatureUpdateResultInfo!>!>
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.Assign(params Dekaf.TopicPartition[]! partitions) -> void
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.Assignment.get -> System.Collections.Generic.IReadOnlySet<Dekaf.TopicPartition>!
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.CloseAsync(Dekaf.Consumer.ConsumerCloseOptions! options, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.CloseAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.CommitAsync(System.Collections.Generic.IEnumerable<Dekaf.TopicPartitionOffset>! offsets, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.CommitAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.ConsumeAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Collections.Generic.IAsyncEnumerable<Dekaf.Consumer.ConsumeResult<TKey, TValue>>!
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.ConsumeBatchAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Collections.Generic.IAsyncEnumerable<Dekaf.Consumer.ConsumeBatch<TKey, TValue>!>!
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.ConsumeOneAsync(System.TimeSpan timeout, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Consumer.ConsumeResult<TKey, TValue>?>
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.ConsumeRawBatchAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Collections.Generic.IAsyncEnumerable<Dekaf.Consumer.ConsumeRawBatch!>!
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.ConsumerGroupMetadata.get -> Dekaf.Consumer.ConsumerGroupMetadata?
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.DisposeAsync() -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.GetCommittedOffsetAsync(Dekaf.TopicPartition partition, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<long?>
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.GetOffsetsForTimesAsync(System.Collections.Generic.IEnumerable<Dekaf.TopicPartitionTimestamp>! timestampsToSearch, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<Dekaf.TopicPartition, long>!>
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.GetPosition(Dekaf.TopicPartition partition) -> long?
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.GetWatermarkOffsets(Dekaf.TopicPartition topicPartition) -> Dekaf.WatermarkOffsets?
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.InMemoryConsumer(Dekaf.Testing.InMemoryKafkaCluster! cluster) -> void
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.InMemoryConsumer(Dekaf.Testing.InMemoryKafkaCluster! cluster, Dekaf.Serialization.IAsyncDeserializer<TKey>! keyDeserializer, Dekaf.Serialization.IAsyncDeserializer<TValue>! valueDeserializer) -> void
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.InMemoryConsumer(Dekaf.Testing.InMemoryKafkaCluster! cluster, Dekaf.Serialization.IAsyncDeserializer<TKey>! keyDeserializer, Dekaf.Serialization.IAsyncDeserializer<TValue>! valueDeserializer, Dekaf.Testing.InMemoryConsumerOptions! options) -> void
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.InMemoryConsumer(Dekaf.Testing.InMemoryKafkaCluster! cluster, Dekaf.Serialization.IAsyncDeserializer<TKey>! keyDeserializer, Dekaf.Serialization.IDeserializer<TValue>! valueDeserializer) -> void
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.InMemoryConsumer(Dekaf.Testing.InMemoryKafkaCluster! cluster, Dekaf.Serialization.IAsyncDeserializer<TKey>! keyDeserializer, Dekaf.Serialization.IDeserializer<TValue>! valueDeserializer, Dekaf.Testing.InMemoryConsumerOptions! options) -> void
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.InMemoryConsumer(Dekaf.Testing.InMemoryKafkaCluster! cluster, Dekaf.Serialization.IDeserializer<TKey>! keyDeserializer, Dekaf.Serialization.IAsyncDeserializer<TValue>! valueDeserializer) -> void
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.InMemoryConsumer(Dekaf.Testing.InMemoryKafkaCluster! cluster, Dekaf.Serialization.IDeserializer<TKey>! keyDeserializer, Dekaf.Serialization.IAsyncDeserializer<TValue>! valueDeserializer, Dekaf.Testing.InMemoryConsumerOptions! options) -> void
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.InMemoryConsumer(Dekaf.Testing.InMemoryKafkaCluster! cluster, Dekaf.Serialization.IDeserializer<TKey>! keyDeserializer, Dekaf.Serialization.IDeserializer<TValue>! valueDeserializer) -> void
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.InMemoryConsumer(Dekaf.Testing.InMemoryKafkaCluster! cluster, Dekaf.Serialization.IDeserializer<TKey>! keyDeserializer, Dekaf.Serialization.IDeserializer<TValue>! valueDeserializer, Dekaf.Testing.InMemoryConsumerOptions! options) -> void
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.InMemoryConsumer(Dekaf.Testing.InMemoryKafkaCluster! cluster, Dekaf.Testing.InMemoryConsumerOptions! options) -> void
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.IncrementalAssign(System.Collections.Generic.IEnumerable<Dekaf.TopicPartitionOffset>! partitions) -> void
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.IncrementalUnassign(System.Collections.Generic.IEnumerable<Dekaf.TopicPartition>! partitions) -> void
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.InitializeAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.MemberId.get -> string?
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.Offsets.get -> Dekaf.Consumer.IConsumerOffsets!
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.Partitions.get -> Dekaf.Consumer.IConsumerPartitions!
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.Pause(params Dekaf.TopicPartition[]! partitions) -> void
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.Paused.get -> System.Collections.Generic.IReadOnlySet<Dekaf.TopicPartition>!
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.Positions.get -> Dekaf.Consumer.IConsumerPositions!
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.QueryWatermarkOffsetsAsync(Dekaf.TopicPartition topicPartition, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.WatermarkOffsets>
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.RegisterMetricForSubscription(Dekaf.Telemetry.ApplicationTelemetryMetric! metric) -> void
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.Resume(params Dekaf.TopicPartition[]! partitions) -> void
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.Seek(Dekaf.TopicPartitionOffset offset) -> void
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.SeekToBeginning(params Dekaf.TopicPartition[]! partitions) -> void
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.SeekToEnd(params Dekaf.TopicPartition[]! partitions) -> void
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.StoreOffset(Dekaf.Consumer.ConsumeResult<TKey, TValue> result) -> void
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.StoreOffset(Dekaf.TopicPartitionOffset offset) -> void
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.Subscribe(System.Func<string!, bool>! topicFilter) -> void
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.Subscribe(params string![]! topics) -> void
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.SubscribePattern(string! pattern) -> void
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.Subscription.get -> System.Collections.Generic.IReadOnlySet<string!>!
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.SubscriptionPattern.get -> string?
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.Unassign() -> void
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.UnregisterMetricFromSubscription(string! name) -> void
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.Unsubscribe() -> void
+Dekaf.Testing.InMemoryConsumerOptions
+Dekaf.Testing.InMemoryConsumerOptions.AutoOffsetReset.get -> Dekaf.Consumer.AutoOffsetReset
+Dekaf.Testing.InMemoryConsumerOptions.AutoOffsetReset.init -> void
+Dekaf.Testing.InMemoryConsumerOptions.AutoOffsetResetDuration.get -> System.TimeSpan?
+Dekaf.Testing.InMemoryConsumerOptions.AutoOffsetResetDuration.init -> void
+Dekaf.Testing.InMemoryConsumerOptions.EnableAutoOffsetStore.get -> bool
+Dekaf.Testing.InMemoryConsumerOptions.EnableAutoOffsetStore.init -> void
+Dekaf.Testing.InMemoryConsumerOptions.GroupId.get -> string?
+Dekaf.Testing.InMemoryConsumerOptions.GroupId.init -> void
+Dekaf.Testing.InMemoryConsumerOptions.InMemoryConsumerOptions() -> void
+Dekaf.Testing.InMemoryConsumerOptions.MemberId.get -> string?
+Dekaf.Testing.InMemoryConsumerOptions.MemberId.init -> void
+Dekaf.Testing.InMemoryConsumerOptions.OffsetCommitMode.get -> Dekaf.Consumer.OffsetCommitMode
+Dekaf.Testing.InMemoryConsumerOptions.OffsetCommitMode.init -> void
+Dekaf.Testing.InMemoryConsumerOptions.OffsetStoreTiming.get -> Dekaf.Consumer.OffsetStoreTiming
+Dekaf.Testing.InMemoryConsumerOptions.OffsetStoreTiming.init -> void
+Dekaf.Testing.InMemoryKafkaCluster
+Dekaf.Testing.InMemoryKafkaCluster.ClearProduceFailure(string! topic) -> bool
+Dekaf.Testing.InMemoryKafkaCluster.CreateTopic(string! name, int partitionCount = 1, System.Collections.Generic.IReadOnlyDictionary<string!, string!>? configs = null) -> void
+Dekaf.Testing.InMemoryKafkaCluster.DeleteTopic(string! name) -> bool
+Dekaf.Testing.InMemoryKafkaCluster.FailProduces(string! topic, System.Exception! exception) -> void
+Dekaf.Testing.InMemoryKafkaCluster.GetTopicPartitions(string! topic) -> System.Collections.Generic.IReadOnlyList<Dekaf.TopicPartition>!
+Dekaf.Testing.InMemoryKafkaCluster.InMemoryKafkaCluster() -> void
+Dekaf.Testing.InMemoryKafkaCluster.InMemoryKafkaCluster(Dekaf.Testing.InMemoryKafkaClusterOptions! options) -> void
+Dekaf.Testing.InMemoryKafkaCluster.ListTopics() -> System.Collections.Generic.IReadOnlyList<string!>!
+Dekaf.Testing.InMemoryKafkaCluster.Options.get -> Dekaf.Testing.InMemoryKafkaClusterOptions!
+Dekaf.Testing.InMemoryKafkaCluster.ProduceLatency.get -> System.TimeSpan
+Dekaf.Testing.InMemoryKafkaCluster.ProduceLatency.set -> void
+Dekaf.Testing.InMemoryKafkaCluster.ReadRecords(string! topic, int partition = 0) -> System.Collections.Generic.IReadOnlyList<Dekaf.Testing.InMemoryRecord!>!
+Dekaf.Testing.InMemoryKafkaClusterOptions
+Dekaf.Testing.InMemoryKafkaClusterOptions.AutoCreateTopics.get -> bool
+Dekaf.Testing.InMemoryKafkaClusterOptions.AutoCreateTopics.set -> void
+Dekaf.Testing.InMemoryKafkaClusterOptions.ClusterId.get -> string!
+Dekaf.Testing.InMemoryKafkaClusterOptions.ClusterId.set -> void
+Dekaf.Testing.InMemoryKafkaClusterOptions.DefaultPartitionCount.get -> int
+Dekaf.Testing.InMemoryKafkaClusterOptions.DefaultPartitionCount.set -> void
+Dekaf.Testing.InMemoryKafkaClusterOptions.InMemoryKafkaClusterOptions() -> void
+Dekaf.Testing.InMemoryKafkaClusterOptions.SupportedFeatures.get -> System.Collections.Generic.IDictionary<string!, Dekaf.Admin.FeatureVersionRange>!
+Dekaf.Testing.InMemoryKafkaClusterOptions.SupportedFeatures.set -> void
+Dekaf.Testing.InMemoryProducer<TKey, TValue>
+Dekaf.Testing.InMemoryProducer<TKey, TValue>.BeginTransaction() -> Dekaf.Producer.ITransaction<TKey, TValue>!
+Dekaf.Testing.InMemoryProducer<TKey, TValue>.CompletePreparedTransactionAsync(Dekaf.Producer.PreparedTransactionState preparedState, bool committed, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.InMemoryProducer<TKey, TValue>.DisposeAsync() -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.InMemoryProducer<TKey, TValue>.FireAsync(Dekaf.Producer.ProducerMessage<TKey, TValue>! message) -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.InMemoryProducer<TKey, TValue>.FireAsync(Dekaf.Producer.ProducerMessage<TKey, TValue>! message, System.Action<Dekaf.Producer.RecordMetadata, System.Exception?>! deliveryHandler) -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.InMemoryProducer<TKey, TValue>.FireAsync(string! topic, TKey? key, TValue value) -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.InMemoryProducer<TKey, TValue>.FlushAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.InMemoryProducer<TKey, TValue>.ForTopic(string! topic) -> Dekaf.Producer.ITopicProducer<TKey, TValue>!
+Dekaf.Testing.InMemoryProducer<TKey, TValue>.InMemoryProducer(Dekaf.Testing.InMemoryKafkaCluster! cluster) -> void
+Dekaf.Testing.InMemoryProducer<TKey, TValue>.InMemoryProducer(Dekaf.Testing.InMemoryKafkaCluster! cluster, Dekaf.Serialization.IAsyncSerializer<TKey>! keySerializer, Dekaf.Serialization.IAsyncSerializer<TValue>! valueSerializer) -> void
+Dekaf.Testing.InMemoryProducer<TKey, TValue>.InMemoryProducer(Dekaf.Testing.InMemoryKafkaCluster! cluster, Dekaf.Serialization.IAsyncSerializer<TKey>! keySerializer, Dekaf.Serialization.ISerializer<TValue>! valueSerializer) -> void
+Dekaf.Testing.InMemoryProducer<TKey, TValue>.InMemoryProducer(Dekaf.Testing.InMemoryKafkaCluster! cluster, Dekaf.Serialization.ISerializer<TKey>! keySerializer, Dekaf.Serialization.IAsyncSerializer<TValue>! valueSerializer) -> void
+Dekaf.Testing.InMemoryProducer<TKey, TValue>.InMemoryProducer(Dekaf.Testing.InMemoryKafkaCluster! cluster, Dekaf.Serialization.ISerializer<TKey>! keySerializer, Dekaf.Serialization.ISerializer<TValue>! valueSerializer) -> void
+Dekaf.Testing.InMemoryProducer<TKey, TValue>.InitTransactionsAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.InMemoryProducer<TKey, TValue>.InitTransactionsAsync(bool keepPreparedTransaction, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.InMemoryProducer<TKey, TValue>.InitializeAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.InMemoryProducer<TKey, TValue>.ProduceAllAsync(System.Collections.Generic.IEnumerable<Dekaf.Producer.ProducerMessage<TKey, TValue>!>! messages, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Dekaf.Producer.RecordMetadata[]!>!
+Dekaf.Testing.InMemoryProducer<TKey, TValue>.ProduceAllAsync(string! topic, System.Collections.Generic.IEnumerable<(TKey? Key, TValue Value)>! messages, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Dekaf.Producer.RecordMetadata[]!>!
+Dekaf.Testing.InMemoryProducer<TKey, TValue>.ProduceAsync(Dekaf.Producer.ProducerMessage<TKey, TValue>! message, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Producer.RecordMetadata>
+Dekaf.Testing.InMemoryProducer<TKey, TValue>.ProduceAsync(string! topic, TKey? key, TValue value, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Producer.RecordMetadata>
+Dekaf.Testing.InMemoryProducer<TKey, TValue>.PurgeAsync(Dekaf.Producer.PurgeOptions options, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.InMemoryProducer<TKey, TValue>.RegisterMetricForSubscription(Dekaf.Telemetry.ApplicationTelemetryMetric! metric) -> void
+Dekaf.Testing.InMemoryProducer<TKey, TValue>.UnregisterMetricFromSubscription(string! name) -> void
+Dekaf.Testing.InMemoryRecord
+Dekaf.Testing.InMemoryRecord.<Clone>$() -> Dekaf.Testing.InMemoryRecord!
+Dekaf.Testing.InMemoryRecord.Equals(Dekaf.Testing.InMemoryRecord? other) -> bool
+Dekaf.Testing.InMemoryRecord.Headers.get -> System.Collections.Generic.IReadOnlyList<Dekaf.Serialization.Header>!
+Dekaf.Testing.InMemoryRecord.Headers.init -> void
+Dekaf.Testing.InMemoryRecord.InMemoryRecord() -> void
+Dekaf.Testing.InMemoryRecord.IsKeyNull.get -> bool
+Dekaf.Testing.InMemoryRecord.IsKeyNull.init -> void
+Dekaf.Testing.InMemoryRecord.IsValueNull.get -> bool
+Dekaf.Testing.InMemoryRecord.IsValueNull.init -> void
+Dekaf.Testing.InMemoryRecord.Key.get -> byte[]!
+Dekaf.Testing.InMemoryRecord.Key.init -> void
+Dekaf.Testing.InMemoryRecord.Offset.get -> long
+Dekaf.Testing.InMemoryRecord.Offset.init -> void
+Dekaf.Testing.InMemoryRecord.Partition.get -> int
+Dekaf.Testing.InMemoryRecord.Partition.init -> void
+Dekaf.Testing.InMemoryRecord.Timestamp.get -> System.DateTimeOffset
+Dekaf.Testing.InMemoryRecord.TimestampMs.get -> long
+Dekaf.Testing.InMemoryRecord.TimestampMs.init -> void
+Dekaf.Testing.InMemoryRecord.Topic.get -> string!
+Dekaf.Testing.InMemoryRecord.Topic.init -> void
+Dekaf.Testing.InMemoryRecord.Value.get -> byte[]!
+Dekaf.Testing.InMemoryRecord.Value.init -> void
+Dekaf.Testing.InMemoryShareConsumer<TKey, TValue>
+Dekaf.Testing.InMemoryShareConsumer<TKey, TValue>.Acknowledge(Dekaf.ShareConsumer.ShareConsumeResult<TKey, TValue>! record, Dekaf.ShareConsumer.AcknowledgeType type = Dekaf.ShareConsumer.AcknowledgeType.Accept) -> void
+Dekaf.Testing.InMemoryShareConsumer<TKey, TValue>.AcquisitionLockTimeoutMs.get -> int?
+Dekaf.Testing.InMemoryShareConsumer<TKey, TValue>.Assignment.get -> System.Collections.Generic.IReadOnlySet<Dekaf.TopicPartition>!
+Dekaf.Testing.InMemoryShareConsumer<TKey, TValue>.CloseAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.InMemoryShareConsumer<TKey, TValue>.CommitAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.InMemoryShareConsumer<TKey, TValue>.DisposeAsync() -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.InMemoryShareConsumer<TKey, TValue>.InMemoryShareConsumer(Dekaf.Testing.InMemoryKafkaCluster! cluster) -> void
+Dekaf.Testing.InMemoryShareConsumer<TKey, TValue>.InMemoryShareConsumer(Dekaf.Testing.InMemoryKafkaCluster! cluster, Dekaf.Serialization.IAsyncDeserializer<TKey>! keyDeserializer, Dekaf.Serialization.IAsyncDeserializer<TValue>! valueDeserializer) -> void
+Dekaf.Testing.InMemoryShareConsumer<TKey, TValue>.InMemoryShareConsumer(Dekaf.Testing.InMemoryKafkaCluster! cluster, Dekaf.Serialization.IAsyncDeserializer<TKey>! keyDeserializer, Dekaf.Serialization.IAsyncDeserializer<TValue>! valueDeserializer, Dekaf.Testing.InMemoryShareConsumerOptions! options) -> void
+Dekaf.Testing.InMemoryShareConsumer<TKey, TValue>.InMemoryShareConsumer(Dekaf.Testing.InMemoryKafkaCluster! cluster, Dekaf.Serialization.IAsyncDeserializer<TKey>! keyDeserializer, Dekaf.Serialization.IDeserializer<TValue>! valueDeserializer) -> void
+Dekaf.Testing.InMemoryShareConsumer<TKey, TValue>.InMemoryShareConsumer(Dekaf.Testing.InMemoryKafkaCluster! cluster, Dekaf.Serialization.IAsyncDeserializer<TKey>! keyDeserializer, Dekaf.Serialization.IDeserializer<TValue>! valueDeserializer, Dekaf.Testing.InMemoryShareConsumerOptions! options) -> void
+Dekaf.Testing.InMemoryShareConsumer<TKey, TValue>.InMemoryShareConsumer(Dekaf.Testing.InMemoryKafkaCluster! cluster, Dekaf.Serialization.IDeserializer<TKey>! keyDeserializer, Dekaf.Serialization.IAsyncDeserializer<TValue>! valueDeserializer) -> void
+Dekaf.Testing.InMemoryShareConsumer<TKey, TValue>.InMemoryShareConsumer(Dekaf.Testing.InMemoryKafkaCluster! cluster, Dekaf.Serialization.IDeserializer<TKey>! keyDeserializer, Dekaf.Serialization.IAsyncDeserializer<TValue>! valueDeserializer, Dekaf.Testing.InMemoryShareConsumerOptions! options) -> void
+Dekaf.Testing.InMemoryShareConsumer<TKey, TValue>.InMemoryShareConsumer(Dekaf.Testing.InMemoryKafkaCluster! cluster, Dekaf.Serialization.IDeserializer<TKey>! keyDeserializer, Dekaf.Serialization.IDeserializer<TValue>! valueDeserializer) -> void
+Dekaf.Testing.InMemoryShareConsumer<TKey, TValue>.InMemoryShareConsumer(Dekaf.Testing.InMemoryKafkaCluster! cluster, Dekaf.Serialization.IDeserializer<TKey>! keyDeserializer, Dekaf.Serialization.IDeserializer<TValue>! valueDeserializer, Dekaf.Testing.InMemoryShareConsumerOptions! options) -> void
+Dekaf.Testing.InMemoryShareConsumer<TKey, TValue>.InMemoryShareConsumer(Dekaf.Testing.InMemoryKafkaCluster! cluster, Dekaf.Testing.InMemoryShareConsumerOptions! options) -> void
+Dekaf.Testing.InMemoryShareConsumer<TKey, TValue>.InitializeAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.InMemoryShareConsumer<TKey, TValue>.MemberId.get -> string?
+Dekaf.Testing.InMemoryShareConsumer<TKey, TValue>.PollAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Collections.Generic.IAsyncEnumerable<Dekaf.ShareConsumer.ShareConsumeResult<TKey, TValue>!>!
+Dekaf.Testing.InMemoryShareConsumer<TKey, TValue>.Subscribe(params string![]! topics) -> Dekaf.ShareConsumer.IKafkaShareConsumer<TKey, TValue>!
+Dekaf.Testing.InMemoryShareConsumer<TKey, TValue>.Subscription.get -> System.Collections.Generic.IReadOnlySet<string!>!
+Dekaf.Testing.InMemoryShareConsumer<TKey, TValue>.Unsubscribe() -> Dekaf.ShareConsumer.IKafkaShareConsumer<TKey, TValue>!
+Dekaf.Testing.InMemoryShareConsumerOptions
+Dekaf.Testing.InMemoryShareConsumerOptions.GroupId.get -> string!
+Dekaf.Testing.InMemoryShareConsumerOptions.GroupId.init -> void
+Dekaf.Testing.InMemoryShareConsumerOptions.InMemoryShareConsumerOptions() -> void
+Dekaf.Testing.InMemoryShareConsumerOptions.MaxPollRecords.get -> int
+Dekaf.Testing.InMemoryShareConsumerOptions.MaxPollRecords.init -> void
+Dekaf.Testing.InMemoryShareConsumerOptions.MemberId.get -> string?
+Dekaf.Testing.InMemoryShareConsumerOptions.MemberId.init -> void
+Dekaf.Testing.ServiceCollectionExtensions
+override Dekaf.Testing.InMemoryRecord.Equals(object? obj) -> bool
+override Dekaf.Testing.InMemoryRecord.GetHashCode() -> int
+override Dekaf.Testing.InMemoryRecord.ToString() -> string!
+static Dekaf.Testing.InMemoryRecord.operator !=(Dekaf.Testing.InMemoryRecord? left, Dekaf.Testing.InMemoryRecord? right) -> bool
+static Dekaf.Testing.InMemoryRecord.operator ==(Dekaf.Testing.InMemoryRecord? left, Dekaf.Testing.InMemoryRecord? right) -> bool
+static Dekaf.Testing.ServiceCollectionExtensions.AddDekafInMemory(this Microsoft.Extensions.DependencyInjection.IServiceCollection! services, System.Action<Dekaf.Testing.InMemoryKafkaClusterOptions!>? configure = null) -> Microsoft.Extensions.DependencyInjection.IServiceCollection!

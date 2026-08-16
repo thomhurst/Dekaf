@@ -1,0 +1,10 @@
+#nullable enable
+Dekaf.Compression.Snappy.SnappyCompressionCodec
+Dekaf.Compression.Snappy.SnappyCompressionCodec.Compress(System.Buffers.ReadOnlySequence<byte> source, System.Buffers.IBufferWriter<byte>! destination) -> void
+Dekaf.Compression.Snappy.SnappyCompressionCodec.Decompress(System.Buffers.ReadOnlySequence<byte> source, System.Buffers.IBufferWriter<byte>! destination) -> void
+Dekaf.Compression.Snappy.SnappyCompressionCodec.SnappyCompressionCodec(int blockSize = 1048576) -> void
+Dekaf.Compression.Snappy.SnappyCompressionCodec.Type.get -> Dekaf.Protocol.Records.CompressionType
+Dekaf.Compression.Snappy.SnappyCompressionExtensions
+Dekaf.Compression.Snappy.SnappyProducerBuilderExtensions
+static Dekaf.Compression.Snappy.SnappyCompressionExtensions.AddSnappy(this Dekaf.Compression.CompressionCodecRegistry! registry, int blockSize = 1048576) -> Dekaf.Compression.CompressionCodecRegistry!
+static Dekaf.Compression.Snappy.SnappyProducerBuilderExtensions.UseSnappyCompression<TKey, TValue>(this Dekaf.ProducerBuilder<TKey, TValue>! builder) -> Dekaf.ProducerBuilder<TKey, TValue>!

@@ -1,0 +1,33 @@
+#nullable enable
+Dekaf.Extensions.HealthChecks.DekafBrokerHealthCheck
+Dekaf.Extensions.HealthChecks.DekafBrokerHealthCheck.CheckHealthAsync(Microsoft.Extensions.Diagnostics.HealthChecks.HealthCheckContext! context, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Microsoft.Extensions.Diagnostics.HealthChecks.HealthCheckResult>!
+Dekaf.Extensions.HealthChecks.DekafBrokerHealthCheck.DekafBrokerHealthCheck(Dekaf.Admin.IAdminClient! adminClient, Dekaf.Extensions.HealthChecks.DekafBrokerHealthCheckOptions! options) -> void
+Dekaf.Extensions.HealthChecks.DekafBrokerHealthCheckOptions
+Dekaf.Extensions.HealthChecks.DekafBrokerHealthCheckOptions.DekafBrokerHealthCheckOptions() -> void
+Dekaf.Extensions.HealthChecks.DekafBrokerHealthCheckOptions.Timeout.get -> System.TimeSpan
+Dekaf.Extensions.HealthChecks.DekafBrokerHealthCheckOptions.Timeout.init -> void
+Dekaf.Extensions.HealthChecks.DekafConsumerHealthCheck<TKey, TValue>
+Dekaf.Extensions.HealthChecks.DekafConsumerHealthCheck<TKey, TValue>.CheckHealthAsync(Microsoft.Extensions.Diagnostics.HealthChecks.HealthCheckContext! context, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Microsoft.Extensions.Diagnostics.HealthChecks.HealthCheckResult>!
+Dekaf.Extensions.HealthChecks.DekafConsumerHealthCheck<TKey, TValue>.DekafConsumerHealthCheck(Dekaf.Consumer.IKafkaConsumer<TKey, TValue>! consumer, Dekaf.Extensions.HealthChecks.DekafConsumerHealthCheckOptions! options) -> void
+Dekaf.Extensions.HealthChecks.DekafConsumerHealthCheckOptions
+Dekaf.Extensions.HealthChecks.DekafConsumerHealthCheckOptions.DegradedThreshold.get -> long
+Dekaf.Extensions.HealthChecks.DekafConsumerHealthCheckOptions.DegradedThreshold.init -> void
+Dekaf.Extensions.HealthChecks.DekafConsumerHealthCheckOptions.DekafConsumerHealthCheckOptions() -> void
+Dekaf.Extensions.HealthChecks.DekafConsumerHealthCheckOptions.NoAssignmentStatus.get -> Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus
+Dekaf.Extensions.HealthChecks.DekafConsumerHealthCheckOptions.NoAssignmentStatus.init -> void
+Dekaf.Extensions.HealthChecks.DekafConsumerHealthCheckOptions.Timeout.get -> System.TimeSpan
+Dekaf.Extensions.HealthChecks.DekafConsumerHealthCheckOptions.Timeout.init -> void
+Dekaf.Extensions.HealthChecks.DekafConsumerHealthCheckOptions.UnhealthyThreshold.get -> long
+Dekaf.Extensions.HealthChecks.DekafConsumerHealthCheckOptions.UnhealthyThreshold.init -> void
+Dekaf.Extensions.HealthChecks.DekafConsumerHealthCheckOptions.Validate() -> void
+Dekaf.Extensions.HealthChecks.DekafProducerHealthCheck<TKey, TValue>
+Dekaf.Extensions.HealthChecks.DekafProducerHealthCheck<TKey, TValue>.CheckHealthAsync(Microsoft.Extensions.Diagnostics.HealthChecks.HealthCheckContext! context, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Microsoft.Extensions.Diagnostics.HealthChecks.HealthCheckResult>!
+Dekaf.Extensions.HealthChecks.DekafProducerHealthCheck<TKey, TValue>.DekafProducerHealthCheck(Dekaf.Producer.IKafkaProducer<TKey, TValue>! producer, Dekaf.Extensions.HealthChecks.DekafProducerHealthCheckOptions! options) -> void
+Dekaf.Extensions.HealthChecks.DekafProducerHealthCheckOptions
+Dekaf.Extensions.HealthChecks.DekafProducerHealthCheckOptions.DekafProducerHealthCheckOptions() -> void
+Dekaf.Extensions.HealthChecks.DekafProducerHealthCheckOptions.Timeout.get -> System.TimeSpan
+Dekaf.Extensions.HealthChecks.DekafProducerHealthCheckOptions.Timeout.init -> void
+Dekaf.Extensions.HealthChecks.HealthCheckExtensions
+static Dekaf.Extensions.HealthChecks.HealthCheckExtensions.AddDekafBrokerHealthCheck(this Microsoft.Extensions.DependencyInjection.IHealthChecksBuilder! builder, string! name = "dekaf-broker", Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus? failureStatus = null, System.Collections.Generic.IEnumerable<string!>? tags = null, Dekaf.Extensions.HealthChecks.DekafBrokerHealthCheckOptions? options = null) -> Microsoft.Extensions.DependencyInjection.IHealthChecksBuilder!
+static Dekaf.Extensions.HealthChecks.HealthCheckExtensions.AddDekafConsumerHealthCheck<TKey, TValue>(this Microsoft.Extensions.DependencyInjection.IHealthChecksBuilder! builder, string! name = "dekaf-consumer", Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus? failureStatus = null, System.Collections.Generic.IEnumerable<string!>? tags = null, Dekaf.Extensions.HealthChecks.DekafConsumerHealthCheckOptions? options = null) -> Microsoft.Extensions.DependencyInjection.IHealthChecksBuilder!
+static Dekaf.Extensions.HealthChecks.HealthCheckExtensions.AddDekafProducerHealthCheck<TKey, TValue>(this Microsoft.Extensions.DependencyInjection.IHealthChecksBuilder! builder, string! name = "dekaf-producer", Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus? failureStatus = null, System.Collections.Generic.IEnumerable<string!>? tags = null, Dekaf.Extensions.HealthChecks.DekafProducerHealthCheckOptions? options = null) -> Microsoft.Extensions.DependencyInjection.IHealthChecksBuilder!

@@ -4,6 +4,7 @@ const sidebars = {
     'intro',
     'getting-started',
     'compatibility',
+    'api-compatibility',
     {
       type: 'category',
       label: 'Producer',

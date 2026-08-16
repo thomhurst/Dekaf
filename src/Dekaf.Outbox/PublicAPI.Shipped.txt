@@ -1,0 +1,96 @@
+#nullable enable
+Dekaf.Outbox.DekafOutboxPublisher
+Dekaf.Outbox.DekafOutboxPublisher.DekafOutboxPublisher(Dekaf.Producer.IKafkaProducer<byte[]?, byte[]?>! producer, bool ownsProducer = true) -> void
+Dekaf.Outbox.DekafOutboxPublisher.DisposeAsync() -> System.Threading.Tasks.ValueTask
+Dekaf.Outbox.DekafOutboxPublisher.InitializeAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Outbox.DekafOutboxPublisher.PublishAsync(System.Collections.Generic.IReadOnlyList<Dekaf.Outbox.OutboxMessage!>! messages, string! messageIdHeaderName, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Outbox.OutboxPublishResult>
+Dekaf.Outbox.IOutboxPublisher
+Dekaf.Outbox.IOutboxPublisher.InitializeAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Outbox.IOutboxPublisher.PublishAsync(System.Collections.Generic.IReadOnlyList<Dekaf.Outbox.OutboxMessage!>! messages, string! messageIdHeaderName, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Outbox.OutboxPublishResult>
+Dekaf.Outbox.IOutboxStore
+Dekaf.Outbox.IOutboxStore.AcquireBucketLeasesAsync(Dekaf.Outbox.OutboxLeaseRequest! request, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyList<int>!>
+Dekaf.Outbox.IOutboxStore.GetBucketsWithPendingAsync(System.Collections.Generic.IReadOnlyList<int>! buckets, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyList<int>!>
+Dekaf.Outbox.IOutboxStore.GetNextBatchAsync(int bucket, int maxCount, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyList<Dekaf.Outbox.OutboxMessage!>!>
+Dekaf.Outbox.IOutboxStore.MarkPublishedAsync(int bucket, System.Collections.Generic.IReadOnlyList<Dekaf.Outbox.OutboxMessage!>! publishedMessages, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Outbox.OutboxBucket
+Dekaf.Outbox.OutboxFairShare
+Dekaf.Outbox.OutboxHeaderCodec
+Dekaf.Outbox.OutboxLeaseRequest
+Dekaf.Outbox.OutboxLeaseRequest.BucketCount.get -> int
+Dekaf.Outbox.OutboxLeaseRequest.BucketCount.init -> void
+Dekaf.Outbox.OutboxLeaseRequest.LeaseDuration.get -> System.TimeSpan
+Dekaf.Outbox.OutboxLeaseRequest.LeaseDuration.init -> void
+Dekaf.Outbox.OutboxLeaseRequest.OutboxLeaseRequest() -> void
+Dekaf.Outbox.OutboxLeaseRequest.RelayId.get -> string!
+Dekaf.Outbox.OutboxLeaseRequest.RelayId.init -> void
+Dekaf.Outbox.OutboxMessage
+Dekaf.Outbox.OutboxMessage.Bucket.get -> int
+Dekaf.Outbox.OutboxMessage.Bucket.init -> void
+Dekaf.Outbox.OutboxMessage.CreatedAtUtc.get -> System.DateTimeOffset
+Dekaf.Outbox.OutboxMessage.CreatedAtUtc.init -> void
+Dekaf.Outbox.OutboxMessage.Headers.get -> byte[]?
+Dekaf.Outbox.OutboxMessage.Headers.init -> void
+Dekaf.Outbox.OutboxMessage.Id.get -> long
+Dekaf.Outbox.OutboxMessage.Id.init -> void
+Dekaf.Outbox.OutboxMessage.Key.get -> byte[]?
+Dekaf.Outbox.OutboxMessage.Key.init -> void
+Dekaf.Outbox.OutboxMessage.MessageId.get -> System.Guid
+Dekaf.Outbox.OutboxMessage.MessageId.init -> void
+Dekaf.Outbox.OutboxMessage.OutboxMessage() -> void
+Dekaf.Outbox.OutboxMessage.Partition.get -> int?
+Dekaf.Outbox.OutboxMessage.Partition.init -> void
+Dekaf.Outbox.OutboxMessage.Topic.get -> string!
+Dekaf.Outbox.OutboxMessage.Topic.init -> void
+Dekaf.Outbox.OutboxMessage.Value.get -> byte[]?
+Dekaf.Outbox.OutboxMessage.Value.init -> void
+Dekaf.Outbox.OutboxMisconfigurationException
+Dekaf.Outbox.OutboxMisconfigurationException.OutboxMisconfigurationException(string! message) -> void
+Dekaf.Outbox.OutboxMisconfigurationException.OutboxMisconfigurationException(string! message, System.Exception! innerException) -> void
+Dekaf.Outbox.OutboxPublishResult
+Dekaf.Outbox.OutboxPublishResult.AckedCount.get -> int
+Dekaf.Outbox.OutboxPublishResult.AckedCount.init -> void
+Dekaf.Outbox.OutboxPublishResult.Deconstruct(out int AckedCount, out System.Exception? FirstError) -> void
+Dekaf.Outbox.OutboxPublishResult.Equals(Dekaf.Outbox.OutboxPublishResult other) -> bool
+Dekaf.Outbox.OutboxPublishResult.FirstError.get -> System.Exception?
+Dekaf.Outbox.OutboxPublishResult.FirstError.init -> void
+Dekaf.Outbox.OutboxPublishResult.OutboxPublishResult() -> void
+Dekaf.Outbox.OutboxPublishResult.OutboxPublishResult(int AckedCount, System.Exception? FirstError) -> void
+Dekaf.Outbox.OutboxRelayOptions
+Dekaf.Outbox.OutboxRelayOptions.BatchSize.get -> int
+Dekaf.Outbox.OutboxRelayOptions.BatchSize.init -> void
+Dekaf.Outbox.OutboxRelayOptions.BucketCount.get -> int
+Dekaf.Outbox.OutboxRelayOptions.BucketCount.init -> void
+Dekaf.Outbox.OutboxRelayOptions.ErrorBackoff.get -> System.TimeSpan
+Dekaf.Outbox.OutboxRelayOptions.ErrorBackoff.init -> void
+Dekaf.Outbox.OutboxRelayOptions.LeaseDuration.get -> System.TimeSpan
+Dekaf.Outbox.OutboxRelayOptions.LeaseDuration.init -> void
+Dekaf.Outbox.OutboxRelayOptions.LeaseRenewInterval.get -> System.TimeSpan
+Dekaf.Outbox.OutboxRelayOptions.LeaseRenewInterval.init -> void
+Dekaf.Outbox.OutboxRelayOptions.MessageIdHeaderName.get -> string!
+Dekaf.Outbox.OutboxRelayOptions.MessageIdHeaderName.init -> void
+Dekaf.Outbox.OutboxRelayOptions.OutboxRelayOptions() -> void
+Dekaf.Outbox.OutboxRelayOptions.PollInterval.get -> System.TimeSpan
+Dekaf.Outbox.OutboxRelayOptions.PollInterval.init -> void
+Dekaf.Outbox.OutboxRelayOptions.RelayId.get -> string!
+Dekaf.Outbox.OutboxRelayOptions.RelayId.init -> void
+Dekaf.Outbox.OutboxRelayOptions.Validate() -> void
+Dekaf.Outbox.OutboxRelayService
+Dekaf.Outbox.OutboxRelayService.OutboxRelayService(Dekaf.Outbox.IOutboxStore! store, Dekaf.Outbox.IOutboxPublisher! publisher, Dekaf.Outbox.OutboxRelayOptions! options, Microsoft.Extensions.Logging.ILogger<Dekaf.Outbox.OutboxRelayService!>! logger, System.TimeProvider? timeProvider = null) -> void
+Dekaf.Outbox.OutboxServiceCollectionExtensions
+const Dekaf.Outbox.OutboxRelayOptions.DefaultBucketCount = 8 -> int
+const Dekaf.Outbox.OutboxRelayOptions.DefaultMessageIdHeaderName = "x-outbox-message-id" -> string!
+const Dekaf.Outbox.OutboxRelayOptions.MaxRelayIdLength = 128 -> int
+override Dekaf.Outbox.OutboxPublishResult.GetHashCode() -> int
+static Dekaf.Outbox.OutboxBucket.Compute(byte[]? key, System.Guid messageId, int bucketCount) -> int
+static Dekaf.Outbox.OutboxBucket.Compute(byte[]? key, System.Guid messageId, int bucketCount, int? partition) -> int
+static Dekaf.Outbox.OutboxFairShare.Compute(int bucketCount, System.Collections.Generic.List<string!>! activeRelayIds, string! relayId) -> int
+static Dekaf.Outbox.OutboxHeaderCodec.Decode(byte[]? data) -> Dekaf.Serialization.Headers?
+static Dekaf.Outbox.OutboxHeaderCodec.Encode(Dekaf.Serialization.Headers? headers) -> byte[]?
+static Dekaf.Outbox.OutboxMessage.Create<TKey, TValue>(string! topic, TKey? key, TValue? value, Dekaf.Serialization.ISerializer<TKey>! keySerializer, Dekaf.Serialization.ISerializer<TValue>! valueSerializer, Dekaf.Serialization.Headers? headers = null, int bucketCount = 8, int? partition = null) -> Dekaf.Outbox.OutboxMessage!
+static Dekaf.Outbox.OutboxPublishResult.operator !=(Dekaf.Outbox.OutboxPublishResult left, Dekaf.Outbox.OutboxPublishResult right) -> bool
+static Dekaf.Outbox.OutboxPublishResult.operator ==(Dekaf.Outbox.OutboxPublishResult left, Dekaf.Outbox.OutboxPublishResult right) -> bool
+static Dekaf.Outbox.OutboxServiceCollectionExtensions.AddDekafOutboxRelay(this Microsoft.Extensions.DependencyInjection.IServiceCollection! services, Dekaf.Outbox.OutboxRelayOptions? options = null) -> Microsoft.Extensions.DependencyInjection.IServiceCollection!
+static Dekaf.Outbox.OutboxServiceCollectionExtensions.AddDekafOutboxRelay(this Microsoft.Extensions.DependencyInjection.IServiceCollection! services, System.Action<Dekaf.ProducerBuilder<byte[]?, byte[]?>!>! configureProducer, Dekaf.Outbox.OutboxRelayOptions? options = null) -> Microsoft.Extensions.DependencyInjection.IServiceCollection!
+static Dekaf.Outbox.OutboxServiceCollectionExtensions.CreateRelayProducerBuilder(System.Action<Dekaf.ProducerBuilder<byte[]?, byte[]?>!>! configureProducer, Microsoft.Extensions.Logging.ILoggerFactory? loggerFactory) -> Dekaf.ProducerBuilder<byte[]?, byte[]?>!
+~override Dekaf.Outbox.OutboxPublishResult.Equals(object obj) -> bool
+~override Dekaf.Outbox.OutboxPublishResult.ToString() -> string

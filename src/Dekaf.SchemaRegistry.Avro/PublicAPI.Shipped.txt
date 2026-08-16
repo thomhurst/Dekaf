@@ -1,0 +1,39 @@
+#nullable enable
+Dekaf.SchemaRegistry.Avro.AvroDeserializerConfig
+Dekaf.SchemaRegistry.Avro.AvroDeserializerConfig.AvroDeserializerConfig() -> void
+Dekaf.SchemaRegistry.Avro.AvroDeserializerConfig.ReaderSchema.get -> string?
+Dekaf.SchemaRegistry.Avro.AvroDeserializerConfig.ReaderSchema.init -> void
+Dekaf.SchemaRegistry.Avro.AvroDeserializerConfig.RuleExecutor.get -> Dekaf.SchemaRegistry.ISchemaRegistryRuleExecutor?
+Dekaf.SchemaRegistry.Avro.AvroDeserializerConfig.RuleExecutor.init -> void
+Dekaf.SchemaRegistry.Avro.AvroSchemaRegistryDeserializer<T>
+Dekaf.SchemaRegistry.Avro.AvroSchemaRegistryDeserializer<T>.AvroSchemaRegistryDeserializer(Dekaf.SchemaRegistry.ISchemaRegistryClient! schemaRegistry, Dekaf.SchemaRegistry.Avro.AvroDeserializerConfig? config = null, bool ownsClient = false) -> void
+Dekaf.SchemaRegistry.Avro.AvroSchemaRegistryDeserializer<T>.Deserialize(System.ReadOnlyMemory<byte> data, Dekaf.Serialization.SerializationContext context) -> T
+Dekaf.SchemaRegistry.Avro.AvroSchemaRegistryDeserializer<T>.DisposeAsync() -> System.Threading.Tasks.ValueTask
+Dekaf.SchemaRegistry.Avro.AvroSchemaRegistryDeserializer<T>.WarmupAsync(int schemaId, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Avro.Schema!>!
+Dekaf.SchemaRegistry.Avro.AvroSchemaRegistryExtensions
+Dekaf.SchemaRegistry.Avro.AvroSchemaRegistrySerializer<T>
+Dekaf.SchemaRegistry.Avro.AvroSchemaRegistrySerializer<T>.AvroSchemaRegistrySerializer(Dekaf.SchemaRegistry.ISchemaRegistryClient! schemaRegistry, Dekaf.SchemaRegistry.Avro.AvroSerializerConfig? config = null, bool ownsClient = false) -> void
+Dekaf.SchemaRegistry.Avro.AvroSchemaRegistrySerializer<T>.DisposeAsync() -> System.Threading.Tasks.ValueTask
+Dekaf.SchemaRegistry.Avro.AvroSchemaRegistrySerializer<T>.PrepareAsync(T value, Dekaf.Serialization.SerializationContext context, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.SchemaRegistry.Avro.AvroSchemaRegistrySerializer<T>.Serialize<TWriter>(T value, ref TWriter destination, Dekaf.Serialization.SerializationContext context) -> void
+Dekaf.SchemaRegistry.Avro.AvroSchemaRegistrySerializer<T>.WarmupAsync(string! topic, T value, bool isKey = false, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<int>!
+Dekaf.SchemaRegistry.Avro.AvroSerializerConfig
+Dekaf.SchemaRegistry.Avro.AvroSerializerConfig.AutoRegisterSchemas.get -> bool
+Dekaf.SchemaRegistry.Avro.AvroSerializerConfig.AutoRegisterSchemas.init -> void
+Dekaf.SchemaRegistry.Avro.AvroSerializerConfig.AvroSerializerConfig() -> void
+Dekaf.SchemaRegistry.Avro.AvroSerializerConfig.CustomSubjectNameStrategy.get -> Dekaf.SchemaRegistry.ISubjectNameStrategy?
+Dekaf.SchemaRegistry.Avro.AvroSerializerConfig.CustomSubjectNameStrategy.init -> void
+Dekaf.SchemaRegistry.Avro.AvroSerializerConfig.NormalizeSchemas.get -> bool
+Dekaf.SchemaRegistry.Avro.AvroSerializerConfig.NormalizeSchemas.init -> void
+Dekaf.SchemaRegistry.Avro.AvroSerializerConfig.RuleExecutor.get -> Dekaf.SchemaRegistry.ISchemaRegistryRuleExecutor?
+Dekaf.SchemaRegistry.Avro.AvroSerializerConfig.RuleExecutor.init -> void
+Dekaf.SchemaRegistry.Avro.AvroSerializerConfig.SubjectNameStrategy.get -> Dekaf.SchemaRegistry.SubjectNameStrategy
+Dekaf.SchemaRegistry.Avro.AvroSerializerConfig.SubjectNameStrategy.init -> void
+Dekaf.SchemaRegistry.Avro.AvroSerializerConfig.UseLatestVersion.get -> bool
+Dekaf.SchemaRegistry.Avro.AvroSerializerConfig.UseLatestVersion.init -> void
+Dekaf.SchemaRegistry.Avro.AvroSerializerConfig.UseLegacySubjectNames.get -> bool
+Dekaf.SchemaRegistry.Avro.AvroSerializerConfig.UseLegacySubjectNames.init -> void
+static Dekaf.SchemaRegistry.Avro.AvroSchemaRegistryExtensions.UseAvroSchemaRegistry<TKey, TValue>(this Dekaf.ConsumerBuilder<TKey, TValue!>! builder, Dekaf.SchemaRegistry.ISchemaRegistryClient! schemaRegistry, Dekaf.SchemaRegistry.Avro.AvroDeserializerConfig? config = null) -> Dekaf.ConsumerBuilder<TKey, TValue!>!
+static Dekaf.SchemaRegistry.Avro.AvroSchemaRegistryExtensions.UseAvroSchemaRegistry<TKey, TValue>(this Dekaf.ProducerBuilder<TKey, TValue!>! builder, Dekaf.SchemaRegistry.ISchemaRegistryClient! schemaRegistry, Dekaf.SchemaRegistry.Avro.AvroSerializerConfig? config = null) -> Dekaf.ProducerBuilder<TKey, TValue!>!
+static Dekaf.SchemaRegistry.Avro.AvroSchemaRegistryExtensions.UseAvroSchemaRegistryKey<TKey, TValue>(this Dekaf.ConsumerBuilder<TKey!, TValue>! builder, Dekaf.SchemaRegistry.ISchemaRegistryClient! schemaRegistry, Dekaf.SchemaRegistry.Avro.AvroDeserializerConfig? config = null) -> Dekaf.ConsumerBuilder<TKey!, TValue>!
+static Dekaf.SchemaRegistry.Avro.AvroSchemaRegistryExtensions.UseAvroSchemaRegistryKey<TKey, TValue>(this Dekaf.ProducerBuilder<TKey!, TValue>! builder, Dekaf.SchemaRegistry.ISchemaRegistryClient! schemaRegistry, Dekaf.SchemaRegistry.Avro.AvroSerializerConfig? config = null) -> Dekaf.ProducerBuilder<TKey!, TValue>!

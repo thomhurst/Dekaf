@@ -1,0 +1,49 @@
+#nullable enable
+Dekaf.SchemaRegistry.Protobuf.ProtobufDeserializerConfig
+Dekaf.SchemaRegistry.Protobuf.ProtobufDeserializerConfig.ProtobufDeserializerConfig() -> void
+Dekaf.SchemaRegistry.Protobuf.ProtobufDeserializerConfig.RuleExecutor.get -> Dekaf.SchemaRegistry.ISchemaRegistryRuleExecutor?
+Dekaf.SchemaRegistry.Protobuf.ProtobufDeserializerConfig.RuleExecutor.init -> void
+Dekaf.SchemaRegistry.Protobuf.ProtobufDeserializerConfig.SkipSchemaValidation.get -> bool
+Dekaf.SchemaRegistry.Protobuf.ProtobufDeserializerConfig.SkipSchemaValidation.init -> void
+Dekaf.SchemaRegistry.Protobuf.ProtobufDeserializerConfig.UseDeprecatedFormat.get -> bool
+Dekaf.SchemaRegistry.Protobuf.ProtobufDeserializerConfig.UseDeprecatedFormat.init -> void
+Dekaf.SchemaRegistry.Protobuf.ProtobufSchemaRegistryDeserializer<T>
+Dekaf.SchemaRegistry.Protobuf.ProtobufSchemaRegistryDeserializer<T>.Deserialize(System.ReadOnlyMemory<byte> data, Dekaf.Serialization.SerializationContext context) -> T
+Dekaf.SchemaRegistry.Protobuf.ProtobufSchemaRegistryDeserializer<T>.DisposeAsync() -> System.Threading.Tasks.ValueTask
+Dekaf.SchemaRegistry.Protobuf.ProtobufSchemaRegistryDeserializer<T>.ProtobufSchemaRegistryDeserializer(Dekaf.SchemaRegistry.ISchemaRegistryClient! schemaRegistry, Dekaf.SchemaRegistry.Protobuf.ProtobufDeserializerConfig? config = null, bool ownsClient = false) -> void
+Dekaf.SchemaRegistry.Protobuf.ProtobufSchemaRegistryExtensions
+Dekaf.SchemaRegistry.Protobuf.ProtobufSchemaRegistrySerializer<T>
+Dekaf.SchemaRegistry.Protobuf.ProtobufSchemaRegistrySerializer<T>.DisposeAsync() -> System.Threading.Tasks.ValueTask
+Dekaf.SchemaRegistry.Protobuf.ProtobufSchemaRegistrySerializer<T>.ProtobufSchemaRegistrySerializer(Dekaf.SchemaRegistry.ISchemaRegistryClient! schemaRegistry, Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig? config = null, bool ownsClient = false) -> void
+Dekaf.SchemaRegistry.Protobuf.ProtobufSchemaRegistrySerializer<T>.Serialize<TWriter>(T value, ref TWriter destination, Dekaf.Serialization.SerializationContext context) -> void
+Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig
+Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig.AutoRegisterSchemas.get -> bool
+Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig.AutoRegisterSchemas.init -> void
+Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig.CustomSubjectNameStrategy.get -> Dekaf.SchemaRegistry.ISubjectNameStrategy?
+Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig.CustomSubjectNameStrategy.init -> void
+Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig.NormalizeSchemas.get -> bool
+Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig.NormalizeSchemas.init -> void
+Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig.ProtobufSerializerConfig() -> void
+Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig.ReferenceSubjectNameStrategy.get -> Dekaf.SchemaRegistry.Protobuf.ReferenceSubjectNameStrategy
+Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig.ReferenceSubjectNameStrategy.init -> void
+Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig.RuleExecutor.get -> Dekaf.SchemaRegistry.ISchemaRegistryRuleExecutor?
+Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig.RuleExecutor.init -> void
+Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig.SkipKnownTypes.get -> bool
+Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig.SkipKnownTypes.init -> void
+Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig.SubjectNameStrategy.get -> Dekaf.SchemaRegistry.SubjectNameStrategy
+Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig.SubjectNameStrategy.init -> void
+Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig.UseDeprecatedFormat.get -> bool
+Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig.UseDeprecatedFormat.init -> void
+Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig.UseLatestVersion.get -> bool
+Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig.UseLatestVersion.init -> void
+Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig.UseLegacySubjectNames.get -> bool
+Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig.UseLegacySubjectNames.init -> void
+Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig.UseSchemaReferences.get -> bool
+Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig.UseSchemaReferences.init -> void
+Dekaf.SchemaRegistry.Protobuf.ReferenceSubjectNameStrategy
+Dekaf.SchemaRegistry.Protobuf.ReferenceSubjectNameStrategy.QualifiedRecordName = 1 -> Dekaf.SchemaRegistry.Protobuf.ReferenceSubjectNameStrategy
+Dekaf.SchemaRegistry.Protobuf.ReferenceSubjectNameStrategy.ReferenceName = 0 -> Dekaf.SchemaRegistry.Protobuf.ReferenceSubjectNameStrategy
+static Dekaf.SchemaRegistry.Protobuf.ProtobufSchemaRegistryExtensions.UseProtobufSchemaRegistry<TKey, TValue>(this Dekaf.ConsumerBuilder<TKey, TValue>! builder, Dekaf.SchemaRegistry.ISchemaRegistryClient! schemaRegistry, Dekaf.SchemaRegistry.Protobuf.ProtobufDeserializerConfig? config = null) -> Dekaf.ConsumerBuilder<TKey, TValue>!
+static Dekaf.SchemaRegistry.Protobuf.ProtobufSchemaRegistryExtensions.UseProtobufSchemaRegistry<TKey, TValue>(this Dekaf.ProducerBuilder<TKey, TValue>! builder, Dekaf.SchemaRegistry.ISchemaRegistryClient! schemaRegistry, Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig? config = null) -> Dekaf.ProducerBuilder<TKey, TValue>!
+static Dekaf.SchemaRegistry.Protobuf.ProtobufSchemaRegistryExtensions.UseProtobufSchemaRegistryForKeyAndValue<TKey, TValue>(this Dekaf.ConsumerBuilder<TKey, TValue>! builder, Dekaf.SchemaRegistry.ISchemaRegistryClient! schemaRegistry, Dekaf.SchemaRegistry.Protobuf.ProtobufDeserializerConfig? keyConfig = null, Dekaf.SchemaRegistry.Protobuf.ProtobufDeserializerConfig? valueConfig = null) -> Dekaf.ConsumerBuilder<TKey, TValue>!
+static Dekaf.SchemaRegistry.Protobuf.ProtobufSchemaRegistryExtensions.UseProtobufSchemaRegistryForKeyAndValue<TKey, TValue>(this Dekaf.ProducerBuilder<TKey, TValue>! builder, Dekaf.SchemaRegistry.ISchemaRegistryClient! schemaRegistry, Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig? keyConfig = null, Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig? valueConfig = null) -> Dekaf.ProducerBuilder<TKey, TValue>!

@@ -1,0 +1,42 @@
+#nullable enable
+Dekaf.Outbox.EntityFrameworkCore.EfCoreOutboxServiceCollectionExtensions
+Dekaf.Outbox.EntityFrameworkCore.EfCoreOutboxStore<TContext>
+Dekaf.Outbox.EntityFrameworkCore.EfCoreOutboxStore<TContext>.AcquireBucketLeasesAsync(Dekaf.Outbox.OutboxLeaseRequest! request, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyList<int>!>
+Dekaf.Outbox.EntityFrameworkCore.EfCoreOutboxStore<TContext>.EfCoreOutboxStore(Microsoft.EntityFrameworkCore.IDbContextFactory<TContext!>! contextFactory, System.TimeProvider? timeProvider = null) -> void
+Dekaf.Outbox.EntityFrameworkCore.EfCoreOutboxStore<TContext>.GetBucketsWithPendingAsync(System.Collections.Generic.IReadOnlyList<int>! buckets, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyList<int>!>
+Dekaf.Outbox.EntityFrameworkCore.EfCoreOutboxStore<TContext>.GetNextBatchAsync(int bucket, int maxCount, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyList<Dekaf.Outbox.OutboxMessage!>!>
+Dekaf.Outbox.EntityFrameworkCore.EfCoreOutboxStore<TContext>.MarkPublishedAsync(int bucket, System.Collections.Generic.IReadOnlyList<Dekaf.Outbox.OutboxMessage!>! publishedMessages, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Outbox.EntityFrameworkCore.OutboxDbContextExtensions
+Dekaf.Outbox.EntityFrameworkCore.OutboxLease
+Dekaf.Outbox.EntityFrameworkCore.OutboxLease.Bucket.get -> int
+Dekaf.Outbox.EntityFrameworkCore.OutboxLease.Bucket.set -> void
+Dekaf.Outbox.EntityFrameworkCore.OutboxLease.ExpiresAtUtc.get -> System.DateTimeOffset
+Dekaf.Outbox.EntityFrameworkCore.OutboxLease.ExpiresAtUtc.set -> void
+Dekaf.Outbox.EntityFrameworkCore.OutboxLease.OutboxLease() -> void
+Dekaf.Outbox.EntityFrameworkCore.OutboxLease.Owner.get -> string?
+Dekaf.Outbox.EntityFrameworkCore.OutboxLease.Owner.set -> void
+Dekaf.Outbox.EntityFrameworkCore.OutboxModelBuilderExtensions
+Dekaf.Outbox.EntityFrameworkCore.OutboxModelOptions
+Dekaf.Outbox.EntityFrameworkCore.OutboxModelOptions.LeasesTableName.get -> string!
+Dekaf.Outbox.EntityFrameworkCore.OutboxModelOptions.LeasesTableName.init -> void
+Dekaf.Outbox.EntityFrameworkCore.OutboxModelOptions.MessagesTableName.get -> string!
+Dekaf.Outbox.EntityFrameworkCore.OutboxModelOptions.MessagesTableName.init -> void
+Dekaf.Outbox.EntityFrameworkCore.OutboxModelOptions.OutboxModelOptions() -> void
+Dekaf.Outbox.EntityFrameworkCore.OutboxModelOptions.RelaysTableName.get -> string!
+Dekaf.Outbox.EntityFrameworkCore.OutboxModelOptions.RelaysTableName.init -> void
+Dekaf.Outbox.EntityFrameworkCore.OutboxModelOptions.Schema.get -> string?
+Dekaf.Outbox.EntityFrameworkCore.OutboxModelOptions.Schema.init -> void
+Dekaf.Outbox.EntityFrameworkCore.OutboxRelayInstance
+Dekaf.Outbox.EntityFrameworkCore.OutboxRelayInstance.LastSeenUtc.get -> System.DateTimeOffset
+Dekaf.Outbox.EntityFrameworkCore.OutboxRelayInstance.LastSeenUtc.set -> void
+Dekaf.Outbox.EntityFrameworkCore.OutboxRelayInstance.OutboxRelayInstance() -> void
+Dekaf.Outbox.EntityFrameworkCore.OutboxRelayInstance.RelayId.get -> string!
+Dekaf.Outbox.EntityFrameworkCore.OutboxRelayInstance.RelayId.set -> void
+const Dekaf.Outbox.EntityFrameworkCore.OutboxModelOptions.DefaultLeasesTableName = "dekaf_outbox_leases" -> string!
+const Dekaf.Outbox.EntityFrameworkCore.OutboxModelOptions.DefaultMessagesTableName = "dekaf_outbox_messages" -> string!
+const Dekaf.Outbox.EntityFrameworkCore.OutboxModelOptions.DefaultRelaysTableName = "dekaf_outbox_relays" -> string!
+static Dekaf.Outbox.EntityFrameworkCore.EfCoreOutboxServiceCollectionExtensions.AddDekafEntityFrameworkCoreOutboxStore<TContext>(this Microsoft.Extensions.DependencyInjection.IServiceCollection! services) -> Microsoft.Extensions.DependencyInjection.IServiceCollection!
+static Dekaf.Outbox.EntityFrameworkCore.OutboxDbContextExtensions.AddOutboxMessage(this Microsoft.EntityFrameworkCore.DbContext! context, Dekaf.Outbox.OutboxMessage! message) -> void
+static Dekaf.Outbox.EntityFrameworkCore.OutboxDbContextExtensions.AddOutboxMessage<TKey, TValue>(this Microsoft.EntityFrameworkCore.DbContext! context, string! topic, TKey? key, TValue? value, Dekaf.Serialization.ISerializer<TKey>! keySerializer, Dekaf.Serialization.ISerializer<TValue>! valueSerializer, Dekaf.Serialization.Headers? headers = null, int bucketCount = 8, int? partition = null) -> Dekaf.Outbox.OutboxMessage!
+static Dekaf.Outbox.EntityFrameworkCore.OutboxModelBuilderExtensions.UseDekafOutbox(this Microsoft.EntityFrameworkCore.ModelBuilder! modelBuilder, Dekaf.Outbox.EntityFrameworkCore.OutboxModelOptions! options) -> Microsoft.EntityFrameworkCore.ModelBuilder!
+static Dekaf.Outbox.EntityFrameworkCore.OutboxModelBuilderExtensions.UseDekafOutbox(this Microsoft.EntityFrameworkCore.ModelBuilder! modelBuilder, string? schema = null) -> Microsoft.EntityFrameworkCore.ModelBuilder!

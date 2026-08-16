@@ -32,6 +32,12 @@
     <PackageReference Include="System.IO.Hashing" />
   </ItemGroup>
 
+  <!-- The core package intentionally exposes TFM-specific collection/ref-struct shapes. -->
+  <ItemGroup Condition="'$(TargetFramework)' != ''">
+    <AdditionalFiles Include="PublicAPI.Shipped.$(TargetFramework).txt" />
+    <AdditionalFiles Include="PublicAPI.Unshipped.$(TargetFramework).txt" />
+  </ItemGroup>
+
   <PropertyGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
     <NoWarn>$(NoWarn);NETSDK1138</NoWarn>
     <PublishAot>false</PublishAot>

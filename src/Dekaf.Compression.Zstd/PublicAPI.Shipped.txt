@@ -1,0 +1,11 @@
+#nullable enable
+Dekaf.Compression.Zstd.ZstdCompressionCodec
+Dekaf.Compression.Zstd.ZstdCompressionCodec.Compress(System.Buffers.ReadOnlySequence<byte> source, System.Buffers.IBufferWriter<byte>! destination) -> void
+Dekaf.Compression.Zstd.ZstdCompressionCodec.Decompress(System.Buffers.ReadOnlySequence<byte> source, System.Buffers.IBufferWriter<byte>! destination) -> void
+Dekaf.Compression.Zstd.ZstdCompressionCodec.Type.get -> Dekaf.Protocol.Records.CompressionType
+Dekaf.Compression.Zstd.ZstdCompressionCodec.ZstdCompressionCodec(int compressionLevel = 3) -> void
+Dekaf.Compression.Zstd.ZstdCompressionExtensions
+Dekaf.Compression.Zstd.ZstdProducerBuilderExtensions
+static Dekaf.Compression.Zstd.ZstdCompressionExtensions.AddZstd(this Dekaf.Compression.CompressionCodecRegistry! registry, int compressionLevel = 3) -> Dekaf.Compression.CompressionCodecRegistry!
+static Dekaf.Compression.Zstd.ZstdCompressionExtensions.AddZstdWithLevel(this Dekaf.Compression.CompressionCodecRegistry! registry, int? compressionLevel = null) -> Dekaf.Compression.CompressionCodecRegistry!
+static Dekaf.Compression.Zstd.ZstdProducerBuilderExtensions.UseZstdCompression<TKey, TValue>(this Dekaf.ProducerBuilder<TKey, TValue>! builder) -> Dekaf.ProducerBuilder<TKey, TValue>!
