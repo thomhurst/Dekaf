@@ -73,6 +73,40 @@ public sealed class SchemaPreparationTests
     }
 
     [Test]
+    public async Task Generic_PrepareAsync_SubjectDependentFactoryCachesSchemaBeforeContextTurnover()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        var schemaFactoryCalls = 0;
+        await using var serializer = new SchemaRegistrySerializer<int>(
+            registry,
+            static (value, writer) =>
+            {
+                var span = writer.GetSpan(sizeof(int));
+                BinaryPrimitives.WriteInt32BigEndian(span, value);
+                writer.Advance(sizeof(int));
+            },
+            _ =>
+            {
+                Interlocked.Increment(ref schemaFactoryCalls);
+                return CreateDataContractSchema(owner: "payments");
+            },
+            subjectNameStrategy: SubjectNameStrategy.RecordName);
+
+        for (var index = 0; index < SubjectSchemaIdCache.MaxCachedEntries; index++)
+            _ = await serializer.PrepareAsync($"topic-{index}", 42);
+
+        for (var index = 0; index < 6; index++)
+        {
+            var overflow = serializer.PrepareAsync($"overflow-{index % 3}", 42);
+            await Assert.That(overflow.IsCompletedSuccessfully).IsTrue();
+            await Assert.That((await overflow).SchemaId).IsEqualTo(1);
+        }
+
+        await Assert.That(schemaFactoryCalls).IsEqualTo(1);
+        await Assert.That(registry.GetOrRegisterSchemaCallCount).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task Json_PrepareAsync_ReturnsKeyContextAndPreventsSerializeRefetch()
     {
         using var registry = new MockSchemaRegistryClient();

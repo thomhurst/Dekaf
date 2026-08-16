@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Collections.Concurrent;
 using Dekaf.Serialization;
 
 namespace Dekaf.SchemaRegistry;
@@ -44,9 +45,10 @@ public sealed class SchemaRegistrySerializer<T> :
     private readonly bool _useLegacySubjectNames;
     private readonly bool _ownsClient;
     private readonly ISchemaRegistryRuleExecutor? _ruleExecutor;
-    private Schema? _subjectIndependentSchema;
+    private CachedFactorySchema? _subjectIndependentSchema;
 
     private readonly SchemaResolutionCache<int> _schemaIdCache = new();
+    private readonly SubjectSchemaCache? _subjectSchemaCache;
     private readonly SubjectSchemaIdCache _subjectSchemaIdCache = new();
 
     /// <summary>
@@ -100,6 +102,7 @@ public sealed class SchemaRegistrySerializer<T> :
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _serialize = serialize ?? throw new ArgumentNullException(nameof(serialize));
         _getSchema = getSchema ?? throw new ArgumentNullException(nameof(getSchema));
+        _subjectSchemaCache = new SubjectSchemaCache();
         _subjectNameStrategy = subjectNameStrategy;
         _autoRegisterSchemas = autoRegisterSchemas;
         _normalizeSchemas = normalizeSchemas;
@@ -184,6 +187,7 @@ public sealed class SchemaRegistrySerializer<T> :
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _serialize = serialize ?? throw new ArgumentNullException(nameof(serialize));
         _getSchema = getSchema ?? throw new ArgumentNullException(nameof(getSchema));
+        _subjectSchemaCache = new SubjectSchemaCache();
         _customSubjectNameStrategy = customSubjectNameStrategy ?? throw new ArgumentNullException(nameof(customSubjectNameStrategy));
         _autoRegisterSchemas = autoRegisterSchemas;
         _normalizeSchemas = normalizeSchemas;
@@ -336,8 +340,9 @@ public sealed class SchemaRegistrySerializer<T> :
 
         for (var attempt = 0; attempt < 4; attempt++)
         {
-            var schema = GetSchema(subject);
-            var recordName = SubjectNameResolver.GetRecordName(schema, fallbackRecordName);
+            var factorySchema = GetSchema(subject, fallbackRecordName);
+            var schema = factorySchema.Schema;
+            var recordName = factorySchema.RecordName;
             var resolvedSubject = string.Equals(recordName, fallbackRecordName, StringComparison.Ordinal)
                 ? subject
                 : GetSubjectName(topic, recordName, isKey);
@@ -351,17 +356,68 @@ public sealed class SchemaRegistrySerializer<T> :
         throw new InvalidOperationException("The schema callback did not resolve to a stable subject name.");
     }
 
-    private Schema GetSchema(string subject)
+    private FactorySchema GetSchema(string subject, string fallbackRecordName)
     {
         if (!_schemaFactoryIgnoresSubject)
-            return _getSchema(subject);
+            return _subjectSchemaCache!.GetOrAdd(subject, fallbackRecordName, _getSchema);
 
         var cached = Volatile.Read(ref _subjectIndependentSchema);
         if (cached is not null)
-            return cached;
+            return cached.Value;
 
         var schema = _getSchema(subject);
-        return Interlocked.CompareExchange(ref _subjectIndependentSchema, schema, null) ?? schema;
+        var candidate = new CachedFactorySchema(new FactorySchema(
+            schema,
+            SubjectNameResolver.GetRecordName(schema, fallbackRecordName)));
+        return (Interlocked.CompareExchange(ref _subjectIndependentSchema, candidate, null) ?? candidate).Value;
+    }
+
+    private sealed class SubjectSchemaCache
+    {
+        private readonly ConcurrentDictionary<string, FactorySchema> _cache = new(StringComparer.Ordinal);
+        private int _cacheCount;
+
+        internal FactorySchema GetOrAdd(
+            string subject,
+            string fallbackRecordName,
+            Func<string, Schema> schemaFactory)
+        {
+            if (_cache.TryGetValue(subject, out var cached))
+                return cached;
+
+            var schema = schemaFactory(subject);
+            var factorySchema = new FactorySchema(
+                schema,
+                SubjectNameResolver.GetRecordName(schema, fallbackRecordName));
+            if (!TryReserveSlot())
+                return factorySchema;
+
+            if (_cache.TryAdd(subject, factorySchema))
+                return factorySchema;
+
+            Interlocked.Decrement(ref _cacheCount);
+            return _cache.TryGetValue(subject, out cached) ? cached : factorySchema;
+        }
+
+        private bool TryReserveSlot()
+        {
+            while (true)
+            {
+                var count = Volatile.Read(ref _cacheCount);
+                if (count >= SubjectSchemaIdCache.MaxCachedEntries)
+                    return false;
+
+                if (Interlocked.CompareExchange(ref _cacheCount, count + 1, count) == count)
+                    return true;
+            }
+        }
+    }
+
+    private readonly record struct FactorySchema(Schema Schema, string RecordName);
+
+    private sealed class CachedFactorySchema(FactorySchema value)
+    {
+        internal FactorySchema Value { get; } = value;
     }
 
     private int GetSchemaIdSync(string subject, Schema schema)

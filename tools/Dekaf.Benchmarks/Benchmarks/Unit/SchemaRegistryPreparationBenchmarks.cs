@@ -62,7 +62,7 @@ public class SchemaRegistryPreparationBenchmarks
                 BinaryPrimitives.WriteInt32BigEndian(span, value);
                 writer.Advance(sizeof(int));
             },
-            static () => CreateReferencedSchema(),
+            static _ => CreateDataContractSchema(),
             subjectNameStrategy: SubjectNameStrategy.RecordName);
         _jsonSerializer = new JsonSchemaRegistrySerializer<BenchmarkPayload>(
             registry,
