@@ -125,6 +125,38 @@ public interface ISchemaRegistryClient : IDisposable
         => IsCompatibleAsync(subject, schema, version, cancellationToken);
 
     /// <summary>
+    /// Gets the global or subject-specific Schema Registry compatibility policy.
+    /// </summary>
+    /// <param name="subject">
+    /// Subject name, or <see langword="null" /> for the global policy. Empty or whitespace
+    /// values are invalid.
+    /// </param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The current compatibility policy.</returns>
+    Task<SchemaCompatibilityLevel> GetCompatibilityAsync(
+        string? subject = null,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException(
+            $"{GetType().Name} does not support compatibility configuration reads.");
+
+    /// <summary>
+    /// Updates the global or subject-specific Schema Registry compatibility policy.
+    /// </summary>
+    /// <param name="level">Compatibility policy to apply.</param>
+    /// <param name="subject">
+    /// Subject name, or <see langword="null" /> for the global policy. Empty or whitespace
+    /// values are invalid.
+    /// </param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The compatibility policy acknowledged by Schema Registry.</returns>
+    Task<SchemaCompatibilityLevel> UpdateCompatibilityAsync(
+        SchemaCompatibilityLevel level,
+        string? subject = null,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException(
+            $"{GetType().Name} does not support compatibility configuration updates.");
+
+    /// <summary>
     /// Deletes a subject and all associated schemas.
     /// </summary>
     /// <param name="subject">The subject name.</param>

@@ -147,6 +147,15 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             baseUri => _httpClient.PostAsJsonAsync(new Uri(baseUri, path), value, jsonTypeInfo, cancellationToken),
             cancellationToken);
 
+    private Task<HttpResponseMessage> PutAsJsonWithFailoverAsync<T>(
+        string path,
+        T value,
+        JsonTypeInfo<T> jsonTypeInfo,
+        CancellationToken cancellationToken) =>
+        SendWithFailoverAsync(
+            baseUri => _httpClient.PutAsJsonAsync(new Uri(baseUri, path), value, jsonTypeInfo, cancellationToken),
+            cancellationToken);
+
     private async Task<HttpResponseMessage> SendWithFailoverAsync(
         Func<Uri, Task<HttpResponseMessage>> sendAsync,
         CancellationToken cancellationToken)
@@ -406,6 +415,45 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         return result?.IsCompatible ?? true;
     }
 
+    public async Task<SchemaCompatibilityLevel> GetCompatibilityAsync(
+        string? subject = null,
+        CancellationToken cancellationToken = default)
+    {
+        var path = GetCompatibilityPath(subject);
+        using var response = await GetWithFailoverAsync(path, cancellationToken).ConfigureAwait(false);
+
+        await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
+
+        var result = await response.Content.ReadFromJsonAsync<GetCompatibilityResponse>(
+            SchemaRegistryJsonContext.Default.GetCompatibilityResponse,
+            cancellationToken).ConfigureAwait(false);
+        return ParseCompatibilityLevel(result?.CompatibilityLevel);
+    }
+
+    public async Task<SchemaCompatibilityLevel> UpdateCompatibilityAsync(
+        SchemaCompatibilityLevel level,
+        string? subject = null,
+        CancellationToken cancellationToken = default)
+    {
+        var path = GetCompatibilityPath(subject);
+        var request = new UpdateCompatibilityRequest
+        {
+            Compatibility = GetCompatibilityWireValue(level)
+        };
+        using var response = await PutAsJsonWithFailoverAsync(
+            path,
+            request,
+            SchemaRegistryJsonContext.Default.UpdateCompatibilityRequest,
+            cancellationToken).ConfigureAwait(false);
+
+        await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
+
+        var result = await response.Content.ReadFromJsonAsync<UpdateCompatibilityResponse>(
+            SchemaRegistryJsonContext.Default.UpdateCompatibilityResponse,
+            cancellationToken).ConfigureAwait(false);
+        return ParseCompatibilityLevel(result?.Compatibility);
+    }
+
     public async Task<IReadOnlyList<int>> DeleteSubjectAsync(string subject, bool permanent = false, CancellationToken cancellationToken = default)
     {
         var url = $"subjects/{Uri.EscapeDataString(subject)}";
@@ -418,6 +466,43 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         return await response.Content.ReadFromJsonAsync<List<int>>(
             SchemaRegistryJsonContext.Default.ListInt32, cancellationToken).ConfigureAwait(false) ?? [];
     }
+
+    private static string GetCompatibilityPath(string? subject)
+    {
+        if (subject is null)
+            return "config";
+
+        if (string.IsNullOrWhiteSpace(subject))
+            throw new ArgumentException("Subject cannot be empty or whitespace. Use null for global configuration.", nameof(subject));
+
+        return $"config/{Uri.EscapeDataString(subject)}";
+    }
+
+    private static string GetCompatibilityWireValue(SchemaCompatibilityLevel level) => level switch
+    {
+        SchemaCompatibilityLevel.None => "NONE",
+        SchemaCompatibilityLevel.Backward => "BACKWARD",
+        SchemaCompatibilityLevel.BackwardTransitive => "BACKWARD_TRANSITIVE",
+        SchemaCompatibilityLevel.Forward => "FORWARD",
+        SchemaCompatibilityLevel.ForwardTransitive => "FORWARD_TRANSITIVE",
+        SchemaCompatibilityLevel.Full => "FULL",
+        SchemaCompatibilityLevel.FullTransitive => "FULL_TRANSITIVE",
+        _ => throw new ArgumentOutOfRangeException(nameof(level), level, "Unknown compatibility level.")
+    };
+
+    private static SchemaCompatibilityLevel ParseCompatibilityLevel(string? compatibility) => compatibility switch
+    {
+        "NONE" => SchemaCompatibilityLevel.None,
+        "BACKWARD" => SchemaCompatibilityLevel.Backward,
+        "BACKWARD_TRANSITIVE" => SchemaCompatibilityLevel.BackwardTransitive,
+        "FORWARD" => SchemaCompatibilityLevel.Forward,
+        "FORWARD_TRANSITIVE" => SchemaCompatibilityLevel.ForwardTransitive,
+        "FULL" => SchemaCompatibilityLevel.Full,
+        "FULL_TRANSITIVE" => SchemaCompatibilityLevel.FullTransitive,
+        _ => throw new SchemaRegistryException(
+            0,
+            $"Schema Registry returned unknown compatibility level '{compatibility ?? "<null>"}'.")
+    };
 
     public async Task<IReadOnlyList<string>> GetKekNamesAsync(
         bool deleted = false,
