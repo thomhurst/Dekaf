@@ -1047,9 +1047,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private readonly Queue<PendingFetchData> _pendingFetchScratch = new();
     private int _observedPausedSnapshotVersion;
     private int _recordIterationEpochSeed;
-    // Foreground ConsumeOne calls are single-threaded. This stays at a validated even
-    // epoch so the steady-state delivery boundary is one volatile read and comparison.
-    private int _consumeOneIterationEpoch;
     private int _pendingFetchDepth;
     // ConsumeOne callbacks run on the documented single application thread. If one
     // reentrantly clears the queue, defer this fetch's disposal until all borrowed
@@ -4270,7 +4267,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             || Volatile.Read(ref _consumerDisposed) != 0
             || !_initialized
             || _pendingFetches.Count == 0
-            || Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent) != 0)
+            || Volatile.Read(ref _batchIterationEpoch.ConsumeOneDeliveryChangesPending) != 0)
         {
             return false;
         }
@@ -4357,15 +4354,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
 
             await EnsureAssignmentForPollAsync(cancellationToken).ConfigureAwait(false);
-            RecoverAndClearFetchBufferForPendingCoordinatorRevocations();
+            PrepareConsumeOneDelivery();
 
             if (_assignmentSnapshot.Count == 0)
             {
                 await DelayForForegroundPollAsync(100, cancellationToken).ConfigureAwait(false);
                 continue;
             }
-
-            PreparePendingFetchesForDelivery();
 
             if (_pendingFetches.Count == 0)
             {
@@ -5520,6 +5515,26 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
+    private void PrepareConsumeOneDelivery()
+    {
+        if (Volatile.Read(ref _batchIterationEpoch.ConsumeOneDeliveryChangesPending) == 0)
+        {
+            RecoverAndClearFetchBufferForPendingCoordinatorRevocations();
+            PreparePendingFetchesForDelivery();
+            return;
+        }
+
+        while (true)
+        {
+            var expectedVersion = _batchIterationEpoch.CaptureStableVersion();
+            RecoverAndClearFetchBufferForPendingCoordinatorRevocations();
+            PreparePendingFetchesForDelivery();
+            if (_batchIterationEpoch.TryAcknowledgeConsumeOneDeliveryChanges(expectedVersion))
+                return;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
     private void ApplyPausedSnapshotToPendingFetches(int pausedSnapshotVersion)
     {
         var paused = _pausedSnapshot;
@@ -5573,8 +5588,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private RecordIterationStatus GetConsumeOneDeliveryStatus(TopicPartition partition)
     {
-        var currentVersion = Volatile.Read(ref _batchIterationEpoch.Version);
-        if (currentVersion == _consumeOneIterationEpoch)
+        if (Volatile.Read(ref _batchIterationEpoch.ConsumeOneDeliveryChangesPending) == 0)
             return RecordIterationStatus.Continue;
 
         return GetConsumeOneDeliveryStatusSlow(partition);
@@ -5583,11 +5597,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     [MethodImpl(MethodImplOptions.NoInlining)]
     private RecordIterationStatus GetConsumeOneDeliveryStatusSlow(TopicPartition partition)
     {
-        var observedVersion = _consumeOneIterationEpoch;
-        var status = GetRecordIterationStatusSlow(partition, ref observedVersion);
-        if (status == RecordIterationStatus.Continue)
-            _consumeOneIterationEpoch = observedVersion;
-        return status;
+        var observedVersion = 0;
+        return GetRecordIterationStatusSlow(partition, ref observedVersion);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

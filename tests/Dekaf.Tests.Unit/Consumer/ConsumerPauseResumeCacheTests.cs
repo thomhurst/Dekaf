@@ -466,6 +466,38 @@ public sealed class ConsumerPauseResumeCacheTests
     }
 
     [Test]
+    public async Task ConsumeOneAsync_PauseOtherPartitionDuringDeserialization_SuppressesItsNextRecord()
+    {
+        var firstActivePartition = new TopicPartition(PrefetchedTopic, 0);
+        var pausedPartition = new TopicPartition(PrefetchedTopic, 1);
+        var secondActivePartition = new TopicPartition(PrefetchedTopic, 2);
+        KafkaConsumer<string, string>? consumer = null;
+        var deserializer = new CallbackOnceDeserializer(() => consumer!.Pause(pausedPartition));
+        var createdConsumer = CreatePrefetchedConsumer(
+            deserializer,
+            CreatePendingFetch(firstActivePartition, 10, 1),
+            CreatePendingFetch(pausedPartition, 20, 1),
+            CreatePendingFetch(secondActivePartition, 30, 1));
+        consumer = createdConsumer;
+        await using var ownedConsumer = createdConsumer;
+
+        var first = await createdConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(5));
+        await Assert.That(first).IsNotNull();
+        await Assert.That(first!.Value.Partition).IsEqualTo(firstActivePartition.Partition);
+
+        var second = await createdConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(5));
+        await Assert.That(second).IsNotNull();
+        await Assert.That(second!.Value.Partition).IsEqualTo(secondActivePartition.Partition);
+
+        createdConsumer.Resume(pausedPartition);
+
+        var resumed = await createdConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(5));
+        await Assert.That(resumed).IsNotNull();
+        await Assert.That(resumed!.Value.Partition).IsEqualTo(pausedPartition.Partition);
+        await Assert.That(resumed.Value.Offset).IsEqualTo(20);
+    }
+
+    [Test]
     public async Task ConsumeOneAsync_PauseDuringAsyncDeserialization_ReplaysSuppressedRecordAfterResume()
     {
         var pausedPartition = new TopicPartition(PrefetchedTopic, 0);

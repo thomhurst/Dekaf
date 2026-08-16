@@ -11,18 +11,25 @@ namespace Dekaf.Consumer
         // is being published and must not be adopted by a batch iterator.
         private readonly object _publicationLock = new();
         public int Version;
+        // One-read hot-path marker. Cleared only after ConsumeOne applies every change from
+        // a stable epoch, so validating one partition cannot hide a change for another.
+        public int ConsumeOneDeliveryChangesPending;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Invalidate()
         {
             lock (_publicationLock)
+            {
+                Volatile.Write(ref ConsumeOneDeliveryChangesPending, 1);
                 Interlocked.Add(ref Version, 2);
+            }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void BeginPublication()
         {
             Monitor.Enter(_publicationLock);
+            Volatile.Write(ref ConsumeOneDeliveryChangesPending, 1);
             Interlocked.Increment(ref Version);
         }
 
@@ -31,6 +38,31 @@ namespace Dekaf.Consumer
         {
             Interlocked.Increment(ref Version);
             Monitor.Exit(_publicationLock);
+        }
+
+        public int CaptureStableVersion()
+        {
+            var spin = new SpinWait();
+            while (true)
+            {
+                var version = Volatile.Read(ref Version);
+                if ((version & 1) == 0)
+                    return version;
+
+                spin.SpinOnce();
+            }
+        }
+
+        public bool TryAcknowledgeConsumeOneDeliveryChanges(int expectedVersion)
+        {
+            lock (_publicationLock)
+            {
+                if (Version != expectedVersion)
+                    return false;
+
+                Volatile.Write(ref ConsumeOneDeliveryChangesPending, 0);
+                return true;
+            }
         }
     }
 
