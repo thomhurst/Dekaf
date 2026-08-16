@@ -1131,15 +1131,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     }
 
     /// <summary>
-    /// Bulk enqueue for the sender loop: writes all batches to the event channel before the
-    /// send loop can wake and read them, ensuring all batches are available for coalescing
-    /// into a single ProduceRequest. This reduces per-request overhead in multi-broker setups
-    /// where each broker receives only a few partitions per drain cycle.
+    /// Bulk enqueue for the sender loop. Each batch is a separate channel event, so the send
+    /// loop may observe a prefix if this producer thread is preempted between writes. The
+    /// sender's request-wave coalescing window joins siblings that arrive in time.
     /// </summary>
     /// <remarks>
     /// Channel.TryWrite on unbounded channels always succeeds unless the channel is completed.
-    /// Writing all events in a tight loop (no yields) maximizes the chance they are all present
-    /// when the send loop reads from the channel.
+    /// Writes are deliberately not treated as one atomic publication.
     /// </remarks>
     public void EnqueueBulk(List<ReadyBatch> batches)
     {
@@ -4281,6 +4279,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     }
                     else
                     {
+                        // Deduplication is scoped to this send-loop request wave. A later failed
+                        // wave must be allowed to refresh again because broker leadership may
+                        // have changed since the preceding recovery attempt.
                         metadataRefreshTopics ??= new HashSet<string>(StringComparer.Ordinal);
                         PrepareDeferredNetworkRetry(batch, metadataRefreshTopics);
                         _sendFailedRetries.Enqueue((batch, generations[i]));

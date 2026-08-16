@@ -2936,7 +2936,7 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
 
     [Test]
     [Timeout(30_000)]
-    public async Task SendLoop_CoalescedSendFailure_RefreshesMetadataOncePerTopic(
+    public async Task SendLoop_SingleRequestWaveFailure_RefreshesMetadataOncePerTopic(
         CancellationToken cancellationToken)
     {
         const string topic = "test-topic";
@@ -2986,7 +2986,11 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
         var rerouted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var reroutedCount = 0;
-        var sender = CreateSender(
+        var firstBatch = CreateTestBatch(valueTaskSourcePool, topic, partition: 0);
+        var secondBatch = CreateTestBatch(valueTaskSourcePool, topic, partition: 1);
+        var injectPreemptedSibling = 1;
+        BrokerSender? sender = null;
+        sender = CreateSender(
             pool,
             options,
             accumulator,
@@ -2996,20 +3000,29 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             {
                 if (Interlocked.Increment(ref reroutedCount) == 2)
                     rerouted.TrySetResult();
+            },
+            onWaveCoalesceStarted: () =>
+            {
+                if (Interlocked.Exchange(ref injectPreemptedSibling, 0) != 0)
+                    sender!.Enqueue(secondBatch);
             });
+
+        // Model producer-thread preemption after publishing the first of two bulk events.
+        // Pre-seeding the known wave width makes the sender enter its coalescing hook; the
+        // hook then deterministically publishes the sibling before the request is sealed.
+        var knownPartitions = (HashSet<TopicPartition>)typeof(BrokerSender).GetField(
+            "_knownPartitions",
+            BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(sender)!;
+        knownPartitions.Add(new TopicPartition(topic, 0));
+        knownPartitions.Add(new TopicPartition(topic, 1));
 
         try
         {
-            var firstBatch = CreateTestBatch(valueTaskSourcePool, topic, partition: 0);
-            var secondBatch = CreateTestBatch(valueTaskSourcePool, topic, partition: 1);
-            sender.EnqueueBulk(
-            [
-                firstBatch,
-                secondBatch
-            ]);
+            sender.Enqueue(firstBatch);
 
             await rerouted.Task.WaitAsync(cancellationToken);
 
+            await Assert.That(staleConnection.SendPipelinedAfterWriteCalls).IsEqualTo(1);
             await Assert.That(Volatile.Read(ref metadataRequests)).IsEqualTo(1);
             await Assert.That(accumulator.IsMuted(firstBatch.TopicPartition)).IsFalse();
             await Assert.That(accumulator.IsMuted(secondBatch.TopicPartition)).IsFalse();
