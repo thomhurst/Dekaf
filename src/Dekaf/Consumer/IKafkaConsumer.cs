@@ -632,6 +632,7 @@ public readonly struct ConsumeResult<TKey, TValue>
             serializationContext.Topic = topic;
             serializationContext.Component = SerializationComponent.Key;
             serializationContext.Headers = null;
+            serializationContext.KeyData = ReadOnlyMemory<byte>.Empty;
             serializationContext.IsNull = false;
 
             Key = keyDeserializer.Deserialize(keyData, serializationContext);
@@ -646,6 +647,7 @@ public readonly struct ConsumeResult<TKey, TValue>
             serializationContext.Topic = topic;
             serializationContext.Component = SerializationComponent.Value;
             serializationContext.Headers = null;
+            serializationContext.KeyData = SerializationContext.NormalizeKeyData(keyData, isKeyNull);
             serializationContext.IsNull = isValueNull;
 
             Value = isValueNull

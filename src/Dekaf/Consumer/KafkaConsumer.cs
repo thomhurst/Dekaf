@@ -4799,6 +4799,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 Topic = topic,
                 Component = SerializationComponent.Key,
+                KeyData = ReadOnlyMemory<byte>.Empty,
                 IsNull = false
             };
             try
@@ -4829,6 +4830,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             Topic = topic,
             Component = SerializationComponent.Value,
+            KeyData = SerializationContext.NormalizeKeyData(keyData, isKeyNull),
             IsNull = isValueNull
         };
         var valueBytes = isValueNull ? ReadOnlyMemory<byte>.Empty : valueData;

@@ -1,4 +1,7 @@
 #nullable enable
+Dekaf.Serialization.SerializationContext.IsKeyNull.get -> bool
+Dekaf.Serialization.SerializationContext.KeyData.get -> System.ReadOnlyMemory<byte>
+Dekaf.Serialization.SerializationContext.KeyData.set -> void
 Dekaf.Consumer.ConsumerOffsetStoreExtensions
 Dekaf.Consumer.IConsumerBatchOffsetStore
 Dekaf.Consumer.IConsumerBatchOffsetStore.StoreOffsets(System.ReadOnlySpan<Dekaf.TopicPartitionOffset> offsets) -> void

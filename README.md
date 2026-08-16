@@ -276,6 +276,9 @@ var producer = await Kafka.CreateProducer<string, Order>()
 await producer.ProduceAsync("orders", order.Id, order);
 ```
 
+For heterogeneous event streams, `Dekaf.Serialization.Routing` provides frozen, allocation-free
+topic and schema-ID deserializers plus topic and runtime-type serializers.
+
 ## Security
 
 ### TLS

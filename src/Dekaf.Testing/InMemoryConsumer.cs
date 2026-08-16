@@ -970,6 +970,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             {
                 Topic = topicPartition.Topic,
                 Component = SerializationComponent.Key,
+                KeyData = ReadOnlyMemory<byte>.Empty,
                 IsNull = false
             };
 
@@ -989,6 +990,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         {
             Topic = topicPartition.Topic,
             Component = SerializationComponent.Value,
+            KeyData = SerializationContext.NormalizeKeyData(record.Key, record.IsKeyNull),
             IsNull = record.IsValueNull
         };
         var valueData = record.IsValueNull ? ReadOnlyMemory<byte>.Empty : record.Value;
