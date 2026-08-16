@@ -44,10 +44,11 @@ internal sealed class SubjectSchemaIdCache
         return Cache(key, resolved.Subject, resolved.SchemaId, resolved.Schema);
     }
 
-    // Cheap membership check for async preparation: true once (topic, isKey) has a resolved schema ID,
-    // meaning a subsequent synchronous GetOrAdd for it will hit the cache instead of fetching/blocking.
-    internal bool Contains(string topic, bool isKey) =>
-        TryGetCached(new SubjectSchemaIdCacheKey(topic, isKey), out _);
+    internal bool TryGet(
+        string topic,
+        bool isKey,
+        out SubjectSchemaIdCacheEntry entry) =>
+        TryGetCached(new SubjectSchemaIdCacheKey(topic, isKey), out entry);
 
     // Shared lookup: the single-entry MRU (_last) fast-check followed by the concurrent dictionary.
     private bool TryGetCached(in SubjectSchemaIdCacheKey key, out SubjectSchemaIdCacheEntry entry)
@@ -72,6 +73,14 @@ internal sealed class SubjectSchemaIdCache
 
     internal int Cache(string topic, bool isKey, string subject, int schemaId, Schema? schema) =>
         Cache(new SubjectSchemaIdCacheKey(topic, isKey), subject, schemaId, schema).SchemaId;
+
+    internal SubjectSchemaIdCacheEntry CacheEntry(
+        string topic,
+        bool isKey,
+        string subject,
+        int schemaId,
+        Schema schema) =>
+        Cache(new SubjectSchemaIdCacheKey(topic, isKey), subject, schemaId, schema);
 
     private SubjectSchemaIdCacheEntry Cache(SubjectSchemaIdCacheKey key, string? subject, int schemaId, Schema? schema)
     {
