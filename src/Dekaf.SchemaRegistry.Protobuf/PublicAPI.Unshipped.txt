@@ -1,1 +1,6 @@
 #nullable enable
+Dekaf.SchemaRegistry.Protobuf.IReferenceSubjectNameStrategy
+Dekaf.SchemaRegistry.Protobuf.IReferenceSubjectNameStrategy.GetSubjectName(string! topic, string! referenceName, bool isKey) -> string!
+Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig.CustomReferenceSubjectNameStrategy.get -> Dekaf.SchemaRegistry.Protobuf.IReferenceSubjectNameStrategy?
+Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig.CustomReferenceSubjectNameStrategy.init -> void
+Dekaf.SchemaRegistry.Protobuf.ReferenceSubjectNameStrategy.Qualified = 1 -> Dekaf.SchemaRegistry.Protobuf.ReferenceSubjectNameStrategy
