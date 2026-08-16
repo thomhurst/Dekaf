@@ -615,6 +615,36 @@ public sealed class SubjectNameStrategyTests
     }
 
     [Test]
+    public async Task AvroSerializer_LogicallyMatchedOverflowInstance_ReusesWeakIdentityCacheAfterEviction()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        var config = new AvroSerializerConfig { MaxCachedSchemas = 1 };
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry, config);
+        var context = CreateContext("matched-overflow-topic");
+        var buffer = new ArrayBufferWriter<byte>();
+        var retained = RuntimeGenericRecord.Create("RetainedMatchedOverflowRecord", 0);
+        var original = RuntimeGenericRecord.Create("MatchedOverflowRecord", 1);
+        var matched = RuntimeGenericRecord.Create("MatchedOverflowRecord", 2);
+
+        serializer.Serialize(retained, ref buffer, context);
+        buffer.ResetWrittenCount();
+        serializer.Serialize(original, ref buffer, context);
+        buffer.ResetWrittenCount();
+        serializer.Serialize(matched, ref buffer, context);
+
+        for (var i = 0; i < 3; i++)
+        {
+            buffer.ResetWrittenCount();
+            serializer.Serialize(RuntimeGenericRecord.Create($"MatchedOverflowEviction{i}", i), ref buffer, context);
+        }
+
+        buffer.ResetWrittenCount();
+        serializer.Serialize(matched, ref buffer, context);
+
+        await Assert.That(schemaRegistry.GetOrRegisterSchemaCallCount).IsEqualTo(5);
+    }
+
+    [Test]
     public async Task AvroSerializer_ThreeRotatingOverflowSchemas_ReuseSubjectCaches()
     {
         using var schemaRegistry = new MockSchemaRegistryClient();

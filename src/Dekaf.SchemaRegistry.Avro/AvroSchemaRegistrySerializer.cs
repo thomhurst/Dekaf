@@ -65,6 +65,7 @@ public sealed class AvroSchemaRegistrySerializer<
     private readonly AvroSchema? _writerSchema;
     private int _dynamicSchemaCacheCount;
     private int _overflowDynamicSchemaCacheCount;
+    private int _hasEvictedOverflowLogicalSchemas;
     private int _schemaIdCacheCount;
     private DynamicSchemaCache? _lastDynamicSchemaCache;
     private DynamicSchemaCache? _previousDynamicSchemaCache;
@@ -606,7 +607,12 @@ public sealed class AvroSchemaRegistrySerializer<
             if (_overflowDynamicSchemaCacheCount == _maxOverflowLogicalSchemas)
             {
                 var oldest = _overflowDynamicSchemaOrder.Dequeue();
-                _overflowDynamicSchemaCaches.TryRemove(oldest, out _);
+                Volatile.Write(ref _hasEvictedOverflowLogicalSchemas, 1);
+                _overflowDynamicSchemaCaches.TryRemove(oldest, out var evicted);
+                Volatile.Write(ref evicted!.IsLogicallyCached, false);
+                _weakDynamicSchemaCaches.TryAdd(
+                    Volatile.Read(ref evicted.LastSeenSchema),
+                    evicted);
                 _overflowDynamicSchemaCacheCount--;
             }
 
@@ -649,6 +655,8 @@ public sealed class AvroSchemaRegistrySerializer<
         var last = Volatile.Read(ref _lastDynamicSchemaCache);
         if (!ReferenceEquals(last, entry))
         {
+            if (Volatile.Read(ref _hasEvictedOverflowLogicalSchemas) != 0)
+                IndexEvictedPreviousDynamicSchemaCache(entry);
             Volatile.Write(ref _previousDynamicSchemaCache, last);
             Volatile.Write(ref _lastDynamicSchemaCache, entry);
         }
@@ -665,11 +673,27 @@ public sealed class AvroSchemaRegistrySerializer<
         var last = Volatile.Read(ref _lastDynamicSchemaCache);
         if (!ReferenceEquals(last, entry))
         {
+            if (Volatile.Read(ref _hasEvictedOverflowLogicalSchemas) != 0)
+                IndexEvictedPreviousDynamicSchemaCache(entry);
             Volatile.Write(ref _previousDynamicSchemaCache, last);
             Volatile.Write(ref _lastDynamicSchemaCache, entry);
         }
 
         return entry;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void IndexEvictedPreviousDynamicSchemaCache(DynamicSchemaCache entry)
+    {
+        var previous = Volatile.Read(ref _previousDynamicSchemaCache);
+        if (previous is { IsStrong: false } &&
+            !ReferenceEquals(previous, entry) &&
+            !Volatile.Read(ref previous.IsLogicallyCached))
+        {
+            _weakDynamicSchemaCaches.TryAdd(
+                Volatile.Read(ref previous.LastSeenSchema),
+                previous);
+        }
     }
 
     private sealed class DynamicSchemaCache
@@ -679,6 +703,7 @@ public sealed class AvroSchemaRegistrySerializer<
             Key = key;
             LastSeenSchema = key.Schema;
             IsStrong = isStrong;
+            IsLogicallyCached = true;
             SubjectSchemaIdCache = new SubjectSchemaIdCache();
             Writer = new GenericDatumWriter<GenericRecord>(key.Schema);
         }
@@ -686,6 +711,7 @@ public sealed class AvroSchemaRegistrySerializer<
         internal DynamicSchemaKey Key { get; }
         internal AvroSchema LastSeenSchema;
         internal bool IsStrong { get; }
+        internal bool IsLogicallyCached;
         internal SubjectSchemaIdCache SubjectSchemaIdCache { get; }
         internal GenericDatumWriter<GenericRecord> Writer { get; }
     }
