@@ -16,11 +16,20 @@ internal sealed class SchemaResolutionCache<TValue>
         Schema schema,
         TState state,
         Func<TState, string, Schema, Task<TValue>> resolve,
+        CancellationToken cancellationToken) =>
+        ResolveAsync(subject, schema, default, state, resolve, cancellationToken);
+
+    internal ValueTask<TValue> ResolveAsync<TState>(
+        string subject,
+        Schema schema,
+        SchemaResolutionScope scope,
+        TState state,
+        Func<TState, string, Schema, Task<TValue>> resolve,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        var task = GetOrAdd(subject, schema, state, resolve).Resolution.Value;
+        var task = GetOrAdd(subject, schema, scope, state, resolve).Resolution.Value;
         if (task.IsCompletedSuccessfully)
             return new ValueTask<TValue>(task.Result);
 
@@ -32,9 +41,18 @@ internal sealed class SchemaResolutionCache<TValue>
         Schema schema,
         TState state,
         Func<TState, string, Schema, Task<TValue>> resolve,
+        TimeSpan timeout) =>
+        Resolve(subject, schema, default, state, resolve, timeout);
+
+    internal TValue Resolve<TState>(
+        string subject,
+        Schema schema,
+        SchemaResolutionScope scope,
+        TState state,
+        Func<TState, string, Schema, Task<TValue>> resolve,
         TimeSpan timeout)
     {
-        var task = GetOrAdd(subject, schema, state, resolve).Resolution.Value;
+        var task = GetOrAdd(subject, schema, scope, state, resolve).Resolution.Value;
         return task.IsCompletedSuccessfully
             ? task.Result
             : task.WaitAsync(timeout).ConfigureAwait(false).GetAwaiter().GetResult();
@@ -43,10 +61,11 @@ internal sealed class SchemaResolutionCache<TValue>
     private Entry GetOrAdd<TState>(
         string subject,
         Schema schema,
+        SchemaResolutionScope scope,
         TState state,
         Func<TState, string, Schema, Task<TValue>> resolve)
     {
-        var key = new SchemaResolutionKey(subject, schema);
+        var key = new SchemaResolutionKey(subject, schema, scope);
         if (_cache.TryGetValue(key, out var cached))
             return cached;
 
@@ -131,7 +150,10 @@ internal sealed class SchemaResolutionCache<TValue>
         }
     }
 
-    private readonly record struct SchemaResolutionKey(string Subject, Schema Schema);
+    private readonly record struct SchemaResolutionKey(
+        string Subject,
+        Schema Schema,
+        SchemaResolutionScope Scope);
 
     private sealed class SchemaResolutionKeyComparer : IEqualityComparer<SchemaResolutionKey>
     {
@@ -139,6 +161,7 @@ internal sealed class SchemaResolutionCache<TValue>
 
         public bool Equals(SchemaResolutionKey left, SchemaResolutionKey right) =>
             string.Equals(left.Subject, right.Subject, StringComparison.Ordinal) &&
+            left.Scope.Equals(right.Scope) &&
             left.Schema.SchemaType == right.Schema.SchemaType &&
             string.Equals(left.Schema.SchemaString, right.Schema.SchemaString, StringComparison.Ordinal) &&
             ReferencesEqual(left.Schema.References, right.Schema.References) &&
@@ -149,6 +172,7 @@ internal sealed class SchemaResolutionCache<TValue>
         {
             var hash = new HashCode();
             hash.Add(key.Subject, StringComparer.Ordinal);
+            hash.Add(key.Scope);
             hash.Add(key.Schema.SchemaType);
             hash.Add(key.Schema.SchemaString, StringComparer.Ordinal);
             hash.Add(key.Schema.Metadata is null ? 0 : RuntimeHelpers.GetHashCode(key.Schema.Metadata));
@@ -193,3 +217,5 @@ internal sealed class SchemaResolutionCache<TValue>
         }
     }
 }
+
+internal readonly record struct SchemaResolutionScope(string? Topic, bool IsKey);

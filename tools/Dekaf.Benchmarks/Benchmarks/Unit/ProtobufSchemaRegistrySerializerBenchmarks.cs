@@ -44,6 +44,9 @@ public class ProtobufSchemaRegistrySerializerBenchmarks
         _serializer.Serialize(_value, ref _destination, _context);
     }
 
+    [Benchmark]
+    public ValueTask PrepareCached() => _serializer.PrepareAsync(_value, _context);
+
     private sealed class BenchmarkSchemaRegistryClient : ISchemaRegistryClient
     {
         public Task<int> RegisterSchemaAsync(

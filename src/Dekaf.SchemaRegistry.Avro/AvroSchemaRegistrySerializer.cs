@@ -46,7 +46,7 @@ public sealed class AvroSchemaRegistrySerializer<
     private readonly ISchemaRegistryClient _schemaRegistry;
     private readonly AvroSerializerConfig _config;
     private readonly bool _ownsClient;
-    private readonly SchemaResolutionCache<int> _schemaIdCache = new();
+    private readonly SchemaResolutionCache<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> _schemaResolutionCache = new();
     private readonly SubjectSchemaIdCache _subjectSchemaIdCache = new();
     private readonly ConcurrentDictionary<AvroSchema, DynamicSchemaCache> _dynamicSchemaCaches =
         new(AvroSchemaLogicalComparer.Instance);
@@ -306,8 +306,8 @@ public sealed class AvroSchemaRegistrySerializer<
     {
         var subject = GetSubjectName(topic, isKey, avroSchema);
         var schema = CreateRegistrySchema(avroSchema);
-        var schemaId = await GetOrFetchSchemaIdAsync(subject, schema, cancellationToken).ConfigureAwait(false);
-        var entry = cache.CacheEntry(topic, isKey, subject, schemaId, schema);
+        var resolved = await ResolveSchemaAsync(subject, schema, cancellationToken).ConfigureAwait(false);
+        var entry = cache.CacheEntry(topic, isKey, subject, resolved.SchemaId, resolved.Schema!);
         return ToResolvedContext(entry);
     }
 
@@ -321,11 +321,7 @@ public sealed class AvroSchemaRegistrySerializer<
 
     private SubjectSchemaIdCache.SubjectSchemaIdCacheValue GetSchemaIdCacheValue(
         string subject,
-        AvroSchema avroSchema)
-    {
-        var schema = CreateRegistrySchema(avroSchema);
-        return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(GetSchemaIdCached(subject, schema), schema);
-    }
+        AvroSchema avroSchema) => ResolveSchemaCached(subject, CreateRegistrySchema(avroSchema));
 
     private void WriteAvroValue(T value, BinaryEncoder encoder)
     {
@@ -349,28 +345,30 @@ public sealed class AvroSchemaRegistrySerializer<
         }
     }
 
-    private int GetSchemaIdCached(string subject, RegistrySchema schema)
-        => _schemaIdCache.Resolve(
+    private SubjectSchemaIdCache.SubjectSchemaIdCacheValue ResolveSchemaCached(
+        string subject,
+        RegistrySchema schema) =>
+        _schemaResolutionCache.Resolve(
             subject,
             schema,
             this,
             static (serializer, resolvedSubject, resolvedSchema) =>
-                serializer.FetchSchemaIdAsync(resolvedSubject, resolvedSchema),
+                serializer.FetchSchemaAsync(resolvedSubject, resolvedSchema),
             SchemaRegistryTimeout);
 
-    private ValueTask<int> GetOrFetchSchemaIdAsync(
+    private ValueTask<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> ResolveSchemaAsync(
         string subject,
         RegistrySchema schema,
         CancellationToken cancellationToken = default) =>
-        _schemaIdCache.ResolveAsync(
+        _schemaResolutionCache.ResolveAsync(
             subject,
             schema,
             this,
             static (serializer, resolvedSubject, resolvedSchema) =>
-                serializer.FetchSchemaIdAsync(resolvedSubject, resolvedSchema),
+                serializer.FetchSchemaAsync(resolvedSubject, resolvedSchema),
             cancellationToken);
 
-    private async Task<int> FetchSchemaIdAsync(
+    private async Task<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> FetchSchemaAsync(
         string subject,
         RegistrySchema registrySchema)
     {
@@ -381,12 +379,14 @@ public sealed class AvroSchemaRegistrySerializer<
                     "latest",
                     CancellationToken.None)
                 .ConfigureAwait(false);
-            return registered.Id;
+            return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(
+                registered.Id,
+                registered.Schema);
         }
 
         if (_config.AutoRegisterSchemas)
         {
-            return _config.NormalizeSchemas
+            var schemaId = _config.NormalizeSchemas
                 ? await _schemaRegistry.GetOrRegisterSchemaAsync(
                     subject,
                     registrySchema,
@@ -396,6 +396,7 @@ public sealed class AvroSchemaRegistrySerializer<
                     subject,
                     registrySchema,
                     CancellationToken.None).ConfigureAwait(false);
+            return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(schemaId, registrySchema);
         }
 
         var existing = await _schemaRegistry.GetSchemaBySubjectAsync(
@@ -403,7 +404,7 @@ public sealed class AvroSchemaRegistrySerializer<
                 "latest",
                 CancellationToken.None)
             .ConfigureAwait(false);
-        return existing.Id;
+        return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(existing.Id, existing.Schema);
     }
 
     private static RegistrySchema CreateRegistrySchema(AvroSchema avroSchema)
