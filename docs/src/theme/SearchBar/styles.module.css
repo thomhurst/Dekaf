@@ -1,0 +1,10 @@
+.autocomplete {
+  width: clamp(12rem, 18vw, 17rem);
+  min-height: 2.5rem;
+}
+
+@media (max-width: 996px) {
+  .autocomplete {
+    width: clamp(9rem, 42vw, 11rem);
+  }
+}
