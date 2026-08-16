@@ -222,11 +222,13 @@ public sealed class ConsumerSnapshotIntegrationTests(KafkaTestContainer kafka)
         await ProduceRangeAsync(topic, partition: 0, count: 3).ConfigureAwait(false);
         await ProduceRangeAsync(topic, partition: 1, count: 3).ConfigureAwait(false);
         var groupId = $"snapshot-rebalance-{Guid.NewGuid():N}";
+        var rebalanceListener = new RevocationListener();
         await using var firstConsumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithQueuedMinMessages(1)
+            .WithRebalanceListener(rebalanceListener)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync().ConfigureAwait(false);
         firstConsumer.Subscribe(topic);
@@ -245,21 +247,10 @@ public sealed class ConsumerSnapshotIntegrationTests(KafkaTestContainer kafka)
         var secondResult = await secondConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), timeout.Token)
             .ConfigureAwait(false);
         await Assert.That(secondResult).IsNotNull();
+        await rebalanceListener.WaitForRevocationAsync(timeout.Token).ConfigureAwait(false);
 
-        var assignmentInvalidated = false;
-        try
-        {
-            while (await snapshot.MoveNextAsync())
-            {
-                // Drain until the rebalance invalidates the captured assignment.
-            }
-        }
-        catch (InvalidOperationException)
-        {
-            assignmentInvalidated = true;
-        }
-
-        await Assert.That(assignmentInvalidated).IsTrue();
+        await Assert.That(async () => await snapshot.MoveNextAsync().AsTask())
+            .Throws<InvalidOperationException>();
     }
 
     private async ValueTask<IKafkaConsumer<string, string>> CreateConsumerAsync(
@@ -311,5 +302,30 @@ public sealed class ConsumerSnapshotIntegrationTests(KafkaTestContainer kafka)
         await foreach (var record in source.ConfigureAwait(false))
             records.Add(record);
         return records;
+    }
+
+    private sealed class RevocationListener : IRebalanceListener
+    {
+        private readonly TaskCompletionSource _revoked = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public ValueTask OnPartitionsAssignedAsync(
+            IEnumerable<TopicPartition> partitions,
+            CancellationToken cancellationToken) => ValueTask.CompletedTask;
+
+        public ValueTask OnPartitionsRevokedAsync(
+            IEnumerable<TopicPartition> partitions,
+            CancellationToken cancellationToken)
+        {
+            _revoked.TrySetResult();
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask OnPartitionsLostAsync(
+            IEnumerable<TopicPartition> partitions,
+            CancellationToken cancellationToken) => ValueTask.CompletedTask;
+
+        public Task WaitForRevocationAsync(CancellationToken cancellationToken) =>
+            _revoked.Task.WaitAsync(cancellationToken);
     }
 }
