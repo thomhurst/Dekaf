@@ -1,6 +1,5 @@
 // @ts-check
 import {themes as prismThemes} from 'prism-react-renderer';
-import algoliaExperiencesPlugin from './plugins/algolia-experiences/index.js';
 
 /** @type {import('@docusaurus/types').Config} */
 const config = {
@@ -57,8 +56,6 @@ const config = {
     defaultLocale: 'en',
     locales: ['en'],
   },
-
-  plugins: [algoliaExperiencesPlugin],
 
   presets: [
     [
