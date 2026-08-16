@@ -15,6 +15,16 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 [MemoryDiagnoser(displayGenColumns: false)]
 public class AvroSchemaRegistrySerializerBenchmarks
 {
+    private const string IntRecordSchema =
+        """
+        {
+          "type": "record",
+          "name": "IntBenchmarkRecord",
+          "namespace": "Dekaf.Benchmarks",
+          "fields": [{ "name": "id", "type": "int" }]
+        }
+        """;
+
     private const string RecordSchema =
         """
         {
@@ -30,6 +40,8 @@ public class AvroSchemaRegistrySerializerBenchmarks
 
     private AvroSchemaRegistrySerializer<GenericRecord> _serializer = null!;
     private GenericRecord[] _equivalentRecords = null!;
+    private GenericRecord _intRecord = null!;
+    private ArrayBufferWriter<byte> _serializeBuffer = null!;
     private GenericRecord _stableRecord = null!;
     private SerializationContext _context;
     private int _recordIndex;
@@ -49,8 +61,11 @@ public class AvroSchemaRegistrySerializerBenchmarks
             _equivalentRecords[i] = CreateRecord(i);
 
         _stableRecord = _equivalentRecords[0];
-        var buffer = new ArrayBufferWriter<byte>();
-        _serializer.Serialize(_stableRecord, ref buffer, _context);
+        _intRecord = CreateIntRecord();
+        _serializeBuffer = new ArrayBufferWriter<byte>();
+        _serializer.Serialize(_stableRecord, ref _serializeBuffer, _context);
+        _serializeBuffer.ResetWrittenCount();
+        _serializer.Serialize(_intRecord, ref _serializeBuffer, _context);
     }
 
     [GlobalCleanup]
@@ -66,12 +81,34 @@ public class AvroSchemaRegistrySerializerBenchmarks
         return _serializer.PrepareAsync(_equivalentRecords[_recordIndex], _context);
     }
 
+    [Benchmark(Description = "Serialize prepared int-only generic Avro record")]
+    public void SerializeIntRecord()
+    {
+        _serializeBuffer.ResetWrittenCount();
+        _serializer.Serialize(_intRecord, ref _serializeBuffer, _context);
+    }
+
+    [Benchmark(Description = "Serialize prepared int + string generic Avro record")]
+    public void SerializeIntStringRecord()
+    {
+        _serializeBuffer.ResetWrittenCount();
+        _serializer.Serialize(_stableRecord, ref _serializeBuffer, _context);
+    }
+
     private static GenericRecord CreateRecord(int id)
     {
         var schema = (Avro.RecordSchema)AvroSchema.Parse(RecordSchema);
         var record = new GenericRecord(schema);
         record.Add("id", id);
         record.Add("name", "benchmark");
+        return record;
+    }
+
+    private static GenericRecord CreateIntRecord()
+    {
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(IntRecordSchema);
+        var record = new GenericRecord(schema);
+        record.Add("id", 42);
         return record;
     }
 
