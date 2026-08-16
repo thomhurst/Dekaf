@@ -270,18 +270,22 @@ public sealed class ErrorPropagationTests(KafkaTestContainer kafka) : KafkaInteg
 
         // Act - dispose and produce concurrently
         var produceExceptions = new List<Exception>();
+        var firstProduceStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var produceTask = Task.Run(async () =>
         {
             for (var i = 0; i < 100; i++)
             {
                 try
                 {
-                    await producer.ProduceAsync(new ProducerMessage<string, string>
+                    var produce = producer.ProduceAsync(new ProducerMessage<string, string>
                     {
                         Topic = topic,
                         Key = $"key-{i}",
                         Value = $"value-{i}"
-                    }, CancellationToken.None).ConfigureAwait(false);
+                    }, CancellationToken.None);
+                    if (i == 0)
+                        firstProduceStarted.TrySetResult();
+                    await produce.ConfigureAwait(false);
                 }
                 catch (ObjectDisposedException)
                 {
@@ -295,8 +299,7 @@ public sealed class ErrorPropagationTests(KafkaTestContainer kafka) : KafkaInteg
             }
         });
 
-        // Brief delay to let some produces start
-        await Task.Delay(10).ConfigureAwait(false);
+        await firstProduceStarted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         await producer.DisposeAsync().ConfigureAwait(false);
 
         await produceTask.ConfigureAwait(false);

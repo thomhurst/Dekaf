@@ -18,7 +18,8 @@ namespace Dekaf.Tests.Unit.Producer;
 /// </summary>
 public class RecordAccumulatorTests
 {
-    private static ProducerOptions CreateTestOptions()
+    private static ProducerOptions CreateTestOptions(
+        CompressionType compressionType = CompressionType.None)
     {
         return new ProducerOptions
         {
@@ -26,7 +27,8 @@ public class RecordAccumulatorTests
             ClientId = "test-producer",
             BufferMemory = ulong.MaxValue, // Disable buffer limit for unit tests (no producer to drain)
             BatchSize = 1000,
-            LingerMs = 10
+            LingerMs = 10,
+            CompressionType = compressionType
         };
     }
 
@@ -663,6 +665,66 @@ public class RecordAccumulatorTests
             releaseHandoff.Set();
             if (!disposed)
                 await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Arguments(CompressionType.None)]
+    [Arguments(CompressionType.Gzip)]
+    public async Task DisposeAsync_CompletedBatchCannotPublishAfterFinalDrain(
+        CompressionType compressionType)
+    {
+        var accumulator = new RecordAccumulator(CreateTestOptions(compressionType));
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var topicPartition = new TopicPartition("test-topic", 0);
+        using var enqueueReached = new ManualResetEventSlim();
+        using var releaseEnqueue = new ManualResetEventSlim();
+        Task<bool>? appendTask = null;
+        var disposed = false;
+
+        accumulator.BeforeCompletedBatchEnqueueForTest = () =>
+        {
+            enqueueReached.Set();
+            if (!releaseEnqueue.Wait(TimeSpan.FromSeconds(10)))
+                throw new TimeoutException("Timed out waiting to release completed batch enqueue.");
+        };
+
+        try
+        {
+            var completion = pool.Rent();
+            var completionTask = completion.Task;
+            appendTask = RunOnDedicatedThread(() => accumulator.TryAppendFromSpansWithCompletion(
+                topicPartition.Topic,
+                topicPartition.Partition,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                ReadOnlySpan<byte>.Empty,
+                keyIsNull: true,
+                "value"u8,
+                valueIsNull: false,
+                headers: null,
+                headerCount: 0,
+                completion));
+
+            await WaitUntilAsync(() => enqueueReached.IsSet, TimeSpan.FromSeconds(5));
+
+            await accumulator.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+            disposed = true;
+            releaseEnqueue.Set();
+
+            await Assert.That(await appendTask.WaitAsync(TimeSpan.FromSeconds(5))).IsTrue();
+            await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+                await completionTask.AsTask().WaitAsync(TimeSpan.FromSeconds(1)));
+            await Assert.That(accumulator.InFlightBatchCount).IsEqualTo(0);
+            await Assert.That(accumulator.BufferedBytes).IsEqualTo(0);
+        }
+        finally
+        {
+            releaseEnqueue.Set();
+            if (appendTask is not null)
+                await appendTask.WaitAsync(TimeSpan.FromSeconds(5));
+            if (!disposed)
+                await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
         }
     }
 
