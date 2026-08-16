@@ -374,7 +374,9 @@ public sealed class SchemaRegistrySerializer<T> :
 
     private sealed class SubjectSchemaCache
     {
+        private const int OverflowCapacity = 4;
         private readonly ConcurrentDictionary<string, FactorySchema> _cache = new(StringComparer.Ordinal);
+        private readonly CachedSubjectSchema?[] _overflow = new CachedSubjectSchema?[OverflowCapacity];
         private int _cacheCount;
 
         internal FactorySchema GetOrAdd(
@@ -384,19 +386,60 @@ public sealed class SchemaRegistrySerializer<T> :
         {
             if (_cache.TryGetValue(subject, out var cached))
                 return cached;
+            if (TryGetOverflow(subject, out cached))
+                return cached;
 
             var schema = schemaFactory(subject);
             var factorySchema = new FactorySchema(
                 schema,
                 SubjectNameResolver.GetRecordName(schema, fallbackRecordName));
             if (!TryReserveSlot())
-                return factorySchema;
+                return PublishOverflow(subject, factorySchema);
 
             if (_cache.TryAdd(subject, factorySchema))
                 return factorySchema;
 
             Interlocked.Decrement(ref _cacheCount);
-            return _cache.TryGetValue(subject, out cached) ? cached : factorySchema;
+            return _cache.TryGetValue(subject, out cached)
+                ? cached
+                : PublishOverflow(subject, factorySchema);
+        }
+
+        private bool TryGetOverflow(string subject, out FactorySchema factorySchema)
+        {
+            for (var index = 0; index < OverflowCapacity; index++)
+            {
+                var cached = Volatile.Read(ref _overflow[index]);
+                if (cached is not null && string.Equals(cached.Subject, subject, StringComparison.Ordinal))
+                {
+                    factorySchema = cached.Value;
+                    return true;
+                }
+            }
+
+            factorySchema = default;
+            return false;
+        }
+
+        private FactorySchema PublishOverflow(string subject, FactorySchema factorySchema)
+        {
+            CachedSubjectSchema? candidate = null;
+            for (var index = 0; index < OverflowCapacity; index++)
+            {
+                var cached = Volatile.Read(ref _overflow[index]);
+                if (cached is null)
+                {
+                    candidate ??= new CachedSubjectSchema(subject, factorySchema);
+                    cached = Interlocked.CompareExchange(ref _overflow[index], candidate, null);
+                    if (cached is null)
+                        return factorySchema;
+                }
+
+                if (string.Equals(cached.Subject, subject, StringComparison.Ordinal))
+                    return cached.Value;
+            }
+
+            return factorySchema;
         }
 
         private bool TryReserveSlot()
@@ -417,6 +460,12 @@ public sealed class SchemaRegistrySerializer<T> :
 
     private sealed class CachedFactorySchema(FactorySchema value)
     {
+        internal FactorySchema Value { get; } = value;
+    }
+
+    private sealed class CachedSubjectSchema(string subject, FactorySchema value)
+    {
+        internal string Subject { get; } = subject;
         internal FactorySchema Value { get; } = value;
     }
 

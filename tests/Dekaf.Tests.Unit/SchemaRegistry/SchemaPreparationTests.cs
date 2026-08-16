@@ -107,6 +107,36 @@ public sealed class SchemaPreparationTests
     }
 
     [Test]
+    public async Task Generic_PrepareAsync_SubjectFactoryRetainsThreeOverflowSubjects()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        var schemaFactoryCalls = 0;
+        await using var serializer = new SchemaRegistrySerializer<int>(
+            registry,
+            static (value, writer) =>
+            {
+                var span = writer.GetSpan(sizeof(int));
+                BinaryPrimitives.WriteInt32BigEndian(span, value);
+                writer.Advance(sizeof(int));
+            },
+            _ =>
+            {
+                Interlocked.Increment(ref schemaFactoryCalls);
+                return CreateDataContractSchema(owner: "payments");
+            },
+            subjectNameStrategy: SubjectNameStrategy.TopicName);
+
+        for (var index = 0; index < SubjectSchemaIdCache.MaxCachedEntries; index++)
+            _ = await serializer.PrepareAsync($"topic-{index}", 42);
+
+        for (var index = 0; index < 30; index++)
+            _ = await serializer.PrepareAsync($"overflow-{index % 3}", 42);
+
+        await Assert.That(schemaFactoryCalls)
+            .IsEqualTo(SubjectSchemaIdCache.MaxCachedEntries + 3);
+    }
+
+    [Test]
     public async Task Json_PrepareAsync_ReturnsKeyContextAndPreventsSerializeRefetch()
     {
         using var registry = new MockSchemaRegistryClient();

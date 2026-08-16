@@ -63,7 +63,7 @@ public class SchemaRegistryPreparationBenchmarks
                 writer.Advance(sizeof(int));
             },
             static _ => CreateDataContractSchema(),
-            subjectNameStrategy: SubjectNameStrategy.RecordName);
+            subjectNameStrategy: SubjectNameStrategy.TopicName);
         _jsonSerializer = new JsonSchemaRegistrySerializer<BenchmarkPayload>(
             registry,
             "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"integer\"}}}");

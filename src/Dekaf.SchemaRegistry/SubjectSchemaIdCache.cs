@@ -12,6 +12,8 @@ internal sealed class SubjectSchemaIdCache
     private CachedEntry? _last;
     private CachedEntry? _overflowFirst;
     private CachedEntry? _overflowSecond;
+    private CachedEntry? _overflowThird;
+    private CachedEntry? _overflowFourth;
     private int _cacheCount;
 
     internal int CachedEntryCount => Volatile.Read(ref _cacheCount);
@@ -75,6 +77,22 @@ internal sealed class SubjectSchemaIdCache
         {
             Volatile.Write(ref _last, overflowSecond);
             entry = overflowSecond.Value;
+            return true;
+        }
+
+        var overflowThird = Volatile.Read(ref _overflowThird);
+        if (overflowThird is not null && overflowThird.Key.Equals(key))
+        {
+            Volatile.Write(ref _last, overflowThird);
+            entry = overflowThird.Value;
+            return true;
+        }
+
+        var overflowFourth = Volatile.Read(ref _overflowFourth);
+        if (overflowFourth is not null && overflowFourth.Key.Equals(key))
+        {
+            Volatile.Write(ref _last, overflowFourth);
+            entry = overflowFourth.Value;
             return true;
         }
 
@@ -156,6 +174,42 @@ internal sealed class SubjectSchemaIdCache
         {
             Volatile.Write(ref _last, second);
             return second.Value;
+        }
+
+        var third = Volatile.Read(ref _overflowThird);
+        if (third is null)
+        {
+            var candidate = new CachedEntry(entry);
+            third = Interlocked.CompareExchange(ref _overflowThird, candidate, null);
+            if (third is null)
+            {
+                Volatile.Write(ref _last, candidate);
+                return entry;
+            }
+        }
+
+        if (third.Key.Equals(entry.Key))
+        {
+            Volatile.Write(ref _last, third);
+            return third.Value;
+        }
+
+        var fourth = Volatile.Read(ref _overflowFourth);
+        if (fourth is null)
+        {
+            var candidate = new CachedEntry(entry);
+            fourth = Interlocked.CompareExchange(ref _overflowFourth, candidate, null);
+            if (fourth is null)
+            {
+                Volatile.Write(ref _last, candidate);
+                return entry;
+            }
+        }
+
+        if (fourth.Key.Equals(entry.Key))
+        {
+            Volatile.Write(ref _last, fourth);
+            return fourth.Value;
         }
 
         return entry;
