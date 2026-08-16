@@ -113,12 +113,12 @@ public sealed class AvroSchemaRegistrySerializer<
         if (cache.TryGet(topic, isKey, out var cached))
             return new ValueTask<ResolvedSchemaContext>(ToResolvedContext(cached));
 
-        return new ValueTask<ResolvedSchemaContext>(PrepareCoreAsync(
+        return PrepareCoreAsync(
             topic,
             isKey,
             avroSchema,
             cache,
-            cancellationToken));
+            cancellationToken);
     }
 
     /// <inheritdoc />
@@ -297,7 +297,7 @@ public sealed class AvroSchemaRegistrySerializer<
             static (state, subject) => state.Serializer.GetSchemaIdCacheValue(subject, state.Schema));
     }
 
-    private async Task<ResolvedSchemaContext> PrepareCoreAsync(
+    private ValueTask<ResolvedSchemaContext> PrepareCoreAsync(
         string topic,
         bool isKey,
         AvroSchema avroSchema,
@@ -306,9 +306,27 @@ public sealed class AvroSchemaRegistrySerializer<
     {
         var subject = GetSubjectName(topic, isKey, avroSchema);
         var schema = CreateRegistrySchema(avroSchema);
-        var resolved = await ResolveSchemaAsync(subject, schema, cancellationToken).ConfigureAwait(false);
-        var entry = cache.CacheEntry(topic, isKey, subject, resolved.SchemaId, resolved.Schema!);
-        return ToResolvedContext(entry);
+        var resolved = ResolveSchemaAsync(subject, schema, cancellationToken);
+        if (resolved.IsCompletedSuccessfully)
+        {
+            var value = resolved.Result;
+            return new ValueTask<ResolvedSchemaContext>(ToResolvedContext(
+                cache.CacheEntry(topic, isKey, subject, value.SchemaId, value.Schema!)));
+        }
+
+        return AwaitSchemaAsync(topic, isKey, subject, cache, resolved);
+
+        static async ValueTask<ResolvedSchemaContext> AwaitSchemaAsync(
+            string topic,
+            bool isKey,
+            string subject,
+            SubjectSchemaIdCache cache,
+            ValueTask<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> resolved)
+        {
+            var value = await resolved.ConfigureAwait(false);
+            return ToResolvedContext(
+                cache.CacheEntry(topic, isKey, subject, value.SchemaId, value.Schema!));
+        }
     }
 
     private static ResolvedSchemaContext ToResolvedContext(
@@ -368,20 +386,13 @@ public sealed class AvroSchemaRegistrySerializer<
                 serializer.FetchSchemaWithTimeoutAsync(resolvedSubject, resolvedSchema),
             cancellationToken);
 
-    private async Task<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> FetchSchemaWithTimeoutAsync(
+    private Task<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> FetchSchemaWithTimeoutAsync(
         string subject,
-        RegistrySchema registrySchema)
-    {
-        using var timeoutSource = new CancellationTokenSource(SchemaRegistryTimeout);
-        try
-        {
-            return await FetchSchemaAsync(subject, registrySchema, timeoutSource.Token).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException exception) when (timeoutSource.IsCancellationRequested)
-        {
-            throw new TimeoutException("Schema Registry resolution timed out.", exception);
-        }
-    }
+        RegistrySchema registrySchema) =>
+        SchemaRegistryOperationTimeout.ExecuteAsync(
+            cancellationToken => FetchSchemaAsync(subject, registrySchema, cancellationToken),
+            SchemaRegistryTimeout,
+            "Schema Registry resolution timed out.");
 
     private async Task<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> FetchSchemaAsync(
         string subject,

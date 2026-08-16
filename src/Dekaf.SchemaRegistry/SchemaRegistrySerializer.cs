@@ -202,7 +202,7 @@ public sealed class SchemaRegistrySerializer<T> :
         if (_subjectSchemaIdCache.TryGet(topic, isKey, out var cached))
             return new ValueTask<ResolvedSchemaContext>(ToResolvedContext(cached));
 
-        return new ValueTask<ResolvedSchemaContext>(PrepareCoreAsync(topic, isKey, cancellationToken));
+        return PrepareCoreAsync(topic, isKey, cancellationToken);
     }
 
     /// <inheritdoc />
@@ -288,23 +288,44 @@ public sealed class SchemaRegistrySerializer<T> :
             resolved.Schema);
     }
 
-    private async Task<ResolvedSchemaContext> PrepareCoreAsync(
+    private ValueTask<ResolvedSchemaContext> PrepareCoreAsync(
         string topic,
         bool isKey,
         CancellationToken cancellationToken)
     {
         var resolved = ResolveSubjectAndSchema(topic, isKey);
-        var schemaId = await GetSchemaIdAsync(
+        var schemaId = GetSchemaIdAsync(
             resolved.Subject,
             resolved.Schema,
-            cancellationToken).ConfigureAwait(false);
-        var entry = _subjectSchemaIdCache.CacheEntry(
-            topic,
-            isKey,
-            resolved.Subject,
-            schemaId,
-            resolved.Schema);
-        return ToResolvedContext(entry);
+            cancellationToken);
+        if (schemaId.IsCompletedSuccessfully)
+        {
+            return new ValueTask<ResolvedSchemaContext>(ToResolvedContext(
+                _subjectSchemaIdCache.CacheEntry(
+                    topic,
+                    isKey,
+                    resolved.Subject,
+                    schemaId.Result,
+                    resolved.Schema)));
+        }
+
+        return AwaitSchemaIdAsync(this, topic, isKey, resolved, schemaId);
+
+        static async ValueTask<ResolvedSchemaContext> AwaitSchemaIdAsync(
+            SchemaRegistrySerializer<T> serializer,
+            string topic,
+            bool isKey,
+            ResolvedSubjectSchema resolved,
+            ValueTask<int> schemaId)
+        {
+            var resolvedSchemaId = await schemaId.ConfigureAwait(false);
+            return ToResolvedContext(serializer._subjectSchemaIdCache.CacheEntry(
+                topic,
+                isKey,
+                resolved.Subject,
+                resolvedSchemaId,
+                resolved.Schema));
+        }
     }
 
     private ResolvedSubjectSchema ResolveSubjectAndSchema(string topic, bool isKey)
@@ -350,18 +371,11 @@ public sealed class SchemaRegistrySerializer<T> :
                 serializer.FetchSchemaIdWithTimeoutAsync(resolvedSubject, resolvedSchema),
             cancellationToken);
 
-    private async Task<int> FetchSchemaIdWithTimeoutAsync(string subject, Schema schema)
-    {
-        using var timeoutSource = new CancellationTokenSource(SchemaRegistryTimeout);
-        try
-        {
-            return await FetchSchemaIdAsync(subject, schema, timeoutSource.Token).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException exception) when (timeoutSource.IsCancellationRequested)
-        {
-            throw new TimeoutException("Schema Registry resolution timed out.", exception);
-        }
-    }
+    private Task<int> FetchSchemaIdWithTimeoutAsync(string subject, Schema schema) =>
+        SchemaRegistryOperationTimeout.ExecuteAsync(
+            cancellationToken => FetchSchemaIdAsync(subject, schema, cancellationToken),
+            SchemaRegistryTimeout,
+            "Schema Registry resolution timed out.");
 
     private async Task<int> FetchSchemaIdAsync(
         string subject,

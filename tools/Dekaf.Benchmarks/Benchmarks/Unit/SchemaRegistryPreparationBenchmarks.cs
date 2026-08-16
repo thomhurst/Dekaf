@@ -17,8 +17,12 @@ public class SchemaRegistryPreparationBenchmarks
     private readonly ArrayBufferWriter<byte> _genericDestination = new(64);
     private readonly ArrayBufferWriter<byte> _jsonDestination = new(128);
     private SchemaRegistrySerializer<int> _genericSerializer = null!;
+    private SchemaRegistrySerializer<int> _genericOverflowSerializer = null!;
     private JsonSchemaRegistrySerializer<BenchmarkPayload> _jsonSerializer = null!;
     private SerializationContext _context;
+    private SerializationContext _overflowContextA;
+    private SerializationContext _overflowContextB;
+    private int _overflowContextIndex;
     private BenchmarkPayload _jsonValue = null!;
 
     [GlobalSetup]
@@ -39,6 +43,16 @@ public class SchemaRegistryPreparationBenchmarks
                 writer.Advance(sizeof(int));
             },
             () => genericSchema);
+        _genericOverflowSerializer = new SchemaRegistrySerializer<int>(
+            registry,
+            static (value, writer) =>
+            {
+                var span = writer.GetSpan(sizeof(int));
+                BinaryPrimitives.WriteInt32BigEndian(span, value);
+                writer.Advance(sizeof(int));
+            },
+            () => genericSchema,
+            subjectNameStrategy: SubjectNameStrategy.RecordName);
         _jsonSerializer = new JsonSchemaRegistrySerializer<BenchmarkPayload>(
             registry,
             "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"integer\"}}}");
@@ -48,9 +62,31 @@ public class SchemaRegistryPreparationBenchmarks
             Topic = "schema-preparation-benchmark",
             Component = SerializationComponent.Value
         };
+        _overflowContextA = new SerializationContext
+        {
+            Topic = "schema-preparation-overflow-a",
+            Component = SerializationComponent.Value
+        };
+        _overflowContextB = new SerializationContext
+        {
+            Topic = "schema-preparation-overflow-b",
+            Component = SerializationComponent.Value
+        };
 
         await _genericSerializer.PrepareAsync(42, _context).ConfigureAwait(false);
         await _jsonSerializer.PrepareAsync(_jsonValue, _context).ConfigureAwait(false);
+        for (var index = 0; index < SubjectSchemaIdCache.MaxCachedEntries; index++)
+        {
+            await _genericOverflowSerializer.PrepareAsync(
+                42,
+                new SerializationContext
+                {
+                    Topic = $"schema-preparation-seed-{index}",
+                    Component = SerializationComponent.Value
+                }).ConfigureAwait(false);
+        }
+        await _genericOverflowSerializer.PrepareAsync(42, _overflowContextA).ConfigureAwait(false);
+        await _genericOverflowSerializer.PrepareAsync(42, _overflowContextB).ConfigureAwait(false);
         var genericDestination = _genericDestination;
         _genericSerializer.Serialize(42, ref genericDestination, _context);
         var jsonDestination = _jsonDestination;
@@ -61,11 +97,21 @@ public class SchemaRegistryPreparationBenchmarks
     public async Task Cleanup()
     {
         await _genericSerializer.DisposeAsync().ConfigureAwait(false);
+        await _genericOverflowSerializer.DisposeAsync().ConfigureAwait(false);
         await _jsonSerializer.DisposeAsync().ConfigureAwait(false);
     }
 
     [Benchmark]
     public ValueTask PrepareGenericCached() => _genericSerializer.PrepareAsync(42, _context);
+
+    [Benchmark]
+    public ValueTask PrepareGenericAlternatingAfterSubjectCacheTurnover()
+    {
+        var context = (_overflowContextIndex++ & 1) == 0
+            ? _overflowContextA
+            : _overflowContextB;
+        return _genericOverflowSerializer.PrepareAsync(42, context);
+    }
 
     [Benchmark]
     public void SerializeGenericPrepared()

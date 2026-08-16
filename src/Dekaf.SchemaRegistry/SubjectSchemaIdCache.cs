@@ -9,8 +9,10 @@ internal sealed class SubjectSchemaIdCache
     internal const int MaxCachedEntries = 16_384;
 
     private readonly ConcurrentDictionary<SubjectSchemaIdCacheKey, SubjectSchemaIdCacheEntry> _cache = new();
-    private int _cacheCount;
     private SubjectSchemaIdCacheEntry? _last;
+    private readonly Queue<SubjectSchemaIdCacheKey> _evictionQueue = new();
+    private readonly object _cacheMutationLock = new();
+    private int _cacheCount;
 
     internal int CachedEntryCount => Volatile.Read(ref _cacheCount);
 
@@ -88,39 +90,26 @@ internal sealed class SubjectSchemaIdCache
         }
 
         var entry = new SubjectSchemaIdCacheEntry(key, subject, schemaId, schema);
-        if (!TryReserveSlot())
+        lock (_cacheMutationLock)
         {
+            if (_cache.TryGetValue(key, out existing))
+            {
+                Volatile.Write(ref _last, existing);
+                return existing;
+            }
+
+            if (_cacheCount == MaxCachedEntries)
+            {
+                var oldest = _evictionQueue.Dequeue();
+                _cache.TryRemove(oldest, out _);
+                _cacheCount--;
+            }
+
+            _cache.TryAdd(key, entry);
+            _evictionQueue.Enqueue(key);
+            _cacheCount++;
             Volatile.Write(ref _last, entry);
             return entry;
-        }
-
-        if (_cache.TryAdd(key, entry))
-        {
-            Volatile.Write(ref _last, entry);
-            return entry;
-        }
-
-        Interlocked.Decrement(ref _cacheCount);
-        if (_cache.TryGetValue(key, out existing))
-        {
-            Volatile.Write(ref _last, existing);
-            return existing;
-        }
-
-        Volatile.Write(ref _last, entry);
-        return entry;
-    }
-
-    private bool TryReserveSlot()
-    {
-        while (true)
-        {
-            var count = Volatile.Read(ref _cacheCount);
-            if (count >= MaxCachedEntries)
-                return false;
-
-            if (Interlocked.CompareExchange(ref _cacheCount, count + 1, count) == count)
-                return true;
         }
     }
 

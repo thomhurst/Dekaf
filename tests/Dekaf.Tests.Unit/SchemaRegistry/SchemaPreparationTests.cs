@@ -41,6 +41,32 @@ public sealed class SchemaPreparationTests
     }
 
     [Test]
+    public async Task Generic_PrepareAsync_SubjectCacheTurnoverCompletesFromResolvedSchemaSynchronously()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        var schema = new Schema { SchemaType = SchemaType.Json, SchemaString = "{}" };
+        await using var serializer = new SchemaRegistrySerializer<int>(
+            registry,
+            static (value, writer) =>
+            {
+                var span = writer.GetSpan(sizeof(int));
+                BinaryPrimitives.WriteInt32BigEndian(span, value);
+                writer.Advance(sizeof(int));
+            },
+            () => schema,
+            subjectNameStrategy: SubjectNameStrategy.RecordName);
+
+        for (var index = 0; index < SubjectSchemaIdCache.MaxCachedEntries; index++)
+            _ = await serializer.PrepareAsync($"topic-{index}", 42);
+
+        var overflow = serializer.PrepareAsync("overflow-a", 42);
+
+        await Assert.That(overflow.IsCompletedSuccessfully).IsTrue();
+        await Assert.That((await overflow).SchemaId).IsEqualTo(1);
+        await Assert.That(registry.GetOrRegisterSchemaCallCount).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task Json_PrepareAsync_ReturnsKeyContextAndPreventsSerializeRefetch()
     {
         using var registry = new MockSchemaRegistryClient();
@@ -501,6 +527,26 @@ public sealed class SchemaPreparationTests
 
         await Assert.That(resolved).IsEqualTo(2);
         await Assert.That(counter.Count).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task OperationTimeout_BoundsOperationThatIgnoresCancellation()
+    {
+        var completion = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var operation = SchemaRegistryOperationTimeout.ExecuteAsync(
+            _ => completion.Task,
+            TimeSpan.FromMilliseconds(20),
+            "timed out");
+
+        try
+        {
+            await Assert.That(async () => await operation.WaitAsync(TimeSpan.FromSeconds(2)))
+                .Throws<TimeoutException>();
+        }
+        finally
+        {
+            completion.TrySetResult(42);
+        }
     }
 
     private static SchemaRegistrySerializer<int> CreateGenericSerializer(

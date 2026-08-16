@@ -155,7 +155,7 @@ public sealed class SchemaRegistryCacheTests
         };
 
     [Test]
-    public async Task SubjectSchemaIdCache_StopsAddingEntriesAtMaxCachedEntries()
+    public async Task SubjectSchemaIdCache_EvictsOldestEntryAtMaxCachedEntries()
     {
         var cache = new SubjectSchemaIdCache();
 
@@ -170,6 +170,11 @@ public sealed class SchemaRegistryCacheTests
         }
 
         await Assert.That(cache.CachedEntryCount).IsEqualTo(SubjectSchemaIdCache.MaxCachedEntries);
+        await Assert.That(cache.TryGet("topic-0", isKey: false, out _)).IsFalse();
+        await Assert.That(cache.TryGet(
+            $"topic-{SubjectSchemaIdCache.MaxCachedEntries + 9}",
+            isKey: false,
+            out _)).IsTrue();
     }
 
     private sealed record JsonPayload(int Id, string Name);
