@@ -626,6 +626,143 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
     }
 
     [Test]
+    public async Task ConsumeAsync_PauseSuppressesPrefetchedRecordsUntilResume()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2);
+        var pausedPartition = new TopicPartition(topic, 0);
+        var activePartition = new TopicPartition(topic, 1);
+        await using var producer = await CreatePauseTestProducerAsync();
+        await ProducePauseTestRecordsAsync(producer, topic, partition: 0, start: 0, count: 3);
+        await using var consumer = await CreatePauseTestConsumerAsync();
+        consumer.Assign(pausedPartition, activePartition);
+        consumer.Seek(new TopicPartitionOffset(topic, 0, 0));
+        consumer.Seek(new TopicPartitionOffset(topic, 1, 0));
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await using var records = consumer.ConsumeAsync(cancellation.Token).GetAsyncEnumerator();
+
+        await Assert.That(await records.MoveNextAsync()).IsTrue();
+        await Assert.That(records.Current.Partition).IsEqualTo(0);
+        await Assert.That(records.Current.Offset).IsEqualTo(0);
+
+        consumer.Pause(pausedPartition);
+        await ProducePauseTestRecordsAsync(producer, topic, partition: 1, start: 100, count: 1);
+
+        await Assert.That(await records.MoveNextAsync()).IsTrue();
+        await Assert.That(records.Current.Partition).IsEqualTo(1);
+        await Assert.That(records.Current.Offset).IsEqualTo(0);
+
+        consumer.Resume(pausedPartition);
+
+        await Assert.That(await records.MoveNextAsync()).IsTrue();
+        await Assert.That(records.Current.Partition).IsEqualTo(0);
+        await Assert.That(records.Current.Offset).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task ConsumeBatchAsync_PauseSuppressesPrefetchedRecordsUntilResume()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2);
+        var pausedPartition = new TopicPartition(topic, 0);
+        var activePartition = new TopicPartition(topic, 1);
+        await using var producer = await CreatePauseTestProducerAsync();
+        await ProducePauseTestRecordsAsync(producer, topic, partition: 0, start: 0, count: 3);
+        await using var consumer = await CreatePauseTestConsumerAsync(maxPollRecords: 1);
+        consumer.Assign(pausedPartition, activePartition);
+        consumer.Seek(new TopicPartitionOffset(topic, 0, 0));
+        consumer.Seek(new TopicPartitionOffset(topic, 1, 0));
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await using var batches = consumer.ConsumeBatchAsync(cancellation.Token).GetAsyncEnumerator();
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        var first = batches.Current.Single();
+        await Assert.That(batches.Current.Partition).IsEqualTo(0);
+        await Assert.That(first.Offset).IsEqualTo(0);
+
+        consumer.Pause(pausedPartition);
+        await ProducePauseTestRecordsAsync(producer, topic, partition: 1, start: 100, count: 1);
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(batches.Current.Partition).IsEqualTo(1);
+        await Assert.That(batches.Current.Single().Offset).IsEqualTo(0);
+
+        consumer.Resume(pausedPartition);
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(batches.Current.Partition).IsEqualTo(0);
+        await Assert.That(batches.Current.Single().Offset).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task ConsumeRawBatchAsync_PauseSuppressesPrefetchedRecordsUntilResume()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2);
+        var pausedPartition = new TopicPartition(topic, 0);
+        var activePartition = new TopicPartition(topic, 1);
+        await using var producer = await CreatePauseTestProducerAsync();
+        await ProducePauseTestRecordsAsync(producer, topic, partition: 0, start: 0, count: 3);
+        await using var consumer = await CreatePauseTestConsumerAsync(maxPollRecords: 1);
+        consumer.Assign(pausedPartition, activePartition);
+        consumer.Seek(new TopicPartitionOffset(topic, 0, 0));
+        consumer.Seek(new TopicPartitionOffset(topic, 1, 0));
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await using var batches = consumer.ConsumeRawBatchAsync(cancellation.Token).GetAsyncEnumerator();
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        var first = batches.Current.Single();
+        await Assert.That(batches.Current.Partition).IsEqualTo(0);
+        await Assert.That(first.Offset).IsEqualTo(0);
+
+        consumer.Pause(pausedPartition);
+        await ProducePauseTestRecordsAsync(producer, topic, partition: 1, start: 100, count: 1);
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(batches.Current.Partition).IsEqualTo(1);
+        await Assert.That(batches.Current.Single().Offset).IsEqualTo(0);
+
+        consumer.Resume(pausedPartition);
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(batches.Current.Partition).IsEqualTo(0);
+        await Assert.That(batches.Current.Single().Offset).IsEqualTo(1);
+    }
+
+    private ValueTask<IKafkaProducer<string, string>> CreatePauseTestProducerAsync() =>
+        Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("pause-prefetch-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+    private ValueTask<IKafkaConsumer<string, string>> CreatePauseTestConsumerAsync(
+        int maxPollRecords = int.MaxValue) =>
+        Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("pause-prefetch-consumer")
+            .WithQueuedMinMessages(100)
+            .WithMaxPollRecords(maxPollRecords)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+    private static async Task ProducePauseTestRecordsAsync(
+        IKafkaProducer<string, string> producer,
+        string topic,
+        int partition,
+        int start,
+        int count)
+    {
+        for (var i = start; i < start + count; i++)
+        {
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Partition = partition,
+                Key = $"key-{i}",
+                Value = $"value-{i}"
+            }, CancellationToken.None);
+        }
+    }
+
+    [Test]
     public async Task Consumer_Unsubscribe_ClearsSubscription()
     {
         // Arrange

@@ -173,7 +173,10 @@ namespace Dekaf.Consumer
                     isValueNull: record.IsValueNull);
 
                 if (!_batch._iterationGuard.IsCurrent(pending.TopicPartition, ref _observedVersion))
+                {
+                    pending.BufferCurrentForRedelivery();
                     return false;
+                }
 
                 pending.TrackConsumed(offset, messageBytes);
                 _batch._storeOffsetOnDelivery?.Invoke(

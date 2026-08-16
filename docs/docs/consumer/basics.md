@@ -263,6 +263,18 @@ consumer.Partitions.Resume(new TopicPartition("my-topic", 0));
 
 This is useful for backpressure - if your processing can't keep up, pause some partitions.
 
+`Pause` stops new fetches and suppresses records already present in Dekaf's pending or
+prefetch buffers for `ConsumeAsync`, `ConsumeBatchAsync`, and `ConsumeRawBatchAsync`.
+Buffered records are retained: `Resume` delivers them with their original offsets and
+in their original per-partition order. Other assigned partitions continue consuming.
+A rebalance or explicit unassignment is different: records buffered for partitions no
+longer assigned may be discarded.
+
+Pause is applied at the record-delivery boundary. If `Pause` races a consume operation
+whose final internal delivery check has already completed, that one in-progress record
+may still reach the caller; the next record (or next record from an already-returned
+batch) is suppressed until `Resume`.
+
 ## Accessing Metadata
 
 ```csharp

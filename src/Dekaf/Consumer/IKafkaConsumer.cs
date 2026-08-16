@@ -343,11 +343,24 @@ public interface IConsumerPartitions
     /// <summary>
     /// Pauses consumption from partitions.
     /// </summary>
+    /// <remarks>
+    /// Records already fetched for a paused partition are retained but suppressed by
+    /// <see cref="IKafkaConsumer{TKey,TValue}.ConsumeAsync"/>,
+    /// <see cref="IKafkaConsumer{TKey,TValue}.ConsumeBatchAsync"/>, and
+    /// <see cref="IKafkaConsumer{TKey,TValue}.ConsumeRawBatchAsync"/> until
+    /// <see cref="Resume"/> is called. Records whose final delivery check completed before
+    /// a concurrent pause belong to the in-progress consume operation; the pause applies
+    /// at the next record-delivery boundary.
+    /// </remarks>
     void Pause(params TopicPartition[] partitions);
 
     /// <summary>
     /// Resumes consumption from partitions.
     /// </summary>
+    /// <remarks>
+    /// Preserved prefetched records are delivered in their original per-partition order
+    /// and retain their original offsets.
+    /// </remarks>
     void Resume(params TopicPartition[] partitions);
 }
 
