@@ -97,17 +97,25 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
             case AvroSchema.Type.Null:
                 return;
             case AvroSchema.Type.Boolean:
+                if (target)
+                    ThrowUnsupported(context, schema.Tag);
                 CopyFixed(ref reader, output, 1);
                 return;
             case AvroSchema.Type.Int:
             case AvroSchema.Type.Long:
             case AvroSchema.Type.Enumeration:
+                if (target)
+                    ThrowUnsupported(context, schema.Tag);
                 CopyLong(ref reader, output);
                 return;
             case AvroSchema.Type.Float:
+                if (target)
+                    ThrowUnsupported(context, schema.Tag);
                 CopyFixed(ref reader, output, sizeof(float));
                 return;
             case AvroSchema.Type.Double:
+                if (target)
+                    ThrowUnsupported(context, schema.Tag);
                 CopyFixed(ref reader, output, sizeof(double));
                 return;
             case AvroSchema.Type.String:
@@ -615,7 +623,9 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
                     {
                         var field = fields[i];
                         var tagField = FindTagField(tagRecord, field.Name);
-                        var fullName = record.Fullname + "." + field.Name;
+                        var fullName = tagField is null
+                            ? record.Fullname + "." + field.Name
+                            : tagRecord!.Fullname + "." + tagField.Name;
                         if (mutableTags)
                         {
                             var target = MutableFieldTarget.Create(

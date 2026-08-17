@@ -628,7 +628,7 @@ public sealed class SchemaRegistryCsfleRuleTests
         const string ownerSchemaText = """
             {"type":"record","name":"MigratedPayment","namespace":"test","fields":[
                 {"name":"prefix","type":"string","default":""},
-                {"name":"renamed_secret","aliases":["secret"],"type":"bytes","confluent:tags":["PII"]}
+                {"name":"renamed_secret","aliases":["secret"],"type":"bytes"}
             ]}
             """;
         var rule = CreateRule(tags: new HashSet<string>(StringComparer.Ordinal) { "PII" });
@@ -641,6 +641,14 @@ public sealed class SchemaRegistryCsfleRuleTests
         {
             SchemaType = SchemaType.Avro,
             SchemaString = ownerSchemaText,
+            Metadata = new SchemaMetadata
+            {
+                Tags = new Dictionary<string, IReadOnlySet<string>>(StringComparer.Ordinal)
+                {
+                    ["test.MigratedPayment.renamed_secret"] =
+                        new HashSet<string>(StringComparer.Ordinal) { "PII" }
+                }
+            },
             RuleSet = new SchemaRuleSet
             {
                 MigrationRules = [rule],
@@ -657,6 +665,50 @@ public sealed class SchemaRegistryCsfleRuleTests
             static (_, _, replacement) => replacement);
 
         await Assert.That(ReadAvroBytes(avroPayloadSchema, transformed)).IsEquivalentTo(new byte[] { 2 });
+    }
+
+    [Test]
+    public async Task AvroTaggedTransformer_TaggedNonEncryptablePrimitives_AreRejected()
+    {
+        var cases = new (string Type, string ExpectedType, byte[] Payload)[]
+        {
+            ("\"boolean\"", "Boolean", [1]),
+            ("\"int\"", "Int", [2]),
+            ("\"long\"", "Long", [2]),
+            ("\"float\"", "Float", [0, 0, 128, 63]),
+            ("\"double\"", "Double", [0, 0, 0, 0, 0, 0, 240, 63]),
+            ("{\"type\":\"enum\",\"name\":\"Status\",\"symbols\":[\"OPEN\"]}", "Enumeration", [0])
+        };
+        var rule = CreateRule(tags: new HashSet<string>(StringComparer.Ordinal) { "PII" });
+
+        foreach (var (type, expectedType, payload) in cases)
+        {
+            var schemaText = $$"""
+                {"type":"record","name":"PrimitivePayload","fields":[
+                    {"name":"secret","type":{{type}},"confluent:tags":["PII"]}
+                ]}
+                """;
+            var avroSchema = (Avro.RecordSchema)AvroSchema.Parse(schemaText);
+            var schema = new Schema
+            {
+                SchemaType = SchemaType.Avro,
+                SchemaString = schemaText,
+                RuleSet = new SchemaRuleSet
+                {
+                    DomainRules = [rule],
+                    HasFixedRuleCollections = true
+                }
+            };
+            var transformer = AvroTaggedFieldTransformer.Get(avroSchema, schema);
+
+            await Assert.That(() => transformer.Transform(
+                    payload,
+                    CreateHandlerContext(rule, schema),
+                    Array.Empty<byte>(),
+                    static (_, _, replacement) => replacement))
+                .Throws<SchemaRegistryRuleException>()
+                .WithMessageContaining($"tagged {expectedType} is unsupported");
+        }
     }
 
     [Test]

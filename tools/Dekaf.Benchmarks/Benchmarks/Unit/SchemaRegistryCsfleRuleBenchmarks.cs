@@ -17,6 +17,7 @@ public class SchemaRegistryCsfleRuleBenchmarks
     private static readonly byte[] JsonPayload = "{\"name\":\"Ada\",\"ssn\":\"123-45-6789\"}"u8.ToArray();
     private static readonly byte[] AvroPayload =
     [
+        0x54,
         0x06, 0x41, 0x64, 0x61,
         0x16, 0x31, 0x32, 0x33, 0x2D, 0x34, 0x35, 0x2D, 0x36, 0x37, 0x38, 0x39
     ];
@@ -25,6 +26,7 @@ public class SchemaRegistryCsfleRuleBenchmarks
             "type": "record",
             "name": "BenchmarkRecord",
             "fields": [
+                { "name": "id", "type": "int" },
                 { "name": "name", "type": "string" },
                 { "name": "ssn", "type": "string", "confluent:tags": ["PII"] }
             ]
