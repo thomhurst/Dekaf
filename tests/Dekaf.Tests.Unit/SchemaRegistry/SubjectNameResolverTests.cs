@@ -2,6 +2,7 @@ using Dekaf.SchemaRegistry;
 
 namespace Dekaf.Tests.Unit.SchemaRegistry;
 
+[NotInParallel]
 public sealed class SubjectNameResolverTests
 {
     [Test]
