@@ -145,6 +145,39 @@ public class AzureKeyVaultKmsProviderTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task AzureSdkCancellation_WithoutCallerCancellation_IsSanitized(bool unwrap)
+    {
+        var client = CreateClient(KeyUri);
+        var cancellation = new OperationCanceledException("internal timeout: sensitive");
+        client.WrapKeyAsync(Arg.Any<KeyWrapAlgorithm>(), Arg.Any<byte[]>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromException<WrapResult>(cancellation));
+        client.UnwrapKeyAsync(Arg.Any<KeyWrapAlgorithm>(), Arg.Any<byte[]>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromException<UnwrapResult>(cancellation));
+        var factory = new RecordingFactory(_ => client);
+        var provider = new AzureKeyVaultKmsProvider(factory);
+        var material = unwrap
+            ? Encoding.ASCII.GetBytes($"azure:v1:{KeyVersion}:wrapped")
+            : new byte[] { 1 };
+        SchemaRegistryKmsException? exception = null;
+
+        for (var pass = 0; pass < 2; pass++)
+        {
+            exception = unwrap
+                ? await Assert.ThrowsAsync<SchemaRegistryKmsException>(
+                    () => provider.UnwrapKeyAsync(material, CreateKeyReference()).AsTask())
+                : await Assert.ThrowsAsync<SchemaRegistryKmsException>(
+                    () => provider.WrapKeyAsync(material, CreateKeyReference()).AsTask());
+        }
+
+        await Assert.That(exception!.Message)
+            .IsEqualTo(unwrap ? "Azure Key Vault unwrap failed." : "Azure Key Vault wrap failed.");
+        await Assert.That(exception.ToString()).DoesNotContain("sensitive");
+        await Assert.That(factory.CreateCount).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task MalformedVersionHeader_IsRejectedBeforeAzureCall()
     {
         var client = CreateClient(KeyUri);
@@ -241,6 +274,30 @@ public class AzureKeyVaultKmsProviderTests
 
         await Assert.That(provider.EmbeddedVersionClientCount)
             .IsLessThanOrEqualTo(AzureKeyVaultKmsProvider.EmbeddedVersionClientCapacity);
+    }
+
+    [Test]
+    public async Task SameVersionAcrossKeys_RetainsBothEmbeddedVersionClients()
+    {
+        const string otherKeyUri = "https://orders.vault.azure.net/keys/kek";
+        var client = CreateClient(VersionedKeyUri);
+        client.UnwrapKeyAsync(Arg.Any<KeyWrapAlgorithm>(), Arg.Any<byte[]>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromException<UnwrapResult>(new RequestFailedException(503, "Unavailable")));
+        var factory = new RecordingFactory(_ => client);
+        var provider = new AzureKeyVaultKmsProvider(factory);
+        var ciphertext = Encoding.ASCII.GetBytes($"azure:v1:{KeyVersion}:wrapped");
+
+        for (var pass = 0; pass < 2; pass++)
+        {
+            await Assert.That(async () => await provider.UnwrapKeyAsync(ciphertext, CreateKeyReference()))
+                .Throws<SchemaRegistryKmsException>();
+            await Assert.That(async () => await provider.UnwrapKeyAsync(
+                    ciphertext,
+                    CreateKeyReference(otherKeyUri)))
+                .Throws<SchemaRegistryKmsException>();
+        }
+
+        await Assert.That(factory.CreateCount).IsEqualTo(2);
     }
 
     [Test]

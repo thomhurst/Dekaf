@@ -52,6 +52,9 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
 
     private const int AzureKeyVersionLength = 32;
     internal const int EmbeddedVersionClientCapacity = 64;
+    private const int EmbeddedVersionClientAssociativity = 4;
+    private const int EmbeddedVersionClientSetCount =
+        EmbeddedVersionClientCapacity / EmbeddedVersionClientAssociativity;
     private const byte HeaderSeparator = (byte)':';
 
     private static ReadOnlySpan<byte> VersionHeaderPrefix => "azure:v1:"u8;
@@ -247,25 +250,52 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
         string version,
         Lazy<CryptographyClient> client)
     {
-        var slot = GetEmbeddedVersionClientSlot(version);
+        var hash = GetEmbeddedVersionClientHash(keyId, version);
+        var setStart = GetEmbeddedVersionClientSetStart(hash);
         VersionClientEntry? candidate = null;
         while (true)
         {
-            var current = Volatile.Read(ref _embeddedVersionClientSlots[slot]);
-            if (current is not null && ReferenceEquals(current.Client, client))
-                return;
+            var emptySlot = -1;
+            for (var offset = 0; offset < EmbeddedVersionClientAssociativity; offset++)
+            {
+                var slot = setStart + offset;
+                var current = Volatile.Read(ref _embeddedVersionClientSlots[slot]);
+                if (current is not null && ReferenceEquals(current.Client, client))
+                    return;
+
+                if (current is null && emptySlot < 0)
+                    emptySlot = slot;
+            }
 
             candidate ??= new VersionClientEntry(keyId, client);
-            var published = Interlocked.CompareExchange(
-                ref _embeddedVersionClientSlots[slot],
-                candidate,
-                current);
-            if (ReferenceEquals(published, current))
+            if (emptySlot >= 0)
             {
-                if (current is not null)
+                var occupied = Interlocked.CompareExchange(
+                    ref _embeddedVersionClientSlots[emptySlot],
+                    candidate,
+                    null);
+                if (occupied is null)
+                    return;
+
+                continue;
+            }
+
+            var evictionSlot = setStart
+                + (int)(((uint)hash >> 16) & (EmbeddedVersionClientAssociativity - 1));
+            var evicted = Volatile.Read(ref _embeddedVersionClientSlots[evictionSlot]);
+            if (evicted is not null && ReferenceEquals(evicted.Client, client))
+                return;
+
+            var published = Interlocked.CompareExchange(
+                ref _embeddedVersionClientSlots[evictionSlot],
+                candidate,
+                evicted);
+            if (ReferenceEquals(published, evicted))
+            {
+                if (evicted is not null)
                 {
                     _embeddedVersionClients.TryRemove(
-                        KeyValuePair.Create(current.KeyId, current.Client));
+                        KeyValuePair.Create(evicted.KeyId, evicted.Client));
                 }
 
                 return;
@@ -279,14 +309,21 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
         Lazy<CryptographyClient> client)
     {
         _embeddedVersionClients.TryRemove(KeyValuePair.Create(keyId, client));
-        var slot = GetEmbeddedVersionClientSlot(version);
-        var current = Volatile.Read(ref _embeddedVersionClientSlots[slot]);
-        if (current is not null && ReferenceEquals(current.Client, client))
-            Interlocked.CompareExchange(ref _embeddedVersionClientSlots[slot], null, current);
+        var setStart = GetEmbeddedVersionClientSetStart(GetEmbeddedVersionClientHash(keyId, version));
+        for (var offset = 0; offset < EmbeddedVersionClientAssociativity; offset++)
+        {
+            var slot = setStart + offset;
+            var current = Volatile.Read(ref _embeddedVersionClientSlots[slot]);
+            if (current is not null && ReferenceEquals(current.Client, client))
+                Interlocked.CompareExchange(ref _embeddedVersionClientSlots[slot], null, current);
+        }
     }
 
-    private static int GetEmbeddedVersionClientSlot(string version) =>
-        (int)((uint)StringComparer.Ordinal.GetHashCode(version) & (EmbeddedVersionClientCapacity - 1));
+    private static int GetEmbeddedVersionClientHash(Uri keyId, string version) =>
+        HashCode.Combine(keyId, StringComparer.Ordinal.GetHashCode(version));
+
+    private static int GetEmbeddedVersionClientSetStart(int hash) =>
+        (int)((uint)hash & (EmbeddedVersionClientSetCount - 1)) * EmbeddedVersionClientAssociativity;
 
     internal int EmbeddedVersionClientCount => _embeddedVersionClients.Count;
 
@@ -486,12 +523,13 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
         or AuthenticationFailedException
         or CredentialUnavailableException
         or CryptographicException
-        or ArgumentException;
+        or ArgumentException
+        or OperationCanceledException;
 
     private static bool ShouldEvictFailedVersionClient(Exception exception) => exception switch
     {
         RequestFailedException { Status: 0 or 408 or 429 or >= 500 } => false,
-        AuthenticationFailedException or CredentialUnavailableException => false,
+        AuthenticationFailedException or CredentialUnavailableException or OperationCanceledException => false,
         _ => true
     };
 
