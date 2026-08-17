@@ -67,6 +67,7 @@ public sealed class VaultAppRoleTokenProvider : IVaultTokenProvider
     private readonly string _roleId;
     private readonly string _secretId;
     private readonly string _authMountPoint;
+    private readonly TimeProvider _timeProvider;
     private readonly ConcurrentDictionary<AuthScope, TokenState> _tokens = [];
 
     /// <summary>
@@ -81,8 +82,19 @@ public sealed class VaultAppRoleTokenProvider : IVaultTokenProvider
         string roleId,
         string secretId,
         string authMountPoint = "approle")
+        : this(httpClient, roleId, secretId, authMountPoint, TimeProvider.System)
+    {
+    }
+
+    internal VaultAppRoleTokenProvider(
+        HttpClient httpClient,
+        string roleId,
+        string secretId,
+        string authMountPoint,
+        TimeProvider timeProvider)
     {
         ArgumentNullException.ThrowIfNull(httpClient);
+        ArgumentNullException.ThrowIfNull(timeProvider);
         if (string.IsNullOrWhiteSpace(roleId))
             throw new ArgumentException("Vault AppRole role ID cannot be null or whitespace.", nameof(roleId));
         if (string.IsNullOrWhiteSpace(secretId))
@@ -92,6 +104,7 @@ public sealed class VaultAppRoleTokenProvider : IVaultTokenProvider
         _roleId = roleId;
         _secretId = secretId;
         _authMountPoint = VaultTransitHttpClient.NormalizeMountPoint(authMountPoint);
+        _timeProvider = timeProvider;
     }
 
     /// <inheritdoc />
@@ -107,7 +120,7 @@ public sealed class VaultAppRoleTokenProvider : IVaultTokenProvider
             VaultTransitHttpClient.NormalizeAddress(vaultAddress),
             VaultTransitHttpClient.NormalizeNamespace(vaultNamespace));
         var state = _tokens.GetOrAdd(scope, static _ => new TokenState());
-        return state.TryGetToken(DateTimeOffset.UtcNow, out var token)
+        return state.TryGetToken(_timeProvider.GetUtcNow(), out var token)
             ? new ValueTask<string>(token)
             : RefreshTokenAsync(scope, state, cancellationToken);
     }
@@ -120,7 +133,7 @@ public sealed class VaultAppRoleTokenProvider : IVaultTokenProvider
         await state.RefreshGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (state.TryGetToken(DateTimeOffset.UtcNow, out var cachedToken))
+            if (state.TryGetToken(_timeProvider.GetUtcNow(), out var cachedToken))
                 return cachedToken;
 
             var requestBytes = JsonSerializer.SerializeToUtf8Bytes(
@@ -137,6 +150,7 @@ public sealed class VaultAppRoleTokenProvider : IVaultTokenProvider
                 request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
                 VaultTransitHttpClient.AddNamespaceHeader(request, scope.VaultNamespace);
 
+                var loginStartedAt = _timeProvider.GetUtcNow();
                 using var response = await _httpClient
                     .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
                     .ConfigureAwait(false);
@@ -150,7 +164,7 @@ public sealed class VaultAppRoleTokenProvider : IVaultTokenProvider
                     var refreshAfterSeconds = leaseDurationSeconds > 60
                         ? leaseDurationSeconds - 30
                         : Math.Max(1, leaseDurationSeconds / 2);
-                    state.SetToken(token, DateTimeOffset.UtcNow.AddSeconds(refreshAfterSeconds));
+                    state.SetToken(token, loginStartedAt.AddSeconds(refreshAfterSeconds));
                     return token;
                 }
                 finally

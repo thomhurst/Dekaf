@@ -11,4 +11,8 @@
     <ProjectReference Include="..\Dekaf.SchemaRegistry\Dekaf.SchemaRegistry.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="Dekaf.Tests.Unit" />
+  </ItemGroup>
+
 </Project>

@@ -328,7 +328,7 @@ var tokenProvider = new VaultStaticTokenProvider(
 var transitClient = new VaultTransitHttpClient(httpClient, tokenProvider);
 var vaultKms = new VaultKmsProvider(
     transitClient,
-    mountPoint: "transit",
+    vaultAddress: new Uri("https://vault.example:8200"),
     vaultNamespace: Environment.GetEnvironmentVariable("VAULT_NAMESPACE"));
 var csfle = new SchemaRegistryCsfleRuleHandler(schemaRegistry, [vaultKms]);
 ```
@@ -344,17 +344,21 @@ var tokenProvider = new VaultAppRoleTokenProvider(
     authMountPoint: "approle");
 ```
 
-Use KMS type `hcvault` and a Confluent-compatible key identifier containing the Vault address and
-Transit key name, for example `hcvault://https://vault.example:8200/orders-kek`. The URL must contain
-exactly one path segment: the address is `https://vault.example:8200`, while `orders-kek` is the key.
-Configure a non-default Transit mount on `VaultKmsProvider`; the namespace is sent as
-`X-Vault-Namespace`.
+Use KMS type `hcvault` and a Confluent-compatible key identifier in
+`https://<vault-address>/<mount>/keys/<key-name>` format, for example
+`https://vault.example:8200/transit/keys/orders-kek`. The provider extracts `transit` as the mount
+and `orders-kek` as the key name. For nested mounts, use a path such as
+`https://vault.example:8200/team/transit/keys/orders-kek`. The key identifier's scheme, host, and
+port must exactly match the locally configured `vaultAddress`; this prevents a Schema Registry KEK
+from redirecting Vault credentials to another server. The namespace is sent as `X-Vault-Namespace`.
 
 Grant `update` capability on `<mount>/encrypt/<key>` and `<mount>/decrypt/<key>`. The supplied
 `HttpClient` is caller-owned; `VaultTransitHttpClient`, `VaultKmsProvider`, and both token providers
 are safe for concurrent use. Cancellation reaches AppRole login and Transit HTTP requests. Errors
 omit Vault response bodies, key material, ciphertext, role IDs, secret IDs, and tokens. Serialized
-request/response buffers are zeroed before release.
+request/response buffers are zeroed before release. Credential and returned-token strings remain
+managed .NET strings and cannot be zeroed; source them from a secret-delivery mechanism and limit
+their lifetime accordingly.
 
 ## Consumer
 

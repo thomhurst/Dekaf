@@ -10,7 +10,7 @@ Dekaf.SchemaRegistry.Kms.Vault.VaultAppRoleTokenProvider.VaultAppRoleTokenProvid
 Dekaf.SchemaRegistry.Kms.Vault.VaultKmsProvider
 Dekaf.SchemaRegistry.Kms.Vault.VaultKmsProvider.Type.get -> string!
 Dekaf.SchemaRegistry.Kms.Vault.VaultKmsProvider.UnwrapKeyAsync(System.ReadOnlyMemory<byte> encryptedKeyMaterial, Dekaf.SchemaRegistry.SchemaRegistryKmsKeyReference! keyReference, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<byte[]!>
-Dekaf.SchemaRegistry.Kms.Vault.VaultKmsProvider.VaultKmsProvider(Dekaf.SchemaRegistry.Kms.Vault.IVaultTransitClient! client, string! mountPoint = "transit", string? vaultNamespace = null, string! type = "hcvault") -> void
+Dekaf.SchemaRegistry.Kms.Vault.VaultKmsProvider.VaultKmsProvider(Dekaf.SchemaRegistry.Kms.Vault.IVaultTransitClient! client, System.Uri! vaultAddress, string? vaultNamespace = null, string! type = "hcvault") -> void
 Dekaf.SchemaRegistry.Kms.Vault.VaultKmsProvider.WrapKeyAsync(System.ReadOnlyMemory<byte> keyMaterial, Dekaf.SchemaRegistry.SchemaRegistryKmsKeyReference! keyReference, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<byte[]!>
 Dekaf.SchemaRegistry.Kms.Vault.VaultStaticTokenProvider
 Dekaf.SchemaRegistry.Kms.Vault.VaultStaticTokenProvider.GetTokenAsync(System.Uri! vaultAddress, string? vaultNamespace, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<string!>
@@ -19,6 +19,4 @@ Dekaf.SchemaRegistry.Kms.Vault.VaultTransitHttpClient
 Dekaf.SchemaRegistry.Kms.Vault.VaultTransitHttpClient.DecryptAsync(System.Uri! vaultAddress, string! mountPoint, string! keyName, string? vaultNamespace, System.ReadOnlyMemory<byte> ciphertext, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<byte[]!>
 Dekaf.SchemaRegistry.Kms.Vault.VaultTransitHttpClient.EncryptAsync(System.Uri! vaultAddress, string! mountPoint, string! keyName, string? vaultNamespace, System.ReadOnlyMemory<byte> plaintext, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<byte[]!>
 Dekaf.SchemaRegistry.Kms.Vault.VaultTransitHttpClient.VaultTransitHttpClient(System.Net.Http.HttpClient! httpClient, Dekaf.SchemaRegistry.Kms.Vault.IVaultTokenProvider! tokenProvider) -> void
-const Dekaf.SchemaRegistry.Kms.Vault.VaultKmsProvider.DefaultMountPoint = "transit" -> string!
 const Dekaf.SchemaRegistry.Kms.Vault.VaultKmsProvider.DefaultType = "hcvault" -> string!
-const Dekaf.SchemaRegistry.Kms.Vault.VaultKmsProvider.KeyUriPrefix = "hcvault://" -> string!

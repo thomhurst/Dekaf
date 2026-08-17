@@ -8,7 +8,9 @@ namespace Dekaf.Tests.Unit.SchemaRegistry;
 
 public class VaultKmsProviderTests
 {
-    private const string KeyReference = "hcvault://https://vault.example:8200/orders-kek";
+    private const string KeyReference = "https://vault.example:8200/transit/keys/orders-kek";
+    private const string NestedMountKeyReference =
+        "https://vault.example:8200/team/transit/keys/orders-kek";
     private static readonly Uri VaultAddress = new("https://vault.example:8200/");
     private static readonly string[] ExpectedTokenHeader = ["token"];
     private static readonly string[] ExpectedNamespaceHeader = ["finance"];
@@ -33,11 +35,12 @@ public class VaultKmsProviderTests
                 Arg.Any<ReadOnlyMemory<byte>>(),
                 Arg.Any<CancellationToken>())
             .Returns(ValueTask.FromResult(new byte[] { 1, 2, 3 }));
-        var provider = new VaultKmsProvider(client, "team/transit", "finance");
+        var provider = new VaultKmsProvider(client, VaultAddress, "finance");
         var plaintext = new byte[] { 1, 2, 3 };
 
-        var encrypted = await provider.WrapKeyAsync(plaintext, CreateKeyReference());
-        var decrypted = await provider.UnwrapKeyAsync(encrypted, CreateKeyReference());
+        var keyReference = CreateKeyReference(NestedMountKeyReference);
+        var encrypted = await provider.WrapKeyAsync(plaintext, keyReference);
+        var decrypted = await provider.UnwrapKeyAsync(encrypted, keyReference);
 
         await Assert.That(encrypted).IsEquivalentTo(Encoding.UTF8.GetBytes("vault:v1:wrapped"));
         await Assert.That(decrypted).IsEquivalentTo(plaintext);
@@ -73,7 +76,7 @@ public class VaultKmsProviderTests
                 Arg.Any<ReadOnlyMemory<byte>>(),
                 Arg.Any<CancellationToken>())
             .Returns(ValueTask.FromException<byte[]>(failure));
-        var provider = new VaultKmsProvider(client);
+        var provider = new VaultKmsProvider(client, VaultAddress);
 
         var exception = await Assert.ThrowsAsync<SchemaRegistryKmsException>(
             () => provider.UnwrapKeyAsync(Encoding.UTF8.GetBytes("vault:v1:bad"), CreateKeyReference()).AsTask());
@@ -96,7 +99,7 @@ public class VaultKmsProviderTests
                 Arg.Any<ReadOnlyMemory<byte>>(),
                 Arg.Any<CancellationToken>())
             .Returns(call => new ValueTask<byte[]>(WaitForCancellationAsync(call.Arg<CancellationToken>())));
-        var provider = new VaultKmsProvider(client);
+        var provider = new VaultKmsProvider(client, VaultAddress);
         using var cancellation = new CancellationTokenSource();
         var operation = provider.WrapKeyAsync(new byte[] { 1 }, CreateKeyReference(), cancellation.Token).AsTask();
 
@@ -105,7 +108,7 @@ public class VaultKmsProviderTests
         await Assert.That(async () => await operation).Throws<OperationCanceledException>();
         await client.Received(1).EncryptAsync(
             VaultAddress,
-            VaultKmsProvider.DefaultMountPoint,
+            "transit",
             "orders-kek",
             null,
             Arg.Any<ReadOnlyMemory<byte>>(),
@@ -124,7 +127,7 @@ public class VaultKmsProviderTests
                 Arg.Any<ReadOnlyMemory<byte>>(),
                 Arg.Any<CancellationToken>())
             .Returns(call => new ValueTask<byte[]>(EchoAfterYieldAsync(call.Arg<ReadOnlyMemory<byte>>())));
-        var provider = new VaultKmsProvider(client);
+        var provider = new VaultKmsProvider(client, VaultAddress);
 
         var operations = Enumerable.Range(1, 32)
             .Select(value => provider.WrapKeyAsync(new byte[] { (byte)value }, CreateKeyReference()).AsTask())
@@ -135,7 +138,7 @@ public class VaultKmsProviderTests
             await Assert.That(results[index]).IsEquivalentTo(new byte[] { (byte)(index + 1) });
         await client.Received(32).EncryptAsync(
             VaultAddress,
-            VaultKmsProvider.DefaultMountPoint,
+            "transit",
             "orders-kek",
             null,
             Arg.Any<ReadOnlyMemory<byte>>(),
@@ -143,14 +146,29 @@ public class VaultKmsProviderTests
     }
 
     [Test]
-    [Arguments("https://vault.example:8200/orders-kek")]
-    [Arguments("hcvault://ftp://vault.example/orders-kek")]
-    [Arguments("hcvault://https://vault.example/transit/orders-kek")]
-    [Arguments("hcvault://https://user@vault.example/orders-kek")]
+    public async Task ServerProvidedAuthority_IsRejectedBeforeVaultCall()
+    {
+        var client = Substitute.For<IVaultTransitClient>();
+        var provider = new VaultKmsProvider(client, VaultAddress);
+
+        await Assert.That(async () => await provider.WrapKeyAsync(
+                new byte[] { 1 },
+                CreateKeyReference("https://attacker.example:8200/transit/keys/orders-kek")))
+            .Throws<SchemaRegistryKmsException>();
+        await client.DidNotReceiveWithAnyArgs().EncryptAsync(
+            default!, default!, default!, default, default, default);
+    }
+
+    [Test]
+    [Arguments("hcvault://https://vault.example:8200/transit/keys/orders-kek")]
+    [Arguments("ftp://vault.example/transit/keys/orders-kek")]
+    [Arguments("https://vault.example/transit/orders-kek")]
+    [Arguments("https://user@vault.example/transit/keys/orders-kek")]
+    [Arguments("https://vault.example:8200/transit/keys/orders-kek/")]
     public async Task InvalidKeyReference_IsRejectedBeforeVaultCall(string keyId)
     {
         var client = Substitute.For<IVaultTransitClient>();
-        var provider = new VaultKmsProvider(client);
+        var provider = new VaultKmsProvider(client, VaultAddress);
 
         await Assert.That(async () => await provider.WrapKeyAsync(new byte[] { 1 }, CreateKeyReference(keyId)))
             .Throws<SchemaRegistryKmsException>();
@@ -245,6 +263,32 @@ public class VaultKmsProviderTests
         await Assert.That(loginCount).IsEqualTo(1);
     }
 
+    [Test]
+    public async Task AppRoleProvider_BasesExpiryOnLoginStartTime()
+    {
+        var loginCount = 0;
+        var timeProvider = new TestTimeProvider(new DateTimeOffset(2026, 8, 17, 0, 0, 0, TimeSpan.Zero));
+        var handler = new RecordingHandler((_, _) =>
+        {
+            Interlocked.Increment(ref loginCount);
+            timeProvider.Advance(TimeSpan.FromSeconds(31));
+            return Task.FromResult(JsonResponse(
+                "{\"auth\":{\"client_token\":\"app-token\",\"lease_duration\":60}}"));
+        });
+        using var httpClient = new HttpClient(handler);
+        var provider = new VaultAppRoleTokenProvider(
+            httpClient,
+            "role",
+            "secret",
+            "approle",
+            timeProvider);
+
+        _ = await provider.GetTokenAsync(VaultAddress, null);
+        _ = await provider.GetTokenAsync(VaultAddress, null);
+
+        await Assert.That(loginCount).IsEqualTo(2);
+    }
+
     private static SchemaRegistryKmsKeyReference CreateKeyReference(string keyId = KeyReference) => new()
     {
         KmsType = VaultKmsProvider.DefaultType,
@@ -277,5 +321,14 @@ public class VaultKmsProviderTests
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken) => send(request, cancellationToken);
+    }
+
+    private sealed class TestTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        private DateTimeOffset _utcNow = utcNow;
+
+        public override DateTimeOffset GetUtcNow() => _utcNow;
+
+        internal void Advance(TimeSpan duration) => _utcNow += duration;
     }
 }

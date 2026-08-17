@@ -40,30 +40,20 @@ public sealed class VaultKmsProvider : ISchemaRegistryKmsProvider
     /// </summary>
     public const string DefaultType = "hcvault";
 
-    /// <summary>
-    /// URI prefix for Vault key references.
-    /// </summary>
-    public const string KeyUriPrefix = "hcvault://";
-
-    /// <summary>
-    /// Default Vault Transit secrets-engine mount point.
-    /// </summary>
-    public const string DefaultMountPoint = "transit";
-
     private readonly IVaultTransitClient _client;
-    private readonly string _mountPoint;
+    private readonly Uri _vaultAddress;
     private readonly string? _vaultNamespace;
 
     /// <summary>
     /// Creates a provider using an injected Vault Transit client.
     /// </summary>
     /// <param name="client">Thread-safe Vault Transit client.</param>
-    /// <param name="mountPoint">Transit secrets-engine mount point.</param>
+    /// <param name="vaultAddress">Allowed Vault server address.</param>
     /// <param name="vaultNamespace">Optional Vault Enterprise namespace.</param>
     /// <param name="type">Schema Registry KMS provider type.</param>
     public VaultKmsProvider(
         IVaultTransitClient client,
-        string mountPoint = DefaultMountPoint,
+        Uri vaultAddress,
         string? vaultNamespace = null,
         string type = DefaultType)
     {
@@ -72,7 +62,7 @@ public sealed class VaultKmsProvider : ISchemaRegistryKmsProvider
             throw new ArgumentException("KMS provider type cannot be null or whitespace.", nameof(type));
 
         _client = client;
-        _mountPoint = VaultTransitHttpClient.NormalizeMountPoint(mountPoint);
+        _vaultAddress = VaultTransitHttpClient.NormalizeAddress(vaultAddress);
         _vaultNamespace = VaultTransitHttpClient.NormalizeNamespace(vaultNamespace);
         Type = type;
     }
@@ -94,8 +84,8 @@ public sealed class VaultKmsProvider : ISchemaRegistryKmsProvider
         try
         {
             var ciphertext = await _client.EncryptAsync(
-                    key.VaultAddress,
-                    _mountPoint,
+                    _vaultAddress,
+                    key.MountPoint,
                     key.KeyName,
                     _vaultNamespace,
                     keyMaterial,
@@ -134,8 +124,8 @@ public sealed class VaultKmsProvider : ISchemaRegistryKmsProvider
         try
         {
             var plaintext = await _client.DecryptAsync(
-                    key.VaultAddress,
-                    _mountPoint,
+                    _vaultAddress,
+                    key.MountPoint,
                     key.KeyName,
                     _vaultNamespace,
                     encryptedKeyMaterial,
@@ -166,38 +156,68 @@ public sealed class VaultKmsProvider : ISchemaRegistryKmsProvider
                 $"Vault KMS provider '{Type}' cannot resolve KMS type '{keyReference.KmsType}'.");
         }
 
-        var keyId = keyReference.KmsKeyId;
-        if (string.IsNullOrWhiteSpace(keyId)
-            || !keyId.StartsWith(KeyUriPrefix, StringComparison.OrdinalIgnoreCase))
-        {
-            throw new SchemaRegistryKmsException(
-                $"Vault key identifier must start with '{KeyUriPrefix}'.");
-        }
-
-        var absoluteKeyUrl = keyId[KeyUriPrefix.Length..];
-        if (!Uri.TryCreate(absoluteKeyUrl, UriKind.Absolute, out var keyUri)
+        if (string.IsNullOrWhiteSpace(keyReference.KmsKeyId)
+            || !Uri.TryCreate(keyReference.KmsKeyId, UriKind.Absolute, out var keyUri)
             || keyUri.Scheme is not ("http" or "https")
             || keyUri.UserInfo.Length != 0
             || keyUri.Query.Length != 0
             || keyUri.Fragment.Length != 0)
         {
             throw new SchemaRegistryKmsException(
-                "Vault key identifier must contain an absolute HTTP or HTTPS Vault key URL.");
+                "Vault key identifier must be an absolute HTTP or HTTPS Vault key URL.");
         }
 
-        var segments = keyUri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
-        if (segments.Length != 1)
+        var keyAddress = VaultTransitHttpClient.NormalizeAddress(keyUri);
+        if (keyAddress != _vaultAddress)
         {
             throw new SchemaRegistryKmsException(
-                "Vault key URL must contain exactly one path segment naming the Transit key.");
+                "Vault key identifier authority does not match the configured Vault address.");
         }
 
-        var keyName = Uri.UnescapeDataString(segments[0]);
+        var escapedSegments = keyUri.AbsolutePath.Split('/');
+        if (escapedSegments.Length < 4
+            || escapedSegments[0].Length != 0
+            || escapedSegments.AsSpan(1).Contains(string.Empty))
+        {
+            throw new SchemaRegistryKmsException(
+                "Vault key identifier path must use '<mount>/keys/<key-name>'.");
+        }
+
+        var keyName = DecodePathSegment(escapedSegments[^1]);
         if (string.IsNullOrWhiteSpace(keyName) || keyName.Contains('/'))
             throw new SchemaRegistryKmsException("Vault Transit key name is invalid.");
 
-        var vaultAddress = new Uri(keyUri.GetLeftPart(UriPartial.Authority) + "/", UriKind.Absolute);
-        return new VaultKeyReference(vaultAddress, keyName);
+        if (!string.Equals(DecodePathSegment(escapedSegments[^2]), "keys", StringComparison.Ordinal))
+        {
+            throw new SchemaRegistryKmsException(
+                "Vault key identifier path must use '<mount>/keys/<key-name>'.");
+        }
+
+        var mountSegmentCount = escapedSegments.Length - 3;
+        var mountSegments = new string[mountSegmentCount];
+        for (var index = 0; index < mountSegments.Length; index++)
+            mountSegments[index] = DecodePathSegment(escapedSegments[index + 1]);
+
+        var mountPoint = string.Join('/', mountSegments);
+        try
+        {
+            mountPoint = VaultTransitHttpClient.NormalizeMountPoint(mountPoint);
+        }
+        catch (ArgumentException ex)
+        {
+            throw new SchemaRegistryKmsException("Vault Transit mount point is invalid.", ex);
+        }
+
+        return new VaultKeyReference(mountPoint, keyName);
+    }
+
+    private static string DecodePathSegment(string segment)
+    {
+        var decoded = Uri.UnescapeDataString(segment);
+        if (decoded.Contains('/'))
+            throw new SchemaRegistryKmsException("Vault key identifier contains an invalid path segment.");
+
+        return decoded;
     }
 
     private static byte[] RequireMaterial(byte[]? material, string operation)
@@ -219,5 +239,5 @@ public sealed class VaultKmsProvider : ISchemaRegistryKmsProvider
         or ArgumentException
         or OperationCanceledException;
 
-    private readonly record struct VaultKeyReference(Uri VaultAddress, string KeyName);
+    private readonly record struct VaultKeyReference(string MountPoint, string KeyName);
 }
