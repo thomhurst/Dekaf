@@ -107,6 +107,14 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
         DiagnosticSeverity.Error,
         isEnabledByDefault: true);
 
+    private static readonly DiagnosticDescriptor DuplicateFullName = new(
+        "DKAVRO012",
+        "Duplicate Avro full name",
+        "Types '{0}' and '{1}' both map to Avro full name '{2}'",
+        "Dekaf.Avro",
+        DiagnosticSeverity.Error,
+        isEnabledByDefault: true);
+
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
         var records = context.SyntaxProvider.ForAttributeWithMetadataName(
@@ -176,6 +184,8 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
         private readonly SourceProductionContext _context;
         private readonly Dictionary<INamedTypeSymbol, RecordModel> _records =
             new(SymbolEqualityComparer.Default);
+        private readonly Dictionary<string, INamedTypeSymbol> _recordsByFullName =
+            new(StringComparer.Ordinal);
         private readonly HashSet<INamedTypeSymbol> _building = new(SymbolEqualityComparer.Default);
 
         internal ModelBuilder(SourceProductionContext context) => _context = context;
@@ -211,6 +221,20 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             var fullName = string.IsNullOrEmpty(avroNamespace)
                 ? avroName
                 : avroNamespace + "." + avroName;
+            if (_recordsByFullName.TryGetValue(fullName, out var existingSymbol) &&
+                !SymbolEqualityComparer.Default.Equals(existingSymbol, symbol))
+            {
+                Error(
+                    DuplicateFullName,
+                    symbol.Locations.FirstOrDefault(),
+                    existingSymbol.ToDisplayString(),
+                    symbol.ToDisplayString(),
+                    fullName);
+                _building.Remove(symbol);
+                return null;
+            }
+            if (existingSymbol is null)
+                _recordsByFullName.Add(fullName, symbol);
 
             var members = new List<MemberModel>();
             foreach (var member in symbol.GetMembers())
@@ -1074,7 +1098,7 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                     Assign(code, target, "reader.ReadUuid()", indent);
                     break;
                 case TypeKindModel.Decimal:
-                    Assign(code, target, "global::Dekaf.SchemaRegistry.Avro.Poco.AvroDecimalCodec.Read(ref reader, " + type.Precision + ", " + type.Scale + ")", indent);
+                    Assign(code, target, "global::Dekaf.SchemaRegistry.Avro.Poco.AvroDecimalCodec.Read(ref reader, " + type.Precision + ", " + type.Scale + ", " + node + ")", indent);
                     break;
                 default:
                     throw new InvalidOperationException("Unsupported generated read type.");

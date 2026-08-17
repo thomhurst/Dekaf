@@ -15,3 +15,4 @@ DKAVRO008 | Dekaf.Avro | Error | Duplicate Avro field name or alias
 DKAVRO009 | Dekaf.Avro | Error | Ambiguous Avro union branches
 DKAVRO010 | Dekaf.Avro | Error | Invalid Avro record, namespace, field, or alias name
 DKAVRO011 | Dekaf.Avro | Error | POCO cannot be constructed by generated deserialization
+DKAVRO012 | Dekaf.Avro | Error | Distinct POCO records map to the same Avro full name

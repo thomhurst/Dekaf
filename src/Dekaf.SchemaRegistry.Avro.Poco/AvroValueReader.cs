@@ -167,7 +167,10 @@ public ref struct AvroValueReader
             case AvroPocoTypeKind.String:
             case AvroPocoTypeKind.Decimal:
             case AvroPocoTypeKind.Uuid:
-                SkipBytes();
+                if (node.FixedSize > 0)
+                    SkipFixed(node.FixedSize);
+                else
+                    SkipBytes();
                 return;
             case AvroPocoTypeKind.Record:
                 foreach (var field in node.Fields.Span)
@@ -192,6 +195,12 @@ public ref struct AvroValueReader
     private void SkipBytes()
     {
         var length = ReadLength();
+        Ensure(length);
+        _position += length;
+    }
+
+    private void SkipFixed(int length)
+    {
         Ensure(length);
         _position += length;
     }

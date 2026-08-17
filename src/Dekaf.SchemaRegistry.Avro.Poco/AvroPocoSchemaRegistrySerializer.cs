@@ -1,7 +1,9 @@
 using System.Buffers;
 using System.Buffers.Binary;
+using Avro;
 using Dekaf.SchemaRegistry.Avro;
 using Dekaf.Serialization;
+using AvroSchema = Avro.Schema;
 using RegistrySchema = Dekaf.SchemaRegistry.Schema;
 
 namespace Dekaf.SchemaRegistry.Avro.Poco;
@@ -272,7 +274,7 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
                     "latest",
                     cancellationToken)
                 .ConfigureAwait(false);
-            return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(registered.Id, registered.Schema);
+            return ValidateLatestSchema(registered);
         }
 
         if (_config.AutoRegisterSchemas)
@@ -293,12 +295,37 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
             return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(schemaId, registeredSchema);
         }
 
-        var existing = await _schemaRegistry.GetSchemaBySubjectAsync(
+        var existing = await _schemaRegistry.LookupSchemaAsync(
                 subject,
-                "latest",
+                schema,
+                ignoreDeletedSchemas: true,
+                normalize: _config.NormalizeSchemas,
                 cancellationToken)
             .ConfigureAwait(false);
         return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(existing.Id, existing.Schema);
+    }
+
+    private static SubjectSchemaIdCache.SubjectSchemaIdCacheValue ValidateLatestSchema(
+        RegisteredSchema registered)
+    {
+        if (registered.Schema.SchemaType != SchemaType.Avro ||
+            !string.Equals(
+                SchemaNormalization.ToParsingForm(AvroSchema.Parse(registered.Schema.SchemaString)),
+                GeneratedSchema.ParsingForm,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Latest schema version {registered.Version} for subject '{registered.Subject}' does not match " +
+                $"generated POCO schema '{TCodec.FullName}'.");
+        }
+
+        return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(registered.Id, registered.Schema);
+    }
+
+    private static class GeneratedSchema
+    {
+        internal static readonly string ParsingForm =
+            SchemaNormalization.ToParsingForm(AvroSchema.Parse(TCodec.SchemaJson));
     }
 
     private string GetSubjectName(string topic, bool isKey) =>

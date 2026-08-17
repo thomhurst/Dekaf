@@ -71,5 +71,7 @@ public sealed class AvroPocoReadNode
     /// <summary>Generated reader-union branch selected for this writer node.</summary>
     public int ReaderUnionBranchIndex { get; internal set; } = -1;
 
+    internal int FixedSize { get; init; }
+
     internal bool RequiresWriterUnionDispatch { get; init; }
 }

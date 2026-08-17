@@ -178,7 +178,10 @@ internal static class AvroPocoReaderPlanBuilder
 
         if (reader.Kind != kind || kind == AvroPocoTypeKind.Decimal && !DecimalMatches(writer, reader))
             throw Incompatible(writer, reader);
-        return new AvroPocoReadNode(kind);
+        return new AvroPocoReadNode(kind)
+        {
+            FixedSize = writer.BaseSchema is FixedSchema fixedSchema ? fixedSchema.Size : 0
+        };
     }
 
     private static int FindCompatibleReaderIndex(
@@ -269,7 +272,10 @@ internal static class AvroPocoReaderPlanBuilder
                 "decimal" => AvroPocoTypeKind.Decimal,
                 _ => throw new InvalidOperationException(
                     $"Writer schema uses unsupported logical type '{logical.LogicalTypeName}'.")
-            });
+            })
+            {
+                FixedSize = logical.BaseSchema is FixedSchema fixedSchema ? fixedSchema.Size : 0
+            };
         }
 
         return writer switch
@@ -291,6 +297,10 @@ internal static class AvroPocoReaderPlanBuilder
                 Branches = BuildSkipBranches(union)
             },
             EnumSchema => new AvroPocoReadNode(AvroPocoTypeKind.Enum),
+            FixedSchema fixedSchema => new AvroPocoReadNode(AvroPocoTypeKind.Bytes)
+            {
+                FixedSize = fixedSchema.Size
+            },
             _ => new AvroPocoReadNode(ToKind(writer.Tag))
         };
     }

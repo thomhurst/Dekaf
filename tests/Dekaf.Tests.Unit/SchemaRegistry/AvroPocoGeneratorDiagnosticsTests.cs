@@ -31,7 +31,8 @@ public sealed class AvroPocoGeneratorDiagnosticsTests
             ("DKAVRO008", "[AvroRecord] public partial class Value { [AvroField(Name=\"same\")] public int A { get; set; } [AvroField(Name=\"same\")] public int B { get; set; } }"),
             ("DKAVRO009", "[AvroRecord] public partial class Value { [AvroField(UnionTypes=new[] { typeof(string), typeof(Guid) })] public object Data { get; set; } = null!; }"),
             ("DKAVRO010", "[AvroRecord(Name=\"not-valid\")] public partial class Value { public int Id { get; set; } }"),
-            ("DKAVRO011", "[AvroRecord] public abstract partial class Value { public int Id { get; set; } }")
+            ("DKAVRO011", "[AvroRecord] public abstract partial class Value { public int Id { get; set; } }"),
+            ("DKAVRO012", "[AvroRecord] public partial class Value { public First A { get; set; } = new(); public Second B { get; set; } = new(); } [AvroRecord(Name=\"Shared\", Namespace=\"Example\")] public partial class First { public int Id { get; set; } } [AvroRecord(Name=\"Shared\", Namespace=\"Example\")] public partial class Second { public string Name { get; set; } = string.Empty; }")
         ];
 
         foreach (var (id, declaration) in cases)

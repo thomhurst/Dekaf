@@ -295,6 +295,89 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    public async Task GeneratedCodec_ReadsFixedDecimalAndSkipsRemovedFixedField()
+    {
+        const string writerSchemaJson =
+            """
+            {"type":"record","name":"PocoFixedEvolution","namespace":"Dekaf.Tests","fields":[{"name":"Amount","type":{"type":{"type":"fixed","name":"AmountBytes","size":4},"logicalType":"decimal","precision":9,"scale":2}},{"name":"removed","type":{"type":"fixed","name":"RemovedBytes","size":3}},{"name":"Tail","type":"int"}]}
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        await using var writer = new AvroSchemaRegistrySerializer<GenericRecord>(registry);
+        await using var reader = PocoFixedEvolution.CreateAvroDeserializer(registry);
+        var writerSchema = (RecordSchema)Schema.Parse(writerSchemaJson);
+        var generic = new GenericRecord(writerSchema);
+        generic.Add("Amount", new AvroDecimal(new BigInteger(12_345), 2));
+        generic.Add("removed", new GenericFixed((FixedSchema)writerSchema.Fields[1].Schema, [1, 2, 3]));
+        generic.Add("Tail", 42);
+        var context = new SerializationContext
+        {
+            Topic = "poco-fixed-evolution",
+            Component = SerializationComponent.Value
+        };
+        var destination = new ArrayBufferWriter<byte>();
+
+        writer.Serialize(generic, ref destination, context);
+        var actual = reader.Deserialize(destination.WrittenMemory, context);
+
+        await Assert.That(actual.Amount).IsEqualTo(123.45m);
+        await Assert.That(actual.Tail).IsEqualTo(42);
+    }
+
+    [Test]
+    public async Task GeneratedCodec_RejectsDifferentLatestWriterSchema()
+    {
+        const string latestSchemaJson =
+            """
+            {"type":"record","name":"PocoWireRecord","namespace":"Dekaf.Tests","fields":[{"name":"Id","type":"int"},{"name":"Name","type":"string"},{"name":"Added","type":"int","default":0}]}
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        await registry.RegisterSchemaAsync(
+            "poco-latest-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = latestSchemaJson
+            });
+        await using var serializer = PocoWireRecord.CreateAvroSerializer(
+            registry,
+            new AvroSerializerConfig { UseLatestVersion = true });
+
+        await Assert.That(async () => await serializer.WarmupAsync("poco-latest"))
+            .Throws<InvalidOperationException>();
+    }
+
+    [Test]
+    public async Task GeneratedCodec_WithoutAutoRegistrationLooksUpGeneratedSchema()
+    {
+        const string differentSchemaJson =
+            """
+            {"type":"record","name":"PocoWireRecord","namespace":"Dekaf.Tests","fields":[{"name":"Id","type":"int"},{"name":"Name","type":"string"},{"name":"Added","type":"int","default":0}]}
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        var expectedId = await registry.RegisterSchemaAsync(
+            "poco-lookup-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = PocoWireRecord.AvroCodec.SchemaJson
+            });
+        await registry.RegisterSchemaAsync(
+            "poco-lookup-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = differentSchemaJson
+            });
+        await using var serializer = PocoWireRecord.CreateAvroSerializer(
+            registry,
+            new AvroSerializerConfig { AutoRegisterSchemas = false });
+
+        var actualId = await serializer.WarmupAsync("poco-lookup");
+
+        await Assert.That(actualId).IsEqualTo(expectedId);
+    }
+
+    [Test]
     public async Task GeneratedCodec_ReadsMultipleCollectionBlocks()
     {
         using var registry = new MockSchemaRegistryClient();
@@ -506,4 +589,14 @@ internal sealed partial class PocoWriterUnions
 internal sealed partial class PocoGrowingPayload
 {
     public required string Value { get; init; }
+}
+
+[AvroRecord(Name = "PocoFixedEvolution", Namespace = "Dekaf.Tests")]
+internal sealed partial class PocoFixedEvolution
+{
+    [AvroField(Order = 0, Precision = 9, Scale = 2)]
+    public decimal Amount { get; init; }
+
+    [AvroField(Order = 1)]
+    public int Tail { get; init; }
 }

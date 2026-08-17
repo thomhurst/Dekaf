@@ -65,6 +65,25 @@ public static class AvroDecimalCodec
     {
         Validate(precision, scale);
         var encoded = reader.ReadBytesSpan();
+        return Decode(encoded, precision, scale);
+    }
+
+    /// <summary>Reads a decimal using the cached writer node to distinguish bytes from fixed encoding.</summary>
+    public static decimal Read(
+        ref AvroValueReader reader,
+        int precision,
+        int scale,
+        AvroPocoReadNode writerType)
+    {
+        Validate(precision, scale);
+        var encoded = writerType.FixedSize > 0
+            ? reader.ReadFixed(writerType.FixedSize)
+            : reader.ReadBytesSpan();
+        return Decode(encoded, precision, scale);
+    }
+
+    private static decimal Decode(ReadOnlySpan<byte> encoded, int precision, int scale)
+    {
         if (encoded.IsEmpty)
             throw new InvalidDataException("Avro decimal byte sequence cannot be empty.");
 
