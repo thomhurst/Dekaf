@@ -16,6 +16,9 @@ dotnet add package Dekaf.SchemaRegistry
 # For Avro serialization
 dotnet add package Dekaf.SchemaRegistry.Avro
 
+# For source-generated POCO Avro serialization
+dotnet add package Dekaf.SchemaRegistry.Avro.Poco
+
 # For Protobuf serialization
 dotnet add package Dekaf.SchemaRegistry.Protobuf
 
@@ -75,6 +78,62 @@ fail instead of silently boxing each element. Custom logical branches in unions 
 sealed CLR type and have at most one value-dependent candidate for that type. Assignable or
 multi-candidate custom logical dispatch is rejected during writer construction because it would
 require a per-message candidate scan.
+
+### With source-generated POCOs
+
+Install `Dekaf.SchemaRegistry.Avro.Poco` when you want plain CLR models without Apache Avro's
+`ISpecificRecord` implementation. Opt in with `[AvroRecord]` on a top-level `partial` class,
+record, or struct. The package's source generator emits the schema and strongly typed codec at
+build time; serialization uses constrained static dispatch with no reflection, boxing, runtime
+schema walk, or codec lookup.
+
+```csharp
+using Dekaf.SchemaRegistry;
+using Dekaf.SchemaRegistry.Avro.Poco;
+
+[AvroRecord(Name = "Order", Namespace = "example.orders")]
+public sealed partial class Order
+{
+    [AvroField(Order = 0)]
+    public required string Id { get; init; }
+
+    [AvroField(Order = 1, Precision = 12, Scale = 2)]
+    public decimal Total { get; init; }
+
+    [AvroField(Order = 2, DefaultJson = "null")]
+    public string? Note { get; init; }
+}
+
+using var registry = new SchemaRegistryClient(new SchemaRegistryConfig
+{
+    Url = "http://localhost:8081"
+});
+
+await using var producer = await Kafka.CreateProducer<string, Order>()
+    .WithBootstrapServers("localhost:9092")
+    .UseAvroPocoSchemaRegistry(registry)
+    .BuildAsync();
+```
+
+Supported generated shapes are primitives, nullable members, enums, arrays, `List<T>`,
+`Dictionary<string,T>`, nested `[AvroRecord]` types, and explicit unions configured with
+`UnionTypes`. Logical mappings are `DateOnly` → `date`, `TimeOnly`/`TimeSpan` → `time-micros`,
+`DateTime`/`DateTimeOffset` → `timestamp-micros`, `Guid` → `uuid`, and `decimal` → `decimal`.
+Decimal members require `Precision` from 1 through 29 and `Scale` from 0 through the smaller of
+28 and `Precision`.
+
+Use `Name`, `Aliases`, and `DefaultJson` for schema evolution. Defaults must match the first Avro
+union branch; nullable fields therefore use `DefaultJson = "null"`. Current generated defaults
+support null, primitive, string, bytes, and enum values. Invalid shapes, cycles, duplicate
+names/orders, ambiguous unions, and incompatible defaults fail compilation with `DKAVRO` diagnostics.
+
+Call `WarmupAsync` before measuring or entering a latency-sensitive path. After warmup,
+serialization is `0 B` per message for supported shapes. Deserialization allocates only the
+returned class/record and declared arrays, lists, dictionaries, strings, or byte arrays; cached
+schema-resolution plans add no per-message intermediate object graph. Rules remain opt-in and can
+allocate according to the configured rule executor. Generated and standard collection writers use
+one Avro block, allowing exact returned collection capacity. Valid external multi-block collections
+are also accepted and may grow their returned backing storage as later blocks arrive.
 
 ## Protobuf Serialization
 

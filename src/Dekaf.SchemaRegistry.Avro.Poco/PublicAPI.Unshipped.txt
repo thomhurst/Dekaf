@@ -1,0 +1,134 @@
+#nullable enable
+Dekaf.SchemaRegistry.Avro.Poco.AvroDecimalCodec
+Dekaf.SchemaRegistry.Avro.Poco.AvroFieldAttribute
+Dekaf.SchemaRegistry.Avro.Poco.AvroFieldAttribute.Aliases.get -> string![]?
+Dekaf.SchemaRegistry.Avro.Poco.AvroFieldAttribute.Aliases.init -> void
+Dekaf.SchemaRegistry.Avro.Poco.AvroFieldAttribute.AvroFieldAttribute() -> void
+Dekaf.SchemaRegistry.Avro.Poco.AvroFieldAttribute.DefaultJson.get -> string?
+Dekaf.SchemaRegistry.Avro.Poco.AvroFieldAttribute.DefaultJson.init -> void
+Dekaf.SchemaRegistry.Avro.Poco.AvroFieldAttribute.LogicalType.get -> string?
+Dekaf.SchemaRegistry.Avro.Poco.AvroFieldAttribute.LogicalType.init -> void
+Dekaf.SchemaRegistry.Avro.Poco.AvroFieldAttribute.Name.get -> string?
+Dekaf.SchemaRegistry.Avro.Poco.AvroFieldAttribute.Name.init -> void
+Dekaf.SchemaRegistry.Avro.Poco.AvroFieldAttribute.Order.get -> int
+Dekaf.SchemaRegistry.Avro.Poco.AvroFieldAttribute.Order.init -> void
+Dekaf.SchemaRegistry.Avro.Poco.AvroFieldAttribute.Precision.get -> int
+Dekaf.SchemaRegistry.Avro.Poco.AvroFieldAttribute.Precision.init -> void
+Dekaf.SchemaRegistry.Avro.Poco.AvroFieldAttribute.Scale.get -> int
+Dekaf.SchemaRegistry.Avro.Poco.AvroFieldAttribute.Scale.init -> void
+Dekaf.SchemaRegistry.Avro.Poco.AvroFieldAttribute.UnionTypes.get -> System.Type![]?
+Dekaf.SchemaRegistry.Avro.Poco.AvroFieldAttribute.UnionTypes.init -> void
+Dekaf.SchemaRegistry.Avro.Poco.AvroIgnoreAttribute
+Dekaf.SchemaRegistry.Avro.Poco.AvroIgnoreAttribute.AvroIgnoreAttribute() -> void
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoField
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoField.Aliases.get -> System.ReadOnlyMemory<string!>
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoField.AvroPocoField() -> void
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoField.AvroPocoField(string! name, System.ReadOnlyMemory<string!> aliases, string? defaultJson, Dekaf.SchemaRegistry.Avro.Poco.AvroPocoType! type) -> void
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoField.DefaultJson.get -> string?
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoField.Name.get -> string!
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoField.Type.get -> Dekaf.SchemaRegistry.Avro.Poco.AvroPocoType!
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoReaderPlan
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoReaderPlan.GetOperation(int writerFieldIndex) -> Dekaf.SchemaRegistry.Avro.Poco.AvroPocoReadOperation
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoReaderPlan.WriterFieldCount.get -> int
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoReadNode
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoReadNode.Branches.get -> System.ReadOnlyMemory<Dekaf.SchemaRegistry.Avro.Poco.AvroPocoReadNode!>
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoReadNode.EnumMap.get -> System.ReadOnlyMemory<int>
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoReadNode.Fields.get -> System.ReadOnlyMemory<Dekaf.SchemaRegistry.Avro.Poco.AvroPocoReadNode!>
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoReadNode.Item.get -> Dekaf.SchemaRegistry.Avro.Poco.AvroPocoReadNode?
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoReadNode.Kind.get -> Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoReadNode.ReaderUnionBranchIndex.get -> int
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoReadNode.RecordPlan.get -> Dekaf.SchemaRegistry.Avro.Poco.AvroPocoReaderPlan?
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoReadOperation
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoReadOperation.AvroPocoReadOperation() -> void
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoReadOperation.ReaderFieldIndex.get -> int
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoReadOperation.WriterType.get -> Dekaf.SchemaRegistry.Avro.Poco.AvroPocoReadNode!
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoSchemaRegistryDeserializer<T, TCodec>
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoSchemaRegistryDeserializer<T, TCodec>.AvroPocoSchemaRegistryDeserializer(Dekaf.SchemaRegistry.ISchemaRegistryClient! schemaRegistry, Dekaf.SchemaRegistry.Avro.AvroDeserializerConfig? config = null, bool ownsClient = false) -> void
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoSchemaRegistryDeserializer<T, TCodec>.Deserialize(System.ReadOnlyMemory<byte> data, Dekaf.Serialization.SerializationContext context) -> T
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoSchemaRegistryDeserializer<T, TCodec>.DisposeAsync() -> System.Threading.Tasks.ValueTask
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoSchemaRegistryDeserializer<T, TCodec>.WarmupAsync(int schemaId, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task!
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoSchemaRegistrySerializer<T, TCodec>
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoSchemaRegistrySerializer<T, TCodec>.AvroPocoSchemaRegistrySerializer(Dekaf.SchemaRegistry.ISchemaRegistryClient! schemaRegistry, Dekaf.SchemaRegistry.Avro.AvroSerializerConfig? config = null, bool ownsClient = false) -> void
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoSchemaRegistrySerializer<T, TCodec>.DisposeAsync() -> System.Threading.Tasks.ValueTask
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoSchemaRegistrySerializer<T, TCodec>.PrepareAsync(string! topic, bool isKey = false, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.SchemaRegistry.ResolvedSchemaContext>
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoSchemaRegistrySerializer<T, TCodec>.PrepareAsync(T value, Dekaf.Serialization.SerializationContext context, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoSchemaRegistrySerializer<T, TCodec>.Serialize<TWriter>(T value, ref TWriter destination, Dekaf.Serialization.SerializationContext context) -> void
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoSchemaRegistrySerializer<T, TCodec>.WarmupAsync(string! topic, bool isKey = false, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<int>!
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoType
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoType.AvroPocoType(Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind kind, Dekaf.SchemaRegistry.Avro.Poco.AvroPocoType? item = null, System.ReadOnlyMemory<Dekaf.SchemaRegistry.Avro.Poco.AvroPocoType!> branches = default(System.ReadOnlyMemory<Dekaf.SchemaRegistry.Avro.Poco.AvroPocoType!>), string? fullName = null, System.ReadOnlyMemory<Dekaf.SchemaRegistry.Avro.Poco.AvroPocoField> fields = default(System.ReadOnlyMemory<Dekaf.SchemaRegistry.Avro.Poco.AvroPocoField>), System.ReadOnlyMemory<string!> symbols = default(System.ReadOnlyMemory<string!>), int precision = 0, int scale = 0) -> void
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoType.Branches.get -> System.ReadOnlyMemory<Dekaf.SchemaRegistry.Avro.Poco.AvroPocoType!>
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoType.Fields.get -> System.ReadOnlyMemory<Dekaf.SchemaRegistry.Avro.Poco.AvroPocoField>
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoType.FullName.get -> string?
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoType.Item.get -> Dekaf.SchemaRegistry.Avro.Poco.AvroPocoType?
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoType.Kind.get -> Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoType.Precision.get -> int
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoType.Scale.get -> int
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoType.Symbols.get -> System.ReadOnlyMemory<string!>
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.Array = 10 -> Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.Boolean = 1 -> Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.Bytes = 6 -> Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.Date = 13 -> Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.Decimal = 19 -> Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.Double = 5 -> Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.Enum = 9 -> Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.Float = 4 -> Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.Int = 2 -> Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.Long = 3 -> Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.Map = 11 -> Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.Null = 0 -> Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.Record = 8 -> Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.String = 7 -> Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.TimeMicroseconds = 15 -> Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.TimeMilliseconds = 14 -> Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.TimestampMicroseconds = 17 -> Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.TimestampMilliseconds = 16 -> Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.Union = 12 -> Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.Uuid = 18 -> Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind
+Dekaf.SchemaRegistry.Avro.Poco.AvroRecordAttribute
+Dekaf.SchemaRegistry.Avro.Poco.AvroRecordAttribute.AvroRecordAttribute() -> void
+Dekaf.SchemaRegistry.Avro.Poco.AvroRecordAttribute.Name.get -> string?
+Dekaf.SchemaRegistry.Avro.Poco.AvroRecordAttribute.Name.init -> void
+Dekaf.SchemaRegistry.Avro.Poco.AvroRecordAttribute.Namespace.get -> string?
+Dekaf.SchemaRegistry.Avro.Poco.AvroRecordAttribute.Namespace.init -> void
+Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader
+Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.AvroValueReader() -> void
+Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.ReadBlockCount() -> int
+Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.ReadBoolean() -> bool
+Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.ReadBytes() -> byte[]!
+Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.ReadBytesSpan() -> System.ReadOnlySpan<byte>
+Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.ReadDouble() -> double
+Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.ReadIndex() -> int
+Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.ReadIndex(int exclusiveUpperBound) -> int
+Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.ReadInt32() -> int
+Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.ReadInt64() -> long
+Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.ReadSingle() -> float
+Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.ReadString() -> string!
+Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.ReadUuid() -> System.Guid
+Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.Skip(Dekaf.SchemaRegistry.Avro.Poco.AvroPocoReadNode! node) -> void
+Dekaf.SchemaRegistry.Avro.Poco.AvroValueWriter
+Dekaf.SchemaRegistry.Avro.Poco.AvroValueWriter.AvroValueWriter() -> void
+Dekaf.SchemaRegistry.Avro.Poco.AvroValueWriter.WriteBlockCount(int count) -> void
+Dekaf.SchemaRegistry.Avro.Poco.AvroValueWriter.WriteBlockEnd() -> void
+Dekaf.SchemaRegistry.Avro.Poco.AvroValueWriter.WriteBoolean(bool value) -> void
+Dekaf.SchemaRegistry.Avro.Poco.AvroValueWriter.WriteBytes(scoped System.ReadOnlySpan<byte> value) -> void
+Dekaf.SchemaRegistry.Avro.Poco.AvroValueWriter.WriteDouble(double value) -> void
+Dekaf.SchemaRegistry.Avro.Poco.AvroValueWriter.WriteIndex(int value) -> void
+Dekaf.SchemaRegistry.Avro.Poco.AvroValueWriter.WriteInt32(int value) -> void
+Dekaf.SchemaRegistry.Avro.Poco.AvroValueWriter.WriteInt64(long value) -> void
+Dekaf.SchemaRegistry.Avro.Poco.AvroValueWriter.WriteSingle(float value) -> void
+Dekaf.SchemaRegistry.Avro.Poco.AvroValueWriter.WriteString(string! value) -> void
+Dekaf.SchemaRegistry.Avro.Poco.AvroValueWriter.WriteUuid(System.Guid value) -> void
+Dekaf.SchemaRegistry.Avro.Poco.AvroValueWriter.WrittenCount.get -> int
+Dekaf.SchemaRegistry.Avro.Poco.IAvroPocoCodec<T>
+Dekaf.SchemaRegistry.Avro.Poco.IAvroPocoCodec<T>.Fields.get -> System.ReadOnlyMemory<Dekaf.SchemaRegistry.Avro.Poco.AvroPocoField>
+Dekaf.SchemaRegistry.Avro.Poco.IAvroPocoCodec<T>.FullName.get -> string!
+Dekaf.SchemaRegistry.Avro.Poco.IAvroPocoCodec<T>.Read(ref Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader reader, Dekaf.SchemaRegistry.Avro.Poco.AvroPocoReaderPlan! plan) -> T
+Dekaf.SchemaRegistry.Avro.Poco.IAvroPocoCodec<T>.SchemaJson.get -> string!
+Dekaf.SchemaRegistry.Avro.Poco.IAvroPocoCodec<T>.SchemaUtf8.get -> System.ReadOnlySpan<byte>
+Dekaf.SchemaRegistry.Avro.Poco.IAvroPocoCodec<T>.ParsingFingerprint64.get -> long
+Dekaf.SchemaRegistry.Avro.Poco.IAvroPocoCodec<T>.Write(ref Dekaf.SchemaRegistry.Avro.Poco.AvroValueWriter writer, T value) -> void
+static Dekaf.SchemaRegistry.Avro.Poco.AvroDecimalCodec.Read(ref Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader reader, int precision, int scale) -> decimal
+static Dekaf.SchemaRegistry.Avro.Poco.AvroDecimalCodec.Write(ref Dekaf.SchemaRegistry.Avro.Poco.AvroValueWriter writer, decimal value, int precision, int scale) -> void
+static Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.ReadNull() -> void
+static Dekaf.SchemaRegistry.Avro.Poco.AvroValueWriter.WriteNull() -> void

@@ -13,6 +13,7 @@ using Dekaf.Compression.Snappy;
 using Dekaf.Compression.Zstd;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Avro;
+using Dekaf.SchemaRegistry.Avro.Poco;
 using Dekaf.SchemaRegistry.Json;
 using Dekaf.SchemaRegistry.Protobuf;
 using Dekaf.Security.Sasl;
@@ -205,6 +206,19 @@ internal static class AotSmoke
         var roundTrip = deserializer.Deserialize(buffer.WrittenMemory, ValueContext);
         Require(roundTrip.Id == payload.Id, "Avro Schema Registry ID mismatch.");
         Require(roundTrip.Name == payload.Name, "Avro Schema Registry name mismatch.");
+
+        await using var pocoSerializer = AotAvroPoco.CreateAvroSerializer(registry);
+        await using var pocoDeserializer = AotAvroPoco.CreateAvroDeserializer(registry);
+        var poco = new AotAvroPoco { Id = 12, Name = "poco", Amount = 34.56m };
+        var pocoBuffer = new ArrayBufferWriter<byte>();
+
+        await pocoSerializer.WarmupAsync(ValueContext.Topic);
+        pocoSerializer.Serialize(poco, ref pocoBuffer, ValueContext);
+
+        var pocoRoundTrip = pocoDeserializer.Deserialize(pocoBuffer.WrittenMemory, ValueContext);
+        Require(pocoRoundTrip.Id == poco.Id, "POCO Avro Schema Registry ID mismatch.");
+        Require(pocoRoundTrip.Name == poco.Name, "POCO Avro Schema Registry name mismatch.");
+        Require(pocoRoundTrip.Amount == poco.Amount, "POCO Avro Schema Registry decimal mismatch.");
     }
 
     private static void RequireInterfaceTypedAvroSerializerRejected(InMemorySchemaRegistry registry)
@@ -248,6 +262,10 @@ internal static class AotSmoke
             .UseAvroSchemaRegistry(registry);
         var avroKeyConsumer = Kafka.CreateConsumer<AotAvroRecord, string>()
             .UseAvroSchemaRegistryKey(registry);
+        var pocoProducer = Kafka.CreateProducer<string, AotAvroPoco>()
+            .UseAvroPocoSchemaRegistry(registry);
+        var pocoConsumer = Kafka.CreateConsumer<string, AotAvroPoco>()
+            .UseAvroPocoSchemaRegistry(registry);
 
         var protobufProducer = Kafka.CreateProducer<string, AotProtobufMessage>()
             .UseProtobufSchemaRegistry(registry);
@@ -262,6 +280,8 @@ internal static class AotSmoke
         GC.KeepAlive(avroKeyProducer);
         GC.KeepAlive(avroConsumer);
         GC.KeepAlive(avroKeyConsumer);
+        GC.KeepAlive(pocoProducer);
+        GC.KeepAlive(pocoConsumer);
         GC.KeepAlive(protobufProducer);
         GC.KeepAlive(protobufKeyValueProducer);
         GC.KeepAlive(protobufConsumer);
@@ -540,6 +560,16 @@ internal sealed class AotAvroRecord : ISpecificRecord
                 throw new ArgumentOutOfRangeException(nameof(fieldPos), fieldPos, "Invalid field position.");
         }
     }
+}
+
+[AvroRecord(Name = "AotAvroPoco", Namespace = "Dekaf.Tests.Aot")]
+internal sealed partial class AotAvroPoco
+{
+    public int Id { get; init; }
+    public required string Name { get; init; }
+
+    [AvroField(Precision = 8, Scale = 2)]
+    public decimal Amount { get; init; }
 }
 
 internal sealed class AotProtobufMessage : IMessage<AotProtobufMessage>, IBufferMessage
