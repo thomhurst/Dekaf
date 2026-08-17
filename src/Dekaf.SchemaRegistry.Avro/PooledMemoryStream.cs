@@ -126,6 +126,21 @@ internal sealed class PooledMemoryStream : Stream
             _length = _position;
     }
 
+    public override void Write(ReadOnlySpan<byte> buffer)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        var newPosition = (long)_position + buffer.Length;
+        if (newPosition > Array.MaxLength)
+            throw new NotSupportedException($"PooledMemoryStream does not support streams larger than {Array.MaxLength} bytes.");
+
+        EnsureCapacity((int)newPosition);
+        buffer.CopyTo(_buffer.AsSpan(_origin + _position));
+        _position += buffer.Length;
+        if (_position > _length)
+            _length = _position;
+    }
+
     public override void WriteByte(byte value)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);

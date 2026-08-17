@@ -191,6 +191,8 @@ internal static class AotSmoke
 
     private static async Task RunAvroSchemaRegistryPackageSmokeAsync(InMemorySchemaRegistry registry)
     {
+        RequireInterfaceTypedAvroSerializerRejected(registry);
+
         await using var serializer = new AvroSchemaRegistrySerializer<AotAvroRecord>(registry);
         await using var deserializer = new AvroSchemaRegistryDeserializer<AotAvroRecord>(registry);
 
@@ -203,6 +205,21 @@ internal static class AotSmoke
         var roundTrip = deserializer.Deserialize(buffer.WrittenMemory, ValueContext);
         Require(roundTrip.Id == payload.Id, "Avro Schema Registry ID mismatch.");
         Require(roundTrip.Name == payload.Name, "Avro Schema Registry name mismatch.");
+    }
+
+    private static void RequireInterfaceTypedAvroSerializerRejected(InMemorySchemaRegistry registry)
+    {
+        try
+        {
+            _ = new AvroSchemaRegistrySerializer<ISpecificRecord>(registry);
+        }
+        catch (NotSupportedException)
+        {
+            return;
+        }
+
+        throw new InvalidOperationException(
+            "Interface-typed Avro serialization must reject trimming-unsafe runtime type discovery.");
     }
 
     private static async Task RunProtobufSchemaRegistryPackageSmokeAsync(InMemorySchemaRegistry registry)
