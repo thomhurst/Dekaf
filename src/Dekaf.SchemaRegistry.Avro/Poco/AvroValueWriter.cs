@@ -39,15 +39,14 @@ public ref struct AvroValueWriter
     public void WriteInt64(long value)
     {
         var encoded = (ulong)((value << 1) ^ (value >> 63));
-        if (!Ensure(10))
-            return;
-
-        while ((encoded & ~0x7FUL) != 0)
+        if ((encoded & ~0x7FUL) != 0)
         {
-            _destination[_position++] = (byte)((encoded & 0x7F) | 0x80);
-            encoded >>= 7;
+            WriteInt64Slow(encoded);
+            return;
         }
 
+        if (!Ensure(1))
+            return;
         _destination[_position++] = (byte)encoded;
     }
 
@@ -126,6 +125,22 @@ public ref struct AvroValueWriter
             return true;
 
         return Overflow();
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void WriteInt64Slow(ulong encoded)
+    {
+        while ((encoded & ~0x7FUL) != 0)
+        {
+            if (!Ensure(1))
+                return;
+            _destination[_position++] = (byte)((encoded & 0x7F) | 0x80);
+            encoded >>= 7;
+        }
+
+        if (!Ensure(1))
+            return;
+        _destination[_position++] = (byte)encoded;
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

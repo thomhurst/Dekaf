@@ -356,6 +356,26 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    public async Task GeneratedCodec_UsesActualVarintWidthForExactPayload()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        await using var serializer = PocoArrayTerminatorPayload.CreateAvroSerializer(registry);
+        var context = new SerializationContext
+        {
+            Topic = "poco-exact-varint",
+            Component = SerializationComponent.Value
+        };
+        var value = new PocoArrayTerminatorPayload { Values = new int[512] };
+        var destination = new ExactSizeBufferWriter(2048);
+
+        serializer.Serialize(value, ref destination, context);
+        destination.Clear();
+        serializer.Serialize(value, ref destination, context);
+
+        await Assert.That(destination.GetMemoryCallCount).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task GeneratedCodec_RetainsLargePayloadSizeHint()
     {
         using var registry = new MockSchemaRegistryClient();
@@ -401,6 +421,50 @@ public sealed class AvroPocoSchemaRegistryTests
 
         await Assert.That(actual.Id).IsEqualTo(42L);
         await Assert.That(actual.Note).IsEqualTo("added-by-reader");
+    }
+
+    [Test]
+    public async Task GeneratedCodec_PromotesBetweenStringAndBytes()
+    {
+        const string bytesWriterSchemaJson =
+            """
+            {"type":"record","name":"PocoStringPromotion","namespace":"Dekaf.Tests","fields":[{"name":"Value","type":"bytes"}]}
+            """;
+        const string stringWriterSchemaJson =
+            """
+            {"type":"record","name":"PocoBytesPromotion","namespace":"Dekaf.Tests","fields":[{"name":"Value","type":"string"}]}
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        await using var writer = new AvroSchemaRegistrySerializer<GenericRecord>(registry);
+        await using var stringReader = PocoStringPromotion.CreateAvroDeserializer(registry);
+        await using var bytesReader = PocoBytesPromotion.CreateAvroDeserializer(registry);
+        var destination = new ArrayBufferWriter<byte>();
+
+        var bytesSchema = (RecordSchema)Schema.Parse(bytesWriterSchemaJson);
+        var bytesRecord = new GenericRecord(bytesSchema);
+        bytesRecord.Add("Value", Encoding.UTF8.GetBytes("bytes-to-string"));
+        var bytesContext = new SerializationContext
+        {
+            Topic = "poco-bytes-to-string",
+            Component = SerializationComponent.Value
+        };
+        writer.Serialize(bytesRecord, ref destination, bytesContext);
+        var promotedString = stringReader.Deserialize(destination.WrittenMemory, bytesContext);
+
+        destination.Clear();
+        var stringSchema = (RecordSchema)Schema.Parse(stringWriterSchemaJson);
+        var stringRecord = new GenericRecord(stringSchema);
+        stringRecord.Add("Value", "string-to-bytes");
+        var stringContext = new SerializationContext
+        {
+            Topic = "poco-string-to-bytes",
+            Component = SerializationComponent.Value
+        };
+        writer.Serialize(stringRecord, ref destination, stringContext);
+        var promotedBytes = bytesReader.Deserialize(destination.WrittenMemory, stringContext);
+
+        await Assert.That(promotedString.Value).IsEqualTo("bytes-to-string");
+        await Assert.That(promotedBytes.Value).IsEquivalentTo(Encoding.UTF8.GetBytes("string-to-bytes"));
     }
 
     [Test]
@@ -854,6 +918,24 @@ internal sealed partial class PocoWriterUnions
 internal sealed partial class PocoGrowingPayload
 {
     public required string Value { get; init; }
+}
+
+[AvroRecord(Name = "PocoArrayTerminatorPayload", Namespace = "Dekaf.Tests")]
+internal sealed partial class PocoArrayTerminatorPayload
+{
+    public required int[] Values { get; init; }
+}
+
+[AvroRecord(Name = "PocoStringPromotion", Namespace = "Dekaf.Tests")]
+internal sealed partial class PocoStringPromotion
+{
+    public required string Value { get; init; }
+}
+
+[AvroRecord(Name = "PocoBytesPromotion", Namespace = "Dekaf.Tests")]
+internal sealed partial class PocoBytesPromotion
+{
+    public required byte[] Value { get; init; }
 }
 
 [AvroRecord(Name = "PocoLargeGrowingPayload", Namespace = "Dekaf.Tests")]

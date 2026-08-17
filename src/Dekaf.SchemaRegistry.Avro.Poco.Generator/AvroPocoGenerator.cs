@@ -472,6 +472,18 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                         return null;
                     }
                 }
+                foreach (var unionType in unionTypes)
+                {
+                    if (!symbol.IsReferenceType || unionType is null || !unionType.IsValueType)
+                        continue;
+                    Error(
+                        UnsupportedType,
+                        member.Locations.FirstOrDefault(),
+                        member.Name,
+                        unionType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
+                        "value-type union branches cannot use a reference-type carrier because deserialization would box each value");
+                    return null;
+                }
                 return TypeModel.Union(symbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat), branches.ToImmutable());
             }
 

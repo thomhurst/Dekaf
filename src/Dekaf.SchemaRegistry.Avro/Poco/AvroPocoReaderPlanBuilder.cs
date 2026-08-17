@@ -252,8 +252,8 @@ internal static class AvroPocoReaderPlanBuilder
                 AvroPocoTypeKind.Double,
             AvroSchema.Type.Float => reader is AvroPocoTypeKind.Float or AvroPocoTypeKind.Double,
             AvroSchema.Type.Double => reader == AvroPocoTypeKind.Double,
-            AvroSchema.Type.Bytes => reader == AvroPocoTypeKind.Bytes,
-            AvroSchema.Type.String => reader == AvroPocoTypeKind.String,
+            AvroSchema.Type.Bytes => reader is AvroPocoTypeKind.Bytes or AvroPocoTypeKind.String,
+            AvroSchema.Type.String => reader is AvroPocoTypeKind.String or AvroPocoTypeKind.Bytes,
             _ => false
         };
 
