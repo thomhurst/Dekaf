@@ -278,6 +278,8 @@ public readonly record struct Header
     internal static Header CreateDeferredTraceparent(string key, Activity activity) =>
         new(key, activity);
 
+    internal bool HasDeferredTraceparent => _deferredTraceparentActivity is not null;
+
     /// <summary>
     /// The header key.
     /// </summary>

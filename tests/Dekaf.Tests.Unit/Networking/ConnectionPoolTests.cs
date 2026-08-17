@@ -118,7 +118,10 @@ public sealed class ConnectionPoolTests
     {
         long statusTimestamp = 100;
         var creationAttempt = 0;
-        var connection = new TestIdleConnection(7, "broker-a", 9092);
+        var connection = new TestIdleConnection(7, "broker-a", 9092)
+        {
+            LastSuccessfulRequestTimestampMs = 99
+        };
         await using var pool = new ConnectionPool(
             clientId: "status-test",
             connectionOptions: new ConnectionOptions
@@ -140,7 +143,9 @@ public sealed class ConnectionPoolTests
 
         var status = ((IConnectionPoolStatusSource)pool).GetBrokerConnectionStatus().Single();
         await Assert.That(status.State).IsEqualTo(BrokerConnectionState.Disconnected);
+        await Assert.That(status.LastSuccessfulRequestAtUtc).IsNotNull();
         await Assert.That(GetBrokerStateChangeTimestamp(pool, 7)).IsEqualTo(101);
+        await Assert.That(GetBrokerSuccessfulRequestTimestamp(pool, 7)).IsEqualTo(99);
     }
 
     [Test]
@@ -168,7 +173,10 @@ public sealed class ConnectionPoolTests
     {
         long statusTimestamp = 100;
         var creationAttempt = 0;
-        var connection = new TestIdleConnection(-1, "controller-a", 19093);
+        var connection = new TestIdleConnection(-1, "controller-a", 19093)
+        {
+            LastSuccessfulRequestTimestampMs = 99
+        };
         await using var pool = new ConnectionPool(
             clientId: "status-test",
             connectionOptions: new ConnectionOptions
@@ -191,7 +199,9 @@ public sealed class ConnectionPoolTests
         var status = ((IConnectionPoolStatusSource)pool).GetEndpointConnectionStatus(
             [new ConnectionStatusEndpoint(2, "controller-a", 19093)]).Single();
         await Assert.That(status.State).IsEqualTo(BrokerConnectionState.Disconnected);
+        await Assert.That(status.LastSuccessfulRequestAtUtc).IsNotNull();
         await Assert.That(GetEndpointStateChangeTimestamp(pool, "controller-a", 19093)).IsEqualTo(101);
+        await Assert.That(GetEndpointSuccessfulRequestTimestamp(pool, "controller-a", 19093)).IsEqualTo(99);
     }
 
     [Test]
@@ -626,6 +636,24 @@ public sealed class ConnectionPoolTests
 
         // Removing a non-existent broker should be a no-op
         await pool.RemoveConnectionAsync(999);
+    }
+
+    [Test]
+    public async Task RemoveConnectionAsync_RegisteredBrokerWithoutConnection_DoesNotRecordStateChange()
+    {
+        long statusTimestamp = 100;
+        await using var pool = new ConnectionPool(
+            clientId: "status-test",
+            connectionOptions: new ConnectionOptions(),
+            connectionsPerBroker: 1,
+            connectionFactory: (_, _, _, _, _) => throw new InvalidOperationException("Connection not expected"),
+            statusTimestampProvider: () => Volatile.Read(ref statusTimestamp));
+        pool.RegisterBroker(7, "broker-a", 9092);
+        Volatile.Write(ref statusTimestamp, 101);
+
+        await pool.RemoveConnectionAsync(7);
+
+        await Assert.That(GetBrokerStateChangeTimestamp(pool, 7)).IsEqualTo(100);
     }
 
     [Test]
@@ -2476,6 +2504,15 @@ public sealed class ConnectionPoolTests
     };
 
     private static long GetBrokerStateChangeTimestamp(ConnectionPool pool, int brokerId)
+        => GetBrokerRuntimeTimestamp(pool, brokerId, "LastStateChangeTimestampMs");
+
+    private static long GetBrokerSuccessfulRequestTimestamp(ConnectionPool pool, int brokerId)
+        => GetBrokerRuntimeTimestamp(pool, brokerId, "LastSuccessfulRequestTimestampMs");
+
+    private static long GetBrokerRuntimeTimestamp(
+        ConnectionPool pool,
+        int brokerId,
+        string propertyName)
     {
         var statesField = typeof(ConnectionPool).GetField(
             "_brokerConnectionRuntimeStates",
@@ -2487,13 +2524,23 @@ public sealed class ConnectionPoolTests
             ?? throw new InvalidOperationException("Connection runtime-state indexer was not found.");
         var state = indexer.GetValue(states, [brokerId])
             ?? throw new InvalidOperationException($"Connection runtime state for broker {brokerId} was not found.");
-        var timestampProperty = state.GetType().GetProperty("LastStateChangeTimestampMs")
-            ?? throw new InvalidOperationException("Connection state-change timestamp property was not found.");
+        var timestampProperty = state.GetType().GetProperty(propertyName)
+            ?? throw new InvalidOperationException($"Connection runtime-state property {propertyName} was not found.");
         return (long)(timestampProperty.GetValue(state)
             ?? throw new InvalidOperationException("Connection state-change timestamp was null."));
     }
 
     private static long GetEndpointStateChangeTimestamp(ConnectionPool pool, string host, int port)
+        => GetEndpointRuntimeTimestamp(pool, host, port, "LastStateChangeTimestampMs");
+
+    private static long GetEndpointSuccessfulRequestTimestamp(ConnectionPool pool, string host, int port)
+        => GetEndpointRuntimeTimestamp(pool, host, port, "LastSuccessfulRequestTimestampMs");
+
+    private static long GetEndpointRuntimeTimestamp(
+        ConnectionPool pool,
+        string host,
+        int port,
+        string propertyName)
     {
         var statesField = typeof(ConnectionPool).GetField(
             "_endpointConnectionRuntimeStates",
@@ -2508,8 +2555,8 @@ public sealed class ConnectionPoolTests
             ?? throw new InvalidOperationException("Endpoint runtime-state indexer was not found.");
         var state = indexer.GetValue(states, [key])
             ?? throw new InvalidOperationException($"Connection runtime state for endpoint {host}:{port} was not found.");
-        var timestampProperty = state.GetType().GetProperty("LastStateChangeTimestampMs")
-            ?? throw new InvalidOperationException("Connection state-change timestamp property was not found.");
+        var timestampProperty = state.GetType().GetProperty(propertyName)
+            ?? throw new InvalidOperationException($"Connection runtime-state property {propertyName} was not found.");
         return (long)(timestampProperty.GetValue(state)
             ?? throw new InvalidOperationException("Connection state-change timestamp was null."));
     }

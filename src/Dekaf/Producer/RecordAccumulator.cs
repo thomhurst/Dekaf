@@ -3016,14 +3016,31 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         workItem.Key.Return();
         workItem.Value.Return();
-        ReturnPooledHeaders(workItem.Headers);
+        ReturnPooledHeaders(workItem.Headers, workItem.HeaderCount);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal static void ReturnPooledHeaders(Header[]? headers)
+    internal static void ReturnPooledHeaders(Header[]? headers, int headerCount)
     {
-        if (headers is not null)
-            ProducerContainerPools.Headers.Return(headers);
+        if (headers is null)
+            return;
+
+        // Trace injection appends traceparent followed only by optional tracestate. Clear the
+        // deferred Activity from that known slot without scanning or clearing the rented array.
+        var lastHeaderIndex = headerCount - 1;
+        if ((uint)lastHeaderIndex < (uint)headers.Length)
+        {
+            if (headers[lastHeaderIndex].HasDeferredTraceparent)
+            {
+                headers[lastHeaderIndex] = default;
+            }
+            else if (lastHeaderIndex > 0 && headers[lastHeaderIndex - 1].HasDeferredTraceparent)
+            {
+                headers[lastHeaderIndex - 1] = default;
+            }
+        }
+
+        ProducerContainerPools.Headers.Return(headers);
     }
 
     /// <summary>
@@ -3102,7 +3119,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // throw (disposal race in worker startup) leaves ownership here.
             key.Return();
             value.Return();
-            ReturnPooledHeaders(headers);
+            ReturnPooledHeaders(headers, headerCount);
             throw;
         }
     }
@@ -3399,7 +3416,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             key.Return();
             value.Return();
-            ReturnPooledHeaders(headers);
+            ReturnPooledHeaders(headers, headerCount);
             throw;
         }
 
@@ -3471,7 +3488,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             {
                 key.Return();
                 value.Return();
-                ReturnPooledHeaders(headers);
+                ReturnPooledHeaders(headers, headerCount);
                 ownsRecordResources = false;
             }
         }
@@ -3716,7 +3733,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             key.Return();
             value.Return();
-            ReturnPooledHeaders(headers);
+            ReturnPooledHeaders(headers, headerCount);
             return new ValueTask<bool>(Task.FromException<bool>(new ObjectDisposedException(nameof(RecordAccumulator))));
         }
 
@@ -3724,7 +3741,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             key.Return();
             value.Return();
-            ReturnPooledHeaders(headers);
+            ReturnPooledHeaders(headers, headerCount);
             return new ValueTask<bool>(Task.FromException<bool>(new OperationCanceledException(cancellationToken)));
         }
 
@@ -3802,7 +3819,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             key.Return();
             value.Return();
-            ReturnPooledHeaders(headers);
+            ReturnPooledHeaders(headers, headerCount);
             throw;
         }
 
@@ -3928,7 +3945,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
             if (ownsHeaderResources)
             {
-                ReturnPooledHeaders(headers);
+                ReturnPooledHeaders(headers, headerCount);
                 ownsHeaderResources = false;
             }
         }
@@ -4106,6 +4123,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                      completionSource,
                                      callback,
                                      headers,
+                                     headerCount,
                                      recordSize);
                                 drainPendingAfterAppend = CommitAdmissionReservationUnderLock(
                                     reservedAppendBatch,
@@ -4289,7 +4307,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
         catch
         {
-            ReturnPooledHeaders(headers);
+            ReturnPooledHeaders(headers, headerCount);
             throw;
         }
 
@@ -7956,7 +7974,7 @@ internal sealed class PartitionBatch
         {
             key.Return();
             value.Return();
-            RecordAccumulator.ReturnPooledHeaders(headers);
+            RecordAccumulator.ReturnPooledHeaders(headers, headerCount);
         }
 
         return result;
@@ -8009,7 +8027,13 @@ internal sealed class PartitionBatch
                 throw;
             }
 
-            CommitReservedAppendFromSpans(reservedAppend, completionSource, callback, headers, estimatedSize);
+            CommitReservedAppendFromSpans(
+                reservedAppend,
+                completionSource,
+                callback,
+                headers,
+                headerCount,
+                estimatedSize);
         }
 
         return result;
@@ -8268,10 +8292,11 @@ internal sealed class PartitionBatch
         PooledValueTaskSource<RecordMetadata>? completionSource,
         Action<RecordMetadata, Exception?>? callback,
         Header[]? headers,
+        int headerCount,
         int estimatedSize)
     {
         CommitReservedAppend(reservedAppend, completionSource, callback, estimatedSize);
-        RecordAccumulator.ReturnPooledHeaders(headers);
+        RecordAccumulator.ReturnPooledHeaders(headers, headerCount);
     }
 
     private void CommitReservedAppend(

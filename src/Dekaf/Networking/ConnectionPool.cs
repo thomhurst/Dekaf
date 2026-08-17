@@ -1730,6 +1730,7 @@ public sealed partial class ConnectionPool :
             : GetEndpointConnectionRuntimeState(endpoint);
         if (connection is IKafkaConnectionStatusSource statusSource)
         {
+            runtimeState.RecordSuccessfulRequest(statusSource.LastSuccessfulRequestTimestampMs);
             var timestampMs = statusSource.LastConnectionStateChangeTimestampMs;
             if (timestampMs > 0)
             {
@@ -2010,9 +2011,7 @@ public sealed partial class ConnectionPool :
             ? brokerRuntimeState
             : null;
         var lastErrorTimestampMs = runtimeState?.LastErrorTimestampMs ?? 0;
-        connections.LastStateChangeTimestampMs = Math.Max(
-            connections.LastStateChangeTimestampMs,
-            runtimeState?.LastStateChangeTimestampMs ?? 0);
+        AccumulateRuntimeState(runtimeState, ref connections);
 
         return new BrokerConnectionStatus
         {
@@ -2065,6 +2064,9 @@ public sealed partial class ConnectionPool :
     {
         if (runtimeState is not null)
         {
+            status.LastSuccessfulRequestTimestampMs = Math.Max(
+                status.LastSuccessfulRequestTimestampMs,
+                runtimeState.LastSuccessfulRequestTimestampMs);
             status.LastStateChangeTimestampMs = Math.Max(
                 status.LastStateChangeTimestampMs,
                 runtimeState.LastStateChangeTimestampMs);
@@ -2299,8 +2301,10 @@ public sealed partial class ConnectionPool :
 
     public async ValueTask RemoveConnectionAsync(int brokerId)
     {
+        var removed = false;
         if (_connectionsById.TryRemove(brokerId, out var connection))
         {
+            removed = true;
             var endpoint = new EndpointKey(connection.Host, connection.Port);
             _connectionsByEndpoint.TryRemove(endpoint, out _);
             if (_connectionCreationLocks.TryRemove(endpoint, out var creationSem))
@@ -2311,6 +2315,7 @@ public sealed partial class ConnectionPool :
 
         if (_connectionGroupsById.TryRemove(brokerId, out var group))
         {
+            removed = true;
             // Iterate the group's actual size: adaptive scaling can grow a group beyond
             // the configured ConnectionsPerBroker.
             for (var i = 0; i < group.Length; i++)
@@ -2332,7 +2337,7 @@ public sealed partial class ConnectionPool :
             LogRemovedConnection(brokerId);
         }
 
-        if (_brokerConnectionRuntimeStates.TryGetValue(brokerId, out var runtimeState))
+        if (removed && _brokerConnectionRuntimeStates.TryGetValue(brokerId, out var runtimeState))
             runtimeState.RecordStateChange();
     }
 
@@ -2589,16 +2594,34 @@ public sealed partial class ConnectionPool :
     {
         private readonly Func<long> _timestampProvider = timestampProvider;
         private long _lastStateChangeTimestampMs = recordInitialState ? timestampProvider() : 0;
+        private long _lastSuccessfulRequestTimestampMs;
         private long _lastErrorTimestampMs;
         private long _lastErrorSequence;
         private string? _lastError;
 
         public long LastStateChangeTimestampMs => Volatile.Read(ref _lastStateChangeTimestampMs);
+        public long LastSuccessfulRequestTimestampMs => Volatile.Read(ref _lastSuccessfulRequestTimestampMs);
         public long LastErrorTimestampMs => Volatile.Read(ref _lastErrorTimestampMs);
         public long LastErrorSequence => Volatile.Read(ref _lastErrorSequence);
         public string? LastError => Volatile.Read(ref _lastError);
 
         public void RecordStateChange() => RecordStateChange(_timestampProvider());
+
+        public void RecordSuccessfulRequest(long timestampMs)
+        {
+            var current = Volatile.Read(ref _lastSuccessfulRequestTimestampMs);
+            while (timestampMs > current)
+            {
+                var observed = Interlocked.CompareExchange(
+                    ref _lastSuccessfulRequestTimestampMs,
+                    timestampMs,
+                    current);
+                if (observed == current)
+                    return;
+
+                current = observed;
+            }
+        }
 
         public void RecordStateChange(long timestampMs)
         {

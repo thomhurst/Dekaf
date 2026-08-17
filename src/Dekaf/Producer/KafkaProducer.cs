@@ -1434,6 +1434,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         CancellationToken cancellationToken)
     {
         Header[]? pooledHeaderArray = null;
+        var headerCount = 0;
         var customPartitionerKey = PooledMemory.Null;
         var customPartitionerValue = PooledMemory.Null;
 
@@ -1501,7 +1502,6 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             var timestampMs = timestamp?.ToUnixTimeMilliseconds() ?? GetFastTimestampMs();
 
             // Convert headers
-            var headerCount = 0;
             if (headers is not null && headers.Count > 0)
             {
                 RentAndFillHeaders(headers, out pooledHeaderArray, out headerCount);
@@ -1559,7 +1559,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         }
         catch (Exception ex)
         {
-            RecordAccumulator.ReturnPooledHeaders(pooledHeaderArray);
+            RecordAccumulator.ReturnPooledHeaders(pooledHeaderArray, headerCount);
             customPartitionerKey.Return();
             customPartitionerValue.Return();
             if (ex is not ObjectDisposedException)
@@ -1790,6 +1790,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         var key = PooledMemory.Null;
         var value = PooledMemory.Null;
         Header[]? pooledHeaderArray = null;
+        var headerCount = 0;
         try
         {
             if (!keyIsNull)
@@ -1821,7 +1822,6 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             var timestampMs = timestamp.ToUnixTimeMilliseconds();
 
             // Convert headers with minimal allocations
-            var headerCount = 0;
             if (message.Headers is not null && message.Headers.Count > 0)
             {
                 RentAndFillHeaders(message.Headers, out pooledHeaderArray, out headerCount);
@@ -1847,7 +1847,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             // must return them here.
             key.Return();
             value.Return();
-            RecordAccumulator.ReturnPooledHeaders(pooledHeaderArray);
+            RecordAccumulator.ReturnPooledHeaders(pooledHeaderArray, headerCount);
             throw;
         }
     }

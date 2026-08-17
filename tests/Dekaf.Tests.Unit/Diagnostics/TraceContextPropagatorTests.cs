@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Diagnostics;
 using System.Text;
 using Dekaf.Diagnostics;
+using Dekaf.Producer;
 using Dekaf.Protocol;
 using Dekaf.Serialization;
 
@@ -65,6 +66,24 @@ public sealed class TraceContextPropagatorTests
         await Assert.That(output.WrittenSpan[12]).IsEqualTo((byte)110);
         await Assert.That(Encoding.UTF8.GetString(output.WrittenSpan[13..])).IsEqualTo(
             $"00-{activity.TraceId}-{activity.SpanId}-{(activity.Recorded ? "01" : "00")}");
+    }
+
+    [Test]
+    public async Task ReturnPooledHeaders_ClearsDeferredActivityReference()
+    {
+        using var activity = new Activity("trace-retention")
+            .SetIdFormat(ActivityIdFormat.W3C)
+            .Start();
+        activity.TraceStateString = "vendor=value";
+        var headers = TraceContextPropagator.InjectTraceContext(new Headers(2), activity)!;
+        var pooledHeaders = ProducerContainerPools.Headers.Rent(headers.Count);
+        for (var i = 0; i < headers.Count; i++)
+            pooledHeaders[i] = headers[i];
+
+        RecordAccumulator.ReturnPooledHeaders(pooledHeaders, headers.Count);
+
+        await Assert.That(pooledHeaders[0].HasDeferredTraceparent).IsFalse();
+        await Assert.That(pooledHeaders[0]).IsEqualTo(default(Header));
     }
 
     [Test]
