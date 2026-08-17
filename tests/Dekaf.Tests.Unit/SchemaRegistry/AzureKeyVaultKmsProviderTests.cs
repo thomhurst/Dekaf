@@ -437,15 +437,20 @@ public class AzureKeyVaultKmsProviderTests
                 key: [4, 5, 6],
                 algorithm: KeyWrapAlgorithm.RsaOaep256));
         var factory = new RecordingFactory(_ => client);
-        var provider = new AzureKeyVaultKmsProvider(factory);
+        var maximumClientCount = 0;
+        var provider = new AzureKeyVaultKmsProvider(
+            factory,
+            AzureKeyVaultKmsProvider.DefaultType,
+            count => maximumClientCount = Math.Max(maximumClientCount, count));
         var operations = Enumerable.Range(0, 256)
-            .Select(index => provider.WrapKeyAsync(
+            .Select(index => Task.Run(() => provider.WrapKeyAsync(
                 new byte[] { 1 },
-                CreateKeyReference($"https://vault{index}.vault.azure.net/keys/kek")).AsTask())
+                CreateKeyReference($"https://vault{index}.vault.azure.net/keys/kek")).AsTask()))
             .ToArray();
 
         await Task.WhenAll(operations);
 
+        await Assert.That(maximumClientCount).IsEqualTo(AzureKeyVaultKmsProvider.ClientCacheCapacity);
         await Assert.That(provider.ClientCount).IsEqualTo(AzureKeyVaultKmsProvider.ClientCacheCapacity);
         await Assert.That(factory.CreateCount).IsEqualTo(operations.Length);
     }
