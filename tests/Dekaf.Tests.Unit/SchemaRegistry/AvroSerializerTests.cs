@@ -690,7 +690,9 @@ public sealed class AvroSerializerTests
         serializer.Serialize(record, ref buffer, context);
 
         await Assert.That(ruleExecutor.SerializeContext!.Schema).IsSameReferenceAs(registeredSchema);
-        await Assert.That(schemaRegistry.GetSchemaCallCount).IsEqualTo(1);
+        // PrepareAsync resolves the registered subject and its rule metadata together, so no
+        // redundant schema-by-ID request is needed before the cached serialization path runs.
+        await Assert.That(schemaRegistry.GetSchemaCallCount).IsEqualTo(0);
     }
 
     [Test]
