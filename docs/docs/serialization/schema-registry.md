@@ -70,7 +70,10 @@ For zero-allocation `GenericRecord` serialization, Avro map values must use
 `Dictionary<string, object>`. Other `IDictionary<string, object>` implementations are rejected
 because their enumeration can allocate per message. Value-type arrays and lists are specialized
 for Avro primitives and built-in logical types; unsupported value-type element representations
-fail instead of silently boxing each element.
+fail instead of silently boxing each element. Custom logical branches in unions must declare one
+sealed CLR type and have at most one value-dependent candidate for that type. Assignable or
+multi-candidate custom logical dispatch is rejected during writer construction because it would
+require a per-message candidate scan.
 
 ## Protobuf Serialization
 

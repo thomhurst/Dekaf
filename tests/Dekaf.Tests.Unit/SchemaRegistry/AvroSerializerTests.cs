@@ -819,7 +819,7 @@ public sealed class AvroSerializerTests
     [Test]
     [Arguments(false)]
     [Arguments(true)]
-    public async Task Serializer_GenericRecord_CustomLogicalAndStructuralBranches_UseSchemaOrder(
+    public async Task Serializer_GenericRecord_AssignableCustomLogicalBranches_AreRejected(
         bool arrayFirst)
     {
         Avro.Util.LogicalTypeFactory.Instance.Register(new IntListBytesLogicalType());
@@ -839,10 +839,14 @@ public sealed class AvroSerializerTests
         var record = new GenericRecord(schema);
         var values = arrayFirst ? new[] { -1, 2 } : new[] { 1, 2 };
         record.Add("value", new List<int>(values));
-        var expectedRecord = new GenericRecord(schema);
-        expectedRecord.Add("value", values);
 
-        await AssertSerializedPayloadMatches(serializer, schema, record, expectedRecord);
+        await Assert.That(Serialize).Throws<Avro.AvroTypeException>();
+
+        void Serialize()
+        {
+            var buffer = new ArrayBufferWriter<byte>();
+            serializer.Serialize(record, ref buffer, CreateContext());
+        }
     }
 
     [Test]
@@ -955,13 +959,12 @@ public sealed class AvroSerializerTests
     }
 
     [Test]
-    [Arguments(false, "plain-value", false)]
-    [Arguments(false, "logical-value", true)]
-    [Arguments(true, "logical-value", false)]
-    public async Task Serializer_GenericRecord_AssignableLogicalAndPrimitiveBranches_UseSchemaOrder(
+    [Arguments(false, "plain-value")]
+    [Arguments(false, "logical-value")]
+    [Arguments(true, "logical-value")]
+    public async Task Serializer_GenericRecord_AssignableLogicalAndPrimitiveBranches_AreRejected(
         bool stringFirst,
-        string value,
-        bool rejectsCustomLogicalBranch)
+        string value)
     {
         Avro.Util.LogicalTypeFactory.Instance.Register(new ComparableBytesLogicalType());
         using var schemaRegistry = new MockSchemaRegistryClient();
@@ -979,13 +982,7 @@ public sealed class AvroSerializerTests
         var record = new GenericRecord(schema);
         record.Add("value", value);
 
-        if (rejectsCustomLogicalBranch)
-        {
-            await Assert.That(Serialize).Throws<Avro.AvroTypeException>();
-            return;
-        }
-
-        await AssertSerializedPayloadMatchesApache(serializer, schema, record);
+        await Assert.That(Serialize).Throws<Avro.AvroTypeException>();
 
         void Serialize()
         {

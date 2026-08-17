@@ -166,9 +166,6 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
         {
             if (TryWriteValueTypeUnionArray(unionSchema, array, encoder))
                 return;
-
-            if (_writerCache.GetUnion(unionSchema).HasAssignableConditionalBranches)
-                ThrowAssignableConditionalCollection(array.GetType());
         }
 
         switch (itemSchema.Tag)
@@ -293,9 +290,6 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
                 return;
 
             var union = _writerCache.GetUnion(unionSchema);
-            if (union.HasAssignableConditionalBranches)
-                ThrowAssignableConditionalCollection(list.GetType());
-
             if (union.HasConditionalValueTypeBranch &&
                 list is not IEnumerable<object?> &&
                 list is not ArrayList)
@@ -391,11 +385,6 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
             WriteValue(itemSchema, list[i], encoder);
         }
     }
-
-    private static void ThrowAssignableConditionalCollection(Type collectionType) =>
-        throw new global::Avro.AvroTypeException(
-            $"Collection type {collectionType} is not supported for assignable value-dependent Avro union items; " +
-            "per-item candidate scans are forbidden in allocation-free serialization.");
 
     private static void WriteListItems<T, TWriter>(
         global::Avro.Schema itemSchema,
@@ -1011,9 +1000,6 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
         private readonly Dictionary<global::Avro.SchemaName, UnionBranch> _enumBranches = new();
         private readonly Dictionary<global::Avro.SchemaName, UnionBranch> _fixedBranches = new();
         private readonly Dictionary<Type, ConditionalUnionBranch>? _conditionalBranches;
-        private readonly Dictionary<Type, MultipleConditionalUnionBranches>? _multipleConditionalBranches;
-        private readonly ConditionalUnionCandidateByType[]? _conditionalCandidates;
-        private readonly ConditionalUnionCandidateByType[]? _assignableConditionalCandidates;
         private readonly ValueTypeFlags _conditionalValueTypes;
         private readonly bool _hasPotentialConditionalValueTypeBranch;
         private readonly UnionBranch _arrayBranch;
@@ -1103,9 +1089,7 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
                         if (conditional is not null)
                         {
                             conditionalValueTypes |= GetAssignableValueTypes(type);
-                            hasPotentialConditionalValueTypeBranch |=
-                                type.IsValueType || type.IsInterface ||
-                                type == typeof(object) || type == typeof(ValueType) || type == typeof(Enum);
+                            hasPotentialConditionalValueTypeBranch |= type.IsValueType;
                         }
                         if (type == typeof(bool))
                         {
@@ -1177,12 +1161,7 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
             _timeSpanBranch = timeSpanBranch;
             _guidBranch = guidBranch;
             _decimalBranch = decimalBranch;
-            _conditionalBranches = BuildConditionalBranches(
-                conditionalBranchBuilders,
-                out _multipleConditionalBranches);
-            _conditionalCandidates = BuildConditionalCandidates(
-                conditionalBranchBuilders,
-                out _assignableConditionalCandidates);
+            _conditionalBranches = BuildConditionalBranches(conditionalBranchBuilders, schema);
             _conditionalValueTypes = conditionalValueTypes;
             _hasPotentialConditionalValueTypeBranch = hasPotentialConditionalValueTypeBranch;
         }
@@ -1192,8 +1171,6 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
         public bool HasConditionalBranches => _conditionalBranches is not null;
 
         public bool HasConditionalValueTypeBranch => _hasPotentialConditionalValueTypeBranch;
-
-        public bool HasAssignableConditionalBranches => _assignableConditionalCandidates is not null;
 
         public int NullIndex { get; }
 
@@ -1287,10 +1264,6 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
                 var runtimeType = value.GetType();
                 if (_conditionalBranches!.TryGetValue(runtimeType, out var conditional))
                 {
-                    if (_assignableConditionalCandidates is not null &&
-                        HasAssignableConditionalCandidate(value, runtimeType))
-                        return ResolveCombinedConditional(value, runtimeType);
-
                     var fallback = GetConditionalFallback(value, conditional.Fallback);
                     if (fallback.Schema is not null && fallback.Index < conditional.Primary.Index)
                         return fallback;
@@ -1302,134 +1275,10 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
                         return fallback;
                     throw NoMatch(value);
                 }
-
-                if (_multipleConditionalBranches?.TryGetValue(runtimeType, out var multiple) == true)
-                {
-                    if (_assignableConditionalCandidates is not null &&
-                        HasAssignableConditionalCandidate(value, runtimeType))
-                        return ResolveCombinedConditional(value, runtimeType);
-
-                    var candidates = multiple.Candidates;
-                    var fallback = GetConditionalFallback(value, multiple.Fallback);
-                    for (var i = 0; i < candidates.Length; i++)
-                    {
-                        var candidate = candidates[i];
-                        if (fallback.Schema is not null && fallback.Index < candidate.Branch.Index)
-                            return fallback;
-                        if (candidate.LogicalSchema.LogicalType.IsInstanceOfLogicalType(value))
-                            return candidate.Branch;
-                    }
-                    if (fallback.Schema is not null)
-                        return fallback;
-                    throw NoMatch(value);
-                }
-
-                if (_assignableConditionalCandidates is not null)
-                    return ResolveAssignableConditional(value, runtimeType);
             }
 
             return Resolve(value);
         }
-
-        private bool HasAssignableConditionalCandidate(object value, Type runtimeType)
-        {
-            var candidates = _assignableConditionalCandidates!;
-            for (var i = 0; i < candidates.Length; i++)
-            {
-                var candidate = candidates[i];
-                if (candidate.DeclaredType != runtimeType && candidate.DeclaredType.IsInstanceOfType(value))
-                    return true;
-            }
-
-            return false;
-        }
-
-        private UnionBranch ResolveAssignableConditional(object value, Type runtimeType)
-        {
-            var fallback = ResolveStructuralBranch(value);
-            if (fallback.Schema is null)
-                fallback = ResolveCompatibleNonStructuralBranch(value, runtimeType);
-
-            var matched = false;
-            var candidates = _assignableConditionalCandidates!;
-            for (var i = 0; i < candidates.Length; i++)
-            {
-                var candidate = candidates[i];
-                if (!candidate.DeclaredType.IsInstanceOfType(value))
-                    continue;
-
-                matched = true;
-                fallback = Earlier(fallback, candidate.Fallback);
-                if (fallback.Schema is not null && fallback.Index < candidate.Branch.Index)
-                    return fallback;
-                if (candidate.LogicalSchema.LogicalType.IsInstanceOfLogicalType(value))
-                    return candidate.Branch;
-            }
-
-            if (fallback.Schema is not null)
-                return fallback;
-            if (matched)
-                throw NoMatch(value);
-            return Resolve(value);
-        }
-
-        private UnionBranch ResolveCombinedConditional(object value, Type runtimeType)
-        {
-            var fallback = Earlier(
-                ResolveCompatibleNonStructuralBranch(value, runtimeType),
-                ResolveStructuralBranch(value));
-            if (_conditionalBranches!.TryGetValue(runtimeType, out var conditional))
-                fallback = Earlier(fallback, conditional.Fallback);
-            if (_multipleConditionalBranches?.TryGetValue(runtimeType, out var multiple) == true)
-                fallback = Earlier(fallback, multiple.Fallback);
-
-            var matched = false;
-            var candidates = _conditionalCandidates!;
-            for (var i = 0; i < candidates.Length; i++)
-            {
-                var candidate = candidates[i];
-                if (!candidate.DeclaredType.IsInstanceOfType(value))
-                    continue;
-
-                matched = true;
-                fallback = Earlier(fallback, candidate.Fallback);
-                if (fallback.Schema is not null && fallback.Index < candidate.Branch.Index)
-                    return fallback;
-                if (candidate.LogicalSchema.LogicalType.IsInstanceOfLogicalType(value))
-                    return candidate.Branch;
-            }
-
-            if (fallback.Schema is not null)
-                return fallback;
-            if (matched)
-                throw NoMatch(value);
-            return Resolve(value);
-        }
-
-        private UnionBranch ResolveCompatibleNonStructuralBranch(object value, Type runtimeType)
-        {
-            if (HasConditionalValueBranch(runtimeType))
-                return default;
-
-            return value switch
-            {
-                bool => _booleanBranch,
-                int => _intBranch,
-                long => _longBranch,
-                float => _floatBranch,
-                double => _doubleBranch,
-                byte[] => _bytesBranch,
-                string => _stringBranch,
-                DateTime => _dateTimeBranch,
-                TimeSpan => _timeSpanBranch,
-                Guid => _guidBranch,
-                global::Avro.AvroDecimal => _decimalBranch,
-                _ => _typedBranches.TryGetValue(runtimeType, out var branch) ? branch : default
-            };
-        }
-
-        private static UnionBranch Earlier(UnionBranch left, UnionBranch right) =>
-            right.Schema is not null && (left.Schema is null || right.Index < left.Index) ? right : left;
 
         private UnionBranch FirstCompatibleTypedBranch(Type type, UnionBranch schemaBranch) =>
             _typedBranches.TryGetValue(type, out var typedBranch) && typedBranch.Index < schemaBranch.Index
@@ -1491,74 +1340,28 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
 
         private static Dictionary<Type, ConditionalUnionBranch>? BuildConditionalBranches(
             Dictionary<Type, ConditionalUnionBranchBuilder>? builders,
-            out Dictionary<Type, MultipleConditionalUnionBranches>? multipleBranches)
+            global::Avro.UnionSchema schema)
         {
-            multipleBranches = null;
             if (builders is null)
                 return null;
 
             var branches = new Dictionary<Type, ConditionalUnionBranch>(builders.Count);
             foreach (var (type, builder) in builders)
             {
-                if (builder.Candidates.Count == 1)
+                if (!type.IsSealed || builder.Candidates.Count != 1)
                 {
-                    var candidate = builder.Candidates[0];
-                    branches.Add(
-                        type,
-                        new ConditionalUnionBranch(candidate.Branch, candidate.LogicalSchema, builder.Fallback));
-                    continue;
+                    throw new global::Avro.AvroTypeException(
+                        $"Union {schema} uses value-dependent custom logical branches for {type}; " +
+                        "assignable or multi-candidate dispatch would require forbidden per-message scans.");
                 }
 
-                multipleBranches ??= new Dictionary<Type, MultipleConditionalUnionBranches>();
-                multipleBranches.Add(
+                var candidate = builder.Candidates[0];
+                branches.Add(
                     type,
-                    new MultipleConditionalUnionBranches(builder.Candidates.ToArray(), builder.Fallback));
+                    new ConditionalUnionBranch(candidate.Branch, candidate.LogicalSchema, builder.Fallback));
             }
 
             return branches;
-        }
-
-        private static ConditionalUnionCandidateByType[]? BuildConditionalCandidates(
-            Dictionary<Type, ConditionalUnionBranchBuilder>? builders,
-            out ConditionalUnionCandidateByType[]? assignableCandidates)
-        {
-            assignableCandidates = null;
-            if (builders is null)
-                return null;
-
-            List<ConditionalUnionCandidateByType>? candidates = null;
-            List<ConditionalUnionCandidateByType>? assignable = null;
-            foreach (var (type, builder) in builders)
-            {
-                candidates ??= [];
-                var isAssignableType = !type.IsSealed;
-                if (isAssignableType)
-                    assignable ??= [];
-
-                for (var i = 0; i < builder.Candidates.Count; i++)
-                {
-                    var candidate = builder.Candidates[i];
-                    var candidateByType = new ConditionalUnionCandidateByType(
-                        type,
-                        candidate.Branch,
-                        candidate.LogicalSchema,
-                        builder.Fallback);
-                    candidates.Add(candidateByType);
-                    if (isAssignableType)
-                        assignable!.Add(candidateByType);
-                }
-            }
-
-            if (candidates is null)
-                return null;
-
-            candidates.Sort(static (left, right) => left.Branch.Index.CompareTo(right.Branch.Index));
-            if (assignable is not null)
-            {
-                assignable.Sort(static (left, right) => left.Branch.Index.CompareTo(right.Branch.Index));
-                assignableCandidates = assignable.ToArray();
-            }
-            return candidates.ToArray();
         }
 
         private void ThrowIfConditionalValueBranch(Type type)
@@ -1576,8 +1379,7 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
             var valueType = GetValueType(type);
             return valueType != ValueTypeFlags.None
                 ? (_conditionalValueTypes & valueType) != 0
-                : _conditionalBranches?.ContainsKey(type) == true ||
-                  _multipleConditionalBranches?.ContainsKey(type) == true;
+                : _conditionalBranches?.ContainsKey(type) == true;
         }
 
         private static ValueTypeFlags GetAssignableValueTypes(Type type)
@@ -1641,16 +1443,6 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
 
     private readonly record struct ConditionalUnionBranch(
         UnionBranch Primary,
-        global::Avro.LogicalSchema LogicalSchema,
-        UnionBranch Fallback);
-
-    private readonly record struct MultipleConditionalUnionBranches(
-        ConditionalUnionCandidate[] Candidates,
-        UnionBranch Fallback);
-
-    private readonly record struct ConditionalUnionCandidateByType(
-        Type DeclaredType,
-        UnionBranch Branch,
         global::Avro.LogicalSchema LogicalSchema,
         UnionBranch Fallback);
 
