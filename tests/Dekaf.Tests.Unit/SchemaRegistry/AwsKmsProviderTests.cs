@@ -139,6 +139,23 @@ public class AwsKmsProviderTests
     }
 
     [Test]
+    public async Task Unwrap_ZeroesNonExposablePlaintextStream()
+    {
+        var plaintext = new byte[] { 1, 2, 3 };
+        var stream = new MemoryStream(plaintext);
+        var client = Substitute.For<IAmazonKeyManagementService>();
+        client.DecryptAsync(Arg.Any<DecryptRequest>(), Arg.Any<CancellationToken>())
+            .Returns(new DecryptResponse { Plaintext = stream });
+        using var provider = new AwsKmsProvider(client);
+
+        var unwrapped = await provider.UnwrapKeyAsync(new byte[] { 4, 5, 6 }, CreateKeyReference());
+
+        await Assert.That(stream.TryGetBuffer(out _)).IsFalse();
+        await Assert.That(unwrapped).IsEquivalentTo(new byte[] { 1, 2, 3 });
+        await Assert.That(plaintext).IsEquivalentTo(new byte[] { 0, 0, 0 });
+    }
+
+    [Test]
     public async Task WrongKey_IsReportedWithoutKeyMaterial()
     {
         var client = Substitute.For<IAmazonKeyManagementService>();

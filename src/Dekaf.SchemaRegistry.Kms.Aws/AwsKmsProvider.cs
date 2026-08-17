@@ -233,9 +233,31 @@ public sealed class AwsKmsProvider : ISchemaRegistryKmsProvider, IDisposable
             }
             finally
             {
-                if (clearSource && stream.TryGetBuffer(out var buffer))
-                    CryptographicOperations.ZeroMemory(buffer.AsSpan());
+                if (clearSource)
+                    ClearResponseStream(stream);
             }
+        }
+    }
+
+    private static void ClearResponseStream(MemoryStream stream)
+    {
+        if (stream.TryGetBuffer(out var buffer))
+        {
+            CryptographicOperations.ZeroMemory(buffer.AsSpan());
+            return;
+        }
+
+        if (!stream.CanWrite)
+            return;
+
+        stream.Position = 0;
+        Span<byte> zeros = stackalloc byte[256];
+        zeros.Clear();
+        for (var remaining = stream.Length; remaining > 0;)
+        {
+            var count = (int)Math.Min(remaining, zeros.Length);
+            stream.Write(zeros[..count]);
+            remaining -= count;
         }
     }
 
