@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using BenchmarkDotNet.Attributes;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Avro;
@@ -41,6 +42,7 @@ public class SchemaRegistryCsfleRuleBenchmarks
     private SchemaRegistryRuleContext _mutableTaggedJsonContext = null!;
     private SchemaRegistryRuleContext _mutableSortedTaggedJsonContext = null!;
     private SchemaRegistryRuleContext _taggedAvroContext = null!;
+    private SchemaRegistryRuleContext _mutableTaggedAvroContext = null!;
     private SchemaRegistryRuleContext[] _rotatingGcmContexts = null!;
     private SchemaRegistryRuleContext[] _rotatingSivContexts = null!;
     private byte[] _encryptedPayload = null!;
@@ -50,6 +52,7 @@ public class SchemaRegistryCsfleRuleBenchmarks
     private byte[] _mutableEncryptedJsonPayload = null!;
     private byte[] _mutableSortedEncryptedJsonPayload = null!;
     private byte[] _encryptedAvroPayload = null!;
+    private byte[] _mutableEncryptedAvroPayload = null!;
 
     [GlobalSetup]
     public void Setup()
@@ -114,6 +117,25 @@ public class SchemaRegistryCsfleRuleBenchmarks
             avroSchema,
             SchemaRegistryPayloadFormat.Avro,
             AvroTaggedFieldTransformer.Get(AvroSchema.Parse(TaggedAvroSchema), avroSchema));
+        var mutableAvroSchema = new Schema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = TaggedAvroSchema,
+            Metadata = new SchemaMetadata
+            {
+                Tags = new Dictionary<string, IReadOnlySet<string>>(StringComparer.Ordinal)
+                {
+                    ["BenchmarkRecord.ssn"] = FrozenSet.ToFrozenSet(["PII"], StringComparer.Ordinal),
+                    ["BenchmarkRecord.s?n"] = FrozenSet.ToFrozenSet(["PII"], StringComparer.Ordinal),
+                    ["BenchmarkRecord.s*"] = FrozenSet.ToFrozenSet(["PII"], StringComparer.Ordinal)
+                }
+            },
+            RuleSet = new SchemaRuleSet { DomainRules = [avroRule] }
+        };
+        _mutableTaggedAvroContext = CreateContext(
+            mutableAvroSchema,
+            SchemaRegistryPayloadFormat.Avro,
+            AvroTaggedFieldTransformer.Get(AvroSchema.Parse(TaggedAvroSchema), mutableAvroSchema));
         _encryptedPayload = _executor.TransformSerializedPayload(Payload, _wholePayloadContext).ToArray();
         _mutableEncryptedPayload = _executor.TransformSerializedPayload(Payload, _mutableWholePayloadContext).ToArray();
         _deterministicEncryptedPayload = _executor.TransformSerializedPayload(Payload, _deterministicContext).ToArray();
@@ -123,6 +145,9 @@ public class SchemaRegistryCsfleRuleBenchmarks
             .TransformSerializedPayload(JsonPayload, _mutableSortedTaggedJsonContext)
             .ToArray();
         _encryptedAvroPayload = _executor.TransformSerializedPayload(AvroPayload, _taggedAvroContext).ToArray();
+        _mutableEncryptedAvroPayload = _executor
+            .TransformSerializedPayload(AvroPayload, _mutableTaggedAvroContext)
+            .ToArray();
 
         Warm();
         Warm();
@@ -185,6 +210,14 @@ public class SchemaRegistryCsfleRuleBenchmarks
         _executor.TransformDeserializedPayload(_encryptedAvroPayload, _taggedAvroContext);
 
     [Benchmark]
+    public ReadOnlyMemory<byte> EncryptMutableTaggedAvroField() =>
+        _executor.TransformSerializedPayload(AvroPayload, _mutableTaggedAvroContext);
+
+    [Benchmark]
+    public ReadOnlyMemory<byte> DecryptMutableTaggedAvroField() =>
+        _executor.TransformDeserializedPayload(_mutableEncryptedAvroPayload, _mutableTaggedAvroContext);
+
+    [Benchmark]
     public ReadOnlyMemory<byte> EncryptRotatingGcmDeks() => EncryptRotating(_rotatingGcmContexts);
 
     [Benchmark]
@@ -206,6 +239,8 @@ public class SchemaRegistryCsfleRuleBenchmarks
         DecryptMutableSortedTaggedJsonField();
         EncryptTaggedAvroField();
         DecryptTaggedAvroField();
+        EncryptMutableTaggedAvroField();
+        DecryptMutableTaggedAvroField();
         EncryptRotating(_rotatingGcmContexts);
         EncryptRotating(_rotatingSivContexts);
     }

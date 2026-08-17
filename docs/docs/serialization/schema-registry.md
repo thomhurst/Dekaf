@@ -267,6 +267,13 @@ silently encrypting the whole payload. Untagged fields remain byte-for-byte unch
 schema and rule plan are cached, the field walker is allocation-free; the KMS provider still owns
 any algorithm- or key-management-specific costs.
 
+For caller-owned mutable schemas, Avro metadata tag values must use `FrozenSet<string>` or
+`IImmutableSet<string>`. To update them, remove and re-add the containing metadata dictionary entry;
+Dekaf observes the dictionary's structural version and rebuilds the cached plan. Mutable
+`HashSet<string>` and `SortedSet<string>` metadata values are rejected because detecting their
+in-place changes would require an O(n) scan on every message. Rule tag sets may remain mutable;
+their version is checked once per transform.
+
 ## Schema Registry Configuration
 
 ```csharp

@@ -170,7 +170,7 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
             var field = fields[i];
             TransformValue(
                 field.Schema,
-                targets.IsTarget(field.Pos, context.Rule),
+                targets.IsTarget(field.Pos),
                 plan,
                 ref reader,
                 output,
@@ -610,7 +610,6 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
             var records = new Dictionary<global::Avro.RecordSchema, RecordTargets>(ReferenceEqualityComparer.Instance);
             List<MutableFieldTarget>? mutableTargets = mutableTags ? [] : null;
             var visited = new HashSet<AvroSchema>(ReferenceEqualityComparer.Instance);
-            var alwaysVisitedRecords = GetAlwaysVisitedRecords(schema);
             var hasTargets = false;
             Visit(
                 schema,
@@ -621,32 +620,8 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
                 records,
                 mutableTargets,
                 visited,
-                alwaysVisitedRecords,
                 ref hasTargets);
             return new RulePlan(records, mutableTargets?.ToArray(), hasTargets, rule);
-        }
-
-        private static HashSet<global::Avro.RecordSchema> GetAlwaysVisitedRecords(AvroSchema schema)
-        {
-            var records = new HashSet<global::Avro.RecordSchema>(ReferenceEqualityComparer.Instance);
-            VisitAlways(schema, records, new HashSet<AvroSchema>(ReferenceEqualityComparer.Instance));
-            return records;
-        }
-
-        private static void VisitAlways(
-            AvroSchema schema,
-            HashSet<global::Avro.RecordSchema> records,
-            HashSet<AvroSchema> visited)
-        {
-            if (schema is global::Avro.LogicalSchema logical)
-                schema = logical.BaseSchema;
-            if (!visited.Add(schema) || schema is not global::Avro.RecordSchema record)
-                return;
-
-            records.Add(record);
-            var fields = record.Fields;
-            for (var i = 0; i < fields.Count; i++)
-                VisitAlways(fields[i].Schema, records, visited);
         }
 
         private static void Visit(
@@ -658,7 +633,6 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
             Dictionary<global::Avro.RecordSchema, RecordTargets> records,
             List<MutableFieldTarget>? mutableTargets,
             HashSet<AvroSchema> visited,
-            HashSet<global::Avro.RecordSchema> alwaysVisitedRecords,
             ref bool hasTargets)
         {
             if (schema is global::Avro.LogicalSchema logical)
@@ -692,7 +666,6 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
                                 tagField,
                                 metadata,
                                 fullName,
-                                alwaysVisitedRecords.Contains(record),
                                 rule);
                             if (target is not null)
                             {
@@ -719,7 +692,6 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
                             records,
                             mutableTargets,
                             visited,
-                            alwaysVisitedRecords,
                             ref hasTargets);
                     }
                     break;
@@ -733,7 +705,6 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
                         records,
                         mutableTargets,
                         visited,
-                        alwaysVisitedRecords,
                         ref hasTargets);
                     break;
                 case global::Avro.MapSchema map:
@@ -746,7 +717,6 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
                         records,
                         mutableTargets,
                         visited,
-                        alwaysVisitedRecords,
                         ref hasTargets);
                     break;
                 case global::Avro.UnionSchema union:
@@ -762,7 +732,6 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
                             records,
                             mutableTargets,
                             visited,
-                            alwaysVisitedRecords,
                             ref hasTargets);
                     }
                     break;
@@ -933,10 +902,10 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
     private sealed class RecordTargets(bool[] targets, MutableFieldTarget?[]? mutableTargets)
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public bool IsTarget(int position, SchemaRule rule)
+        public bool IsTarget(int position)
         {
             var mutableTarget = mutableTargets?[position];
-            return mutableTarget is null ? targets[position] : mutableTarget.Refresh(rule);
+            return mutableTarget is null ? targets[position] : mutableTarget.IsTarget;
         }
     }
 
@@ -955,10 +924,6 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
         IReadOnlySet<string>[] metadataTags,
         SchemaRule rule)
     {
-        private readonly object _gate = new();
-        private readonly int[] _metadataVersions = CaptureVersions(metadataTags);
-        private readonly int[] _pendingMetadataVersions = new int[metadataTags.Length];
-        private int _ruleTagsVersion = GetSetVersion(rule.Tags!);
         private int _isTarget =
             TagsOverlap(inlineTags, rule.Tags!) || MetadataTagsOverlap(metadataTags, rule.Tags!) ? 1 : 0;
         private TargetCounter? _counter;
@@ -969,7 +934,6 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
             global::Avro.Field? field,
             IReadOnlyDictionary<string, IReadOnlySet<string>>? metadata,
             string fullName,
-            bool alwaysVisited,
             SchemaRule rule)
         {
             var inlineTags = ReadInlineTags(field);
@@ -980,11 +944,10 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
                 {
                     if (!RulePlan.GlobMatches(pattern, fullName))
                         continue;
-                    _ = GetSetVersion(tags);
-                    if (!alwaysVisited && tags is HashSet<string> or SortedSet<string>)
+                    if (tags is not (FrozenSet<string> or IImmutableSet<string>))
                     {
                         throw new SchemaRegistryRuleException(
-                            $"Caller-owned Avro CSFLE metadata tags for conditionally visited field '{fullName}' " +
+                            $"Caller-owned Avro CSFLE metadata tags for field '{fullName}' " +
                             "cannot be mutated in place without a per-message scan. Use FrozenSet<string> or " +
                             "IImmutableSet<string>, and remove then re-add the metadata dictionary entry to update tags.");
                     }
@@ -1002,47 +965,14 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void SetCounter(TargetCounter counter) => _counter = counter;
 
-        public bool Refresh(SchemaRule rule)
+        public void Refresh(SchemaRule rule)
         {
             var ruleTags = rule.Tags!;
-            var ruleVersion = GetSetVersion(ruleTags);
-            if (VersionsAreCurrent(ruleVersion))
-                return IsTarget;
-
-            lock (_gate)
-            {
-                ruleVersion = GetSetVersion(ruleTags);
-                if (VersionsAreCurrent(ruleVersion))
-                    return IsTarget;
-
-                for (var i = 0; i < metadataTags.Length; i++)
-                    _pendingMetadataVersions[i] = GetSetVersion(metadataTags[i]);
-
-                var previous = IsTarget;
-                var current = TagsOverlap(inlineTags, ruleTags) || MetadataTagsOverlap(metadataTags, ruleTags);
-                Volatile.Write(ref _isTarget, current ? 1 : 0);
-                if (current != previous)
-                    _counter!.Add(current ? 1 : -1);
-                Volatile.Write(ref _ruleTagsVersion, ruleVersion);
-                for (var i = 0; i < metadataTags.Length; i++)
-                    Volatile.Write(ref _metadataVersions[i], _pendingMetadataVersions[i]);
-
-                return current;
-            }
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private bool VersionsAreCurrent(int ruleVersion)
-        {
-            if (ruleVersion != Volatile.Read(ref _ruleTagsVersion))
-                return false;
-            for (var i = 0; i < metadataTags.Length; i++)
-            {
-                if (GetSetVersion(metadataTags[i]) != Volatile.Read(ref _metadataVersions[i]))
-                    return false;
-            }
-
-            return true;
+            var previous = IsTarget;
+            var current = TagsOverlap(inlineTags, ruleTags) || MetadataTagsOverlap(metadataTags, ruleTags);
+            Volatile.Write(ref _isTarget, current ? 1 : 0);
+            if (current != previous)
+                _counter!.Add(current ? 1 : -1);
         }
 
         private static string[] ReadInlineTags(global::Avro.Field? field)
@@ -1063,14 +993,6 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
             }
 
             return tags.ToArray();
-        }
-
-        private static int[] CaptureVersions(IReadOnlySet<string>[] tags)
-        {
-            var versions = new int[tags.Length];
-            for (var i = 0; i < tags.Length; i++)
-                versions[i] = GetSetVersion(tags[i]);
-            return versions;
         }
 
         private static bool MetadataTagsOverlap(

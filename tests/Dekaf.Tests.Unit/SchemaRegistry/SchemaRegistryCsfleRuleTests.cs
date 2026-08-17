@@ -179,7 +179,8 @@ public sealed class SchemaRegistryCsfleRuleTests
             {
                 Tags = new Dictionary<string, IReadOnlySet<string>>(StringComparer.Ordinal)
                 {
-                    ["test.Payment.account"] = new HashSet<string>(StringComparer.Ordinal) { "PII" }
+                    ["test.Payment.account"] =
+                        new HashSet<string>(StringComparer.Ordinal) { "PII" }.ToFrozenSet(StringComparer.Ordinal)
                 }
             },
             RuleSet = new SchemaRuleSet { DomainRules = [rule] }
@@ -263,7 +264,7 @@ public sealed class SchemaRegistryCsfleRuleTests
     }
 
     [Test]
-    public async Task AvroSerializer_CallerOwnedTags_ObservesSetMutations()
+    public async Task AvroSerializer_CallerOwnedTags_RequiresMetadataEntryReplacement()
     {
         const string schemaText = """
             {
@@ -275,12 +276,11 @@ public sealed class SchemaRegistryCsfleRuleTests
                     { "name": "account", "type": "string" }
                 ]
             }
-            """;
+        """;
         var ruleTags = new HashSet<string>(StringComparer.Ordinal) { "PII" };
-        var accountTags = new HashSet<string>(StringComparer.Ordinal) { "ACCOUNT" };
         var metadataTags = new Dictionary<string, IReadOnlySet<string>>(StringComparer.Ordinal)
         {
-            ["test.MutablePayment.account"] = accountTags
+            ["test.MutablePayment.account"] = new HashSet<string>(StringComparer.Ordinal) { "ACCOUNT" }
         };
         var rule = CreateRule(tags: ruleTags);
         var schema = new Schema
@@ -310,9 +310,13 @@ public sealed class SchemaRegistryCsfleRuleTests
         };
         var first = new ArrayBufferWriter<byte>();
 
+        await Assert.That(() => Serialize(first))
+            .Throws<SchemaRegistryRuleException>()
+            .WithMessageContaining("cannot be mutated in place");
+
+        ReplaceMetadataTags("ACCOUNT");
         serializer.Serialize(record, ref first, context);
-        accountTags.Clear();
-        accountTags.Add("PII");
+        ReplaceMetadataTags("PII");
         var second = new ArrayBufferWriter<byte>();
         serializer.Serialize(record, ref second, context);
         ruleTags.Clear();
@@ -322,8 +326,7 @@ public sealed class SchemaRegistryCsfleRuleTests
             .Throws<SchemaRegistryRuleException>()
             .WithMessageContaining("did not match");
 
-        accountTags.Clear();
-        accountTags.Add("PUBLIC");
+        ReplaceMetadataTags("PUBLIC");
         var third = new ArrayBufferWriter<byte>();
         serializer.Serialize(record, ref third, context);
         metadataTags.Remove("test.MutablePayment.account");
@@ -332,8 +335,7 @@ public sealed class SchemaRegistryCsfleRuleTests
             .Throws<SchemaRegistryRuleException>()
             .WithMessageContaining("did not match");
 
-        metadataTags["test.MutablePayment.account"] =
-            new HashSet<string>(StringComparer.Ordinal) { "PUBLIC" };
+        ReplaceMetadataTags("PUBLIC");
         var fourth = new ArrayBufferWriter<byte>();
         serializer.Serialize(record, ref fourth, context);
 
@@ -348,6 +350,14 @@ public sealed class SchemaRegistryCsfleRuleTests
 
         void Serialize(ArrayBufferWriter<byte> destination) =>
             serializer.Serialize(record, ref destination, context);
+
+        void ReplaceMetadataTags(string tag)
+        {
+            metadataTags.Remove("test.MutablePayment.account");
+            metadataTags.Add(
+                "test.MutablePayment.account",
+                new HashSet<string>(StringComparer.Ordinal) { tag }.ToFrozenSet(StringComparer.Ordinal));
+        }
     }
 
     [Test]
@@ -406,7 +416,7 @@ public sealed class SchemaRegistryCsfleRuleTests
 
         await Assert.That(Serialize)
             .Throws<SchemaRegistryRuleException>()
-            .WithMessageContaining("conditionally visited");
+            .WithMessageContaining("cannot be mutated in place");
 
         metadataTags.Remove("test.SecretItem.secret");
         metadataTags.Add(
