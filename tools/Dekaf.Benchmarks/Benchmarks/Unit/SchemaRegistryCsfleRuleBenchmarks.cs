@@ -19,11 +19,13 @@ public class SchemaRegistryCsfleRuleBenchmarks
     private SchemaRegistryRuleContext _deterministicContext = null!;
     private SchemaRegistryRuleContext _taggedJsonContext = null!;
     private SchemaRegistryRuleContext _mutableTaggedJsonContext = null!;
+    private SchemaRegistryRuleContext _mutableSortedTaggedJsonContext = null!;
     private byte[] _encryptedPayload = null!;
     private byte[] _mutableEncryptedPayload = null!;
     private byte[] _deterministicEncryptedPayload = null!;
     private byte[] _encryptedJsonPayload = null!;
     private byte[] _mutableEncryptedJsonPayload = null!;
+    private byte[] _mutableSortedEncryptedJsonPayload = null!;
 
     [GlobalSetup]
     public void Setup()
@@ -58,11 +60,27 @@ public class SchemaRegistryCsfleRuleBenchmarks
                 },
                 fixedCollections: false),
             SchemaRegistryPayloadFormat.Json);
+        var sortedTaggedRule = CreateRule(new SortedSet<string>(StringComparer.Ordinal) { "PII" });
+        _mutableSortedTaggedJsonContext = CreateContext(
+            CreateSchema(
+                sortedTaggedRule,
+                new SchemaMetadata
+                {
+                    Tags = new Dictionary<string, IReadOnlySet<string>>(StringComparer.Ordinal)
+                    {
+                        ["$.ssn"] = new SortedSet<string>(StringComparer.Ordinal) { "PII" }
+                    }
+                },
+                fixedCollections: false),
+            SchemaRegistryPayloadFormat.Json);
         _encryptedPayload = _executor.TransformSerializedPayload(Payload, _wholePayloadContext).ToArray();
         _mutableEncryptedPayload = _executor.TransformSerializedPayload(Payload, _mutableWholePayloadContext).ToArray();
         _deterministicEncryptedPayload = _executor.TransformSerializedPayload(Payload, _deterministicContext).ToArray();
         _encryptedJsonPayload = _executor.TransformSerializedPayload(JsonPayload, _taggedJsonContext).ToArray();
         _mutableEncryptedJsonPayload = _executor.TransformSerializedPayload(JsonPayload, _mutableTaggedJsonContext).ToArray();
+        _mutableSortedEncryptedJsonPayload = _executor
+            .TransformSerializedPayload(JsonPayload, _mutableSortedTaggedJsonContext)
+            .ToArray();
 
         Warm();
         Warm();
@@ -108,6 +126,14 @@ public class SchemaRegistryCsfleRuleBenchmarks
     public ReadOnlyMemory<byte> DecryptMutableTaggedJsonField() =>
         _executor.TransformDeserializedPayload(_mutableEncryptedJsonPayload, _mutableTaggedJsonContext);
 
+    [Benchmark]
+    public ReadOnlyMemory<byte> EncryptMutableSortedTaggedJsonField() =>
+        _executor.TransformSerializedPayload(JsonPayload, _mutableSortedTaggedJsonContext);
+
+    [Benchmark]
+    public ReadOnlyMemory<byte> DecryptMutableSortedTaggedJsonField() =>
+        _executor.TransformDeserializedPayload(_mutableSortedEncryptedJsonPayload, _mutableSortedTaggedJsonContext);
+
     private void Warm()
     {
         EncryptWholePayload();
@@ -120,6 +146,8 @@ public class SchemaRegistryCsfleRuleBenchmarks
         DecryptTaggedJsonField();
         EncryptMutableTaggedJsonField();
         DecryptMutableTaggedJsonField();
+        EncryptMutableSortedTaggedJsonField();
+        DecryptMutableSortedTaggedJsonField();
     }
 
     private static SchemaRule CreateRule(IReadOnlySet<string>? tags = null, string? algorithm = null) =>

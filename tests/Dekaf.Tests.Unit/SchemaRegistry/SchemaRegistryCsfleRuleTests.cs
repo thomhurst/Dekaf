@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -159,6 +160,77 @@ public sealed class SchemaRegistryCsfleRuleTests
         using var document = JsonDocument.Parse(encrypted);
         await Assert.That(document.RootElement.GetProperty("name").GetString()).IsNotEqualTo("Ada");
         await Assert.That(document.RootElement.GetProperty("ssn").GetString()).IsEqualTo("123-45-6789");
+    }
+
+    [Test]
+    public async Task TransformSerializedPayload_CallerOwnedSortedTags_ObservesTagMutations()
+    {
+        var ruleTags = new SortedSet<string>(StringComparer.Ordinal) { "PII" };
+        var fieldTags = new SortedSet<string>(StringComparer.Ordinal) { "PII" };
+        var rule = CreateRule(tags: ruleTags);
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = "{}",
+            Metadata = new SchemaMetadata
+            {
+                Tags = new Dictionary<string, IReadOnlySet<string>>(StringComparer.Ordinal)
+                {
+                    ["$.ssn"] = fieldTags
+                }
+            },
+            RuleSet = new SchemaRuleSet { DomainRules = [rule] }
+        };
+        var handler = CreateHandler(CreateDekClient());
+        var context = CreateHandlerContext(rule, schema);
+        var payload = """{"ssn":"123-45-6789"}"""u8.ToArray();
+
+        _ = handler.TransformSerializedPayload(payload, context);
+        fieldTags.Clear();
+        fieldTags.Add("PUBLIC");
+
+        await Assert.That(() => handler.TransformSerializedPayload(payload, context))
+            .Throws<SchemaRegistryRuleException>()
+            .WithMessageContaining("did not match");
+
+        ruleTags.Clear();
+        ruleTags.Add("PUBLIC");
+        var encrypted = handler.TransformSerializedPayload(payload, context);
+
+        using var document = JsonDocument.Parse(encrypted);
+        await Assert.That(document.RootElement.GetProperty("ssn").GetString()).IsNotEqualTo("123-45-6789");
+    }
+
+    [Test]
+    public async Task TransformSerializedPayload_UntrackableCallerOwnedTags_FailsClosed()
+    {
+        var rule = CreateRule(tags: new UntrackableTagSet("PII"));
+        var handler = CreateHandler(CreateDekClient());
+        var context = CreateHandlerContext(rule, CreateTaggedSchema(rule));
+
+        await Assert.That(() => handler.TransformSerializedPayload("""{"ssn":"secret"}"""u8.ToArray(), context))
+            .Throws<SchemaRegistryRuleException>()
+            .WithMessageContaining("cannot be tracked for mutation");
+    }
+
+    [Test]
+    public async Task TransformSerializedPayload_OversizedWorkspaceBuffers_AreNotRetained()
+    {
+        const int maxRetainedBufferSize = 1024 * 1024;
+        var rule = CreateRule(tags: new HashSet<string>(StringComparer.Ordinal) { "PII" });
+        var handler = CreateHandler(CreateDekClient());
+        var context = CreateHandlerContext(rule, CreateTaggedSchema(rule));
+        var value = new string('x', maxRetainedBufferSize + 1);
+        var payload = Encoding.UTF8.GetBytes($"{{\"ssn\":\"{value}\"}}");
+
+        var encrypted = handler.TransformSerializedPayload(payload, context);
+        var (outputs, temporaries) = GetWorkspaceBuffers(handler);
+
+        await Assert.That(outputs.Where(static buffer => buffer is not null).All(
+            buffer => buffer!.Length <= maxRetainedBufferSize)).IsTrue();
+        await Assert.That(temporaries.Where(static buffer => buffer is not null).All(
+            buffer => buffer!.Length <= maxRetainedBufferSize)).IsTrue();
+        GC.KeepAlive(encrypted);
     }
 
     [Test]
@@ -566,6 +638,49 @@ public sealed class SchemaRegistryCsfleRuleTests
         var bytes = Encoding.UTF8.GetBytes(value);
         bytes.CopyTo(writer.GetSpan(bytes.Length));
         writer.Advance(bytes.Length);
+    }
+
+    private static (byte[]?[] Outputs, byte[]?[] Temporaries) GetWorkspaceBuffers(
+        SchemaRegistryCsfleRuleHandler handler)
+    {
+        var workspaces = typeof(SchemaRegistryCsfleRuleHandler)
+            .GetField("t_workspaces", BindingFlags.NonPublic | BindingFlags.Static)!
+            .GetValue(null)!;
+        var arguments = new object?[] { handler, null };
+        var found = (bool)workspaces.GetType().GetMethod("TryGetValue")!.Invoke(workspaces, arguments)!;
+        if (!found)
+            throw new InvalidOperationException("CSFLE workspace was not created.");
+
+        var workspace = arguments[1]!;
+        var workspaceType = workspace.GetType();
+        return (
+            (byte[]?[])workspaceType.GetField("_outputs", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(workspace)!,
+            (byte[]?[])workspaceType.GetField("_temporaries", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(workspace)!);
+    }
+
+    private sealed class UntrackableTagSet(params string[] tags) : IReadOnlySet<string>
+    {
+        private readonly HashSet<string> _tags = new(tags, StringComparer.Ordinal);
+
+        public int Count => _tags.Count;
+
+        public bool Contains(string item) => _tags.Contains(item);
+
+        public IEnumerator<string> GetEnumerator() => _tags.GetEnumerator();
+
+        public bool IsProperSubsetOf(IEnumerable<string> other) => _tags.IsProperSubsetOf(other);
+
+        public bool IsProperSupersetOf(IEnumerable<string> other) => _tags.IsProperSupersetOf(other);
+
+        public bool IsSubsetOf(IEnumerable<string> other) => _tags.IsSubsetOf(other);
+
+        public bool IsSupersetOf(IEnumerable<string> other) => _tags.IsSupersetOf(other);
+
+        public bool Overlaps(IEnumerable<string> other) => _tags.Overlaps(other);
+
+        public bool SetEquals(IEnumerable<string> other) => _tags.SetEquals(other);
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
     }
 
     private sealed class FakeDekRegistryClient : ISchemaRegistryClient

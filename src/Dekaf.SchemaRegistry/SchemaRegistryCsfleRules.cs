@@ -2,6 +2,8 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.Buffers.Text;
 using System.Collections.Concurrent;
+using System.Collections.Frozen;
+using System.Collections.Immutable;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
@@ -147,6 +149,7 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
         bool encrypt)
     {
         var workspace = GetWorkspace();
+        using var workspaceOperation = new CsfleWorkspaceOperation(workspace);
         workspace.JsonNodes[0] = plan.Root;
         var output = workspace.CreateOutput(payload.Span, payload.Length + 128);
         var reader = new Utf8JsonReader(payload.Span);
@@ -493,8 +496,15 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
         return node;
     }
 
-    private static int GetSetVersion(IReadOnlySet<string> tags) =>
-        tags is HashSet<string> hashSet ? Volatile.Read(ref GetHashSetVersion(hashSet)) : -1;
+    private static int GetSetVersion(IReadOnlySet<string> tags) => tags switch
+    {
+        HashSet<string> hashSet => Volatile.Read(ref GetHashSetVersion(hashSet)),
+        SortedSet<string> sortedSet => Volatile.Read(ref GetSortedSetVersion(sortedSet)),
+        FrozenSet<string> or IImmutableSet<string> => 0,
+        _ => throw new SchemaRegistryRuleException(
+            $"Caller-owned CSFLE tag set type '{tags.GetType().FullName}' cannot be tracked for mutation without a per-message scan. " +
+            "Use HashSet<string>, SortedSet<string>, FrozenSet<string>, or IImmutableSet<string>.")
+    };
 
     [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_version")]
     private static extern ref int GetMetadataVersion(Dictionary<string, IReadOnlySet<string>> dictionary);
@@ -504,6 +514,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
 
     [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_version")]
     private static extern ref int GetHashSetVersion(HashSet<string> hashSet);
+
+    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "version")]
+    private static extern ref int GetSortedSetVersion(SortedSet<string> sortedSet);
 
     private static bool TagsOverlap(IReadOnlySet<string> tags, IReadOnlySet<string> ruleTags)
     {
@@ -1627,8 +1640,8 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
             var tagsVersion = GetSetVersion(tags);
             var ruleTagsVersion = GetSetVersion(rule.Tags!);
             if (!tagsChanged
-                && (tagsVersion < 0 || tagsVersion == Volatile.Read(ref MutableTagsVersion))
-                && (ruleTagsVersion < 0 || ruleTagsVersion == Volatile.Read(ref MutableRuleTagsVersion)))
+                && tagsVersion == Volatile.Read(ref MutableTagsVersion)
+                && ruleTagsVersion == Volatile.Read(ref MutableRuleTagsVersion))
             {
                 return IsTarget;
             }
@@ -1810,6 +1823,7 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
 
     private sealed class CsfleWorkspace
     {
+        private const int MaxRetainedBufferSize = 1024 * 1024;
         private const int OutputBufferCount = 4;
         // Rotation is a cold path; cap retained cipher/key state without adding work to cache hits.
         private const int CryptoCacheCapacity = 16;
@@ -1888,8 +1902,20 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
             return _outputs[slot]!.AsSpan(written);
         }
 
-        public ReadOnlyMemory<byte> GetOutputMemory(int slot, int written) =>
-            _outputs[slot]!.AsMemory(0, written);
+        public ReadOnlyMemory<byte> GetOutputMemory(int slot, int written)
+        {
+            var buffer = _outputs[slot]!;
+            var memory = buffer.AsMemory(0, written);
+            if (buffer.Length > MaxRetainedBufferSize)
+                _outputs[slot] = null;
+            return memory;
+        }
+
+        public void ReleaseOversizedTemporaries()
+        {
+            ReleaseOversizedTemporary(0);
+            ReleaseOversizedTemporary(1);
+        }
 
         private void EnsureOutputCapacity(int slot, int capacity, int written)
         {
@@ -1906,6 +1932,21 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
 
             _outputs[slot] = replacement;
         }
+
+        private void ReleaseOversizedTemporary(int slot)
+        {
+            var buffer = _temporaries[slot];
+            if (buffer is null || buffer.Length <= MaxRetainedBufferSize)
+                return;
+
+            _temporaries[slot] = null;
+            ArrayPool<byte>.Shared.Return(buffer, clearArray: true);
+        }
+    }
+
+    private readonly ref struct CsfleWorkspaceOperation(CsfleWorkspace workspace)
+    {
+        public void Dispose() => workspace.ReleaseOversizedTemporaries();
     }
 
     private ref struct PooledBufferBuilder(CsfleWorkspace workspace, int slot)
