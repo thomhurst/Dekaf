@@ -44,6 +44,21 @@ public interface ISchemaRegistryClient : IDisposable
     Task<Schema> GetSchemaAsync(int id, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Gets a schema by global ID using the consumed subject to resolve subject-scoped metadata and rules.
+    /// </summary>
+    /// <param name="id">The schema ID.</param>
+    /// <param name="subject">The subject the message was consumed from.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The schema registered for the subject and ID.</returns>
+    Task<Schema> GetSchemaAsync(
+        int id,
+        string subject,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException(
+            $"{GetType().Name} does not support subject-scoped schema lookup. " +
+            $"Implement {nameof(GetSchemaAsync)}(int, string, CancellationToken) to execute Schema Registry rules safely.");
+
+    /// <summary>
     /// Gets the schema registered under a subject at a specific version.
     /// </summary>
     /// <param name="subject">The subject name.</param>
@@ -370,6 +385,19 @@ public interface ISchemaRegistryCache
     /// <param name="schema">The cached schema, when found.</param>
     /// <returns>True when the schema is already cached.</returns>
     bool TryGetCachedSchema(int id, out Schema schema);
+
+    /// <summary>
+    /// Attempts to get subject-scoped schema metadata by ID without allocating.
+    /// </summary>
+    /// <param name="id">The schema ID.</param>
+    /// <param name="subject">The subject the message was consumed from.</param>
+    /// <param name="schema">The cached schema, when found.</param>
+    /// <returns>True when the subject-scoped schema is already cached.</returns>
+    bool TryGetCachedSchema(int id, string subject, out Schema schema)
+    {
+        schema = null!;
+        return false;
+    }
 }
 
 /// <summary>

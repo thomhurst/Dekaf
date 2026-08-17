@@ -69,9 +69,21 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IA
 
         // Optionally validate the schema exists (with timeout to prevent indefinite hang)
         Schema? schema = null;
+        string? ruleSubject = null;
         if (!_config.SkipSchemaValidation || _config.RuleExecutor is SchemaRegistryRuleExecutor)
         {
-            schema = _schemaRegistry.GetSchemaSync(schemaId, SchemaRegistryTimeout);
+            if (_config.RuleExecutor is not null && _subjectNames is null)
+            {
+                ruleSubject = SubjectNameResolver.GetTopicSubjectName(
+                    context.Topic,
+                    context.Component == SerializationComponent.Key);
+                schema = _schemaRegistry.GetSchemaSync(schemaId, ruleSubject, SchemaRegistryTimeout);
+            }
+            else
+            {
+                schema = _schemaRegistry.GetSchemaSync(schemaId, SchemaRegistryTimeout);
+            }
+
             if (!_config.SkipSchemaValidation && schema.SchemaType != SchemaType.Protobuf)
                 throw new InvalidOperationException($"Schema {schemaId} is not a Protobuf schema (type: {schema.SchemaType})");
         }
@@ -96,11 +108,14 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IA
         var protobufData = payloadMemory.Slice(bytesRead);
         if (_config.RuleExecutor is not null)
         {
+            var subject = ruleSubject ?? GetSubjectName(schemaId, schema, context);
+            if (schema is not null && ruleSubject is null)
+                schema = _schemaRegistry.GetSchemaSync(schemaId, subject, SchemaRegistryTimeout);
             var ruleContext = SchemaRegistryRuleContext.Rent(
                 context.Topic,
                 context.Component,
                 schemaId,
-                GetSubjectName(schemaId, schema, context),
+                subject,
                 schema,
                 SchemaRegistryPayloadFormat.Protobuf);
             try

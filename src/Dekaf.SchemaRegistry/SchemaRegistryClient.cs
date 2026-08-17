@@ -23,6 +23,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
     private readonly HttpClient _httpClient;
     private readonly SchemaRegistryConfig _config;
     private readonly ConcurrentDictionary<int, Schema> _schemaByIdCache = new();
+    private readonly ConcurrentDictionary<(int Id, string Subject), Schema> _schemaBySubjectAndIdCache = new();
     private readonly ConcurrentDictionary<(string Subject, Schema Schema, bool Normalize), int> _idBySchemaCache = new();
     private readonly object _cacheLock = new();
     private readonly int _maxCachedSchemas;
@@ -99,6 +100,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
     }
 
     internal int CachedSchemaByIdCount => _schemaByIdCache.Count;
+    internal int CachedSchemaBySubjectAndIdCount => _schemaBySubjectAndIdCache.Count;
     internal int CachedSchemaIdCount => _idBySchemaCache.Count;
 
     internal static HttpMessageHandler CreateConfiguredHttpHandler(SchemaRegistryConfig? config)
@@ -484,6 +486,37 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
     public bool TryGetCachedSchema(int id, out Schema schema)
         => _schemaByIdCache.TryGetValue(id, out schema!);
 
+    public async Task<Schema> GetSchemaAsync(
+        int id,
+        string subject,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(subject);
+        var key = (id, subject);
+        if (_schemaBySubjectAndIdCache.TryGetValue(key, out var cached))
+            return cached;
+
+        using var response = await GetWithFailoverAsync(
+            WithQuery(
+                $"schemas/ids/{id.ToString(CultureInfo.InvariantCulture)}",
+                ("subject", subject)),
+            cancellationToken).ConfigureAwait(false);
+
+        await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
+
+        var result = await response.Content.ReadFromJsonAsync<GetSchemaResponse>(
+            SchemaRegistryJsonContext.Default.GetSchemaResponse, cancellationToken).ConfigureAwait(false);
+        if (result is null)
+            throw new SchemaRegistryException((int)response.StatusCode, "Schema Registry returned an empty schema response");
+
+        var schema = CreateSchema(result);
+        CacheSubjectSchema(id, subject, schema);
+        return schema;
+    }
+
+    public bool TryGetCachedSchema(int id, string subject, out Schema schema)
+        => _schemaBySubjectAndIdCache.TryGetValue((id, subject), out schema!);
+
     public async Task<RegisteredSchema> GetSchemaBySubjectAsync(string subject, string version = "latest", CancellationToken cancellationToken = default)
     {
         using var response = await GetWithFailoverAsync(
@@ -616,11 +649,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
 
         lock (_cacheLock)
         {
-            if (_schemaByIdCache.Count >= _maxCachedSchemas || _idBySchemaCache.Count >= _maxCachedSchemas)
-            {
-                _schemaByIdCache.Clear();
-                _idBySchemaCache.Clear();
-            }
+            ClearCachesIfFull();
 
             if (schemaById is not null)
                 _schemaByIdCache[id] = schemaById;
@@ -631,6 +660,31 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
                 _idBySchemaCache.TryAdd((subject, schema, normalize), id);
             }
         }
+    }
+
+    private void CacheSubjectSchema(int id, string subject, Schema schema)
+    {
+        if (_maxCachedSchemas == 0)
+            return;
+
+        lock (_cacheLock)
+        {
+            ClearCachesIfFull();
+
+            _schemaBySubjectAndIdCache[(id, subject)] = schema;
+        }
+    }
+
+    private void ClearCachesIfFull()
+    {
+        if (_schemaByIdCache.Count < _maxCachedSchemas &&
+            _schemaBySubjectAndIdCache.Count < _maxCachedSchemas &&
+            _idBySchemaCache.Count < _maxCachedSchemas)
+            return;
+
+        _schemaByIdCache.Clear();
+        _schemaBySubjectAndIdCache.Clear();
+        _idBySchemaCache.Clear();
     }
 
     public async Task<IReadOnlyList<string>> GetAllSubjectsAsync(CancellationToken cancellationToken = default)

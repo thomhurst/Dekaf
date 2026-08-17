@@ -196,8 +196,14 @@ public sealed class SchemaRegistryRuleContext
             return;
         }
 
-        _next = t_overflow;
-        t_overflow = this;
+        ReturnOverflow(this);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void ReturnOverflow(SchemaRegistryRuleContext context)
+    {
+        context._next = t_overflow;
+        t_overflow = context;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

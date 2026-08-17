@@ -125,12 +125,25 @@ public sealed class AvroSchemaRegistryDeserializer<
         var payloadMemory = data.Slice(5);
         if (_config.RuleExecutor is not null)
         {
-            var schema = _schemaRegistry.GetSchemaSync(schemaId, SchemaRegistryTimeout);
+            string subject;
+            if (_subjectNames is null)
+            {
+                subject = SubjectNameResolver.GetTopicSubjectName(
+                    context.Topic,
+                    context.Component == SerializationComponent.Key);
+            }
+            else
+            {
+                var unscopedSchema = _schemaRegistry.GetSchemaSync(schemaId, SchemaRegistryTimeout);
+                subject = GetSubjectName(schemaId, unscopedSchema, context);
+            }
+
+            var schema = _schemaRegistry.GetSchemaSync(schemaId, subject, SchemaRegistryTimeout);
             var ruleContext = SchemaRegistryRuleContext.Rent(
                 context.Topic,
                 context.Component,
                 schemaId,
-                GetSubjectName(schemaId, schema, context),
+                subject,
                 schema,
                 SchemaRegistryPayloadFormat.Avro);
             try

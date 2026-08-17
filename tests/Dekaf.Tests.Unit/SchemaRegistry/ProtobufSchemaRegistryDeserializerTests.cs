@@ -134,7 +134,7 @@ public class ProtobufSchemaRegistryDeserializerTests
             SchemaType = SchemaType.Protobuf,
             SchemaString = "syntax = \"proto3\";"
         };
-        var schemaId = await schemaRegistry.RegisterSchemaAsync("test-topic-value", schema);
+        var schemaId = await schemaRegistry.RegisterSchemaAsync(TestMessage.Descriptor.FullName, schema);
         var replacement = new TestMessage { Id = 9, Name = "Plain", Value = 1.25 };
         var executor = new CapturingRuleExecutor(replacement.ToByteArray());
         var config = new ProtobufDeserializerConfig
@@ -283,7 +283,7 @@ public class ProtobufSchemaRegistryDeserializerTests
             }
         };
         var schemaRegistry = Substitute.For<ISchemaRegistryClient>();
-        schemaRegistry.GetSchemaAsync(123, Arg.Any<CancellationToken>())
+        schemaRegistry.GetSchemaAsync(123, "test-topic-value", Arg.Any<CancellationToken>())
             .Returns(Task.FromResult(schema));
         var handler = new CapturingRuleHandler();
         var config = new ProtobufDeserializerConfig
@@ -298,7 +298,10 @@ public class ProtobufSchemaRegistryDeserializerTests
 
         var result = deserializer.Deserialize(wireBytes, CreateContext());
 
-        await schemaRegistry.Received(1).GetSchemaAsync(123, Arg.Any<CancellationToken>());
+        await schemaRegistry.Received(1).GetSchemaAsync(
+            123,
+            "test-topic-value",
+            Arg.Any<CancellationToken>());
         await Assert.That(handler.WasCalled).IsTrue();
         await Assert.That(result.Id).IsEqualTo(42);
     }

@@ -943,6 +943,23 @@ public sealed class SchemaRegistryCsfleRuleTests
             throw new SchemaRegistryException(40403, $"Schema '{id}' not found");
         }
 
+        public Task<Schema> GetSchemaAsync(
+            int id,
+            string subject,
+            CancellationToken cancellationToken = default)
+        {
+            if (_schemasBySubject.TryGetValue(subject, out var schemas))
+            {
+                for (var i = 0; i < schemas.Count; i++)
+                {
+                    if (schemas[i].Id == id)
+                        return Task.FromResult(schemas[i].Schema);
+                }
+            }
+
+            throw new SchemaRegistryException(40403, $"Schema '{id}' not found under subject '{subject}'");
+        }
+
         public Task<RegisteredSchema> GetSchemaBySubjectAsync(
             string subject,
             string version = "latest",

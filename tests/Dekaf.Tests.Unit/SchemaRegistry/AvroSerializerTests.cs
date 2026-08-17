@@ -210,7 +210,7 @@ public sealed class AvroSerializerTests
             SchemaType = SchemaType.Avro,
             SchemaString = SimpleRecordSchema
         };
-        var schemaId = await schemaRegistry.RegisterSchemaAsync("test-topic-value", schemaObj);
+        var schemaId = await schemaRegistry.RegisterSchemaAsync("test-topic-test.SimpleRecord", schemaObj);
 
         var avroSchema = AvroSchema.Parse(SimpleRecordSchema) as Avro.RecordSchema;
         var replacement = new GenericRecord(avroSchema!);

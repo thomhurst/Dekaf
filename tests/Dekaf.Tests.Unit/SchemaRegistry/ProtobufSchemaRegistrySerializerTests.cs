@@ -79,7 +79,7 @@ public class ProtobufSchemaRegistrySerializerTests
                 Arg.Any<Schema>(),
                 Arg.Any<CancellationToken>())
             .Returns(Task.FromResult(42));
-        schemaRegistry.GetSchemaAsync(42, Arg.Any<CancellationToken>())
+        schemaRegistry.GetSchemaAsync(42, "test-topic-value", Arg.Any<CancellationToken>())
             .Returns(Task.FromResult(registeredSchema));
 
         var replacement = new TestMessage { Id = 9, Name = "Encrypted", Value = 1.25 };
@@ -98,7 +98,10 @@ public class ProtobufSchemaRegistrySerializerTests
         await Assert.That(executor.Context.Subject).IsEqualTo("test-topic-value");
         await Assert.That(executor.Context.SchemaId).IsEqualTo(42);
         await Assert.That(executor.Context.Schema).IsSameReferenceAs(registeredSchema);
-        await schemaRegistry.Received(1).GetSchemaAsync(42, Arg.Any<CancellationToken>());
+        await schemaRegistry.Received(1).GetSchemaAsync(
+            42,
+            "test-topic-value",
+            Arg.Any<CancellationToken>());
     }
 
 

@@ -1623,8 +1623,7 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
                     _metadataKind = MetadataTagsKind.SortedDictionary;
                     _sortedMetadataVersion = sortedDictionary.GetEnumerator();
                     while (_sortedMetadataVersion.MoveNext())
-                    {
-                    }
+                        _ = _sortedMetadataVersion.Current;
                     break;
                 case FrozenDictionary<string, IReadOnlySet<string>> or
                     IImmutableDictionary<string, IReadOnlySet<string>>:

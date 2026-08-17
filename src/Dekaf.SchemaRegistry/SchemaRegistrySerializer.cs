@@ -697,7 +697,7 @@ public sealed class SchemaRegistrySerializer<T> :
                     cancellationToken).ConfigureAwait(false);
             var registeredSchema = _ruleExecutor is null
                 ? schema
-                : await _schemaRegistry.GetSchemaAsync(schemaId, cancellationToken).ConfigureAwait(false);
+                : await _schemaRegistry.GetSchemaAsync(schemaId, subject, cancellationToken).ConfigureAwait(false);
             return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(schemaId, registeredSchema);
         }
 
@@ -831,15 +831,29 @@ public sealed class SchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisp
 
         var schemaId = BinaryPrimitives.ReadInt32BigEndian(span.Slice(1, 4));
 
-        var schema = _schemaRegistry.GetSchemaSync(schemaId, SchemaRegistryTimeout);
         var payload = data.Slice(5);
+        Schema schema;
         if (_ruleExecutor is not null)
         {
+            string subject;
+            if (_subjectNames is null)
+            {
+                subject = SubjectNameResolver.GetTopicSubjectName(
+                    context.Topic,
+                    context.Component == SerializationComponent.Key);
+            }
+            else
+            {
+                schema = _schemaRegistry.GetSchemaSync(schemaId, SchemaRegistryTimeout);
+                subject = GetSubjectName(schemaId, schema, context);
+            }
+
+            schema = _schemaRegistry.GetSchemaSync(schemaId, subject, SchemaRegistryTimeout);
             var ruleContext = SchemaRegistryRuleContext.Rent(
                 context.Topic,
                 context.Component,
                 schemaId,
-                GetSubjectName(schemaId, schema, context),
+                subject,
                 schema,
                 SchemaRegistryPayloadFormat.Custom);
             try
@@ -850,6 +864,10 @@ public sealed class SchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisp
             {
                 ruleContext.Return();
             }
+        }
+        else
+        {
+            schema = _schemaRegistry.GetSchemaSync(schemaId, SchemaRegistryTimeout);
         }
 
         return _deserialize(payload, schema);

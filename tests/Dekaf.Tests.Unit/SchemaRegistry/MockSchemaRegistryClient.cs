@@ -102,11 +102,51 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
         throw new SchemaRegistryException(40403, $"Schema {id} not found");
     }
 
+    public Task<Schema> GetSchemaAsync(
+        int id,
+        string subject,
+        CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        GetSchemaCallCount++;
+
+        if (_schemasBySubject.TryGetValue(subject, out var schemas))
+        {
+            for (var i = 0; i < schemas.Count; i++)
+            {
+                if (schemas[i].Id == id)
+                    return Task.FromResult(schemas[i].Schema);
+            }
+        }
+
+        throw new SchemaRegistryException(40403, $"Schema {id} not found under subject '{subject}'");
+    }
+
     public bool TryGetCachedSchema(int id, out Schema schema)
     {
         ThrowIfDisposed();
         TryGetCachedSchemaCallCount++;
         return _schemasById.TryGetValue(id, out schema!);
+    }
+
+    public bool TryGetCachedSchema(int id, string subject, out Schema schema)
+    {
+        ThrowIfDisposed();
+        TryGetCachedSchemaCallCount++;
+        if (_schemasBySubject.TryGetValue(subject, out var schemas))
+        {
+            for (var i = 0; i < schemas.Count; i++)
+            {
+                if (schemas[i].Id == id)
+                {
+                    schema = schemas[i].Schema;
+                    return true;
+                }
+            }
+        }
+
+        schema = null!;
+        return false;
     }
 
     public Task<RegisteredSchema> GetSchemaBySubjectAsync(string subject, string version = "latest", CancellationToken cancellationToken = default)

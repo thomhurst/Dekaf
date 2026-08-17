@@ -65,6 +65,17 @@ public sealed class SchemaRegistryCacheTests
         public Task<Schema> GetSchemaAsync(int id, CancellationToken cancellationToken = default)
             => Task.FromResult(_schemasById[id]);
 
+        public Task<Schema> GetSchemaAsync(
+            int id,
+            string subject,
+            CancellationToken cancellationToken = default)
+        {
+            if (_idsBySubject.TryGetValue(subject, out var subjectId) && subjectId == id)
+                return Task.FromResult(_schemasById[id]);
+
+            throw new SchemaRegistryException(40403, $"Schema {id} not found under subject '{subject}'");
+        }
+
         public Task<RegisteredSchema> GetSchemaBySubjectAsync(string subject, string version = "latest", CancellationToken cancellationToken = default)
             => throw new NotImplementedException();
 
@@ -483,6 +494,67 @@ public sealed class SchemaRegistryCacheTests
         await Assert.That(executor.DeserializeContext.Subject).IsEqualTo("CustomRecord");
         await Assert.That(executor.DeserializeContext.SchemaId).IsEqualTo(schemaId);
         await Assert.That(executor.DeserializeContext.Schema).IsSameReferenceAs(schema);
+    }
+
+    [Test]
+    public async Task Deserializer_RuleExecutor_RequiresSubjectScopedSchemaLookup()
+    {
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = """{ "type": "string" }"""
+        };
+        var registry = new NonCachingSchemaRegistryClient(schema);
+        var wireBytes = new byte[6];
+        BinaryPrimitives.WriteInt32BigEndian(wireBytes.AsSpan(1, 4), 42);
+        wireBytes[5] = (byte)'x';
+        await using var deserializer = SchemaRegistryDeserializer.Create(
+            registry,
+            static (ReadOnlyMemory<byte> payload, Schema _) => Encoding.UTF8.GetString(payload.Span),
+            ruleExecutor: new ReplacingRuleExecutor());
+
+        var act = () => deserializer.Deserialize(wireBytes, CreateContext());
+
+        await Assert.That(act).Throws<NotSupportedException>()
+            .And.HasMessageContaining("subject-scoped schema lookup");
+        await Assert.That(registry.GetSchemaCallCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Deserializer_RuleExecutor_CachesRuleMetadataBySubjectAndId()
+    {
+        using var handler = new QueueingSchemaRegistryHandler()
+            .Enqueue(HttpStatusCode.OK, SchemaWithRuleJson("topic-a-rule"))
+            .Enqueue(HttpStatusCode.OK, SchemaWithRuleJson("topic-b-rule"));
+        using var registry = new SchemaRegistryClient(new SchemaRegistryConfig
+        {
+            Url = "http://registry:8081"
+        }, handler);
+        var payload = "plain"u8.ToArray();
+        var wireBytes = new byte[5 + payload.Length];
+        wireBytes[0] = 0;
+        BinaryPrimitives.WriteInt32BigEndian(wireBytes.AsSpan(1, 4), 42);
+        payload.CopyTo(wireBytes.AsSpan(5));
+        var executor = new ReplacingRuleExecutor();
+        await using var deserializer = SchemaRegistryDeserializer.Create(
+            registry,
+            static (ReadOnlyMemory<byte> value, Schema _) => Encoding.UTF8.GetString(value.Span),
+            ruleExecutor: executor);
+
+        _ = deserializer.Deserialize(wireBytes, CreateContext("topic-a"));
+        var firstSchema = executor.DeserializeContext!.Schema!;
+        _ = deserializer.Deserialize(wireBytes, CreateContext("topic-b"));
+        var secondSchema = executor.DeserializeContext!.Schema!;
+        _ = deserializer.Deserialize(wireBytes, CreateContext("topic-a"));
+
+        await Assert.That(firstSchema.RuleSet!.EncodingRules![0].Name).IsEqualTo("topic-a-rule");
+        await Assert.That(secondSchema.RuleSet!.EncodingRules![0].Name).IsEqualTo("topic-b-rule");
+        await Assert.That(firstSchema).IsNotSameReferenceAs(secondSchema);
+        await Assert.That(handler.RequestUris).Count().IsEqualTo(2);
+        await Assert.That(handler.RequestUris[0].Query).IsEqualTo("?subject=topic-a-value");
+        await Assert.That(handler.RequestUris[1].Query).IsEqualTo("?subject=topic-b-value");
+        await Assert.That(registry.TryGetCachedSchema(42, "topic-a-value", out var cached)).IsTrue();
+        await Assert.That(cached).IsSameReferenceAs(firstSchema);
     }
 
     [Test]
@@ -994,6 +1066,22 @@ public sealed class SchemaRegistryCacheTests
           "id": {{id}},
           "schema": "{ \"type\": \"string\" }",
           "schemaType": "JSON"
+        }
+        """;
+
+    private static string SchemaWithRuleJson(string ruleName) =>
+        $$"""
+        {
+          "schema": "{ \"type\": \"string\" }",
+          "schemaType": "JSON",
+          "ruleSet": {
+            "encodingRules": [{
+              "name": "{{ruleName}}",
+              "kind": "TRANSFORM",
+              "mode": "READ",
+              "type": "TEST"
+            }]
+          }
         }
         """;
 

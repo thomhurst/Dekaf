@@ -337,7 +337,7 @@ public class SchemaRegistryRuleContextBenchmarks
         SchemaString = "{}"
     };
 
-    private ArrayBufferWriter<byte> _destination = new(256);
+    private readonly ArrayBufferWriter<byte> _destination = new(256);
     private readonly SerializationContext _context = new()
     {
         Topic = "benchmark-topic",
@@ -356,7 +356,8 @@ public class SchemaRegistryRuleContextBenchmarks
             static (value, writer) => writer.Write(value),
             static () => BenchmarkSchema,
             ruleExecutor: PassThroughRuleExecutor.Instance);
-        _serializer.Serialize(Payload, ref _destination, _context);
+        var destination = _destination;
+        _serializer.Serialize(Payload, ref destination, _context);
         _encodedPayload = _destination.WrittenMemory.ToArray();
         _deserializer = new SchemaRegistryDeserializer<ReadOnlyMemory<byte>>(
             client,
@@ -370,7 +371,8 @@ public class SchemaRegistryRuleContextBenchmarks
     public void SerializeWithRuleExecutor()
     {
         _destination.ResetWrittenCount();
-        _serializer.Serialize(Payload, ref _destination, _context);
+        var destination = _destination;
+        _serializer.Serialize(Payload, ref destination, _context);
     }
 
     [Benchmark]
@@ -393,6 +395,12 @@ public class SchemaRegistryRuleContextBenchmarks
     private sealed class BenchmarkSchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistryCache
     {
         public bool TryGetCachedSchema(int id, out Schema schema)
+        {
+            schema = BenchmarkSchema;
+            return true;
+        }
+
+        public bool TryGetCachedSchema(int id, string subject, out Schema schema)
         {
             schema = BenchmarkSchema;
             return true;

@@ -470,6 +470,13 @@ public sealed class JsonSchemaValidationTests
             """,
             """
             {
+              "schema":"{\"$id\":\"https://example.test/root.json\",\"properties\":{\"address\":{\"$ref\":\"address.json\"}},\"required\":[\"address\"]}",
+              "schemaType":"JSON",
+              "references":[{"name":"address.json","subject":"address-value","version":1}]
+            }
+            """,
+            """
+            {
               "subject":"address-value","version":1,"id":43,
               "schema":"{\"type\":\"object\",\"required\":[\"postcode\"]}",
               "schemaType":"JSON"
@@ -502,7 +509,7 @@ public sealed class JsonSchemaValidationTests
         await Assert.That(resolved.Schema.References).IsNotNull();
         await Assert.That(resolved.Schema.References!.Count).IsEqualTo(1);
         await Assert.That(buffer.WrittenCount).IsGreaterThan(5);
-        await Assert.That(handler.RequestCount).IsEqualTo(2);
+        await Assert.That(handler.RequestCount).IsEqualTo(3);
     }
 
     [Test]

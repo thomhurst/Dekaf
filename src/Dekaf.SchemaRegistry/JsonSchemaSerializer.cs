@@ -586,7 +586,7 @@ public sealed class JsonSchemaRegistrySerializer<T> :
                     cancellationToken).ConfigureAwait(false);
             var registeredSchema = _validatorFactory is null && _ruleExecutor is null
                 ? schema
-                : await _schemaRegistry.GetSchemaAsync(schemaId, cancellationToken).ConfigureAwait(false);
+                : await _schemaRegistry.GetSchemaAsync(schemaId, subject, cancellationToken).ConfigureAwait(false);
             return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(schemaId, registeredSchema);
         }
 
@@ -827,18 +827,30 @@ public sealed class JsonSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
 
         var schemaId = BinaryPrimitives.ReadInt32BigEndian(span.Slice(1, 4));
 
-        // Verify the schema exists. Cache hits avoid Task allocation and sync-over-async.
-        var schema = _schemaRegistry.GetSchemaSync(schemaId, SchemaRegistryTimeout);
-
         // Extract JSON payload and deserialize
         var payload = data.Slice(5);
+        Schema schema;
         if (_ruleExecutor is not null)
         {
+            string subject;
+            if (_subjectNames is null)
+            {
+                subject = SubjectNameResolver.GetTopicSubjectName(
+                    context.Topic,
+                    context.Component == SerializationComponent.Key);
+            }
+            else
+            {
+                schema = _schemaRegistry.GetSchemaSync(schemaId, SchemaRegistryTimeout);
+                subject = GetSubjectName(schemaId, schema, context);
+            }
+
+            schema = _schemaRegistry.GetSchemaSync(schemaId, subject, SchemaRegistryTimeout);
             var ruleContext = SchemaRegistryRuleContext.Rent(
                 context.Topic,
                 context.Component,
                 schemaId,
-                GetSubjectName(schemaId, schema, context),
+                subject,
                 schema,
                 SchemaRegistryPayloadFormat.Json);
             try
@@ -849,6 +861,11 @@ public sealed class JsonSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
             {
                 ruleContext.Return();
             }
+        }
+        else
+        {
+            // Verify the schema exists. Cache hits avoid Task allocation and sync-over-async.
+            schema = _schemaRegistry.GetSchemaSync(schemaId, SchemaRegistryTimeout);
         }
 
         if (_validatorFactory is not null)
