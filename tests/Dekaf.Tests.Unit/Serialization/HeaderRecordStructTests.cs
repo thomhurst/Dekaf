@@ -82,6 +82,15 @@ public class HeaderRecordStructTests
     }
 
     [Test]
+    public async Task GetValueAsString_ReadOnlyMemorySlice_ReturnsSlice()
+    {
+        var bytes = "xxhello worldyy"u8.ToArray();
+        var header = new Header("key", bytes.AsMemory(2, 11));
+        var result = header.GetValueAsString();
+        await Assert.That(result).IsEqualTo("hello world");
+    }
+
+    [Test]
     public async Task GetValueAsString_Null_ReturnsNull()
     {
         var header = new Header("key", (byte[]?)null);

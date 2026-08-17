@@ -1,5 +1,8 @@
 using System.Collections;
 using System.Runtime.CompilerServices;
+#if NETSTANDARD2_0
+using System.Runtime.InteropServices;
+#endif
 using System.Text;
 
 namespace Dekaf.Serialization;
@@ -414,7 +417,17 @@ public readonly record struct Header
             return traceState;
         if (_deferredValue is null)
 #if NETSTANDARD2_0
+        {
+            if (MemoryMarshal.TryGetArray(_value, out var segment))
+            {
+                return Encoding.UTF8.GetString(
+                    segment.Array!,
+                    segment.Offset,
+                    segment.Count);
+            }
+
             return Encoding.UTF8.GetString(_value.ToArray());
+        }
 #else
             return Encoding.UTF8.GetString(_value.Span);
 #endif

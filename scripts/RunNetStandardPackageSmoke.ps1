@@ -87,6 +87,31 @@ try {
     $entries = [string[]]$zip.Entries.FullName
     Assert-PackageEntry -Entries $entries -Entry 'lib/net10.0/Dekaf.dll' -PackagePath $corePackage.FullName
     Assert-PackageEntry -Entries $entries -Entry 'lib/netstandard2.0/Dekaf.dll' -PackagePath $corePackage.FullName
+
+    $nuspecEntry = $zip.Entries | Where-Object { $_.Name -eq 'Dekaf.nuspec' } | Select-Object -First 1
+    if (-not $nuspecEntry) {
+        throw "Dekaf package is missing Dekaf.nuspec: $($corePackage.FullName)"
+    }
+
+    $nuspecReader = [System.IO.StreamReader]::new($nuspecEntry.Open())
+    try {
+        [xml]$nuspec = $nuspecReader.ReadToEnd()
+    }
+    finally {
+        $nuspecReader.Dispose()
+    }
+
+    $abstractionsDependencies = @(
+        $nuspec.package.metadata.dependencies.group.dependency |
+            Where-Object { $_.id -eq 'Dekaf.Abstractions' })
+    $expectedDependencyVersion = "[$PackageVersion]"
+    $unexpectedAbstractionsDependencies = @(
+        $abstractionsDependencies |
+            Where-Object { $_.version -ne $expectedDependencyVersion })
+    if ($abstractionsDependencies.Count -ne 2 -or
+        $unexpectedAbstractionsDependencies.Count -ne 0) {
+        throw "Dekaf must depend on Dekaf.Abstractions $expectedDependencyVersion for both target frameworks."
+    }
 }
 finally {
     $zip.Dispose()

@@ -33,6 +33,17 @@
     <PackageReference Include="System.IO.Hashing" />
   </ItemGroup>
 
+  <!-- Dekaf calls internal Abstractions members, so mixed package versions are unsupported. -->
+  <Target Name="PinAbstractionsPackageDependency" AfterTargets="_GetProjectReferenceVersions">
+    <ItemGroup>
+      <_ProjectReferencesWithVersions
+        Update="@(_ProjectReferencesWithVersions)"
+        Condition="'%(_ProjectReferencesWithVersions.Filename)' == 'Dekaf.Abstractions'">
+        <ProjectVersion>[%(_ProjectReferencesWithVersions.ProjectVersion)]</ProjectVersion>
+      </_ProjectReferencesWithVersions>
+    </ItemGroup>
+  </Target>
+
   <ItemGroup>
     <Compile Remove="Consumer\ConsumerCloseOptions.cs" />
     <Compile Remove="Consumer\ConsumerGroupMetadata.cs" />
