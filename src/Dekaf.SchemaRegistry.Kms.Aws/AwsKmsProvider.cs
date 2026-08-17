@@ -29,10 +29,14 @@ public sealed class AwsKmsProvider : ISchemaRegistryKmsProvider, IDisposable
     public const string KeyUriPrefix = "aws-kms://";
 
     private const int MaximumPlaintextLength = 4096;
+    private const int DisposedMask = int.MinValue;
+    private const int ActiveOperationMask = int.MaxValue;
 
     private readonly IAmazonKeyManagementService _client;
     private readonly bool _ownsClient;
-    private int _disposed;
+    private readonly ManualResetEventSlim _operationsCompleted = new(initialState: false);
+    private int _operationState;
+    private int _completionSignalFinished;
 
     /// <summary>
     /// Creates a provider using the AWS SDK default credential and region provider chains.
@@ -97,7 +101,7 @@ public sealed class AwsKmsProvider : ISchemaRegistryKmsProvider, IDisposable
         SchemaRegistryKmsKeyReference keyReference,
         CancellationToken cancellationToken = default)
     {
-        ThrowIfDisposed();
+        using var operation = EnterOperation();
         cancellationToken.ThrowIfCancellationRequested();
         if (keyMaterial.IsEmpty)
             throw new SchemaRegistryKmsException("AWS KMS wrap failed. Key material cannot be empty.");
@@ -140,7 +144,7 @@ public sealed class AwsKmsProvider : ISchemaRegistryKmsProvider, IDisposable
         SchemaRegistryKmsKeyReference keyReference,
         CancellationToken cancellationToken = default)
     {
-        ThrowIfDisposed();
+        using var operation = EnterOperation();
         cancellationToken.ThrowIfCancellationRequested();
         if (encryptedKeyMaterial.IsEmpty)
             throw new SchemaRegistryKmsException("AWS KMS unwrap failed. Encrypted key material cannot be empty.");
@@ -174,10 +178,52 @@ public sealed class AwsKmsProvider : ISchemaRegistryKmsProvider, IDisposable
     /// <inheritdoc />
     public void Dispose()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0 || !_ownsClient)
+        var previousState = Interlocked.Or(ref _operationState, DisposedMask);
+        if ((previousState & DisposedMask) != 0)
             return;
 
-        _client.Dispose();
+        try
+        {
+            if ((previousState & ActiveOperationMask) != 0)
+            {
+                _operationsCompleted.Wait();
+                var spinner = new SpinWait();
+                while (Volatile.Read(ref _completionSignalFinished) == 0)
+                    spinner.SpinOnce();
+            }
+
+            if (_ownsClient)
+                _client.Dispose();
+        }
+        finally
+        {
+            _operationsCompleted.Dispose();
+        }
+    }
+
+    private OperationLease EnterOperation()
+    {
+        while (true)
+        {
+            var state = Volatile.Read(ref _operationState);
+            if ((state & DisposedMask) != 0)
+                throw new ObjectDisposedException(nameof(AwsKmsProvider));
+
+            if ((state & ActiveOperationMask) == ActiveOperationMask)
+                throw new InvalidOperationException("AWS KMS provider has too many active operations.");
+
+            if (Interlocked.CompareExchange(ref _operationState, state + 1, state) == state)
+                return new OperationLease(this);
+        }
+    }
+
+    private void ExitOperation()
+    {
+        if (Interlocked.Decrement(ref _operationState) == DisposedMask)
+        {
+            _operationsCompleted.Set();
+            Volatile.Write(ref _completionSignalFinished, 1);
+        }
     }
 
     private string ResolveKeyId(SchemaRegistryKmsKeyReference keyReference)
@@ -306,5 +352,8 @@ public sealed class AwsKmsProvider : ISchemaRegistryKmsProvider, IDisposable
             throw new ArgumentException("KMS provider type cannot be null or whitespace.", nameof(type));
     }
 
-    private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed != 0, this);
+    private readonly struct OperationLease(AwsKmsProvider owner) : IDisposable
+    {
+        public void Dispose() => owner.ExitOperation();
+    }
 }
