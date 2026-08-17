@@ -123,6 +123,28 @@ public class SchemaRegistryPreparationBenchmarks
 
         await _genericSerializer.PrepareAsync(42, _context).ConfigureAwait(false);
         await _jsonSerializer.PrepareAsync(_jsonValue, _context).ConfigureAwait(false);
+        await InitializeGenericOverflowAsync().ConfigureAwait(false);
+        InitializeSubjectTurnover();
+        await _equivalentDataContractCache.ResolveAsync(
+            "data-contract-value",
+            _dataContractSchemaA,
+            0,
+            static (_, _, _) => Task.FromResult(1),
+            CancellationToken.None).ConfigureAwait(false);
+        await _referencedSchemaCache.ResolveAsync(
+            "referenced-value",
+            _referencedSchema,
+            0,
+            static (_, _, _) => Task.FromResult(1),
+            CancellationToken.None).ConfigureAwait(false);
+        var genericDestination = _genericDestination;
+        _genericSerializer.Serialize(42, ref genericDestination, _context);
+        var jsonDestination = _jsonDestination;
+        _jsonSerializer.Serialize(_jsonValue, ref jsonDestination, _context);
+    }
+
+    private async Task InitializeGenericOverflowAsync()
+    {
         for (var index = 0; index < SubjectSchemaIdCache.MaxCachedEntries; index++)
         {
             await _genericOverflowSerializer.PrepareAsync(
@@ -153,6 +175,10 @@ public class SchemaRegistryPreparationBenchmarks
                 .PrepareAsync(42, _overflowContexts[index])
                 .ConfigureAwait(false);
         }
+    }
+
+    private void InitializeSubjectTurnover()
+    {
         _subjectTurnoverTopics = new string[SubjectTurnoverWorkingSetSize];
         for (var index = 0; index < SubjectSchemaIdCache.MaxCachedEntries; index++)
         {
@@ -174,22 +200,6 @@ public class SchemaRegistryPreparationBenchmarks
                 static (_, candidate, _) => candidate,
                 static (_, subject) => new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(subject.Length, null));
         }
-        await _equivalentDataContractCache.ResolveAsync(
-            "data-contract-value",
-            _dataContractSchemaA,
-            0,
-            static (_, _, _) => Task.FromResult(1),
-            CancellationToken.None).ConfigureAwait(false);
-        await _referencedSchemaCache.ResolveAsync(
-            "referenced-value",
-            _referencedSchema,
-            0,
-            static (_, _, _) => Task.FromResult(1),
-            CancellationToken.None).ConfigureAwait(false);
-        var genericDestination = _genericDestination;
-        _genericSerializer.Serialize(42, ref genericDestination, _context);
-        var jsonDestination = _jsonDestination;
-        _jsonSerializer.Serialize(_jsonValue, ref jsonDestination, _context);
     }
 
     [GlobalCleanup]
