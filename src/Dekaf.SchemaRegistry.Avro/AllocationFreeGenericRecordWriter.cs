@@ -1,6 +1,5 @@
 using System.Buffers;
 using System.Collections;
-using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using global::Avro.Generic;
@@ -13,10 +12,8 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
     private const int StackBufferSize = 256;
     private static readonly DateTime UnixEpoch = new(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
     private static readonly DateTime LocalUnixEpoch = new(1970, 1, 1, 0, 0, 0, DateTimeKind.Unspecified);
-    private static readonly ConditionalWeakTable<Type, ListElement> ListElements = new();
     private readonly global::Avro.RecordSchema _schema = schema;
     private readonly WriterCache _writerCache = WriterCache.Create(schema);
-    private ListElement? _lastListElement;
 
     internal void Write(GenericRecord record, AllocationFreeBinaryEncoder encoder) =>
         WriteRecord(_schema, record, encoder, validateSchema: false);
@@ -363,20 +360,14 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
                 return;
         }
 
-        var listType = list.GetType();
-        var cache = Volatile.Read(ref _lastListElement);
-        if (cache is null || !ReferenceEquals(cache.ListType, listType))
+        if (itemSchema is global::Avro.LogicalSchema logicalSchema)
         {
-            cache = ListElements.GetValue(
-                listType,
-                static type => new ListElement(type, FindListElement(type)));
-            Volatile.Write(ref _lastListElement, cache);
-        }
-
-        if (cache.ElementType is { IsValueType: true } elementType)
-        {
-            throw new global::Avro.AvroTypeException(
-                $"List element type {elementType} is not supported for Avro {itemSchema.Tag} items.");
+            var elementType = logicalSchema.LogicalType.GetCSharpType(nullible: false);
+            if (elementType.IsValueType)
+            {
+                throw new global::Avro.AvroTypeException(
+                    $"List element type {elementType} is not supported for Avro {itemSchema.Tag} items.");
+            }
         }
 
         for (var i = 0; i < list.Count; i++)
@@ -384,28 +375,6 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
             encoder.StartItem();
             WriteValue(itemSchema, list[i], encoder);
         }
-    }
-
-    [UnconditionalSuppressMessage(
-        "Trimming",
-        "IL2070",
-        Justification = "A live IList instance retains the implemented interface needed for this rejection check.")]
-    private static Type? FindListElement(Type listType)
-    {
-        var interfaces = listType.GetInterfaces();
-        for (var index = 0; index < interfaces.Length; index++)
-        {
-            var candidate = interfaces[index];
-            if (!candidate.IsGenericType
-                || candidate.GetGenericTypeDefinition() != typeof(IList<>))
-            {
-                continue;
-            }
-
-            return candidate.GetGenericArguments()[0];
-        }
-
-        return null;
     }
 
     private static void WriteListItems<T, TWriter>(
@@ -1026,6 +995,7 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
         private readonly Dictionary<global::Avro.SchemaName, UnionBranch> _fixedBranches = new();
         private readonly Dictionary<Type, ConditionalUnionBranch>? _conditionalBranches;
         private readonly Dictionary<Type, MultipleConditionalUnionBranches>? _multipleConditionalBranches;
+        private readonly AssignableConditionalUnionCandidate[]? _assignableConditionalCandidates;
         private readonly UnionBranch _arrayBranch;
         private readonly UnionBranch _booleanBranch;
         private readonly UnionBranch _bytesBranch;
@@ -1181,6 +1151,8 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
             _conditionalBranches = BuildConditionalBranches(
                 conditionalBranchBuilders,
                 out _multipleConditionalBranches);
+            _assignableConditionalCandidates = BuildAssignableConditionalCandidates(
+                conditionalBranchBuilders);
         }
 
         public global::Avro.UnionSchema Schema => _schema;
@@ -1307,6 +1279,37 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
                 throw NoMatch(value);
             }
 
+            if (value is not null && _assignableConditionalCandidates is not null)
+            {
+                var fallback = ResolveStructuralBranch(value);
+                var matched = false;
+                for (var i = 0; i < _assignableConditionalCandidates.Length; i++)
+                {
+                    var candidate = _assignableConditionalCandidates[i];
+                    if (!candidate.DeclaredType.IsInstanceOfType(value))
+                        continue;
+
+                    matched = true;
+                    if (candidate.Fallback.Schema is not null
+                        && (fallback.Schema is null || candidate.Fallback.Index < fallback.Index))
+                    {
+                        fallback = candidate.Fallback;
+                    }
+
+                    if (fallback.Schema is not null && fallback.Index < candidate.Branch.Index)
+                        return fallback;
+                    if (candidate.LogicalSchema.LogicalType.IsInstanceOfLogicalType(value))
+                        return candidate.Branch;
+                }
+
+                if (matched)
+                {
+                    if (fallback.Schema is not null)
+                        return fallback;
+                    throw NoMatch(value);
+                }
+            }
+
             return Resolve(value);
         }
 
@@ -1397,6 +1400,37 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
             return branches;
         }
 
+        private static AssignableConditionalUnionCandidate[]? BuildAssignableConditionalCandidates(
+            Dictionary<Type, ConditionalUnionBranchBuilder>? builders)
+        {
+            if (builders is null)
+                return null;
+
+            List<AssignableConditionalUnionCandidate>? assignable = null;
+            foreach (var (type, builder) in builders)
+            {
+                if (type.IsSealed)
+                    continue;
+
+                assignable ??= [];
+                for (var i = 0; i < builder.Candidates.Count; i++)
+                {
+                    var candidate = builder.Candidates[i];
+                    assignable.Add(new AssignableConditionalUnionCandidate(
+                        type,
+                        candidate.Branch,
+                        candidate.LogicalSchema,
+                        builder.Fallback));
+                }
+            }
+
+            if (assignable is null)
+                return null;
+
+            assignable.Sort(static (left, right) => left.Branch.Index.CompareTo(right.Branch.Index));
+            return assignable.ToArray();
+        }
+
         private void ThrowIfConditionalValueBranch(Type type)
         {
             if (HasConditionalValueBranch(type))
@@ -1435,16 +1469,16 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
         ConditionalUnionCandidate[] Candidates,
         UnionBranch Fallback);
 
+    private readonly record struct AssignableConditionalUnionCandidate(
+        Type DeclaredType,
+        UnionBranch Branch,
+        global::Avro.LogicalSchema LogicalSchema,
+        UnionBranch Fallback);
+
     private sealed class ConditionalUnionBranchBuilder
     {
         public List<ConditionalUnionCandidate> Candidates { get; } = [];
         public UnionBranch Fallback { get; set; }
-    }
-
-    private sealed class ListElement(Type listType, Type? elementType)
-    {
-        internal Type ListType { get; } = listType;
-        internal Type? ElementType { get; } = elementType;
     }
 
     private sealed class ReferenceComparer<T> : IEqualityComparer<T>

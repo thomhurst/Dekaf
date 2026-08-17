@@ -600,6 +600,32 @@ public sealed class AvroSerializerTests
     }
 
     [Test]
+    public async Task Serializer_GenericRecord_AssignableCustomLogicalBranch_MatchesApacheAvroBytes()
+    {
+        Avro.Util.LogicalTypeFactory.Instance.Register(new IntListBytesLogicalType());
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry);
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(
+            $$"""
+            {
+                "type": "record",
+                "name": "AssignableCustomLogicalUnionRecord",
+                "fields": [{
+                    "name": "value",
+                    "type": [
+                        { "type": "bytes", "logicalType": "{{IntListBytesLogicalType.LogicalName}}" },
+                        { "type": "array", "items": "int" }
+                    ]
+                }]
+            }
+            """);
+        var record = new GenericRecord(schema);
+        record.Add("value", new List<int> { -1, 2 });
+
+        await AssertSerializedPayloadMatchesApache(serializer, schema, record);
+    }
+
+    [Test]
     public async Task Serializer_GenericRecord_ListArray_MatchesApacheAvroBytes()
     {
         using var schemaRegistry = new MockSchemaRegistryClient();
@@ -1502,15 +1528,15 @@ public sealed class AvroSerializerTests
         internal const string LogicalName = "dekaf-int-list-bytes";
 
         public override object ConvertToBaseValue(object logicalValue, Avro.LogicalSchema schema) =>
-            new byte[] { (byte)((List<int>)logicalValue).Count };
+            new byte[] { (byte)((IList<int>)logicalValue).Count };
 
         public override object ConvertToLogicalValue(object baseValue, Avro.LogicalSchema schema) =>
             throw new NotSupportedException();
 
-        public override Type GetCSharpType(bool nullible) => typeof(List<int>);
+        public override Type GetCSharpType(bool nullible) => typeof(IList<int>);
 
         public override bool IsInstanceOfLogicalType(object logicalValue) =>
-            logicalValue is List<int> { Count: > 0 } values && values[0] < 0;
+            logicalValue is IList<int> { Count: > 0 } values && values[0] < 0;
     }
 
     private sealed class StringTextLogicalType() : Avro.Util.LogicalType(LogicalName)
