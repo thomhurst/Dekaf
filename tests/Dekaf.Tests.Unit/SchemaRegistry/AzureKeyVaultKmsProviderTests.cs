@@ -178,6 +178,32 @@ public class AzureKeyVaultKmsProviderTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task FactoryCancellation_WithCallerCancellation_IsPropagated(bool unwrap)
+    {
+        using var cancellation = new CancellationTokenSource();
+        var factory = new RecordingFactory(_ =>
+        {
+            cancellation.Cancel();
+            throw new OperationCanceledException(cancellation.Token);
+        });
+        var provider = new AzureKeyVaultKmsProvider(factory);
+        var material = unwrap
+            ? Encoding.ASCII.GetBytes($"azure:v1:{KeyVersion}:wrapped")
+            : new byte[] { 1 };
+
+        var exception = unwrap
+            ? await Assert.ThrowsAsync<OperationCanceledException>(
+                () => provider.UnwrapKeyAsync(material, CreateKeyReference(), cancellation.Token).AsTask())
+            : await Assert.ThrowsAsync<OperationCanceledException>(
+                () => provider.WrapKeyAsync(material, CreateKeyReference(), cancellation.Token).AsTask());
+
+        await Assert.That(exception!.CancellationToken).IsEqualTo(cancellation.Token);
+        await Assert.That(factory.CreateCount).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task MalformedVersionHeader_IsRejectedBeforeAzureCall()
     {
         var client = CreateClient(KeyUri);

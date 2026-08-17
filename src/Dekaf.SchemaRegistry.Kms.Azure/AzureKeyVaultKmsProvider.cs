@@ -142,6 +142,9 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
         catch (Exception ex) when (!client.IsValueCreated)
         {
             _clients.TryRemove(KeyValuePair.Create(key.KeyId, client));
+            if (ex is OperationCanceledException && cancellationToken.IsCancellationRequested)
+                throw;
+
             if (IsAzureFailure(ex))
                 throw new SchemaRegistryKmsException("Azure Key Vault wrap failed.");
 
@@ -201,6 +204,9 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
                 RemoveEmbeddedVersionClient(key.KeyId, version, client);
             else
                 _clients.TryRemove(KeyValuePair.Create(key.KeyId, client));
+
+            if (ex is OperationCanceledException && cancellationToken.IsCancellationRequested)
+                throw;
 
             if (IsAzureFailure(ex))
                 throw new SchemaRegistryKmsException("Azure Key Vault unwrap failed.");
