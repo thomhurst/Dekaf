@@ -159,6 +159,7 @@ public class AvroSchemaRegistrySerializerBenchmarks
     private GenericRecord _logicalStringCollectionRecord = null!;
     private GenericRecord _conditionalLogicalStructuralUnionRecord = null!;
     private GenericRecord _nestedRecordCollectionRecord = null!;
+    private GenericRecord _nestedRecordListRecord = null!;
     private SpecificBenchmarkRecord _specificRecord = null!;
     private ArrayBufferWriter<byte> _serializeBuffer = null!;
     private GenericRecord _stableRecord = null!;
@@ -194,7 +195,7 @@ public class AvroSchemaRegistrySerializerBenchmarks
         _conditionalLogicalUnionRecord = CreateConditionalLogicalUnionRecord();
         _logicalStringCollectionRecord = CreateLogicalStringCollectionRecord();
         _conditionalLogicalStructuralUnionRecord = CreateConditionalLogicalStructuralUnionRecord();
-        _nestedRecordCollectionRecord = CreateNestedRecordCollectionRecord();
+        (_nestedRecordCollectionRecord, _nestedRecordListRecord) = CreateNestedRecordCollectionRecords();
         _specificRecord = new SpecificBenchmarkRecord { Id = 42, Name = "benchmark" };
         _serializeBuffer = new ArrayBufferWriter<byte>();
         _serializer.Serialize(_stableRecord, ref _serializeBuffer, _context);
@@ -216,6 +217,8 @@ public class AvroSchemaRegistrySerializerBenchmarks
         _serializer.Serialize(_conditionalLogicalStructuralUnionRecord, ref _serializeBuffer, _context);
         _serializeBuffer.ResetWrittenCount();
         _serializer.Serialize(_nestedRecordCollectionRecord, ref _serializeBuffer, _context);
+        _serializeBuffer.ResetWrittenCount();
+        _serializer.Serialize(_nestedRecordListRecord, ref _serializeBuffer, _context);
         _serializeBuffer.ResetWrittenCount();
         _specificSerializer.Serialize(_specificRecord, ref _serializeBuffer, _context);
     }
@@ -314,6 +317,13 @@ public class AvroSchemaRegistrySerializerBenchmarks
         _serializer.Serialize(_nestedRecordCollectionRecord, ref _serializeBuffer, _context);
     }
 
+    [Benchmark(Description = "Serialize generic nested-record list")]
+    public void SerializeNestedRecordList()
+    {
+        _serializeBuffer.ResetWrittenCount();
+        _serializer.Serialize(_nestedRecordListRecord, ref _serializeBuffer, _context);
+    }
+
     [Benchmark(Description = "Control: Apache writer prepared SpecificRecord")]
     public void SerializeSpecificRecord()
     {
@@ -410,7 +420,7 @@ public class AvroSchemaRegistrySerializerBenchmarks
         return record;
     }
 
-    private static GenericRecord CreateNestedRecordCollectionRecord()
+    private static (GenericRecord Collection, GenericRecord List) CreateNestedRecordCollectionRecords()
     {
         var schema = (Avro.RecordSchema)AvroSchema.Parse(NestedRecordArraySchema);
         var arraySchema = (Avro.ArraySchema)schema.Fields[0].Schema;
@@ -419,9 +429,11 @@ public class AvroSchemaRegistrySerializerBenchmarks
         first.Add("id", 1);
         var second = new GenericRecord(itemSchema);
         second.Add("id", 2);
-        var record = new GenericRecord(schema);
-        record.Add("values", new NonGenericRecordCollection([first, second]));
-        return record;
+        var collectionRecord = new GenericRecord(schema);
+        collectionRecord.Add("values", new NonGenericRecordCollection([first, second]));
+        var listRecord = new GenericRecord(schema);
+        listRecord.Add("values", new List<GenericRecord> { first, second });
+        return (collectionRecord, listRecord);
     }
 
     private sealed class NonGenericRecordCollection(IList<GenericRecord> values)
