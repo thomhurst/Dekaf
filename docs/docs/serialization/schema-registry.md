@@ -220,6 +220,38 @@ periodically re-resolve latest schemas; `0` refreshes on every use. Historical v
 deleted versions so migration paths remain complete. Custom `ISchemaRegistryClient` implementations
 must override the deleted-version overload; its default implementation fails closed.
 
+### JSONata rules
+
+Install the optional `Dekaf.SchemaRegistry.Jsonata` package and register its handler when a data
+contract contains `JSONATA` rules:
+
+```csharp
+using Dekaf.SchemaRegistry.Jsonata;
+
+var rules = new SchemaRegistryRuleExecutor(
+[
+    new JsonataSchemaRegistryRuleHandler()
+]);
+```
+
+The handler compiles and caches each rule expression, then evaluates JSONata against JSON codec
+payloads for write, read, and migration transforms. For example,
+`$merge([$, {'fullName': first & ' ' & last}])` preserves the input object and adds `fullName`.
+JSONata dependencies remain isolated in the optional package; applications without the handler add
+no JSONata work or allocation.
+
+Transform results may be any JSON value, including `null`, numbers, objects, and collections.
+JSONata's standard sequence semantics apply: a singleton sequence collapses to its value; append
+`[]` when the output must remain an array. An undefined result (for example, a missing-field query)
+fails explicitly rather than emitting invalid JSON. Condition rules must return `true` or `false`;
+`false` fails the rule. Invalid expressions, malformed JSON, and non-JSON payload formats fail with
+`SchemaRegistryRuleException`. Error messages identify the rule and engine error, but never include
+the payload.
+
+Binary Avro and Protobuf codec payloads are not currently supported by the JSONata byte handler and
+are rejected explicitly. Their object-level transforms require codec-specific conversion before
+binary encoding.
+
 ## Schema Registry Configuration
 
 ```csharp

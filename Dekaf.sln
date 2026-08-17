@@ -79,6 +79,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Dekaf.SchemaRegistry.Kms.Aw
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Dekaf.SchemaRegistry.Kms.Azure", "src\Dekaf.SchemaRegistry.Kms.Azure\Dekaf.SchemaRegistry.Kms.Azure.csproj", "{4DA172AF-659C-4F4B-BF0E-9DF2CB6E63D8}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Dekaf.SchemaRegistry.Jsonata", "src\Dekaf.SchemaRegistry.Jsonata\Dekaf.SchemaRegistry.Jsonata.csproj", "{5A088F71-C070-4BDB-B48B-20831462CF9D}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -497,6 +499,18 @@ Global
 		{4DA172AF-659C-4F4B-BF0E-9DF2CB6E63D8}.Release|x64.Build.0 = Release|Any CPU
 		{4DA172AF-659C-4F4B-BF0E-9DF2CB6E63D8}.Release|x86.ActiveCfg = Release|Any CPU
 		{4DA172AF-659C-4F4B-BF0E-9DF2CB6E63D8}.Release|x86.Build.0 = Release|Any CPU
+		{5A088F71-C070-4BDB-B48B-20831462CF9D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5A088F71-C070-4BDB-B48B-20831462CF9D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5A088F71-C070-4BDB-B48B-20831462CF9D}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{5A088F71-C070-4BDB-B48B-20831462CF9D}.Debug|x64.Build.0 = Debug|Any CPU
+		{5A088F71-C070-4BDB-B48B-20831462CF9D}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{5A088F71-C070-4BDB-B48B-20831462CF9D}.Debug|x86.Build.0 = Debug|Any CPU
+		{5A088F71-C070-4BDB-B48B-20831462CF9D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5A088F71-C070-4BDB-B48B-20831462CF9D}.Release|Any CPU.Build.0 = Release|Any CPU
+		{5A088F71-C070-4BDB-B48B-20831462CF9D}.Release|x64.ActiveCfg = Release|Any CPU
+		{5A088F71-C070-4BDB-B48B-20831462CF9D}.Release|x64.Build.0 = Release|Any CPU
+		{5A088F71-C070-4BDB-B48B-20831462CF9D}.Release|x86.ActiveCfg = Release|Any CPU
+		{5A088F71-C070-4BDB-B48B-20831462CF9D}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -536,5 +550,6 @@ Global
 		{170E0071-44E4-4D9B-AB44-4B324DE007F1} = {A1B2C3D4-E5F6-7890-ABCD-EF1234567890}
 		{B7C4FB68-A5F2-4A49-B6A1-C7AC7C6106DD} = {A1B2C3D4-E5F6-7890-ABCD-EF1234567890}
 		{4DA172AF-659C-4F4B-BF0E-9DF2CB6E63D8} = {A1B2C3D4-E5F6-7890-ABCD-EF1234567890}
+		{5A088F71-C070-4BDB-B48B-20831462CF9D} = {A1B2C3D4-E5F6-7890-ABCD-EF1234567890}
 	EndGlobalSection
 EndGlobal
