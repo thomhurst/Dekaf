@@ -1,4 +1,8 @@
 #nullable enable
+Dekaf.SchemaRegistry.ISchemaRegistryClient.LatestCacheTtlSecs.get -> int
+Dekaf.SchemaRegistry.SchemaRegistryClient.LatestCacheTtlSecs.get -> int
+Dekaf.SchemaRegistry.SchemaRegistryConfig.LatestCacheTtlSecs.get -> int
+Dekaf.SchemaRegistry.SchemaRegistryConfig.LatestCacheTtlSecs.init -> void
 Dekaf.SchemaRegistry.SchemaRegistryDeserializerConfig.UseLatestVersion.get -> bool
 Dekaf.SchemaRegistry.SchemaRegistryDeserializerConfig.UseLatestVersion.init -> void
 Dekaf.SchemaRegistry.SchemaRegistryRuleContext.RuleMode.get -> Dekaf.SchemaRegistry.SchemaRuleMode?

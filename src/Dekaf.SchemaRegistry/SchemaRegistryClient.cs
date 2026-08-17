@@ -103,6 +103,9 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
     internal int CachedSchemaBySubjectAndIdCount => _schemaBySubjectAndIdCache.Count;
     internal int CachedSchemaIdCount => _idBySchemaCache.Count;
 
+    /// <inheritdoc />
+    public int LatestCacheTtlSecs => _config.LatestCacheTtlSecs;
+
     internal static HttpMessageHandler CreateConfiguredHttpHandler(SchemaRegistryConfig? config)
     {
         ArgumentNullException.ThrowIfNull(config);
@@ -168,6 +171,13 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             throw new ArgumentOutOfRangeException(
                 nameof(config),
                 "RequestTimeoutMs must be positive or -1 for an infinite timeout.");
+        }
+
+        if (config.LatestCacheTtlSecs < -1)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(config),
+                "LatestCacheTtlSecs must be non-negative or -1 for no expiry.");
         }
 
         if (!config.UseProxy && config.Proxy is not null)
@@ -1489,6 +1499,12 @@ public sealed class SchemaRegistryConfig
     /// Maximum number of schemas to cache.
     /// </summary>
     public int MaxCachedSchemas { get; init; } = 1000;
+
+    /// <summary>
+    /// TTL in seconds for caches holding latest schemas. Use -1 for no expiry.
+    /// Default is -1.
+    /// </summary>
+    public int LatestCacheTtlSecs { get; init; } = -1;
 
     /// <summary>
     /// Whether schema registration, lookup, and compatibility requests should

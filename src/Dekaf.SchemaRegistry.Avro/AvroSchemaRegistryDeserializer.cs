@@ -52,6 +52,8 @@ public sealed class AvroSchemaRegistryDeserializer<
         new(AvroSchemaPairReferenceComparer.Instance);
     private readonly ConcurrentDictionary<AvroSchemaPair, SpecificDatumReader<T>> _specificReaders =
         new(AvroSchemaPairReferenceComparer.Instance);
+    private readonly ConcurrentDictionary<AvroSchema, byte> _validatedSpecificMigrationSchemas =
+        new(AvroSchemaReferenceComparer.Instance);
     private readonly AvroSchema? _readerSchema;
     private readonly DeserializerSubjectNameCache? _subjectNames;
     private readonly SchemaRegistryMigrationRunner? _migrationRunner;
@@ -84,11 +86,10 @@ public sealed class AvroSchemaRegistryDeserializer<
             _config.UseLegacySubjectNames);
         if (_config.UseLatestVersion)
         {
-            _migrationRunner = new SchemaRegistryMigrationRunner(
+            (_migrationRunner, _ruleExecutor) = SchemaRegistryMigrationRunner.Create(
                 schemaRegistry,
                 _config.RuleExecutor,
                 SchemaRegistryTimeout);
-            _ruleExecutor ??= SchemaRegistryMigrationRunner.MarkerRuleExecutor;
         }
 
         // Parse custom reader schema if provided, otherwise derive from type
@@ -248,10 +249,9 @@ public sealed class AvroSchemaRegistryDeserializer<
         AvroSchema? migrationReaderSchema,
         BinaryDecoder decoder)
     {
-        var readerSchema = migrationReaderSchema ?? _readerSchema ?? writerSchema;
-
         if (typeof(T) == typeof(GenericRecord))
         {
+            var readerSchema = migrationReaderSchema ?? _readerSchema ?? writerSchema;
             var reader = _genericReaders.GetOrAdd(
                 new AvroSchemaPair(writerSchema, readerSchema),
                 static key => new GenericDatumReader<GenericRecord>(key.WriterSchema, key.ReaderSchema));
@@ -261,6 +261,20 @@ public sealed class AvroSchemaRegistryDeserializer<
 
         if (typeof(ISpecificRecord).IsAssignableFrom(typeof(T)))
         {
+            var readerSchema = _readerSchema ?? throw new InvalidOperationException(
+                $"Specific Avro type {typeof(T)} does not expose a static _SCHEMA field.");
+            if (migrationReaderSchema is not null &&
+                !_validatedSpecificMigrationSchemas.TryGetValue(migrationReaderSchema, out _))
+            {
+                if (!readerSchema.CanRead(migrationReaderSchema))
+                {
+                    throw new InvalidOperationException(
+                        $"The latest Schema Registry schema is incompatible with specific Avro type {typeof(T)}.");
+                }
+
+                _validatedSpecificMigrationSchemas.TryAdd(migrationReaderSchema, 0);
+            }
+
             var reader = _specificReaders.GetOrAdd(
                 new AvroSchemaPair(writerSchema, readerSchema),
                 static key => new SpecificDatumReader<T>(key.WriterSchema, key.ReaderSchema));

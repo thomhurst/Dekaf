@@ -465,9 +465,13 @@ public class SchemaRegistryMigrationBenchmarks
     private SchemaRegistryMigrationRunner _noMigration = null!;
     private SchemaRegistryMigrationRunner _disabledMigration = null!;
     private SchemaRegistryMigrationRunner _activeMigration = null!;
+    private SchemaRegistryMigrationRunner _alternatingMigration = null!;
     private Schema _noMigrationWriter = null!;
     private Schema _disabledWriter = null!;
     private Schema _activeWriter = null!;
+    private Schema _alternatingWriterOne = null!;
+    private Schema _alternatingWriterTwo = null!;
+    private int _alternatingSchemaId = 1;
 
     [GlobalSetup]
     public void Setup()
@@ -482,10 +486,14 @@ public class SchemaRegistryMigrationBenchmarks
             executor,
             CreateMigrationRule(disabled: false),
             sameVersion: false);
+        (_alternatingMigration, _alternatingWriterOne, _alternatingWriterTwo) =
+            CreateAlternatingRunner(executor);
 
         _ = NoMigration();
         _ = DisabledMigration();
         _ = ActiveMigration();
+        _ = AlternatingWriterSchemas();
+        _ = AlternatingWriterSchemas();
     }
 
     [Benchmark(Baseline = true)]
@@ -518,6 +526,21 @@ public class SchemaRegistryMigrationBenchmarks
             Context,
             SchemaRegistryPayloadFormat.Json).Payload;
 
+    [Benchmark]
+    public ReadOnlyMemory<byte> AlternatingWriterSchemas()
+    {
+        var schemaId = _alternatingSchemaId;
+        _alternatingSchemaId = schemaId == 1 ? 2 : 1;
+        var writer = schemaId == 1 ? _alternatingWriterOne : _alternatingWriterTwo;
+        return _alternatingMigration.Transform(
+            Payload,
+            schemaId,
+            "benchmark-topic-value",
+            writer,
+            Context,
+            SchemaRegistryPayloadFormat.Json).Payload;
+    }
+
     private static (SchemaRegistryMigrationRunner Runner, Schema Writer) CreateRunner(
         SchemaRegistryRuleExecutor executor,
         SchemaRule? targetRule,
@@ -534,6 +557,18 @@ public class SchemaRegistryMigrationBenchmarks
             };
         var client = new MigrationBenchmarkRegistryClient(writer, reader);
         return (new SchemaRegistryMigrationRunner(client, executor, TimeSpan.FromSeconds(1)), writer);
+    }
+
+    private static (SchemaRegistryMigrationRunner Runner, Schema WriterOne, Schema WriterTwo)
+        CreateAlternatingRunner(SchemaRegistryRuleExecutor executor)
+    {
+        var writerOne = new Schema { SchemaType = SchemaType.Json, SchemaString = "writer-one" };
+        var writerTwo = new Schema { SchemaType = SchemaType.Json, SchemaString = "writer-two" };
+        var client = new AlternatingMigrationBenchmarkRegistryClient(writerOne, writerTwo);
+        return (
+            new SchemaRegistryMigrationRunner(client, executor, TimeSpan.FromSeconds(1)),
+            writerOne,
+            writerTwo);
     }
 
     private static SchemaRule CreateMigrationRule(bool disabled) =>
@@ -589,12 +624,92 @@ public class SchemaRegistryMigrationBenchmarks
             string version = "latest",
             CancellationToken cancellationToken = default) => Task.FromResult(_reader);
 
+        public Task<RegisteredSchema> GetSchemaBySubjectAsync(
+            string subject,
+            string version,
+            bool ignoreDeletedSchemas,
+            CancellationToken cancellationToken = default) => Task.FromResult(_reader);
+
         public Task<RegisteredSchema> LookupSchemaAsync(
             string subject,
             Schema schema,
             bool ignoreDeletedSchemas = true,
             bool normalize = false,
             CancellationToken cancellationToken = default) => Task.FromResult(_writer);
+
+        public Task<int> RegisterSchemaAsync(
+            string subject,
+            Schema schema,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task<int> GetOrRegisterSchemaAsync(
+            string subject,
+            Schema schema,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task<IReadOnlyList<string>> GetAllSubjectsAsync(
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task<IReadOnlyList<int>> GetVersionsAsync(
+            string subject,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task<bool> IsCompatibleAsync(
+            string subject,
+            Schema schema,
+            string version = "latest",
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task<IReadOnlyList<int>> DeleteSubjectAsync(
+            string subject,
+            bool permanent = false,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public void Dispose()
+        {
+        }
+    }
+
+    private sealed class AlternatingMigrationBenchmarkRegistryClient(
+        Schema writerOne,
+        Schema writerTwo) : ISchemaRegistryClient
+    {
+        private readonly RegisteredSchema _writerOne = new()
+        {
+            Id = 1,
+            Subject = "benchmark-topic-value",
+            Version = 1,
+            Schema = writerOne
+        };
+        private readonly RegisteredSchema _writerTwo = new()
+        {
+            Id = 2,
+            Subject = "benchmark-topic-value",
+            Version = 2,
+            Schema = writerTwo
+        };
+
+        public Task<Schema> GetSchemaAsync(int id, CancellationToken cancellationToken = default) =>
+            Task.FromResult(id == 1 ? _writerOne.Schema : _writerTwo.Schema);
+
+        public Task<RegisteredSchema> GetSchemaBySubjectAsync(
+            string subject,
+            string version = "latest",
+            CancellationToken cancellationToken = default) => Task.FromResult(_writerTwo);
+
+        public Task<RegisteredSchema> GetSchemaBySubjectAsync(
+            string subject,
+            string version,
+            bool ignoreDeletedSchemas,
+            CancellationToken cancellationToken = default) => Task.FromResult(_writerTwo);
+
+        public Task<RegisteredSchema> LookupSchemaAsync(
+            string subject,
+            Schema schema,
+            bool ignoreDeletedSchemas = true,
+            bool normalize = false,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(ReferenceEquals(schema, _writerOne.Schema) ? _writerOne : _writerTwo);
 
         public Task<int> RegisterSchemaAsync(
             string subject,

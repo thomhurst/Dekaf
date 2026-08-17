@@ -820,8 +820,10 @@ public sealed class SchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisp
         _subjectNames = DeserializerSubjectNameCache.Create(config);
         if (config?.UseLatestVersion == true)
         {
-            _migrationRunner = new SchemaRegistryMigrationRunner(schemaRegistry, ruleExecutor, SchemaRegistryTimeout);
-            _ruleExecutor ??= SchemaRegistryMigrationRunner.MarkerRuleExecutor;
+            (_migrationRunner, _ruleExecutor) = SchemaRegistryMigrationRunner.Create(
+                schemaRegistry,
+                ruleExecutor,
+                SchemaRegistryTimeout);
         }
     }
 

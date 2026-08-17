@@ -154,6 +154,53 @@ public sealed class SchemaRegistryMigrationTests
     }
 
     [Test]
+    public async Task Transform_ExpiredLatestPlan_RefreshesReaderSchema()
+    {
+        var registry = new MigrationRegistryClient { LatestCacheTtlSecs = 0 };
+        var v1 = CreateSchema("v1");
+        var v2 = CreateSchema("v2");
+        var v1Id = registry.Register("orders-value", v1);
+        var v2Id = registry.Register("orders-value", v2);
+        var runner = new SchemaRegistryMigrationRunner(registry, ruleExecutor: null, TimeSpan.FromSeconds(1));
+
+        var first = runner.Transform(
+            "payload"u8.ToArray(),
+            v1Id,
+            "orders-value",
+            v1,
+            SerializationContext,
+            SchemaRegistryPayloadFormat.Json);
+        var v3 = CreateSchema("v3");
+        var v3Id = registry.Register("orders-value", v3);
+        var second = runner.Transform(
+            "payload"u8.ToArray(),
+            v1Id,
+            "orders-value",
+            v1,
+            SerializationContext,
+            SchemaRegistryPayloadFormat.Json);
+
+        await Assert.That(first.ReaderSchema.Id).IsEqualTo(v2Id);
+        await Assert.That(second.ReaderSchema.Id).IsEqualTo(v3Id);
+        await Assert.That(registry.LatestCount).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task DeletedVersionLookup_DefaultImplementation_FailsClosed()
+    {
+        ISchemaRegistryClient registry = new MockSchemaRegistryClient();
+        async Task LookupDeletedVersionAsync() =>
+            _ = await registry.GetSchemaBySubjectAsync(
+                "orders-value",
+                "2",
+                ignoreDeletedSchemas: false);
+
+        await Assert.That(LookupDeletedVersionAsync)
+            .Throws<NotSupportedException>()
+            .WithMessageContaining("deleted schema versions");
+    }
+
+    [Test]
     public async Task JsonDeserializer_UseLatestVersion_ExecutesEncodingMigrationDomainThenReadsTarget()
     {
         var registry = new MigrationRegistryClient();
@@ -392,6 +439,7 @@ public sealed class SchemaRegistryMigrationTests
         private readonly Dictionary<int, RegisteredSchema> _byVersion = [];
         private int _nextId = 1;
 
+        public int LatestCacheTtlSecs { get; init; } = -1;
         internal int LatestVersion { get; init; }
         internal int LookupCount { get; private set; }
         internal int LatestCount { get; private set; }
@@ -439,6 +487,13 @@ public sealed class SchemaRegistryMigrationTests
             return Task.FromResult(schema);
         }
 
+        public Task<RegisteredSchema> GetSchemaBySubjectAsync(
+            string subject,
+            string version,
+            bool ignoreDeletedSchemas,
+            CancellationToken cancellationToken = default) =>
+            GetSchemaBySubjectAsync(subject, version, cancellationToken);
+
         public Task<RegisteredSchema> LookupSchemaAsync(
             string subject,
             Schema schema,
@@ -447,13 +502,9 @@ public sealed class SchemaRegistryMigrationTests
             CancellationToken cancellationToken = default)
         {
             LookupCount++;
-            foreach (var registered in _byId.Values)
-            {
-                if (ReferenceEquals(registered.Schema, schema))
-                    return Task.FromResult(registered);
-            }
-
-            throw new SchemaRegistryException(40403, "Schema not found.");
+            var registered = _byId.Values.SingleOrDefault(candidate => ReferenceEquals(candidate.Schema, schema))
+                ?? throw new SchemaRegistryException(40403, "Schema not found.");
+            return Task.FromResult(registered);
         }
 
         public Task<int> RegisterSchemaAsync(

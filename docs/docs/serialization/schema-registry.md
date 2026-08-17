@@ -211,7 +211,13 @@ first action for upgrade and the second for downgrade. Disabled rules are skippe
 Using the latest reader schema without active migration rules does not require a rule executor. If
 an active migration path exists, configure the built-in `SchemaRegistryRuleExecutor`; Dekaf fails
 closed instead of silently skipping the transform. Warm cached no-migration, disabled-migration, and
-active pass-through paths remain allocation-free.
+active pass-through paths remain allocation-free, including interleaved writer schema IDs.
+
+Migration plans follow `SchemaRegistryConfig.LatestCacheTtlSecs`. The Confluent-compatible default
+is `-1`, which disables time-based expiry. Set a non-negative TTL to
+periodically re-resolve latest schemas; `0` refreshes on every use. Historical version lookup includes
+deleted versions so migration paths remain complete. Custom `ISchemaRegistryClient` implementations
+must override the deleted-version overload; its default implementation fails closed.
 
 ## Schema Registry Configuration
 

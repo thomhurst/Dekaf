@@ -9,7 +9,7 @@ internal sealed class SchemaResolutionCache<TValue>
         new(SchemaResolutionKeyComparer.Instance);
     private readonly ConcurrentDictionary<SchemaResolutionKey, Entry> _inFlight =
         new(SchemaResolutionKeyComparer.Instance);
-    private readonly ConcurrentQueue<SchemaResolutionKey> _evictionQueue = new();
+    private readonly ConcurrentQueue<KeyValuePair<SchemaResolutionKey, TValue>> _evictionQueue = new();
     private readonly int _maxCachedEntries;
     private int _cacheCount;
 
@@ -20,6 +20,21 @@ internal sealed class SchemaResolutionCache<TValue>
     }
 
     internal int CachedEntryCount => Volatile.Read(ref _cacheCount);
+
+    internal bool TryGet(string subject, Schema schema, out TValue value) =>
+        _cache.TryGetValue(new SchemaResolutionKey(subject, schema, default), out value!);
+
+    internal bool TryRemove(string subject, Schema schema, TValue value)
+    {
+        var entry = new KeyValuePair<SchemaResolutionKey, TValue>(
+            new SchemaResolutionKey(subject, schema, default),
+            value);
+        if (!((ICollection<KeyValuePair<SchemaResolutionKey, TValue>>)_cache).Remove(entry))
+            return false;
+
+        Interlocked.Decrement(ref _cacheCount);
+        return true;
+    }
 
     internal ValueTask<TValue> ResolveAsync<TState>(
         string subject,
@@ -131,7 +146,7 @@ internal sealed class SchemaResolutionCache<TValue>
             return;
 
         Interlocked.Increment(ref _cacheCount);
-        _evictionQueue.Enqueue(key);
+        _evictionQueue.Enqueue(new KeyValuePair<SchemaResolutionKey, TValue>(key, value));
         TrimOverflow();
     }
 
@@ -149,7 +164,7 @@ internal sealed class SchemaResolutionCache<TValue>
             var removed = false;
             while (_evictionQueue.TryDequeue(out var oldest))
             {
-                if (_cache.TryRemove(oldest, out _))
+                if (((ICollection<KeyValuePair<SchemaResolutionKey, TValue>>)_cache).Remove(oldest))
                 {
                     removed = true;
                     break;

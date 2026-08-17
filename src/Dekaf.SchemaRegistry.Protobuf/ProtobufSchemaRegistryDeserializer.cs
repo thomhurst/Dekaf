@@ -55,11 +55,10 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IA
             _config.UseLegacySubjectNames);
         if (_config.UseLatestVersion)
         {
-            _migrationRunner = new SchemaRegistryMigrationRunner(
+            (_migrationRunner, _ruleExecutor) = SchemaRegistryMigrationRunner.Create(
                 schemaRegistry,
                 _config.RuleExecutor,
                 SchemaRegistryTimeout);
-            _ruleExecutor ??= SchemaRegistryMigrationRunner.MarkerRuleExecutor;
         }
     }
 

@@ -8,6 +8,12 @@ namespace Dekaf.SchemaRegistry;
 public interface ISchemaRegistryClient : IDisposable
 {
     /// <summary>
+    /// TTL in seconds for cached latest-schema resolutions, or -1 for no expiry.
+    /// The default is -1.
+    /// </summary>
+    int LatestCacheTtlSecs => -1;
+
+    /// <summary>
     /// Registers a schema under a subject. If the schema is already registered,
     /// returns the existing schema ID.
     /// </summary>
@@ -79,8 +85,16 @@ public interface ISchemaRegistryClient : IDisposable
         string subject,
         string version,
         bool ignoreDeletedSchemas,
-        CancellationToken cancellationToken = default) =>
-        GetSchemaBySubjectAsync(subject, version, cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        if (!ignoreDeletedSchemas)
+        {
+            throw new NotSupportedException(
+                $"This {nameof(ISchemaRegistryClient)} implementation does not support looking up deleted schema versions.");
+        }
+
+        return GetSchemaBySubjectAsync(subject, version, cancellationToken);
+    }
 
     /// <summary>
     /// Looks up an exact schema under a subject without registering it.

@@ -113,6 +113,8 @@ public sealed class SchemaRegistryDataContractTests
             "2",
             ignoreDeletedSchemas: false);
 
+        await Assert.That(handler.LastRequestUri!.AbsolutePath)
+            .IsEqualTo("/subjects/orders-value/versions/2");
         await Assert.That(handler.LastRequestUri!.Query).IsEqualTo("?deleted=true");
     }
 
