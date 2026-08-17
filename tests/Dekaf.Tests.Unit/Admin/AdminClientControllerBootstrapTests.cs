@@ -69,6 +69,43 @@ public sealed class AdminClientControllerBootstrapTests
     }
 
     [Test]
+    public async Task DescribeClusterAsync_DeadlineCancelsInFlightDiscovery()
+    {
+        await using var context = new ControllerAdminContext(
+            CreateDiscoveryResponse(activeControllerId: -1),
+            initTimeoutMs: 250);
+        context.EnqueueDiscovery(WaitForDiscoveryCancellationAsync);
+
+        var exception = await Assert.That(async () => await context.Client.DescribeClusterAsync())
+            .Throws<KafkaTimeoutException>();
+
+        await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Metadata);
+        await Assert.That(context.DiscoveryRequests).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task DescribeClusterAsync_CallerCancellationWinsOverInitializationDeadline()
+    {
+        var discoveryStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var context = new ControllerAdminContext(
+            CreateDiscoveryResponse(activeControllerId: -1),
+            initTimeoutMs: 10_000);
+        context.EnqueueDiscovery(async cancellationToken =>
+        {
+            discoveryStarted.TrySetResult(true);
+            return await WaitForDiscoveryCancellationAsync(cancellationToken);
+        });
+        using var cancellation = new CancellationTokenSource();
+        var operation = context.Client.DescribeClusterAsync(cancellation.Token).AsTask();
+        await discoveryStarted.Task;
+
+        cancellation.Cancel();
+
+        var exception = await Assert.ThrowsAsync<OperationCanceledException>(() => operation);
+        await Assert.That(exception).IsNotTypeOf<KafkaTimeoutException>();
+    }
+
+    [Test]
     public async Task DescribeMetadataQuorumAsync_RoutesToAdvertisedActiveController()
     {
         await using var context = new ControllerAdminContext();
@@ -267,6 +304,13 @@ public sealed class AdminClientControllerBootstrapTests
         ]
     };
 
+    private static async ValueTask<DescribeClusterResponse> WaitForDiscoveryCancellationAsync(
+        CancellationToken cancellationToken)
+    {
+        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        throw new InvalidOperationException("Controller discovery cancellation was not observed.");
+    }
+
     private sealed class ControllerAdminContext : IAsyncDisposable
     {
         private readonly MetadataManager _metadataManager;
@@ -274,7 +318,8 @@ public sealed class AdminClientControllerBootstrapTests
 
         internal ControllerAdminContext(
             DescribeClusterResponse? discoveryResponse = null,
-            TimeSpan? refreshInterval = null)
+            TimeSpan? refreshInterval = null,
+            int initTimeoutMs = 60_000)
         {
             BootstrapController = CreateConnection("seed", 9093);
             ActiveController = CreateConnection("controller-2", 19094);
@@ -316,7 +361,8 @@ public sealed class AdminClientControllerBootstrapTests
                 {
                     MetadataRefreshInterval = refreshInterval ?? TimeSpan.FromMinutes(15),
                     RetryBackoffMs = 1,
-                    RetryBackoffMaxMs = 1
+                    RetryBackoffMaxMs = 1,
+                    InitTimeoutMs = initTimeoutMs
                 });
         }
 
@@ -332,6 +378,10 @@ public sealed class AdminClientControllerBootstrapTests
         internal void EnqueueDiscovery(DescribeClusterResponse response) => _discoveryOutcomes.Enqueue(response);
 
         internal void EnqueueDiscovery(Exception exception) => _discoveryOutcomes.Enqueue(exception);
+
+        internal void EnqueueDiscovery(
+            Func<CancellationToken, ValueTask<DescribeClusterResponse>> operation) =>
+            _discoveryOutcomes.Enqueue(operation);
 
         public async ValueTask DisposeAsync() => await Client.DisposeAsync().ConfigureAwait(false);
 
@@ -353,6 +403,8 @@ public sealed class AdminClientControllerBootstrapTests
                     {
                         DescribeClusterResponse response => ValueTask.FromResult(response),
                         Exception exception => ValueTask.FromException<DescribeClusterResponse>(exception),
+                        Func<CancellationToken, ValueTask<DescribeClusterResponse>> operation =>
+                            operation(callInfo.ArgAt<CancellationToken>(2)),
                         _ => throw new InvalidOperationException("Unknown controller discovery outcome.")
                     };
                 });
