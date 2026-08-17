@@ -5489,9 +5489,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Checks for batches that have exceeded linger time.
-    /// Uses conditional removal to avoid race conditions where a new batch might be created
-    /// between Complete() and TryRemove() calls.
+    /// Checks active partitions for batches that have reached their linger deadline
+    /// and seals eligible current batches. The sweep drains <c>_lingerPartitions</c>
+    /// and conditionally detaches <c>CurrentBatch</c> while holding each partition lock.
     /// </summary>
     /// <remarks>
     /// Optimized with multiple fast paths:
