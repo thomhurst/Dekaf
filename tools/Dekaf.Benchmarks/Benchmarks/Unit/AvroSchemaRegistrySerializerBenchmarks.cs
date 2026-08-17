@@ -476,15 +476,15 @@ public class AvroSchemaRegistrySerializerBenchmarks
         : Avro.Util.LogicalType("dekaf-benchmark-int-list-bytes")
     {
         public override object ConvertToBaseValue(object logicalValue, Avro.LogicalSchema schema) =>
-            new byte[] { (byte)((List<int>)logicalValue).Count };
+            new byte[] { (byte)((IList<int>)logicalValue).Count };
 
         public override object ConvertToLogicalValue(object baseValue, Avro.LogicalSchema schema) =>
             throw new NotSupportedException();
 
-        public override Type GetCSharpType(bool nullible) => typeof(List<int>);
+        public override Type GetCSharpType(bool nullible) => typeof(IList<int>);
 
         public override bool IsInstanceOfLogicalType(object logicalValue) =>
-            logicalValue is List<int> { Count: > 0 } values && values[0] < 0;
+            logicalValue is IList<int> { Count: > 0 } values && values[0] < 0;
     }
 
     private sealed class SpecificBenchmarkRecord : ISpecificRecord
