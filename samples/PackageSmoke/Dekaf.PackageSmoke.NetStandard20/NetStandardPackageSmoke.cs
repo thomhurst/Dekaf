@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Text;
 using Dekaf;
 using Dekaf.Consumer;
@@ -24,6 +25,10 @@ public static class NetStandardPackageSmoke
 
         var payload = Encoding.UTF8.GetBytes("dekaf");
         var decoded = Serializers.String.Deserialize(new ReadOnlyMemory<byte>(payload), context);
+        using var memoryManager = new NonArrayMemoryManager(payload);
+        var nativeHeader = new Header("native", memoryManager.Memory);
+        if (nativeHeader.GetValueAsString() != "dekaf")
+            throw new InvalidOperationException("MemoryManager-backed header did not decode correctly.");
 
         var producerBuilder = new ProducerBuilder<string, string>()
             .WithBootstrapServers("localhost:9092")
@@ -44,5 +49,21 @@ public static class NetStandardPackageSmoke
             .WithRetryPolicy(NoRetryPolicy.Instance);
 
         return $"{decoded}:{headers.Count}:{producerBuilder.GetType().Name}:{consumerBuilder.GetType().Name}";
+    }
+
+    private sealed class NonArrayMemoryManager(byte[] bytes) : MemoryManager<byte>
+    {
+        public override Span<byte> GetSpan() => bytes;
+
+        public override MemoryHandle Pin(int elementIndex = 0) =>
+            throw new NotSupportedException();
+
+        public override void Unpin()
+        {
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+        }
     }
 }
