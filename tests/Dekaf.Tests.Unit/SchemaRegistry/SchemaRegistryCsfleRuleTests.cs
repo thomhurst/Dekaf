@@ -466,7 +466,7 @@ public sealed class SchemaRegistryCsfleRuleTests
     }
 
     [Test]
-    public async Task AvroTaggedTransformer_OversizedOutputBuffer_IsNotRetained()
+    public async Task AvroTaggedTransformer_OversizedOutputBuffer_IsReturnedAfterInputLifetime()
     {
         const int maxRetainedBufferSize = 1024 * 1024;
         const string schemaText = """
@@ -487,10 +487,22 @@ public sealed class SchemaRegistryCsfleRuleTests
             }
         };
         var transformer = AvroTaggedFieldTransformer.Get(avroSchema, schema);
+        var context = CreateHandlerContext(rule, schema);
         var transformed = transformer.Transform(
             WriteAvroRecord(avroSchema, [1]),
-            CreateHandlerContext(rule, schema),
+            context,
             new byte[maxRetainedBufferSize + 1],
+            static (_, _, replacement) => replacement);
+        var consumed = transformer.Transform(
+            transformed,
+            context,
+            new byte[] { 2 },
+            static (_, _, replacement) => replacement);
+        await Assert.That(ReadAvroBytes(avroSchema, consumed)).IsEquivalentTo(new byte[] { 2 });
+        _ = transformer.Transform(
+            consumed,
+            context,
+            new byte[] { 3 },
             static (_, _, replacement) => replacement);
         var workspaces = typeof(AvroTaggedFieldTransformer)
             .GetField("t_workspaces", BindingFlags.NonPublic | BindingFlags.Static)!
@@ -503,7 +515,6 @@ public sealed class SchemaRegistryCsfleRuleTests
 
         await Assert.That(outputs.Where(static output => output is not null).All(
             output => output!.Length <= maxRetainedBufferSize)).IsTrue();
-        GC.KeepAlive(transformed);
     }
 
     [Test]
@@ -665,6 +676,50 @@ public sealed class SchemaRegistryCsfleRuleTests
             static (_, _, replacement) => replacement);
 
         await Assert.That(ReadAvroBytes(avroPayloadSchema, transformed)).IsEquivalentTo(new byte[] { 2 });
+    }
+
+    [Test]
+    public async Task AvroTaggedTransformerProvider_UsesNamedAliasesInsideUnions()
+    {
+        const string payloadSchemaText = """
+            {"type":"record","name":"Envelope","namespace":"test","fields":[
+                {"name":"value","type":["null",{
+                    "type":"record","name":"OldValue","fields":[
+                        {"name":"secret","type":"bytes"}
+                    ]
+                }]}
+            ]}
+            """;
+        const string ownerSchemaText = """
+            {"type":"record","name":"Envelope","namespace":"test","fields":[
+                {"name":"value","type":["null",{
+                    "type":"record","name":"NewValue","aliases":["OldValue"],"fields":[
+                        {"name":"secret","type":"bytes","confluent:tags":["PII"]}
+                    ]
+                }]}
+            ]}
+            """;
+        var rule = CreateRule(tags: new HashSet<string>(StringComparer.Ordinal) { "PII" });
+        var payloadSchema = new Schema { SchemaType = SchemaType.Avro, SchemaString = payloadSchemaText };
+        var ownerSchema = new Schema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = ownerSchemaText,
+            RuleSet = new SchemaRuleSet
+            {
+                MigrationRules = [rule],
+                HasFixedRuleCollections = true
+            }
+        };
+        var transformer = new AvroTaggedFieldTransformerProvider().Get(payloadSchema, ownerSchema);
+
+        var transformed = transformer.Transform(
+            new byte[] { 2, 2, 1 },
+            CreateHandlerContext(rule, ownerSchema),
+            new byte[] { 2 },
+            static (_, _, replacement) => replacement);
+
+        await Assert.That(transformed.ToArray()).IsEquivalentTo(new byte[] { 2, 2, 2 });
     }
 
     [Test]

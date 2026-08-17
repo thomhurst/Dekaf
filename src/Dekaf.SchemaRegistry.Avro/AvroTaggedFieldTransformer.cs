@@ -68,6 +68,7 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
         }
         finally
         {
+            workspace.ReleaseConsumedOversizedOutput(payload.Span);
             workspace.ReleaseOversizedTemporary();
         }
     }
@@ -744,7 +745,7 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
                     continue;
                 if (branch is global::Avro.NamedSchema namedBranch &&
                     candidate is global::Avro.NamedSchema namedCandidate &&
-                    !string.Equals(namedBranch.Fullname, namedCandidate.Fullname, StringComparison.Ordinal))
+                    !NamedSchemaMatches(namedBranch, namedCandidate))
                 {
                     continue;
                 }
@@ -753,6 +754,25 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
             }
 
             return null;
+        }
+
+        private static bool NamedSchemaMatches(
+            global::Avro.NamedSchema payloadBranch,
+            global::Avro.NamedSchema ruleOwnerBranch)
+        {
+            if (string.Equals(payloadBranch.Fullname, ruleOwnerBranch.Fullname, StringComparison.Ordinal))
+                return true;
+
+            var aliases = AvroSchemaLogicalAccessors.GetAliases(ruleOwnerBranch);
+            if (aliases is null)
+                return false;
+            for (var i = 0; i < aliases.Count; i++)
+            {
+                if (string.Equals(payloadBranch.Fullname, aliases[i].Fullname, StringComparison.Ordinal))
+                    return true;
+            }
+
+            return false;
         }
 
         private static bool InlineTagsOverlap(global::Avro.Field? field, IReadOnlySet<string> ruleTags)
@@ -1032,6 +1052,7 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
         private readonly int[] _outputLengths = new int[2];
         private byte[]? _temporary;
         private int _outputSlot;
+        private int _oversizedOutputMask;
         private int _length;
         private int _temporaryLength;
 
@@ -1040,15 +1061,14 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
             get
             {
                 var output = _outputs[_outputSlot]!;
-                var memory = new ReadOnlyMemory<byte>(output, 0, _length);
-                if (output.Length > MaxRetainedBufferSize)
-                    _outputs[_outputSlot] = null;
-                return memory;
+                return new ReadOnlyMemory<byte>(output, 0, _length);
             }
         }
 
         public void Reset(ReadOnlySpan<byte> input, int minimumCapacity)
         {
+            if (_oversizedOutputMask != 0)
+                ReleaseInactiveOversizedOutputs(input);
             var nextSlot = _outputSlot;
             if (_outputs[nextSlot] is not null && input.Overlaps(_outputs[nextSlot]))
                 nextSlot ^= 1;
@@ -1061,6 +1081,24 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
             _outputLengths[_outputSlot] = 0;
             _length = 0;
             EnsureOutput(minimumCapacity);
+        }
+
+        private void ReleaseInactiveOversizedOutputs(ReadOnlySpan<byte> input)
+        {
+            for (var i = 0; i < _outputs.Length; i++)
+            {
+                var slotMask = 1 << i;
+                if ((_oversizedOutputMask & slotMask) == 0)
+                    continue;
+                var output = _outputs[i];
+                if (input.Overlaps(output))
+                    continue;
+
+                _outputs[i] = null;
+                _outputLengths[i] = 0;
+                _oversizedOutputMask &= ~slotMask;
+                ArrayPool<byte>.Shared.Return(output!, clearArray: true);
+            }
         }
 
         public void Append(ReadOnlySpan<byte> value)
@@ -1120,6 +1158,32 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
             ArrayPool<byte>.Shared.Return(temporary, clearArray: true);
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void ReleaseConsumedOversizedOutput(ReadOnlySpan<byte> input)
+        {
+            if (_oversizedOutputMask != 0)
+                ReleaseConsumedOversizedOutputSlow(input);
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private void ReleaseConsumedOversizedOutputSlow(ReadOnlySpan<byte> input)
+        {
+            for (var i = 0; i < _outputs.Length; i++)
+            {
+                var slotMask = 1 << i;
+                if ((_oversizedOutputMask & slotMask) == 0)
+                    continue;
+                var output = _outputs[i];
+                if (!input.Overlaps(output))
+                    continue;
+
+                _outputs[i] = null;
+                _outputLengths[i] = 0;
+                _oversizedOutputMask &= ~slotMask;
+                ArrayPool<byte>.Shared.Return(output!, clearArray: true);
+            }
+        }
+
         private Span<byte> GetTemporary(int minimumLength)
         {
             if (_temporary is not null && _temporaryLength > 0)
@@ -1147,6 +1211,11 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
                 ArrayPool<byte>.Shared.Return(output, clearArray: true);
             }
             _outputs[_outputSlot] = replacement;
+            var slotMask = 1 << _outputSlot;
+            if (replacement.Length > MaxRetainedBufferSize)
+                _oversizedOutputMask |= slotMask;
+            else
+                _oversizedOutputMask &= ~slotMask;
         }
     }
 

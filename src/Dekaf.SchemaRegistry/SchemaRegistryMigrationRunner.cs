@@ -127,7 +127,7 @@ internal sealed class SchemaRegistryMigrationRunner
             context.Return();
         }
 
-        var payloadSchema = writerSchema;
+        var encodedSchema = writerSchema;
         var steps = plan.Steps;
         for (var i = 0; i < steps.Length; i++)
         {
@@ -140,7 +140,7 @@ internal sealed class SchemaRegistryMigrationRunner
                 owner,
                 payloadFormat,
                 taggedFieldTransformers,
-                payloadSchema,
+                encodedSchema,
                 step.Source.Schema,
                 step.Target.Schema,
                 step.Mode);
@@ -152,8 +152,6 @@ internal sealed class SchemaRegistryMigrationRunner
             {
                 context.Return();
             }
-
-            payloadSchema = step.Target.Schema;
         }
 
         context = RentContext(
@@ -163,7 +161,7 @@ internal sealed class SchemaRegistryMigrationRunner
             plan.ReaderSchema.Schema,
             payloadFormat,
             taggedFieldTransformers,
-            taggedFieldSchema: payloadSchema);
+            taggedFieldSchema: encodedSchema);
         try
         {
             payload = _schemaRuleExecutor.TransformDeserializedDomainPayload(payload, context);

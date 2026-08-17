@@ -52,8 +52,10 @@ public sealed class SchemaRegistryMigrationTests
     {
         var registry = new MigrationRegistryClient();
         var writer = CreateSchema("v1");
-        var target = CreateSchema("v2", CreateRule("v2-up", SchemaRuleMode.Upgrade));
+        var intermediate = CreateSchema("v2", CreateRule("v2-up", SchemaRuleMode.Upgrade));
+        var target = CreateSchema("v3", CreateRule("v3-up", SchemaRuleMode.Upgrade));
         var writerId = registry.Register("orders-value", writer);
+        registry.Register("orders-value", intermediate);
         registry.Register("orders-value", target);
         var provider = new CapturingTaggedFieldTransformerProvider();
         var runner = new SchemaRegistryMigrationRunner(
@@ -70,9 +72,13 @@ public sealed class SchemaRegistryMigrationTests
             SchemaRegistryPayloadFormat.Avro,
             provider);
 
-        await Assert.That(provider.Calls.Count).IsEqualTo(3);
+        await Assert.That(provider.Calls.Count).IsEqualTo(4);
         await Assert.That(provider.Calls[1].PayloadSchema).IsSameReferenceAs(writer);
-        await Assert.That(provider.Calls[1].RuleOwnerSchema).IsSameReferenceAs(target);
+        await Assert.That(provider.Calls[1].RuleOwnerSchema).IsSameReferenceAs(intermediate);
+        await Assert.That(provider.Calls[2].PayloadSchema).IsSameReferenceAs(writer);
+        await Assert.That(provider.Calls[2].RuleOwnerSchema).IsSameReferenceAs(target);
+        await Assert.That(provider.Calls[3].PayloadSchema).IsSameReferenceAs(writer);
+        await Assert.That(provider.Calls[3].RuleOwnerSchema).IsSameReferenceAs(target);
     }
 
     [Test]
