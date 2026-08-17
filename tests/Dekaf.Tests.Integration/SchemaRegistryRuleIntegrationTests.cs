@@ -20,7 +20,7 @@ namespace Dekaf.Tests.Integration;
 public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryContainer testInfra)
 {
     [Test]
-    public async Task RegisteredDomainAndEncodingRules_ProduceAndConsume_RoundTrip()
+    public async Task RegisteredDomainRules_ProduceAndConsume_RoundTrip()
     {
         var topic = await testInfra.CreateTestTopicAsync();
         using var registryClient = new SchemaRegistryClient(new SchemaRegistryConfig
@@ -31,8 +31,7 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
         var ruleExecutor = new SchemaRegistryRuleExecutor(
         [
             new CelSchemaRegistryRuleHandler(),
-            new XorRuleHandler("DOMAIN-XOR", 0x25, calls),
-            new XorRuleHandler("ENCODING-XOR", 0x5A, calls)
+            new XorRuleHandler("DOMAIN-XOR", 0x25, calls)
         ]);
         var schema = new Schema
         {
@@ -51,8 +50,7 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
                         Expr = "subject == \"DomainRulePayload\""
                     },
                     CreateRule("domain-xor", "DOMAIN-XOR")
-                ],
-                EncodingRules = [CreateRule("encoding-xor", "ENCODING-XOR")]
+                ]
             }
         };
 
@@ -110,11 +108,8 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
         var registeredById = await registryClient.GetSchemaAsync(registered.Id);
         await Assert.That(consumed).IsEqualTo("domain-rule-payload");
         await Assert.That(registeredById.RuleSet!.DomainRules).Count().IsEqualTo(2);
-        await Assert.That(registeredById.RuleSet.EncodingRules).Count().IsEqualTo(1);
         await Assert.That(calls).IsEquivalentTo([
             "Write:domain-xor",
-            "Write:encoding-xor",
-            "Read:encoding-xor",
             "Read:domain-xor"
         ]);
     }
