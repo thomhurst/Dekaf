@@ -125,6 +125,31 @@ public class AwsKmsProviderTests
     }
 
     [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task DisposedTransportFailure_IsSanitizedWithoutSensitiveCause(bool wrap)
+    {
+        var client = Substitute.For<IAmazonKeyManagementService>();
+        var failure = new ObjectDisposedException("HttpClient", "disposed transport: sensitive");
+        client.EncryptAsync(Arg.Any<EncryptRequest>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromException<EncryptResponse>(failure));
+        client.DecryptAsync(Arg.Any<DecryptRequest>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromException<DecryptResponse>(failure));
+        using var provider = new AwsKmsProvider(client);
+
+        var exception = wrap
+            ? await Assert.ThrowsAsync<SchemaRegistryKmsException>(
+                () => provider.WrapKeyAsync(new byte[] { 1 }, CreateKeyReference()).AsTask())
+            : await Assert.ThrowsAsync<SchemaRegistryKmsException>(
+                () => provider.UnwrapKeyAsync(new byte[] { 1 }, CreateKeyReference()).AsTask());
+
+        await Assert.That(exception!.Message)
+            .IsEqualTo(wrap ? "AWS KMS wrap failed." : "AWS KMS unwrap failed.");
+        await Assert.That(exception.InnerException).IsNull();
+        await Assert.That(exception.ToString()).DoesNotContain("sensitive");
+    }
+
+    [Test]
     public async Task MalformedCiphertext_IsReportedWithoutMaterial()
     {
         var client = Substitute.For<IAmazonKeyManagementService>();

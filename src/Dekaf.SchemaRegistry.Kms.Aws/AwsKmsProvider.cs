@@ -363,6 +363,7 @@ public sealed class AwsKmsProvider : ISchemaRegistryKmsProvider, IDisposable
         or SocketException
         or TimeoutException
         or AuthenticationException
+        or ObjectDisposedException
         or OperationCanceledException;
 
     private static AmazonKeyManagementServiceClient CreateOwnedClient(string type)
