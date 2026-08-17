@@ -2166,6 +2166,7 @@ public sealed partial class ConnectionPool :
                 _connectionsByEndpoint,
                 new EndpointKey(connection.Host, connection.Port),
                 connection);
+            PreserveSuccessfulRequest(connection, brokerId);
             RetireConnection(connection);
         }
 
@@ -2181,7 +2182,19 @@ public sealed partial class ConnectionPool :
         foreach (var groupedConnection in group)
         {
             if (groupedConnection is not null)
+            {
+                PreserveSuccessfulRequest(groupedConnection, brokerId);
                 RetireConnection(groupedConnection);
+            }
+        }
+    }
+
+    private void PreserveSuccessfulRequest(IKafkaConnection connection, int brokerId)
+    {
+        if (connection is IKafkaConnectionStatusSource statusSource)
+        {
+            GetBrokerConnectionRuntimeState(brokerId)
+                .RecordSuccessfulRequest(statusSource.LastSuccessfulRequestTimestampMs);
         }
     }
 

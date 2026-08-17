@@ -149,6 +149,29 @@ public sealed class ConnectionPoolTests
     }
 
     [Test]
+    public async Task StatusSnapshot_PreservesRequestFreshnessWhenBrokerEndpointChanges()
+    {
+        var connection = new TestIdleConnection(7, "broker-a", 9092)
+        {
+            LastSuccessfulRequestTimestampMs = 99
+        };
+        await using var pool = new ConnectionPool(
+            clientId: "status-test",
+            connectionOptions: new ConnectionOptions(),
+            connectionsPerBroker: 1,
+            connectionFactory: (_, _, _, _, _) => ValueTask.FromResult<IKafkaConnection>(connection));
+        pool.RegisterBroker(7, "broker-a", 9092);
+        _ = await pool.GetConnectionAsync(7);
+
+        pool.RegisterBroker(7, "broker-b", 9093);
+
+        var status = ((IConnectionPoolStatusSource)pool).GetBrokerConnectionStatus().Single();
+        await Assert.That(status.State).IsEqualTo(BrokerConnectionState.Disconnected);
+        await Assert.That(status.LastSuccessfulRequestAtUtc).IsNotNull();
+        await Assert.That(GetBrokerSuccessfulRequestTimestamp(pool, 7)).IsEqualTo(99);
+    }
+
+    [Test]
     public async Task StatusSnapshot_ReportsControllerEndpointConnection()
     {
         var connection = new TestIdleConnection(-1, "controller-a", 19093);
