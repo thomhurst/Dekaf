@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
@@ -29,14 +30,17 @@ public sealed class AwsKmsProvider : ISchemaRegistryKmsProvider, IDisposable
     public const string KeyUriPrefix = "aws-kms://";
 
     private const int MaximumPlaintextLength = 4096;
+    private const int DisposeDrainTimeoutMilliseconds = 100;
     private const int DisposedMask = int.MinValue;
     private const int ActiveOperationMask = int.MaxValue;
 
     private readonly IAmazonKeyManagementService _client;
     private readonly bool _ownsClient;
-    private readonly ManualResetEventSlim _operationsCompleted = new(initialState: false);
+    private readonly CancellationTokenSource _disposeCancellation = new();
     private int _operationState;
-    private int _completionSignalFinished;
+    private int _cancellationFinished;
+    private int _clientDisposed;
+    private int _cancellationDisposed;
 
     /// <summary>
     /// Creates a provider using the AWS SDK default credential and region provider chains.
@@ -102,6 +106,8 @@ public sealed class AwsKmsProvider : ISchemaRegistryKmsProvider, IDisposable
         CancellationToken cancellationToken = default)
     {
         using var operation = EnterOperation();
+        using var linkedCancellation = CreateLinkedCancellation(cancellationToken);
+        var operationToken = linkedCancellation?.Token ?? _disposeCancellation.Token;
         cancellationToken.ThrowIfCancellationRequested();
         if (keyMaterial.IsEmpty)
             throw new SchemaRegistryKmsException("AWS KMS wrap failed. Key material cannot be empty.");
@@ -120,11 +126,11 @@ public sealed class AwsKmsProvider : ISchemaRegistryKmsProvider, IDisposable
             {
                 KeyId = keyId,
                 Plaintext = plaintext
-            }, cancellationToken).ConfigureAwait(false);
+            }, operationToken).ConfigureAwait(false);
 
             return CopyResponse(response.CiphertextBlob, "wrap", clearSource: false);
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (operationToken.IsCancellationRequested)
         {
             throw;
         }
@@ -145,6 +151,8 @@ public sealed class AwsKmsProvider : ISchemaRegistryKmsProvider, IDisposable
         CancellationToken cancellationToken = default)
     {
         using var operation = EnterOperation();
+        using var linkedCancellation = CreateLinkedCancellation(cancellationToken);
+        var operationToken = linkedCancellation?.Token ?? _disposeCancellation.Token;
         cancellationToken.ThrowIfCancellationRequested();
         if (encryptedKeyMaterial.IsEmpty)
             throw new SchemaRegistryKmsException("AWS KMS unwrap failed. Encrypted key material cannot be empty.");
@@ -157,11 +165,11 @@ public sealed class AwsKmsProvider : ISchemaRegistryKmsProvider, IDisposable
             {
                 KeyId = keyId,
                 CiphertextBlob = ciphertext
-            }, cancellationToken).ConfigureAwait(false);
+            }, operationToken).ConfigureAwait(false);
 
             return CopyResponse(response.Plaintext, "unwrap", clearSource: true);
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (operationToken.IsCancellationRequested)
         {
             throw;
         }
@@ -184,20 +192,22 @@ public sealed class AwsKmsProvider : ISchemaRegistryKmsProvider, IDisposable
 
         try
         {
-            if ((previousState & ActiveOperationMask) != 0)
-            {
-                _operationsCompleted.Wait();
-                var spinner = new SpinWait();
-                while (Volatile.Read(ref _completionSignalFinished) == 0)
-                    spinner.SpinOnce();
-            }
-
-            if (_ownsClient)
-                _client.Dispose();
+            _disposeCancellation.Cancel();
         }
         finally
         {
-            _operationsCompleted.Dispose();
+            Volatile.Write(ref _cancellationFinished, 1);
+            try
+            {
+                if ((previousState & ActiveOperationMask) != 0)
+                    WaitForOperationsToDrain();
+
+                DisposeOwnedClient();
+            }
+            finally
+            {
+                TryDisposeCancellation();
+            }
         }
     }
 
@@ -220,10 +230,41 @@ public sealed class AwsKmsProvider : ISchemaRegistryKmsProvider, IDisposable
     private void ExitOperation()
     {
         if (Interlocked.Decrement(ref _operationState) == DisposedMask)
+            TryDisposeCancellation();
+    }
+
+    private CancellationTokenSource? CreateLinkedCancellation(CancellationToken cancellationToken) =>
+        cancellationToken.CanBeCanceled
+            ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _disposeCancellation.Token)
+            : null;
+
+    private void WaitForOperationsToDrain()
+    {
+        var startedAt = Stopwatch.GetTimestamp();
+        var spinner = new SpinWait();
+        while ((Volatile.Read(ref _operationState) & ActiveOperationMask) != 0 &&
+               Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds < DisposeDrainTimeoutMilliseconds)
         {
-            _operationsCompleted.Set();
-            Volatile.Write(ref _completionSignalFinished, 1);
+            spinner.SpinOnce();
         }
+    }
+
+    private void DisposeOwnedClient()
+    {
+        if (_ownsClient && Interlocked.Exchange(ref _clientDisposed, 1) == 0)
+            _client.Dispose();
+    }
+
+    private void TryDisposeCancellation()
+    {
+        if ((Volatile.Read(ref _operationState) & ActiveOperationMask) != 0 ||
+            Volatile.Read(ref _cancellationFinished) == 0 ||
+            Interlocked.Exchange(ref _cancellationDisposed, 1) != 0)
+        {
+            return;
+        }
+
+        _disposeCancellation.Dispose();
     }
 
     private string ResolveKeyId(SchemaRegistryKmsKeyReference keyReference)

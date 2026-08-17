@@ -1,11 +1,11 @@
 using Amazon.KeyManagementService;
 using Amazon.KeyManagementService.Model;
 using Amazon.Runtime;
+using System.Diagnostics;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Kms.Aws;
 using NSubstitute;
 using System.Net;
-using System.Reflection;
 
 namespace Dekaf.Tests.Unit.SchemaRegistry;
 
@@ -199,8 +199,13 @@ public class AwsKmsProviderTests
     {
         var client = Substitute.For<IAmazonKeyManagementService>();
         using var cancellation = new CancellationTokenSource();
+        CancellationToken operationToken = default;
         client.EncryptAsync(Arg.Any<EncryptRequest>(), Arg.Any<CancellationToken>())
-            .Returns(call => WaitForCancellationAsync(call.Arg<CancellationToken>()));
+            .Returns(call =>
+            {
+                operationToken = call.Arg<CancellationToken>();
+                return WaitForCancellationAsync(operationToken);
+            });
         using var provider = new AwsKmsProvider(client);
         var operation = provider.WrapKeyAsync(new byte[] { 1 }, CreateKeyReference(), cancellation.Token).AsTask();
 
@@ -208,7 +213,8 @@ public class AwsKmsProviderTests
 
         await Assert.That(async () => await operation)
             .Throws<OperationCanceledException>();
-        await client.Received(1).EncryptAsync(Arg.Any<EncryptRequest>(), cancellation.Token);
+        await Assert.That(operationToken.IsCancellationRequested).IsTrue();
+        await client.Received(1).EncryptAsync(Arg.Any<EncryptRequest>(), operationToken);
     }
 
     [Test]
@@ -243,11 +249,35 @@ public class AwsKmsProviderTests
     }
 
     [Test]
-    public async Task Dispose_WaitsForActiveOperationBeforeDisposingOwnedClient()
+    public async Task Dispose_CancelsActiveOperationBeforeDisposingOwnedClient()
+    {
+        var operationStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var client = Substitute.For<IAmazonKeyManagementService>();
+        client.EncryptAsync(Arg.Any<EncryptRequest>(), Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                operationStarted.SetResult();
+                return WaitForCancellationAsync(call.Arg<CancellationToken>());
+            });
+        using var provider = new AwsKmsProvider(client, ownsClient: true);
+
+        var wrapTask = provider.WrapKeyAsync(new byte[] { 1 }, CreateKeyReference()).AsTask();
+        await operationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var elapsed = Stopwatch.StartNew();
+
+        provider.Dispose();
+
+        elapsed.Stop();
+        await Assert.That(elapsed.Elapsed).IsLessThan(TimeSpan.FromSeconds(2));
+        await Assert.That(async () => await wrapTask).Throws<OperationCanceledException>();
+        client.Received(1).Dispose();
+    }
+
+    [Test]
+    public async Task Dispose_ReturnsPromptlyWhenActiveOperationIgnoresCancellation()
     {
         var operationStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var operationCompletion = new TaskCompletionSource<EncryptResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
-        using var disposeStarted = new ManualResetEventSlim(initialState: false);
         var client = Substitute.For<IAmazonKeyManagementService>();
         client.EncryptAsync(Arg.Any<EncryptRequest>(), Arg.Any<CancellationToken>())
             .Returns(_ =>
@@ -255,42 +285,26 @@ public class AwsKmsProviderTests
                 operationStarted.SetResult();
                 return operationCompletion.Task;
             });
-        var provider = new AwsKmsProvider(client, ownsClient: true);
-
+        using var provider = new AwsKmsProvider(client, ownsClient: true);
         var wrapTask = provider.WrapKeyAsync(new byte[] { 1 }, CreateKeyReference()).AsTask();
         await operationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var disposeTask = Task.Run(() =>
-        {
-            disposeStarted.Set();
-            provider.Dispose();
-        });
 
         try
         {
-            await Assert.That(disposeStarted.Wait(TimeSpan.FromSeconds(5))).IsTrue();
-            await Assert.That(SpinWait.SpinUntil(
-                () => GetOperationState(provider) < 0,
-                TimeSpan.FromSeconds(5))).IsTrue();
-            client.DidNotReceive().Dispose();
+            var elapsed = Stopwatch.StartNew();
+            provider.Dispose();
+            elapsed.Stop();
 
+            await Assert.That(elapsed.Elapsed).IsLessThan(TimeSpan.FromSeconds(2));
+            client.Received(1).Dispose();
             operationCompletion.SetResult(CreateEncryptResponse());
-
             await Assert.That(await wrapTask.WaitAsync(TimeSpan.FromSeconds(5)))
                 .IsEquivalentTo(new byte[] { 4, 5, 6 });
-            await disposeTask.WaitAsync(TimeSpan.FromSeconds(5));
-            client.Received(1).Dispose();
         }
         finally
         {
             operationCompletion.TrySetResult(CreateEncryptResponse());
-            try
-            {
-                await disposeTask.WaitAsync(TimeSpan.FromSeconds(5));
-            }
-            finally
-            {
-                provider.Dispose();
-            }
+            await wrapTask.WaitAsync(TimeSpan.FromSeconds(5));
         }
     }
 
@@ -367,11 +381,6 @@ public class AwsKmsProviderTests
 
     private static EncryptResponse CreateEncryptResponse() =>
         new() { CiphertextBlob = new MemoryStream([4, 5, 6]) };
-
-    private static int GetOperationState(AwsKmsProvider provider) =>
-        (int)typeof(AwsKmsProvider)
-            .GetField("_operationState", BindingFlags.Instance | BindingFlags.NonPublic)!
-            .GetValue(provider)!;
 
     private static async Task<EncryptResponse> WaitForCancellationAsync(CancellationToken cancellationToken)
     {
