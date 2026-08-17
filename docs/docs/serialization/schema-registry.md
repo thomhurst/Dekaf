@@ -1,5 +1,6 @@
 ---
 sidebar_position: 3
+description: "Confluent Schema Registry with Avro and Protobuf, JSON Schema validation, and client-side field-level encryption via AWS, Azure, GCP, or Vault KMS."
 ---
 
 # Schema Registry
@@ -174,6 +175,82 @@ identify the failure. Exception messages never include payload contents. Validat
 CPU cost when enabled because each payload must be parsed and evaluated. Steady-state validation is
 zero-allocation; disabled serializers remain validation-neutral and do not load the optional JSON
 Schema package.
+
+## Migration rules
+
+Set `UseLatestVersion = true` on a deserializer config to select the subject's latest registered
+schema as the reader schema. Dekaf resolves the writer's exact subject version, walks every adjacent
+version, and executes active migration rules before deserializing with the reader schema:
+
+```csharp
+var rules = new SchemaRegistryRuleExecutor([migrationHandler]);
+
+var config = new AvroDeserializerConfig
+{
+    UseLatestVersion = true,
+    RuleExecutor = rules
+};
+
+var consumer = await Kafka.CreateConsumer<string, GenericRecord>()
+    .WithBootstrapServers("localhost:9092")
+    .WithGroupId("orders")
+    .UseAvroSchemaRegistry(registry, config)
+    .BuildAsync();
+```
+
+`SchemaRegistryDeserializerConfig`, `AvroDeserializerConfig`, and `ProtobufDeserializerConfig`
+all expose `UseLatestVersion`. Avro does not allow `UseLatestVersion` together with an explicit
+`ReaderSchema`.
+
+Ordering matches Schema Registry behavior. Read encoding rules run against the writer schema first;
+upgrade or downgrade rules then run for each version edge; read domain rules run against the final
+reader schema last. The higher schema owns each edge's migration rules. Upgrade paths visit versions
+and rules in ascending/forward order. Downgrade paths visit versions and rules in descending/reverse
+order. `UpDown` rules participate in both directions, and paired success/failure actions select the
+first action for upgrade and the second for downgrade. Disabled rules are skipped.
+
+Using the latest reader schema without active migration rules does not require a rule executor. If
+an active migration path exists, configure the built-in `SchemaRegistryRuleExecutor`; Dekaf fails
+closed instead of silently skipping the transform. Warm cached no-migration, disabled-migration, and
+active pass-through paths remain allocation-free, including interleaved writer schema IDs.
+
+Migration plans follow `SchemaRegistryConfig.LatestCacheTtlSecs`. The Confluent-compatible default
+is `-1`, which disables time-based expiry. Set a non-negative TTL to
+periodically re-resolve latest schemas; `0` refreshes on every use. Historical version lookup includes
+deleted versions so migration paths remain complete. Custom `ISchemaRegistryClient` implementations
+must override the deleted-version overload; its default implementation fails closed.
+
+### JSONata rules
+
+Install the optional `Dekaf.SchemaRegistry.Jsonata` package and register its handler when a data
+contract contains `JSONATA` rules:
+
+```csharp
+using Dekaf.SchemaRegistry.Jsonata;
+
+var rules = new SchemaRegistryRuleExecutor(
+[
+    new JsonataSchemaRegistryRuleHandler()
+]);
+```
+
+The handler compiles and caches each rule expression, then evaluates JSONata against JSON codec
+payloads for write, read, and migration transforms. For example,
+`$merge([$, {'fullName': first & ' ' & last}])` preserves the input object and adds `fullName`.
+JSONata dependencies remain isolated in the optional package; applications without the handler add
+no JSONata work or allocation.
+
+Transform results may be any JSON value, including `null`, numbers, objects, and collections.
+JSONata's standard sequence semantics apply: a singleton sequence collapses to its value; append
+`[]` when the output must remain an array. An undefined result (for example, a missing-field query)
+fails explicitly rather than emitting invalid JSON. Condition rules must return `true` or `false`;
+`false` fails the rule. Invalid expressions, malformed JSON, and non-JSON payload formats fail with
+`SchemaRegistryRuleException`. Error messages identify the rule and engine error, but never include
+the payload.
+
+Binary Avro and Protobuf codec payloads are not currently supported by the JSONata byte handler and
+are rejected explicitly. Their object-level transforms require codec-specific conversion before
+binary encoding.
 
 ## Schema Registry Configuration
 
@@ -415,6 +492,57 @@ using var euKms = new AwsKmsProvider(RegionEndpoint.EUWest2, type: "aws-kms-eu-w
 using var usKms = new AwsKmsProvider(RegionEndpoint.USEast1, type: "aws-kms-us-east-1");
 var multiRegionCsfle = new SchemaRegistryCsfleRuleHandler(schemaRegistry, [euKms, usKms]);
 ```
+
+## Azure Key Vault KMS
+
+Install the opt-in Azure provider when Schema Registry client-side field-level encryption (CSFLE)
+uses an Azure Key Vault key:
+
+```bash
+dotnet add package Dekaf.SchemaRegistry.Kms.Azure
+```
+
+```csharp
+using Azure.Identity;
+using Dekaf.SchemaRegistry;
+using Dekaf.SchemaRegistry.Kms.Azure;
+
+var credential = new DefaultAzureCredential();
+var azureKms = new AzureKeyVaultKmsProvider(credential);
+var confluentAzureKms = new AzureKeyVaultKmsProvider(
+    credential,
+    type: AzureKeyVaultKmsProvider.ConfluentType);
+var csfle = new SchemaRegistryCsfleRuleHandler(
+    schemaRegistry,
+    [azureKms, confluentAzureKms]);
+```
+
+`DefaultAzureCredential` uses the standard Azure credential chain. Production applications can
+instead pass a specific credential such as `ManagedIdentityCredential` or
+`ClientSecretCredential`. The credential and any supplied `CryptographyClientOptions` are
+caller-owned. For complete client-construction control, implement
+`IAzureKeyVaultCryptographyClientFactory`.
+
+Use an absolute HTTPS key identifier with `/keys/<name>` or `/keys/<name>/<version>`, for example
+`https://payments.vault.azure.net/keys/orders-kek`. Azure public, US Government, and China Key Vault
+and Managed HSM DNS authorities are accepted; other authorities are rejected before credential use.
+Each provider instance registers one KMS type;
+register the default instance for `azure-kv`, the `ConfluentType` instance for Confluent-compatible
+`azure-kms`, or both as shown above. Matching `azure-kv://` and `azure-kms://` prefixes on the key
+identifier are optional. The provider uses RSA-OAEP-256. Prefer a versioned key identifier so
+existing data keeps decrypting after rotation. For a versionless key, set the KEK property
+`encrypt.azure.key.version.save=true` to embed the exact Azure key version in newly wrapped key
+material.
+
+For RBAC-enabled vaults, grant the identity the Key Vault Crypto User role. For vaults using legacy
+access policies, grant the `keys/wrapKey` and `keys/unwrapKey` permissions. Managed HSM uses its own
+local RBAC system: grant the identity the
+[Managed HSM Crypto User role](https://learn.microsoft.com/azure/key-vault/managed-hsm/role-management)
+at the `/keys` scope or the specific key's scope. One provider instance is safe for concurrent use.
+It bounds both its configured-key client cache and its ciphertext key-version client cache to 64
+entries.
+Cancellation is forwarded to Azure; provider error messages do not include service response text
+or key material.
 
 ## Consumer
 

@@ -6,6 +6,7 @@ using Avro.Generic;
 using Dekaf.Consumer;
 using Dekaf.Producer;
 using Dekaf.SchemaRegistry;
+using Dekaf.SchemaRegistry.Jsonata;
 using Dekaf.SchemaRegistry.Avro;
 using Dekaf.SchemaRegistry.Protobuf;
 using Dekaf.Serialization;
@@ -19,6 +20,109 @@ namespace Dekaf.Tests.Integration;
 [ClassDataSource<KafkaWithSchemaRegistryContainer>(Shared = SharedType.PerTestSession)]
 public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryContainer testInfra)
 {
+    [Test]
+    public async Task RegisteredJsonataMigrationRule_UseLatestVersion_TransformsPayload()
+    {
+        var topic = await testInfra.CreateTestTopicAsync();
+        var subject = $"{topic}-value";
+        using var registryClient = new SchemaRegistryClient(new SchemaRegistryConfig
+        {
+            Url = testInfra.RegistryUrl
+        });
+        var v1 = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = """{ "type": "object", "properties": { "first": { "type": "string" }, "last": { "type": "string" } }, "additionalProperties": false }"""
+        };
+        var v2 = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = """{ "type": "object", "properties": { "first": { "type": "string" }, "last": { "type": "string" }, "fullName": { "type": "string" } }, "additionalProperties": false }""",
+            RuleSet = new SchemaRuleSet
+            {
+                MigrationRules =
+                [
+                    new SchemaRule
+                    {
+                        Name = "add-full-name",
+                        Kind = SchemaRuleKind.Transform,
+                        Mode = SchemaRuleMode.Upgrade,
+                        Type = JsonataSchemaRegistryRuleHandler.RuleType,
+                        Expr = "$merge([$, {'fullName': first & ' ' & last}])"
+                    }
+                ]
+            }
+        };
+        var writerId = await registryClient.RegisterSchemaAsync(subject, v1);
+        await registryClient.RegisterSchemaAsync(subject, v2);
+        var executor = new SchemaRegistryRuleExecutor([new JsonataSchemaRegistryRuleHandler()]);
+        await using var deserializer = new JsonSchemaRegistryDeserializer<System.Text.Json.JsonElement>(
+            registryClient,
+            SchemaRegistryRuleJsonContext.Default.JsonElement,
+            new SchemaRegistryDeserializerConfig { UseLatestVersion = true },
+            ruleExecutor: executor);
+        var payload = """{"first":"Ada","last":"Lovelace"}"""u8;
+        var wire = new byte[5 + payload.Length];
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian(wire.AsSpan(1, 4), writerId);
+        payload.CopyTo(wire.AsSpan(5));
+
+        var result = deserializer.Deserialize(wire, CreateContext(topic));
+
+        await Assert.That(result.GetProperty("fullName").GetString()).IsEqualTo("Ada Lovelace");
+    }
+
+    [Test]
+    public async Task RegisteredMigrationRules_UseLatestVersion_ExecutesUpgradePath()
+    {
+        var topic = await testInfra.CreateTestTopicAsync();
+        var subject = $"{topic}-value";
+        using var registryClient = new SchemaRegistryClient(new SchemaRegistryConfig
+        {
+            Url = testInfra.RegistryUrl
+        });
+        var v1 = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = """{ "type": "string", "title": "MigrationV1" }"""
+        };
+        var v2 = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = """{ "type": "string", "title": "MigrationV2" }""",
+            RuleSet = new SchemaRuleSet
+            {
+                MigrationRules =
+                [
+                    new SchemaRule
+                    {
+                        Name = "append-version",
+                        Kind = SchemaRuleKind.Transform,
+                        Mode = SchemaRuleMode.Upgrade,
+                        Type = AppendMigrationRuleHandler.RuleType
+                    }
+                ]
+            }
+        };
+        var writerId = await registryClient.RegisterSchemaAsync(subject, v1);
+        await registryClient.RegisterSchemaAsync(subject, v2);
+        var calls = new ConcurrentQueue<string>();
+        var executor = new SchemaRegistryRuleExecutor([new AppendMigrationRuleHandler(calls)]);
+        await using var deserializer = SchemaRegistryDeserializer.Create(
+            registryClient,
+            static (ReadOnlyMemory<byte> payload, Schema _) => Encoding.UTF8.GetString(payload.Span),
+            new SchemaRegistryDeserializerConfig { UseLatestVersion = true },
+            ruleExecutor: executor);
+        var payload = "payload"u8;
+        var wire = new byte[5 + payload.Length];
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian(wire.AsSpan(1, 4), writerId);
+        payload.CopyTo(wire.AsSpan(5));
+
+        var result = deserializer.Deserialize(wire, CreateContext(topic));
+
+        await Assert.That(result).IsEqualTo("payload|v2");
+        await Assert.That(calls).IsEquivalentTo(["Upgrade:MigrationV1->MigrationV2"]);
+    }
+
     [Test]
     public async Task RegisteredDomainRules_ProduceAndConsume_RoundTrip()
     {
@@ -267,7 +371,43 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
             return result;
         }
     }
+
+    private sealed class AppendMigrationRuleHandler(ConcurrentQueue<string> calls)
+        : ISchemaRegistryRuleHandler
+    {
+        internal const string RuleType = "APPEND-MIGRATION";
+
+        public string Type => RuleType;
+
+        public ReadOnlyMemory<byte> TransformSerializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleHandlerContext context) => Transform(payload, context);
+
+        public ReadOnlyMemory<byte> TransformDeserializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleHandlerContext context) => Transform(payload, context);
+
+        private ReadOnlyMemory<byte> Transform(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleHandlerContext context)
+        {
+            calls.Enqueue(
+                $"{context.PayloadContext.RuleMode}:{GetTitle(context.PayloadContext.SourceSchema!)}->{GetTitle(context.PayloadContext.TargetSchema!)}");
+            var suffix = "|v2"u8;
+            var result = new byte[payload.Length + suffix.Length];
+            payload.Span.CopyTo(result);
+            suffix.CopyTo(result.AsSpan(payload.Length));
+            return result;
+        }
+
+        private static string GetTitle(Schema schema)
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(schema.SchemaString);
+            return document.RootElement.GetProperty("title").GetString()!;
+        }
+    }
 }
 
 [JsonSerializable(typeof(string))]
+[JsonSerializable(typeof(System.Text.Json.JsonElement))]
 internal sealed partial class SchemaRegistryRuleJsonContext : JsonSerializerContext;

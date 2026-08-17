@@ -1,5 +1,6 @@
 ---
 sidebar_position: 4
+description: "Which .NET targets each Dekaf package supports, the netstandard2.0 restore baseline, and the blocker categories tracked against it."
 ---
 
 # Compatibility

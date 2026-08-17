@@ -1,5 +1,6 @@
 ---
 sidebar_position: 1
+description: "RFC (deferred): why a Dekaf.Streams runtime stays out of the core client, and the prototype, correctness, and benchmark gates required to reopen it."
 ---
 
 # RFC: Evaluate a Separate Dekaf.Streams Runtime

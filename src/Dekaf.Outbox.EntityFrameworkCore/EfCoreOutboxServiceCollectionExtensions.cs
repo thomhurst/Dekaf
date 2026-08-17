@@ -12,7 +12,7 @@ public static class EfCoreOutboxServiceCollectionExtensions
     /// <summary>
     /// Registers <see cref="EfCoreOutboxStore{TContext}"/> as the <see cref="IOutboxStore"/>.
     /// Requires an <c>AddDbContextFactory&lt;TContext&gt;</c> registration, and the context's
-    /// model must call <see cref="OutboxModelBuilderExtensions.UseDekafOutbox"/>.
+    /// model must call <see cref="OutboxModelBuilderExtensions.UseDekafOutbox(ModelBuilder, string)"/>.
     /// </summary>
     /// <typeparam name="TContext">The application's context type containing the outbox model.</typeparam>
     public static IServiceCollection AddDekafEntityFrameworkCoreOutboxStore<TContext>(

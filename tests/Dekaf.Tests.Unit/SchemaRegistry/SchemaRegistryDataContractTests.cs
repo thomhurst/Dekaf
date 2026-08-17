@@ -92,6 +92,33 @@ public sealed class SchemaRegistryDataContractTests
     }
 
     [Test]
+    public async Task GetSchemaBySubjectAsync_IncludesDeletedVersionWhenRequested()
+    {
+        var handler = new CapturingSchemaRegistryHandler("""
+            {
+              "subject": "orders-value",
+              "version": 2,
+              "id": 42,
+              "schema": "{\"type\":\"object\"}",
+              "schemaType": "JSON"
+            }
+            """);
+        using var client = new SchemaRegistryClient(new SchemaRegistryConfig
+        {
+            Url = "http://schema-registry.local"
+        }, handler);
+
+        await client.GetSchemaBySubjectAsync(
+            "orders-value",
+            "2",
+            ignoreDeletedSchemas: false);
+
+        await Assert.That(handler.LastRequestUri!.AbsolutePath)
+            .IsEqualTo("/subjects/orders-value/versions/2");
+        await Assert.That(handler.LastRequestUri!.Query).IsEqualTo("?deleted=true");
+    }
+
+    [Test]
     public async Task LookupSchemaAsync_PostsExactSchemaAndReturnsRegisteredVersion()
     {
         var handler = new CapturingSchemaRegistryHandler("""

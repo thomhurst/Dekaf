@@ -1,5 +1,6 @@
 ---
 sidebar_position: 3
+description: "FireAsync enqueues records without waiting for broker acknowledgment, how it differs from ProduceAsync, and how to still guarantee delivery."
 ---
 
 # Fire-and-Forget Production

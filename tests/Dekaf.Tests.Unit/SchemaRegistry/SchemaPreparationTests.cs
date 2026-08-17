@@ -724,6 +724,33 @@ public sealed class SchemaPreparationTests
     }
 
     [Test]
+    public async Task ResolutionCache_ExactRemoval_AllowsReplacement()
+    {
+        var cache = new SchemaResolutionCache<int>();
+        var schema = new Schema { SchemaType = SchemaType.Json, SchemaString = "{}" };
+        var first = await cache.ResolveAsync(
+            "orders-value",
+            schema,
+            0,
+            static (_, _, _) => Task.FromResult(1),
+            CancellationToken.None);
+
+        var removed = cache.TryRemove("orders-value", schema, first);
+        var removedAgain = cache.TryRemove("orders-value", schema, first);
+        var replacement = await cache.ResolveAsync(
+            "orders-value",
+            schema,
+            0,
+            static (_, _, _) => Task.FromResult(2),
+            CancellationToken.None);
+
+        await Assert.That(removed).IsTrue();
+        await Assert.That(removedAgain).IsFalse();
+        await Assert.That(replacement).IsEqualTo(2);
+        await Assert.That(cache.CachedEntryCount).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task ResolutionCache_CoalescesConcurrentMissWhenAtCapacity()
     {
         var cache = new SchemaResolutionCache<int>(maxCachedEntries: 1);

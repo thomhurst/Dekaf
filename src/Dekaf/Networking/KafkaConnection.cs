@@ -2006,7 +2006,7 @@ public sealed partial class KafkaConnection :
     /// <summary>
     /// Writes one complete frame while holding the write lock, then releases the lock and
     /// returns the serialization buffer. The socket write is deliberately not cancellable:
-    /// cancelling <see cref="Stream.WriteAsync(ReadOnlyMemory{byte}, CancellationToken)"/>
+    /// cancelling the underlying <see cref="Stream"/> write
     /// mid-frame can leave a partial frame on the wire, desyncing the outgoing stream so the
     /// broker misparses it (broker-side InvalidRequestException on PRODUCE followed by a socket
     /// close). Callers that time out abandon the await instead (<see cref="AwaitFrameWriteAsync"/>);
@@ -2207,7 +2207,7 @@ public sealed partial class KafkaConnection :
 
     /// <summary>
     /// Marks the connection unusable after a frame write faulted or stayed stuck past its grace
-    /// period. A faulted <see cref="Stream.WriteAsync(ReadOnlyMemory{byte}, CancellationToken)"/>
+    /// period. A faulted <see cref="Stream"/> write
     /// can have transmitted part of the frame, so the outgoing stream is no longer frame-aligned:
     /// any further request written to it is misparsed by the broker (surfacing as broker-side
     /// InvalidRequestException on PRODUCE, after which the broker closes the socket while the

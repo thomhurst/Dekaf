@@ -1,5 +1,6 @@
 ---
 sidebar_position: 4
+description: "Attach metadata such as trace IDs and message types to records, read headers on the consumer side, and understand their performance cost."
 ---
 
 # Message Headers

@@ -778,6 +778,7 @@ public sealed class SchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisp
     private readonly bool _ownsClient;
     private readonly ISchemaRegistryRuleExecutor? _ruleExecutor;
     private readonly DeserializerSubjectNameCache? _subjectNames;
+    private readonly SchemaRegistryMigrationRunner? _migrationRunner;
 
     /// <summary>
     /// Creates a new Schema Registry deserializer.
@@ -817,6 +818,13 @@ public sealed class SchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisp
         _ownsClient = ownsClient;
         _ruleExecutor = ruleExecutor;
         _subjectNames = DeserializerSubjectNameCache.Create(config);
+        if (config?.UseLatestVersion == true)
+        {
+            (_migrationRunner, _ruleExecutor) = SchemaRegistryMigrationRunner.Create(
+                schemaRegistry,
+                ruleExecutor,
+                SchemaRegistryTimeout);
+        }
     }
 
     public T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
@@ -849,20 +857,35 @@ public sealed class SchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisp
             }
 
             schema = _schemaRegistry.GetSchemaSync(schemaId, subject, SchemaRegistryTimeout);
-            var ruleContext = SchemaRegistryRuleContext.Rent(
-                context.Topic,
-                context.Component,
-                schemaId,
-                subject,
-                schema,
-                SchemaRegistryPayloadFormat.Custom);
-            try
+            if (_migrationRunner is null)
             {
-                payload = _ruleExecutor.TransformDeserializedPayload(payload, ruleContext);
+                var ruleContext = SchemaRegistryRuleContext.Rent(
+                    context.Topic,
+                    context.Component,
+                    schemaId,
+                    subject,
+                    schema,
+                    SchemaRegistryPayloadFormat.Custom);
+                try
+                {
+                    payload = _ruleExecutor!.TransformDeserializedPayload(payload, ruleContext);
+                }
+                finally
+                {
+                    ruleContext.Return();
+                }
             }
-            finally
+            else
             {
-                ruleContext.Return();
+                var migration = _migrationRunner.Transform(
+                    payload,
+                    schemaId,
+                    subject,
+                    schema,
+                    context,
+                    SchemaRegistryPayloadFormat.Custom);
+                payload = migration.Payload;
+                schema = migration.ReaderSchema.Schema;
             }
         }
         else

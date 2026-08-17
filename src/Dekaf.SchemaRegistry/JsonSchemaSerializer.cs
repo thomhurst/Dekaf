@@ -660,6 +660,11 @@ public sealed class JsonSchemaRegistrySerializer<T> :
 /// <para>
 /// The blocking call includes a timeout to prevent indefinite hangs.
 /// </para>
+/// <para>
+/// Kafka value tombstones return <see langword="default"/> without reading Confluent framing
+/// or contacting Schema Registry. This is <see langword="null"/> for reference and nullable
+/// types; non-nullable value types receive their normal default value.
+/// </para>
 /// </remarks>
 /// <typeparam name="T">The type to deserialize.</typeparam>
 public sealed class JsonSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisposable
@@ -678,6 +683,7 @@ public sealed class JsonSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
     private readonly ISchemaRegistryRuleExecutor? _ruleExecutor;
     private readonly IJsonSchemaValidatorFactory? _validatorFactory;
     private readonly DeserializerSubjectNameCache? _subjectNames;
+    private readonly SchemaRegistryMigrationRunner? _migrationRunner;
 
     /// <summary>
     /// Creates a new JSON Schema Registry deserializer.
@@ -715,6 +721,13 @@ public sealed class JsonSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
     {
         ArgumentNullException.ThrowIfNull(config);
         _subjectNames = DeserializerSubjectNameCache.Create(config);
+        if (config.UseLatestVersion)
+        {
+            (_migrationRunner, _ruleExecutor) = SchemaRegistryMigrationRunner.Create(
+                schemaRegistry,
+                ruleExecutor,
+                SchemaRegistryTimeout);
+        }
     }
 
     /// <summary>
@@ -784,6 +797,13 @@ public sealed class JsonSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
     {
         ArgumentNullException.ThrowIfNull(config);
         _subjectNames = DeserializerSubjectNameCache.Create(config);
+        if (config.UseLatestVersion)
+        {
+            (_migrationRunner, _ruleExecutor) = SchemaRegistryMigrationRunner.Create(
+                schemaRegistry,
+                ruleExecutor,
+                SchemaRegistryTimeout);
+        }
     }
 
     /// <summary>
@@ -822,7 +842,12 @@ public sealed class JsonSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
         var span = data.Span;
 
         if (span.Length < 5)
+        {
+            if (context is { IsNull: true, Component: SerializationComponent.Value })
+                return default!;
+
             throw new InvalidOperationException("Message too short to contain Schema Registry wire format");
+        }
 
         if (span[0] != MagicByte)
             throw new InvalidOperationException($"Unknown magic byte: {span[0]}. Expected Schema Registry format.");
@@ -848,20 +873,35 @@ public sealed class JsonSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
             }
 
             schema = _schemaRegistry.GetSchemaSync(schemaId, subject, SchemaRegistryTimeout);
-            var ruleContext = SchemaRegistryRuleContext.Rent(
-                context.Topic,
-                context.Component,
-                schemaId,
-                subject,
-                schema,
-                SchemaRegistryPayloadFormat.Json);
-            try
+            if (_migrationRunner is null)
             {
-                payload = _ruleExecutor.TransformDeserializedPayload(payload, ruleContext);
+                var ruleContext = SchemaRegistryRuleContext.Rent(
+                    context.Topic,
+                    context.Component,
+                    schemaId,
+                    subject,
+                    schema,
+                    SchemaRegistryPayloadFormat.Json);
+                try
+                {
+                    payload = _ruleExecutor!.TransformDeserializedPayload(payload, ruleContext);
+                }
+                finally
+                {
+                    ruleContext.Return();
+                }
             }
-            finally
+            else
             {
-                ruleContext.Return();
+                var migration = _migrationRunner.Transform(
+                    payload,
+                    schemaId,
+                    subject,
+                    schema,
+                    context,
+                    SchemaRegistryPayloadFormat.Json);
+                payload = migration.Payload;
+                schema = migration.ReaderSchema.Schema;
             }
         }
         else

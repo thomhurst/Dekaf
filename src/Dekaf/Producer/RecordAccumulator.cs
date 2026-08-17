@@ -760,7 +760,7 @@ internal sealed class BatchArena
     }
 
     /// <summary>
-    /// Number of times <see cref="RentOrCreate"/> found the pool empty and had to allocate a new arena.
+    /// Number of times <see cref="RentOrCreate(int)"/> found the pool empty and had to allocate a new arena.
     /// Use this to diagnose pool sizing — sustained misses under load indicate the pool is too small.
     /// </summary>
     internal static long Misses => s_pool.Misses;
@@ -2330,7 +2330,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     /// <summary>
     /// Schedules a partition to be re-enqueued into <see cref="_readyPartitions"/> after
-    /// <paramref name="delayMs"/> milliseconds. Uses a fire-and-forget <see cref="Task.Delay"/>
+    /// <paramref name="delayMs"/> milliseconds. Uses a fire-and-forget <see cref="Task.Delay(int, CancellationToken)"/>
     /// so the sender loop is not churning on partitions still in retry backoff.
     /// One allocation per retry batch (not per message) — acceptable per allocation guidelines.
     /// Respects <see cref="_disposalCts"/> so the timer cancels promptly on disposal,
@@ -5446,19 +5446,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     /// <summary>
     /// Tries to get an existing batch for the given topic-partition.
-    /// Used by KafkaProducer to access the batch's arena for direct serialization.
-    /// </summary>
-    /// <param name="topicPartition">The topic-partition to look up.</param>
-    /// <param name="batch">The batch if found, null otherwise.</param>
-    /// <summary>
-    /// Checks for batches that have exceeded linger time.
-    /// Uses conditional removal to avoid race conditions where a new batch might be created
-    /// between Complete() and TryRemove() calls.
-    /// </summary>
-    /// <summary>
-    /// Tries to get an existing batch for the given topic-partition.
     /// Used by tests for batch introspection.
     /// </summary>
+    /// <param name="topic">The topic to look up.</param>
+    /// <param name="partition">The partition to look up.</param>
+    /// <param name="batch">The batch if found, null otherwise.</param>
     internal bool TryGetBatch(string topic, int partition, out PartitionBatch? batch)
     {
         if (Volatile.Read(ref _disposed) != 0)
@@ -5496,6 +5488,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Checks active partitions for batches that have reached their linger deadline
+    /// and seals eligible current batches. Each sweep processes at most the captured
+    /// <c>_lingerPartitions</c> count, leaving later notifications queued for the next pass.
+    /// Eligible batches are detached while holding each partition lock.
+    /// </summary>
     /// <remarks>
     /// Optimized with multiple fast paths:
     /// 1. No-unsealed-batch check avoids linger work entirely.

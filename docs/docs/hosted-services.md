@@ -1,5 +1,6 @@
 ---
 sidebar_position: 12
+description: "KafkaConsumerService runs a consumer for your application's lifetime, handling scoped dependencies, failure handling, and shutdown behaviour."
 ---
 
 # Hosted Consumer Services

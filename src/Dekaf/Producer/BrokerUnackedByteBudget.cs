@@ -38,7 +38,7 @@ internal readonly record struct BrokerBudgetProbeEvent(
 /// The batch gate is multi-writer and amortizes compare/exchange reservations across many
 /// records. The adaptive controller is single-writer: only the owning broker response loop
 /// calls <see cref="OnAcked"/>,
-/// <see cref="CompleteAckedPass"/>, and <see cref="SetCap"/>. It publishes one byte limit and
+/// <see cref="CompleteAckedPass"/>, and <see cref="SetCap(long, long)"/>. It publishes one byte limit and
 /// generation for appenders to read.
 /// </para>
 /// </summary>

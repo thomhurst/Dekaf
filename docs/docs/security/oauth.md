@@ -1,5 +1,6 @@
 ---
 sidebar_position: 3
+description: "OAUTHBEARER authentication with custom token providers, JWT-bearer and client assertion grants, Azure AD, AWS MSK IAM, and token refresh."
 ---
 
 # OAuth / OAUTHBEARER

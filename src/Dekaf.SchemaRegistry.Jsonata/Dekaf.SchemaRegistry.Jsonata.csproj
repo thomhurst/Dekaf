@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>Dekaf.SchemaRegistry.Jsonata</PackageId>
+    <Description>JSONata rule execution for Dekaf Schema Registry data contracts</Description>
+    <PackageTags>kafka;schema-registry;data-contracts;rules;jsonata</PackageTags>
+    <PackageValidationBaselineVersion></PackageValidationBaselineVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Dekaf.SchemaRegistry\Dekaf.SchemaRegistry.csproj" />
+    <PackageReference Include="Jsonata.Net.Native" />
+  </ItemGroup>
+
+</Project>

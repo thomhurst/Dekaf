@@ -172,7 +172,7 @@ internal static class PoolSizing
     /// Returns the total response-buffer working set across brokers, pipeline slots, and
     /// connections. The native response pool uses this as one global retention allowance
     /// across capacity buckets so adaptive response sizes cannot multiply unmanaged memory.
-    /// The managed <see cref="ArrayPool{T}"/> uses the same depth independently per bucket.
+    /// The managed <see cref="System.Buffers.ArrayPool{T}"/> uses the same depth independently per bucket.
     /// </summary>
     internal static int ForConsumerResponseBuffers(
         int brokerCount,

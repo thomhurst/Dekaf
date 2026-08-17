@@ -1,5 +1,6 @@
 ---
 sidebar_position: 5
+description: "LINQ-style Where, Select, Take, Batch, and ForEachAsync operators over consumed messages, and why filtering skips records permanently."
 ---
 
 # LINQ Extensions

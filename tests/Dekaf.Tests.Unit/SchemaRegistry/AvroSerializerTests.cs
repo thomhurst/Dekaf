@@ -120,6 +120,30 @@ public sealed class AvroSerializerTests
         }
         """;
 
+    internal const string SpecificMigrationRecordSchema = """
+        {
+            "type": "record",
+            "name": "SpecificMigrationRecord",
+            "namespace": "Dekaf.Tests.Unit.SchemaRegistry",
+            "fields": [
+                { "name": "name", "type": "string" },
+                { "name": "age", "type": "int" }
+            ]
+        }
+        """;
+
+    private const string SpecificMigrationReorderedSchema = """
+        {
+            "type": "record",
+            "name": "SpecificMigrationRecord",
+            "namespace": "Dekaf.Tests.Unit.SchemaRegistry",
+            "fields": [
+                { "name": "age", "type": "int" },
+                { "name": "name", "type": "string" }
+            ]
+        }
+        """;
+
     private const string AllFieldTypesSchema = """
         {
             "type": "record",
@@ -1846,6 +1870,28 @@ public sealed class AvroSerializerTests
     }
 
     [Test]
+    public async Task Deserializer_UseLatestVersion_SpecificRecordUsesGeneratedFieldIndexes()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        var writerId = await schemaRegistry.RegisterSchemaAsync(
+            "test-topic-value",
+            new RegistrySchema { SchemaType = SchemaType.Avro, SchemaString = SpecificMigrationRecordSchema });
+        await schemaRegistry.RegisterSchemaAsync(
+            "test-topic-value",
+            new RegistrySchema { SchemaType = SchemaType.Avro, SchemaString = SpecificMigrationReorderedSchema });
+        var record = new SpecificMigrationRecord { Name = "Ada", Age = 36 };
+        var wire = CreateWireFormat(writerId, SerializeSpecificAvroRecord(record));
+        await using var deserializer = new AvroSchemaRegistryDeserializer<SpecificMigrationRecord>(
+            schemaRegistry,
+            new AvroDeserializerConfig { UseLatestVersion = true });
+
+        var result = deserializer.Deserialize(wire, CreateContext());
+
+        await Assert.That(result.Name).IsEqualTo("Ada");
+        await Assert.That(result.Age).IsEqualTo(36);
+    }
+
+    [Test]
     public async Task Serializer_WarmupAsync_RetriesAfterTransientSchemaIdFailure()
     {
         using var schemaRegistry = new MockSchemaRegistryClient
@@ -2384,5 +2430,36 @@ public sealed class AvroSerializerTests
             ? Name
             : throw new ArgumentOutOfRangeException(nameof(fieldPos));
         public void Put(int fieldPos, object fieldValue) => throw new NotSupportedException();
+    }
+}
+
+public sealed class SpecificMigrationRecord : ISpecificRecord
+{
+    public static readonly AvroSchema _SCHEMA = AvroSchema.Parse(AvroSerializerTests.SpecificMigrationRecordSchema);
+
+    public string Name { get; set; } = string.Empty;
+    public int Age { get; set; }
+    public AvroSchema Schema => _SCHEMA;
+
+    public object Get(int fieldPos) => fieldPos switch
+    {
+        0 => Name,
+        1 => Age,
+        _ => throw new ArgumentOutOfRangeException(nameof(fieldPos))
+    };
+
+    public void Put(int fieldPos, object fieldValue)
+    {
+        switch (fieldPos)
+        {
+            case 0:
+                Name = (string)fieldValue;
+                break;
+            case 1:
+                Age = (int)fieldValue;
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(fieldPos));
+        }
     }
 }

@@ -1,5 +1,6 @@
 ---
 sidebar_position: 5
+description: "Translate existing Confluent-style configuration to Dekaf, including Aspire setup, a settings compatibility matrix, and CoreWCF Kafka migration."
 ---
 
 # Migrate Confluent configuration

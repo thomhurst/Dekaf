@@ -1,5 +1,6 @@
 ---
 sidebar_position: 2
+description: "The definitive reference for what happens to a message when processing fails, how Dekaf's default compares to other clients, and how to choose a guarantee."
 ---
 
 # Delivery Semantics

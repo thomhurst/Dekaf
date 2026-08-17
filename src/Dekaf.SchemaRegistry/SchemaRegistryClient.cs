@@ -103,6 +103,9 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
     internal int CachedSchemaBySubjectAndIdCount => _schemaBySubjectAndIdCache.Count;
     internal int CachedSchemaIdCount => _idBySchemaCache.Count;
 
+    /// <inheritdoc />
+    public int LatestCacheTtlSecs => _config.LatestCacheTtlSecs;
+
     internal static HttpMessageHandler CreateConfiguredHttpHandler(SchemaRegistryConfig? config)
     {
         ArgumentNullException.ThrowIfNull(config);
@@ -168,6 +171,13 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             throw new ArgumentOutOfRangeException(
                 nameof(config),
                 "RequestTimeoutMs must be positive or -1 for an infinite timeout.");
+        }
+
+        if (config.LatestCacheTtlSecs < -1)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(config),
+                "LatestCacheTtlSecs must be non-negative or -1 for no expiry.");
         }
 
         if (!config.UseProxy && config.Proxy is not null)
@@ -517,10 +527,22 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
     public bool TryGetCachedSchema(int id, string subject, out Schema schema)
         => _schemaBySubjectAndIdCache.TryGetValue((id, subject), out schema!);
 
-    public async Task<RegisteredSchema> GetSchemaBySubjectAsync(string subject, string version = "latest", CancellationToken cancellationToken = default)
+    public Task<RegisteredSchema> GetSchemaBySubjectAsync(
+        string subject,
+        string version = "latest",
+        CancellationToken cancellationToken = default) =>
+        GetSchemaBySubjectAsync(subject, version, ignoreDeletedSchemas: true, cancellationToken);
+
+    public async Task<RegisteredSchema> GetSchemaBySubjectAsync(
+        string subject,
+        string version,
+        bool ignoreDeletedSchemas,
+        CancellationToken cancellationToken = default)
     {
         using var response = await GetWithFailoverAsync(
-            $"subjects/{Uri.EscapeDataString(subject)}/versions/{Uri.EscapeDataString(version)}",
+            WithQuery(
+                $"subjects/{Uri.EscapeDataString(subject)}/versions/{Uri.EscapeDataString(version)}",
+                ("deleted", ignoreDeletedSchemas ? null : "true")),
             cancellationToken).ConfigureAwait(false);
 
         await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
@@ -1477,6 +1499,12 @@ public sealed class SchemaRegistryConfig
     /// Maximum number of schemas to cache.
     /// </summary>
     public int MaxCachedSchemas { get; init; } = 1000;
+
+    /// <summary>
+    /// TTL in seconds for caches holding latest schemas. Use -1 for no expiry.
+    /// Default is -1.
+    /// </summary>
+    public int LatestCacheTtlSecs { get; init; } = -1;
 
     /// <summary>
     /// Whether schema registration, lookup, and compatibility requests should

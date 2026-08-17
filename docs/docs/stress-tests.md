@@ -1,5 +1,6 @@
 ---
 sidebar_position: 14
+description: "Long-running throughput and stability comparisons between Dekaf and Confluent.Kafka under sustained real-world load."
 ---
 
 # Stress Test Results

@@ -1,5 +1,6 @@
 ---
 sidebar_position: 10
+description: "The available compression codecs, how to install and enable batch compression, and how to pick one for your throughput and CPU budget."
 ---
 
 # Compression

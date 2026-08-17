@@ -281,7 +281,7 @@ await _channel.Writer.WriteAsync(workItem, cancellationToken);
 
 **FlushAsync:** Can be cancelled throughout the wait. Cancelling stops the caller from waiting, but batches continue sending in background.
 
-**Send (Fire-and-Forget):** Never uses cancellation tokens. Use `FlushAsync(cancellationToken)` if you need cancellable waiting for delivery.
+**FireAsync (Fire-and-Forget):** Never uses cancellation tokens; no overload accepts one. Use `FlushAsync(cancellationToken)` if you need cancellable waiting for delivery.
 
 ```csharp
 // CORRECT: Cancellation before append - message NOT sent

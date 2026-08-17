@@ -130,6 +130,19 @@ public sealed class SchemaRegistryHttpPipelineTests
     }
 
     [Test]
+    public async Task Config_LatestCacheTtlBelowMinusOne_IsRejected()
+    {
+        var config = new SchemaRegistryConfig
+        {
+            Url = "http://schema-registry.local",
+            LatestCacheTtlSecs = -2
+        };
+
+        await Assert.That(() => new SchemaRegistryClient(config, new TrackingHandler()))
+            .Throws<ArgumentOutOfRangeException>();
+    }
+
+    [Test]
     public async Task Config_ContentHeader_IsRejected()
     {
         var config = new SchemaRegistryConfig
