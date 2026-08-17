@@ -2391,63 +2391,51 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
     [Timeout(120_000)]
     public async Task SendLoop_InFlightLimitEnforced_SecondBatchWaitsForFirstResponse(CancellationToken cancellationToken)
     {
-        // With maxInFlight=1 and two batches on different partitions, they coalesce into
-        // one request. After the response completes, both batches are acknowledged.
-        // This verifies in-flight limiting uses _pendingResponses.Count and that
-        // response completion correctly wakes the send loop.
-
-        var tcs1 = new TaskCompletionSource<ProduceResponse>();
-        var tcs2 = new TaskCompletionSource<ProduceResponse>();
-        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>();
-        responseQueue.Enqueue(tcs1);
-        responseQueue.Enqueue(tcs2);
-
-        var requestSent = new TaskCompletionSource();
-        var (pool, _) = CreateMockConnection(responseQueue, onSend: () => requestSent.TrySetResult());
+        // Publish batch 2 while the send loop is deliberately held at the coalescing gate.
+        // EnqueueBulk writes separate channel events, so relying on two consecutive writes
+        // allowed caller preemption to split the wave and strand the unused scripted response.
+        var response = new TaskCompletionSource<ProduceResponse>();
+        var requestSent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var coalesceStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var releaseCoalesce = new ManualResetEventSlim();
+        var sendCount = 0;
+        var (pool, connection) = CreateMockConnection(
+            new Queue<TaskCompletionSource<ProduceResponse>>([response]),
+            onSend: () =>
+            {
+                Interlocked.Increment(ref sendCount);
+                requestSent.TrySetResult();
+            });
+        connection.CaptureProduceRequests = true;
         cancellationToken = GuardUnscriptedSends(cancellationToken);
         var options = CreateOptions(maxInFlight: 1);
         var accumulator = new RecordAccumulator(options);
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
-
-        var ackOffsets = new List<long>();
-        var allAcknowledged = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        var sender = CreateSender(pool, options, accumulator, (_, offset, _, _, ex) =>
-        {
-            if (ex is null)
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            static (_, _, _, _, _) => { },
+            onWaveCoalesceStarted: () =>
             {
-                lock (ackOffsets)
-                {
-                    ackOffsets.Add(offset);
-                    if (ackOffsets.Count >= 2)
-                        allAcknowledged.TrySetResult();
-                }
-            }
-        });
+                coalesceStarted.TrySetResult();
+                releaseCoalesce.Wait(cancellationToken);
+            });
+        var (batch1, delivery1) = CreateTestBatchWithDelivery(vtPool, "test-topic", 0);
+        var (batch2, delivery2) = CreateTestBatchWithDelivery(vtPool, "test-topic", 1);
+        var deliveries = Task.WhenAll(delivery1, delivery2);
 
         try
         {
-            // Enqueue two batches on different partitions so both can coalesce
-            // (same partition would cause carry-over due to one-per-partition rule)
-            var batch1 = CreateTestBatch(vtPool, "test-topic", 0);
-            var batch2 = CreateTestBatch(vtPool, "test-topic", 1);
+            SeedKnownPartitions(sender, batch1.TopicPartition, batch2.TopicPartition);
+            sender.Enqueue(batch1);
+            await coalesceStarted.Task.WaitAsync(cancellationToken);
 
-            // The first batch teaches the live sender only one known partition. Predeclare
-            // the complete test wave so it waits for both separately queued bulk events
-            // instead of dispatching whichever event wins the startup race.
-            var knownPartitions = (HashSet<TopicPartition>)typeof(BrokerSender).GetField(
-                "_knownPartitions",
-                BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(sender)!;
-            knownPartitions.Add(batch1.TopicPartition);
-            knownPartitions.Add(batch2.TopicPartition);
-            sender.EnqueueBulk([batch1, batch2]);
-
-            // Wait for the send loop to send the coalesced request
+            sender.Enqueue(batch2);
+            releaseCoalesce.Set();
             await requestSent.Task.WaitAsync(cancellationToken);
 
-            // Complete the first response — this should process both batches since
-            // they were coalesced into one request
-            tcs1.SetResult(new ProduceResponse
+            response.SetResult(new ProduceResponse
             {
                 TopicCount = 1,
                 Responses =
@@ -2475,15 +2463,19 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
                 ]
             });
 
-            // Wait for all acknowledgements
-            await allAcknowledged.Task.WaitAsync(cancellationToken);
-
-            await Assert.That(ackOffsets).Contains(100L);
-            await Assert.That(ackOffsets).Contains(200L);
+            var metadata = await deliveries.WaitAsync(cancellationToken);
+            await Assert.That(metadata[0].Offset).IsEqualTo(100);
+            await Assert.That(metadata[1].Offset).IsEqualTo(200);
+            await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(1);
+            await Assert.That(connection.CapturedProduceRequests.Count).IsEqualTo(1);
+            await Assert.That(connection.CapturedProduceRequests[0].Topics.Count).IsEqualTo(2);
         }
         finally
         {
+            releaseCoalesce.Set();
+            response.TrySetCanceled(CancellationToken.None);
             await sender.DisposeAsync();
+            await ((Task)deliveries).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
             await accumulator.DisposeAsync();
             await vtPool.DisposeAsync();
         }
