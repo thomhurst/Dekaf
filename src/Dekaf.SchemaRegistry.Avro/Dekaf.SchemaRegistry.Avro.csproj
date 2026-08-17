@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="Dekaf.Tests.Unit" />
+    <InternalsVisibleTo Include="Dekaf.Benchmarks" />
   </ItemGroup>
 
   <ItemGroup>

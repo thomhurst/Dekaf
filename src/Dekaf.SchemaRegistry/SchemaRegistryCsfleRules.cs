@@ -17,8 +17,7 @@ namespace Dekaf.SchemaRegistry;
 /// </summary>
 /// <remarks>
 /// The handler supports whole-payload encryption for every payload format and
-/// tagged string-field encryption for JSON payloads when schema metadata tags
-/// are present.
+/// tagged field encryption for schema-aware payload formats.
 /// </remarks>
 public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
 {
@@ -102,7 +101,7 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
     {
         ArgumentNullException.ThrowIfNull(context);
         var settings = GetSettings(context);
-        return TransformJsonFields(payload, context, settings, encrypt: true) ??
+        return TransformTaggedFields(payload, context, settings, encrypt: true) ??
             EncryptPayload(payload, context, settings);
     }
 
@@ -113,9 +112,37 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
     {
         ArgumentNullException.ThrowIfNull(context);
         var settings = GetSettings(context);
-        return TransformJsonFields(payload, context, settings, encrypt: false) ??
+        return TransformTaggedFields(payload, context, settings, encrypt: false) ??
             DecryptPayload(payload, context, settings);
     }
+
+    private ReadOnlyMemory<byte>? TransformTaggedFields(
+        ReadOnlyMemory<byte> payload,
+        SchemaRegistryRuleHandlerContext context,
+        EncryptionSettings settings,
+        bool encrypt)
+    {
+        if (context.Rule.Tags is not { Count: > 0 })
+            return null;
+
+        if (context.PayloadContext.PayloadFormat == SchemaRegistryPayloadFormat.Avro)
+        {
+            var transformer = context.PayloadContext.TaggedFieldTransformer ??
+                throw new SchemaRegistryRuleException(
+                    $"Schema Registry rule '{context.Rule.Name}' cannot apply tagged Avro encryption without an Avro field transformer.");
+            var operation = new FieldEncryptionOperation(this, settings, encrypt);
+            return transformer.Transform(payload, context, operation, TransformField);
+        }
+
+        return TransformJsonFields(payload, context, settings, encrypt);
+    }
+
+    private static ReadOnlyMemory<byte> TransformField(
+        ReadOnlyMemory<byte> value,
+        SchemaRegistryRuleHandlerContext context,
+        FieldEncryptionOperation operation) => operation.Encrypt
+            ? operation.Handler.EncryptPayload(value, context, operation.Settings)
+            : operation.Handler.DecryptPayload(value, context, operation.Settings);
 
     private ReadOnlyMemory<byte>? TransformJsonFields(
         ReadOnlyMemory<byte> payload,
@@ -123,9 +150,7 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
         EncryptionSettings settings,
         bool encrypt)
     {
-        if (context.PayloadContext.PayloadFormat != SchemaRegistryPayloadFormat.Json ||
-            context.Rule.Tags is null ||
-            context.Rule.Tags.Count == 0)
+        if (context.PayloadContext.PayloadFormat != SchemaRegistryPayloadFormat.Json)
         {
             return null;
         }
@@ -145,6 +170,11 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
                 context.PayloadContext.Schema?.RuleSet?.HasFixedRuleCollections != true);
         return TransformTaggedJson(payload, context, settings, plan, encrypt);
     }
+
+    private readonly record struct FieldEncryptionOperation(
+        SchemaRegistryCsfleRuleHandler Handler,
+        EncryptionSettings Settings,
+        bool Encrypt);
 
     private ReadOnlyMemory<byte> TransformTaggedJson(
         ReadOnlyMemory<byte> payload,

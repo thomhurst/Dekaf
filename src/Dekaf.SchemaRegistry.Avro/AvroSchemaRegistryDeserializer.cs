@@ -62,6 +62,7 @@ public sealed class AvroSchemaRegistryDeserializer<
     private readonly AvroSchema? _readerSchema;
     private readonly DeserializerSubjectNameCache? _subjectNames;
     private readonly SchemaRegistryMigrationRunner? _migrationRunner;
+    private readonly AvroTaggedFieldTransformerProvider _taggedFieldTransformers = new();
 
     /// <summary>
     /// Creates a new Avro Schema Registry deserializer.
@@ -171,20 +172,21 @@ public sealed class AvroSchemaRegistryDeserializer<
             var schema = _schemaRegistry.GetSchemaSync(schemaId, subject, SchemaRegistryTimeout);
             if (_migrationRunner is null)
             {
-                var ruleContext = SchemaRegistryRuleContext.Rent(
+                var ruleContext = SchemaRegistryRuleContext.RentWithTaggedFieldTransformer(
                     context.Topic,
                     context.Component,
                     schemaId,
                     subject,
                     schema,
-                    SchemaRegistryPayloadFormat.Avro);
+                    SchemaRegistryPayloadFormat.Avro,
+                    _taggedFieldTransformers.Get(schema, writerSchema));
                 try
                 {
                     payloadMemory = _ruleExecutor.TransformDeserializedPayload(payloadMemory, ruleContext);
                 }
                 finally
                 {
-                    ruleContext.Return();
+                    ruleContext.ReturnTagged();
                 }
             }
             else
@@ -195,7 +197,8 @@ public sealed class AvroSchemaRegistryDeserializer<
                     subject,
                     schema,
                     context,
-                    SchemaRegistryPayloadFormat.Avro);
+                    SchemaRegistryPayloadFormat.Avro,
+                    _taggedFieldTransformers);
                 payloadMemory = migration.Payload;
                 migrationReaderSchema = GetWriterSchemaCached(migration.ReaderSchema.Id);
             }

@@ -4,8 +4,12 @@ using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Avro.Generic;
+using Avro.IO;
 using Dekaf.SchemaRegistry;
+using Dekaf.SchemaRegistry.Avro;
 using Dekaf.Serialization;
+using AvroSchema = Avro.Schema;
 
 namespace Dekaf.Tests.Unit.SchemaRegistry;
 
@@ -18,6 +22,9 @@ public sealed class SchemaRegistryCsfleRuleTests
         0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37,
         0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D, 0x3E, 0x3F
     ];
+
+    private static readonly byte[] TokenValue = [1, 2, 3, 4];
+    private static readonly string[] AliasValues = ["alpha", "beta"];
 
     [Test]
     public async Task TransformSerializedPayload_AesGcm_EncryptsWithRegisteredDekAndDecrypts()
@@ -122,6 +129,174 @@ public sealed class SchemaRegistryCsfleRuleTests
         using var encryptedJson = JsonDocument.Parse(encrypted);
         await Assert.That(encryptedJson.RootElement.GetProperty("ssn").ValueKind).IsEqualTo(JsonValueKind.Null);
         await Assert.That(Encoding.UTF8.GetString(decrypted.Span)).IsEqualTo(Encoding.UTF8.GetString(payload));
+    }
+
+    [Test]
+    public async Task AvroSerializer_TaggedFields_EncryptsSelectedValuesAndRoundTrips()
+    {
+        const string schemaText = """
+            {
+                "type": "record",
+                "name": "Payment",
+                "namespace": "test",
+                "fields": [
+                    { "name": "id", "type": "int" },
+                    { "name": "name", "type": "string" },
+                    { "name": "status", "type": { "type": "enum", "name": "Status", "symbols": ["OPEN", "CLOSED"] } },
+                    { "name": "token", "type": { "type": "fixed", "name": "Token", "size": 4 } },
+                    { "name": "created", "type": { "type": "long", "logicalType": "timestamp-millis" } },
+                    { "name": "ssn", "type": ["null", "string"], "confluent:tags": ["PII"] },
+                    { "name": "account", "type": "bytes" },
+                    { "name": "aliases", "type": { "type": "array", "items": "string" }, "confluent:tags": ["PII"] },
+                    { "name": "secrets", "type": { "type": "map", "values": "bytes" }, "confluent:tags": ["PII"] },
+                    {
+                        "name": "profile",
+                        "type": {
+                            "type": "record",
+                            "name": "Profile",
+                            "fields": [
+                                { "name": "display", "type": "string" },
+                                { "name": "secret", "type": "string", "confluent:tags": ["PII"] }
+                            ]
+                        }
+                    },
+                    {
+                        "name": "amount",
+                        "type": { "type": "bytes", "logicalType": "decimal", "precision": 20, "scale": 2 },
+                        "confluent:tags": ["PII"]
+                    }
+                ]
+            }
+            """;
+        var client = CreateDekClient();
+        var rule = CreateRule(tags: new HashSet<string>(StringComparer.Ordinal) { "PII" });
+        var registeredSchema = new Schema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = schemaText,
+            Metadata = new SchemaMetadata
+            {
+                Tags = new Dictionary<string, IReadOnlySet<string>>(StringComparer.Ordinal)
+                {
+                    ["test.Payment.account"] = new HashSet<string>(StringComparer.Ordinal) { "PII" }
+                }
+            },
+            RuleSet = new SchemaRuleSet { DomainRules = [rule] }
+        };
+        _ = await client.RegisterSchemaAsync("payments-value", registeredSchema);
+        var executor = new SchemaRegistryRuleExecutor([CreateHandler(client)]);
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(
+            client,
+            new AvroSerializerConfig { AutoRegisterSchemas = false, RuleExecutor = executor });
+        await using var deserializer = new AvroSchemaRegistryDeserializer<GenericRecord>(
+            client,
+            new AvroDeserializerConfig { RuleExecutor = executor });
+        var avroSchema = (Avro.RecordSchema)AvroSchema.Parse(schemaText);
+        var record = new GenericRecord(avroSchema);
+        record.Add("id", 42);
+        record.Add("name", "Ada");
+        record.Add("status", new GenericEnum((Avro.EnumSchema)avroSchema["status"].Schema, "OPEN"));
+        record.Add("token", new GenericFixed((Avro.FixedSchema)avroSchema["token"].Schema, TokenValue));
+        var created = new DateTime(2026, 8, 17, 12, 0, 0, DateTimeKind.Utc);
+        record.Add("created", created);
+        record.Add("ssn", "123-45-6789");
+        record.Add("account", "account-123"u8.ToArray());
+        record.Add("aliases", AliasValues);
+        record.Add("secrets", new Dictionary<string, object>
+        {
+            ["primary"] = "map-secret"u8.ToArray()
+        });
+        var profileSchema = (Avro.RecordSchema)avroSchema["profile"].Schema;
+        var profile = new GenericRecord(profileSchema);
+        profile.Add("display", "public-profile");
+        profile.Add("secret", "nested-secret");
+        record.Add("profile", profile);
+        var amount = new Avro.AvroDecimal(new System.Numerics.BigInteger(123_45), 2);
+        record.Add("amount", amount);
+        var buffer = new ArrayBufferWriter<byte>();
+        var serializationContext = new SerializationContext
+        {
+            Topic = "payments",
+            Component = SerializationComponent.Value
+        };
+
+        serializer.Serialize(record, ref buffer, serializationContext);
+
+        await Assert.That(buffer.WrittenSpan.IndexOf("123-45-6789"u8)).IsEqualTo(-1);
+        await Assert.That(buffer.WrittenSpan.IndexOf("account-123"u8)).IsEqualTo(-1);
+        using var encryptedPayload = new MemoryStream(buffer.WrittenMemory[5..].ToArray());
+        var encryptedRecord = new GenericDatumReader<GenericRecord>(avroSchema, avroSchema)
+            .Read(new GenericRecord(avroSchema), new BinaryDecoder(encryptedPayload));
+        await Assert.That((int)encryptedRecord["id"]!).IsEqualTo(42);
+        await Assert.That((string)encryptedRecord["name"]!).IsEqualTo("Ada");
+        await Assert.That((string)encryptedRecord["ssn"]!).IsNotEqualTo("123-45-6789");
+        await Assert.That((byte[])encryptedRecord["account"]!).IsNotEquivalentTo("account-123"u8.ToArray());
+
+        var roundTripped = deserializer.Deserialize(buffer.WrittenMemory, serializationContext);
+        await Assert.That((int)roundTripped["id"]!).IsEqualTo(42);
+        await Assert.That((string)roundTripped["name"]!).IsEqualTo("Ada");
+        await Assert.That(((GenericEnum)roundTripped["status"]!).Value).IsEqualTo("OPEN");
+        await Assert.That(((GenericFixed)roundTripped["token"]!).Value).IsEquivalentTo(TokenValue);
+        await Assert.That((DateTime)roundTripped["created"]!).IsEqualTo(created);
+        await Assert.That((string)roundTripped["ssn"]!).IsEqualTo("123-45-6789");
+        await Assert.That((byte[])roundTripped["account"]!).IsEquivalentTo("account-123"u8.ToArray());
+        await Assert.That((object[])roundTripped["aliases"]!).IsEquivalentTo(AliasValues);
+        var roundTrippedSecrets = (Dictionary<string, object>)roundTripped["secrets"]!;
+        await Assert.That((byte[])roundTrippedSecrets["primary"]).IsEquivalentTo("map-secret"u8.ToArray());
+        var roundTrippedProfile = (GenericRecord)roundTripped["profile"]!;
+        await Assert.That((string)roundTrippedProfile["display"]!).IsEqualTo("public-profile");
+        await Assert.That((string)roundTrippedProfile["secret"]!).IsEqualTo("nested-secret");
+        await Assert.That((Avro.AvroDecimal)roundTripped["amount"]!).IsEqualTo(amount);
+    }
+
+    [Test]
+    public async Task AvroSerializer_TaggedFixedField_IsRejected()
+    {
+        const string schemaText = """
+            {
+                "type": "record",
+                "name": "FixedPayment",
+                "namespace": "test",
+                "fields": [
+                    { "name": "seed", "type": { "type": "fixed", "name": "Account", "size": 16 } },
+                    {
+                        "name": "account",
+                        "type": {
+                            "type": "Account",
+                            "logicalType": "decimal",
+                            "precision": 20,
+                            "scale": 2
+                        },
+                        "confluent:tags": ["PII"]
+                    }
+                ]
+            }
+            """;
+        var client = CreateDekClient();
+        var rule = CreateRule(tags: new HashSet<string>(StringComparer.Ordinal) { "PII" });
+        _ = await client.RegisterSchemaAsync("fixed-payments-value", new Schema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = schemaText,
+            RuleSet = new SchemaRuleSet { DomainRules = [rule] }
+        });
+        var executor = new SchemaRegistryRuleExecutor([CreateHandler(client)]);
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(
+            client,
+            new AvroSerializerConfig { AutoRegisterSchemas = false, RuleExecutor = executor });
+        var avroSchema = (Avro.RecordSchema)AvroSchema.Parse(schemaText);
+        var record = new GenericRecord(avroSchema);
+        record.Add("seed", new GenericFixed((Avro.FixedSchema)avroSchema["seed"].Schema, new byte[16]));
+        record.Add("account", new Avro.AvroDecimal(new System.Numerics.BigInteger(123_45), 2));
+        var buffer = new ArrayBufferWriter<byte>();
+
+        await Assert.That(Serialize).Throws<SchemaRegistryRuleException>();
+
+        void Serialize() => serializer.Serialize(record, ref buffer, new SerializationContext
+        {
+            Topic = "fixed-payments",
+            Component = SerializationComponent.Value
+        });
     }
 
     [Test]

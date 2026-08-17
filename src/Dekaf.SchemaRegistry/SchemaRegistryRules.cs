@@ -4,6 +4,25 @@ using Dekaf.Serialization;
 
 namespace Dekaf.SchemaRegistry;
 
+internal delegate ReadOnlyMemory<byte> SchemaRegistryFieldTransform<TState>(
+    ReadOnlyMemory<byte> value,
+    SchemaRegistryRuleHandlerContext context,
+    TState state);
+
+internal interface ISchemaRegistryTaggedFieldTransformer
+{
+    ReadOnlyMemory<byte> Transform<TState>(
+        ReadOnlyMemory<byte> payload,
+        SchemaRegistryRuleHandlerContext context,
+        TState state,
+        SchemaRegistryFieldTransform<TState> transform);
+}
+
+internal interface ISchemaRegistryTaggedFieldTransformerProvider
+{
+    ISchemaRegistryTaggedFieldTransformer Get(Schema schema);
+}
+
 /// <summary>
 /// Schema Registry payload format exposed to rule executors.
 /// </summary>
@@ -54,6 +73,7 @@ public sealed class SchemaRegistryRuleContext
     private Schema? _targetSchema;
     private SchemaRuleMode? _ruleMode;
     private SchemaRegistryPayloadFormat _payloadFormat;
+    private ISchemaRegistryTaggedFieldTransformer? _taggedFieldTransformer;
     private bool _inUse;
     private SchemaRegistryRuleContext? _next;
 
@@ -146,6 +166,12 @@ public sealed class SchemaRegistryRuleContext
         init => _payloadFormat = value;
     }
 
+    internal ISchemaRegistryTaggedFieldTransformer? TaggedFieldTransformer
+    {
+        get => _taggedFieldTransformer;
+        init => _taggedFieldTransformer = value;
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static SchemaRegistryRuleContext Rent(
         string topic,
@@ -207,6 +233,33 @@ public sealed class SchemaRegistryRuleContext
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static SchemaRegistryRuleContext RentWithTaggedFieldTransformer(
+        string topic,
+        SerializationComponent component,
+        int schemaId,
+        string? subject,
+        Schema? schema,
+        SchemaRegistryPayloadFormat payloadFormat,
+        ISchemaRegistryTaggedFieldTransformer taggedFieldTransformer,
+        Schema? sourceSchema = null,
+        Schema? targetSchema = null,
+        SchemaRuleMode? ruleMode = null)
+    {
+        var context = Rent(
+            topic,
+            component,
+            schemaId,
+            subject,
+            schema,
+            payloadFormat,
+            sourceSchema,
+            targetSchema,
+            ruleMode);
+        context._taggedFieldTransformer = taggedFieldTransformer;
+        return context;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void Return()
     {
         _topic = null!;
@@ -223,6 +276,13 @@ public sealed class SchemaRegistryRuleContext
         }
 
         ReturnOverflow(this);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void ReturnTagged()
+    {
+        _taggedFieldTransformer = null;
+        Return();
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
