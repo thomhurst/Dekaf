@@ -63,6 +63,33 @@ public sealed class AvroSerializerTests
         }
         """;
 
+    private const string SpecificMissingPropertySchema = """
+        {
+            "type": "record",
+            "name": "SpecificMissingPropertyRecord",
+            "namespace": "test",
+            "fields": [{ "name": "missing", "type": "int" }]
+        }
+        """;
+
+    private const string SpecificMismatchedPropertySchema = """
+        {
+            "type": "record",
+            "name": "SpecificMismatchedPropertyRecord",
+            "namespace": "test",
+            "fields": [{ "name": "count", "type": "int" }]
+        }
+        """;
+
+    private const string SpecificCaseInsensitivePropertySchema = """
+        {
+            "type": "record",
+            "name": "SpecificCaseInsensitivePropertyRecord",
+            "namespace": "test",
+            "fields": [{ "name": "userId", "type": "int" }]
+        }
+        """;
+
     private const string AllFieldTypesSchema = """
         {
             "type": "record",
@@ -1354,6 +1381,30 @@ public sealed class AvroSerializerTests
     }
 
     [Test]
+    public async Task Serializer_InterfaceTypedSpecificRecord_MatchesApacheAvroBytes()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        await using var serializer = new AvroSchemaRegistrySerializer<ISpecificRecord>(schemaRegistry);
+        ISpecificRecord record = new SpecificScalarRecord
+        {
+            Enabled = true,
+            Count = -42,
+            Sequence = long.MaxValue,
+            Ratio = 1.25f,
+            Total = -123.5,
+            Name = "specific",
+            Payload = [0, 1, 127, 255]
+        };
+        var expected = SerializeSpecificAvroRecord(record);
+        var buffer = new ArrayBufferWriter<byte>();
+
+        serializer.Serialize(record, ref buffer, CreateContext());
+
+        await Assert.That(buffer.WrittenSpan.Slice(5).SequenceEqual(expected)).IsTrue();
+        await Assert.That(serializer.CachedSpecificWriterCount).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task Serializer_SpecificRecord_UnsupportedFieldFailsDuringPreparation()
     {
         using var schemaRegistry = new MockSchemaRegistryClient();
@@ -1362,6 +1413,42 @@ public sealed class AvroSerializerTests
             () => GC.KeepAlive(new AvroSchemaRegistrySerializer<SpecificArrayRecord>(schemaRegistry)));
 
         await Assert.That(exception!.Message).Contains("schema type Array is not supported");
+    }
+
+    [Test]
+    public async Task Serializer_SpecificRecord_MissingPropertyFailsDuringPreparation()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+
+        var exception = Assert.Throws<NotSupportedException>(
+            () => GC.KeepAlive(new AvroSchemaRegistrySerializer<SpecificMissingPropertyRecord>(schemaRegistry)));
+
+        await Assert.That(exception!.Message).Contains("a readable public property named 'missing' was not found");
+    }
+
+    [Test]
+    public async Task Serializer_SpecificRecord_MismatchedPropertyTypeFailsDuringPreparation()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+
+        var exception = Assert.Throws<NotSupportedException>(
+            () => GC.KeepAlive(new AvroSchemaRegistrySerializer<SpecificMismatchedPropertyRecord>(schemaRegistry)));
+
+        await Assert.That(exception!.Message).Contains("has type System.Int64, expected System.Int32");
+    }
+
+    [Test]
+    public async Task Serializer_SpecificRecord_CaseInsensitivePropertyMatchesSchemaField()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        await using var serializer = new AvroSchemaRegistrySerializer<SpecificCaseInsensitivePropertyRecord>(schemaRegistry);
+        var record = new SpecificCaseInsensitivePropertyRecord { UserId = 7 };
+        var expected = SerializeSpecificAvroRecord(record);
+        var buffer = new ArrayBufferWriter<byte>();
+
+        serializer.Serialize(record, ref buffer, CreateContext());
+
+        await Assert.That(buffer.WrittenSpan.Slice(5).SequenceEqual(expected)).IsTrue();
     }
 
     [Test]
@@ -1916,6 +2003,39 @@ public sealed class AvroSerializerTests
             ? Values
             : throw new ArgumentOutOfRangeException(nameof(fieldPos));
 
+        public void Put(int fieldPos, object fieldValue) => throw new NotSupportedException();
+    }
+
+    private sealed class SpecificMissingPropertyRecord : ISpecificRecord
+    {
+        public static readonly AvroSchema _SCHEMA = AvroSchema.Parse(SpecificMissingPropertySchema);
+
+        public AvroSchema Schema => _SCHEMA;
+        public object Get(int fieldPos) => throw new ArgumentOutOfRangeException(nameof(fieldPos));
+        public void Put(int fieldPos, object fieldValue) => throw new NotSupportedException();
+    }
+
+    private sealed class SpecificMismatchedPropertyRecord : ISpecificRecord
+    {
+        public static readonly AvroSchema _SCHEMA = AvroSchema.Parse(SpecificMismatchedPropertySchema);
+
+        public long Count { get; init; }
+        public AvroSchema Schema => _SCHEMA;
+        public object Get(int fieldPos) => fieldPos == 0
+            ? Count
+            : throw new ArgumentOutOfRangeException(nameof(fieldPos));
+        public void Put(int fieldPos, object fieldValue) => throw new NotSupportedException();
+    }
+
+    private sealed class SpecificCaseInsensitivePropertyRecord : ISpecificRecord
+    {
+        public static readonly AvroSchema _SCHEMA = AvroSchema.Parse(SpecificCaseInsensitivePropertySchema);
+
+        public int UserId { get; init; }
+        public AvroSchema Schema => _SCHEMA;
+        public object Get(int fieldPos) => fieldPos == 0
+            ? UserId
+            : throw new ArgumentOutOfRangeException(nameof(fieldPos));
         public void Put(int fieldPos, object fieldValue) => throw new NotSupportedException();
     }
 }

@@ -11,23 +11,29 @@ internal sealed unsafe class AllocationFreeSpecificRecordWriter<
 
     private AllocationFreeSpecificRecordWriter(FieldPlan[] fields) => _fields = fields;
 
-    internal static AllocationFreeSpecificRecordWriter<T> Create(global::Avro.Schema schema)
+    internal static AllocationFreeSpecificRecordWriter<T> Create(global::Avro.Schema schema) =>
+        Create(schema, typeof(T));
+
+    internal static AllocationFreeSpecificRecordWriter<T> Create(
+        global::Avro.Schema schema,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)]
+        Type recordType)
     {
-        if (typeof(T).IsValueType)
+        if (recordType.IsValueType || !typeof(T).IsAssignableFrom(recordType))
         {
             throw new NotSupportedException(
-                $"SpecificRecord type {typeof(T)} must be a reference type for allocation-free serialization.");
+                $"SpecificRecord type {recordType} must be a reference type assignable to {typeof(T)} for allocation-free serialization.");
         }
 
         if (schema is not global::Avro.RecordSchema recordSchema)
         {
             throw new NotSupportedException(
-                $"SpecificRecord type {typeof(T)} must expose an Avro record schema.");
+                $"SpecificRecord type {recordType} must expose an Avro record schema.");
         }
 
         var fields = new FieldPlan[recordSchema.Fields.Count];
         for (var i = 0; i < fields.Length; i++)
-            fields[i] = CreateFieldPlan(recordSchema.Fields[i]);
+            fields[i] = CreateFieldPlan(recordSchema.Fields[i], recordType);
 
         return new AllocationFreeSpecificRecordWriter<T>(fields);
     }
@@ -71,17 +77,20 @@ internal sealed unsafe class AllocationFreeSpecificRecordWriter<
         }
     }
 
-    private static FieldPlan CreateFieldPlan(global::Avro.Field field)
+    private static FieldPlan CreateFieldPlan(
+        global::Avro.Field field,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] Type recordType)
     {
-        var kind = GetFieldKind(field);
+        var kind = GetFieldKind(field, recordType);
         if (kind == FieldKind.Null)
             return new FieldPlan(kind, 0);
 
-        var property = FindProperty(field.Name);
+        var property = FindProperty(recordType, field.Name);
         if (property?.GetMethod is not { IsStatic: false, IsAbstract: false } getter ||
             property.GetIndexParameters().Length != 0)
         {
             throw UnsupportedField(
+                recordType,
                 field,
                 $"a readable public property named '{field.Name}' was not found");
         }
@@ -90,6 +99,7 @@ internal sealed unsafe class AllocationFreeSpecificRecordWriter<
         if (property.PropertyType != expectedType)
         {
             throw UnsupportedField(
+                recordType,
                 field,
                 $"property '{property.Name}' has type {property.PropertyType}, expected {expectedType}");
         }
@@ -97,13 +107,15 @@ internal sealed unsafe class AllocationFreeSpecificRecordWriter<
         return new FieldPlan(kind, getter.MethodHandle.GetFunctionPointer());
     }
 
-    private static PropertyInfo? FindProperty(string name)
+    private static PropertyInfo? FindProperty(
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] Type recordType,
+        string name)
     {
-        var property = typeof(T).GetProperty(name);
+        var property = recordType.GetProperty(name);
         if (property is not null)
             return property;
 
-        var properties = typeof(T).GetProperties();
+        var properties = recordType.GetProperties();
         for (var i = 0; i < properties.Length; i++)
         {
             if (string.Equals(properties[i].Name, name, StringComparison.OrdinalIgnoreCase))
@@ -113,7 +125,7 @@ internal sealed unsafe class AllocationFreeSpecificRecordWriter<
         return null;
     }
 
-    private static FieldKind GetFieldKind(global::Avro.Field field) => field.Schema.Tag switch
+    private static FieldKind GetFieldKind(global::Avro.Field field, Type recordType) => field.Schema.Tag switch
     {
         global::Avro.Schema.Type.Null => FieldKind.Null,
         global::Avro.Schema.Type.Boolean => FieldKind.Boolean,
@@ -123,7 +135,7 @@ internal sealed unsafe class AllocationFreeSpecificRecordWriter<
         global::Avro.Schema.Type.Double => FieldKind.Double,
         global::Avro.Schema.Type.String => FieldKind.String,
         global::Avro.Schema.Type.Bytes => FieldKind.Bytes,
-        _ => throw UnsupportedField(field, $"schema type {field.Schema.Tag} is not supported")
+        _ => throw UnsupportedField(recordType, field, $"schema type {field.Schema.Tag} is not supported")
     };
 
     private static Type GetExpectedType(FieldKind kind) => kind switch
@@ -138,9 +150,12 @@ internal sealed unsafe class AllocationFreeSpecificRecordWriter<
         _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, null)
     };
 
-    private static NotSupportedException UnsupportedField(global::Avro.Field field, string reason) =>
+    private static NotSupportedException UnsupportedField(
+        Type recordType,
+        global::Avro.Field field,
+        string reason) =>
         new(
-            $"SpecificRecord field '{field.Name}' on {typeof(T)} cannot use allocation-free serialization: " +
+            $"SpecificRecord field '{field.Name}' on {recordType} cannot use allocation-free serialization: " +
             $"{reason}. Use GenericRecord or a supported scalar SpecificRecord shape.");
 
     private readonly record struct FieldPlan(FieldKind Kind, nint Getter);
