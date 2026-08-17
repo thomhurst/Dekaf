@@ -364,6 +364,9 @@ public class AzureKeyVaultKmsProviderTests
     [Arguments("https://payments.vault.azure.net/keys/kek")]
     [Arguments("https://payments.vault.azure.cn/keys/kek")]
     [Arguments("https://payments.vault.usgovcloudapi.net/keys/kek")]
+    [Arguments("https://payments.managedhsm.azure.net/keys/kek")]
+    [Arguments("https://payments.managedhsm.azure.cn/keys/kek")]
+    [Arguments("https://payments.managedhsm.usgovcloudapi.net/keys/kek")]
     public async Task SupportedAzureVaultAuthority_IsAccepted(string keyUri)
     {
         var client = CreateClient(KeyUri);

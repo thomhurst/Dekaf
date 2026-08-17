@@ -352,7 +352,10 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
     private static bool IsTrustedVaultHost(ReadOnlySpan<char> host) =>
         HasVaultSuffix(host, ".vault.azure.net")
         || HasVaultSuffix(host, ".vault.azure.cn")
-        || HasVaultSuffix(host, ".vault.usgovcloudapi.net");
+        || HasVaultSuffix(host, ".vault.usgovcloudapi.net")
+        || HasVaultSuffix(host, ".managedhsm.azure.net")
+        || HasVaultSuffix(host, ".managedhsm.azure.cn")
+        || HasVaultSuffix(host, ".managedhsm.usgovcloudapi.net");
 
     private static bool HasVaultSuffix(ReadOnlySpan<char> host, ReadOnlySpan<char> suffix)
     {
