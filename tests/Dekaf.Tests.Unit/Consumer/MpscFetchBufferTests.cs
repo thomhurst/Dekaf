@@ -426,21 +426,24 @@ public class MpscFetchBufferTests
     }
 
     [Test]
-    public async Task WaitToReadAsync_TimeoutDoesNotRunContinuationOnTimerThread()
+    public async Task WaitToReadAsync_TimeoutDoesNotRunContinuationInline()
     {
-        var continuationEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var continuationFinished = new TaskCompletionSource<(int ThreadId, bool Result)>(
+        var continuationFinished = new TaskCompletionSource<(bool RanInline, bool Result)>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var timeoutCallbackExited = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var timeoutThreadId = 0;
+        var timeoutCallbackActive = 0;
         var buffer = new MpscFetchBuffer(
             capacity: 4,
             afterProducerWaiterCountIncrementedForTesting: null,
             beforeConsumerTimeoutForTesting: () =>
-                Volatile.Write(ref timeoutThreadId, Environment.CurrentManagedThreadId),
+            {
+                Volatile.Write(ref timeoutThreadId, Environment.CurrentManagedThreadId);
+                Volatile.Write(ref timeoutCallbackActive, 1);
+            },
             afterConsumerTimeoutForTesting: () =>
             {
-                continuationEntered.Task.GetAwaiter().GetResult();
+                Volatile.Write(ref timeoutCallbackActive, 0);
                 timeoutCallbackExited.TrySetResult();
             });
 
@@ -449,11 +452,11 @@ public class MpscFetchBufferTests
             var awaiter = buffer.WaitToReadAsync(1, CancellationToken.None).GetAwaiter();
             awaiter.UnsafeOnCompleted(() =>
             {
-                var continuationThreadId = Environment.CurrentManagedThreadId;
-                continuationEntered.TrySetResult();
+                var ranInline = Volatile.Read(ref timeoutCallbackActive) != 0
+                    && Environment.CurrentManagedThreadId == Volatile.Read(ref timeoutThreadId);
                 try
                 {
-                    continuationFinished.TrySetResult((continuationThreadId, awaiter.GetResult()));
+                    continuationFinished.TrySetResult((ranInline, awaiter.GetResult()));
                 }
                 catch (Exception exception)
                 {
@@ -464,12 +467,11 @@ public class MpscFetchBufferTests
             var completion = await continuationFinished.Task.WaitAsync(TimeSpan.FromSeconds(5));
             await timeoutCallbackExited.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-            await Assert.That(completion.ThreadId).IsNotEqualTo(Volatile.Read(ref timeoutThreadId));
+            await Assert.That(completion.RanInline).IsFalse();
             await Assert.That(completion.Result).IsFalse();
         }
         finally
         {
-            continuationEntered.TrySetResult();
             buffer.Dispose();
         }
     }
