@@ -621,22 +621,24 @@ public sealed class TransactionTests
     public async Task InitTransactionsAsync_SharedDeadlineSpansCoordinatorAndProducerId(
         CancellationToken cancellationToken)
     {
+        var transactionClock = new FakeTransactionClock();
         await using var harness = BuildPreparedCompletionHarness(
             PreparedTransactionState.Empty,
             currentProducerId: 2002,
             currentProducerEpoch: 9,
-            initProducerIdWaitsForCancellation: true,
-            findCoordinatorDelayMs: 1200,
-            maxBlockMs: 2000);
+            initProducerIdRetriableFailuresBeforeSuccess: 1,
+            transactionClock: transactionClock,
+            findCoordinatorAdvanceMs: 20_000,
+            initProducerIdAdvanceMs: 40_000,
+            maxBlockMs: 60_000);
         harness.Producer._transactionState = TransactionState.Uninitialized;
-        var stopwatch = Stopwatch.StartNew();
 
         var exception = await Assert.That(() => harness.Producer.InitTransactionsAsync(
                 cancellationToken).AsTask())
             .Throws<KafkaTimeoutException>();
 
         await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Transaction);
-        await Assert.That(stopwatch.Elapsed).IsLessThan(TimeSpan.FromMilliseconds(2800));
+        await Assert.That(exception.Elapsed).IsEqualTo(TimeSpan.FromSeconds(60));
         await Assert.That(harness.FindCoordinatorRequests).IsEqualTo(1);
         await Assert.That(harness.InitProducerIdRequests).IsEqualTo(1);
     }
@@ -1441,6 +1443,9 @@ public sealed class TransactionTests
         int emptyCoordinatorResponsesBeforeSuccess = 0,
         ErrorCode addPartitionsRetriableError = ErrorCode.CoordinatorLoadInProgress,
         int retryBackoffMs = 0,
+        FakeTransactionClock? transactionClock = null,
+        int findCoordinatorAdvanceMs = 0,
+        int initProducerIdAdvanceMs = 0,
         int maxBlockMs = 1000)
     {
         var connection = new LeaseTrackingConnection(
@@ -1458,7 +1463,10 @@ public sealed class TransactionTests
             initProducerIdWaitsBeforeWriteForCancellation: initProducerIdWaitsBeforeWriteForCancellation,
             findCoordinatorDelayMs: findCoordinatorDelayMs,
             emptyCoordinatorResponsesBeforeSuccess: emptyCoordinatorResponsesBeforeSuccess,
-            addPartitionsRetriableError: addPartitionsRetriableError);
+            addPartitionsRetriableError: addPartitionsRetriableError,
+            transactionClock: transactionClock,
+            findCoordinatorAdvanceMs: findCoordinatorAdvanceMs,
+            initProducerIdAdvanceMs: initProducerIdAdvanceMs);
 
         var connectionPool = new ConnectionPool(
             clientId: "test-producer",
@@ -1506,7 +1514,8 @@ public sealed class TransactionTests
             Serializers.String,
             connectionPool,
             metadataManager,
-            DekafMemoryBudget.Global);
+            DekafMemoryBudget.Global,
+            transactionTimestampProvider: transactionClock is null ? null : transactionClock.GetMilliseconds);
 
         SetInstanceField(producer, "_initialized", true);
         SetInstanceField(producer, "_producerId", currentProducerId);
@@ -1603,7 +1612,10 @@ public sealed class TransactionTests
         bool initProducerIdWaitsBeforeWriteForCancellation,
         int findCoordinatorDelayMs,
         int emptyCoordinatorResponsesBeforeSuccess,
-        ErrorCode addPartitionsRetriableError) : IKafkaConnection, IRetirableKafkaConnection,
+        ErrorCode addPartitionsRetriableError,
+        FakeTransactionClock? transactionClock,
+        int findCoordinatorAdvanceMs,
+        int initProducerIdAdvanceMs) : IKafkaConnection, IRetirableKafkaConnection,
         IKafkaPipelinedWriteCompletionConnection, IKafkaRequestWriteObserverConnection
     {
         private readonly TrackingResponseSource<EndTxnResponse> _pipelinedResponseSource = new();
@@ -1732,6 +1744,7 @@ public sealed class TransactionTests
         private FindCoordinatorResponse CreateFindCoordinatorResponse(FindCoordinatorRequest request)
         {
             FindCoordinatorRequests++;
+            transactionClock?.Advance(findCoordinatorAdvanceMs);
             if (FindCoordinatorRequests <= emptyCoordinatorResponsesBeforeSuccess)
                 return new FindCoordinatorResponse { Coordinators = [] };
 
@@ -1756,6 +1769,7 @@ public sealed class TransactionTests
         private InitProducerIdResponse CreateInitProducerIdResponse()
         {
             InitProducerIdRequests++;
+            transactionClock?.Advance(initProducerIdAdvanceMs);
             return new InitProducerIdResponse
             {
                 ErrorCode = InitProducerIdRequests <= initProducerIdRetriableFailuresBeforeSuccess
@@ -1873,6 +1887,15 @@ public sealed class TransactionTests
             where TRequest : IKafkaRequest<TResponse>
             where TResponse : IKafkaResponse
             => throw new NotSupportedException();
+    }
+
+    private sealed class FakeTransactionClock
+    {
+        private long _milliseconds;
+
+        public long GetMilliseconds() => Volatile.Read(ref _milliseconds);
+
+        public void Advance(int milliseconds) => Interlocked.Add(ref _milliseconds, milliseconds);
     }
 
     private sealed class TrackingResponseSource<TResponse> : IPipelinedResponseSource<TResponse>
