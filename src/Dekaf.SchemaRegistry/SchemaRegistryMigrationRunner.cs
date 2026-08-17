@@ -97,14 +97,15 @@ internal sealed class SchemaRegistryMigrationRunner
                 subject,
                 plan.ReaderSchema.Schema,
                 payloadFormat,
-                taggedFieldTransformers);
+                taggedFieldTransformers,
+                taggedFieldSchema: writerSchema);
             try
             {
                 payload = _ruleExecutor.TransformDeserializedPayload(payload, readerContext);
             }
             finally
             {
-                ReturnContext(readerContext, taggedFieldTransformers);
+                readerContext.Return();
             }
 
             return new MigrationResult(payload, plan.ReaderSchema);
@@ -123,9 +124,10 @@ internal sealed class SchemaRegistryMigrationRunner
         }
         finally
         {
-            ReturnContext(context, taggedFieldTransformers);
+            context.Return();
         }
 
+        var payloadSchema = writerSchema;
         var steps = plan.Steps;
         for (var i = 0; i < steps.Length; i++)
         {
@@ -138,6 +140,7 @@ internal sealed class SchemaRegistryMigrationRunner
                 owner,
                 payloadFormat,
                 taggedFieldTransformers,
+                payloadSchema,
                 step.Source.Schema,
                 step.Target.Schema,
                 step.Mode);
@@ -147,8 +150,10 @@ internal sealed class SchemaRegistryMigrationRunner
             }
             finally
             {
-                ReturnContext(context, taggedFieldTransformers);
+                context.Return();
             }
+
+            payloadSchema = step.Target.Schema;
         }
 
         context = RentContext(
@@ -157,14 +162,15 @@ internal sealed class SchemaRegistryMigrationRunner
             subject,
             plan.ReaderSchema.Schema,
             payloadFormat,
-            taggedFieldTransformers);
+            taggedFieldTransformers,
+            taggedFieldSchema: payloadSchema);
         try
         {
             payload = _schemaRuleExecutor.TransformDeserializedDomainPayload(payload, context);
         }
         finally
         {
-            ReturnContext(context, taggedFieldTransformers);
+            context.Return();
         }
 
         return new MigrationResult(payload, plan.ReaderSchema);
@@ -178,6 +184,7 @@ internal sealed class SchemaRegistryMigrationRunner
         Schema schema,
         SchemaRegistryPayloadFormat payloadFormat,
         ISchemaRegistryTaggedFieldTransformerProvider? taggedFieldTransformers,
+        Schema? taggedFieldSchema = null,
         Schema? sourceSchema = null,
         Schema? targetSchema = null,
         SchemaRuleMode? ruleMode = null) => taggedFieldTransformers is null
@@ -198,21 +205,10 @@ internal sealed class SchemaRegistryMigrationRunner
             subject,
             schema,
             payloadFormat,
-            taggedFieldTransformers.Get(schema),
+            taggedFieldTransformers.Get(taggedFieldSchema ?? schema),
             sourceSchema,
             targetSchema,
             ruleMode);
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void ReturnContext(
-        SchemaRegistryRuleContext context,
-        ISchemaRegistryTaggedFieldTransformerProvider? taggedFieldTransformers)
-    {
-        if (taggedFieldTransformers is null)
-            context.Return();
-        else
-            context.ReturnTagged();
-    }
 
     private async Task<MigrationPlan> CreatePlanAsync(string subject, Schema writerSchema)
     {

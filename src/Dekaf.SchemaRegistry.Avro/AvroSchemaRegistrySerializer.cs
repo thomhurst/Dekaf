@@ -277,7 +277,7 @@ public sealed class AvroSchemaRegistrySerializer<
             }
             finally
             {
-                ruleContext.ReturnTagged();
+                ruleContext.Return();
             }
 
             // Write wire format: [0x00] [schema ID] [Avro payload]

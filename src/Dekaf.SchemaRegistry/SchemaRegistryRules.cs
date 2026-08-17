@@ -268,6 +268,7 @@ public sealed class SchemaRegistryRuleContext
         _sourceSchema = null;
         _targetSchema = null;
         _ruleMode = null;
+        _taggedFieldTransformer = null;
 
         if (ReferenceEquals(this, t_primary))
         {
@@ -276,13 +277,6 @@ public sealed class SchemaRegistryRuleContext
         }
 
         ReturnOverflow(this);
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal void ReturnTagged()
-    {
-        _taggedFieldTransformer = null;
-        Return();
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -310,6 +304,7 @@ public sealed class SchemaRegistryRuleContext
         _subject = subject;
         _schema = schema;
         _payloadFormat = payloadFormat;
+        _taggedFieldTransformer = null;
         SetMigration(sourceSchema, targetSchema, ruleMode);
     }
 

@@ -186,7 +186,7 @@ public sealed class AvroSchemaRegistryDeserializer<
                 }
                 finally
                 {
-                    ruleContext.ReturnTagged();
+                    ruleContext.Return();
                 }
             }
             else

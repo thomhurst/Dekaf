@@ -224,6 +224,12 @@ public sealed class SchemaRegistryCsfleRuleTests
 
         await Assert.That(buffer.WrittenSpan.IndexOf("123-45-6789"u8)).IsEqualTo(-1);
         await Assert.That(buffer.WrittenSpan.IndexOf("account-123"u8)).IsEqualTo(-1);
+        await Assert.That(buffer.WrittenSpan.IndexOf("alpha"u8)).IsEqualTo(-1);
+        await Assert.That(buffer.WrittenSpan.IndexOf("beta"u8)).IsEqualTo(-1);
+        await Assert.That(buffer.WrittenSpan.IndexOf("map-secret"u8)).IsEqualTo(-1);
+        await Assert.That(buffer.WrittenSpan.IndexOf("nested-secret"u8)).IsEqualTo(-1);
+        await Assert.That(buffer.WrittenSpan.IndexOf("Ada"u8)).IsGreaterThanOrEqualTo(0);
+        await Assert.That(buffer.WrittenSpan.IndexOf("public-profile"u8)).IsGreaterThanOrEqualTo(0);
         using var encryptedPayload = new MemoryStream(buffer.WrittenMemory[5..].ToArray());
         var encryptedRecord = new GenericDatumReader<GenericRecord>(avroSchema, avroSchema)
             .Read(new GenericRecord(avroSchema), new BinaryDecoder(encryptedPayload));
@@ -231,6 +237,12 @@ public sealed class SchemaRegistryCsfleRuleTests
         await Assert.That((string)encryptedRecord["name"]!).IsEqualTo("Ada");
         await Assert.That((string)encryptedRecord["ssn"]!).IsNotEqualTo("123-45-6789");
         await Assert.That((byte[])encryptedRecord["account"]!).IsNotEquivalentTo("account-123"u8.ToArray());
+        await Assert.That((object[])encryptedRecord["aliases"]!).IsNotEquivalentTo(AliasValues);
+        var encryptedSecrets = (Dictionary<string, object>)encryptedRecord["secrets"]!;
+        await Assert.That((byte[])encryptedSecrets["primary"]).IsNotEquivalentTo("map-secret"u8.ToArray());
+        var encryptedProfile = (GenericRecord)encryptedRecord["profile"]!;
+        await Assert.That((string)encryptedProfile["secret"]!).IsNotEqualTo("nested-secret");
+        await Assert.That((Avro.AvroDecimal)encryptedRecord["amount"]!).IsNotEqualTo(amount);
 
         var roundTripped = deserializer.Deserialize(buffer.WrittenMemory, serializationContext);
         await Assert.That((int)roundTripped["id"]!).IsEqualTo(42);
@@ -247,6 +259,290 @@ public sealed class SchemaRegistryCsfleRuleTests
         await Assert.That((string)roundTrippedProfile["display"]!).IsEqualTo("public-profile");
         await Assert.That((string)roundTrippedProfile["secret"]!).IsEqualTo("nested-secret");
         await Assert.That((Avro.AvroDecimal)roundTripped["amount"]!).IsEqualTo(amount);
+    }
+
+    [Test]
+    public async Task AvroSerializer_CallerOwnedTags_ObservesSetMutations()
+    {
+        const string schemaText = """
+            {
+                "type": "record",
+                "name": "MutablePayment",
+                "namespace": "test",
+                "fields": [
+                    { "name": "secret", "type": "string", "confluent:tags": ["PII"] },
+                    { "name": "account", "type": "string" }
+                ]
+            }
+            """;
+        var ruleTags = new HashSet<string>(StringComparer.Ordinal) { "PII" };
+        var accountTags = new HashSet<string>(StringComparer.Ordinal) { "ACCOUNT" };
+        var metadataTags = new Dictionary<string, IReadOnlySet<string>>(StringComparer.Ordinal)
+        {
+            ["test.MutablePayment.account"] = accountTags
+        };
+        var rule = CreateRule(tags: ruleTags);
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = schemaText,
+            Metadata = new SchemaMetadata
+            {
+                Tags = metadataTags
+            },
+            RuleSet = new SchemaRuleSet { DomainRules = [rule] }
+        };
+        var client = CreateDekClient();
+        _ = await client.RegisterSchemaAsync("mutable-payments-value", schema);
+        var executor = new SchemaRegistryRuleExecutor([CreateHandler(client)]);
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(
+            client,
+            new AvroSerializerConfig { AutoRegisterSchemas = false, RuleExecutor = executor });
+        var avroSchema = (Avro.RecordSchema)AvroSchema.Parse(schemaText);
+        var record = new GenericRecord(avroSchema);
+        record.Add("secret", "secret-value");
+        record.Add("account", "account-value");
+        var context = new SerializationContext
+        {
+            Topic = "mutable-payments",
+            Component = SerializationComponent.Value
+        };
+        var first = new ArrayBufferWriter<byte>();
+
+        serializer.Serialize(record, ref first, context);
+        accountTags.Clear();
+        accountTags.Add("PII");
+        var second = new ArrayBufferWriter<byte>();
+        serializer.Serialize(record, ref second, context);
+        ruleTags.Clear();
+        ruleTags.Add("PUBLIC");
+
+        await Assert.That(() => Serialize(new ArrayBufferWriter<byte>()))
+            .Throws<SchemaRegistryRuleException>()
+            .WithMessageContaining("did not match");
+
+        accountTags.Clear();
+        accountTags.Add("PUBLIC");
+        var third = new ArrayBufferWriter<byte>();
+        serializer.Serialize(record, ref third, context);
+        metadataTags.Remove("test.MutablePayment.account");
+
+        await Assert.That(() => Serialize(new ArrayBufferWriter<byte>()))
+            .Throws<SchemaRegistryRuleException>()
+            .WithMessageContaining("did not match");
+
+        metadataTags["test.MutablePayment.account"] =
+            new HashSet<string>(StringComparer.Ordinal) { "PUBLIC" };
+        var fourth = new ArrayBufferWriter<byte>();
+        serializer.Serialize(record, ref fourth, context);
+
+        await Assert.That(first.WrittenSpan.IndexOf("secret-value"u8)).IsEqualTo(-1);
+        await Assert.That(first.WrittenSpan.IndexOf("account-value"u8)).IsGreaterThanOrEqualTo(0);
+        await Assert.That(second.WrittenSpan.IndexOf("secret-value"u8)).IsEqualTo(-1);
+        await Assert.That(second.WrittenSpan.IndexOf("account-value"u8)).IsEqualTo(-1);
+        await Assert.That(third.WrittenSpan.IndexOf("secret-value"u8)).IsGreaterThanOrEqualTo(0);
+        await Assert.That(third.WrittenSpan.IndexOf("account-value"u8)).IsEqualTo(-1);
+        await Assert.That(fourth.WrittenSpan.IndexOf("secret-value"u8)).IsGreaterThanOrEqualTo(0);
+        await Assert.That(fourth.WrittenSpan.IndexOf("account-value"u8)).IsEqualTo(-1);
+
+        void Serialize(ArrayBufferWriter<byte> destination) =>
+            serializer.Serialize(record, ref destination, context);
+    }
+
+    [Test]
+    public async Task AvroTaggedTransformer_UntrackableCallerOwnedTags_FailsClosed()
+    {
+        const string schemaText = """
+            {"type":"record","name":"UntrackablePayload","fields":[
+                {"name":"secret","type":"bytes","confluent:tags":["PII"]}
+            ]}
+            """;
+        var avroSchema = (Avro.RecordSchema)AvroSchema.Parse(schemaText);
+        var rule = CreateRule(tags: new UntrackableTagSet("PII"));
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = schemaText,
+            RuleSet = new SchemaRuleSet { DomainRules = [rule] }
+        };
+        var transformer = AvroTaggedFieldTransformer.Get(avroSchema, schema);
+
+        await Assert.That(() => transformer.Transform(
+                WriteAvroRecord(avroSchema, [1]),
+                CreateHandlerContext(rule, schema),
+                new byte[] { 2 },
+                static (_, _, replacement) => replacement))
+            .Throws<SchemaRegistryRuleException>()
+            .WithMessageContaining("cannot be tracked for mutation");
+    }
+
+    [Test]
+    public async Task AvroTaggedTransformer_PreviousOutputAsInput_DoesNotCorruptPayload()
+    {
+        const string schemaText = """
+            {"type":"record","name":"AliasPayload","fields":[
+                {"name":"secret","type":"bytes","confluent:tags":["PII"]}
+            ]}
+            """;
+        var avroSchema = (Avro.RecordSchema)AvroSchema.Parse(schemaText);
+        var rule = CreateRule(tags: new HashSet<string>(StringComparer.Ordinal) { "PII" });
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = schemaText,
+            RuleSet = new SchemaRuleSet
+            {
+                DomainRules = [rule],
+                HasFixedRuleCollections = true
+            }
+        };
+        var transformer = AvroTaggedFieldTransformer.Get(avroSchema, schema);
+        var handlerContext = CreateHandlerContext(rule, schema);
+        var payload = WriteAvroRecord(avroSchema, "initial"u8.ToArray());
+
+        var first = transformer.Transform(
+            payload,
+            handlerContext,
+            "first"u8.ToArray(),
+            static (_, _, replacement) => replacement);
+        var second = transformer.Transform(
+            first,
+            handlerContext,
+            "second"u8.ToArray(),
+            static (_, _, replacement) => replacement);
+        var result = ReadAvroBytes(avroSchema, second);
+
+        await Assert.That(result).IsEquivalentTo("second"u8.ToArray());
+    }
+
+    [Test]
+    public async Task AvroTaggedTransformer_OversizedOutputBuffer_IsNotRetained()
+    {
+        const int maxRetainedBufferSize = 1024 * 1024;
+        const string schemaText = """
+            {"type":"record","name":"LargePayload","fields":[
+                {"name":"secret","type":"bytes","confluent:tags":["PII"]}
+            ]}
+            """;
+        var avroSchema = (Avro.RecordSchema)AvroSchema.Parse(schemaText);
+        var rule = CreateRule(tags: new HashSet<string>(StringComparer.Ordinal) { "PII" });
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = schemaText,
+            RuleSet = new SchemaRuleSet
+            {
+                DomainRules = [rule],
+                HasFixedRuleCollections = true
+            }
+        };
+        var transformer = AvroTaggedFieldTransformer.Get(avroSchema, schema);
+        var transformed = transformer.Transform(
+            WriteAvroRecord(avroSchema, [1]),
+            CreateHandlerContext(rule, schema),
+            new byte[maxRetainedBufferSize + 1],
+            static (_, _, replacement) => replacement);
+        var workspaces = typeof(AvroTaggedFieldTransformer)
+            .GetField("t_workspaces", BindingFlags.NonPublic | BindingFlags.Static)!
+            .GetValue(null)!;
+        var arguments = new object?[] { transformer, null };
+        _ = workspaces.GetType().GetMethod("TryGetValue")!.Invoke(workspaces, arguments);
+        var outputs = (byte[]?[])arguments[1]!.GetType()
+            .GetField("_outputs", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(arguments[1])!;
+
+        await Assert.That(outputs.Where(static output => output is not null).All(
+            output => output!.Length <= maxRetainedBufferSize)).IsTrue();
+        GC.KeepAlive(transformed);
+    }
+
+    [Test]
+    public async Task AvroTaggedTransformerProvider_ConcurrentSchemas_KeepCachePairAtomic()
+    {
+        const string firstSchemaText = """
+            {"type":"record","name":"First","fields":[
+                {"name":"secret","type":"string","confluent:tags":["PII"]}
+            ]}
+            """;
+        const string secondSchemaText = """
+            {"type":"record","name":"Second","fields":[
+                {"name":"value","type":"bytes","confluent:tags":["PII"]}
+            ]}
+            """;
+        var first = new Schema { SchemaType = SchemaType.Avro, SchemaString = firstSchemaText };
+        var second = new Schema { SchemaType = SchemaType.Avro, SchemaString = secondSchemaText };
+        var provider = new AvroTaggedFieldTransformerProvider();
+        var registrySchemaField = typeof(AvroTaggedFieldTransformer)
+            .GetField("_registrySchema", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        var mismatches = 0;
+
+        Parallel.For(0, 100_000, index =>
+        {
+            var expected = (index & 1) == 0 ? first : second;
+            var transformer = provider.Get(expected);
+            var actual = (Schema)registrySchemaField.GetValue(transformer)!;
+            if (!ReferenceEquals(expected, actual))
+                Interlocked.Increment(ref mismatches);
+        });
+
+        await Assert.That(mismatches).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task AvroDeserializer_UseLatestVersion_DecryptsWriterPayloadBeforeSchemaResolution()
+    {
+        const string writerSchemaText = """
+            {"type":"record","name":"VersionedPayment","namespace":"test","fields":[
+                {"name":"secret","type":"string","confluent:tags":["PII"]}
+            ]}
+            """;
+        const string readerSchemaText = """
+            {"type":"record","name":"VersionedPayment","namespace":"test","fields":[
+                {"name":"prefix","type":"string","default":""},
+                {"name":"secret","type":"string","confluent:tags":["PII"]}
+            ]}
+            """;
+        var client = CreateDekClient();
+        var writerRule = CreateRule(
+            mode: SchemaRuleMode.Write,
+            tags: new HashSet<string>(StringComparer.Ordinal) { "PII" });
+        var readerRule = CreateRule(
+            mode: SchemaRuleMode.Read,
+            tags: new HashSet<string>(StringComparer.Ordinal) { "PII" });
+        _ = await client.RegisterSchemaAsync("versioned-payments-value", new Schema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = writerSchemaText,
+            RuleSet = new SchemaRuleSet { EncodingRules = [writerRule] }
+        });
+        var executor = new SchemaRegistryRuleExecutor([CreateHandler(client)]);
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(
+            client,
+            new AvroSerializerConfig { AutoRegisterSchemas = false, RuleExecutor = executor });
+        var writerSchema = (Avro.RecordSchema)AvroSchema.Parse(writerSchemaText);
+        var record = new GenericRecord(writerSchema);
+        record.Add("secret", "versioned-secret");
+        var output = new ArrayBufferWriter<byte>();
+        var context = new SerializationContext
+        {
+            Topic = "versioned-payments",
+            Component = SerializationComponent.Value
+        };
+
+        serializer.Serialize(record, ref output, context);
+        _ = await client.RegisterSchemaAsync("versioned-payments-value", new Schema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = readerSchemaText,
+            RuleSet = new SchemaRuleSet { DomainRules = [readerRule] }
+        });
+        await using var deserializer = new AvroSchemaRegistryDeserializer<GenericRecord>(
+            client,
+            new AvroDeserializerConfig { UseLatestVersion = true, RuleExecutor = executor });
+        var result = deserializer.Deserialize(output.WrittenMemory, context);
+
+        await Assert.That((string)result["prefix"]!).IsEqualTo("");
+        await Assert.That((string)result["secret"]!).IsEqualTo("versioned-secret");
     }
 
     [Test]
@@ -916,6 +1212,25 @@ public sealed class SchemaRegistryCsfleRuleTests
             }
         };
 
+    private static byte[] WriteAvroRecord(Avro.RecordSchema schema, byte[] value)
+    {
+        var record = new GenericRecord(schema);
+        record.Add("secret", value);
+        using var stream = new MemoryStream();
+        var encoder = new BinaryEncoder(stream);
+        new GenericDatumWriter<GenericRecord>(schema).Write(record, encoder);
+        encoder.Flush();
+        return stream.ToArray();
+    }
+
+    private static byte[] ReadAvroBytes(Avro.RecordSchema schema, ReadOnlyMemory<byte> payload)
+    {
+        using var stream = new MemoryStream(payload.ToArray());
+        var record = new GenericDatumReader<GenericRecord>(schema, schema)
+            .Read(new GenericRecord(schema), new BinaryDecoder(stream));
+        return (byte[])record["secret"]!;
+    }
+
     private static void WriteUtf8(string value, IBufferWriter<byte> writer)
     {
         var bytes = Encoding.UTF8.GetBytes(value);
@@ -1264,6 +1579,37 @@ public sealed class SchemaRegistryCsfleRuleTests
                 Version = entry.Version,
                 Schema = entry.Schema
             });
+        }
+
+        public Task<RegisteredSchema> LookupSchemaAsync(
+            string subject,
+            Schema schema,
+            bool ignoreDeletedSchemas = true,
+            bool normalize = false,
+            CancellationToken cancellationToken = default)
+        {
+            if (_schemasBySubject.TryGetValue(subject, out var versions))
+            {
+                for (var i = 0; i < versions.Count; i++)
+                {
+                    var entry = versions[i];
+                    if (!ReferenceEquals(entry.Schema, schema)
+                        && !string.Equals(entry.Schema.SchemaString, schema.SchemaString, StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    return Task.FromResult(new RegisteredSchema
+                    {
+                        Id = entry.Id,
+                        Subject = subject,
+                        Version = entry.Version,
+                        Schema = entry.Schema
+                    });
+                }
+            }
+
+            throw new SchemaRegistryException(40403, $"Schema was not found under subject '{subject}'");
         }
 
         public Task<int> GetOrRegisterSchemaAsync(string subject, Schema schema, CancellationToken cancellationToken = default)

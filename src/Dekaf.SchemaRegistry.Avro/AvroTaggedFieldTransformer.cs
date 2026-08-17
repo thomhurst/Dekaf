@@ -1,5 +1,7 @@
 using System.Buffers;
 using System.Buffers.Text;
+using System.Collections.Frozen;
+using System.Collections.Immutable;
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -17,14 +19,13 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
 
     private readonly AvroSchema _schema;
     private readonly RegistrySchema _registrySchema;
-    private readonly ConditionalWeakTable<SchemaRule, RulePlan> _plans = new();
-    private readonly ConditionalWeakTable<SchemaRule, RulePlan>.CreateValueCallback _createPlan;
+    private readonly RulePlanCache _plans;
 
     private AvroTaggedFieldTransformer(AvroSchema schema, RegistrySchema registrySchema)
     {
         _schema = schema;
         _registrySchema = registrySchema;
-        _createPlan = CreatePlan;
+        _plans = new RulePlanCache(schema, registrySchema);
     }
 
     internal static AvroTaggedFieldTransformer Get(AvroSchema schema, RegistrySchema registrySchema) =>
@@ -36,15 +37,17 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
         TState state,
         SchemaRegistryFieldTransform<TState> transform)
     {
-        var plan = _plans.GetValue(context.Rule, _createPlan);
-        if (plan.Targets.Count == 0)
+        var plan = _plans.Get(
+            context.Rule,
+            context.PayloadContext.Schema?.RuleSet?.HasFixedRuleCollections != true);
+        if (!plan.HasTargets(context.Rule))
         {
             throw new SchemaRegistryRuleException(
                 $"Schema Registry rule '{context.Rule.Name}' did not match any Avro field tags.");
         }
 
-        var workspace = (t_workspaces ??= new()).GetValue(this, static _ => new Workspace());
-        workspace.Reset(payload.Length + 128);
+        var workspace = GetWorkspace(this);
+        workspace.Reset(payload.Span, payload.Length + 128);
         var reader = new AvroReader(payload);
         TransformValue(_schema, target: false, plan, ref reader, workspace, context, state, transform);
         if (!reader.End)
@@ -56,7 +59,9 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
         return workspace.WrittenMemory;
     }
 
-    private RulePlan CreatePlan(SchemaRule rule) => RulePlan.Create(_schema, _registrySchema, rule);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static Workspace GetWorkspace(AvroTaggedFieldTransformer transformer) =>
+        (t_workspaces ??= new()).GetValue(transformer, static _ => new Workspace());
 
     private static void TransformValue<TState>(
         AvroSchema schema,
@@ -134,10 +139,19 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
         SchemaRegistryFieldTransform<TState> transform)
     {
         var fields = schema.Fields;
+        var targets = plan.GetTargets(schema);
         for (var i = 0; i < fields.Count; i++)
         {
             var field = fields[i];
-            TransformValue(field.Schema, plan.Targets.Contains(field), plan, ref reader, output, context, state, transform);
+            TransformValue(
+                field.Schema,
+                targets.IsTarget(field.Pos, context.Rule),
+                plan,
+                ref reader,
+                output,
+                context,
+                state,
+                transform);
         }
     }
 
@@ -323,24 +337,203 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
             _values.GetValue(registrySchema, _create);
     }
 
-    private sealed class RulePlan(HashSet<global::Avro.Field> targets)
+    private sealed class RulePlanCache
     {
-        public HashSet<global::Avro.Field> Targets { get; } = targets;
+        private readonly AvroSchema _schema;
+        private readonly RegistrySchema _registrySchema;
+        private readonly ConditionalWeakTable<SchemaRule, RulePlan> _fixedPlans = new();
+        private readonly ConditionalWeakTable<SchemaRule, MutableRulePlan> _mutablePlans = new();
+        private readonly ConditionalWeakTable<SchemaRule, RulePlan>.CreateValueCallback _createFixedPlan;
+        private readonly ConditionalWeakTable<SchemaRule, MutableRulePlan>.CreateValueCallback _createMutablePlan;
 
-        public static RulePlan Create(AvroSchema schema, RegistrySchema registrySchema, SchemaRule rule)
+        public RulePlanCache(AvroSchema schema, RegistrySchema registrySchema)
         {
-            var targets = new HashSet<global::Avro.Field>(ReferenceEqualityComparer.Instance);
+            _schema = schema;
+            _registrySchema = registrySchema;
+            _createFixedPlan = CreateFixedPlan;
+            _createMutablePlan = CreateMutablePlan;
+        }
+
+        public RulePlan Get(SchemaRule rule, bool mutableTags) => mutableTags
+            ? _mutablePlans.GetValue(rule, _createMutablePlan).Get()
+            : _fixedPlans.GetValue(rule, _createFixedPlan);
+
+        private RulePlan CreateFixedPlan(SchemaRule rule) =>
+            RulePlan.Create(_schema, _registrySchema, rule, mutableTags: false);
+
+        private MutableRulePlan CreateMutablePlan(SchemaRule rule) =>
+            new(_schema, _registrySchema, rule);
+    }
+
+    private sealed class MutableRulePlan
+    {
+        private readonly object _gate = new();
+        private readonly AvroSchema _schema;
+        private readonly RegistrySchema _registrySchema;
+        private readonly SchemaRule _rule;
+        private RulePlan _plan;
+        private int _metadataCount;
+        private int _metadataVersion;
+        private SortedDictionary<string, IReadOnlySet<string>>.Enumerator _sortedMetadataVersion;
+        private MetadataTagsKind _metadataKind;
+
+        public MutableRulePlan(AvroSchema schema, RegistrySchema registrySchema, SchemaRule rule)
+        {
+            _schema = schema;
+            _registrySchema = registrySchema;
+            _rule = rule;
+            _plan = RulePlan.Create(schema, registrySchema, rule, mutableTags: true);
+            CaptureMetadataVersion();
+        }
+
+        public RulePlan Get()
+        {
+            if (MetadataIsCurrent())
+                return _plan;
+
+            lock (_gate)
+            {
+                if (!MetadataIsCurrent())
+                {
+                    _plan = RulePlan.Create(_schema, _registrySchema, _rule, mutableTags: true);
+                    CaptureMetadataVersion();
+                }
+
+                return _plan;
+            }
+        }
+
+        private bool MetadataIsCurrent()
+        {
+            var tags = _registrySchema.Metadata?.Tags;
+            if (tags is null)
+                return _metadataKind == MetadataTagsKind.None;
+            if (tags.Count != _metadataCount)
+                return false;
+
+            return _metadataKind switch
+            {
+                MetadataTagsKind.Dictionary =>
+                    tags is Dictionary<string, IReadOnlySet<string>> dictionary
+                    && Volatile.Read(ref GetDictionaryVersion(dictionary)) == _metadataVersion,
+                MetadataTagsKind.SortedDictionary =>
+                    tags is SortedDictionary<string, IReadOnlySet<string>> && SortedMetadataIsCurrent(),
+                MetadataTagsKind.Immutable =>
+                    tags is FrozenDictionary<string, IReadOnlySet<string>>
+                        or IImmutableDictionary<string, IReadOnlySet<string>>,
+                _ => false
+            };
+        }
+
+        private void CaptureMetadataVersion()
+        {
+            var tags = _registrySchema.Metadata?.Tags;
+            if (tags is null)
+            {
+                _metadataKind = MetadataTagsKind.None;
+                _metadataCount = 0;
+                return;
+            }
+
+            _metadataCount = tags.Count;
+            switch (tags)
+            {
+                case Dictionary<string, IReadOnlySet<string>> dictionary:
+                    _metadataKind = MetadataTagsKind.Dictionary;
+                    _metadataVersion = Volatile.Read(ref GetDictionaryVersion(dictionary));
+                    break;
+                case SortedDictionary<string, IReadOnlySet<string>> sortedDictionary:
+                    _metadataKind = MetadataTagsKind.SortedDictionary;
+                    _sortedMetadataVersion = sortedDictionary.GetEnumerator();
+                    while (_sortedMetadataVersion.MoveNext())
+                        _ = _sortedMetadataVersion.Current;
+                    break;
+                case FrozenDictionary<string, IReadOnlySet<string>> or
+                    IImmutableDictionary<string, IReadOnlySet<string>>:
+                    _metadataKind = MetadataTagsKind.Immutable;
+                    break;
+                default:
+                    throw new SchemaRegistryRuleException(
+                        $"Caller-owned Avro CSFLE metadata tag map type '{tags.GetType().FullName}' cannot be tracked for mutation without a per-message scan. " +
+                        "Use Dictionary<string, IReadOnlySet<string>>, SortedDictionary<string, IReadOnlySet<string>>, " +
+                        "FrozenDictionary<string, IReadOnlySet<string>>, or IImmutableDictionary<string, IReadOnlySet<string>>.");
+            }
+        }
+
+        private bool SortedMetadataIsCurrent()
+        {
+            try
+            {
+                var version = _sortedMetadataVersion;
+                return !version.MoveNext();
+            }
+            catch (InvalidOperationException)
+            {
+                return false;
+            }
+        }
+    }
+
+    private enum MetadataTagsKind : byte
+    {
+        None,
+        Dictionary,
+        SortedDictionary,
+        Immutable
+    }
+
+    private sealed class RulePlan(
+        Dictionary<global::Avro.RecordSchema, RecordTargets> records,
+        MutableFieldTarget[]? mutableTargets,
+        bool hasFixedTargets)
+    {
+        public bool HasTargets(SchemaRule rule)
+        {
+            if (mutableTargets is null)
+                return hasFixedTargets;
+
+            for (var i = 0; i < mutableTargets.Length; i++)
+            {
+                if (mutableTargets[i].Refresh(rule))
+                    return true;
+            }
+
+            return false;
+        }
+
+        public RecordTargets GetTargets(global::Avro.RecordSchema schema) => records[schema];
+
+        public static RulePlan Create(
+            AvroSchema schema,
+            RegistrySchema registrySchema,
+            SchemaRule rule,
+            bool mutableTags)
+        {
+            var records = new Dictionary<global::Avro.RecordSchema, RecordTargets>(ReferenceEqualityComparer.Instance);
+            List<MutableFieldTarget>? mutableTargets = mutableTags ? [] : null;
             var visited = new HashSet<AvroSchema>(ReferenceEqualityComparer.Instance);
-            Visit(schema, registrySchema.Metadata?.Tags, rule.Tags!, targets, visited);
-            return new RulePlan(targets);
+            var hasTargets = false;
+            Visit(
+                schema,
+                registrySchema.Metadata?.Tags,
+                rule,
+                mutableTags,
+                records,
+                mutableTargets,
+                visited,
+                ref hasTargets);
+            return new RulePlan(records, mutableTargets?.ToArray(), hasTargets);
         }
 
         private static void Visit(
             AvroSchema schema,
             IReadOnlyDictionary<string, IReadOnlySet<string>>? metadata,
-            IReadOnlySet<string> ruleTags,
-            HashSet<global::Avro.Field> targets,
-            HashSet<AvroSchema> visited)
+            SchemaRule rule,
+            bool mutableTags,
+            Dictionary<global::Avro.RecordSchema, RecordTargets> records,
+            List<MutableFieldTarget>? mutableTargets,
+            HashSet<AvroSchema> visited,
+            ref bool hasTargets)
         {
             if (schema is global::Avro.LogicalSchema logical)
                 schema = logical.BaseSchema;
@@ -352,24 +545,54 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
             {
                 case global::Avro.RecordSchema record:
                     var fields = record.Fields;
+                    var targets = new bool[fields.Count];
+                    MutableFieldTarget?[]? mutableRecordTargets = mutableTags
+                        ? new MutableFieldTarget?[fields.Count]
+                        : null;
+                    records.Add(record, new RecordTargets(targets, mutableRecordTargets));
                     for (var i = 0; i < fields.Count; i++)
                     {
                         var field = fields[i];
                         var fullName = record.Fullname + "." + field.Name;
-                        if (InlineTagsOverlap(field, ruleTags) || MetadataTagsOverlap(metadata, fullName, ruleTags))
-                            targets.Add(field);
-                        Visit(field.Schema, metadata, ruleTags, targets, visited);
+                        if (mutableTags)
+                        {
+                            var target = MutableFieldTarget.Create(field, metadata, fullName, rule);
+                            if (target is not null)
+                            {
+                                mutableRecordTargets![field.Pos] = target;
+                                mutableTargets!.Add(target);
+                                targets[field.Pos] = target.IsTarget;
+                                hasTargets |= target.IsTarget;
+                            }
+                        }
+                        else
+                        {
+                            var target = InlineTagsOverlap(field, rule.Tags!)
+                                || MetadataTagsOverlap(metadata, fullName, rule.Tags!);
+                            targets[field.Pos] = target;
+                            hasTargets |= target;
+                        }
+
+                        Visit(
+                            field.Schema,
+                            metadata,
+                            rule,
+                            mutableTags,
+                            records,
+                            mutableTargets,
+                            visited,
+                            ref hasTargets);
                     }
                     break;
                 case global::Avro.ArraySchema array:
-                    Visit(array.ItemSchema, metadata, ruleTags, targets, visited);
+                    Visit(array.ItemSchema, metadata, rule, mutableTags, records, mutableTargets, visited, ref hasTargets);
                     break;
                 case global::Avro.MapSchema map:
-                    Visit(map.ValueSchema, metadata, ruleTags, targets, visited);
+                    Visit(map.ValueSchema, metadata, rule, mutableTags, records, mutableTargets, visited, ref hasTargets);
                     break;
                 case global::Avro.UnionSchema union:
                     for (var i = 0; i < union.Count; i++)
-                        Visit(union[i], metadata, ruleTags, targets, visited);
+                        Visit(union[i], metadata, rule, mutableTags, records, mutableTargets, visited, ref hasTargets);
                     break;
             }
         }
@@ -410,7 +633,7 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
             return false;
         }
 
-        private static bool TagsOverlap(IReadOnlySet<string> left, IReadOnlySet<string> right)
+        internal static bool TagsOverlap(IReadOnlySet<string> left, IReadOnlySet<string> right)
         {
             var smaller = left.Count <= right.Count ? left : right;
             var larger = ReferenceEquals(smaller, left) ? right : left;
@@ -423,7 +646,7 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
             return false;
         }
 
-        private static bool GlobMatches(string pattern, string value)
+        internal static bool GlobMatches(string pattern, string value)
         {
             var patternIndex = 0;
             var valueIndex = 0;
@@ -465,19 +688,183 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
         }
     }
 
+    private sealed class RecordTargets(bool[] targets, MutableFieldTarget?[]? mutableTargets)
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool IsTarget(int position, SchemaRule rule)
+        {
+            var mutableTarget = mutableTargets?[position];
+            return mutableTarget is null ? targets[position] : mutableTarget.Refresh(rule);
+        }
+    }
+
+    private sealed class MutableFieldTarget(
+        string[] inlineTags,
+        IReadOnlySet<string>[] metadataTags,
+        SchemaRule rule)
+    {
+        private readonly int[] _metadataVersions = CaptureVersions(metadataTags);
+        private int _ruleTagsVersion = GetSetVersion(rule.Tags!);
+
+        public bool IsTarget { get; private set; } =
+            TagsOverlap(inlineTags, rule.Tags!) || MetadataTagsOverlap(metadataTags, rule.Tags!);
+
+        public static MutableFieldTarget? Create(
+            global::Avro.Field field,
+            IReadOnlyDictionary<string, IReadOnlySet<string>>? metadata,
+            string fullName,
+            SchemaRule rule)
+        {
+            var inlineTags = ReadInlineTags(field);
+            List<IReadOnlySet<string>>? matchingMetadata = null;
+            if (metadata is not null)
+            {
+                foreach (var (pattern, tags) in metadata)
+                {
+                    if (!RulePlan.GlobMatches(pattern, fullName))
+                        continue;
+                    _ = GetSetVersion(tags);
+                    (matchingMetadata ??= []).Add(tags);
+                }
+            }
+
+            if (inlineTags.Length == 0 && matchingMetadata is null)
+                return null;
+
+            _ = GetSetVersion(rule.Tags!);
+            return new MutableFieldTarget(inlineTags, matchingMetadata?.ToArray() ?? [], rule);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool Refresh(SchemaRule rule)
+        {
+            var ruleTags = rule.Tags!;
+            var ruleVersion = GetSetVersion(ruleTags);
+            var changed = ruleVersion != Volatile.Read(ref _ruleTagsVersion);
+            for (var i = 0; i < metadataTags.Length; i++)
+            {
+                var version = GetSetVersion(metadataTags[i]);
+                if (version == Volatile.Read(ref _metadataVersions[i]))
+                    continue;
+
+                _metadataVersions[i] = version;
+                changed = true;
+            }
+
+            if (!changed)
+                return IsTarget;
+
+            _ruleTagsVersion = ruleVersion;
+            IsTarget = TagsOverlap(inlineTags, ruleTags) || MetadataTagsOverlap(metadataTags, ruleTags);
+            return IsTarget;
+        }
+
+        private static string[] ReadInlineTags(global::Avro.Field field)
+        {
+            var tagsJson = field.GetProperty("confluent:tags");
+            if (string.IsNullOrEmpty(tagsJson))
+                return [];
+
+            using var document = JsonDocument.Parse(tagsJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Array)
+                return [];
+
+            var tags = new List<string>();
+            foreach (var tag in document.RootElement.EnumerateArray())
+            {
+                if (tag.ValueKind == JsonValueKind.String)
+                    tags.Add(tag.GetString()!);
+            }
+
+            return tags.ToArray();
+        }
+
+        private static int[] CaptureVersions(IReadOnlySet<string>[] tags)
+        {
+            var versions = new int[tags.Length];
+            for (var i = 0; i < tags.Length; i++)
+                versions[i] = GetSetVersion(tags[i]);
+            return versions;
+        }
+
+        private static bool MetadataTagsOverlap(
+            IReadOnlySet<string>[] metadataTags,
+            IReadOnlySet<string> ruleTags)
+        {
+            for (var i = 0; i < metadataTags.Length; i++)
+            {
+                if (RulePlan.TagsOverlap(metadataTags[i], ruleTags))
+                    return true;
+            }
+
+            return false;
+        }
+
+        private static bool TagsOverlap(string[] tags, IReadOnlySet<string> ruleTags)
+        {
+            for (var i = 0; i < tags.Length; i++)
+            {
+                if (ruleTags.Contains(tags[i]))
+                    return true;
+            }
+
+            return false;
+        }
+    }
+
+    private static int GetSetVersion(IReadOnlySet<string> tags) => tags switch
+    {
+        HashSet<string> hashSet => Volatile.Read(ref GetHashSetVersion(hashSet)),
+        SortedSet<string> sortedSet => Volatile.Read(ref GetSortedSetVersion(sortedSet)),
+        FrozenSet<string> or IImmutableSet<string> => 0,
+        _ => throw new SchemaRegistryRuleException(
+            $"Caller-owned Avro CSFLE tag set type '{tags.GetType().FullName}' cannot be tracked for mutation without a per-message scan. " +
+            "Use HashSet<string>, SortedSet<string>, FrozenSet<string>, or IImmutableSet<string>.")
+    };
+
+    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_version")]
+    private static extern ref int GetDictionaryVersion(Dictionary<string, IReadOnlySet<string>> dictionary);
+
+    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_version")]
+    private static extern ref int GetHashSetVersion(HashSet<string> hashSet);
+
+    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "version")]
+    private static extern ref int GetSortedSetVersion(SortedSet<string> sortedSet);
+
     private sealed class Workspace
     {
-        private byte[]? _output;
+        private const int MaxRetainedBufferSize = 1024 * 1024;
+        private readonly byte[]?[] _outputs = new byte[2][];
+        private readonly int[] _outputLengths = new int[2];
         private byte[]? _temporary;
+        private int _outputSlot;
         private int _length;
         private int _temporaryLength;
 
-        public ReadOnlyMemory<byte> WrittenMemory => new(_output!, 0, _length);
-
-        public void Reset(int minimumCapacity)
+        public ReadOnlyMemory<byte> WrittenMemory
         {
-            if (_output is not null && _length > 0)
-                CryptographicOperations.ZeroMemory(_output.AsSpan(0, _length));
+            get
+            {
+                var output = _outputs[_outputSlot]!;
+                var memory = new ReadOnlyMemory<byte>(output, 0, _length);
+                if (output.Length > MaxRetainedBufferSize)
+                    _outputs[_outputSlot] = null;
+                return memory;
+            }
+        }
+
+        public void Reset(ReadOnlySpan<byte> input, int minimumCapacity)
+        {
+            var nextSlot = _outputSlot;
+            if (_outputs[nextSlot] is not null && input.Overlaps(_outputs[nextSlot]))
+                nextSlot ^= 1;
+            _outputSlot = nextSlot;
+
+            var output = _outputs[_outputSlot];
+            var outputLength = _outputLengths[_outputSlot];
+            if (output is not null && outputLength > 0)
+                CryptographicOperations.ZeroMemory(output.AsSpan(0, outputLength));
+            _outputLengths[_outputSlot] = 0;
             _length = 0;
             EnsureOutput(minimumCapacity);
         }
@@ -485,8 +872,9 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
         public void Append(ReadOnlySpan<byte> value)
         {
             EnsureOutput(checked(_length + value.Length));
-            value.CopyTo(_output.AsSpan(_length));
+            value.CopyTo(_outputs[_outputSlot].AsSpan(_length));
             _length += value.Length;
+            _outputLengths[_outputSlot] = _length;
         }
 
         public void WriteLong(long value)
@@ -495,11 +883,12 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
             var encoded = (ulong)((value << 1) ^ (value >> 63));
             while ((encoded & ~0x7FUL) != 0)
             {
-                _output![_length++] = (byte)((encoded & 0x7F) | 0x80);
+                _outputs[_outputSlot]![_length++] = (byte)((encoded & 0x7F) | 0x80);
                 encoded >>= 7;
             }
 
-            _output![_length++] = (byte)encoded;
+            _outputs[_outputSlot]![_length++] = (byte)encoded;
+            _outputLengths[_outputSlot] = _length;
         }
 
         public ReadOnlyMemory<byte> DecodeBase64(ReadOnlySpan<byte> value, string ruleName)
@@ -543,15 +932,16 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
 
         private void EnsureOutput(int minimumLength)
         {
-            if (_output is not null && _output.Length >= minimumLength)
+            var output = _outputs[_outputSlot];
+            if (output is not null && output.Length >= minimumLength)
                 return;
             var replacement = ArrayPool<byte>.Shared.Rent(minimumLength);
-            if (_output is not null)
+            if (output is not null)
             {
-                _output.AsSpan(0, _length).CopyTo(replacement);
-                ArrayPool<byte>.Shared.Return(_output, clearArray: true);
+                output.AsSpan(0, _length).CopyTo(replacement);
+                ArrayPool<byte>.Shared.Return(output, clearArray: true);
             }
-            _output = replacement;
+            _outputs[_outputSlot] = replacement;
         }
     }
 
@@ -605,37 +995,35 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
 internal sealed class AvroTaggedFieldTransformerProvider : ISchemaRegistryTaggedFieldTransformerProvider
 {
     private readonly ConditionalWeakTable<RegistrySchema, AvroTaggedFieldTransformer> _transformers = new();
-    private RegistrySchema? _lastSchema;
-    private AvroTaggedFieldTransformer? _lastTransformer;
+    private Entry? _last;
 
     public ISchemaRegistryTaggedFieldTransformer Get(RegistrySchema schema)
     {
-        var lastSchema = Volatile.Read(ref _lastSchema);
-        var lastTransformer = Volatile.Read(ref _lastTransformer);
-        if (ReferenceEquals(lastSchema, schema) && lastTransformer is not null)
-            return lastTransformer;
+        var last = Volatile.Read(ref _last);
+        if (last is not null && ReferenceEquals(last.Schema, schema))
+            return last.Transformer;
 
         var transformer = _transformers.GetValue(schema, static value =>
             AvroTaggedFieldTransformer.Get(AvroSchema.Parse(value.SchemaString), value));
-        Publish(schema, transformer);
+        Volatile.Write(ref _last, new Entry(schema, transformer));
         return transformer;
     }
 
     internal AvroTaggedFieldTransformer Get(RegistrySchema schema, AvroSchema avroSchema)
     {
-        var lastSchema = Volatile.Read(ref _lastSchema);
-        var lastTransformer = Volatile.Read(ref _lastTransformer);
-        if (ReferenceEquals(lastSchema, schema) && lastTransformer is not null)
-            return lastTransformer;
+        var last = Volatile.Read(ref _last);
+        if (last is not null && ReferenceEquals(last.Schema, schema))
+            return last.Transformer;
 
         var transformer = AvroTaggedFieldTransformer.Get(avroSchema, schema);
-        Publish(schema, transformer);
+        Volatile.Write(ref _last, new Entry(schema, transformer));
         return transformer;
     }
 
-    private void Publish(RegistrySchema schema, AvroTaggedFieldTransformer transformer)
+    private sealed class Entry(RegistrySchema schema, AvroTaggedFieldTransformer transformer)
     {
-        Volatile.Write(ref _lastTransformer, transformer);
-        Volatile.Write(ref _lastSchema, schema);
+        public RegistrySchema Schema { get; } = schema;
+
+        public AvroTaggedFieldTransformer Transformer { get; } = transformer;
     }
 }
