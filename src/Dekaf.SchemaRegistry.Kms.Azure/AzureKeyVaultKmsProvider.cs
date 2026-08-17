@@ -157,7 +157,8 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
 
         var key = ResolveKey(keyReference);
         var wrappedMaterial = encryptedKeyMaterial;
-        if (TryReadVersionHeader(encryptedKeyMaterial.Span, out var version))
+        var hasEmbeddedVersion = TryReadVersionHeader(encryptedKeyMaterial.Span, out var version);
+        if (hasEmbeddedVersion)
         {
             key = key.WithVersion(version);
             wrappedMaterial = encryptedKeyMaterial[VersionHeaderLength..];
@@ -166,12 +167,16 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
         }
 
         var ciphertext = GetInputArray(wrappedMaterial, out var temporaryCiphertext);
+        var client = GetClientEntry(key.KeyId);
+        var retainClient = false;
         try
         {
-            var result = await GetClient(key.KeyId)
+            var result = await client.Value
                 .DecryptAsync(EncryptionAlgorithm.RsaOaep256, ciphertext, cancellationToken)
                 .ConfigureAwait(false);
-            return RequireMaterial(result.Plaintext, "unwrap");
+            var plaintext = RequireMaterial(result.Plaintext, "unwrap");
+            retainClient = true;
+            return plaintext;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -184,17 +189,21 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
         finally
         {
             ClearTemporaryBuffer(temporaryCiphertext);
+            if (hasEmbeddedVersion && !retainClient)
+                _clients.TryRemove(KeyValuePair.Create(key.KeyId, client));
         }
     }
 
     private static int VersionHeaderLength => VersionHeaderPrefix.Length + AzureKeyVersionLength + 1;
 
-    private CryptographyClient GetClient(Uri keyId) => _clients.GetOrAdd(
+    private CryptographyClient GetClient(Uri keyId) => GetClientEntry(keyId).Value;
+
+    private Lazy<CryptographyClient> GetClientEntry(Uri keyId) => _clients.GetOrAdd(
         keyId,
         static (uri, factory) => new Lazy<CryptographyClient>(
             () => factory.CreateClient(uri),
             LazyThreadSafetyMode.ExecutionAndPublication),
-        _clientFactory).Value;
+        _clientFactory);
 
     private KeyReference ResolveKey(SchemaRegistryKmsKeyReference keyReference)
     {

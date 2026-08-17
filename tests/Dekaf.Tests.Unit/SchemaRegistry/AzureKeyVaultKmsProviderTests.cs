@@ -166,6 +166,30 @@ public class AzureKeyVaultKmsProviderTests
     }
 
     [Test]
+    public async Task FailedEmbeddedVersions_AreNotRetained()
+    {
+        var client = CreateClient(KeyUri);
+        client.DecryptAsync(Arg.Any<EncryptionAlgorithm>(), Arg.Any<byte[]>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromException<DecryptResult>(new RequestFailedException(400, "invalid ciphertext")));
+        var factory = new RecordingFactory(_ => client);
+        var provider = new AzureKeyVaultKmsProvider(factory);
+
+        for (var pass = 0; pass < 2; pass++)
+        {
+            for (var index = 0; index < 32; index++)
+            {
+                var version = index.ToString("x32");
+                var ciphertext = Encoding.ASCII.GetBytes($"azure:v1:{version}:wrapped");
+
+                await Assert.That(async () => await provider.UnwrapKeyAsync(ciphertext, CreateKeyReference()))
+                    .Throws<SchemaRegistryKmsException>();
+            }
+        }
+
+        await Assert.That(factory.CreateCount).IsEqualTo(64);
+    }
+
+    [Test]
     public async Task Cancellation_IsPropagatedToInFlightAzureCall()
     {
         var client = CreateClient(KeyUri);
