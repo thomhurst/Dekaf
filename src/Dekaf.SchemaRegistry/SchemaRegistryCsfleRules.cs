@@ -1642,7 +1642,8 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
         {
             try
             {
-                return !_sortedMetadataVersion.MoveNext();
+                var version = _sortedMetadataVersion;
+                return !version.MoveNext();
             }
             catch (InvalidOperationException)
             {
