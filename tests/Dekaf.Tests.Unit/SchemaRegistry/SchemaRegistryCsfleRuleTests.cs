@@ -350,6 +350,56 @@ public sealed class SchemaRegistryCsfleRuleTests
     }
 
     [Test]
+    public async Task AvroTaggedTransformer_ConcurrentTagGain_NeverWritesPlaintext()
+    {
+        const string schemaText = """
+            {"type":"record","name":"ConcurrentTagGain","fields":[
+                {"name":"secret","type":"bytes","confluent:tags":["PII"]}
+            ]}
+            """;
+        var ruleTags = new HashSet<string>(StringComparer.Ordinal) { "PUBLIC" };
+        var rule = CreateRule(tags: ruleTags);
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = schemaText,
+            RuleSet = new SchemaRuleSet { DomainRules = [rule] }
+        };
+        var avroSchema = (Avro.RecordSchema)AvroSchema.Parse(schemaText);
+        var transformer = AvroTaggedFieldTransformer.Get(avroSchema, schema);
+        var context = CreateHandlerContext(rule, schema);
+        var payload = WriteAvroRecord(avroSchema, [1]);
+        byte[] replacement = [2];
+
+        await Assert.That(() => Transform()).Throws<SchemaRegistryRuleException>();
+        ruleTags.Clear();
+        ruleTags.Add("PII");
+        var failures = 0;
+
+        Parallel.For(0, 10_000, _ =>
+        {
+            try
+            {
+                var transformed = Transform();
+                if (!ReadAvroBytes(avroSchema, transformed).AsSpan().SequenceEqual(replacement))
+                    Interlocked.Increment(ref failures);
+            }
+            catch (SchemaRegistryRuleException)
+            {
+                Interlocked.Increment(ref failures);
+            }
+        });
+
+        await Assert.That(failures).IsEqualTo(0);
+
+        ReadOnlyMemory<byte> Transform() => transformer.Transform(
+            payload,
+            context,
+            replacement,
+            static (_, _, replacement) => replacement);
+    }
+
+    [Test]
     public async Task AvroTaggedTransformer_UntrackableCallerOwnedTags_FailsClosed()
     {
         const string schemaText = """
@@ -486,6 +536,87 @@ public sealed class SchemaRegistryCsfleRuleTests
         });
 
         await Assert.That(mismatches).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task AvroTaggedTransformerProvider_AlternatingSchemas_DoesNotAllocate()
+    {
+        var first = new Schema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = """
+                {"type":"record","name":"FirstAllocation","fields":[
+                    {"name":"secret","type":"string","confluent:tags":["PII"]}
+                ]}
+                """
+        };
+        var second = new Schema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = """
+                {"type":"record","name":"SecondAllocation","fields":[
+                    {"name":"secret","type":"bytes","confluent:tags":["PII"]}
+                ]}
+                """
+        };
+        var provider = new AvroTaggedFieldTransformerProvider();
+        var firstAvro = AvroSchema.Parse(first.SchemaString);
+        var secondAvro = AvroSchema.Parse(second.SchemaString);
+        _ = provider.Get(first, firstAvro);
+        _ = provider.Get(second, secondAvro);
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var i = 0; i < 10_000; i++)
+        {
+            _ = (i & 1) == 0
+                ? provider.Get(first, firstAvro)
+                : provider.Get(second, secondAvro);
+        }
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        await Assert.That(allocated).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task AvroTaggedTransformerProvider_UsesOwnerTagsWithPayloadLayout()
+    {
+        const string payloadSchemaText = """
+            {"type":"record","name":"MigratedPayment","namespace":"test","fields":[
+                {"name":"secret","type":"bytes"}
+            ]}
+            """;
+        const string ownerSchemaText = """
+            {"type":"record","name":"MigratedPayment","namespace":"test","fields":[
+                {"name":"prefix","type":"string","default":""},
+                {"name":"secret","type":"bytes","confluent:tags":["PII"]}
+            ]}
+            """;
+        var rule = CreateRule(tags: new HashSet<string>(StringComparer.Ordinal) { "PII" });
+        var payloadSchema = new Schema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = payloadSchemaText
+        };
+        var ownerSchema = new Schema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = ownerSchemaText,
+            RuleSet = new SchemaRuleSet
+            {
+                MigrationRules = [rule],
+                HasFixedRuleCollections = true
+            }
+        };
+        var avroPayloadSchema = (Avro.RecordSchema)AvroSchema.Parse(payloadSchemaText);
+        var transformer = new AvroTaggedFieldTransformerProvider().Get(payloadSchema, ownerSchema);
+
+        var transformed = transformer.Transform(
+            WriteAvroRecord(avroPayloadSchema, [1]),
+            CreateHandlerContext(rule, ownerSchema),
+            new byte[] { 2 },
+            static (_, _, replacement) => replacement);
+
+        await Assert.That(ReadAvroBytes(avroPayloadSchema, transformed)).IsEquivalentTo(new byte[] { 2 });
     }
 
     [Test]

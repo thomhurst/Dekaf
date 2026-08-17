@@ -20,7 +20,7 @@ internal interface ISchemaRegistryTaggedFieldTransformer
 
 internal interface ISchemaRegistryTaggedFieldTransformerProvider
 {
-    ISchemaRegistryTaggedFieldTransformer Get(Schema schema);
+    ISchemaRegistryTaggedFieldTransformer Get(Schema payloadSchema, Schema? ruleOwnerSchema = null);
 }
 
 /// <summary>

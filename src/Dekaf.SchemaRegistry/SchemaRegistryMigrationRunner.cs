@@ -205,7 +205,7 @@ internal sealed class SchemaRegistryMigrationRunner
             subject,
             schema,
             payloadFormat,
-            taggedFieldTransformers.Get(taggedFieldSchema ?? schema),
+            taggedFieldTransformers.Get(taggedFieldSchema ?? schema, schema),
             sourceSchema,
             targetSchema,
             ruleMode);
