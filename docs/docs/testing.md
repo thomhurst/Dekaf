@@ -1,5 +1,6 @@
 ---
 sidebar_position: 12
+description: "Dekaf.Testing provides in-memory producers and consumers for fast unit tests, plus DI wiring, admin and offset fakes, and NativeAOT smoke validation."
 ---
 
 # Testing

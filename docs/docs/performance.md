@@ -1,5 +1,6 @@
 ---
 sidebar_position: 12
+description: "What makes Dekaf fast, how to tune batching and compression for your workload, what throughput to expect, and the common mistakes that cost you."
 ---
 
 # Performance

@@ -1,5 +1,6 @@
 ---
 sidebar_position: 2
+description: "Install Dekaf, run Kafka locally, and write your first producer and consumer."
 ---
 
 # Getting Started

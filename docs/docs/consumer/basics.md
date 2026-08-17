@@ -1,5 +1,6 @@
 ---
 sidebar_position: 1
+description: "Create a consumer, subscribe to topics, and process records with await foreach, including auto offset reset, error handling, and graceful shutdown."
 ---
 
 # Consumer Basics

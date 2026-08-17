@@ -1,5 +1,6 @@
 ---
 sidebar_position: 2
+description: "Complete reference for every producer setting, covering connection, delivery guarantees, batching, compression, partitioning, transactions, and security."
 ---
 
 # Producer Options

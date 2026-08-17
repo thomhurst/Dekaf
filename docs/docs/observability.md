@@ -1,5 +1,6 @@
 ---
 sidebar_position: 12
+description: "Dekaf's built-in ActivitySource and Meter for OpenTelemetry tracing and metrics, plus broker-side telemetry (KIP-714). Zero cost when nothing is listening."
 ---
 
 # Observability (OpenTelemetry)

@@ -1,5 +1,6 @@
 ---
 sidebar_position: 6
+description: "Atomic writes across partitions and topics for exactly-once semantics, covering consume-transform-produce, isolation levels, timeouts, and error handling."
 ---
 
 # Transactions

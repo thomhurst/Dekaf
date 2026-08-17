@@ -1,5 +1,6 @@
 ---
 sidebar_position: 7
+description: "RunPartitionedAsync keeps per-key work ordered while processing partitions in parallel, covering commit semantics, backpressure, and error policy."
 ---
 
 # Partitioned Async Processing

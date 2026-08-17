@@ -1,5 +1,6 @@
 ---
 sidebar_position: 4
+description: "Route heterogeneous records by topic or by schema ID without allocating in steady state, on both the produce and consume sides."
 ---
 
 # Routing Serdes

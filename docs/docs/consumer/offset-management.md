@@ -1,5 +1,6 @@
 ---
 sidebar_position: 3
+description: "Offset commit modes, commit strategies, seeking, and inspecting committed offsets, so you neither lose messages nor reprocess them."
 ---
 
 # Offset Management

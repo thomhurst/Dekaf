@@ -1,5 +1,6 @@
 ---
 sidebar_position: 2
+description: "SASL/PLAIN, SCRAM, GSSAPI (Kerberos), and AWS_MSK_IAM authentication for Dekaf, including Confluent Cloud setup and securing credentials."
 ---
 
 # SASL Authentication

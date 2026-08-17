@@ -1,5 +1,6 @@
 ---
 sidebar_position: 2
+description: "ITopicProducer binds to a single topic at construction so you skip the topic argument on every call, with disposal semantics and DI wiring."
 ---
 
 # Topic-Specific Producers

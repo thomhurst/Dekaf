@@ -1,6 +1,7 @@
 ---
 sidebar_position: 1
 slug: /
+description: "Dekaf is a high-performance, pure C# Apache Kafka client for .NET, implemented from the wire protocol up with no librdkafka or JVM dependency."
 ---
 
 # Introduction

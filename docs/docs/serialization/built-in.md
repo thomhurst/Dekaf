@@ -1,5 +1,6 @@
 ---
 sidebar_position: 1
+description: "The serializers Dekaf selects automatically for strings, byte arrays, ReadOnlyMemory, integers, and Guid, and how to specify them explicitly."
 ---
 
 # Built-in Serializers

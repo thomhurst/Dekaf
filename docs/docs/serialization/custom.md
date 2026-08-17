@@ -1,5 +1,6 @@
 ---
 sidebar_position: 4
+description: "Implement ISerializer and IDeserializer, write a zero-allocation serializer, use SerializationContext, and handle nulls and async serdes."
 ---
 
 # Custom Serializers
