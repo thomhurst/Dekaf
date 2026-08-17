@@ -140,7 +140,7 @@ public sealed class SchemaPreparationTests
     }
 
     [Test]
-    public async Task Generic_PrepareAsync_SubjectFactoryRetainsFiveOverflowSubjects()
+    public async Task Generic_PrepareAsync_SubjectFactoryRetainsThirteenOverflowSubjects()
     {
         using var registry = new MockSchemaRegistryClient();
         var schemaFactoryCalls = 0;
@@ -162,11 +162,11 @@ public sealed class SchemaPreparationTests
         for (var index = 0; index < SubjectSchemaIdCache.MaxCachedEntries; index++)
             _ = await serializer.PrepareAsync($"topic-{index}", 42);
 
-        for (var index = 0; index < 30; index++)
-            _ = await serializer.PrepareAsync($"overflow-{index % 5}", 42);
+        for (var index = 0; index < 52; index++)
+            _ = await serializer.PrepareAsync($"overflow-{index % 13}", 42);
 
         await Assert.That(schemaFactoryCalls)
-            .IsEqualTo(SubjectSchemaIdCache.MaxCachedEntries + 5);
+            .IsEqualTo(SubjectSchemaIdCache.MaxCachedEntries + 13);
     }
 
     [Test]

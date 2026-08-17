@@ -408,8 +408,14 @@ public sealed class Schema
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal bool TryGetCachedFingerprint(out int fingerprint)
     {
+        if (Volatile.Read(ref _hasCachedFingerprint) == 0)
+        {
+            fingerprint = default;
+            return false;
+        }
+
         fingerprint = _cachedFingerprint;
-        return Volatile.Read(ref _hasCachedFingerprint) != 0;
+        return true;
     }
 
     internal void CacheFingerprint(int fingerprint)

@@ -15,6 +15,7 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 public class SchemaRegistryPreparationBenchmarks
 {
     private const int DistinctDataContractCount = 128;
+    private const int SubjectTurnoverWorkingSetSize = 14;
     private readonly ArrayBufferWriter<byte> _genericDestination = new(64);
     private readonly ArrayBufferWriter<byte> _jsonDestination = new(128);
     private readonly SchemaResolutionCache<int> _equivalentDataContractCache = new(maxCachedEntries: 1);
@@ -30,6 +31,7 @@ public class SchemaRegistryPreparationBenchmarks
     private SerializationContext _overflowContextC;
     private SerializationContext _overflowContextD;
     private SerializationContext _overflowContextE;
+    private SerializationContext[] _overflowContexts = null!;
     private int _overflowContextIndex;
     private int _subjectTurnoverIndex;
     private int _equivalentDataContractIndex;
@@ -131,13 +133,27 @@ public class SchemaRegistryPreparationBenchmarks
                     Component = SerializationComponent.Value
                 }).ConfigureAwait(false);
         }
-        await _genericOverflowSerializer.PrepareAsync(42, _overflowContextA).ConfigureAwait(false);
-        await _genericOverflowSerializer.PrepareAsync(42, _overflowContextB).ConfigureAwait(false);
-        await _genericOverflowSerializer.PrepareAsync(42, _overflowContextC).ConfigureAwait(false);
-        await _genericOverflowSerializer.PrepareAsync(42, _overflowContextD).ConfigureAwait(false);
-        await _genericOverflowSerializer.PrepareAsync(42, _overflowContextE).ConfigureAwait(false);
-        _subjectTurnoverTopics = new string[
-            SubjectSchemaIdCache.FixedOverflowCapacity + SubjectSchemaIdCache.TurnoverCapacity + 1];
+        _overflowContexts = new SerializationContext[13];
+        _overflowContexts[0] = _overflowContextA;
+        _overflowContexts[1] = _overflowContextB;
+        _overflowContexts[2] = _overflowContextC;
+        _overflowContexts[3] = _overflowContextD;
+        _overflowContexts[4] = _overflowContextE;
+        for (var index = 5; index < _overflowContexts.Length; index++)
+        {
+            _overflowContexts[index] = new SerializationContext
+            {
+                Topic = $"schema-preparation-overflow-{index}",
+                Component = SerializationComponent.Value
+            };
+        }
+        for (var index = 0; index < _overflowContexts.Length; index++)
+        {
+            await _genericOverflowSerializer
+                .PrepareAsync(42, _overflowContexts[index])
+                .ConfigureAwait(false);
+        }
+        _subjectTurnoverTopics = new string[SubjectTurnoverWorkingSetSize];
         for (var index = 0; index < SubjectSchemaIdCache.MaxCachedEntries; index++)
         {
             _ = _subjectTurnoverCache.GetOrAdd(
@@ -223,6 +239,13 @@ public class SchemaRegistryPreparationBenchmarks
             3 => _overflowContextD,
             _ => _overflowContextE
         };
+        return _genericOverflowSerializer.PrepareAsync(42, context);
+    }
+
+    [Benchmark]
+    public ValueTask PrepareGenericThirteenWayAfterSubjectCacheTurnover()
+    {
+        var context = _overflowContexts[_overflowContextIndex++ % _overflowContexts.Length];
         return _genericOverflowSerializer.PrepareAsync(42, context);
     }
 

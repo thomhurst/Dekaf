@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Net;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
@@ -159,7 +160,11 @@ public sealed class SchemaRegistryCacheTests
     {
         var cache = new SubjectSchemaIdCache();
 
-        for (var i = 0; i < SubjectSchemaIdCache.MaxCachedEntries + 14; i++)
+        const int extraEntries = 2;
+        var overflowEntryCount = SubjectSchemaIdCache.FixedOverflowCapacity
+            + SubjectSchemaIdCache.TurnoverCapacity
+            + extraEntries;
+        for (var i = 0; i < SubjectSchemaIdCache.MaxCachedEntries + overflowEntryCount; i++)
         {
             _ = cache.GetOrAdd(
                 $"topic-{i}",
@@ -178,14 +183,18 @@ public sealed class SchemaRegistryCacheTests
                 isKey: false,
                 out _)).IsTrue();
         }
-        for (var index = 8; index < 10; index++)
+        for (var index = SubjectSchemaIdCache.FixedOverflowCapacity;
+             index < SubjectSchemaIdCache.FixedOverflowCapacity + extraEntries;
+             index++)
         {
             await Assert.That(cache.TryGet(
                 $"topic-{SubjectSchemaIdCache.MaxCachedEntries + index}",
                 isKey: false,
                 out _)).IsFalse();
         }
-        for (var index = 10; index < 14; index++)
+        for (var index = SubjectSchemaIdCache.FixedOverflowCapacity + extraEntries;
+             index < overflowEntryCount;
+             index++)
         {
             await Assert.That(cache.TryGet(
                 $"topic-{SubjectSchemaIdCache.MaxCachedEntries + index}",
@@ -245,6 +254,43 @@ public sealed class SchemaRegistryCacheTests
         });
 
         await Assert.That(mismatches).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task SubjectSchemaIdCache_PreemptedTurnoverWriterDoesNotBlockReaders()
+    {
+        var cache = new SubjectSchemaIdCache();
+        var entryCount = SubjectSchemaIdCache.MaxCachedEntries
+            + SubjectSchemaIdCache.FixedOverflowCapacity
+            + 1;
+        for (var index = 0; index < entryCount; index++)
+        {
+            _ = cache.GetOrAdd(
+                $"preemption-{index}",
+                isKey: false,
+                state: index,
+                static (_, topic, _) => topic,
+                static (schemaId, _) => new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(schemaId, null));
+        }
+
+        var turnoverField = typeof(SubjectSchemaIdCache).GetField("_turnover", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var turnover = (Array)turnoverField.GetValue(cache)!;
+        var firstSlot = turnover.GetValue(0)!;
+        var versionField = firstSlot.GetType().GetField("_version", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        const int stableVersion = 2;
+        const int writerOwnedVersion = 3;
+        versionField.SetValue(firstSlot, writerOwnedVersion);
+
+        var turnoverTopic = $"preemption-{SubjectSchemaIdCache.MaxCachedEntries + SubjectSchemaIdCache.FixedOverflowCapacity}";
+        var lookup = Task.Run(() => cache.TryGet(turnoverTopic, isKey: false, out _));
+        try
+        {
+            await Assert.That(await lookup.WaitAsync(TimeSpan.FromSeconds(1))).IsTrue();
+        }
+        finally
+        {
+            versionField.SetValue(firstSlot, stableVersion);
+        }
     }
 
     private sealed record JsonPayload(int Id, string Name);

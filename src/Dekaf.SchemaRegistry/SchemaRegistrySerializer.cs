@@ -374,7 +374,7 @@ public sealed class SchemaRegistrySerializer<T> :
 
     private sealed class SubjectSchemaCache
     {
-        private const int FixedOverflowCapacity = 8;
+        private const int FixedOverflowCapacity = 9;
         private const int TurnoverCapacity = 4;
         private readonly ConcurrentDictionary<string, FactorySchema> _cache = new(StringComparer.Ordinal);
         private readonly CachedSubjectSchema?[] _overflow = new CachedSubjectSchema?[FixedOverflowCapacity];
@@ -457,9 +457,7 @@ public sealed class SchemaRegistrySerializer<T> :
                         return cached;
                 }
 
-                var fullReplacementIndex = Interlocked.Increment(ref _turnoverCursor) & (TurnoverCapacity - 1);
-                _turnover[fullReplacementIndex].Publish(subject, factorySchema);
-                return factorySchema;
+                return PublishTurnover(subject, factorySchema);
             }
 
             for (var index = 0; index < TurnoverCapacity; index++)
@@ -478,8 +476,19 @@ public sealed class SchemaRegistrySerializer<T> :
                     return cached;
             }
 
-            var replacementIndex = Interlocked.Increment(ref _turnoverCursor) & (TurnoverCapacity - 1);
-            _turnover[replacementIndex].Publish(subject, factorySchema);
+            return PublishTurnover(subject, factorySchema);
+        }
+
+        private FactorySchema PublishTurnover(string subject, FactorySchema factorySchema)
+        {
+            var startIndex = Interlocked.Increment(ref _turnoverCursor);
+            for (var attempt = 0; attempt < TurnoverCapacity; attempt++)
+            {
+                var index = (startIndex + attempt) & (TurnoverCapacity - 1);
+                if (_turnover[index].TryPublish(subject, factorySchema))
+                    break;
+            }
+
             return factorySchema;
         }
 
@@ -521,61 +530,63 @@ public sealed class SchemaRegistrySerializer<T> :
 
     private sealed class TurnoverSubjectSchema
     {
-        private string? _subject;
-        private FactorySchema _value;
+        private string? _firstSubject;
+        private string? _secondSubject;
+        private FactorySchema _firstValue;
+        private FactorySchema _secondValue;
+        private int _activeIndex;
         private int _version;
 
         internal bool TryGet(string subject, out FactorySchema value)
         {
-            while (true)
+            var version = Volatile.Read(ref _version);
+            if (version is 0 or 1)
             {
-                var version = Volatile.Read(ref _version);
-                if (version == 0)
-                {
-                    value = default;
-                    return false;
-                }
-
-                if ((version & 1) != 0)
-                {
-                    Thread.SpinWait(1);
-                    continue;
-                }
-
-                var candidateSubject = _subject;
-                var candidateValue = _value;
-                if (version != Volatile.Read(ref _version))
-                    continue;
-
-                if (string.Equals(candidateSubject, subject, StringComparison.Ordinal))
-                {
-                    value = candidateValue;
-                    return true;
-                }
-
                 value = default;
                 return false;
             }
+
+            var activeIndex = Volatile.Read(ref _activeIndex);
+            var candidateSubject = activeIndex == 0 ? _firstSubject : _secondSubject;
+            var candidateValue = activeIndex == 0 ? _firstValue : _secondValue;
+            if (activeIndex != Volatile.Read(ref _activeIndex)
+                || version != Volatile.Read(ref _version)
+                || !string.Equals(candidateSubject, subject, StringComparison.Ordinal))
+            {
+                value = default;
+                return false;
+            }
+
+            value = candidateValue;
+            return true;
         }
 
-        internal void Publish(string subject, FactorySchema value)
+        internal bool TryPublish(string subject, FactorySchema value)
         {
-            while (true)
+            var version = Volatile.Read(ref _version);
+            if ((version & 1) != 0
+                || Interlocked.CompareExchange(ref _version, unchecked(version + 1), version) != version)
             {
-                var version = Volatile.Read(ref _version);
-                if ((version & 1) != 0 ||
-                    Interlocked.CompareExchange(ref _version, unchecked(version + 1), version) != version)
-                {
-                    Thread.SpinWait(1);
-                    continue;
-                }
-
-                _subject = subject;
-                _value = value;
-                var publishedVersion = unchecked(version + 2);
-                Volatile.Write(ref _version, publishedVersion == 0 ? 2 : publishedVersion);
-                return;
+                return false;
             }
+
+            // Readers keep using the active buffer while this inactive buffer is populated.
+            var nextIndex = Volatile.Read(ref _activeIndex) ^ 1;
+            if (nextIndex == 0)
+            {
+                _firstSubject = subject;
+                _firstValue = value;
+            }
+            else
+            {
+                _secondSubject = subject;
+                _secondValue = value;
+            }
+
+            Volatile.Write(ref _activeIndex, nextIndex);
+            var publishedVersion = unchecked(version + 2);
+            Volatile.Write(ref _version, publishedVersion == 0 ? 2 : publishedVersion);
+            return true;
         }
 
         internal bool TryPublishEmpty(string subject, FactorySchema value)
@@ -583,8 +594,9 @@ public sealed class SchemaRegistrySerializer<T> :
             if (Interlocked.CompareExchange(ref _version, 1, 0) != 0)
                 return false;
 
-            _subject = subject;
-            _value = value;
+            _firstSubject = subject;
+            _firstValue = value;
+            Volatile.Write(ref _activeIndex, 0);
             Volatile.Write(ref _version, 2);
             return true;
         }
