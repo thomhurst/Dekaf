@@ -352,7 +352,7 @@ public sealed class AvroSerializerTests
     }
 
     [Test]
-    public async Task Serializer_GenericRecord_CustomLogicalUnion_PrecedesPrimitiveBranch()
+    public async Task Serializer_GenericRecord_SelectedCustomLogicalBranch_IsRejected()
     {
         Avro.Util.LogicalTypeFactory.Instance.Register(new StringBytesLogicalType());
         using var schemaRegistry = new MockSchemaRegistryClient();
@@ -374,15 +374,21 @@ public sealed class AvroSerializerTests
         var record = new GenericRecord(schema);
         record.Add("value", "logical-value");
 
-        await AssertSerializedPayloadMatchesApache(serializer, schema, record);
+        await Assert.That(SerializeLogical).Throws<Avro.AvroTypeException>();
 
         var primitiveRecord = new GenericRecord(schema);
         primitiveRecord.Add("value", "primitive-value");
         await AssertSerializedPayloadMatchesApache(serializer, schema, primitiveRecord);
+
+        void SerializeLogical()
+        {
+            var buffer = new ArrayBufferWriter<byte>();
+            serializer.Serialize(record, ref buffer, CreateContext());
+        }
     }
 
     [Test]
-    public async Task Serializer_GenericRecord_MultipleCustomLogicalBranchesUseFirstMatchingPredicate()
+    public async Task Serializer_GenericRecord_SelectedMultipleCustomLogicalBranches_AreRejected()
     {
         Avro.Util.LogicalTypeFactory.Instance.Register(new StringBytesLogicalType());
         Avro.Util.LogicalTypeFactory.Instance.Register(new StringTextLogicalType());
@@ -407,8 +413,14 @@ public sealed class AvroSerializerTests
         var textRecord = new GenericRecord(schema);
         textRecord.Add("value", "text-value");
 
-        await AssertSerializedPayloadMatchesApache(serializer, schema, bytesRecord);
-        await AssertSerializedPayloadMatchesApache(serializer, schema, textRecord);
+        await Assert.That(() => Serialize(bytesRecord)).Throws<Avro.AvroTypeException>();
+        await Assert.That(() => Serialize(textRecord)).Throws<Avro.AvroTypeException>();
+
+        void Serialize(GenericRecord record)
+        {
+            var buffer = new ArrayBufferWriter<byte>();
+            serializer.Serialize(record, ref buffer, CreateContext());
+        }
     }
 
     [Test]
@@ -563,6 +575,83 @@ public sealed class AvroSerializerTests
     [Arguments(0, true)]
     [Arguments(1, false)]
     [Arguments(1, true)]
+    public async Task Serializer_GenericRecord_CustomStructUnionReferenceList_Serializes(
+        int collectionKind,
+        bool includeValue)
+    {
+        Avro.Util.LogicalTypeFactory.Instance.Register(new CustomStructBytesLogicalType());
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry);
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(
+            $$"""
+            {
+                "type": "record",
+                "name": "CustomStructUnionReferenceListRecord",
+                "fields": [{
+                    "name": "values",
+                    "type": {
+                        "type": "array",
+                        "items": [
+                            { "type": "bytes", "logicalType": "{{CustomStructBytesLogicalType.LogicalName}}" },
+                            "string"
+                        ]
+                    }
+                }]
+            }
+            """);
+        System.Collections.IList values = collectionKind switch
+        {
+            0 => includeValue ? new List<string> { "value" } : new List<string>(),
+            1 => includeValue ? new System.Collections.ArrayList { "value" } : [],
+            _ => throw new ArgumentOutOfRangeException(nameof(collectionKind))
+        };
+        var record = new GenericRecord(schema);
+        record.Add("values", values);
+        var expectedRecord = new GenericRecord(schema);
+        expectedRecord.Add("values", includeValue ? new object[] { "value" } : []);
+
+        await AssertSerializedPayloadMatches(serializer, schema, record, expectedRecord);
+    }
+
+    [Test]
+    public async Task Serializer_GenericRecord_CustomStructUnionGenericRecordList_Serializes()
+    {
+        Avro.Util.LogicalTypeFactory.Instance.Register(new CustomStructBytesLogicalType());
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry);
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(
+            $$"""
+            {
+                "type": "record",
+                "name": "CustomStructUnionGenericRecordListRecord",
+                "fields": [{
+                    "name": "values",
+                    "type": {
+                        "type": "array",
+                        "items": [
+                            { "type": "bytes", "logicalType": "{{CustomStructBytesLogicalType.LogicalName}}" },
+                            { "type": "record", "name": "Nested", "fields": [{ "name": "id", "type": "int" }] }
+                        ]
+                    }
+                }]
+            }
+            """);
+        var nestedSchema = (Avro.RecordSchema)((Avro.UnionSchema)((Avro.ArraySchema)schema.Fields[0].Schema).ItemSchema)[1];
+        var nested = new GenericRecord(nestedSchema);
+        nested.Add("id", 42);
+        var record = new GenericRecord(schema);
+        record.Add("values", new List<GenericRecord> { nested });
+        var expectedRecord = new GenericRecord(schema);
+        expectedRecord.Add("values", new object[] { nested });
+
+        await AssertSerializedPayloadMatches(serializer, schema, record, expectedRecord);
+    }
+
+    [Test]
+    [Arguments(0, false)]
+    [Arguments(0, true)]
+    [Arguments(1, false)]
+    [Arguments(1, true)]
     [Arguments(2, false)]
     [Arguments(2, true)]
     public async Task Serializer_GenericRecord_ConditionalNullableUnionCollection_AcceptsEmptyOrNulls(
@@ -635,7 +724,7 @@ public sealed class AvroSerializerTests
     }
 
     [Test]
-    public async Task Serializer_GenericRecord_AssignableCustomLogicalBranch_MatchesApacheAvroBytes()
+    public async Task Serializer_GenericRecord_SelectedAssignableCustomLogicalBranch_IsRejected()
     {
         Avro.Util.LogicalTypeFactory.Instance.Register(new IntListBytesLogicalType());
         using var schemaRegistry = new MockSchemaRegistryClient();
@@ -657,16 +746,23 @@ public sealed class AvroSerializerTests
         var record = new GenericRecord(schema);
         record.Add("value", new List<int> { -1, 2 });
 
-        await AssertSerializedPayloadMatchesApache(serializer, schema, record);
+        await Assert.That(Serialize).Throws<Avro.AvroTypeException>();
+
+        void Serialize()
+        {
+            var buffer = new ArrayBufferWriter<byte>();
+            serializer.Serialize(record, ref buffer, CreateContext());
+        }
     }
 
     [Test]
-    [Arguments(false, "plain-value")]
-    [Arguments(false, "logical-value")]
-    [Arguments(true, "logical-value")]
+    [Arguments(false, "plain-value", false)]
+    [Arguments(false, "logical-value", true)]
+    [Arguments(true, "logical-value", false)]
     public async Task Serializer_GenericRecord_AssignableLogicalAndPrimitiveBranches_UseSchemaOrder(
         bool stringFirst,
-        string value)
+        string value,
+        bool rejectsCustomLogicalBranch)
     {
         Avro.Util.LogicalTypeFactory.Instance.Register(new ComparableBytesLogicalType());
         using var schemaRegistry = new MockSchemaRegistryClient();
@@ -684,11 +780,23 @@ public sealed class AvroSerializerTests
         var record = new GenericRecord(schema);
         record.Add("value", value);
 
+        if (rejectsCustomLogicalBranch)
+        {
+            await Assert.That(Serialize).Throws<Avro.AvroTypeException>();
+            return;
+        }
+
         await AssertSerializedPayloadMatchesApache(serializer, schema, record);
+
+        void Serialize()
+        {
+            var buffer = new ArrayBufferWriter<byte>();
+            serializer.Serialize(record, ref buffer, CreateContext());
+        }
     }
 
     [Test]
-    public async Task Serializer_GenericRecord_ExactAndAssignableLogicalBranches_UseSchemaOrder()
+    public async Task Serializer_GenericRecord_SelectedExactAndAssignableLogicalBranch_IsRejected()
     {
         Avro.Util.LogicalTypeFactory.Instance.Register(new IntListBytesLogicalType());
         Avro.Util.LogicalTypeFactory.Instance.Register(new IntListStringLogicalType());
@@ -711,7 +819,13 @@ public sealed class AvroSerializerTests
         var record = new GenericRecord(schema);
         record.Add("value", new List<int> { -1, 2 });
 
-        await AssertSerializedPayloadMatchesApache(serializer, schema, record);
+        await Assert.That(Serialize).Throws<Avro.AvroTypeException>();
+
+        void Serialize()
+        {
+            var buffer = new ArrayBufferWriter<byte>();
+            serializer.Serialize(record, ref buffer, CreateContext());
+        }
     }
 
     [Test]
