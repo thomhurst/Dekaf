@@ -101,11 +101,6 @@ public static class Serializers
     public static ISerde<Ignore> Ignore { get; } = new IgnoreSerde();
 }
 
-/// <summary>
-/// Represents a value to be ignored during serialization.
-/// </summary>
-public readonly struct Ignore;
-
 internal sealed class ByteArraySerde : ISerde<byte[]>
 {
     public void Serialize<TWriter>(byte[] value, ref TWriter destination, SerializationContext context)

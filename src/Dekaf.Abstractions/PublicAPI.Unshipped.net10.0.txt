@@ -1,0 +1,324 @@
+#nullable enable
+~override Dekaf.Producer.PreparedTransactionState.Equals(object obj) -> bool
+~override Dekaf.Producer.RecordMetadata.Equals(object obj) -> bool
+~override Dekaf.Producer.RecordMetadata.ToString() -> string
+~override Dekaf.Serialization.Header.Equals(object obj) -> bool
+~override Dekaf.TopicPartition.Equals(object obj) -> bool
+~override Dekaf.TopicPartition.ToString() -> string
+~override Dekaf.TopicPartitionOffset.Equals(object obj) -> bool
+~override Dekaf.TopicPartitionOffset.ToString() -> string
+~override Dekaf.TopicPartitionTimestamp.Equals(object obj) -> bool
+~override Dekaf.TopicPartitionTimestamp.ToString() -> string
+~override Dekaf.WatermarkOffsets.Equals(object obj) -> bool
+~override Dekaf.WatermarkOffsets.ToString() -> string
+const Dekaf.TopicPartitionTimestamp.Earliest = -2 -> long
+const Dekaf.TopicPartitionTimestamp.Latest = -1 -> long
+Dekaf.Consumer.ConsumerCloseOptions
+Dekaf.Consumer.ConsumerCloseOptions.ConsumerCloseOptions() -> void
+Dekaf.Consumer.ConsumerCloseOptions.GroupMembershipOperation.get -> Dekaf.Consumer.ConsumerGroupMembershipOperation
+Dekaf.Consumer.ConsumerCloseOptions.GroupMembershipOperation.init -> void
+Dekaf.Consumer.ConsumerGroupMembershipOperation
+Dekaf.Consumer.ConsumerGroupMembershipOperation.Default = 0 -> Dekaf.Consumer.ConsumerGroupMembershipOperation
+Dekaf.Consumer.ConsumerGroupMembershipOperation.LeaveGroup = 1 -> Dekaf.Consumer.ConsumerGroupMembershipOperation
+Dekaf.Consumer.ConsumerGroupMembershipOperation.RemainInGroup = 2 -> Dekaf.Consumer.ConsumerGroupMembershipOperation
+Dekaf.Consumer.ConsumerGroupMetadata
+Dekaf.Consumer.ConsumerGroupMetadata.ConsumerGroupMetadata() -> void
+Dekaf.Consumer.ConsumerGroupMetadata.GenerationId.get -> int
+Dekaf.Consumer.ConsumerGroupMetadata.GenerationId.init -> void
+Dekaf.Consumer.ConsumerGroupMetadata.GroupId.get -> string!
+Dekaf.Consumer.ConsumerGroupMetadata.GroupId.init -> void
+Dekaf.Consumer.ConsumerGroupMetadata.GroupInstanceId.get -> string?
+Dekaf.Consumer.ConsumerGroupMetadata.GroupInstanceId.init -> void
+Dekaf.Consumer.ConsumerGroupMetadata.MemberId.get -> string!
+Dekaf.Consumer.ConsumerGroupMetadata.MemberId.init -> void
+Dekaf.Consumer.IConsumerBatchOffsetStore
+Dekaf.Consumer.IConsumerBatchOffsetStore.StoreOffsets(System.ReadOnlySpan<Dekaf.TopicPartitionOffset> offsets) -> void
+Dekaf.Consumer.IConsumerBatchOffsetStore.StoreOffsets<TOffsets>(TOffsets offsets) -> void
+Dekaf.Consumer.IConsumerCommitConfiguration
+Dekaf.Consumer.IConsumerCommitConfiguration.EnableAutoOffsetStore.get -> bool
+Dekaf.Consumer.IConsumerCommitConfiguration.HasConsumerGroup.get -> bool
+Dekaf.Consumer.IConsumerCommitConfiguration.OffsetCommitMode.get -> Dekaf.Consumer.OffsetCommitMode
+Dekaf.Consumer.IConsumerOffsets
+Dekaf.Consumer.IConsumerOffsets.GetOffsetsForTimesAsync(System.Collections.Generic.IEnumerable<Dekaf.TopicPartitionTimestamp>! timestampsToSearch, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<Dekaf.TopicPartition, long>!>
+Dekaf.Consumer.IConsumerOffsets.GetWatermarkOffsets(Dekaf.TopicPartition topicPartition) -> Dekaf.WatermarkOffsets?
+Dekaf.Consumer.IConsumerOffsets.QueryWatermarkOffsetsAsync(Dekaf.TopicPartition topicPartition, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.WatermarkOffsets>
+Dekaf.Consumer.IConsumerPartitions
+Dekaf.Consumer.IConsumerPartitions.Assign(params Dekaf.TopicPartition[]! partitions) -> void
+Dekaf.Consumer.IConsumerPartitions.Assignment.get -> System.Collections.Generic.IReadOnlySet<Dekaf.TopicPartition>!
+Dekaf.Consumer.IConsumerPartitions.IncrementalAssign(System.Collections.Generic.IEnumerable<Dekaf.TopicPartitionOffset>! partitions) -> void
+Dekaf.Consumer.IConsumerPartitions.IncrementalUnassign(System.Collections.Generic.IEnumerable<Dekaf.TopicPartition>! partitions) -> void
+Dekaf.Consumer.IConsumerPartitions.Pause(params Dekaf.TopicPartition[]! partitions) -> void
+Dekaf.Consumer.IConsumerPartitions.Paused.get -> System.Collections.Generic.IReadOnlySet<Dekaf.TopicPartition>!
+Dekaf.Consumer.IConsumerPartitions.Resume(params Dekaf.TopicPartition[]! partitions) -> void
+Dekaf.Consumer.IConsumerPartitions.Unassign() -> void
+Dekaf.Consumer.IConsumerPositions
+Dekaf.Consumer.IConsumerPositions.GetCommittedOffsetAsync(Dekaf.TopicPartition partition, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<long?>
+Dekaf.Consumer.IConsumerPositions.GetPosition(Dekaf.TopicPartition partition) -> long?
+Dekaf.Consumer.IConsumerPositions.Seek(Dekaf.TopicPartitionOffset offset) -> void
+Dekaf.Consumer.IConsumerPositions.SeekToBeginning(params Dekaf.TopicPartition[]! partitions) -> void
+Dekaf.Consumer.IConsumerPositions.SeekToEnd(params Dekaf.TopicPartition[]! partitions) -> void
+Dekaf.Consumer.OffsetCommitMode
+Dekaf.Consumer.OffsetCommitMode.Auto = 0 -> Dekaf.Consumer.OffsetCommitMode
+Dekaf.Consumer.OffsetCommitMode.Manual = 1 -> Dekaf.Consumer.OffsetCommitMode
+Dekaf.IInitializableKafkaClient
+Dekaf.IInitializableKafkaClient.InitializeAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Producer.IKafkaProducer<TKey, TValue>
+Dekaf.Producer.IKafkaProducer<TKey, TValue>.BeginTransaction() -> Dekaf.Producer.ITransaction<TKey, TValue>!
+Dekaf.Producer.IKafkaProducer<TKey, TValue>.CompletePreparedTransactionAsync(Dekaf.Producer.PreparedTransactionState preparedState, bool committed, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Producer.IKafkaProducer<TKey, TValue>.FireAsync(Dekaf.Producer.ProducerMessage<TKey, TValue>! message, System.Action<Dekaf.Producer.RecordMetadata, System.Exception?>! deliveryHandler) -> System.Threading.Tasks.ValueTask
+Dekaf.Producer.IKafkaProducer<TKey, TValue>.FireAsync(Dekaf.Producer.ProducerMessage<TKey, TValue>! message) -> System.Threading.Tasks.ValueTask
+Dekaf.Producer.IKafkaProducer<TKey, TValue>.FireAsync(string! topic, TKey? key, TValue value) -> System.Threading.Tasks.ValueTask
+Dekaf.Producer.IKafkaProducer<TKey, TValue>.FlushAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Producer.IKafkaProducer<TKey, TValue>.ForTopic(string! topic) -> Dekaf.Producer.ITopicProducer<TKey, TValue>!
+Dekaf.Producer.IKafkaProducer<TKey, TValue>.InitTransactionsAsync(bool keepPreparedTransaction, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Producer.IKafkaProducer<TKey, TValue>.InitTransactionsAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Producer.IKafkaProducer<TKey, TValue>.ProduceAllAsync(string! topic, System.Collections.Generic.IEnumerable<(TKey? Key, TValue Value)>! messages, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Dekaf.Producer.RecordMetadata[]!>!
+Dekaf.Producer.IKafkaProducer<TKey, TValue>.ProduceAllAsync(System.Collections.Generic.IEnumerable<Dekaf.Producer.ProducerMessage<TKey, TValue>!>! messages, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Dekaf.Producer.RecordMetadata[]!>!
+Dekaf.Producer.IKafkaProducer<TKey, TValue>.ProduceAsync(Dekaf.Producer.ProducerMessage<TKey, TValue>! message, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Producer.RecordMetadata>
+Dekaf.Producer.IKafkaProducer<TKey, TValue>.ProduceAsync(string! topic, TKey? key, TValue value, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Producer.RecordMetadata>
+Dekaf.Producer.IKafkaProducer<TKey, TValue>.PurgeAsync(Dekaf.Producer.PurgeOptions options, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Producer.IKafkaProducer<TKey, TValue>.RegisterMetricForSubscription(Dekaf.Telemetry.ApplicationTelemetryMetric! metric) -> void
+Dekaf.Producer.IKafkaProducer<TKey, TValue>.UnregisterMetricFromSubscription(string! name) -> void
+Dekaf.Producer.ITopicProducer<TKey, TValue>
+Dekaf.Producer.ITopicProducer<TKey, TValue>.FireAsync(TKey? key, TValue value, Dekaf.Serialization.Headers! headers) -> System.Threading.Tasks.ValueTask
+Dekaf.Producer.ITopicProducer<TKey, TValue>.FireAsync(TKey? key, TValue value, System.Action<Dekaf.Producer.RecordMetadata, System.Exception?>! deliveryHandler) -> System.Threading.Tasks.ValueTask
+Dekaf.Producer.ITopicProducer<TKey, TValue>.FireAsync(TKey? key, TValue value) -> System.Threading.Tasks.ValueTask
+Dekaf.Producer.ITopicProducer<TKey, TValue>.FlushAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Producer.ITopicProducer<TKey, TValue>.InitializeAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Producer.ITopicProducer<TKey, TValue>.ProduceAllAsync(System.Collections.Generic.IEnumerable<(TKey? Key, TValue Value)>! messages, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Dekaf.Producer.RecordMetadata[]!>!
+Dekaf.Producer.ITopicProducer<TKey, TValue>.ProduceAllAsync(System.Collections.Generic.IEnumerable<Dekaf.Producer.TopicProducerMessage<TKey, TValue>!>! messages, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Dekaf.Producer.RecordMetadata[]!>!
+Dekaf.Producer.ITopicProducer<TKey, TValue>.ProduceAsync(Dekaf.Producer.TopicProducerMessage<TKey, TValue>! message, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Producer.RecordMetadata>
+Dekaf.Producer.ITopicProducer<TKey, TValue>.ProduceAsync(int partition, TKey? key, TValue value, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Producer.RecordMetadata>
+Dekaf.Producer.ITopicProducer<TKey, TValue>.ProduceAsync(TKey? key, TValue value, Dekaf.Serialization.Headers! headers, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Producer.RecordMetadata>
+Dekaf.Producer.ITopicProducer<TKey, TValue>.ProduceAsync(TKey? key, TValue value, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Producer.RecordMetadata>
+Dekaf.Producer.ITopicProducer<TKey, TValue>.Topic.get -> string!
+Dekaf.Producer.ITransaction<TKey, TValue>
+Dekaf.Producer.ITransaction<TKey, TValue>.AbortAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Producer.ITransaction<TKey, TValue>.CommitAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Producer.ITransaction<TKey, TValue>.PrepareAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Producer.PreparedTransactionState>
+Dekaf.Producer.ITransaction<TKey, TValue>.ProduceAsync(Dekaf.Producer.ProducerMessage<TKey, TValue>! message, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Producer.RecordMetadata>
+Dekaf.Producer.ITransaction<TKey, TValue>.ProduceAsync(string! topic, TKey? key, TValue value, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Producer.RecordMetadata>
+Dekaf.Producer.ITransaction<TKey, TValue>.SendOffsetsToTransactionAsync(System.Collections.Generic.IEnumerable<Dekaf.TopicPartitionOffset>! offsets, Dekaf.Consumer.ConsumerGroupMetadata! consumerGroupMetadata, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Producer.ITransaction<TKey, TValue>.SendOffsetsToTransactionAsync(System.Collections.Generic.IEnumerable<Dekaf.TopicPartitionOffset>! offsets, string! consumerGroupId, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Producer.PreparedTransactionState
+Dekaf.Producer.PreparedTransactionState.Deconstruct(out long ProducerId, out short ProducerEpoch) -> void
+Dekaf.Producer.PreparedTransactionState.Equals(Dekaf.Producer.PreparedTransactionState other) -> bool
+Dekaf.Producer.PreparedTransactionState.HasTransaction.get -> bool
+Dekaf.Producer.PreparedTransactionState.PreparedTransactionState() -> void
+Dekaf.Producer.PreparedTransactionState.PreparedTransactionState(long ProducerId, short ProducerEpoch) -> void
+Dekaf.Producer.PreparedTransactionState.ProducerEpoch.get -> short
+Dekaf.Producer.PreparedTransactionState.ProducerEpoch.init -> void
+Dekaf.Producer.PreparedTransactionState.ProducerId.get -> long
+Dekaf.Producer.PreparedTransactionState.ProducerId.init -> void
+Dekaf.Producer.ProducerMessage<TKey, TValue>
+Dekaf.Producer.ProducerMessage<TKey, TValue>.<Clone>$() -> Dekaf.Producer.ProducerMessage<TKey, TValue>!
+Dekaf.Producer.ProducerMessage<TKey, TValue>.Equals(Dekaf.Producer.ProducerMessage<TKey, TValue>? other) -> bool
+Dekaf.Producer.ProducerMessage<TKey, TValue>.Headers.get -> Dekaf.Serialization.Headers?
+Dekaf.Producer.ProducerMessage<TKey, TValue>.Headers.init -> void
+Dekaf.Producer.ProducerMessage<TKey, TValue>.Key.get -> TKey?
+Dekaf.Producer.ProducerMessage<TKey, TValue>.Key.init -> void
+Dekaf.Producer.ProducerMessage<TKey, TValue>.Partition.get -> int?
+Dekaf.Producer.ProducerMessage<TKey, TValue>.Partition.init -> void
+Dekaf.Producer.ProducerMessage<TKey, TValue>.ProducerMessage() -> void
+Dekaf.Producer.ProducerMessage<TKey, TValue>.Timestamp.get -> System.DateTimeOffset?
+Dekaf.Producer.ProducerMessage<TKey, TValue>.Timestamp.init -> void
+Dekaf.Producer.ProducerMessage<TKey, TValue>.Topic.get -> string!
+Dekaf.Producer.ProducerMessage<TKey, TValue>.Topic.init -> void
+Dekaf.Producer.ProducerMessage<TKey, TValue>.Value.get -> TValue
+Dekaf.Producer.ProducerMessage<TKey, TValue>.Value.init -> void
+Dekaf.Producer.PurgeOptions
+Dekaf.Producer.PurgeOptions.All = Dekaf.Producer.PurgeOptions.Queue | Dekaf.Producer.PurgeOptions.InFlight -> Dekaf.Producer.PurgeOptions
+Dekaf.Producer.PurgeOptions.InFlight = 2 -> Dekaf.Producer.PurgeOptions
+Dekaf.Producer.PurgeOptions.None = 0 -> Dekaf.Producer.PurgeOptions
+Dekaf.Producer.PurgeOptions.Queue = 1 -> Dekaf.Producer.PurgeOptions
+Dekaf.Producer.RecordMetadata
+Dekaf.Producer.RecordMetadata.Equals(Dekaf.Producer.RecordMetadata other) -> bool
+Dekaf.Producer.RecordMetadata.KeySize.get -> int
+Dekaf.Producer.RecordMetadata.KeySize.init -> void
+Dekaf.Producer.RecordMetadata.Offset.get -> long
+Dekaf.Producer.RecordMetadata.Offset.init -> void
+Dekaf.Producer.RecordMetadata.Partition.get -> int
+Dekaf.Producer.RecordMetadata.Partition.init -> void
+Dekaf.Producer.RecordMetadata.RecordMetadata() -> void
+Dekaf.Producer.RecordMetadata.Timestamp.get -> System.DateTimeOffset
+Dekaf.Producer.RecordMetadata.Timestamp.init -> void
+Dekaf.Producer.RecordMetadata.Topic.get -> string!
+Dekaf.Producer.RecordMetadata.Topic.init -> void
+Dekaf.Producer.RecordMetadata.ValueSize.get -> int
+Dekaf.Producer.RecordMetadata.ValueSize.init -> void
+Dekaf.Producer.TopicProducerMessage<TKey, TValue>
+Dekaf.Producer.TopicProducerMessage<TKey, TValue>.<Clone>$() -> Dekaf.Producer.TopicProducerMessage<TKey, TValue>!
+Dekaf.Producer.TopicProducerMessage<TKey, TValue>.Equals(Dekaf.Producer.TopicProducerMessage<TKey, TValue>? other) -> bool
+Dekaf.Producer.TopicProducerMessage<TKey, TValue>.Headers.get -> Dekaf.Serialization.Headers?
+Dekaf.Producer.TopicProducerMessage<TKey, TValue>.Headers.init -> void
+Dekaf.Producer.TopicProducerMessage<TKey, TValue>.Key.get -> TKey?
+Dekaf.Producer.TopicProducerMessage<TKey, TValue>.Key.init -> void
+Dekaf.Producer.TopicProducerMessage<TKey, TValue>.Partition.get -> int?
+Dekaf.Producer.TopicProducerMessage<TKey, TValue>.Partition.init -> void
+Dekaf.Producer.TopicProducerMessage<TKey, TValue>.Timestamp.get -> System.DateTimeOffset?
+Dekaf.Producer.TopicProducerMessage<TKey, TValue>.Timestamp.init -> void
+Dekaf.Producer.TopicProducerMessage<TKey, TValue>.TopicProducerMessage() -> void
+Dekaf.Producer.TopicProducerMessage<TKey, TValue>.Value.get -> TValue
+Dekaf.Producer.TopicProducerMessage<TKey, TValue>.Value.init -> void
+Dekaf.Serialization.Header
+Dekaf.Serialization.Header.Equals(Dekaf.Serialization.Header other) -> bool
+Dekaf.Serialization.Header.GetValueAsArray() -> byte[]?
+Dekaf.Serialization.Header.GetValueAsString() -> string?
+Dekaf.Serialization.Header.Header() -> void
+Dekaf.Serialization.Header.Header(string! key, byte[]? value) -> void
+Dekaf.Serialization.Header.Header(string! key, System.ReadOnlyMemory<byte> value, bool isNull = false) -> void
+Dekaf.Serialization.Header.IsValueNull.get -> bool
+Dekaf.Serialization.Header.IsValueNull.init -> void
+Dekaf.Serialization.Header.Key.get -> string!
+Dekaf.Serialization.Header.Key.init -> void
+Dekaf.Serialization.Header.Value.get -> System.ReadOnlyMemory<byte>
+Dekaf.Serialization.Header.Value.init -> void
+Dekaf.Serialization.Headers
+Dekaf.Serialization.Headers.Add(Dekaf.Serialization.Header header) -> Dekaf.Serialization.Headers!
+Dekaf.Serialization.Headers.Add(string! key, byte[]? value) -> Dekaf.Serialization.Headers!
+Dekaf.Serialization.Headers.Add(string! key, string! value) -> Dekaf.Serialization.Headers!
+Dekaf.Serialization.Headers.AddIf(bool condition, string! key, string! value) -> Dekaf.Serialization.Headers!
+Dekaf.Serialization.Headers.AddIfNotNull(string! key, string? value) -> Dekaf.Serialization.Headers!
+Dekaf.Serialization.Headers.AddIfNotNullOrEmpty(string! key, string? value) -> Dekaf.Serialization.Headers!
+Dekaf.Serialization.Headers.AddRange(System.Collections.Generic.IEnumerable<System.Collections.Generic.KeyValuePair<string!, string!>>! headers) -> Dekaf.Serialization.Headers!
+Dekaf.Serialization.Headers.Clear() -> void
+Dekaf.Serialization.Headers.Count.get -> int
+Dekaf.Serialization.Headers.GetAll(string! key) -> System.Collections.Generic.IEnumerable<Dekaf.Serialization.Header>!
+Dekaf.Serialization.Headers.GetEnumerator() -> System.Collections.Generic.IEnumerator<Dekaf.Serialization.Header>!
+Dekaf.Serialization.Headers.GetFirst(string! key) -> Dekaf.Serialization.Header?
+Dekaf.Serialization.Headers.GetFirstAsString(string! key) -> string?
+Dekaf.Serialization.Headers.Headers() -> void
+Dekaf.Serialization.Headers.Headers(int capacity) -> void
+Dekaf.Serialization.Headers.Headers(System.Collections.Generic.IEnumerable<Dekaf.Serialization.Header>! headers) -> void
+Dekaf.Serialization.Headers.Remove(string! key) -> Dekaf.Serialization.Headers!
+Dekaf.Serialization.Headers.this[int index].get -> Dekaf.Serialization.Header
+Dekaf.Serialization.Headers.ToList() -> System.Collections.Generic.IReadOnlyList<Dekaf.Serialization.Header>!
+Dekaf.Serialization.IAsyncDeserializer<T>
+Dekaf.Serialization.IAsyncDeserializer<T>.DeserializeAsync(System.ReadOnlyMemory<byte> data, Dekaf.Serialization.SerializationContext context, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<T>
+Dekaf.Serialization.IAsyncSerde<T>
+Dekaf.Serialization.IAsyncSerializer<T>
+Dekaf.Serialization.IAsyncSerializer<T>.SerializeAsync(T value, System.Buffers.IBufferWriter<byte>! destination, Dekaf.Serialization.SerializationContext context, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Serialization.IAsyncSerializerPreparer<T>
+Dekaf.Serialization.IAsyncSerializerPreparer<T>.PrepareAsync(T value, Dekaf.Serialization.SerializationContext context, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Serialization.IDeserializer<T>
+Dekaf.Serialization.IDeserializer<T>.Deserialize(System.ReadOnlyMemory<byte> data, Dekaf.Serialization.SerializationContext context) -> T
+Dekaf.Serialization.Ignore
+Dekaf.Serialization.Ignore.Ignore() -> void
+Dekaf.Serialization.ISerde<T>
+Dekaf.Serialization.ISerializer<T>
+Dekaf.Serialization.ISerializer<T>.Serialize<TWriter>(T value, ref TWriter destination, Dekaf.Serialization.SerializationContext context) -> void
+Dekaf.Serialization.SerializationComponent
+Dekaf.Serialization.SerializationComponent.Key = 0 -> Dekaf.Serialization.SerializationComponent
+Dekaf.Serialization.SerializationComponent.Value = 1 -> Dekaf.Serialization.SerializationComponent
+Dekaf.Serialization.SerializationContext
+Dekaf.Serialization.SerializationContext.Component.get -> Dekaf.Serialization.SerializationComponent
+Dekaf.Serialization.SerializationContext.Component.set -> void
+Dekaf.Serialization.SerializationContext.Headers.get -> Dekaf.Serialization.Headers?
+Dekaf.Serialization.SerializationContext.Headers.set -> void
+Dekaf.Serialization.SerializationContext.IsKeyNull.get -> bool
+Dekaf.Serialization.SerializationContext.IsNull.get -> bool
+Dekaf.Serialization.SerializationContext.IsNull.set -> void
+Dekaf.Serialization.SerializationContext.KeyData.get -> System.ReadOnlyMemory<byte>
+Dekaf.Serialization.SerializationContext.KeyData.set -> void
+Dekaf.Serialization.SerializationContext.SerializationContext() -> void
+Dekaf.Serialization.SerializationContext.Topic.get -> string!
+Dekaf.Serialization.SerializationContext.Topic.set -> void
+Dekaf.Telemetry.ApplicationTelemetryMetric
+Dekaf.Telemetry.ApplicationTelemetryMetric.ApplicationTelemetryMetric(string! name, Dekaf.Telemetry.ApplicationTelemetryMetricKind kind, System.Func<double>! observe, System.Collections.Generic.IReadOnlyDictionary<string!, string!>? attributes = null) -> void
+Dekaf.Telemetry.ApplicationTelemetryMetric.Attributes.get -> System.Collections.Generic.IReadOnlyDictionary<string!, string!>!
+Dekaf.Telemetry.ApplicationTelemetryMetric.Kind.get -> Dekaf.Telemetry.ApplicationTelemetryMetricKind
+Dekaf.Telemetry.ApplicationTelemetryMetric.Name.get -> string!
+Dekaf.Telemetry.ApplicationTelemetryMetric.Observe.get -> System.Func<double>!
+Dekaf.Telemetry.ApplicationTelemetryMetricKind
+Dekaf.Telemetry.ApplicationTelemetryMetricKind.Counter = 0 -> Dekaf.Telemetry.ApplicationTelemetryMetricKind
+Dekaf.Telemetry.ApplicationTelemetryMetricKind.Gauge = 1 -> Dekaf.Telemetry.ApplicationTelemetryMetricKind
+Dekaf.TopicPartition
+Dekaf.TopicPartition.Deconstruct(out string! Topic, out int Partition) -> void
+Dekaf.TopicPartition.Equals(Dekaf.TopicPartition other) -> bool
+Dekaf.TopicPartition.Partition.get -> int
+Dekaf.TopicPartition.Partition.init -> void
+Dekaf.TopicPartition.Topic.get -> string!
+Dekaf.TopicPartition.Topic.init -> void
+Dekaf.TopicPartition.TopicPartition() -> void
+Dekaf.TopicPartition.TopicPartition(string! Topic, int Partition) -> void
+Dekaf.TopicPartitionOffset
+Dekaf.TopicPartitionOffset.Deconstruct(out string! Topic, out int Partition, out long Offset) -> void
+Dekaf.TopicPartitionOffset.Equals(Dekaf.TopicPartitionOffset other) -> bool
+Dekaf.TopicPartitionOffset.LeaderEpoch.get -> int
+Dekaf.TopicPartitionOffset.LeaderEpoch.init -> void
+Dekaf.TopicPartitionOffset.Metadata.get -> string?
+Dekaf.TopicPartitionOffset.Metadata.init -> void
+Dekaf.TopicPartitionOffset.Offset.get -> long
+Dekaf.TopicPartitionOffset.Offset.init -> void
+Dekaf.TopicPartitionOffset.Partition.get -> int
+Dekaf.TopicPartitionOffset.Partition.init -> void
+Dekaf.TopicPartitionOffset.Topic.get -> string!
+Dekaf.TopicPartitionOffset.Topic.init -> void
+Dekaf.TopicPartitionOffset.TopicPartitionOffset() -> void
+Dekaf.TopicPartitionOffset.TopicPartitionOffset(string! topic, int partition, long offset, int leaderEpoch) -> void
+Dekaf.TopicPartitionOffset.TopicPartitionOffset(string! Topic, int Partition, long Offset) -> void
+Dekaf.TopicPartitionTimestamp
+Dekaf.TopicPartitionTimestamp.Deconstruct(out string! Topic, out int Partition, out long Timestamp) -> void
+Dekaf.TopicPartitionTimestamp.Equals(Dekaf.TopicPartitionTimestamp other) -> bool
+Dekaf.TopicPartitionTimestamp.Partition.get -> int
+Dekaf.TopicPartitionTimestamp.Partition.init -> void
+Dekaf.TopicPartitionTimestamp.Timestamp.get -> long
+Dekaf.TopicPartitionTimestamp.Timestamp.init -> void
+Dekaf.TopicPartitionTimestamp.Topic.get -> string!
+Dekaf.TopicPartitionTimestamp.Topic.init -> void
+Dekaf.TopicPartitionTimestamp.TopicPartition.get -> Dekaf.TopicPartition
+Dekaf.TopicPartitionTimestamp.TopicPartitionTimestamp() -> void
+Dekaf.TopicPartitionTimestamp.TopicPartitionTimestamp(Dekaf.TopicPartition topicPartition, long timestamp) -> void
+Dekaf.TopicPartitionTimestamp.TopicPartitionTimestamp(Dekaf.TopicPartition topicPartition, System.DateTimeOffset timestamp) -> void
+Dekaf.TopicPartitionTimestamp.TopicPartitionTimestamp(string! Topic, int Partition, long Timestamp) -> void
+Dekaf.WatermarkOffsets
+Dekaf.WatermarkOffsets.Deconstruct(out long Low, out long High) -> void
+Dekaf.WatermarkOffsets.Equals(Dekaf.WatermarkOffsets other) -> bool
+Dekaf.WatermarkOffsets.High.get -> long
+Dekaf.WatermarkOffsets.High.init -> void
+Dekaf.WatermarkOffsets.Low.get -> long
+Dekaf.WatermarkOffsets.Low.init -> void
+Dekaf.WatermarkOffsets.WatermarkOffsets() -> void
+Dekaf.WatermarkOffsets.WatermarkOffsets(long Low, long High) -> void
+override Dekaf.Producer.PreparedTransactionState.GetHashCode() -> int
+override Dekaf.Producer.PreparedTransactionState.ToString() -> string!
+override Dekaf.Producer.ProducerMessage<TKey, TValue>.Equals(object? obj) -> bool
+override Dekaf.Producer.ProducerMessage<TKey, TValue>.GetHashCode() -> int
+override Dekaf.Producer.ProducerMessage<TKey, TValue>.ToString() -> string!
+override Dekaf.Producer.RecordMetadata.GetHashCode() -> int
+override Dekaf.Producer.TopicProducerMessage<TKey, TValue>.Equals(object? obj) -> bool
+override Dekaf.Producer.TopicProducerMessage<TKey, TValue>.GetHashCode() -> int
+override Dekaf.Producer.TopicProducerMessage<TKey, TValue>.ToString() -> string!
+override Dekaf.Serialization.Header.GetHashCode() -> int
+override Dekaf.Serialization.Header.ToString() -> string!
+override Dekaf.TopicPartition.GetHashCode() -> int
+override Dekaf.TopicPartitionOffset.GetHashCode() -> int
+override Dekaf.TopicPartitionTimestamp.GetHashCode() -> int
+override Dekaf.WatermarkOffsets.GetHashCode() -> int
+static Dekaf.Producer.PreparedTransactionState.Empty.get -> Dekaf.Producer.PreparedTransactionState
+static Dekaf.Producer.PreparedTransactionState.operator !=(Dekaf.Producer.PreparedTransactionState left, Dekaf.Producer.PreparedTransactionState right) -> bool
+static Dekaf.Producer.PreparedTransactionState.operator ==(Dekaf.Producer.PreparedTransactionState left, Dekaf.Producer.PreparedTransactionState right) -> bool
+static Dekaf.Producer.PreparedTransactionState.Parse(string! value) -> Dekaf.Producer.PreparedTransactionState
+static Dekaf.Producer.PreparedTransactionState.TryParse(string? value, out Dekaf.Producer.PreparedTransactionState state) -> bool
+static Dekaf.Producer.ProducerMessage<TKey, TValue>.operator !=(Dekaf.Producer.ProducerMessage<TKey, TValue>? left, Dekaf.Producer.ProducerMessage<TKey, TValue>? right) -> bool
+static Dekaf.Producer.ProducerMessage<TKey, TValue>.operator ==(Dekaf.Producer.ProducerMessage<TKey, TValue>? left, Dekaf.Producer.ProducerMessage<TKey, TValue>? right) -> bool
+static Dekaf.Producer.RecordMetadata.operator !=(Dekaf.Producer.RecordMetadata left, Dekaf.Producer.RecordMetadata right) -> bool
+static Dekaf.Producer.RecordMetadata.operator ==(Dekaf.Producer.RecordMetadata left, Dekaf.Producer.RecordMetadata right) -> bool
+static Dekaf.Producer.TopicProducerMessage<TKey, TValue>.Create(int partition, TKey? key, TValue value) -> Dekaf.Producer.TopicProducerMessage<TKey, TValue>!
+static Dekaf.Producer.TopicProducerMessage<TKey, TValue>.Create(TKey? key, TValue value, Dekaf.Serialization.Headers! headers) -> Dekaf.Producer.TopicProducerMessage<TKey, TValue>!
+static Dekaf.Producer.TopicProducerMessage<TKey, TValue>.Create(TKey? key, TValue value) -> Dekaf.Producer.TopicProducerMessage<TKey, TValue>!
+static Dekaf.Producer.TopicProducerMessage<TKey, TValue>.operator !=(Dekaf.Producer.TopicProducerMessage<TKey, TValue>? left, Dekaf.Producer.TopicProducerMessage<TKey, TValue>? right) -> bool
+static Dekaf.Producer.TopicProducerMessage<TKey, TValue>.operator ==(Dekaf.Producer.TopicProducerMessage<TKey, TValue>? left, Dekaf.Producer.TopicProducerMessage<TKey, TValue>? right) -> bool
+static Dekaf.Serialization.Header.operator !=(Dekaf.Serialization.Header left, Dekaf.Serialization.Header right) -> bool
+static Dekaf.Serialization.Header.operator ==(Dekaf.Serialization.Header left, Dekaf.Serialization.Header right) -> bool
+static Dekaf.Serialization.Headers.Create() -> Dekaf.Serialization.Headers!
+static Dekaf.Serialization.Headers.Create(string! key, byte[]? value) -> Dekaf.Serialization.Headers!
+static Dekaf.Serialization.Headers.Create(string! key, string! value) -> Dekaf.Serialization.Headers!
+static Dekaf.TopicPartition.operator !=(Dekaf.TopicPartition left, Dekaf.TopicPartition right) -> bool
+static Dekaf.TopicPartition.operator ==(Dekaf.TopicPartition left, Dekaf.TopicPartition right) -> bool
+static Dekaf.TopicPartitionOffset.operator !=(Dekaf.TopicPartitionOffset left, Dekaf.TopicPartitionOffset right) -> bool
+static Dekaf.TopicPartitionOffset.operator ==(Dekaf.TopicPartitionOffset left, Dekaf.TopicPartitionOffset right) -> bool
+static Dekaf.TopicPartitionTimestamp.operator !=(Dekaf.TopicPartitionTimestamp left, Dekaf.TopicPartitionTimestamp right) -> bool
+static Dekaf.TopicPartitionTimestamp.operator ==(Dekaf.TopicPartitionTimestamp left, Dekaf.TopicPartitionTimestamp right) -> bool
+static Dekaf.WatermarkOffsets.operator !=(Dekaf.WatermarkOffsets left, Dekaf.WatermarkOffsets right) -> bool
+static Dekaf.WatermarkOffsets.operator ==(Dekaf.WatermarkOffsets left, Dekaf.WatermarkOffsets right) -> bool

@@ -18,6 +18,7 @@
     <PackageVersion Include="Confluent.SchemaRegistry.Serdes.Json" Version="2.15.0" />
     <PackageVersion Include="Confluent.SchemaRegistry.Serdes.Protobuf" Version="2.15.0" />
     <PackageVersion Include="Dekaf" Version="$(DekafPackageVersion)" />
+    <PackageVersion Include="Dekaf.Abstractions" Version="$(DekafPackageVersion)" />
     <PackageVersion Include="GitVersion.MsBuild" Version="6.8.2" />
     <PackageVersion Include="Google.Cloud.Kms.V1" Version="3.26.0" />
     <PackageVersion Include="Google.Protobuf" Version="3.35.1" />
@@ -55,6 +56,7 @@
     <PackageVersion Include="System.CommandLine" Version="2.0.11" />
     <PackageVersion Include="System.IO.Hashing" Version="10.0.11" />
     <PackageVersion Include="System.IO.Pipelines" Version="10.0.11" />
+    <PackageVersion Include="System.Memory" Version="4.6.3" />
     <PackageVersion Include="System.Text.Json" Version="10.0.9" />
     <PackageVersion Include="System.Threading.Channels" Version="10.0.9" />
     <PackageVersion Include="Testcontainers" Version="4.14.0" />

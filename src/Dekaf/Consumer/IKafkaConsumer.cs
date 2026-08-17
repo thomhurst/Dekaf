@@ -1,4 +1,6 @@
+#if !DEKAF_ABSTRACTIONS
 using Dekaf.Errors;
+#endif
 using Dekaf.Serialization;
 using Dekaf.Telemetry;
 #if NETSTANDARD2_0
@@ -11,6 +13,7 @@ using TopicPartitionSet = System.Collections.Generic.IReadOnlySet<Dekaf.TopicPar
 
 namespace Dekaf.Consumer;
 
+#if !DEKAF_ABSTRACTIONS
 /// <summary>
 /// Interface for Kafka consumer.
 /// </summary>
@@ -213,7 +216,9 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// </exception>
     ValueTask CloseAsync(ConsumerCloseOptions options, CancellationToken cancellationToken = default);
 }
+#endif
 
+#if DEKAF_ABSTRACTIONS
 /// <summary>
 /// Optional capability for allocation-free batch offset storage.
 /// </summary>
@@ -419,7 +424,9 @@ public interface IConsumerOffsets
         TopicPartition topicPartition,
         CancellationToken cancellationToken = default);
 }
+#endif
 
+#if !DEKAF_ABSTRACTIONS
 /// <summary>
 /// Result of consuming a message.
 /// This is a struct to avoid heap allocations in the hot path.
@@ -846,3 +853,4 @@ public enum TimestampType
     /// </summary>
     LogAppendTime = 1
 }
+#endif

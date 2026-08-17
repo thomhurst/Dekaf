@@ -10,25 +10,6 @@ using Dekaf.Telemetry;
 namespace Dekaf.Consumer;
 
 /// <summary>
-/// Specifies how consumer offsets are committed.
-/// </summary>
-public enum OffsetCommitMode
-{
-    /// <summary>
-    /// Offsets are automatically committed periodically in the background.
-    /// This matches Kafka's enable.auto.commit=true behavior.
-    /// </summary>
-    Auto,
-
-    /// <summary>
-    /// You must call CommitAsync() explicitly to commit offsets.
-    /// This matches Kafka's enable.auto.commit=false behavior.
-    /// Use for at-least-once processing where you commit after processing.
-    /// </summary>
-    Manual
-}
-
-/// <summary>
 /// Controls when a consumed record's offset is staged (stored) for commit under
 /// automatic offset storage (<see cref="ConsumerOptions.EnableAutoOffsetStore"/>).
 /// </summary>

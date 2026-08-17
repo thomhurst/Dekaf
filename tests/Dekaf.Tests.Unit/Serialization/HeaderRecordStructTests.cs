@@ -82,6 +82,38 @@ public class HeaderRecordStructTests
     }
 
     [Test]
+    public async Task GetValueAsString_ReadOnlyMemorySlice_ReturnsSlice()
+    {
+        var bytes = "xxhello worldyy"u8.ToArray();
+        var header = new Header("key", bytes.AsMemory(2, 11));
+        var result = header.GetValueAsString();
+        await Assert.That(result).IsEqualTo("hello world");
+    }
+
+    [Test]
+    public async Task GetValueAsString_MemoryManagerSlice_ReturnsSlice()
+    {
+        var bytes = "xxhéllo 世界yy"u8.ToArray();
+        using var manager = new NonArrayMemoryManager(bytes);
+        var header = new Header("key", manager.Memory.Slice(2, bytes.Length - 4));
+
+        var result = header.GetValueAsString();
+
+        await Assert.That(result).IsEqualTo("héllo 世界");
+    }
+
+    [Test]
+    public async Task GetValueAsString_EmptyMemoryManager_ReturnsEmptyString()
+    {
+        using var manager = new NonArrayMemoryManager([]);
+        var header = new Header("key", manager.Memory);
+
+        var result = header.GetValueAsString();
+
+        await Assert.That(result).IsEmpty();
+    }
+
+    [Test]
     public async Task GetValueAsString_Null_ReturnsNull()
     {
         var header = new Header("key", (byte[]?)null);
@@ -148,9 +180,25 @@ public class HeaderRecordStructTests
     {
         var buffer = new ArrayBufferWriter<byte>();
         var writer = new KafkaProtocolWriter(buffer);
-        header.Write(ref writer);
+        HeaderProtocol.Write(in header, ref writer);
 
         var reader = new KafkaProtocolReader(buffer.WrittenMemory);
-        return Header.Read(ref reader);
+        return HeaderProtocol.Read(ref reader);
+    }
+
+    private sealed class NonArrayMemoryManager(byte[] bytes) : MemoryManager<byte>
+    {
+        public override Span<byte> GetSpan() => bytes;
+
+        public override MemoryHandle Pin(int elementIndex = 0) =>
+            throw new NotSupportedException();
+
+        public override void Unpin()
+        {
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+        }
     }
 }

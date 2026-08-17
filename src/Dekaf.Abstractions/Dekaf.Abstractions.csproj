@@ -1,0 +1,58 @@
+<Project Sdk="Microsoft.NET.Sdk" TreatAsLocalProperty="PublishAot">
+
+  <PropertyGroup>
+    <TargetFramework></TargetFramework>
+    <TargetFrameworks>net10.0;netstandard2.0</TargetFrameworks>
+    <PackageId>Dekaf.Abstractions</PackageId>
+    <PackageValidationBaselineVersion></PackageValidationBaselineVersion>
+    <Description>Contracts and shared types for Dekaf integrations</Description>
+    <PackageTags>kafka;messaging;abstractions;serialization</PackageTags>
+    <DefineConstants>$(DefineConstants);DEKAF_ABSTRACTIONS</DefineConstants>
+    <!-- Documentation intentionally references implementation types that remain in Dekaf. -->
+    <NoWarn>$(NoWarn);CS1574</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Dekaf" />
+    <InternalsVisibleTo Include="Dekaf.Tests.Unit" />
+    <InternalsVisibleTo Include="Dekaf.Tests.Integration" />
+    <InternalsVisibleTo Include="Dekaf.Benchmarks" />
+    <InternalsVisibleTo Include="Dekaf.Profiling" />
+    <InternalsVisibleTo Include="Dekaf.StressTests" />
+    <InternalsVisibleTo Include="Dekaf.Fuzzing" />
+    <InternalsVisibleTo Include="Dekaf.Testing" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Dekaf\IInitializableKafkaClient.cs" Link="Common\IInitializableKafkaClient.cs" />
+    <Compile Include="..\Dekaf\TopicPartition.cs" Link="Common\TopicPartition.cs" />
+    <Compile Include="..\Dekaf\Consumer\ConsumerCloseOptions.cs" Link="Consumer\ConsumerCloseOptions.cs" />
+    <Compile Include="..\Dekaf\Consumer\ConsumerGroupMetadata.cs" Link="Consumer\ConsumerGroupMetadata.cs" />
+    <Compile Include="..\Dekaf\Consumer\IKafkaConsumer.cs" Link="Consumer\IKafkaConsumer.cs" />
+    <Compile Include="..\Dekaf\Producer\IKafkaProducer.cs" Link="Producer\IKafkaProducer.cs" />
+    <Compile Include="..\Dekaf\Producer\ITopicProducer.cs" Link="Producer\ITopicProducer.cs" />
+    <Compile Include="..\Dekaf\Producer\TopicProducerMessage.cs" Link="Producer\TopicProducerMessage.cs" />
+    <Compile Include="..\Dekaf\Serialization\Headers.cs" Link="Serialization\Headers.cs" />
+    <Compile Include="..\Dekaf\Serialization\IAsyncSerializer.cs" Link="Serialization\IAsyncSerializer.cs" />
+    <Compile Include="..\Dekaf\Serialization\IAsyncSerializerPreparer.cs" Link="Serialization\IAsyncSerializerPreparer.cs" />
+    <Compile Include="..\Dekaf\Serialization\ISerializer.cs" Link="Serialization\ISerializer.cs" />
+    <Compile Include="..\Dekaf\Telemetry\ApplicationTelemetryMetric.cs" Link="Telemetry\ApplicationTelemetryMetric.cs" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' != ''">
+    <AdditionalFiles Include="PublicAPI.Shipped.$(TargetFramework).txt" />
+    <AdditionalFiles Include="PublicAPI.Unshipped.$(TargetFramework).txt" />
+  </ItemGroup>
+
+  <PropertyGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <NoWarn>$(NoWarn);NETSDK1138</NoWarn>
+    <PublishAot>false</PublishAot>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
+    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" />
+    <PackageReference Include="System.Memory" />
+  </ItemGroup>
+
+</Project>

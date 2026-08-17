@@ -7,13 +7,13 @@ Dekaf.Consumer.KafkaConsumer<TKey, TValue>.ConsumeSnapshotAsync(System.Threading
 Dekaf.Consumer.KafkaConsumer<TKey, TValue>.SeekToTailAsync(Dekaf.TopicPartition partition, int offsetCount, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.TopicPartitionOffset>
 static Dekaf.Consumer.BoundedConsumerExtensions.ConsumeSnapshotAsync<TKey, TValue>(this Dekaf.Consumer.IKafkaConsumer<TKey, TValue>! consumer, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Collections.Generic.IAsyncEnumerable<Dekaf.Consumer.ConsumeResult<TKey, TValue>>!
 static Dekaf.Consumer.BoundedConsumerExtensions.SeekToTailAsync<TKey, TValue>(this Dekaf.Consumer.IKafkaConsumer<TKey, TValue>! consumer, Dekaf.TopicPartition partition, int offsetCount, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.TopicPartitionOffset>
-Dekaf.Serialization.SerializationContext.IsKeyNull.get -> bool
-Dekaf.Serialization.SerializationContext.KeyData.get -> System.ReadOnlyMemory<byte>
-Dekaf.Serialization.SerializationContext.KeyData.set -> void
+Dekaf.Serialization.SerializationContext.IsKeyNull.get -> bool (forwarded, contained in Dekaf.Abstractions)
+Dekaf.Serialization.SerializationContext.KeyData.get -> System.ReadOnlyMemory<byte> (forwarded, contained in Dekaf.Abstractions)
+Dekaf.Serialization.SerializationContext.KeyData.set -> void (forwarded, contained in Dekaf.Abstractions)
 Dekaf.Consumer.ConsumerOffsetStoreExtensions
-Dekaf.Consumer.IConsumerBatchOffsetStore
-Dekaf.Consumer.IConsumerBatchOffsetStore.StoreOffsets(System.ReadOnlySpan<Dekaf.TopicPartitionOffset> offsets) -> void
-Dekaf.Consumer.IConsumerBatchOffsetStore.StoreOffsets<TOffsets>(TOffsets offsets) -> void
+Dekaf.Consumer.IConsumerBatchOffsetStore (forwarded, contained in Dekaf.Abstractions)
+Dekaf.Consumer.IConsumerBatchOffsetStore.StoreOffsets(System.ReadOnlySpan<Dekaf.TopicPartitionOffset> offsets) -> void (forwarded, contained in Dekaf.Abstractions)
+Dekaf.Consumer.IConsumerBatchOffsetStore.StoreOffsets<TOffsets>(TOffsets offsets) -> void (forwarded, contained in Dekaf.Abstractions)
 Dekaf.Consumer.KafkaConsumer<TKey, TValue>.StoreOffsets(System.ReadOnlySpan<Dekaf.TopicPartitionOffset> offsets) -> void
 Dekaf.Consumer.KafkaConsumer<TKey, TValue>.StoreOffsets<TOffsets>(TOffsets offsets) -> void
 static Dekaf.Consumer.ConsumerOffsetStoreExtensions.StoreOffsets<TKey, TValue>(this Dekaf.Consumer.IKafkaConsumer<TKey, TValue>! consumer, Dekaf.TopicPartitionOffset[]! offsets) -> void
