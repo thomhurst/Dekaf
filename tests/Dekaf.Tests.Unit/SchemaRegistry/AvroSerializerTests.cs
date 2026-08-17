@@ -826,6 +826,48 @@ public sealed class AvroSerializerTests
     }
 
     [Test]
+    [Arguments(false, false)]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task Serializer_GenericRecord_AssignableLogicalReferenceCollection_IsRejected(
+        bool useList,
+        bool empty)
+    {
+        Avro.Util.LogicalTypeFactory.Instance.Register(new ComparableBytesLogicalType());
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry);
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(
+            $$"""
+            {
+                "type": "record",
+                "name": "AssignableLogicalReferenceCollectionRecord",
+                "fields": [{
+                    "name": "values",
+                    "type": {
+                        "type": "array",
+                        "items": [
+                            { "type": "bytes", "logicalType": "{{ComparableBytesLogicalType.LogicalName}}" },
+                            "string"
+                        ]
+                    }
+                }]
+            }
+            """);
+        var values = empty ? [] : new[] { "plain-value" };
+        var record = new GenericRecord(schema);
+        record.Add("values", useList ? new List<string>(values) : values);
+
+        await Assert.That(Serialize).Throws<Avro.AvroTypeException>();
+
+        void Serialize()
+        {
+            var buffer = new ArrayBufferWriter<byte>();
+            serializer.Serialize(record, ref buffer, CreateContext());
+        }
+    }
+
+    [Test]
     [Arguments(false, "plain-value", false)]
     [Arguments(false, "logical-value", true)]
     [Arguments(true, "logical-value", false)]

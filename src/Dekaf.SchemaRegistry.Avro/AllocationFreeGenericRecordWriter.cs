@@ -162,10 +162,13 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
 
     private void WriteTypedArray(global::Avro.Schema itemSchema, Array array, AllocationFreeBinaryEncoder encoder)
     {
-        if (itemSchema is global::Avro.UnionSchema unionSchema &&
-            TryWriteValueTypeUnionArray(unionSchema, array, encoder))
+        if (itemSchema is global::Avro.UnionSchema unionSchema)
         {
-            return;
+            if (TryWriteValueTypeUnionArray(unionSchema, array, encoder))
+                return;
+
+            if (_writerCache.GetUnion(unionSchema).HasAssignableConditionalBranches)
+                ThrowAssignableConditionalCollection(array.GetType());
         }
 
         switch (itemSchema.Tag)
@@ -289,7 +292,11 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
             if (TryWriteValueTypeUnionList(unionSchema, list, encoder))
                 return;
 
-            if (_writerCache.GetUnion(unionSchema).HasConditionalValueTypeBranch &&
+            var union = _writerCache.GetUnion(unionSchema);
+            if (union.HasAssignableConditionalBranches)
+                ThrowAssignableConditionalCollection(list.GetType());
+
+            if (union.HasConditionalValueTypeBranch &&
                 list is not IEnumerable<object?> &&
                 list is not ArrayList)
             {
@@ -384,6 +391,11 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
             WriteValue(itemSchema, list[i], encoder);
         }
     }
+
+    private static void ThrowAssignableConditionalCollection(Type collectionType) =>
+        throw new global::Avro.AvroTypeException(
+            $"Collection type {collectionType} is not supported for assignable value-dependent Avro union items; " +
+            "per-item candidate scans are forbidden in allocation-free serialization.");
 
     private static void WriteListItems<T, TWriter>(
         global::Avro.Schema itemSchema,
@@ -1180,6 +1192,8 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
         public bool HasConditionalBranches => _conditionalBranches is not null;
 
         public bool HasConditionalValueTypeBranch => _hasPotentialConditionalValueTypeBranch;
+
+        public bool HasAssignableConditionalBranches => _assignableConditionalCandidates is not null;
 
         public int NullIndex { get; }
 
