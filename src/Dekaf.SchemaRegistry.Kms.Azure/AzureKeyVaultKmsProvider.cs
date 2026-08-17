@@ -51,19 +51,14 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
     public const string SaveVersionProperty = "encrypt.azure.key.version.save";
 
     private const int AzureKeyVersionLength = 32;
-    internal const int EmbeddedVersionClientCapacity = 64;
-    private const int EmbeddedVersionClientAssociativity = 4;
-    private const int EmbeddedVersionClientSetCount =
-        EmbeddedVersionClientCapacity / EmbeddedVersionClientAssociativity;
+    internal const int ClientCacheCapacity = 64;
+    internal const int EmbeddedVersionClientCapacity = ClientCacheCapacity;
     private const byte HeaderSeparator = (byte)':';
 
     private static ReadOnlySpan<byte> VersionHeaderPrefix => "azure:v1:"u8;
 
-    private readonly IAzureKeyVaultCryptographyClientFactory _clientFactory;
-    private readonly ConcurrentDictionary<Uri, Lazy<CryptographyClient>> _clients = [];
-    private readonly ConcurrentDictionary<Uri, Lazy<CryptographyClient>> _embeddedVersionClients = [];
-    private readonly VersionClientEntry?[] _embeddedVersionClientSlots =
-        new VersionClientEntry[EmbeddedVersionClientCapacity];
+    private readonly BoundedClientCache _clients;
+    private readonly BoundedClientCache _embeddedVersionClients;
 
     /// <summary>
     /// Creates a provider using <see cref="DefaultAzureCredential" />.
@@ -100,7 +95,8 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
         if (string.IsNullOrWhiteSpace(type))
             throw new ArgumentException("KMS provider type cannot be null or whitespace.", nameof(type));
 
-        _clientFactory = clientFactory;
+        _clients = new BoundedClientCache(clientFactory, ClientCacheCapacity);
+        _embeddedVersionClients = new BoundedClientCache(clientFactory, EmbeddedVersionClientCapacity);
         Type = type;
     }
 
@@ -119,7 +115,7 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
 
         var key = ResolveKey(keyReference);
         var plaintext = GetInputArray(keyMaterial, out var temporaryPlaintext);
-        var client = GetClientEntry(key.KeyId);
+        var client = _clients.GetOrAdd(key.KeyId);
         try
         {
             var result = await client.Value
@@ -141,7 +137,7 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
         }
         catch (Exception ex) when (!client.IsValueCreated)
         {
-            _clients.TryRemove(KeyValuePair.Create(key.KeyId, client));
+            _clients.Remove(key.KeyId, client);
             if (ex is OperationCanceledException && cancellationToken.IsCancellationRequested)
                 throw;
 
@@ -186,9 +182,8 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
         }
 
         var ciphertext = GetInputArray(wrappedMaterial, out var temporaryCiphertext);
-        var client = hasEmbeddedVersion
-            ? GetEmbeddedVersionClientEntry(key.KeyId, version)
-            : GetClientEntry(key.KeyId);
+        var clientCache = hasEmbeddedVersion ? _embeddedVersionClients : _clients;
+        var client = clientCache.GetOrAdd(key.KeyId);
         var evictClient = false;
         try
         {
@@ -200,10 +195,7 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
         }
         catch (Exception ex) when (!client.IsValueCreated)
         {
-            if (hasEmbeddedVersion)
-                RemoveEmbeddedVersionClient(key.KeyId, version, client);
-            else
-                _clients.TryRemove(KeyValuePair.Create(key.KeyId, client));
+            clientCache.Remove(key.KeyId, client);
 
             if (ex is OperationCanceledException && cancellationToken.IsCancellationRequested)
                 throw;
@@ -226,112 +218,14 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
         {
             ClearTemporaryBuffer(temporaryCiphertext);
             if (hasEmbeddedVersion && evictClient)
-                RemoveEmbeddedVersionClient(key.KeyId, version, client);
+                clientCache.Remove(key.KeyId, client);
         }
     }
 
     private static int VersionHeaderLength => VersionHeaderPrefix.Length + AzureKeyVersionLength + 1;
 
-    private Lazy<CryptographyClient> GetClientEntry(Uri keyId) => _clients.GetOrAdd(
-        keyId,
-        static (uri, factory) => new Lazy<CryptographyClient>(
-            () => factory.CreateClient(uri),
-            LazyThreadSafetyMode.ExecutionAndPublication),
-        _clientFactory);
-
-    private Lazy<CryptographyClient> GetEmbeddedVersionClientEntry(Uri keyId, string version)
-    {
-        var client = _embeddedVersionClients.GetOrAdd(
-            keyId,
-            static (uri, factory) => new Lazy<CryptographyClient>(
-                () => factory.CreateClient(uri),
-                LazyThreadSafetyMode.ExecutionAndPublication),
-            _clientFactory);
-        TrackEmbeddedVersionClient(keyId, version, client);
-        return client;
-    }
-
-    private void TrackEmbeddedVersionClient(
-        Uri keyId,
-        string version,
-        Lazy<CryptographyClient> client)
-    {
-        var hash = GetEmbeddedVersionClientHash(keyId, version);
-        var setStart = GetEmbeddedVersionClientSetStart(hash);
-        VersionClientEntry? candidate = null;
-        while (true)
-        {
-            var emptySlot = -1;
-            for (var offset = 0; offset < EmbeddedVersionClientAssociativity; offset++)
-            {
-                var slot = setStart + offset;
-                var current = Volatile.Read(ref _embeddedVersionClientSlots[slot]);
-                if (current is not null && ReferenceEquals(current.Client, client))
-                    return;
-
-                if (current is null && emptySlot < 0)
-                    emptySlot = slot;
-            }
-
-            candidate ??= new VersionClientEntry(keyId, client);
-            if (emptySlot >= 0)
-            {
-                var occupied = Interlocked.CompareExchange(
-                    ref _embeddedVersionClientSlots[emptySlot],
-                    candidate,
-                    null);
-                if (occupied is null)
-                    return;
-
-                continue;
-            }
-
-            var evictionSlot = setStart
-                + (int)(((uint)hash >> 16) & (EmbeddedVersionClientAssociativity - 1));
-            var evicted = Volatile.Read(ref _embeddedVersionClientSlots[evictionSlot]);
-            if (evicted is not null && ReferenceEquals(evicted.Client, client))
-                return;
-
-            var published = Interlocked.CompareExchange(
-                ref _embeddedVersionClientSlots[evictionSlot],
-                candidate,
-                evicted);
-            if (ReferenceEquals(published, evicted))
-            {
-                if (evicted is not null)
-                {
-                    _embeddedVersionClients.TryRemove(
-                        KeyValuePair.Create(evicted.KeyId, evicted.Client));
-                }
-
-                return;
-            }
-        }
-    }
-
-    private void RemoveEmbeddedVersionClient(
-        Uri keyId,
-        string version,
-        Lazy<CryptographyClient> client)
-    {
-        _embeddedVersionClients.TryRemove(KeyValuePair.Create(keyId, client));
-        var setStart = GetEmbeddedVersionClientSetStart(GetEmbeddedVersionClientHash(keyId, version));
-        for (var offset = 0; offset < EmbeddedVersionClientAssociativity; offset++)
-        {
-            var slot = setStart + offset;
-            var current = Volatile.Read(ref _embeddedVersionClientSlots[slot]);
-            if (current is not null && ReferenceEquals(current.Client, client))
-                Interlocked.CompareExchange(ref _embeddedVersionClientSlots[slot], null, current);
-        }
-    }
-
-    private static int GetEmbeddedVersionClientHash(Uri keyId, string version) =>
-        HashCode.Combine(keyId, StringComparer.Ordinal.GetHashCode(version));
-
-    private static int GetEmbeddedVersionClientSetStart(int hash) =>
-        (int)((uint)hash & (EmbeddedVersionClientSetCount - 1)) * EmbeddedVersionClientAssociativity;
-
     internal int EmbeddedVersionClientCount => _embeddedVersionClients.Count;
+    internal int ClientCount => _clients.Count;
 
     private KeyReference ResolveKey(SchemaRegistryKmsKeyReference keyReference)
     {
@@ -381,6 +275,7 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
     private static bool HasTrustedVaultAuthority(string? value)
     {
         const string httpsPrefix = "https://";
+        const string defaultPort = ":443";
         if (value is null || !value.StartsWith(httpsPrefix, StringComparison.OrdinalIgnoreCase))
             return false;
 
@@ -389,7 +284,11 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
         if (pathStart <= 0)
             return false;
 
-        return IsTrustedVaultHost(remainder[..pathStart]);
+        var authority = remainder[..pathStart];
+        if (authority.EndsWith(defaultPort, StringComparison.Ordinal))
+            authority = authority[..^defaultPort.Length];
+
+        return IsTrustedVaultHost(authority);
     }
 
     private static bool IsTrustedVaultHost(ReadOnlySpan<char> host) =>
@@ -553,7 +452,105 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
             version);
     }
 
-    private sealed record VersionClientEntry(Uri KeyId, Lazy<CryptographyClient> Client);
+    private sealed class BoundedClientCache(
+        IAzureKeyVaultCryptographyClientFactory clientFactory,
+        int capacity)
+    {
+        private const int Associativity = 4;
+
+        private readonly ConcurrentDictionary<Uri, Lazy<CryptographyClient>> _entries = [];
+        private readonly ClientCacheEntry?[] _slots = new ClientCacheEntry[capacity];
+
+        internal int Count => _entries.Count;
+
+        internal Lazy<CryptographyClient> GetOrAdd(Uri keyId)
+        {
+            if (_entries.TryGetValue(keyId, out var client))
+                return client;
+
+            var candidate = CreateClientEntry(keyId, clientFactory);
+            client = _entries.GetOrAdd(keyId, candidate);
+            Track(keyId, client);
+            return client;
+        }
+
+        private static Lazy<CryptographyClient> CreateClientEntry(
+            Uri keyId,
+            IAzureKeyVaultCryptographyClientFactory factory) => new(
+                () => factory.CreateClient(keyId),
+                LazyThreadSafetyMode.ExecutionAndPublication);
+
+        internal void Remove(Uri keyId, Lazy<CryptographyClient> client)
+        {
+            _entries.TryRemove(KeyValuePair.Create(keyId, client));
+            var setStart = GetSetStart(keyId);
+            for (var offset = 0; offset < Associativity; offset++)
+            {
+                var slot = setStart + offset;
+                var current = Volatile.Read(ref _slots[slot]);
+                if (current is not null && ReferenceEquals(current.Client, client))
+                    Interlocked.CompareExchange(ref _slots[slot], null, current);
+            }
+        }
+
+        private void Track(Uri keyId, Lazy<CryptographyClient> client)
+        {
+            var hash = keyId.GetHashCode();
+            var setStart = GetSetStart(hash);
+            ClientCacheEntry? candidate = null;
+            while (true)
+            {
+                var emptySlot = -1;
+                for (var offset = 0; offset < Associativity; offset++)
+                {
+                    var slot = setStart + offset;
+                    var current = Volatile.Read(ref _slots[slot]);
+                    if (current is not null && ReferenceEquals(current.Client, client))
+                        return;
+
+                    if (current is null && emptySlot < 0)
+                        emptySlot = slot;
+                }
+
+                candidate ??= new ClientCacheEntry(keyId, client);
+                if (emptySlot >= 0)
+                {
+                    var occupied = Interlocked.CompareExchange(
+                        ref _slots[emptySlot],
+                        candidate,
+                        null);
+                    if (occupied is null)
+                        return;
+
+                    continue;
+                }
+
+                var evictionSlot = setStart + (int)(((uint)hash >> 16) & (Associativity - 1));
+                var evicted = Volatile.Read(ref _slots[evictionSlot]);
+                if (evicted is not null && ReferenceEquals(evicted.Client, client))
+                    return;
+
+                var published = Interlocked.CompareExchange(
+                    ref _slots[evictionSlot],
+                    candidate,
+                    evicted);
+                if (!ReferenceEquals(published, evicted))
+                    continue;
+
+                if (evicted is not null)
+                    _entries.TryRemove(KeyValuePair.Create(evicted.KeyId, evicted.Client));
+
+                return;
+            }
+        }
+
+        private int GetSetStart(Uri keyId) => GetSetStart(keyId.GetHashCode());
+
+        private int GetSetStart(int hash) =>
+            (int)((uint)hash & ((capacity / Associativity) - 1)) * Associativity;
+
+        private sealed record ClientCacheEntry(Uri KeyId, Lazy<CryptographyClient> Client);
+    }
 
     private sealed class TokenCredentialClientFactory(
         TokenCredential credential,

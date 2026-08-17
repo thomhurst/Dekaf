@@ -428,10 +428,34 @@ public class AzureKeyVaultKmsProviderTests
     }
 
     [Test]
+    public async Task SharedProvider_ConcurrentDistinctKeys_KeepsClientCacheBounded()
+    {
+        var client = CreateClient(KeyUri);
+        client.WrapKeyAsync(Arg.Any<KeyWrapAlgorithm>(), Arg.Any<byte[]>(), Arg.Any<CancellationToken>())
+            .Returns(CryptographyModelFactory.WrapResult(
+                keyId: VersionedKeyUri,
+                key: [4, 5, 6],
+                algorithm: KeyWrapAlgorithm.RsaOaep256));
+        var factory = new RecordingFactory(_ => client);
+        var provider = new AzureKeyVaultKmsProvider(factory);
+        var operations = Enumerable.Range(0, 256)
+            .Select(index => provider.WrapKeyAsync(
+                new byte[] { 1 },
+                CreateKeyReference($"https://vault{index}.vault.azure.net/keys/kek")).AsTask())
+            .ToArray();
+
+        await Task.WhenAll(operations);
+
+        await Assert.That(provider.ClientCount).IsEqualTo(AzureKeyVaultKmsProvider.ClientCacheCapacity);
+        await Assert.That(factory.CreateCount).IsEqualTo(operations.Length);
+    }
+
+    [Test]
     [Arguments("https://payments.vault.azure.net/secrets/not-a-key")]
     [Arguments("http://payments.vault.azure.net/keys/kek")]
     [Arguments("https://attacker.example/keys/kek")]
     [Arguments("https://payments.vault.azure.net.attacker.example/keys/kek")]
+    [Arguments("https://payments.vault.azure.net:8443/keys/kek")]
     public async Task InvalidKeyUri_IsRejectedBeforeClientCreation(string keyUri)
     {
         var factory = new RecordingFactory(_ => CreateClient(KeyUri));
@@ -445,6 +469,7 @@ public class AzureKeyVaultKmsProviderTests
 
     [Test]
     [Arguments("https://payments.vault.azure.net/keys/kek")]
+    [Arguments("https://payments.vault.azure.net:443/keys/kek")]
     [Arguments("https://payments.vault.azure.cn/keys/kek")]
     [Arguments("https://payments.vault.usgovcloudapi.net/keys/kek")]
     [Arguments("https://payments.managedhsm.azure.net/keys/kek")]
