@@ -1,6 +1,35 @@
 // @ts-check
 import {themes as prismThemes} from 'prism-react-renderer';
 
+/**
+ * Docusaurus renders a "Direct link to ..." anchor inside every heading. Converting the
+ * built HTML back to Markdown would carry those into each emitted .md file and into
+ * llms-full.txt, so drop them before the conversion runs.
+ *
+ * Hand-rolled rather than using unist-util-visit, which is only a transitive dependency.
+ *
+ * @returns {(tree: import('hast').Root) => void}
+ */
+function rehypeStripHeadingAnchors() {
+  const isHashLink = (/** @type {any} */ node) =>
+    node.type === 'element' &&
+    node.tagName === 'a' &&
+    []
+      .concat(node.properties?.className ?? [])
+      .includes('hash-link');
+
+  return (tree) => {
+    const walk = (/** @type {any} */ node) => {
+      if (!Array.isArray(node.children)) {
+        return;
+      }
+      node.children = node.children.filter((child) => !isHashLink(child));
+      node.children.forEach(walk);
+    };
+    walk(tree);
+  };
+}
+
 /** @type {import('@docusaurus/types').Config} */
 const config = {
   title: 'Dekaf',
@@ -45,6 +74,36 @@ const config = {
   ],
 
   onBrokenLinks: 'throw',
+
+  plugins: [
+    [
+      '@signalwire/docusaurus-plugin-llms-txt',
+      /** @type {import('@signalwire/docusaurus-plugin-llms-txt').PluginOptions} */
+      ({
+        siteTitle: 'Dekaf',
+        siteDescription:
+          'High-performance, pure C# Apache Kafka client library for .NET 10+. A native, zero-allocation implementation with no interop overhead or JVM dependency.',
+        // Categories come from URL path segments. Under /Dekaf/docs/, deeper values give
+        // every root-level page its own single-entry section, so keep the index flat and
+        // let each link's title and description carry the signal.
+        depth: 1,
+        enableDescriptions: true,
+        content: {
+          // Serve raw Markdown alongside each HTML page.
+          enableMarkdownFiles: true,
+          // Off by default; this is the single-file full corpus.
+          enableLlmsFullTxt: true,
+          // Emit absolute URLs. Relative links omit the /Dekaf/ baseUrl, which 404s
+          // once llms.txt is fetched away from the site.
+          relativePaths: false,
+          includeDocs: true,
+          includeBlog: false,
+          includePages: false,
+          beforeDefaultRehypePlugins: [rehypeStripHeadingAnchors],
+        },
+      }),
+    ],
+  ],
 
   markdown: {
     hooks: {

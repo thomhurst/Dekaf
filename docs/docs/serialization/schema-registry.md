@@ -1,5 +1,6 @@
 ---
 sidebar_position: 3
+description: "Confluent Schema Registry with Avro and Protobuf, JSON Schema validation, and client-side field-level encryption via AWS, Azure, GCP, or Vault KMS."
 ---
 
 # Schema Registry

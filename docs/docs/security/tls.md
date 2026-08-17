@@ -1,5 +1,6 @@
 ---
 sidebar_position: 1
+description: "Encrypt broker connections with TLS, supply a custom CA certificate, configure mutual TLS, and troubleshoot common handshake failures."
 ---
 
 # TLS Encryption

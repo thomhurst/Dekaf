@@ -1,5 +1,6 @@
 ---
 sidebar_position: 7
+description: "Park repeatedly failing records in a companion topic instead of stalling the consumer, with tiered retry topics, failure counting, and custom routing."
 ---
 
 # Dead Letter Queues and Retry Topics

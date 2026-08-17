@@ -1,5 +1,6 @@
 ---
 sidebar_position: 13
+description: "Dekaf versus Confluent.Kafka on throughput, latency, and allocations, measured with BenchmarkDotNet and refreshed on every commit to main."
 ---
 
 # Benchmark Results

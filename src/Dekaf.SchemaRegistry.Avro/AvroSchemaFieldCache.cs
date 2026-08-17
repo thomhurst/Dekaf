@@ -17,7 +17,7 @@ internal static class AvroSchemaFieldCache
     /// Returns <c>null</c> if the type does not have such a field.
     /// </summary>
     /// <remarks>
-    /// The result is cached per type via <see cref="ConcurrentDictionary{TKey,TValue}.GetOrAdd"/>.
+    /// The result is cached per type via <see cref="ConcurrentDictionary{TKey,TValue}.GetOrAdd(TKey, TValue)"/>.
     /// Under concurrent first access for the same type, the value factory (reflection lookup) may
     /// execute more than once; however, the reflection call is idempotent and only one result is
     /// stored and returned for subsequent lookups.

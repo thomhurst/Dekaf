@@ -1,5 +1,6 @@
 ---
 sidebar_position: 12
+description: "Dekaf's built-in ActivitySource and Meter for OpenTelemetry tracing and metrics, plus broker-side telemetry (KIP-714). Zero cost when nothing is listening."
 ---
 
 # Observability (OpenTelemetry)
@@ -45,7 +46,7 @@ Dekaf emits spans following the [OpenTelemetry messaging semantic conventions](h
 
 | Span | Kind | When |
 |------|------|------|
-| `send {topic}` | `Producer` | Each `ProduceAsync` / `Send` |
+| `send {topic}` | `Producer` | Each `ProduceAsync` / `FireAsync` |
 | `process {topic}` | `Consumer` | Each message from streaming `ConsumeAsync` |
 | `poll {topic}` | `Client` | Each message from `ConsumeOne` / `ConsumeOneAsync` |
 

@@ -1,5 +1,6 @@
 ---
 sidebar_position: 4
+description: "Share partitions across consumer instances, covering rebalancing, static membership, session and heartbeat tuning, and how to scale group members."
 ---
 
 # Consumer Groups

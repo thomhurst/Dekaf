@@ -1,5 +1,6 @@
 ---
 sidebar_position: 2
+description: "ProduceAllAsync sends many messages concurrently without the pitfalls of awaiting ValueTask in a loop, including partial success handling."
 ---
 
 # Batch Production

@@ -1,5 +1,6 @@
 ---
 sidebar_position: 6
+description: "Assign specific partitions directly instead of joining a consumer group, with manual offset management, seeking, and incremental assignment."
 ---
 
 # Manual Partition Assignment

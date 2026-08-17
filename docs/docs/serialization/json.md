@@ -1,5 +1,6 @@
 ---
 sidebar_position: 2
+description: "System.Text.Json serialization for Dekaf, with custom JsonSerializerOptions, polymorphic types, NativeAOT support, and error handling."
 ---
 
 # JSON Serialization

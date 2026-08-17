@@ -1,5 +1,6 @@
 ---
 sidebar_position: 2
+description: "Complete reference for every producer setting, covering connection, delivery guarantees, batching, compression, partitioning, transactions, and security."
 ---
 
 # Producer Options
@@ -369,7 +370,7 @@ Maximum memory the producer uses for buffering unsent messages:
 .WithBufferMemory(256 * 1024 * 1024)  // 256MB
 ```
 
-Default: 2GB. When the buffer is full, `ProduceAsync` and `Send` block until space is freed (controlled by `WithMaxBlockMs`). Increase if profiling shows significant time in backpressure waits; decrease in memory-constrained environments.
+Default: 2GB. When the buffer is full, `ProduceAsync` and `FireAsync` block until space is freed (controlled by `WithMaxBlockMs`). Increase if profiling shows significant time in backpressure waits; decrease in memory-constrained environments.
 
 ### WithBufferMemoryAllocationStrategy
 

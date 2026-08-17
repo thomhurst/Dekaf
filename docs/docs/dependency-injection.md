@@ -1,5 +1,6 @@
 ---
 sidebar_position: 11
+description: "Register Dekaf producers and consumers in the ASP.NET Core container, including multiple clients, global interceptors, appsettings binding, and NativeAOT."
 ---
 
 # Dependency Injection

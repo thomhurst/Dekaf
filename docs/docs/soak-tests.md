@@ -1,5 +1,6 @@
 ---
 sidebar_position: 15
+description: "The 24-hour mixed producer and consumer soak run, the failure gates it enforces, and how to run it locally."
 ---
 
 # 24-hour soak tests

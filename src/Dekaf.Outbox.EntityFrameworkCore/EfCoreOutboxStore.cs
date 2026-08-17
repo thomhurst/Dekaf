@@ -7,7 +7,7 @@ namespace Dekaf.Outbox.EntityFrameworkCore;
 /// </summary>
 /// <remarks>
 /// <para>Requires the context model to include the outbox entities via
-/// <see cref="OutboxModelBuilderExtensions.UseDekafOutbox"/> and an
+/// <see cref="OutboxModelBuilderExtensions.UseDekafOutbox(ModelBuilder, string)"/> and an
 /// <see cref="IDbContextFactory{TContext}"/> registration (the relay runs outside any
 /// request scope).</para>
 /// <para>Lease mutations use guarded set-based <c>ExecuteUpdate</c> statements (the

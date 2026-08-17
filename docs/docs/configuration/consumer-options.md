@@ -1,5 +1,6 @@
 ---
 sidebar_position: 3
+description: "Complete reference for every consumer setting, covering connection, group coordination, offsets, fetch and session tuning, subscription, and rebalancing."
 ---
 
 # Consumer Options

@@ -170,8 +170,8 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// </summary>
     /// <param name="bufferMemory">The buffer memory limit in bytes.</param>
     /// <remarks>
-    /// When the buffer is full, <see cref="KafkaProducer{TKey,TValue}.ProduceAsync"/> will block
-    /// until space becomes available or the delivery timeout expires.
+    /// When the buffer is full, <see cref="KafkaProducer{TKey,TValue}.ProduceAsync(ProducerMessage{TKey,TValue}, CancellationToken)"/>
+    /// will block until space becomes available or the delivery timeout expires.
     /// Default is 256 MB.
     /// </remarks>
     public ProducerBuilder<TKey, TValue> WithBufferMemory(ulong bufferMemory)
@@ -1145,7 +1145,7 @@ public sealed class ProducerBuilder<TKey, TValue>
 
     /// <summary>
     /// Sets the application-level retry policy for produce operations.
-    /// When set, retriable exceptions from <see cref="IKafkaProducer{TKey,TValue}.ProduceAsync"/>
+    /// When set, retriable exceptions from <see cref="IKafkaProducer{TKey,TValue}.ProduceAsync(ProducerMessage{TKey,TValue}, CancellationToken)"/>
     /// will be retried according to this policy.
     /// </summary>
     /// <param name="retryPolicy">The retry policy to use.</param>
@@ -1290,7 +1290,7 @@ public sealed class ProducerBuilder<TKey, TValue>
 
     /// <summary>
     /// Builds and initializes the producer, ready for immediate use.
-    /// This is equivalent to calling <see cref="Build"/> followed by <see cref="IKafkaProducer{TKey,TValue}.InitializeAsync"/>.
+    /// This is equivalent to calling <see cref="Build"/> followed by <see cref="IInitializableKafkaClient.InitializeAsync"/>.
     /// </summary>
     /// <param name="cancellationToken">Cancellation token for the initialization.</param>
     /// <returns>An initialized producer ready to produce messages.</returns>
@@ -3090,7 +3090,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
 
     /// <summary>
     /// Builds and initializes the consumer, ready for immediate use.
-    /// This is equivalent to calling <see cref="Build"/> followed by <see cref="IKafkaConsumer{TKey,TValue}.InitializeAsync"/>.
+    /// This is equivalent to calling <see cref="Build"/> followed by <see cref="IInitializableKafkaClient.InitializeAsync"/>.
     /// </summary>
     /// <param name="cancellationToken">Cancellation token for the initialization.</param>
     /// <returns>An initialized consumer ready to consume messages.</returns>

@@ -652,7 +652,7 @@ internal interface IConsumerRebalanceEventSource
 
 /// <summary>
 /// Optional companion interface for observing graceful partition stop during
-/// <see cref="IKafkaConsumer{TKey,TValue}.CloseAsync"/> or
+/// <see cref="IKafkaConsumer{TKey,TValue}.CloseAsync(CancellationToken)"/> or
 /// <see cref="IAsyncDisposable.DisposeAsync"/>.
 /// </summary>
 /// <remarks>
@@ -666,7 +666,7 @@ internal interface IConsumerRebalanceEventSource
 ///
 /// Non-cancellation exceptions follow the rebalance listener policy: they are caught
 /// and logged at <c>Error</c> level. <see cref="OperationCanceledException"/> follows
-/// the <see cref="IKafkaConsumer{TKey,TValue}.CloseAsync"/> token or internal
+/// the <see cref="IKafkaConsumer{TKey,TValue}.CloseAsync(CancellationToken)"/> token or internal
 /// disposal shutdown token, but close/disposal teardown still runs before
 /// <c>CloseAsync</c> rethrows the cancellation. The callback is bounded by a
 /// five-second timeout.

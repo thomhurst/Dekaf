@@ -34,7 +34,7 @@ public class OutboxMessage
     public required Guid MessageId { get; init; }
 
     /// <summary>
-    /// Ordering bucket computed from the record key via <see cref="OutboxBucket.Compute(byte[]?, Guid, int)"/>.
+    /// Ordering bucket computed from the record key via <see cref="OutboxBucket.Compute(byte[], Guid, int)"/>.
     /// Each bucket has a single publishing relay at any time, so records that share a key
     /// (and therefore a bucket) are published in enqueue order.
     /// </summary>

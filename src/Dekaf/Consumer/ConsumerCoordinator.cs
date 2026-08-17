@@ -475,7 +475,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     /// <summary>
     /// Forces the coordinator to rejoin the group on the next
-    /// <see cref="EnsureActiveGroupAsync"/> call by transitioning to <see cref="CoordinatorState.Unjoined"/>.
+    /// <see cref="EnsureActiveGroupAsync(StringSet, CancellationToken)"/> call by transitioning to <see cref="CoordinatorState.Unjoined"/>.
     /// </summary>
     internal void RequestRejoin()
     {

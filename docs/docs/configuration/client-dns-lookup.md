@@ -1,5 +1,6 @@
 ---
 sidebar_position: 4
+description: "How Dekaf resolves broker hostnames before connecting, the available DNS lookup modes, and the bootstrap resolution deadline."
 ---
 
 # Client DNS Lookup
