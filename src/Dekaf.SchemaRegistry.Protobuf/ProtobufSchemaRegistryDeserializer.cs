@@ -23,11 +23,13 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IA
 {
     private const byte MagicByte = 0x00;
     private static readonly TimeSpan SchemaRegistryTimeout = TimeSpan.FromSeconds(30);
+    private static readonly string RecordName = new T().Descriptor.FullName;
 
     private readonly ISchemaRegistryClient _schemaRegistry;
     private readonly ProtobufDeserializerConfig _config;
     private readonly bool _ownsClient;
     private readonly MessageParser<T> _parser;
+    private readonly DeserializerSubjectNameCache? _subjectNames;
 
     /// <summary>
     /// Creates a new Protobuf Schema Registry deserializer.
@@ -44,6 +46,10 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IA
         _config = config ?? new ProtobufDeserializerConfig();
         _ownsClient = ownsClient;
         _parser = new MessageParser<T>(() => new T());
+        _subjectNames = DeserializerSubjectNameCache.Create(
+            _config.SubjectNameStrategy,
+            _config.CustomSubjectNameStrategy,
+            _config.UseLegacySubjectNames);
     }
 
     /// <inheritdoc />
@@ -63,10 +69,22 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IA
 
         // Optionally validate the schema exists (with timeout to prevent indefinite hang)
         Schema? schema = null;
-        if (!_config.SkipSchemaValidation)
+        string? ruleSubject = null;
+        if (!_config.SkipSchemaValidation || _config.RuleExecutor is SchemaRegistryRuleExecutor)
         {
-            schema = _schemaRegistry.GetSchemaSync(schemaId, SchemaRegistryTimeout);
-            if (schema.SchemaType != SchemaType.Protobuf)
+            if (_config.RuleExecutor is not null && _subjectNames is null)
+            {
+                ruleSubject = SubjectNameResolver.GetTopicSubjectName(
+                    context.Topic,
+                    context.Component == SerializationComponent.Key);
+                schema = _schemaRegistry.GetSchemaSync(schemaId, ruleSubject, SchemaRegistryTimeout);
+            }
+            else
+            {
+                schema = _schemaRegistry.GetSchemaSync(schemaId, SchemaRegistryTimeout);
+            }
+
+            if (!_config.SkipSchemaValidation && schema.SchemaType != SchemaType.Protobuf)
                 throw new InvalidOperationException($"Schema {schemaId} is not a Protobuf schema (type: {schema.SchemaType})");
         }
 
@@ -90,21 +108,41 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IA
         var protobufData = payloadMemory.Slice(bytesRead);
         if (_config.RuleExecutor is not null)
         {
-            protobufData = _config.RuleExecutor.TransformDeserializedPayload(
-                protobufData,
-                new SchemaRegistryRuleContext
-                {
-                    Topic = context.Topic,
-                    Component = context.Component,
-                    SchemaId = schemaId,
-                    Schema = schema,
-                    PayloadFormat = SchemaRegistryPayloadFormat.Protobuf
-                });
+            var subject = ruleSubject ?? GetSubjectName(schemaId, schema, context);
+            if (schema is not null && ruleSubject is null)
+                schema = _schemaRegistry.GetSchemaSync(schemaId, subject, SchemaRegistryTimeout);
+            var ruleContext = SchemaRegistryRuleContext.Rent(
+                context.Topic,
+                context.Component,
+                schemaId,
+                subject,
+                schema,
+                SchemaRegistryPayloadFormat.Protobuf);
+            try
+            {
+                protobufData = _config.RuleExecutor.TransformDeserializedPayload(protobufData, ruleContext);
+            }
+            finally
+            {
+                ruleContext.Return();
+            }
         }
 
         // Parse directly from span — zero allocation (Google.Protobuf 3.21+).
         // IBufferMessage constraint is enforced at compile time.
         return _parser.ParseFrom(protobufData.Span);
+    }
+
+    private string GetSubjectName(int schemaId, Schema? schema, SerializationContext context)
+    {
+        var isKey = context.Component == SerializationComponent.Key;
+        return _subjectNames?.GetSubjectName(
+                schemaId,
+                schema,
+                context.Topic,
+                isKey,
+                RecordName)
+            ?? SubjectNameResolver.GetTopicSubjectName(context.Topic, isKey);
     }
 
     private static (int value, int bytesRead) ReadVarint(ReadOnlySpan<byte> data, bool useDeprecatedFormat)

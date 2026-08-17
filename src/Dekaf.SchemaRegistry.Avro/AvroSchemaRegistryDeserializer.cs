@@ -41,6 +41,7 @@ public sealed class AvroSchemaRegistryDeserializer<
 {
     private const byte MagicByte = 0x00;
     private static readonly TimeSpan SchemaRegistryTimeout = TimeSpan.FromSeconds(30);
+    private static readonly string FallbackRecordName = typeof(T).FullName ?? typeof(T).Name;
 
     private readonly ISchemaRegistryClient _schemaRegistry;
     private readonly AvroDeserializerConfig _config;
@@ -51,6 +52,7 @@ public sealed class AvroSchemaRegistryDeserializer<
     private readonly ConcurrentDictionary<AvroSchemaPair, SpecificDatumReader<T>> _specificReaders =
         new(AvroSchemaPairReferenceComparer.Instance);
     private readonly AvroSchema? _readerSchema;
+    private readonly DeserializerSubjectNameCache? _subjectNames;
 
     /// <summary>
     /// Creates a new Avro Schema Registry deserializer.
@@ -66,6 +68,10 @@ public sealed class AvroSchemaRegistryDeserializer<
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _config = config ?? new AvroDeserializerConfig();
         _ownsClient = ownsClient;
+        _subjectNames = DeserializerSubjectNameCache.Create(
+            _config.SubjectNameStrategy,
+            _config.CustomSubjectNameStrategy,
+            _config.UseLegacySubjectNames);
 
         // Parse custom reader schema if provided, otherwise derive from type
         _readerSchema = GetReaderSchema();
@@ -119,21 +125,51 @@ public sealed class AvroSchemaRegistryDeserializer<
         var payloadMemory = data.Slice(5);
         if (_config.RuleExecutor is not null)
         {
-            var schema = _schemaRegistry.GetSchemaSync(schemaId, SchemaRegistryTimeout);
-            payloadMemory = _config.RuleExecutor.TransformDeserializedPayload(
-                payloadMemory,
-                new SchemaRegistryRuleContext
-                {
-                    Topic = context.Topic,
-                    Component = context.Component,
-                    SchemaId = schemaId,
-                    Schema = schema,
-                    PayloadFormat = SchemaRegistryPayloadFormat.Avro
-                });
+            string subject;
+            if (_subjectNames is null)
+            {
+                subject = SubjectNameResolver.GetTopicSubjectName(
+                    context.Topic,
+                    context.Component == SerializationComponent.Key);
+            }
+            else
+            {
+                var unscopedSchema = _schemaRegistry.GetSchemaSync(schemaId, SchemaRegistryTimeout);
+                subject = GetSubjectName(schemaId, unscopedSchema, context);
+            }
+
+            var schema = _schemaRegistry.GetSchemaSync(schemaId, subject, SchemaRegistryTimeout);
+            var ruleContext = SchemaRegistryRuleContext.Rent(
+                context.Topic,
+                context.Component,
+                schemaId,
+                subject,
+                schema,
+                SchemaRegistryPayloadFormat.Avro);
+            try
+            {
+                payloadMemory = _config.RuleExecutor.TransformDeserializedPayload(payloadMemory, ruleContext);
+            }
+            finally
+            {
+                ruleContext.Return();
+            }
         }
 
         var codecState = AvroCodecThreadStateCache.Deserialization ??= new AvroDeserializationThreadState();
         return ReadAvroPayload(payloadMemory, writerSchema, codecState);
+    }
+
+    private string GetSubjectName(int schemaId, Schema schema, SerializationContext context)
+    {
+        var isKey = context.Component == SerializationComponent.Key;
+        return _subjectNames?.GetSubjectName(
+                schemaId,
+                schema,
+                context.Topic,
+                isKey,
+                FallbackRecordName)
+            ?? SubjectNameResolver.GetTopicSubjectName(context.Topic, isKey);
     }
 
     private T ReadAvroPayload(

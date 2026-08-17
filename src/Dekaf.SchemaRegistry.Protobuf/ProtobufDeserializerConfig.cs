@@ -6,6 +6,21 @@ namespace Dekaf.SchemaRegistry.Protobuf;
 public sealed class ProtobufDeserializerConfig
 {
     /// <summary>
+    /// Subject-name strategy used when deserialization rules execute.
+    /// </summary>
+    public SubjectNameStrategy SubjectNameStrategy { get; init; } = SubjectNameStrategy.TopicName;
+
+    /// <summary>
+    /// Custom subject-name strategy used when deserialization rules execute.
+    /// </summary>
+    public ISubjectNameStrategy? CustomSubjectNameStrategy { get; init; }
+
+    /// <summary>
+    /// Whether record-based strategies retain Dekaf's legacy -key/-value suffix.
+    /// </summary>
+    public bool UseLegacySubjectNames { get; init; }
+
+    /// <summary>
     /// Whether to read the deprecated unsigned Protobuf message-index encoding.
     /// Default is false.
     /// </summary>

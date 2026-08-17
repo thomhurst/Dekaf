@@ -317,6 +317,107 @@ public sealed class JsonSchemaValidationTests
     }
 
     [Test]
+    public async Task Serializer_AutoRegistrationWithValidation_UsesIdOnlyLookup()
+    {
+        const string schemaText = """{ "type": "object", "required": ["id"] }""";
+        var schema = CreateSchema(schemaText);
+        using var registry = Substitute.For<ISchemaRegistryClient>();
+        registry.GetOrRegisterSchemaAsync(
+                "validation-value",
+                Arg.Any<Schema>(),
+                Arg.Any<CancellationToken>())
+            .Returns(42);
+        registry.GetSchemaAsync(42, Arg.Any<CancellationToken>())
+            .Returns(schema);
+        await using var serializer = new JsonSchemaRegistrySerializer<ValidationPayload>(
+            registry,
+            schemaText,
+            jsonOptions: null,
+            validationOptions: new JsonSchemaValidationOptions
+            {
+                ValidatorFactory = new StreamingJsonSchemaValidatorFactory(registry),
+                Mode = JsonSchemaValidationMode.Serialize
+            });
+        var buffer = new ArrayBufferWriter<byte>();
+
+        serializer.Serialize(new ValidationPayload(7), ref buffer, Context);
+
+        await registry.Received(1).GetSchemaAsync(42, Arg.Any<CancellationToken>());
+        await registry.DidNotReceive().GetSchemaAsync(
+            42,
+            "validation-value",
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task Serializer_AutoRegistrationWithCustomRules_UsesLocalSchema()
+    {
+        const string schemaText = """{ "type": "object", "required": ["id"] }""";
+        using var registry = Substitute.For<ISchemaRegistryClient>();
+        registry.GetOrRegisterSchemaAsync(
+                "validation-value",
+                Arg.Any<Schema>(),
+                Arg.Any<CancellationToken>())
+            .Returns(42);
+        await using var serializer = new JsonSchemaRegistrySerializer<ValidationPayload>(
+            registry,
+            schemaText,
+            jsonOptions: null,
+            ruleExecutor: new PassThroughRuleExecutor());
+        var buffer = new ArrayBufferWriter<byte>();
+
+        serializer.Serialize(new ValidationPayload(7), ref buffer, Context);
+
+        await registry.DidNotReceive().GetSchemaAsync(
+            42,
+            "validation-value",
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task Serializer_ValidatesAfterDomainRulesBeforeEncodingRules()
+    {
+        const string schemaText = """{ "type": "string" }""";
+        using var registry = new MockSchemaRegistryClient();
+        await registry.RegisterSchemaAsync(
+            "validation-value",
+            new Schema
+            {
+                SchemaType = SchemaType.Json,
+                SchemaString = schemaText,
+                RuleSet = new SchemaRuleSet
+                {
+                    DomainRules = [CreateRule("domain", "DOMAIN")],
+                    EncodingRules = [CreateRule("encoding", "ENCODING")],
+                    HasFixedRuleCollections = true
+                }
+            });
+        var calls = new List<string>();
+        var executor = new SchemaRegistryRuleExecutor(
+        [
+            new ReplacingRuleHandler("DOMAIN", "1"u8.ToArray(), calls),
+            new ReplacingRuleHandler("ENCODING", "\"encoded\""u8.ToArray(), calls)
+        ]);
+        await using var serializer = new JsonSchemaRegistrySerializer<string>(
+            registry,
+            schemaText,
+            jsonOptions: null,
+            validationOptions: new JsonSchemaValidationOptions
+            {
+                ValidatorFactory = new StreamingJsonSchemaValidatorFactory(registry),
+                Mode = JsonSchemaValidationMode.Serialize
+            },
+            autoRegisterSchemas: false,
+            ruleExecutor: executor);
+        var buffer = new ArrayBufferWriter<byte>();
+
+        Assert.Throws<JsonSchemaValidationException>(
+            () => serializer.Serialize("valid", ref buffer, Context));
+
+        await Assert.That(calls).IsEquivalentTo(["domain"]);
+    }
+
+    [Test]
     public async Task Serializer_CompilesCompleteRegisteredSchemaForReferences()
     {
         const string rootSchema = """
@@ -528,6 +629,15 @@ public sealed class JsonSchemaValidationTests
         };
     }
 
+    private static SchemaRule CreateRule(string name, string type) =>
+        new()
+        {
+            Name = name,
+            Type = type,
+            Kind = SchemaRuleKind.Transform,
+            Mode = SchemaRuleMode.Write
+        };
+
     private static byte[] CreateWirePayload(int schemaId, string json)
     {
         var payload = Encoding.UTF8.GetBytes(json);
@@ -540,6 +650,37 @@ public sealed class JsonSchemaValidationTests
     private sealed record ValidationPayload(int Id);
     private sealed record ReferencedPayload(AddressPayload Address);
     private sealed record AddressPayload(string Postcode);
+
+    private sealed class PassThroughRuleExecutor : ISchemaRegistryRuleExecutor
+    {
+        public ReadOnlyMemory<byte> TransformSerializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleContext context) => payload;
+
+        public ReadOnlyMemory<byte> TransformDeserializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleContext context) => payload;
+    }
+
+    private sealed class ReplacingRuleHandler(
+        string type,
+        ReadOnlyMemory<byte> replacement,
+        List<string> calls) : ISchemaRegistryRuleHandler
+    {
+        public string Type => type;
+
+        public ReadOnlyMemory<byte> TransformSerializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleHandlerContext context)
+        {
+            calls.Add(context.Rule.Name);
+            return replacement;
+        }
+
+        public ReadOnlyMemory<byte> TransformDeserializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleHandlerContext context) => payload;
+    }
 
     private sealed class QueueingHandler(params string[] responses) : HttpMessageHandler
     {

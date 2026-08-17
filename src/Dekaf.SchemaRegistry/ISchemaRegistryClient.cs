@@ -44,6 +44,21 @@ public interface ISchemaRegistryClient : IDisposable
     Task<Schema> GetSchemaAsync(int id, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Gets a schema by global ID using the consumed subject to resolve subject-scoped metadata and rules.
+    /// </summary>
+    /// <param name="id">The schema ID.</param>
+    /// <param name="subject">The subject the message was consumed from.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The schema registered for the subject and ID.</returns>
+    Task<Schema> GetSchemaAsync(
+        int id,
+        string subject,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException(
+            $"{GetType().Name} does not support subject-scoped schema lookup. " +
+            $"Implement {nameof(GetSchemaAsync)}(int, string, CancellationToken) to execute Schema Registry rules safely.");
+
+    /// <summary>
     /// Gets the schema registered under a subject at a specific version.
     /// </summary>
     /// <param name="subject">The subject name.</param>
@@ -303,6 +318,25 @@ public interface ISchemaRegistryClient : IDisposable
         => throw new NotSupportedException("This Schema Registry client does not support DEK Registry DEK operations.");
 
     /// <summary>
+    /// Gets a Data Encryption Key (DEK) by version and algorithm.
+    /// </summary>
+    /// <param name="kekName">KEK name.</param>
+    /// <param name="subject">DEK subject.</param>
+    /// <param name="version">DEK version.</param>
+    /// <param name="algorithm">DEK algorithm.</param>
+    /// <param name="deleted">Whether to include soft-deleted DEKs.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The DEK.</returns>
+    Task<Dek> GetDekAsync(
+        string kekName,
+        string subject,
+        int version,
+        DekAlgorithm algorithm,
+        bool deleted = false,
+        CancellationToken cancellationToken = default)
+        => GetDekAsync(kekName, subject, version, deleted, cancellationToken);
+
+    /// <summary>
     /// Lists Data Encryption Key (DEK) versions for a KEK and subject.
     /// </summary>
     /// <param name="kekName">KEK name.</param>
@@ -370,6 +404,19 @@ public interface ISchemaRegistryCache
     /// <param name="schema">The cached schema, when found.</param>
     /// <returns>True when the schema is already cached.</returns>
     bool TryGetCachedSchema(int id, out Schema schema);
+
+    /// <summary>
+    /// Attempts to get subject-scoped schema metadata by ID without allocating.
+    /// </summary>
+    /// <param name="id">The schema ID.</param>
+    /// <param name="subject">The subject the message was consumed from.</param>
+    /// <param name="schema">The cached schema, when found.</param>
+    /// <returns>True when the subject-scoped schema is already cached.</returns>
+    bool TryGetCachedSchema(int id, string subject, out Schema schema)
+    {
+        schema = null!;
+        return false;
+    }
 }
 
 /// <summary>
@@ -667,6 +714,10 @@ public sealed class SchemaMetadata
 /// </summary>
 public sealed class SchemaRuleSet
 {
+    private IReadOnlyList<SchemaRule>? _domainRules;
+    private IReadOnlyList<SchemaRule>? _encodingRules;
+    private bool _hasFixedDomainOrEncodingRules;
+
     /// <summary>
     /// Rules used when migrating between schema versions.
     /// </summary>
@@ -675,17 +726,54 @@ public sealed class SchemaRuleSet
     /// <summary>
     /// Rules used for validation or transforms on the current schema.
     /// </summary>
-    public IReadOnlyList<SchemaRule>? DomainRules { get; init; }
+    // Preserve the CompilerGenerated attributes emitted by the previously shipped auto-property.
+    public IReadOnlyList<SchemaRule>? DomainRules
+    {
+        [CompilerGenerated]
+        get => _domainRules;
+
+        [CompilerGenerated]
+        init
+        {
+            _domainRules = value;
+            UpdateFixedRuleState();
+        }
+    }
 
     /// <summary>
     /// Rules used for encoding transforms such as field-level encryption.
     /// </summary>
-    public IReadOnlyList<SchemaRule>? EncodingRules { get; init; }
+    // Preserve the CompilerGenerated attributes emitted by the previously shipped auto-property.
+    public IReadOnlyList<SchemaRule>? EncodingRules
+    {
+        [CompilerGenerated]
+        get => _encodingRules;
+
+        [CompilerGenerated]
+        init
+        {
+            _encodingRules = value;
+            UpdateFixedRuleState();
+        }
+    }
 
     /// <summary>
     /// Optional Schema Registry activation marker.
     /// </summary>
     public string? EnableAt { get; init; }
+
+    internal bool HasDomainOrEncodingRules =>
+        // Schema Registry responses use fixed-length arrays, so the common no-rules path is one
+        // cached branch. Preserve live Count semantics for caller-supplied mutable list types.
+        HasFixedRuleCollections
+            ? _hasFixedDomainOrEncodingRules
+            : _domainRules is { Count: > 0 } || _encodingRules is { Count: > 0 };
+
+    internal bool HasFixedRuleCollections { get; init; }
+
+    private void UpdateFixedRuleState() =>
+        _hasFixedDomainOrEncodingRules = _domainRules is { Count: > 0 } || _encodingRules is { Count: > 0 };
+
 }
 
 /// <summary>

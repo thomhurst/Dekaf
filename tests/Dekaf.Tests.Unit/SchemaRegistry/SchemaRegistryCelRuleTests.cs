@@ -198,10 +198,73 @@ public sealed class SchemaRegistryCelRuleTests
         await Assert.That(result.ToArray()).IsEquivalentTo(payload);
     }
 
-    private static SchemaRegistryRuleContext CreateContext(Schema schema) =>
+    [Test]
+    public async Task Utf8MessageComparisons_AcceptFreshEqualContextStrings()
+    {
+        var executor = new SchemaRegistryRuleExecutor([new CelSchemaRegistryRuleHandler()]);
+        var schema = CreateSchema(CreateCelRule(
+            "fresh-context",
+            SchemaRuleKind.Condition,
+            SchemaRuleMode.Write,
+            "message == topic && contains(message, topic) && startsWith(message, topic) && endsWith(message, topic)"));
+        var payload = "payload"u8.ToArray();
+
+        var result = executor.TransformSerializedPayload(
+            payload,
+            CreateContext(schema, new string("payload".AsSpan())));
+
+        await Assert.That(result.ToArray()).IsEquivalentTo(payload);
+    }
+
+    [Test]
+    public async Task Utf8Transform_ReusesFreshEqualContextStringByContent()
+    {
+        var executor = new SchemaRegistryRuleExecutor([new CelSchemaRegistryRuleHandler()]);
+        var schema = CreateSchema(CreateCelRule(
+            "fresh-context-transform",
+            SchemaRuleKind.Transform,
+            SchemaRuleMode.Write,
+            "topic"));
+        var payload = "payload"u8.ToArray();
+
+        _ = executor.TransformSerializedPayload(payload, CreateContext(schema, new string("payload".AsSpan())));
+        var result = executor.TransformSerializedPayload(
+            payload,
+            CreateContext(schema, new string("payload".AsSpan())));
+
+        await Assert.That(result.ToArray()).IsEquivalentTo(payload);
+    }
+
+    [Test]
+    public async Task Utf8Transform_OutputSurvivesConditionCacheWraparound()
+    {
+        var executor = new SchemaRegistryRuleExecutor([new CelSchemaRegistryRuleHandler()]);
+        var rules = new SchemaRule[10];
+        rules[0] = CreateCelRule(
+            "context-transform",
+            SchemaRuleKind.Transform,
+            SchemaRuleMode.Write,
+            "topic");
+        for (var index = 1; index < rules.Length; index++)
+        {
+            rules[index] = CreateCelRule(
+                $"condition-{index}",
+                SchemaRuleKind.Condition,
+                SchemaRuleMode.Write,
+                $"message != \"literal-{index}\"");
+        }
+
+        var result = executor.TransformSerializedPayload(
+            "payload"u8.ToArray(),
+            CreateContext(CreateSchema(rules), "transformed-topic"));
+
+        await Assert.That(Encoding.UTF8.GetString(result.Span)).IsEqualTo("transformed-topic");
+    }
+
+    private static SchemaRegistryRuleContext CreateContext(Schema schema, string topic = "orders") =>
         new()
         {
-            Topic = "orders",
+            Topic = topic,
             Component = SerializationComponent.Value,
             SchemaId = 42,
             Subject = "orders-value",

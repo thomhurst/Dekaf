@@ -99,6 +99,9 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
             .WithEnvironment("SCHEMA_REGISTRY_HOST_NAME", "schema-registry")
             .WithEnvironment("SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS", "kafka:9093")
             .WithEnvironment("SCHEMA_REGISTRY_LISTENERS", "http://0.0.0.0:8081")
+            .WithEnvironment(
+                "SCHEMA_REGISTRY_RESOURCE_EXTENSION_CLASS",
+                "io.confluent.kafka.schemaregistry.rulehandler.RuleSetResourceExtension")
             .WithWaitStrategy(Wait.ForUnixContainer().UntilHttpRequestIsSucceeded(r => r.ForPath("/subjects").ForPort(8081)))
             .Build();
 

@@ -253,17 +253,21 @@ public sealed class SchemaRegistrySerializer<T> :
         var payload = payloadBuffer.WrittenMemory;
         if (_ruleExecutor is not null)
         {
-            payload = _ruleExecutor.TransformSerializedPayload(
-                payload,
-                new SchemaRegistryRuleContext
-                {
-                    Topic = context.Topic,
-                    Component = context.Component,
-                    SchemaId = schemaId,
-                    Subject = schemaEntry.Subject,
-                    Schema = schemaEntry.Schema,
-                    PayloadFormat = SchemaRegistryPayloadFormat.Custom
-                });
+            var ruleContext = SchemaRegistryRuleContext.Rent(
+                context.Topic,
+                context.Component,
+                schemaId,
+                schemaEntry.Subject,
+                schemaEntry.Schema,
+                SchemaRegistryPayloadFormat.Custom);
+            try
+            {
+                payload = _ruleExecutor.TransformSerializedPayload(payload, ruleContext);
+            }
+            finally
+            {
+                ruleContext.Return();
+            }
         }
 
         // Write wire format: [0x00] [schema ID] [payload]
@@ -691,7 +695,10 @@ public sealed class SchemaRegistrySerializer<T> :
                     subject,
                     schema,
                     cancellationToken).ConfigureAwait(false);
-            return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(schemaId, schema);
+            var registeredSchema = _ruleExecutor is SchemaRegistryRuleExecutor
+                ? await _schemaRegistry.GetSchemaAsync(schemaId, subject, cancellationToken).ConfigureAwait(false)
+                : schema;
+            return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(schemaId, registeredSchema);
         }
 
         var registered = await _schemaRegistry.GetSchemaBySubjectAsync(
@@ -759,6 +766,7 @@ internal static class SchemaRegistryBuffers
 public sealed class SchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisposable
 {
     private const byte MagicByte = 0x00;
+    private static readonly string FallbackRecordName = typeof(T).FullName ?? typeof(T).Name;
 
     /// <summary>
     /// Default timeout for Schema Registry operations (30 seconds).
@@ -769,6 +777,7 @@ public sealed class SchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisp
     private readonly Func<ReadOnlyMemory<byte>, Schema, T> _deserialize;
     private readonly bool _ownsClient;
     private readonly ISchemaRegistryRuleExecutor? _ruleExecutor;
+    private readonly DeserializerSubjectNameCache? _subjectNames;
 
     /// <summary>
     /// Creates a new Schema Registry deserializer.
@@ -785,7 +794,8 @@ public sealed class SchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisp
             schemaRegistry,
             (ReadOnlyMemory<byte> payload, Schema schema) => deserialize(payload.ToArray(), schema),
             ownsClient,
-            ruleExecutor)
+            ruleExecutor,
+            config: null)
     {
     }
 
@@ -799,12 +809,14 @@ public sealed class SchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisp
         ISchemaRegistryClient schemaRegistry,
         Func<ReadOnlyMemory<byte>, Schema, T> deserialize,
         bool ownsClient,
-        ISchemaRegistryRuleExecutor? ruleExecutor = null)
+        ISchemaRegistryRuleExecutor? ruleExecutor = null,
+        SchemaRegistryDeserializerConfig? config = null)
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _deserialize = deserialize ?? throw new ArgumentNullException(nameof(deserialize));
         _ownsClient = ownsClient;
         _ruleExecutor = ruleExecutor;
+        _subjectNames = DeserializerSubjectNameCache.Create(config);
     }
 
     public T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
@@ -819,23 +831,58 @@ public sealed class SchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisp
 
         var schemaId = BinaryPrimitives.ReadInt32BigEndian(span.Slice(1, 4));
 
-        var schema = _schemaRegistry.GetSchemaSync(schemaId, SchemaRegistryTimeout);
         var payload = data.Slice(5);
+        Schema schema;
         if (_ruleExecutor is not null)
         {
-            payload = _ruleExecutor.TransformDeserializedPayload(
-                payload,
-                new SchemaRegistryRuleContext
-                {
-                    Topic = context.Topic,
-                    Component = context.Component,
-                    SchemaId = schemaId,
-                    Schema = schema,
-                    PayloadFormat = SchemaRegistryPayloadFormat.Custom
-                });
+            string subject;
+            if (_subjectNames is null)
+            {
+                subject = SubjectNameResolver.GetTopicSubjectName(
+                    context.Topic,
+                    context.Component == SerializationComponent.Key);
+            }
+            else
+            {
+                schema = _schemaRegistry.GetSchemaSync(schemaId, SchemaRegistryTimeout);
+                subject = GetSubjectName(schemaId, schema, context);
+            }
+
+            schema = _schemaRegistry.GetSchemaSync(schemaId, subject, SchemaRegistryTimeout);
+            var ruleContext = SchemaRegistryRuleContext.Rent(
+                context.Topic,
+                context.Component,
+                schemaId,
+                subject,
+                schema,
+                SchemaRegistryPayloadFormat.Custom);
+            try
+            {
+                payload = _ruleExecutor.TransformDeserializedPayload(payload, ruleContext);
+            }
+            finally
+            {
+                ruleContext.Return();
+            }
+        }
+        else
+        {
+            schema = _schemaRegistry.GetSchemaSync(schemaId, SchemaRegistryTimeout);
         }
 
         return _deserialize(payload, schema);
+    }
+
+    private string GetSubjectName(int schemaId, Schema schema, SerializationContext context)
+    {
+        var isKey = context.Component == SerializationComponent.Key;
+        return _subjectNames?.GetSubjectName(
+                schemaId,
+                schema,
+                context.Topic,
+                isKey,
+                FallbackRecordName)
+            ?? SubjectNameResolver.GetTopicSubjectName(context.Topic, isKey);
     }
 
     public ValueTask DisposeAsync()
@@ -865,6 +912,20 @@ public static class SchemaRegistryDeserializer
         bool ownsClient = false,
         ISchemaRegistryRuleExecutor? ruleExecutor = null)
         => new(schemaRegistry, deserialize, ownsClient, ruleExecutor);
+
+    /// <summary>
+    /// Creates a zero-copy Schema Registry deserializer with subject-name configuration for read rules.
+    /// </summary>
+    public static SchemaRegistryDeserializer<T> Create<T>(
+        ISchemaRegistryClient schemaRegistry,
+        Func<ReadOnlyMemory<byte>, Schema, T> deserialize,
+        SchemaRegistryDeserializerConfig config,
+        bool ownsClient = false,
+        ISchemaRegistryRuleExecutor? ruleExecutor = null)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        return new SchemaRegistryDeserializer<T>(schemaRegistry, deserialize, ownsClient, ruleExecutor, config);
+    }
 }
 
 /// <summary>

@@ -21,7 +21,7 @@ public class ProtobufSchemaRegistrySerializerTests
             ReadOnlyMemory<byte> payload,
             SchemaRegistryRuleContext context)
         {
-            Context = context;
+            Context = SchemaRegistryRuleContextSnapshot.Capture(context);
             return serializedPayload;
         }
 
@@ -68,7 +68,10 @@ public class ProtobufSchemaRegistrySerializerTests
     public async Task Serialize_RuleExecutor_TransformsMessageBytes_AfterMessageIndexes()
     {
         var schemaRegistry = Substitute.For<ISchemaRegistryClient>();
-        schemaRegistry.GetOrRegisterSchemaAsync(Arg.Any<string>(), Arg.Any<Schema>(), Arg.Any<CancellationToken>())
+        schemaRegistry.GetOrRegisterSchemaAsync(
+                "test-topic-value",
+                Arg.Any<Schema>(),
+                Arg.Any<CancellationToken>())
             .Returns(Task.FromResult(42));
 
         var replacement = new TestMessage { Id = 9, Name = "Encrypted", Value = 1.25 };
@@ -86,8 +89,13 @@ public class ProtobufSchemaRegistrySerializerTests
         await Assert.That(executor.Context!.PayloadFormat).IsEqualTo(SchemaRegistryPayloadFormat.Protobuf);
         await Assert.That(executor.Context.Subject).IsEqualTo("test-topic-value");
         await Assert.That(executor.Context.SchemaId).IsEqualTo(42);
+        await Assert.That(executor.Context.Schema).IsNotNull();
+        await Assert.That(executor.Context.Schema!.SchemaType).IsEqualTo(SchemaType.Protobuf);
+        await schemaRegistry.DidNotReceive().GetSchemaAsync(
+            42,
+            "test-topic-value",
+            Arg.Any<CancellationToken>());
     }
-
 
     [Test]
     public async Task Serialize_CachesSchemaId()

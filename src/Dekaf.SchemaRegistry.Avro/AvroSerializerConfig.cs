@@ -58,6 +58,21 @@ public sealed class AvroSerializerConfig
 public sealed class AvroDeserializerConfig
 {
     /// <summary>
+    /// Subject-name strategy used when deserialization rules execute.
+    /// </summary>
+    public SubjectNameStrategy SubjectNameStrategy { get; init; } = SubjectNameStrategy.TopicName;
+
+    /// <summary>
+    /// Custom subject-name strategy used when deserialization rules execute.
+    /// </summary>
+    public ISubjectNameStrategy? CustomSubjectNameStrategy { get; init; }
+
+    /// <summary>
+    /// Whether record-based strategies retain Dekaf's legacy -key/-value suffix.
+    /// </summary>
+    public bool UseLegacySubjectNames { get; init; }
+
+    /// <summary>
     /// Whether to use a specific reader schema instead of inferring it from the .NET type.
     /// When null, the reader schema is derived from the type T.
     /// </summary>

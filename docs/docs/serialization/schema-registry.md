@@ -142,10 +142,11 @@ var consumer = await Kafka.CreateConsumer<string, Order>()
     .BuildAsync();
 ```
 
-`JsonSchemaValidationMode.Serialize` validates plaintext JSON immediately after serialization and
-before write rules. `Deserialize` validates after read rules and before JSON deserialization. This
-ordering lets encryption and migration rules transform the wire payload without validating
-ciphertext or a pre-migration shape.
+`JsonSchemaValidationMode.Serialize` validates plaintext JSON after built-in domain rules and before
+encoding rules. Custom rule executors are validated before their transform because they do not
+expose phase boundaries. `Deserialize` validates after read rules and before JSON deserialization.
+This ordering lets domain rules establish the final logical shape and encoding rules transform the
+wire payload without validating ciphertext or a pre-migration shape.
 
 Streaming validators are compiled once per exact registered `Schema` object and weakly cached. The
 serializer fetches the complete registered schema after registration or lookup, so write validation

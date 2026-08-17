@@ -129,17 +129,21 @@ public sealed class ProtobufSchemaRegistrySerializer<
         ReadOnlyMemory<byte> transformedPayload = default;
         if (_config.RuleExecutor is not null)
         {
-            transformedPayload = _config.RuleExecutor.TransformSerializedPayload(
-                value.ToByteArray(),
-                new SchemaRegistryRuleContext
-                {
-                    Topic = context.Topic,
-                    Component = context.Component,
-                    SchemaId = schemaId,
-                    Subject = schemaEntry.Subject,
-                    Schema = schemaEntry.Schema,
-                    PayloadFormat = SchemaRegistryPayloadFormat.Protobuf
-                });
+            var ruleContext = SchemaRegistryRuleContext.Rent(
+                context.Topic,
+                context.Component,
+                schemaId,
+                schemaEntry.Subject,
+                schemaEntry.Schema,
+                SchemaRegistryPayloadFormat.Protobuf);
+            try
+            {
+                transformedPayload = _config.RuleExecutor.TransformSerializedPayload(value.ToByteArray(), ruleContext);
+            }
+            finally
+            {
+                ruleContext.Return();
+            }
         }
 
         // Total size: magic byte + schema ID + indexes + message
@@ -323,7 +327,10 @@ public sealed class ProtobufSchemaRegistrySerializer<
                     subject,
                     schema,
                     cancellationToken).ConfigureAwait(false);
-            return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(id, schema);
+            var executionSchema = _config.RuleExecutor is SchemaRegistryRuleExecutor
+                ? await _schemaRegistry.GetSchemaAsync(id, subject, cancellationToken).ConfigureAwait(false)
+                : schema;
+            return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(id, executionSchema);
         }
 
         var registered = await _schemaRegistry.LookupSchemaAsync(

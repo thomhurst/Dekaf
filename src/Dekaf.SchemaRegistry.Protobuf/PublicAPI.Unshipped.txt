@@ -1,4 +1,10 @@
 #nullable enable
+Dekaf.SchemaRegistry.Protobuf.ProtobufDeserializerConfig.CustomSubjectNameStrategy.get -> Dekaf.SchemaRegistry.ISubjectNameStrategy?
+Dekaf.SchemaRegistry.Protobuf.ProtobufDeserializerConfig.CustomSubjectNameStrategy.init -> void
+Dekaf.SchemaRegistry.Protobuf.ProtobufDeserializerConfig.SubjectNameStrategy.get -> Dekaf.SchemaRegistry.SubjectNameStrategy
+Dekaf.SchemaRegistry.Protobuf.ProtobufDeserializerConfig.SubjectNameStrategy.init -> void
+Dekaf.SchemaRegistry.Protobuf.ProtobufDeserializerConfig.UseLegacySubjectNames.get -> bool
+Dekaf.SchemaRegistry.Protobuf.ProtobufDeserializerConfig.UseLegacySubjectNames.init -> void
 Dekaf.SchemaRegistry.Protobuf.IReferenceSubjectNameStrategy
 Dekaf.SchemaRegistry.Protobuf.IReferenceSubjectNameStrategy.GetSubjectName(string! topic, string! referenceName, bool isKey) -> string!
 Dekaf.SchemaRegistry.Protobuf.ProtobufSchemaRegistrySerializer<T>.PrepareAsync(string! topic, T value, bool isKey = false, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.SchemaRegistry.ResolvedSchemaContext>
