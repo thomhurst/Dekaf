@@ -5,6 +5,8 @@ Dekaf.SchemaRegistry.Protobuf.ProtobufDeserializerConfig.SubjectNameStrategy.get
 Dekaf.SchemaRegistry.Protobuf.ProtobufDeserializerConfig.SubjectNameStrategy.init -> void
 Dekaf.SchemaRegistry.Protobuf.ProtobufDeserializerConfig.UseLegacySubjectNames.get -> bool
 Dekaf.SchemaRegistry.Protobuf.ProtobufDeserializerConfig.UseLegacySubjectNames.init -> void
+Dekaf.SchemaRegistry.Protobuf.ProtobufDeserializerConfig.UseLatestVersion.get -> bool
+Dekaf.SchemaRegistry.Protobuf.ProtobufDeserializerConfig.UseLatestVersion.init -> void
 Dekaf.SchemaRegistry.Protobuf.IReferenceSubjectNameStrategy
 Dekaf.SchemaRegistry.Protobuf.IReferenceSubjectNameStrategy.GetSubjectName(string! topic, string! referenceName, bool isKey) -> string!
 Dekaf.SchemaRegistry.Protobuf.ProtobufSchemaRegistrySerializer<T>.PrepareAsync(string! topic, T value, bool isKey = false, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.SchemaRegistry.ResolvedSchemaContext>

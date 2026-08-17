@@ -6,3 +6,5 @@ Dekaf.SchemaRegistry.Avro.AvroDeserializerConfig.SubjectNameStrategy.get -> Deka
 Dekaf.SchemaRegistry.Avro.AvroDeserializerConfig.SubjectNameStrategy.init -> void
 Dekaf.SchemaRegistry.Avro.AvroDeserializerConfig.UseLegacySubjectNames.get -> bool
 Dekaf.SchemaRegistry.Avro.AvroDeserializerConfig.UseLegacySubjectNames.init -> void
+Dekaf.SchemaRegistry.Avro.AvroDeserializerConfig.UseLatestVersion.get -> bool
+Dekaf.SchemaRegistry.Avro.AvroDeserializerConfig.UseLatestVersion.init -> void

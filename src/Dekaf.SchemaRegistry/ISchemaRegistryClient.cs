@@ -8,6 +8,12 @@ namespace Dekaf.SchemaRegistry;
 public interface ISchemaRegistryClient : IDisposable
 {
     /// <summary>
+    /// TTL in seconds for cached latest-schema resolutions, or -1 for no expiry.
+    /// The default is -1.
+    /// </summary>
+    int LatestCacheTtlSecs => -1;
+
+    /// <summary>
     /// Registers a schema under a subject. If the schema is already registered,
     /// returns the existing schema ID.
     /// </summary>
@@ -66,6 +72,29 @@ public interface ISchemaRegistryClient : IDisposable
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>The registered schema with metadata.</returns>
     Task<RegisteredSchema> GetSchemaBySubjectAsync(string subject, string version = "latest", CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Gets the schema registered under a subject at a specific version, optionally including deleted versions.
+    /// </summary>
+    /// <param name="subject">The subject name.</param>
+    /// <param name="version">The version number, or "latest" for latest.</param>
+    /// <param name="ignoreDeletedSchemas">Whether deleted schemas are excluded.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The registered schema with metadata.</returns>
+    Task<RegisteredSchema> GetSchemaBySubjectAsync(
+        string subject,
+        string version,
+        bool ignoreDeletedSchemas,
+        CancellationToken cancellationToken = default)
+    {
+        if (!ignoreDeletedSchemas)
+        {
+            throw new NotSupportedException(
+                $"This {nameof(ISchemaRegistryClient)} implementation does not support looking up deleted schema versions.");
+        }
+
+        return GetSchemaBySubjectAsync(subject, version, cancellationToken);
+    }
 
     /// <summary>
     /// Looks up an exact schema under a subject without registering it.

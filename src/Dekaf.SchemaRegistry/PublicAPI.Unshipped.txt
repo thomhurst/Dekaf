@@ -1,4 +1,13 @@
 #nullable enable
+Dekaf.SchemaRegistry.ISchemaRegistryClient.LatestCacheTtlSecs.get -> int
+Dekaf.SchemaRegistry.SchemaRegistryClient.LatestCacheTtlSecs.get -> int
+Dekaf.SchemaRegistry.SchemaRegistryConfig.LatestCacheTtlSecs.get -> int
+Dekaf.SchemaRegistry.SchemaRegistryConfig.LatestCacheTtlSecs.init -> void
+Dekaf.SchemaRegistry.SchemaRegistryDeserializerConfig.UseLatestVersion.get -> bool
+Dekaf.SchemaRegistry.SchemaRegistryDeserializerConfig.UseLatestVersion.init -> void
+Dekaf.SchemaRegistry.SchemaRegistryRuleContext.RuleMode.get -> Dekaf.SchemaRegistry.SchemaRuleMode?
+Dekaf.SchemaRegistry.SchemaRegistryRuleContext.SourceSchema.get -> Dekaf.SchemaRegistry.Schema?
+Dekaf.SchemaRegistry.SchemaRegistryRuleContext.TargetSchema.get -> Dekaf.SchemaRegistry.Schema?
 Dekaf.SchemaRegistry.ISchemaRegistryCache.TryGetCachedSchema(int id, string! subject, out Dekaf.SchemaRegistry.Schema! schema) -> bool
 Dekaf.SchemaRegistry.ISchemaRegistryClient.GetSchemaAsync(int id, string! subject, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Dekaf.SchemaRegistry.Schema!>!
 Dekaf.SchemaRegistry.SchemaRegistryClient.GetSchemaAsync(int id, string! subject, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Dekaf.SchemaRegistry.Schema!>!
@@ -126,7 +135,9 @@ Dekaf.SchemaRegistry.SchemaRegistryTlsConfig.ValidateServerCertificateHostName.i
 Dekaf.SchemaRegistry.SchemaRegistrySerializer<T>.PrepareAsync(string! topic, T value, bool isKey = false, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.SchemaRegistry.ResolvedSchemaContext>
 Dekaf.SchemaRegistry.SchemaRegistrySerializer<T>.PrepareAsync(T value, Dekaf.Serialization.SerializationContext context, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
 Dekaf.SchemaRegistry.ISchemaRegistryClient.GetDekAsync(string! kekName, string! subject, int version, Dekaf.SchemaRegistry.DekAlgorithm algorithm, bool deleted = false, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Dekaf.SchemaRegistry.Dek!>!
+Dekaf.SchemaRegistry.ISchemaRegistryClient.GetSchemaBySubjectAsync(string! subject, string! version, bool ignoreDeletedSchemas, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Dekaf.SchemaRegistry.RegisteredSchema!>!
 Dekaf.SchemaRegistry.SchemaRegistryClient.GetDekAsync(string! kekName, string! subject, int version, Dekaf.SchemaRegistry.DekAlgorithm algorithm, bool deleted = false, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Dekaf.SchemaRegistry.Dek!>!
+Dekaf.SchemaRegistry.SchemaRegistryClient.GetSchemaBySubjectAsync(string! subject, string! version, bool ignoreDeletedSchemas, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Dekaf.SchemaRegistry.RegisteredSchema!>!
 override Dekaf.SchemaRegistry.ResolvedSchemaContext.GetHashCode() -> int
 static Dekaf.SchemaRegistry.ResolvedSchemaContext.operator !=(Dekaf.SchemaRegistry.ResolvedSchemaContext left, Dekaf.SchemaRegistry.ResolvedSchemaContext right) -> bool
 static Dekaf.SchemaRegistry.ResolvedSchemaContext.operator ==(Dekaf.SchemaRegistry.ResolvedSchemaContext left, Dekaf.SchemaRegistry.ResolvedSchemaContext right) -> bool

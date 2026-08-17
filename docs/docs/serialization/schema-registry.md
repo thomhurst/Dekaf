@@ -175,6 +175,50 @@ CPU cost when enabled because each payload must be parsed and evaluated. Steady-
 zero-allocation; disabled serializers remain validation-neutral and do not load the optional JSON
 Schema package.
 
+## Migration rules
+
+Set `UseLatestVersion = true` on a deserializer config to select the subject's latest registered
+schema as the reader schema. Dekaf resolves the writer's exact subject version, walks every adjacent
+version, and executes active migration rules before deserializing with the reader schema:
+
+```csharp
+var rules = new SchemaRegistryRuleExecutor([migrationHandler]);
+
+var config = new AvroDeserializerConfig
+{
+    UseLatestVersion = true,
+    RuleExecutor = rules
+};
+
+var consumer = await Kafka.CreateConsumer<string, GenericRecord>()
+    .WithBootstrapServers("localhost:9092")
+    .WithGroupId("orders")
+    .UseAvroSchemaRegistry(registry, config)
+    .BuildAsync();
+```
+
+`SchemaRegistryDeserializerConfig`, `AvroDeserializerConfig`, and `ProtobufDeserializerConfig`
+all expose `UseLatestVersion`. Avro does not allow `UseLatestVersion` together with an explicit
+`ReaderSchema`.
+
+Ordering matches Schema Registry behavior. Read encoding rules run against the writer schema first;
+upgrade or downgrade rules then run for each version edge; read domain rules run against the final
+reader schema last. The higher schema owns each edge's migration rules. Upgrade paths visit versions
+and rules in ascending/forward order. Downgrade paths visit versions and rules in descending/reverse
+order. `UpDown` rules participate in both directions, and paired success/failure actions select the
+first action for upgrade and the second for downgrade. Disabled rules are skipped.
+
+Using the latest reader schema without active migration rules does not require a rule executor. If
+an active migration path exists, configure the built-in `SchemaRegistryRuleExecutor`; Dekaf fails
+closed instead of silently skipping the transform. Warm cached no-migration, disabled-migration, and
+active pass-through paths remain allocation-free, including interleaved writer schema IDs.
+
+Migration plans follow `SchemaRegistryConfig.LatestCacheTtlSecs`. The Confluent-compatible default
+is `-1`, which disables time-based expiry. Set a non-negative TTL to
+periodically re-resolve latest schemas; `0` refreshes on every use. Historical version lookup includes
+deleted versions so migration paths remain complete. Custom `ISchemaRegistryClient` implementations
+must override the deleted-version overload; its default implementation fails closed.
+
 ## Schema Registry Configuration
 
 ```csharp
