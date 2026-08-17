@@ -231,7 +231,10 @@ public sealed class ConnectionPoolTests
     public async Task StatusSnapshot_RecordsControllerEndpointClosure()
     {
         long statusTimestamp = 100;
-        var connection = new TestIdleConnection(-1, "controller-a", 19093);
+        var connection = new TestIdleConnection(-1, "controller-a", 19093)
+        {
+            LastSuccessfulRequestTimestampMs = 99
+        };
         await using var pool = new ConnectionPool(
             clientId: "status-test",
             connectionOptions: new ConnectionOptions(),
@@ -249,13 +252,17 @@ public sealed class ConnectionPoolTests
         await Assert.That(status.ConnectionCount).IsEqualTo(0);
         await Assert.That(status.LastConnectionStateChangeAtUtc).IsNotNull();
         await Assert.That(GetEndpointStateChangeTimestamp(pool, "controller-a", 19093)).IsEqualTo(101);
+        await Assert.That(GetEndpointSuccessfulRequestTimestamp(pool, "controller-a", 19093)).IsEqualTo(99);
     }
 
     [Test]
     public async Task StatusSnapshot_RecordsOnlyRepresentedBrokerClosures()
     {
         long statusTimestamp = 100;
-        var connection = new TestIdleConnection(7, "broker-a", 9092);
+        var connection = new TestIdleConnection(7, "broker-a", 9092)
+        {
+            LastSuccessfulRequestTimestampMs = 99
+        };
         await using var pool = new ConnectionPool(
             clientId: "status-test",
             connectionOptions: new ConnectionOptions(),
@@ -270,6 +277,7 @@ public sealed class ConnectionPoolTests
         await pool.CloseAllAsync();
 
         await Assert.That(GetBrokerStateChangeTimestamp(pool, 7)).IsEqualTo(101);
+        await Assert.That(GetBrokerSuccessfulRequestTimestamp(pool, 7)).IsEqualTo(99);
         await Assert.That(GetBrokerStateChangeTimestamp(pool, 8)).IsEqualTo(100);
     }
 
@@ -677,6 +685,43 @@ public sealed class ConnectionPoolTests
         await pool.RemoveConnectionAsync(7);
 
         await Assert.That(GetBrokerStateChangeTimestamp(pool, 7)).IsEqualTo(100);
+    }
+
+    [Test]
+    public async Task RemoveConnectionAsync_RecordsStatusBeforeSlowDisposalCompletes()
+    {
+        long statusTimestamp = 100;
+        var disposalStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseDisposal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var connection = new TestIdleConnection(7, "broker-a", 9092)
+        {
+            LastSuccessfulRequestTimestampMs = 99,
+            DisposalStarted = disposalStarted,
+            DisposalRelease = releaseDisposal.Task
+        };
+        await using var pool = new ConnectionPool(
+            clientId: "status-test",
+            connectionOptions: new ConnectionOptions(),
+            connectionsPerBroker: 1,
+            connectionFactory: (_, _, _, _, _) => ValueTask.FromResult<IKafkaConnection>(connection),
+            statusTimestampProvider: () => Volatile.Read(ref statusTimestamp));
+        pool.RegisterBroker(7, "broker-a", 9092);
+        _ = await pool.GetConnectionAsync(7);
+        Volatile.Write(ref statusTimestamp, 101);
+
+        var removal = pool.RemoveConnectionAsync(7).AsTask();
+        await disposalStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var status = ((IConnectionPoolStatusSource)pool).GetBrokerConnectionStatus().Single();
+        await Assert.That(removal.IsCompleted).IsFalse();
+        await Assert.That(status.State).IsEqualTo(BrokerConnectionState.Disconnected);
+        await Assert.That(GetBrokerStateChangeTimestamp(pool, 7)).IsEqualTo(101);
+        await Assert.That(GetBrokerSuccessfulRequestTimestamp(pool, 7)).IsEqualTo(99);
+        await Assert.That(GetEndpointStateChangeTimestamp(pool, "broker-a", 9092)).IsEqualTo(101);
+        await Assert.That(GetEndpointSuccessfulRequestTimestamp(pool, "broker-a", 9092)).IsEqualTo(99);
+
+        releaseDisposal.TrySetResult();
+        await removal.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
     [Test]
@@ -2701,6 +2746,10 @@ public sealed class ConnectionPoolTests
 
         public Func<int>? PendingRequestCountProvider { get; set; }
 
+        public TaskCompletionSource? DisposalStarted { get; init; }
+
+        public Task? DisposalRelease { get; init; }
+
         public long LastSuccessfulRequestTimestampMs
         {
             get => Volatile.Read(ref _lastSuccessfulRequestTimestampMs);
@@ -2790,7 +2839,8 @@ public sealed class ConnectionPoolTests
             Interlocked.Increment(ref _disposeCount);
             Volatile.Write(ref _lastConnectionStateChangeTimestampMs, MonotonicClock.GetMilliseconds());
             Volatile.Write(ref _connected, 0);
-            return ValueTask.CompletedTask;
+            DisposalStarted?.TrySetResult();
+            return DisposalRelease is null ? ValueTask.CompletedTask : new ValueTask(DisposalRelease);
         }
 
         public void DisconnectAt(long timestampMs)

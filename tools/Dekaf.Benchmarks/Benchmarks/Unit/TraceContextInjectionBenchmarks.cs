@@ -14,6 +14,7 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 public class TraceContextInjectionBenchmarks
 {
     private readonly Headers _headers = new(1);
+    private readonly Header _serializerHeader = new("serializer", "appended"u8.ToArray());
     private readonly byte[] _destination = new byte[80];
     private Activity _activity = null!;
 
@@ -43,5 +44,24 @@ public class TraceContextInjectionBenchmarks
         var offset = 0;
         _headers[0].Encode(_destination, ref offset);
         return offset;
+    }
+
+    [Benchmark]
+    public int InjectAndRemove()
+    {
+        _headers.Clear();
+        Diagnostics.TraceContextPropagator.InjectTraceContext(_headers, _activity);
+        _headers.RemoveDeferredTraceContext();
+        return _headers.Count;
+    }
+
+    [Benchmark]
+    public int InjectAppendAndRemove()
+    {
+        _headers.Clear();
+        Diagnostics.TraceContextPropagator.InjectTraceContext(_headers, _activity);
+        _headers.Add(_serializerHeader);
+        _headers.RemoveDeferredTraceContext();
+        return _headers.Count;
     }
 }

@@ -2190,12 +2190,14 @@ public sealed partial class ConnectionPool :
     }
 
     private void PreserveSuccessfulRequest(IKafkaConnection connection, int brokerId)
+        => PreserveSuccessfulRequest(connection, GetBrokerConnectionRuntimeState(brokerId));
+
+    private static void PreserveSuccessfulRequest(
+        IKafkaConnection connection,
+        BrokerConnectionRuntimeState runtimeState)
     {
         if (connection is IKafkaConnectionStatusSource statusSource)
-        {
-            GetBrokerConnectionRuntimeState(brokerId)
-                .RecordSuccessfulRequest(statusSource.LastSuccessfulRequestTimestampMs);
-        }
+            runtimeState.RecordSuccessfulRequest(statusSource.LastSuccessfulRequestTimestampMs);
     }
 
     private static bool BrokerEndpointsEqual(BrokerInfo left, BrokerInfo right) =>
@@ -2313,12 +2315,18 @@ public sealed partial class ConnectionPool :
 
     public async ValueTask RemoveConnectionAsync(int brokerId)
     {
-        var removed = false;
         if (_connectionsById.TryRemove(brokerId, out var connection))
         {
-            removed = true;
+            var runtimeState = GetBrokerConnectionRuntimeState(brokerId);
+            PreserveSuccessfulRequest(connection, runtimeState);
+            runtimeState.RecordStateChange();
             var endpoint = new EndpointKey(connection.Host, connection.Port);
-            _connectionsByEndpoint.TryRemove(endpoint, out _);
+            if (_connectionsByEndpoint.TryRemove(endpoint, out var endpointConnection))
+            {
+                var endpointRuntimeState = GetEndpointConnectionRuntimeState(endpoint);
+                PreserveSuccessfulRequest(endpointConnection, endpointRuntimeState);
+                endpointRuntimeState.RecordStateChange();
+            }
             if (_connectionCreationLocks.TryRemove(endpoint, out var creationSem))
                 creationSem.Dispose();
             await connection.DisposeAsync().ConfigureAwait(false);
@@ -2327,7 +2335,14 @@ public sealed partial class ConnectionPool :
 
         if (_connectionGroupsById.TryRemove(brokerId, out var group))
         {
-            removed = true;
+            var runtimeState = GetBrokerConnectionRuntimeState(brokerId);
+            for (var i = 0; i < group.Length; i++)
+            {
+                if (group[i] is not null)
+                    PreserveSuccessfulRequest(group[i], runtimeState);
+            }
+            runtimeState.RecordStateChange();
+
             // Iterate the group's actual size: adaptive scaling can grow a group beyond
             // the configured ConnectionsPerBroker.
             for (var i = 0; i < group.Length; i++)
@@ -2348,9 +2363,6 @@ public sealed partial class ConnectionPool :
 
             LogRemovedConnection(brokerId);
         }
-
-        if (removed && _brokerConnectionRuntimeStates.TryGetValue(brokerId, out var runtimeState))
-            runtimeState.RecordStateChange();
     }
 
     public async ValueTask CloseAllAsync()
@@ -2360,10 +2372,11 @@ public sealed partial class ConnectionPool :
         {
             LogClosingAllConnections();
 
-            foreach (var brokerId in _connectionsById.Keys)
+            foreach (var (brokerId, connection) in _connectionsById)
             {
-                if (_brokerConnectionRuntimeStates.TryGetValue(brokerId, out var runtimeState))
-                    runtimeState.RecordStateChange();
+                var runtimeState = GetBrokerConnectionRuntimeState(brokerId);
+                PreserveSuccessfulRequest(connection, runtimeState);
+                runtimeState.RecordStateChange();
             }
 
             var tasks = new List<ValueTask>();
@@ -2374,27 +2387,29 @@ public sealed partial class ConnectionPool :
             // adaptive scaling creates a group — both collections are disposed below.
             foreach (var (endpoint, connection) in _connectionsByEndpoint)
             {
-                GetEndpointConnectionRuntimeState(endpoint).RecordStateChange();
+                var runtimeState = GetEndpointConnectionRuntimeState(endpoint);
+                PreserveSuccessfulRequest(connection, runtimeState);
+                runtimeState.RecordStateChange();
                 tasks.Add(connection.DisposeAsync());
             }
 
             // Close connection groups (used when _connectionsPerBroker > 1)
             foreach (var (brokerId, connectionGroup) in _connectionGroupsById)
             {
-                var runtimeState = !_connectionsById.ContainsKey(brokerId)
-                    && _brokerConnectionRuntimeStates.TryGetValue(brokerId, out var trackedRuntimeState)
-                        ? trackedRuntimeState
-                        : null;
+                var runtimeState = GetBrokerConnectionRuntimeState(brokerId);
+                var recordStateChange = !_connectionsById.ContainsKey(brokerId);
 
                 foreach (var connection in connectionGroup)
                 {
                     if (connection is not null)
                     {
-                        runtimeState?.RecordStateChange();
-                        runtimeState = null;
+                        PreserveSuccessfulRequest(connection, runtimeState);
                         tasks.Add(connection.DisposeAsync());
                     }
                 }
+
+                if (recordStateChange)
+                    runtimeState.RecordStateChange();
             }
 
             LogDisposingConnections(tasks.Count);

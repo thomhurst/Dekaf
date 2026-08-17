@@ -83,6 +83,32 @@ internal static class BufferedConsumerHarness
             pendingFetches.Dequeue().Dispose();
     }
 
+    /// <summary>
+    /// Installs the immutable state captured by a bounded snapshot so the complete buffered
+    /// delivery loop, including its per-record snapshot validation and position publication,
+    /// can be measured without broker I/O.
+    /// </summary>
+    public static void ActivateSnapshotForBufferedFastPath<TKey, TValue>(
+        KafkaConsumer<TKey, TValue> consumer,
+        string topic,
+        int partition,
+        long endOffset)
+    {
+        var topicPartition = new TopicPartition(topic, partition);
+        var assignment = (IReadOnlySet<TopicPartition>)GetPrivateField(consumer, "_assignmentSnapshot")!;
+        var paused = (IReadOnlySet<TopicPartition>)GetPrivateField(consumer, "_pausedSnapshot")!;
+        var snapshot = new SnapshotConsumeState(
+            new Dictionary<TopicPartition, long> { [topicPartition] = endOffset },
+            assignment,
+            paused,
+            new Dictionary<TopicPartition, long> { [topicPartition] = 0 });
+        SetPrivateField(consumer, "_activeSnapshot", snapshot);
+    }
+
+    public static void DeactivateSnapshotForBufferedFastPath<TKey, TValue>(
+        KafkaConsumer<TKey, TValue> consumer) =>
+        SetPrivateField(consumer, "_activeSnapshot", null);
+
     private static Queue<PendingFetchData> GetPendingFetches<TKey, TValue>(
         KafkaConsumer<TKey, TValue> consumer)
         => (Queue<PendingFetchData>)GetPrivateField(consumer, "_pendingFetches")!;

@@ -104,6 +104,25 @@ public sealed class TraceContextPropagatorTests
     }
 
     [Test]
+    public async Task RemoveDeferredTraceContext_PreservesHeadersAppendedAfterInjection()
+    {
+        using var activity = new Activity("trace-with-serializer-header")
+            .SetIdFormat(ActivityIdFormat.W3C)
+            .Start();
+        activity.TraceStateString = "vendor=value";
+        var headers = new Headers(4).Add("existing", "value");
+
+        TraceContextPropagator.InjectTraceContext(headers, activity);
+        headers.Add("serializer", "appended");
+        headers.RemoveDeferredTraceContext();
+
+        await Assert.That(headers.Count).IsEqualTo(2);
+        await Assert.That(headers[0].Key).IsEqualTo("existing");
+        await Assert.That(headers[1].Key).IsEqualTo("serializer");
+        await Assert.That(headers[1].GetValueAsString()).IsEqualTo("appended");
+    }
+
+    [Test]
     public async Task InjectTraceContext_WithTracestate_AddsBothHeaders()
     {
         using var listener = new ActivityListener

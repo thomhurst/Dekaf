@@ -14,6 +14,8 @@ namespace Dekaf.Serialization;
 public sealed class Headers : IEnumerable<Header>
 {
     private readonly List<Header> _headers;
+    private int _deferredTraceparentIndex = -1;
+    private bool _hasDeferredTracestate;
 
     /// <summary>
     /// Creates an empty headers collection.
@@ -159,26 +161,37 @@ public sealed class Headers : IEnumerable<Header>
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void AddDeferredTraceContext(Activity activity, string? traceState)
+    {
+        _deferredTraceparentIndex = _headers.Count;
+        _headers.Add(Header.CreateDeferredTraceparent("traceparent", activity));
+        if (string.IsNullOrEmpty(traceState))
+            return;
+
+        _hasDeferredTracestate = true;
+        Add("tracestate", traceState!);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void RemoveDeferredTraceContext()
     {
-        var lastIndex = _headers.Count - 1;
-        if (lastIndex < 0)
+        var traceparentIndex = _deferredTraceparentIndex;
+        if (traceparentIndex < 0)
             return;
 
-        if (_headers[lastIndex].HasDeferredTraceparent)
-        {
-            _headers.RemoveAt(lastIndex);
-            return;
-        }
+        _deferredTraceparentIndex = -1;
+        var hasTracestate = _hasDeferredTracestate;
+        if (hasTracestate)
+            _hasDeferredTracestate = false;
 
-        // Trace injection appends traceparent followed only by optional tracestate.
-        if (lastIndex > 0
-            && _headers[lastIndex - 1].HasDeferredTraceparent
-            && _headers[lastIndex].Key == "tracestate")
-        {
-            _headers.RemoveAt(lastIndex);
-            _headers.RemoveAt(lastIndex - 1);
-        }
+        if (hasTracestate
+            && traceparentIndex + 1 < _headers.Count
+            && _headers[traceparentIndex + 1].Key == "tracestate")
+            _headers.RemoveAt(traceparentIndex + 1);
+
+        if (traceparentIndex < _headers.Count
+            && _headers[traceparentIndex].HasDeferredTraceparent)
+            _headers.RemoveAt(traceparentIndex);
     }
 
     /// <summary>

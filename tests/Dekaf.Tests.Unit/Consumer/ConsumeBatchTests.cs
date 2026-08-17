@@ -236,6 +236,42 @@ public class ConsumeBatchTests
         }
     }
 
+    [Test]
+    public async Task BatchIterationEpoch_DeliveryGateSerializesPublication()
+    {
+        var epoch = new BatchIterationEpoch();
+        var deliveryVersion = epoch.Version;
+        await Assert.That(epoch.TryBeginSnapshotDelivery(deliveryVersion)).IsTrue();
+        using var publicationEntered = new ManualResetEventSlim();
+        var publisher = new Thread(() =>
+        {
+            epoch.BeginPublication();
+            publicationEntered.Set();
+            epoch.EndPublication();
+        })
+        {
+            IsBackground = true
+        };
+
+        try
+        {
+            publisher.Start();
+            await Assert.That(SpinWait.SpinUntil(
+                    () => Volatile.Read(ref epoch.ConsumeOneDeliveryChangesPending) != 0,
+                    TimeSpan.FromSeconds(5)))
+                .IsTrue();
+            await Assert.That(publicationEntered.IsSet).IsFalse();
+        }
+        finally
+        {
+            epoch.EndSnapshotDelivery(deliveryVersion);
+        }
+
+        await Assert.That(publicationEntered.Wait(TimeSpan.FromSeconds(5))).IsTrue();
+        await Assert.That(publisher.Join(TimeSpan.FromSeconds(5))).IsTrue();
+        await Assert.That(epoch.Version & 1).IsEqualTo(0);
+    }
+
     /// <summary>
     /// Creates a PendingFetchData with a single RecordBatch containing the specified number of records.
     /// </summary>

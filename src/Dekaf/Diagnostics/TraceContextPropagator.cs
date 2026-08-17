@@ -33,13 +33,7 @@ internal static class TraceContextPropagator
     {
         headers ??= new Headers(2);
 
-        headers.Add(Header.CreateDeferredTraceparent(TraceparentHeader, activity));
-
-        var traceState = activity.TraceStateString;
-        if (!string.IsNullOrEmpty(traceState))
-        {
-            headers.Add(TracestateHeader, traceState!);
-        }
+        headers.AddDeferredTraceContext(activity, activity.TraceStateString);
 
         return headers;
     }
