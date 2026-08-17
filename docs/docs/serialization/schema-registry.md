@@ -306,6 +306,61 @@ Grant the runtime identity `cloudkms.cryptoKeyVersions.useToEncrypt` and
 Decrypter role. Cancellation is forwarded to the gRPC call. Provider errors omit service response
 text and key material, and temporary SDK plaintext buffers are cleared after copy-out.
 
+## HashiCorp Vault Transit KMS
+
+Install the opt-in Vault provider when Schema Registry client-side field-level encryption (CSFLE)
+uses a Transit secrets-engine key:
+
+```bash
+dotnet add package Dekaf.SchemaRegistry.Kms.Vault
+```
+
+For token authentication, create one shared `HttpClient` and read the token from your secret-delivery
+mechanism, such as `VAULT_TOKEN` or a Vault Agent sink:
+
+```csharp
+using Dekaf.SchemaRegistry;
+using Dekaf.SchemaRegistry.Kms.Vault;
+
+var httpClient = new HttpClient();
+var tokenProvider = new VaultStaticTokenProvider(
+    Environment.GetEnvironmentVariable("VAULT_TOKEN")!);
+var transitClient = new VaultTransitHttpClient(httpClient, tokenProvider);
+var vaultKms = new VaultKmsProvider(
+    transitClient,
+    vaultAddress: new Uri("https://vault.example:8200"),
+    vaultNamespace: Environment.GetEnvironmentVariable("VAULT_NAMESPACE"));
+var csfle = new SchemaRegistryCsfleRuleHandler(schemaRegistry, [vaultKms]);
+```
+
+For AppRole, replace the token provider. The provider logs in through the configured auth mount and
+caches each address/namespace token until shortly before its lease expires:
+
+```csharp
+var tokenProvider = new VaultAppRoleTokenProvider(
+    httpClient,
+    roleId: Environment.GetEnvironmentVariable("VAULT_APPROLE_ROLE_ID")!,
+    secretId: Environment.GetEnvironmentVariable("VAULT_APPROLE_SECRET_ID")!,
+    authMountPoint: "approle");
+```
+
+Use KMS type `hcvault` and a Confluent-compatible key identifier in
+`https://<vault-address>/<mount>/keys/<key-name>` format, for example
+`https://vault.example:8200/transit/keys/orders-kek`. The provider extracts `transit` as the mount
+and `orders-kek` as the key name. For nested mounts, use a path such as
+`https://vault.example:8200/team/transit/keys/orders-kek`. The key identifier's scheme, host, and
+port must exactly match the locally configured `vaultAddress`; this prevents a Schema Registry KEK
+from redirecting Vault credentials to another server. Configure `vaultAddress` as a root authority
+without a path prefix. The namespace is sent as `X-Vault-Namespace`.
+
+Grant `update` capability on `<mount>/encrypt/<key>` and `<mount>/decrypt/<key>`. The supplied
+`HttpClient` is caller-owned; `VaultTransitHttpClient`, `VaultKmsProvider`, and both token providers
+are safe for concurrent use. Cancellation reaches AppRole login and Transit HTTP requests. Errors
+omit Vault response bodies, key material, ciphertext, role IDs, secret IDs, and tokens. Serialized
+request/response buffers are zeroed before release. Credential and returned-token strings remain
+managed .NET strings and cannot be zeroed; source them from a secret-delivery mechanism and limit
+their lifetime accordingly.
+
 ## Consumer
 
 ```csharp
