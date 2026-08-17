@@ -398,23 +398,23 @@ public class MpscFetchBufferTests
     }
 
     [Test]
-    public async Task WaitToReadAsync_TimeoutDoesNotRunContinuationOnTimerThread()
+    public async Task WaitToReadAsync_TimeoutDoesNotRunContinuationInline()
     {
-        using var timeoutEntered = new ManualResetEventSlim();
+        var timeoutEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var releaseTimeout = new ManualResetEventSlim();
-        using var continuationEntered = new ManualResetEventSlim();
+        var continuationEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var releaseContinuation = new ManualResetEventSlim();
-        using var continuationFinished = new ManualResetEventSlim();
-        using var timeoutCallbackExited = new ManualResetEventSlim();
+        var continuationFinished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var timeoutCallbackExited = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var buffer = new MpscFetchBuffer(
             capacity: 4,
             afterProducerWaiterCountIncrementedForTesting: null,
             beforeConsumerTimeoutForTesting: () =>
             {
-                timeoutEntered.Set();
+                timeoutEntered.TrySetResult();
                 releaseTimeout.Wait();
             },
-            afterConsumerTimeoutForTesting: timeoutCallbackExited.Set);
+            afterConsumerTimeoutForTesting: () => timeoutCallbackExited.TrySetResult());
         var result = true;
         Exception? continuationException = null;
 
@@ -423,7 +423,7 @@ public class MpscFetchBufferTests
             var awaiter = buffer.WaitToReadAsync(1, CancellationToken.None).GetAwaiter();
             awaiter.UnsafeOnCompleted(() =>
             {
-                continuationEntered.Set();
+                continuationEntered.TrySetResult();
                 releaseContinuation.Wait();
                 try
                 {
@@ -435,17 +435,17 @@ public class MpscFetchBufferTests
                 }
                 finally
                 {
-                    continuationFinished.Set();
+                    continuationFinished.TrySetResult();
                 }
             });
 
-            await Assert.That(timeoutEntered.Wait(TimeSpan.FromSeconds(5))).IsTrue();
+            await timeoutEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
             releaseTimeout.Set();
-            await Assert.That(continuationEntered.Wait(TimeSpan.FromSeconds(5))).IsTrue();
-            await Assert.That(timeoutCallbackExited.Wait(TimeSpan.FromSeconds(5))).IsTrue();
+            await continuationEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await timeoutCallbackExited.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
             releaseContinuation.Set();
-            await Assert.That(continuationFinished.Wait(TimeSpan.FromSeconds(5))).IsTrue();
+            await continuationFinished.Task.WaitAsync(TimeSpan.FromSeconds(5));
             await Assert.That(continuationException).IsNull();
             await Assert.That(result).IsFalse();
         }

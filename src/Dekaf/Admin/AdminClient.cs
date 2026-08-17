@@ -3,6 +3,7 @@ using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
 using System.Runtime.CompilerServices;
 using System.Text;
+using Dekaf.Diagnostics;
 using Dekaf.Internal;
 using Dekaf.Metadata;
 using Dekaf.Networking;
@@ -19,7 +20,7 @@ namespace Dekaf.Admin;
 /// <summary>
 /// Kafka administrative client implementation.
 /// </summary>
-public sealed class AdminClient : IAdminClient
+public sealed class AdminClient : IAdminClient, IKafkaClientStatusProvider
 {
     private const string MetadataQuorumTopic = "__cluster_metadata";
     private const int MetadataQuorumPartition = 0;
@@ -155,6 +156,50 @@ public sealed class AdminClient : IAdminClient
     }
 
     public ClusterMetadata Metadata => _metadataManager.Metadata;
+
+    /// <inheritdoc />
+    public string? ClusterId => _controllerMetadataManager is { } controllerMetadataManager
+        ? controllerMetadataManager.Snapshot.ClusterId
+        : _metadataManager.ClusterId;
+
+    /// <inheritdoc />
+    public KafkaClientStatus GetStatus()
+    {
+        var stopped = Volatile.Read(ref _disposed) != 0;
+        if (_controllerMetadataManager is not { } controllerMetadataManager)
+        {
+            return KafkaClientStatusFactory.Capture(
+                KafkaClientRole.Admin,
+                _connectionPool,
+                _metadataManager,
+                stopped);
+        }
+
+        var snapshot = controllerMetadataManager.Snapshot;
+        IReadOnlyList<BrokerConnectionStatus> brokers = Array.Empty<BrokerConnectionStatus>();
+        if (_connectionPool is IConnectionPoolStatusSource statusSource)
+        {
+            var endpoints = new ConnectionStatusEndpoint[snapshot.Controllers.Count];
+            var index = 0;
+            foreach (var endpoint in snapshot.Controllers.Values)
+            {
+                snapshot.DiscoveryConnections.TryGetValue(endpoint.NodeId, out var aliases);
+                endpoints[index++] = new ConnectionStatusEndpoint(
+                    endpoint.NodeId,
+                    endpoint.Host,
+                    endpoint.Port,
+                    aliases);
+            }
+            brokers = statusSource.GetEndpointConnectionStatus(endpoints);
+        }
+        return KafkaClientStatusFactory.Capture(
+            KafkaClientRole.Admin,
+            _connectionPool,
+            snapshot.ClusterId,
+            snapshot.LastRefreshed,
+            stopped,
+            brokers: brokers);
+    }
 
     private static void ValidateBootstrapOptions(AdminClientOptions options)
     {

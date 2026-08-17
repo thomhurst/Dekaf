@@ -1525,7 +1525,7 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         // The original defect (#2529) was counters wired onto a path production traffic never
         // took, so this drives the real send loop end to end rather than calling CompleteSend
         // directly: enqueue -> serialize -> scripted ack -> per-batch counter emission.
-        const string topic = "sent-counter-test-topic";
+        const string topic = "sent-counter-real-path-topic";
         // Resolve instrument names before the listener starts (static-initializer re-entry
         // landmine — see FireAndForgetDeliveryErrorMetricTests).
         var messagesSentName = DekafMetrics.MessagesSent.Name;
@@ -1560,7 +1560,7 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         {
             sender.Enqueue(CreateTestBatch(valueTaskSourcePool, topic, partition: 0, messageCount: 3));
 
-            await WaitUntilAsync(() => Volatile.Read(ref messagesSent) == 3, cancellationToken);
+            await WaitUntilAsync(() => Volatile.Read(ref messagesSent) >= 3, cancellationToken);
 
             // Bytes are the batch's encoded wire size, stamped during serialization.
             await Assert.That(Volatile.Read(ref bytesSent)).IsGreaterThan(0);

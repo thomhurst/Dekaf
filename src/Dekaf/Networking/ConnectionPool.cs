@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using Dekaf.Diagnostics;
 using Dekaf.Internal;
 using Dekaf.Protocol;
 using Dekaf.Retry;
@@ -16,6 +17,7 @@ namespace Dekaf.Networking;
 public sealed partial class ConnectionPool :
     IConnectionPool,
     IConnectionPoolDiagnostics,
+    IConnectionPoolStatusSource,
     IBrokerThrottleProvider,
     IConnectionCapabilityObserverPool,
     IMetadataClusterIdentityPool
@@ -65,8 +67,13 @@ public sealed partial class ConnectionPool :
     private readonly Action<TimeSpan>? _connectionSetupTimeoutObserver;
     private readonly Func<TimeSpan, CancellationToken, ValueTask>? _reconnectBackoffDelay;
     private readonly Func<long>? _timestampProvider;
+    private readonly Func<long> _statusTimestampProvider;
 
     private readonly ConcurrentDictionary<int, BrokerInfo> _brokers = new();
+    private int[]? _brokerStatusSnapshot;
+    private readonly ConcurrentDictionary<int, BrokerConnectionRuntimeState> _brokerConnectionRuntimeStates = new();
+    private readonly ConcurrentDictionary<EndpointKey, BrokerConnectionRuntimeState> _endpointConnectionRuntimeStates = new();
+    private long _connectionFailureSequence;
     private readonly ConcurrentDictionary<EndpointKey, IKafkaConnection> _connectionsByEndpoint = new();
     private readonly ConcurrentDictionary<int, IKafkaConnection> _connectionsById = new();
     // Per-endpoint semaphores to deduplicate concurrent single-connection creation
@@ -135,6 +142,7 @@ public sealed partial class ConnectionPool :
         _telemetryMetricCollector = telemetryMetricCollector;
         _idleReapDrainTimeout = idleReapDrainTimeout ?? DefaultIdleReapDrainTimeout;
         _randomDouble = randomDouble ?? SharedRandomDouble;
+        _statusTimestampProvider = static () => Dekaf.MonotonicClock.GetMilliseconds();
         var bucketCapacity = pipeMemoryBucketCapacity ?? ScaledBucketCapacity(_connectionsPerBroker);
         _sharedPipeMemoryPool = PipeMemoryPool.Create(maxArraysPerBucket: bucketCapacity);
         _currentPipeMemoryBucketCapacity = bucketCapacity;
@@ -155,7 +163,8 @@ public sealed partial class ConnectionPool :
         Action? brokerEndpointUpdated = null,
         Action<TimeSpan>? connectionSetupTimeoutObserver = null,
         Func<TimeSpan, CancellationToken, ValueTask>? reconnectBackoffDelay = null,
-        Func<long>? timestampProvider = null)
+        Func<long>? timestampProvider = null,
+        Func<long>? statusTimestampProvider = null)
     {
         _clientId = clientId;
         _connectionOptions = ConfigureSharedOAuthBearerProvider(
@@ -174,6 +183,8 @@ public sealed partial class ConnectionPool :
         _connectionSetupTimeoutObserver = connectionSetupTimeoutObserver;
         _reconnectBackoffDelay = reconnectBackoffDelay;
         _timestampProvider = timestampProvider;
+        _statusTimestampProvider = statusTimestampProvider ??
+            (static () => Dekaf.MonotonicClock.GetMilliseconds());
         // No shared pool needed: factory-created connections manage their own pools.
         StartIdleConnectionReaper();
     }
@@ -348,6 +359,7 @@ public sealed partial class ConnectionPool :
     public void RegisterBroker(int brokerId, string host, int port)
     {
         var brokerInfo = new BrokerInfo(brokerId, host, port);
+        var endpointChanged = false;
         while (true)
         {
             if (!_brokers.TryGetValue(brokerId, out var previous))
@@ -364,6 +376,7 @@ public sealed partial class ConnectionPool :
             if (!_brokers.TryUpdate(brokerId, brokerInfo, previous))
                 continue;
 
+            endpointChanged = true;
             var previousKey = new ConnectionSetupKey(brokerId, previous.Host, previous.Port);
             _connectionSetupTimeouts.TryRemove(previousKey, out _);
             RemoveReconnectBackoff(previousKey);
@@ -371,6 +384,10 @@ public sealed partial class ConnectionPool :
             RetireBrokerConnections(brokerId, previous);
             break;
         }
+
+        var runtimeState = GetBrokerConnectionRuntimeState(brokerId);
+        if (endpointChanged)
+            runtimeState.RecordStateChange();
 
         GetBrokerThrottleState(brokerId, new EndpointKey(host, port));
         LogRegisteredBroker(brokerId, host, port);
@@ -605,9 +622,10 @@ public sealed partial class ConnectionPool :
             success = true;
             return connections[0];
         }
-        catch when (!cancellationToken.IsCancellationRequested)
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
         {
-            RecordConnectionAttemptFailure(setupKey, brokerId, brokerInfo.Host, brokerInfo.Port);
+            RecordConnectionAttemptFailure(
+                setupKey, brokerId, brokerInfo.Host, brokerInfo.Port, ex.Message);
             throw;
         }
         finally
@@ -730,13 +748,13 @@ public sealed partial class ConnectionPool :
                     ThrowIfGroupConnectionDisconnected(connection, brokerId);
                 }
             }
-            catch
+            catch (Exception ex)
             {
                 // Close any successfully created connections to avoid leaking TCP handles.
                 await DisposeCompletedTaskConnectionsAsync(tasks).ConfigureAwait(false);
                 if (!cancellationToken.IsCancellationRequested)
                     RecordConnectionAttemptFailure(
-                        setupKey, brokerId, brokerInfo.Host, brokerInfo.Port);
+                        setupKey, brokerId, brokerInfo.Host, brokerInfo.Port, ex.Message);
                 throw;
             }
 
@@ -789,7 +807,9 @@ public sealed partial class ConnectionPool :
             Array.Copy(currentGroup, shrunkGroup, shrunkGroup.Length);
 
             // Atomically swap the connection group
+            PreserveSuccessfulRequest(removedConnection, brokerId);
             _connectionGroupsById[brokerId] = shrunkGroup;
+            RecordBrokerConnectionStateChange(brokerId);
 
             // Clean up creation task slot for the removed index.
             // The semaphore is intentionally NOT disposed here: a concurrent
@@ -905,12 +925,14 @@ public sealed partial class ConnectionPool :
                 try { await connection.DisposeAsync().ConfigureAwait(false); }
                 catch { /* best-effort cleanup of a disconnected replacement */ }
 
+                var exception = CreateDisconnectedGroupConnectionException(brokerId);
                 RecordReconnectFailure(
                     new ConnectionSetupKey(brokerId, brokerInfo.Host, brokerInfo.Port),
                     brokerId,
                     brokerInfo.Host,
-                    brokerInfo.Port);
-                throw CreateDisconnectedGroupConnectionException(brokerId);
+                    brokerInfo.Port,
+                    exception.Message);
+                throw exception;
             }
 
             // Acquire _scaleLock to protect the array write against concurrent
@@ -1136,6 +1158,7 @@ public sealed partial class ConnectionPool :
                 // Dispose disconnected connection before creating a new one to avoid socket/pipe leaks.
                 if (existing is not null)
                 {
+                    PreserveRemovedConnectionState(existing, brokerId, endpoint);
                     _connectionsByEndpoint.TryRemove(endpoint, out _);
                     if (brokerId >= 0)
                         _connectionsById.TryRemove(brokerId, out _);
@@ -1168,7 +1191,12 @@ public sealed partial class ConnectionPool :
                 try { await connection.DisposeAsync().ConfigureAwait(false); }
                 catch { /* best-effort cleanup */ }
 
-                RecordReconnectFailure(setupKey, brokerId, host, port);
+                RecordReconnectFailure(
+                    setupKey,
+                    brokerId,
+                    host,
+                    port,
+                    "Connection closed during setup.");
             }
 
             throw new InvalidOperationException($"Failed to create connection after {MaxRetries} retries");
@@ -1300,22 +1328,24 @@ public sealed partial class ConnectionPool :
         {
             timeoutCts.Cancel();
             ObserveLateConnectionSetup(connectionTask);
+            var exception = CreateConnectionSetupTimeoutException(timeout, brokerId, host, port);
             if (recordFailure)
-                RecordConnectionAttemptFailure(setupKey, brokerId, host, port);
-            throw CreateConnectionSetupTimeoutException(timeout, brokerId, host, port);
+                RecordConnectionAttemptFailure(setupKey, brokerId, host, port, exception.Message);
+            throw exception;
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !callerCancellationToken.IsCancellationRequested)
         {
             ObserveLateConnectionSetup(connectionTask);
+            var exception = CreateConnectionSetupTimeoutException(timeout, brokerId, host, port);
             if (recordFailure)
-                RecordConnectionAttemptFailure(setupKey, brokerId, host, port);
-            throw CreateConnectionSetupTimeoutException(timeout, brokerId, host, port);
+                RecordConnectionAttemptFailure(setupKey, brokerId, host, port, exception.Message);
+            throw exception;
         }
-        catch (OperationCanceledException) when (operationCancellationToken.IsCancellationRequested && !callerCancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException ex) when (operationCancellationToken.IsCancellationRequested && !callerCancellationToken.IsCancellationRequested)
         {
             ObserveLateConnectionSetup(connectionTask);
             if (recordFailure)
-                RecordConnectionAttemptFailure(setupKey, brokerId, host, port);
+                RecordConnectionAttemptFailure(setupKey, brokerId, host, port, ex.Message);
             throw;
         }
         catch (OperationCanceledException) when (callerCancellationToken.IsCancellationRequested)
@@ -1325,11 +1355,11 @@ public sealed partial class ConnectionPool :
             ObserveLateConnectionSetup(connectionTask, trackDisposal: false);
             throw;
         }
-        catch (Exception)
+        catch (Exception ex)
         {
             ObserveLateConnectionSetup(connectionTask);
             if (recordFailure)
-                RecordConnectionAttemptFailure(setupKey, brokerId, host, port);
+                RecordConnectionAttemptFailure(setupKey, brokerId, host, port, ex.Message);
             throw;
         }
     }
@@ -1418,10 +1448,11 @@ public sealed partial class ConnectionPool :
         ConnectionSetupKey setupKey,
         int brokerId,
         string host,
-        int port)
+        int port,
+        string error)
     {
         RecordConnectionSetupFailure(setupKey);
-        RecordReconnectFailure(setupKey, brokerId, host, port);
+        RecordReconnectFailure(setupKey, brokerId, host, port, error);
     }
 
     private void ResetConnectionSetupTimeout(ConnectionSetupKey setupKey)
@@ -1510,8 +1541,19 @@ public sealed partial class ConnectionPool :
         }
     }
 
-    private void RecordReconnectFailure(ConnectionSetupKey setupKey, int brokerId, string host, int port)
+    private void RecordReconnectFailure(
+        ConnectionSetupKey setupKey,
+        int brokerId,
+        string host,
+        int port,
+        string error)
     {
+        var failureSequence = Interlocked.Increment(ref _connectionFailureSequence);
+        if (brokerId >= 0)
+            GetBrokerConnectionRuntimeState(brokerId).RecordFailure(error, failureSequence);
+        else
+            GetEndpointConnectionRuntimeState(new EndpointKey(host, port)).RecordFailure(error, failureSequence);
+
         var state = _reconnectBackoffs.GetOrAdd(setupKey, static _ => new ReconnectBackoffState());
 
         TimeSpan delay;
@@ -1639,6 +1681,7 @@ public sealed partial class ConnectionPool :
             return false;
         }
 
+        PreserveRemovedConnectionState(connection, connection.BrokerId, endpoint);
         return true;
     }
 
@@ -1668,8 +1711,64 @@ public sealed partial class ConnectionPool :
         var result = await DisposeIdleConnectionAsync(connection, index, now).ConfigureAwait(false);
         if (!result.Reaped && result.CanRestore && connection.IsConnected)
             Interlocked.CompareExchange(ref group[index], connection, null!);
+        else if (result.Reaped)
+        {
+            PreserveSuccessfulRequest(connection, brokerId);
+            RecordBrokerConnectionStateChange(brokerId);
+        }
 
         return result.Reaped;
+    }
+
+    private void RecordBrokerConnectionStateChange(int brokerId) =>
+        GetBrokerConnectionRuntimeState(brokerId).RecordStateChange();
+
+    private void PreserveRemovedConnectionState(
+        IKafkaConnection connection,
+        int brokerId,
+        EndpointKey endpoint)
+    {
+        var runtimeState = brokerId >= 0
+            ? GetBrokerConnectionRuntimeState(brokerId)
+            : GetEndpointConnectionRuntimeState(endpoint);
+        if (connection is IKafkaConnectionStatusSource statusSource)
+        {
+            runtimeState.RecordSuccessfulRequest(statusSource.LastSuccessfulRequestTimestampMs);
+            var timestampMs = statusSource.LastConnectionStateChangeTimestampMs;
+            if (timestampMs > 0)
+            {
+                runtimeState.RecordStateChange(timestampMs);
+                return;
+            }
+        }
+
+        runtimeState.RecordStateChange();
+    }
+
+    private BrokerConnectionRuntimeState GetBrokerConnectionRuntimeState(int brokerId)
+    {
+        if (_brokerConnectionRuntimeStates.TryGetValue(brokerId, out var runtimeState))
+            return runtimeState;
+
+        return _brokerConnectionRuntimeStates.GetOrAdd(
+            brokerId,
+            static (_, timestampProvider) => new BrokerConnectionRuntimeState(
+                timestampProvider,
+                recordInitialState: true),
+            _statusTimestampProvider);
+    }
+
+    private BrokerConnectionRuntimeState GetEndpointConnectionRuntimeState(EndpointKey endpoint)
+    {
+        if (_endpointConnectionRuntimeStates.TryGetValue(endpoint, out var runtimeState))
+            return runtimeState;
+
+        return _endpointConnectionRuntimeStates.GetOrAdd(
+            endpoint,
+            static (_, timestampProvider) => new BrokerConnectionRuntimeState(
+                timestampProvider,
+                recordInitialState: false),
+            _statusTimestampProvider);
     }
 
     private bool IsIdleReapable(IKafkaConnection connection, long now)
@@ -1786,6 +1885,256 @@ public sealed partial class ConnectionPool :
         return maximum;
     }
 
+    IReadOnlyList<BrokerConnectionStatus> IConnectionPoolStatusSource.GetBrokerConnectionStatus()
+    {
+        var capturedAtUtc = DateTimeOffset.UtcNow;
+        var capturedAtTimestampMs = _statusTimestampProvider();
+        var brokerIds = Volatile.Read(ref _brokerStatusSnapshot);
+        var result = new List<BrokerConnectionStatus>(brokerIds?.Length ?? _brokers.Count);
+
+        if (brokerIds is null)
+        {
+            foreach (var broker in _brokers.Values)
+            {
+                result.Add(CaptureBrokerConnectionStatus(
+                    broker, capturedAtTimestampMs, capturedAtUtc));
+            }
+        }
+        else
+        {
+            for (var i = 0; i < brokerIds.Length; i++)
+            {
+                if (_brokers.TryGetValue(brokerIds[i], out var broker))
+                {
+                    result.Add(CaptureBrokerConnectionStatus(
+                        broker, capturedAtTimestampMs, capturedAtUtc));
+                }
+            }
+        }
+
+        result.Sort(static (left, right) => left.BrokerId.CompareTo(right.BrokerId));
+        return result.AsReadOnly();
+    }
+
+    IReadOnlyList<BrokerConnectionStatus> IConnectionPoolStatusSource.GetEndpointConnectionStatus(
+        IReadOnlyList<ConnectionStatusEndpoint> endpoints)
+    {
+        var capturedAtUtc = DateTimeOffset.UtcNow;
+        var capturedAtTimestampMs = _statusTimestampProvider();
+        var result = new List<BrokerConnectionStatus>(endpoints.Count);
+        for (var i = 0; i < endpoints.Count; i++)
+        {
+            var endpoint = endpoints[i];
+            var endpointKey = new EndpointKey(endpoint.Host, endpoint.Port);
+            var connections = default(ConnectionStatusAccumulator);
+            if (_connectionsByEndpoint.TryGetValue(endpointKey, out var connection))
+                AccumulateConnectionStatus(connection, ref connections);
+            _endpointConnectionRuntimeStates.TryGetValue(endpointKey, out var runtimeState);
+            AccumulateRuntimeState(runtimeState, ref connections);
+            var lastFailure = runtimeState?.LastFailure;
+            var aliases = endpoint.ConnectionAliases;
+            if (aliases is not null)
+            {
+                for (var aliasIndex = 0; aliasIndex < aliases.Count; aliasIndex++)
+                {
+                    var alias = aliases[aliasIndex];
+                    var aliasKey = new EndpointKey(alias.Host, alias.Port);
+                    if (aliasKey == endpointKey || AliasAlreadyVisited(aliases, aliasIndex, aliasKey))
+                        continue;
+
+                    if (_connectionsByEndpoint.TryGetValue(aliasKey, out connection))
+                        AccumulateConnectionStatus(connection, ref connections);
+                    _endpointConnectionRuntimeStates.TryGetValue(aliasKey, out var aliasRuntimeState);
+                    AccumulateRuntimeState(aliasRuntimeState, ref connections);
+                    lastFailure = GetLaterFailure(aliasRuntimeState?.LastFailure, lastFailure);
+                }
+            }
+            result.Add(CreateBrokerConnectionStatus(
+                new BrokerInfo(endpoint.NodeId, endpoint.Host, endpoint.Port),
+                ref connections,
+                capturedAtTimestampMs,
+                capturedAtUtc,
+                runtimeState,
+                lastFailure));
+        }
+
+        result.Sort(static (left, right) => left.BrokerId.CompareTo(right.BrokerId));
+        return result.AsReadOnly();
+    }
+
+    bool IConnectionPoolStatusSource.ContainsEndpointConnection(string host, int port) =>
+        _connectionsByEndpoint.ContainsKey(new EndpointKey(host, port));
+
+    private static bool AliasAlreadyVisited(
+        IReadOnlyList<ConnectionStatusEndpointAlias> aliases,
+        int currentIndex,
+        EndpointKey endpoint)
+    {
+        for (var i = 0; i < currentIndex; i++)
+        {
+            var alias = aliases[i];
+            if (new EndpointKey(alias.Host, alias.Port) == endpoint)
+                return true;
+        }
+
+        return false;
+    }
+
+    private static FailureInfo? GetLaterFailure(FailureInfo? candidate, FailureInfo? current)
+    {
+        if (candidate is null)
+            return current;
+        if (current is null)
+            return candidate;
+
+        return candidate.TimestampMs > current.TimestampMs ||
+               (candidate.TimestampMs == current.TimestampMs && candidate.Sequence > current.Sequence)
+            ? candidate
+            : current;
+    }
+
+    void IConnectionPoolStatusSource.UpdateBrokerStatusSnapshot(int[] brokerIds) =>
+        Volatile.Write(ref _brokerStatusSnapshot, brokerIds);
+
+    private BrokerConnectionStatus CaptureBrokerConnectionStatus(
+        BrokerInfo broker,
+        long capturedAtTimestampMs,
+        DateTimeOffset capturedAtUtc)
+    {
+        var connections = default(ConnectionStatusAccumulator);
+
+        _connectionGroupsById.TryGetValue(broker.BrokerId, out var group);
+        if (group is not null)
+        {
+            for (var i = 0; i < group.Length; i++)
+            {
+                var groupedConnection = Volatile.Read(ref group[i]);
+                if (groupedConnection is not null)
+                    AccumulateConnectionStatus(groupedConnection, ref connections);
+            }
+        }
+        if (_connectionsById.TryGetValue(broker.BrokerId, out var connection)
+            && !ContainsReference(group, connection))
+        {
+            AccumulateConnectionStatus(connection, ref connections);
+        }
+
+        return CreateBrokerConnectionStatus(
+            broker,
+            ref connections,
+            capturedAtTimestampMs,
+            capturedAtUtc);
+    }
+
+    private BrokerConnectionStatus CreateBrokerConnectionStatus(
+        BrokerInfo broker,
+        ref ConnectionStatusAccumulator connections,
+        long capturedAtTimestampMs,
+        DateTimeOffset capturedAtUtc,
+        BrokerConnectionRuntimeState? runtimeState = null,
+        FailureInfo? lastFailure = null)
+    {
+        runtimeState ??= _brokerConnectionRuntimeStates.TryGetValue(broker.BrokerId, out var brokerRuntimeState)
+            ? brokerRuntimeState
+            : null;
+        lastFailure ??= runtimeState?.LastFailure;
+        AccumulateRuntimeState(runtimeState, ref connections);
+
+        return new BrokerConnectionStatus
+        {
+            BrokerId = broker.BrokerId,
+            Host = broker.Host,
+            Port = broker.Port,
+            State = connections.ConnectedCount == 0
+                ? BrokerConnectionState.Disconnected
+                : connections.ConnectedCount == connections.ConnectionCount
+                    ? BrokerConnectionState.Connected
+                    : BrokerConnectionState.PartiallyConnected,
+            ConnectionCount = connections.ConnectionCount,
+            ConnectedConnectionCount = connections.ConnectedCount,
+            PendingRequestCount = connections.PendingRequestCount,
+            LastSuccessfulRequestAtUtc = ToUtcTimestamp(
+                connections.LastSuccessfulRequestTimestampMs, capturedAtTimestampMs, capturedAtUtc),
+            LastConnectionStateChangeAtUtc = ToUtcTimestamp(
+                connections.LastStateChangeTimestampMs, capturedAtTimestampMs, capturedAtUtc),
+            LastErrorAtUtc = ToUtcTimestamp(
+                lastFailure?.TimestampMs ?? 0, capturedAtTimestampMs, capturedAtUtc),
+            LastError = lastFailure?.Error
+        };
+    }
+
+    private static void AccumulateConnectionStatus(
+        IKafkaConnection connection,
+        ref ConnectionStatusAccumulator status)
+    {
+        status.ConnectionCount++;
+        if (connection.IsConnected)
+            status.ConnectedCount++;
+
+        if (connection is IIdleTrackedKafkaConnection idleTracked)
+            status.PendingRequestCount += idleTracked.PendingRequestCount;
+
+        if (connection is not IKafkaConnectionStatusSource statusSource)
+            return;
+
+        status.LastSuccessfulRequestTimestampMs = Math.Max(
+            status.LastSuccessfulRequestTimestampMs,
+            statusSource.LastSuccessfulRequestTimestampMs);
+        status.LastStateChangeTimestampMs = Math.Max(
+            status.LastStateChangeTimestampMs,
+            statusSource.LastConnectionStateChangeTimestampMs);
+    }
+
+    private static void AccumulateRuntimeState(
+        BrokerConnectionRuntimeState? runtimeState,
+        ref ConnectionStatusAccumulator status)
+    {
+        if (runtimeState is not null)
+        {
+            status.LastSuccessfulRequestTimestampMs = Math.Max(
+                status.LastSuccessfulRequestTimestampMs,
+                runtimeState.LastSuccessfulRequestTimestampMs);
+            status.LastStateChangeTimestampMs = Math.Max(
+                status.LastStateChangeTimestampMs,
+                runtimeState.LastStateChangeTimestampMs);
+        }
+    }
+
+    private struct ConnectionStatusAccumulator
+    {
+        public int ConnectionCount;
+        public int ConnectedCount;
+        public int PendingRequestCount;
+        public long LastSuccessfulRequestTimestampMs;
+        public long LastStateChangeTimestampMs;
+    }
+
+    private static bool ContainsReference(IKafkaConnection[]? connections, IKafkaConnection candidate)
+    {
+        if (connections is null)
+            return false;
+
+        for (var i = 0; i < connections.Length; i++)
+        {
+            if (ReferenceEquals(connections[i], candidate))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static DateTimeOffset? ToUtcTimestamp(
+        long timestampMs,
+        long capturedAtTimestampMs,
+        DateTimeOffset capturedAtUtc)
+    {
+        if (timestampMs <= 0)
+            return null;
+
+        var elapsedMs = Math.Max(capturedAtTimestampMs - timestampMs, 0);
+        return capturedAtUtc - TimeSpan.FromMilliseconds(elapsedMs);
+    }
+
     private void RecordConnectionReapDiagnostic(int brokerId, int connectionIndex, long idleDurationMs)
     {
         lock (_connectionReapDiagnosticsLock)
@@ -1845,6 +2194,7 @@ public sealed partial class ConnectionPool :
                 _connectionsByEndpoint,
                 new EndpointKey(connection.Host, connection.Port),
                 connection);
+            PreserveSuccessfulRequest(connection, brokerId);
             RetireConnection(connection);
         }
 
@@ -1860,8 +2210,22 @@ public sealed partial class ConnectionPool :
         foreach (var groupedConnection in group)
         {
             if (groupedConnection is not null)
+            {
+                PreserveSuccessfulRequest(groupedConnection, brokerId);
                 RetireConnection(groupedConnection);
+            }
         }
+    }
+
+    private void PreserveSuccessfulRequest(IKafkaConnection connection, int brokerId)
+        => PreserveSuccessfulRequest(connection, GetBrokerConnectionRuntimeState(brokerId));
+
+    private static void PreserveSuccessfulRequest(
+        IKafkaConnection connection,
+        BrokerConnectionRuntimeState runtimeState)
+    {
+        if (connection is IKafkaConnectionStatusSource statusSource)
+            runtimeState.RecordSuccessfulRequest(statusSource.LastSuccessfulRequestTimestampMs);
     }
 
     private static bool BrokerEndpointsEqual(BrokerInfo left, BrokerInfo right) =>
@@ -1981,8 +2345,16 @@ public sealed partial class ConnectionPool :
     {
         if (_connectionsById.TryRemove(brokerId, out var connection))
         {
+            var runtimeState = GetBrokerConnectionRuntimeState(brokerId);
+            PreserveSuccessfulRequest(connection, runtimeState);
+            runtimeState.RecordStateChange();
             var endpoint = new EndpointKey(connection.Host, connection.Port);
-            _connectionsByEndpoint.TryRemove(endpoint, out _);
+            if (_connectionsByEndpoint.TryRemove(endpoint, out var endpointConnection))
+            {
+                var endpointRuntimeState = GetEndpointConnectionRuntimeState(endpoint);
+                PreserveSuccessfulRequest(endpointConnection, endpointRuntimeState);
+                endpointRuntimeState.RecordStateChange();
+            }
             if (_connectionCreationLocks.TryRemove(endpoint, out var creationSem))
                 creationSem.Dispose();
             await connection.DisposeAsync().ConfigureAwait(false);
@@ -1991,6 +2363,14 @@ public sealed partial class ConnectionPool :
 
         if (_connectionGroupsById.TryRemove(brokerId, out var group))
         {
+            var runtimeState = GetBrokerConnectionRuntimeState(brokerId);
+            for (var i = 0; i < group.Length; i++)
+            {
+                if (group[i] is not null)
+                    PreserveSuccessfulRequest(group[i], runtimeState);
+            }
+            runtimeState.RecordStateChange();
+
             // Iterate the group's actual size: adaptive scaling can grow a group beyond
             // the configured ConnectionsPerBroker.
             for (var i = 0; i < group.Length; i++)
@@ -2020,27 +2400,44 @@ public sealed partial class ConnectionPool :
         {
             LogClosingAllConnections();
 
+            foreach (var (brokerId, connection) in _connectionsById)
+            {
+                var runtimeState = GetBrokerConnectionRuntimeState(brokerId);
+                PreserveSuccessfulRequest(connection, runtimeState);
+                runtimeState.RecordStateChange();
+            }
+
             var tasks = new List<ValueTask>();
 
             // Close single connections (the GetConnectionAsync path when
             // _connectionsPerBroker == 1). A pool configured for one connection can hold
             // BOTH a single connection and a connection group for the same broker once
             // adaptive scaling creates a group — both collections are disposed below.
-            foreach (var connection in _connectionsByEndpoint.Values)
+            foreach (var (endpoint, connection) in _connectionsByEndpoint)
             {
+                var runtimeState = GetEndpointConnectionRuntimeState(endpoint);
+                PreserveSuccessfulRequest(connection, runtimeState);
+                runtimeState.RecordStateChange();
                 tasks.Add(connection.DisposeAsync());
             }
 
             // Close connection groups (used when _connectionsPerBroker > 1)
-            foreach (var connectionGroup in _connectionGroupsById.Values)
+            foreach (var (brokerId, connectionGroup) in _connectionGroupsById)
             {
+                var runtimeState = GetBrokerConnectionRuntimeState(brokerId);
+                var recordStateChange = !_connectionsById.ContainsKey(brokerId);
+
                 foreach (var connection in connectionGroup)
                 {
                     if (connection is not null)
                     {
+                        PreserveSuccessfulRequest(connection, runtimeState);
                         tasks.Add(connection.DisposeAsync());
                     }
                 }
+
+                if (recordStateChange)
+                    runtimeState.RecordStateChange();
             }
 
             LogDisposingConnections(tasks.Count);
@@ -2245,6 +2642,70 @@ public sealed partial class ConnectionPool :
         public readonly object Sync = new();
         public int FailureCount;
     }
+
+    private sealed class BrokerConnectionRuntimeState(
+        Func<long> timestampProvider,
+        bool recordInitialState)
+    {
+        private readonly Func<long> _timestampProvider = timestampProvider;
+        private long _lastStateChangeTimestampMs = recordInitialState ? timestampProvider() : 0;
+        private long _lastSuccessfulRequestTimestampMs;
+        private FailureInfo? _lastFailure;
+
+        public long LastStateChangeTimestampMs => Volatile.Read(ref _lastStateChangeTimestampMs);
+        public long LastSuccessfulRequestTimestampMs => Volatile.Read(ref _lastSuccessfulRequestTimestampMs);
+        public FailureInfo? LastFailure => Volatile.Read(ref _lastFailure);
+
+        public void RecordStateChange() => RecordStateChange(_timestampProvider());
+
+        public void RecordSuccessfulRequest(long timestampMs)
+        {
+            var current = Volatile.Read(ref _lastSuccessfulRequestTimestampMs);
+            while (timestampMs > current)
+            {
+                var observed = Interlocked.CompareExchange(
+                    ref _lastSuccessfulRequestTimestampMs,
+                    timestampMs,
+                    current);
+                if (observed == current)
+                    return;
+
+                current = observed;
+            }
+        }
+
+        public void RecordStateChange(long timestampMs)
+        {
+            var current = Volatile.Read(ref _lastStateChangeTimestampMs);
+            while (timestampMs > current)
+            {
+                var observed = Interlocked.CompareExchange(
+                    ref _lastStateChangeTimestampMs,
+                    timestampMs,
+                    current);
+                if (observed == current)
+                    return;
+
+                current = observed;
+            }
+        }
+
+        public void RecordFailure(string error, long sequence)
+        {
+            var failure = new FailureInfo(error, _timestampProvider(), sequence);
+            var current = Volatile.Read(ref _lastFailure);
+            while (current is null || sequence > current.Sequence)
+            {
+                var observed = Interlocked.CompareExchange(ref _lastFailure, failure, current);
+                if (ReferenceEquals(observed, current))
+                    return;
+
+                current = observed;
+            }
+        }
+    }
+
+    private sealed record FailureInfo(string Error, long TimestampMs, long Sequence);
 
     private readonly record struct EndpointKey(string Host, int Port);
     private readonly record struct ConnectionSetupKey(int BrokerId, string Host, int Port);

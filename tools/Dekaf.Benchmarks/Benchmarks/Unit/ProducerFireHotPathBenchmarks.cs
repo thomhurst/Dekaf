@@ -1,5 +1,6 @@
-using System.Reflection;
 using System.Buffers;
+using System.Diagnostics;
+using System.Reflection;
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Engines;
 using Dekaf.Benchmarks.Infrastructure;
@@ -28,6 +29,8 @@ public class ProducerFireHotPathBenchmarks
     private CancellationTokenSource _drainerCts = null!;
     private Thread _drainerThread = null!;
     private string _value = null!;
+    private ProducerMessage<string, string>[] _messages = null!;
+    private ActivityListener? _activityListener;
 
     [Params(1000)]
     public int MessageSize { get; set; }
@@ -37,6 +40,9 @@ public class ProducerFireHotPathBenchmarks
 
     [Params(1, 12)]
     public int PartitionCount { get; set; }
+
+    [Params(false, true)]
+    public bool TracingEnabled { get; set; }
 
     [Params(false, true)]
     public bool UsePreparedSerializer { get; set; }
@@ -63,6 +69,16 @@ public class ProducerFireHotPathBenchmarks
             Serializers.String,
             UsePreparedSerializer ? PreparedStringSerializer.Instance : Serializers.String);
 
+        if (TracingEnabled)
+        {
+            _activityListener = new ActivityListener
+            {
+                ShouldListenTo = static source => source.Name == Diagnostics.DekafDiagnostics.ActivitySourceName,
+                Sample = static (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData
+            };
+            ActivitySource.AddActivityListener(_activityListener);
+        }
+
         await StopBackgroundLoopsAsync(_producer).ConfigureAwait(false);
         SeedMetadata(_producer, PartitionCount);
         SetInstanceField(_producer, "_initialized", true);
@@ -77,6 +93,16 @@ public class ProducerFireHotPathBenchmarks
         }
 
         _value = new string('x', MessageSize);
+        _messages = new ProducerMessage<string, string>[100];
+        for (var i = 0; i < _messages.Length; i++)
+        {
+            _messages[i] = new ProducerMessage<string, string>
+            {
+                Topic = Topic,
+                Key = Keys[i],
+                Value = _value
+            };
+        }
         _drainerCts = new CancellationTokenSource();
         _drainerThread = new Thread(() => DrainLoop(_drainerCts.Token))
         {
@@ -95,6 +121,7 @@ public class ProducerFireHotPathBenchmarks
         _drainerCts.Cancel();
         _drainerThread.Join();
         _drainerCts.Dispose();
+        _activityListener?.Dispose();
 
         await _producer.DisposeAsync().ConfigureAwait(false);
     }
@@ -104,7 +131,7 @@ public class ProducerFireHotPathBenchmarks
     {
         for (var i = 0; i < 100; i++)
         {
-            var result = _producer.FireAsync(Topic, Keys[i], _value);
+            var result = _producer.FireAsync(_messages[i]);
             if (!result.IsCompletedSuccessfully)
             {
                 throw new InvalidOperationException(
@@ -167,6 +194,14 @@ public class ProducerFireHotPathBenchmarks
                 },
             ],
         });
+        typeof(MetadataManager)
+            .GetMethod(
+                "UpdateMetadataClusterId",
+                BindingFlags.NonPublic | BindingFlags.Instance,
+                binder: null,
+                [typeof(string)],
+                modifiers: null)!
+            .Invoke(metadataManager, ["producer-fire-hot-path"]);
     }
 
     private static ValueTask StopBackgroundLoopsAsync(KafkaProducer<string, string> producer)

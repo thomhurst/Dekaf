@@ -8,3 +8,10 @@ internal interface IIdleTrackedKafkaConnection
 
     void Touch();
 }
+
+internal interface IKafkaConnectionStatusSource
+{
+    long LastSuccessfulRequestTimestampMs { get; }
+
+    long LastConnectionStateChangeTimestampMs { get; }
+}

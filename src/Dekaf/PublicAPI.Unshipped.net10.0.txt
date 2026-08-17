@@ -19,3 +19,108 @@ Dekaf.Consumer.KafkaConsumer<TKey, TValue>.StoreOffsets<TOffsets>(TOffsets offse
 static Dekaf.Consumer.ConsumerOffsetStoreExtensions.StoreOffsets<TKey, TValue>(this Dekaf.Consumer.IKafkaConsumer<TKey, TValue>! consumer, Dekaf.TopicPartitionOffset[]! offsets) -> void
 static Dekaf.Consumer.ConsumerOffsetStoreExtensions.StoreOffsets<TKey, TValue>(this Dekaf.Consumer.IKafkaConsumer<TKey, TValue>! consumer, System.ReadOnlySpan<Dekaf.TopicPartitionOffset> offsets) -> void
 static Dekaf.Consumer.ConsumerOffsetStoreExtensions.StoreOffsets<TKey, TValue, TOffsets>(this Dekaf.Consumer.IKafkaConsumer<TKey, TValue>! consumer, TOffsets offsets) -> void
+Dekaf.Diagnostics.IKafkaClientIdentity
+Dekaf.Diagnostics.IKafkaClientStatusProvider
+Dekaf.Diagnostics.KafkaClientRole
+Dekaf.Diagnostics.BrokerConnectionState.Disconnected = 0 -> Dekaf.Diagnostics.BrokerConnectionState
+Dekaf.Diagnostics.BrokerConnectionState.PartiallyConnected = 1 -> Dekaf.Diagnostics.BrokerConnectionState
+Dekaf.Diagnostics.BrokerConnectionState
+Dekaf.Diagnostics.BrokerConnectionState.Connected = 2 -> Dekaf.Diagnostics.BrokerConnectionState
+Dekaf.Diagnostics.KafkaClientRole.Producer = 0 -> Dekaf.Diagnostics.KafkaClientRole
+Dekaf.Diagnostics.KafkaClientStatus
+Dekaf.Diagnostics.KafkaClientStatus.KafkaClientStatus() -> void
+Dekaf.Diagnostics.BrokerConnectionStatus
+Dekaf.Diagnostics.BrokerConnectionStatus.BrokerConnectionStatus() -> void
+Dekaf.Diagnostics.KafkaClientRole.Admin = 3 -> Dekaf.Diagnostics.KafkaClientRole
+Dekaf.Diagnostics.KafkaClientRole.ShareConsumer = 2 -> Dekaf.Diagnostics.KafkaClientRole
+Dekaf.Diagnostics.KafkaClientRole.Consumer = 1 -> Dekaf.Diagnostics.KafkaClientRole
+Dekaf.Diagnostics.ProducerBacklogStatus
+Dekaf.Diagnostics.ProducerBacklogStatus.ProducerBacklogStatus() -> void
+~override Dekaf.Diagnostics.ProducerBacklogStatus.ToString() -> string
+static Dekaf.Diagnostics.ProducerBacklogStatus.operator !=(Dekaf.Diagnostics.ProducerBacklogStatus left, Dekaf.Diagnostics.ProducerBacklogStatus right) -> bool
+static Dekaf.Diagnostics.ProducerBacklogStatus.operator ==(Dekaf.Diagnostics.ProducerBacklogStatus left, Dekaf.Diagnostics.ProducerBacklogStatus right) -> bool
+override Dekaf.Diagnostics.ProducerBacklogStatus.GetHashCode() -> int
+~override Dekaf.Diagnostics.ProducerBacklogStatus.Equals(object obj) -> bool
+Dekaf.Diagnostics.ProducerBacklogStatus.Equals(Dekaf.Diagnostics.ProducerBacklogStatus other) -> bool
+Dekaf.Diagnostics.ProducerBacklogStatus.Deconstruct(out long BufferedBytes, out ulong BufferCapacityBytes, out int UnsealedBatchCount, out long QueuedBatchCount, out long InFlightBatchCount, out long BufferPressureEventCount) -> void
+Dekaf.Diagnostics.ProducerBacklogStatus.BufferedBytes.get -> long
+Dekaf.Diagnostics.ProducerBacklogStatus.BufferedBytes.init -> void
+Dekaf.Diagnostics.ProducerBacklogStatus.BufferCapacityBytes.get -> ulong
+Dekaf.Diagnostics.ProducerBacklogStatus.BufferCapacityBytes.init -> void
+Dekaf.Diagnostics.ProducerBacklogStatus.UnsealedBatchCount.get -> int
+Dekaf.Diagnostics.ProducerBacklogStatus.UnsealedBatchCount.init -> void
+Dekaf.Diagnostics.ProducerBacklogStatus.QueuedBatchCount.get -> long
+Dekaf.Diagnostics.ProducerBacklogStatus.QueuedBatchCount.init -> void
+Dekaf.Diagnostics.ProducerBacklogStatus.InFlightBatchCount.get -> long
+Dekaf.Diagnostics.ProducerBacklogStatus.BufferPressureEventCount.get -> long
+Dekaf.Diagnostics.ProducerBacklogStatus.InFlightBatchCount.init -> void
+Dekaf.Diagnostics.ProducerBacklogStatus.BufferPressureEventCount.init -> void
+Dekaf.Diagnostics.ConsumerGroupStatus
+Dekaf.Diagnostics.ConsumerGroupStatus.ConsumerGroupStatus() -> void
+Dekaf.Admin.AdminClient.ClusterId.get -> string?
+Dekaf.Admin.AdminClient.GetStatus() -> Dekaf.Diagnostics.KafkaClientStatus!
+Dekaf.Diagnostics.ConsumerGroupStatus.HasConsumerGroup.get -> bool
+Dekaf.Diagnostics.ConsumerGroupStatus.HasConsumerGroup.init -> void
+Dekaf.Diagnostics.ConsumerGroupStatus.State.get -> Dekaf.Consumer.CoordinatorState
+Dekaf.Diagnostics.ConsumerGroupStatus.State.init -> void
+Dekaf.Diagnostics.ConsumerGroupStatus.CoordinatorId.init -> void
+Dekaf.Diagnostics.ConsumerGroupStatus.CoordinatorId.get -> int
+Dekaf.Diagnostics.ConsumerGroupStatus.MemberId.get -> string?
+Dekaf.Diagnostics.ConsumerGroupStatus.GenerationOrMemberEpoch.get -> int
+Dekaf.Diagnostics.ConsumerGroupStatus.MemberId.init -> void
+Dekaf.Diagnostics.ConsumerGroupStatus.GenerationOrMemberEpoch.init -> void
+Dekaf.Diagnostics.ConsumerGroupStatus.HeartbeatInterval.get -> System.TimeSpan
+Dekaf.Diagnostics.ConsumerGroupStatus.HeartbeatInterval.init -> void
+Dekaf.Diagnostics.ConsumerGroupStatus.TimeSinceLastHeartbeat.get -> System.TimeSpan?
+Dekaf.Diagnostics.ConsumerGroupStatus.TimeSinceLastHeartbeat.init -> void
+Dekaf.Diagnostics.ConsumerGroupStatus.LastHeartbeatFailure.get -> string?
+Dekaf.Diagnostics.ConsumerGroupStatus.LastHeartbeatFailure.init -> void
+Dekaf.Diagnostics.ConsumerGroupStatus.Assignment.init -> void
+Dekaf.Diagnostics.ConsumerGroupStatus.Assignment.get -> System.Collections.Generic.IReadOnlyList<Dekaf.TopicPartition>!
+Dekaf.Diagnostics.ProducerBacklogStatus.ProducerBacklogStatus(long BufferedBytes, ulong BufferCapacityBytes, int UnsealedBatchCount, long QueuedBatchCount, long InFlightBatchCount, long BufferPressureEventCount) -> void
+Dekaf.Diagnostics.ProducerBacklogStatus.BufferUtilization.get -> double
+Dekaf.Diagnostics.IKafkaClientIdentity.ClusterId.get -> string?
+Dekaf.Diagnostics.ProducerBacklogStatus.IsAtCapacity.get -> bool
+Dekaf.Diagnostics.BrokerConnectionStatus.BrokerId.get -> int
+Dekaf.Diagnostics.BrokerConnectionStatus.Host.get -> string!
+Dekaf.Diagnostics.BrokerConnectionStatus.BrokerId.init -> void
+Dekaf.Diagnostics.BrokerConnectionStatus.Host.init -> void
+Dekaf.Diagnostics.BrokerConnectionStatus.Port.init -> void
+Dekaf.Diagnostics.BrokerConnectionStatus.Port.get -> int
+Dekaf.Diagnostics.BrokerConnectionStatus.State.get -> Dekaf.Diagnostics.BrokerConnectionState
+Dekaf.Diagnostics.BrokerConnectionStatus.State.init -> void
+Dekaf.Diagnostics.BrokerConnectionStatus.ConnectionCount.init -> void
+Dekaf.Diagnostics.BrokerConnectionStatus.ConnectedConnectionCount.get -> int
+Dekaf.Diagnostics.BrokerConnectionStatus.ConnectionCount.get -> int
+Dekaf.Diagnostics.BrokerConnectionStatus.ConnectedConnectionCount.init -> void
+Dekaf.Diagnostics.BrokerConnectionStatus.PendingRequestCount.get -> int
+Dekaf.Diagnostics.BrokerConnectionStatus.PendingRequestCount.init -> void
+Dekaf.Diagnostics.BrokerConnectionStatus.LastSuccessfulRequestAtUtc.get -> System.DateTimeOffset?
+Dekaf.Diagnostics.BrokerConnectionStatus.LastSuccessfulRequestAtUtc.init -> void
+Dekaf.Diagnostics.BrokerConnectionStatus.LastErrorAtUtc.get -> System.DateTimeOffset?
+Dekaf.Diagnostics.BrokerConnectionStatus.LastConnectionStateChangeAtUtc.init -> void
+Dekaf.Diagnostics.BrokerConnectionStatus.LastConnectionStateChangeAtUtc.get -> System.DateTimeOffset?
+Dekaf.Diagnostics.BrokerConnectionStatus.LastErrorAtUtc.init -> void
+Dekaf.Diagnostics.BrokerConnectionStatus.LastError.get -> string?
+Dekaf.Diagnostics.BrokerConnectionStatus.LastError.init -> void
+Dekaf.Diagnostics.KafkaClientStatus.CapturedAtUtc.get -> System.DateTimeOffset
+Dekaf.Diagnostics.KafkaClientStatus.Role.get -> Dekaf.Diagnostics.KafkaClientRole
+Dekaf.Diagnostics.KafkaClientStatus.CapturedAtUtc.init -> void
+Dekaf.Diagnostics.KafkaClientStatus.Role.init -> void
+Dekaf.Diagnostics.KafkaClientStatus.ClusterId.init -> void
+Dekaf.Diagnostics.KafkaClientStatus.MetadataLastRefreshedAtUtc.get -> System.DateTimeOffset?
+Dekaf.Diagnostics.KafkaClientStatus.ClusterId.get -> string?
+Dekaf.Diagnostics.KafkaClientStatus.IsStopped.get -> bool
+Dekaf.Diagnostics.KafkaClientStatus.MetadataLastRefreshedAtUtc.init -> void
+Dekaf.Diagnostics.KafkaClientStatus.Brokers.get -> System.Collections.Generic.IReadOnlyList<Dekaf.Diagnostics.BrokerConnectionStatus!>!
+Dekaf.Diagnostics.KafkaClientStatus.Brokers.init -> void
+Dekaf.Diagnostics.KafkaClientStatus.IsStopped.init -> void
+Dekaf.Diagnostics.KafkaClientStatus.Producer.get -> Dekaf.Diagnostics.ProducerBacklogStatus?
+Dekaf.Diagnostics.KafkaClientStatus.Producer.init -> void
+Dekaf.Diagnostics.KafkaClientStatus.ConsumerGroup.get -> Dekaf.Diagnostics.ConsumerGroupStatus?
+Dekaf.Diagnostics.KafkaClientStatus.ConsumerGroup.init -> void
+Dekaf.Diagnostics.IKafkaClientStatusProvider.GetStatus() -> Dekaf.Diagnostics.KafkaClientStatus!
+Dekaf.Consumer.KafkaConsumer<TKey, TValue>.ClusterId.get -> string?
+Dekaf.Consumer.KafkaConsumer<TKey, TValue>.GetStatus() -> Dekaf.Diagnostics.KafkaClientStatus!
+Dekaf.Producer.KafkaProducer<TKey, TValue>.ClusterId.get -> string?
+Dekaf.Producer.KafkaProducer<TKey, TValue>.GetStatus() -> Dekaf.Diagnostics.KafkaClientStatus!

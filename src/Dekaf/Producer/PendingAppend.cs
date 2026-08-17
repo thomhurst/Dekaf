@@ -220,7 +220,7 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
         // Clean up owned resources since drain will not process this operation
         _key.Return();
         _value.Return();
-        RecordAccumulator.ReturnPooledHeaders(_headers);
+        RecordAccumulator.ReturnPooledHeaders(_headers, _headerCount);
 
         _core.SetException(exception);
         return true;

@@ -6,6 +6,7 @@ using Dekaf.Errors;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using Dekaf.Compression;
+using Dekaf.Diagnostics;
 using Dekaf.Internal;
 using Dekaf.Metadata;
 using Dekaf.Networking;
@@ -1108,6 +1109,7 @@ internal static class ConsumerFetchPools
 /// <typeparam name="TValue">Value type.</typeparam>
 public sealed partial class KafkaConsumer<TKey, TValue> :
     IKafkaConsumer<TKey, TValue>,
+    IKafkaClientStatusProvider,
     IBoundedKafkaConsumer<TKey, TValue>,
     IConsumerGroupLiveness,
     IConsumerPositions,
@@ -1984,6 +1986,42 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     }
 
     public string? MemberId => _coordinator?.MemberId;
+
+    /// <inheritdoc />
+    public string? ClusterId => _metadataManager.ClusterId;
+
+    /// <inheritdoc />
+    public KafkaClientStatus GetStatus()
+    {
+        var stopped = Volatile.Read(ref _closed) != 0 || Volatile.Read(ref _consumerDisposed) != 0;
+        var hasConsumerGroup = _topicFilter is not null
+            || _topicPattern is not null
+            || _subscriptionSnapshot.Count != 0;
+        var consumerGroup = hasConsumerGroup
+            ? _coordinator?.CaptureGroupStatus()
+            : null;
+        if (consumerGroup is null)
+        {
+            var assignment = _assignmentSnapshot;
+            consumerGroup = new ConsumerGroupStatus
+            {
+                HasConsumerGroup = false,
+                State = CoordinatorState.Unjoined,
+                CoordinatorId = -1,
+                GenerationOrMemberEpoch = -1,
+                HeartbeatInterval = TimeSpan.Zero,
+                Assignment = KafkaClientStatusFactory.CopyAssignment(assignment, assignment.Count)
+            };
+        }
+
+        return KafkaClientStatusFactory.Capture(
+            KafkaClientRole.Consumer,
+            _connectionPool,
+            _metadataManager,
+            stopped,
+            consumerGroup: consumerGroup);
+    }
+
     public TopicPartitionSet Paused => _pausedSnapshot;
     public IConsumerPositions Positions => this;
     public IConsumerPartitions Partitions => this;
@@ -1999,7 +2037,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             LastHeartbeatFailure: null)
         : _coordinator.CaptureGroupLiveness(
             Volatile.Read(ref _closed) != 0 || Volatile.Read(ref _consumerDisposed) != 0,
-            _topicPattern is not null || _subscriptionSnapshot.Count != 0);
+            _topicFilter is not null || _topicPattern is not null || _subscriptionSnapshot.Count != 0);
 
     IDisposable IConsumerRebalanceEventSource.RegisterRuntimeRebalanceListener(IRebalanceListener listener)
     {
@@ -2776,8 +2814,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                     pooledHeaderCount,
                                     pending,
                                     pending.HeaderGeneration);
-                                activity = StartConsumeActivity(pending, headers, offset,
-                                    valueData.Length, isValueNull, isProcessSpan: true);
+                                activity = StartConsumeActivity(
+                                    pending, headers, offset, isValueNull, isProcessSpan: true);
                                 if (activity is not null)
                                     previousActivity = activity;
                             }
@@ -5177,7 +5215,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                 pooledHeaders,
                                 pooledHeaderCount,
                                 offset,
-                                valueData.Length,
                                 isValueNull,
                                 out pendingDisposed);
 
@@ -5361,7 +5398,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                 pooledHeaders,
                                 pooledHeaderCount,
                                 offset,
-                                valueData.Length,
                                 isValueNull,
                                 out pendingDisposed);
 
@@ -5628,7 +5664,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         Header[]? pooledHeaders,
         int pooledHeaderCount,
         long offset,
-        int valueLength,
         bool isValueNull,
         out bool pendingDisposed)
     {
@@ -5644,7 +5679,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 pending,
                 headers,
                 offset,
-                valueLength,
                 isValueNull,
                 isProcessSpan: false);
         }
@@ -8927,7 +8961,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         PendingFetchData pending,
         IReadOnlyList<Header>? headers,
         long offset,
-        int valueLength,
         bool isTombstone,
         bool isProcessSpan)
     {
@@ -8990,9 +9023,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 : Diagnostics.DekafDiagnostics.OperationTypeReceive);
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingDestinationPartitionId, pending.PartitionIndex);
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingKafkaOffset, offset);
-            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageBodySize, isTombstone ? 0 : valueLength);
+            // messaging.message.body.size is Opt-In in the OTel messaging conventions.
+            // Dekaf does not expose that opt-in, so avoid its tag node and per-record int box.
             if (isTombstone)
                 activity.SetTag(Diagnostics.DekafDiagnostics.MessagingKafkaTombstone, Diagnostics.DekafDiagnostics.BoxedTrue);
+            var clusterId = _metadataManager.ClusterId;
+            if (clusterId is not null)
+                activity.SetTag(Diagnostics.DekafDiagnostics.MessagingKafkaClusterId, clusterId);
             if (_options.ClientId is not null)
                 activity.SetTag(Diagnostics.DekafDiagnostics.MessagingClientId, _options.ClientId);
             if (_options.GroupId is not null)

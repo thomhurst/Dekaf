@@ -152,6 +152,7 @@ internal sealed class ControllerMetadataManager : IDisposable
                                     response.ClusterId,
                                     response.ControllerId,
                                     controllers,
+                                    BuildDiscoveryConnections(snapshot, endpoint, controllers),
                                     DateTimeOffset.UtcNow));
                             return;
                         }
@@ -352,15 +353,132 @@ internal sealed class ControllerMetadataManager : IDisposable
 
         return result;
     }
+
+    private static ControllerEndpoint IdentifyDiscoveryConnection(
+        ControllerEndpoint endpoint,
+        IReadOnlyDictionary<int, ControllerEndpoint> controllers)
+    {
+        if (endpoint.NodeId >= 0
+            && controllers.TryGetValue(endpoint.NodeId, out var identifiedController)
+            && HasSameAddress(endpoint, identifiedController))
+        {
+            return endpoint;
+        }
+
+        foreach (var controller in controllers.Values)
+        {
+            if (HasSameAddress(endpoint, controller))
+                return endpoint with { NodeId = controller.NodeId };
+        }
+
+        return endpoint with { NodeId = -1 };
+    }
+
+    private static bool HasSameAddress(ControllerEndpoint left, ControllerEndpoint right) =>
+        left.Port == right.Port
+        && string.Equals(left.Host, right.Host, StringComparison.OrdinalIgnoreCase);
+
+    private IReadOnlyDictionary<int, ConnectionStatusEndpointAlias[]> BuildDiscoveryConnections(
+        ControllerMetadataSnapshot previous,
+        ControllerEndpoint endpoint,
+        IReadOnlyDictionary<int, ControllerEndpoint> controllers)
+    {
+        var result = new Dictionary<int, ConnectionStatusEndpointAlias[]>(previous.DiscoveryConnections.Count + 1);
+        var statusSource = _connectionPool as IConnectionPoolStatusSource;
+        foreach (var pair in previous.DiscoveryConnections)
+        {
+            if (!controllers.ContainsKey(pair.Key))
+                continue;
+
+            var liveAliases = RetainRepresentedAliases(pair.Value, statusSource);
+            if (liveAliases.Length > 0)
+                result.Add(pair.Key, liveAliases);
+        }
+
+        var discovery = IdentifyDiscoveryConnection(endpoint, controllers);
+        if (discovery.NodeId >= 0)
+        {
+            var alias = new ConnectionStatusEndpointAlias(discovery.Host, discovery.Port);
+            if (!result.TryGetValue(discovery.NodeId, out var aliases))
+                result.Add(discovery.NodeId, [alias]);
+            else if (!ContainsAlias(aliases, alias))
+            {
+                var expanded = new ConnectionStatusEndpointAlias[aliases.Length + 1];
+                aliases.CopyTo(expanded, 0);
+                expanded[^1] = alias;
+                result[discovery.NodeId] = expanded;
+            }
+        }
+
+        return result;
+    }
+
+    private static ConnectionStatusEndpointAlias[] RetainRepresentedAliases(
+        ConnectionStatusEndpointAlias[] aliases,
+        IConnectionPoolStatusSource? statusSource)
+    {
+        if (statusSource is null)
+            return aliases;
+
+        var firstMissing = -1;
+        for (var i = 0; i < aliases.Length; i++)
+        {
+            var alias = aliases[i];
+            if (!statusSource.ContainsEndpointConnection(alias.Host, alias.Port))
+            {
+                firstMissing = i;
+                break;
+            }
+        }
+
+        if (firstMissing < 0)
+            return aliases;
+
+        var retained = new ConnectionStatusEndpointAlias[aliases.Length - 1];
+        Array.Copy(aliases, retained, firstMissing);
+        var destination = firstMissing;
+        for (var i = firstMissing + 1; i < aliases.Length; i++)
+        {
+            var alias = aliases[i];
+            if (statusSource.ContainsEndpointConnection(alias.Host, alias.Port))
+                retained[destination++] = alias;
+        }
+
+        if (destination == 0)
+            return [];
+        if (destination != retained.Length)
+            Array.Resize(ref retained, destination);
+
+        return retained;
+    }
+
+    private static bool ContainsAlias(
+        ConnectionStatusEndpointAlias[] aliases,
+        ConnectionStatusEndpointAlias candidate)
+    {
+        for (var i = 0; i < aliases.Length; i++)
+        {
+            if (aliases[i] == candidate)
+                return true;
+        }
+
+        return false;
+    }
 }
 
 internal sealed record ControllerMetadataSnapshot(
     string? ClusterId,
     int ActiveControllerId,
     IReadOnlyDictionary<int, ControllerEndpoint> Controllers,
+    IReadOnlyDictionary<int, ConnectionStatusEndpointAlias[]> DiscoveryConnections,
     DateTimeOffset LastRefreshed)
 {
-    internal static ControllerMetadataSnapshot Empty { get; } = new(null, -1, new Dictionary<int, ControllerEndpoint>(), default);
+    internal static ControllerMetadataSnapshot Empty { get; } = new(
+        null,
+        -1,
+        new Dictionary<int, ControllerEndpoint>(),
+        new Dictionary<int, ConnectionStatusEndpointAlias[]>(),
+        default);
 }
 
 internal sealed record ControllerEndpoint(int NodeId, string Host, int Port, string? Rack);

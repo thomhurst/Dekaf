@@ -398,6 +398,18 @@
   </Suppression>
   <Suppression>
     <DiagnosticId>CP0008</DiagnosticId>
+    <Target>T:Dekaf.Diagnostics.BrokerConnectionState</Target>
+    <Left>lib/netstandard2.0/Dekaf.dll</Left>
+    <Right>lib/net10.0/Dekaf.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0008</DiagnosticId>
+    <Target>T:Dekaf.Diagnostics.KafkaClientRole</Target>
+    <Left>lib/netstandard2.0/Dekaf.dll</Left>
+    <Right>lib/net10.0/Dekaf.dll</Right>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0008</DiagnosticId>
     <Target>T:Dekaf.Errors.DeserializationExceptionOrigin</Target>
     <Left>lib/netstandard2.0/Dekaf.dll</Left>
     <Right>lib/net10.0/Dekaf.dll</Right>
