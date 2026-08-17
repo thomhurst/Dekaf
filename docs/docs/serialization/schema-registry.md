@@ -477,6 +477,12 @@ still gives repeated and alternating overflow schemas a lock-free reference fast
 records share one stateless writer; generic records retain a writer per logical schema. Cache entries
 never retain individual `GenericRecord` values.
 
+Reuse parsed Avro `Schema` objects on the per-message path. A previously observed schema object uses
+the O(1) reference lookup. A newly parsed object is a first-seen identity even when it is logically
+equivalent to an existing schema; safely proving that equivalence requires a structural fingerprint
+or comparison. Parse and cache schemas during startup or producer setup instead of constructing a
+new runtime schema for every message.
+
 Weak exact-identity tracking is also bounded. If more than two live, logically equivalent overflow
 schema objects rotate through one cache entry before eviction, replaying an intermediate object after
 both logical-cache and hot-set eviction can require one cold writer and schema-resolution rebuild.
