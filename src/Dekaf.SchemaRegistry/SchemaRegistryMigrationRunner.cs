@@ -15,7 +15,7 @@ internal sealed class SchemaRegistryMigrationRunner
     private readonly SchemaRegistryRuleExecutor? _schemaRuleExecutor;
     private readonly SchemaResolutionCache<MigrationPlan> _plans = new();
     private readonly TimeSpan _timeout;
-    private readonly CachedPlanSlot _lastPlan = new();
+    private MigrationPlan? _lastPlan;
     private readonly long _latestCacheTtlMilliseconds;
 
     internal SchemaRegistryMigrationRunner(
@@ -56,7 +56,10 @@ internal sealed class SchemaRegistryMigrationRunner
         SchemaRegistryPayloadFormat payloadFormat)
     {
         var isNewPlan = false;
-        if (!_lastPlan.TryRead(schemaId, subject, out var plan))
+        var plan = Volatile.Read(ref _lastPlan);
+        if (plan is null ||
+            plan.WriterSchemaId != schemaId ||
+            !string.Equals(plan.Subject, subject, StringComparison.Ordinal))
         {
             if (!_plans.TryGet(subject, writerSchema, out plan))
             {
@@ -64,7 +67,7 @@ internal sealed class SchemaRegistryMigrationRunner
                 isNewPlan = true;
             }
 
-            _lastPlan.TryWrite(schemaId, subject, plan);
+            Volatile.Write(ref _lastPlan, plan);
         }
 
         if (!isNewPlan &&
@@ -73,7 +76,7 @@ internal sealed class SchemaRegistryMigrationRunner
         {
             _plans.TryRemove(subject, writerSchema, plan);
             plan = _plans.Resolve(subject, writerSchema, this, s_createPlan, _timeout);
-            _lastPlan.TryWrite(schemaId, subject, plan);
+            Volatile.Write(ref _lastPlan, plan);
         }
 
         if (_schemaRuleExecutor is null)
@@ -179,7 +182,7 @@ internal sealed class SchemaRegistryMigrationRunner
             .ConfigureAwait(false);
 
         if (writer.Version == reader.Version)
-            return new MigrationPlan(reader, [], Environment.TickCount64);
+            return new MigrationPlan(writer.Id, subject, reader, [], Environment.TickCount64);
 
         var steps = new List<MigrationStep>();
         if (writer.Version < reader.Version)
@@ -219,7 +222,7 @@ internal sealed class SchemaRegistryMigrationRunner
             }
         }
 
-        return new MigrationPlan(reader, [.. steps], Environment.TickCount64);
+        return new MigrationPlan(writer.Id, subject, reader, [.. steps], Environment.TickCount64);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -235,61 +238,17 @@ internal sealed class SchemaRegistryMigrationRunner
         RegisteredSchema ReaderSchema);
 
     private sealed class MigrationPlan(
+        int writerSchemaId,
+        string subject,
         RegisteredSchema readerSchema,
         MigrationStep[] steps,
         long createdAtMilliseconds)
     {
+        internal int WriterSchemaId { get; } = writerSchemaId;
+        internal string Subject { get; } = subject;
         internal RegisteredSchema ReaderSchema { get; } = readerSchema;
         internal MigrationStep[] Steps { get; } = steps;
         internal long CreatedAtMilliseconds { get; } = createdAtMilliseconds;
-    }
-
-    private sealed class CachedPlanSlot
-    {
-        private int _version;
-        private int _schemaId;
-        private string? _subject;
-        private MigrationPlan? _plan;
-
-        internal bool TryRead(int schemaId, string subject, out MigrationPlan plan)
-        {
-            var version = Volatile.Read(ref _version);
-            if ((version & 1) != 0)
-            {
-                plan = null!;
-                return false;
-            }
-
-            var cachedSchemaId = _schemaId;
-            var cachedSubject = _subject;
-            var cachedPlan = _plan;
-            if (version == Volatile.Read(ref _version) &&
-                cachedSchemaId == schemaId &&
-                cachedPlan is not null &&
-                string.Equals(cachedSubject, subject, StringComparison.Ordinal))
-            {
-                plan = cachedPlan;
-                return true;
-            }
-
-            plan = null!;
-            return false;
-        }
-
-        internal void TryWrite(int schemaId, string subject, MigrationPlan plan)
-        {
-            var version = Volatile.Read(ref _version);
-            if ((version & 1) != 0 ||
-                Interlocked.CompareExchange(ref _version, unchecked(version + 1), version) != version)
-            {
-                return;
-            }
-
-            _schemaId = schemaId;
-            _subject = subject;
-            _plan = plan;
-            Volatile.Write(ref _version, unchecked(version + 2));
-        }
     }
 
     private readonly record struct MigrationStep(
