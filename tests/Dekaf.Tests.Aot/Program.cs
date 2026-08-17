@@ -1,6 +1,5 @@
 using System.Buffers;
 using System.Net;
-using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
@@ -185,8 +184,7 @@ internal static class AotSmoke
 
     private static async Task RunAvroSchemaRegistryPackageSmokeAsync(InMemorySchemaRegistry registry)
     {
-        if (!RuntimeFeature.IsDynamicCodeSupported)
-            RequireInterfaceTypedAvroSerializerRejected(registry);
+        RequireInterfaceTypedAvroSerializerRejected(registry);
 
         await using var serializer = new AvroSchemaRegistrySerializer<AotAvroRecord>(registry);
         await using var deserializer = new AvroSchemaRegistryDeserializer<AotAvroRecord>(registry);
@@ -208,13 +206,13 @@ internal static class AotSmoke
         {
             _ = new AvroSchemaRegistrySerializer<ISpecificRecord>(registry);
         }
-        catch (PlatformNotSupportedException)
+        catch (NotSupportedException)
         {
             return;
         }
 
         throw new InvalidOperationException(
-            "Interface-typed Avro serialization must be rejected when runtime type discovery is unavailable.");
+            "Interface-typed Avro serialization must reject trimming-unsafe runtime type discovery.");
     }
 
     private static async Task RunProtobufSchemaRegistryPackageSmokeAsync(InMemorySchemaRegistry registry)

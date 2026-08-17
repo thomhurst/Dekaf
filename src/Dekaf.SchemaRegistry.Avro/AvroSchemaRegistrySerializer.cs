@@ -2,7 +2,6 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
-using System.Runtime.CompilerServices;
 using Avro.Generic;
 using Avro.Specific;
 using Dekaf.Serialization;
@@ -33,8 +32,8 @@ namespace Dekaf.SchemaRegistry.Avro;
 /// </para>
 /// </remarks>
 /// <typeparam name="T">
-/// The type to serialize. Must be either an Avro ISpecificRecord or GenericRecord. NativeAOT requires
-/// a concrete SpecificRecord type with a statically discoverable schema; runtime SpecificRecord discovery is unsupported.
+/// The type to serialize. Must be either a concrete Avro ISpecificRecord type with a statically
+/// discoverable schema or GenericRecord. Runtime SpecificRecord type discovery is unsupported.
 /// </typeparam>
 public sealed class AvroSchemaRegistrySerializer<
     [DynamicallyAccessedMembers(
@@ -55,12 +54,9 @@ public sealed class AvroSchemaRegistrySerializer<
     private readonly SubjectSchemaIdCache _subjectSchemaIdCache = new();
     private readonly ConcurrentDictionary<AvroSchema, DynamicSchemaCache> _dynamicSchemaCaches =
         new(AvroSchemaLogicalComparer.Instance);
-    private readonly ConcurrentDictionary<RuntimeSpecificWriterKey, RuntimeSpecificWriterEntry> _runtimeSpecificWriters =
-        new(RuntimeSpecificWriterKeyComparer.Instance);
     private readonly AllocationFreeSpecificRecordWriter<T>? _specificWriter;
     private readonly AvroSchema? _writerSchema;
     private DynamicSchemaCache? _lastDynamicSchemaCache;
-    private RuntimeSpecificWriterEntry? _lastRuntimeSpecificWriter;
 
     /// <summary>
     /// Creates a new Avro Schema Registry serializer.
@@ -81,15 +77,15 @@ public sealed class AvroSchemaRegistrySerializer<
         _writerSchema = GetSchemaFromType();
         if (_writerSchema is not null)
             _specificWriter = AllocationFreeSpecificRecordWriter<T>.Create(_writerSchema);
-        else if (!RuntimeFeature.IsDynamicCodeSupported && typeof(ISpecificRecord).IsAssignableFrom(typeof(T)))
+        else if (typeof(ISpecificRecord).IsAssignableFrom(typeof(T)))
         {
-            throw new PlatformNotSupportedException(
-                $"NativeAOT serialization requires a concrete SpecificRecord type with a statically discoverable schema; {typeof(T)} requires runtime type discovery.");
+            throw new NotSupportedException(
+                $"Allocation-free SpecificRecord serialization requires a concrete type with a statically discoverable schema; {typeof(T)} requires trimming-unsafe runtime type discovery.");
         }
     }
 
     internal int CachedGenericWriterCount => _dynamicSchemaCaches.Count;
-    internal int CachedSpecificWriterCount => (_specificWriter is null ? 0 : 1) + _runtimeSpecificWriters.Count;
+    internal int CachedSpecificWriterCount => _specificWriter is null ? 0 : 1;
     internal int CachedDynamicSubjectSchemaCount => _dynamicSchemaCaches.Count;
 
     /// <summary>
@@ -320,9 +316,10 @@ public sealed class AvroSchemaRegistrySerializer<
                 genericWriter.Write(genericRecord, encoder);
                 break;
 
-            case ISpecificRecord specificRecord:
-                var specificWriter = GetSpecificWriter(value, specificRecord);
-                specificWriter.Write(value, encoder);
+            case ISpecificRecord:
+                (_specificWriter ?? throw new InvalidOperationException(
+                    $"SpecificRecord type {typeof(T)} does not have a prepared allocation-free writer."))
+                    .Write(value, encoder);
                 break;
 
             default:
@@ -461,31 +458,6 @@ public sealed class AvroSchemaRegistrySerializer<
     private AllocationFreeGenericRecordWriter GetGenericWriter(AvroSchema schema) =>
         GetDynamicSchemaCache(schema).Writer;
 
-    private AllocationFreeSpecificRecordWriter<T> GetSpecificWriter(T value, ISpecificRecord record)
-    {
-        if (_specificWriter is { } fixedWriter)
-            return fixedWriter;
-
-        var recordType = value!.GetType();
-        var schema = record.Schema;
-        var last = Volatile.Read(ref _lastRuntimeSpecificWriter);
-        if (last is not null &&
-            last.Key.RecordType == recordType &&
-            ReferenceEquals(last.Key.Schema, schema))
-        {
-            return last.Writer;
-        }
-
-        var key = new RuntimeSpecificWriterKey(recordType, schema);
-        var entry = _runtimeSpecificWriters.GetOrAdd(
-            key,
-            static value => new RuntimeSpecificWriterEntry(
-                value,
-                AllocationFreeSpecificRecordWriter<T>.Create(value.Schema, value.RecordType)));
-        Volatile.Write(ref _lastRuntimeSpecificWriter, entry);
-        return entry.Writer;
-    }
-
     private DynamicSchemaCache GetDynamicSchemaCache(AvroSchema schema)
     {
         var last = Volatile.Read(ref _lastDynamicSchemaCache);
@@ -515,27 +487,6 @@ public sealed class AvroSchemaRegistrySerializer<
         internal AvroSchema LastSeenSchema;
         internal SubjectSchemaIdCache SubjectSchemaIdCache { get; }
         internal AllocationFreeGenericRecordWriter Writer { get; }
-    }
-
-    private readonly record struct RuntimeSpecificWriterKey(
-        [property: DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] Type RecordType,
-        AvroSchema Schema);
-
-    private sealed record RuntimeSpecificWriterEntry(
-        RuntimeSpecificWriterKey Key,
-        AllocationFreeSpecificRecordWriter<T> Writer);
-
-    private sealed class RuntimeSpecificWriterKeyComparer : IEqualityComparer<RuntimeSpecificWriterKey>
-    {
-        internal static readonly RuntimeSpecificWriterKeyComparer Instance = new();
-
-        private RuntimeSpecificWriterKeyComparer() { }
-
-        public bool Equals(RuntimeSpecificWriterKey x, RuntimeSpecificWriterKey y) =>
-            x.RecordType == y.RecordType && ReferenceEquals(x.Schema, y.Schema);
-
-        public int GetHashCode(RuntimeSpecificWriterKey value) =>
-            HashCode.Combine(value.RecordType, RuntimeHelpers.GetHashCode(value.Schema));
     }
 
     private static AvroSchema? GetSchemaFromType()

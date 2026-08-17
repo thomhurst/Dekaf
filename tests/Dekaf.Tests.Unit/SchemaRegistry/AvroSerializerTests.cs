@@ -1411,27 +1411,14 @@ public sealed class AvroSerializerTests
     }
 
     [Test]
-    public async Task Serializer_InterfaceTypedSpecificRecord_MatchesApacheAvroBytes()
+    public async Task Serializer_InterfaceTypedSpecificRecord_FailsDuringPreparation()
     {
         using var schemaRegistry = new MockSchemaRegistryClient();
-        await using var serializer = new AvroSchemaRegistrySerializer<ISpecificRecord>(schemaRegistry);
-        ISpecificRecord record = new SpecificScalarRecord
-        {
-            Enabled = true,
-            Count = -42,
-            Sequence = long.MaxValue,
-            Ratio = 1.25f,
-            Total = -123.5,
-            Name = "specific",
-            Payload = [0, 1, 127, 255]
-        };
-        var expected = SerializeSpecificAvroRecord(record);
-        var buffer = new ArrayBufferWriter<byte>();
 
-        serializer.Serialize(record, ref buffer, CreateContext());
+        var exception = Assert.Throws<NotSupportedException>(
+            () => GC.KeepAlive(new AvroSchemaRegistrySerializer<ISpecificRecord>(schemaRegistry)));
 
-        await Assert.That(buffer.WrittenSpan.Slice(5).SequenceEqual(expected)).IsTrue();
-        await Assert.That(serializer.CachedSpecificWriterCount).IsEqualTo(1);
+        await Assert.That(exception!.Message).Contains("trimming-unsafe runtime type discovery");
     }
 
     [Test]

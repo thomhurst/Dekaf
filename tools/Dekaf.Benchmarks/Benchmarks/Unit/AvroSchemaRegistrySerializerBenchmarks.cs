@@ -154,7 +154,6 @@ public class AvroSchemaRegistrySerializerBenchmarks
 
     private AvroSchemaRegistrySerializer<GenericRecord> _serializer = null!;
     private AvroSchemaRegistrySerializer<SpecificBenchmarkRecord> _specificSerializer = null!;
-    private AvroSchemaRegistrySerializer<ISpecificRecord> _interfaceSpecificSerializer = null!;
     private GenericRecord[] _equivalentRecords = null!;
     private GenericRecord _intRecord = null!;
     private GenericRecord _nullableIntArrayRecord = null!;
@@ -168,7 +167,6 @@ public class AvroSchemaRegistrySerializerBenchmarks
     private GenericRecord _nestedRecordCollectionRecord = null!;
     private GenericRecord _nestedRecordListRecord = null!;
     private SpecificBenchmarkRecord _specificRecord = null!;
-    private ISpecificRecord _interfaceSpecificRecord = null!;
     private ArrayBufferWriter<byte> _serializeBuffer = null!;
     private GenericRecord _stableRecord = null!;
     private SerializationContext _context;
@@ -182,8 +180,6 @@ public class AvroSchemaRegistrySerializerBenchmarks
         Avro.Util.LogicalTypeFactory.Instance.Register(new BenchmarkIntBytesLogicalType());
         _serializer = new AvroSchemaRegistrySerializer<GenericRecord>(new BenchmarkSchemaRegistryClient());
         _specificSerializer = new AvroSchemaRegistrySerializer<SpecificBenchmarkRecord>(
-            new BenchmarkSchemaRegistryClient());
-        _interfaceSpecificSerializer = new AvroSchemaRegistrySerializer<ISpecificRecord>(
             new BenchmarkSchemaRegistryClient());
         _context = new SerializationContext
         {
@@ -207,7 +203,6 @@ public class AvroSchemaRegistrySerializerBenchmarks
         _conditionalValueLogicalStringArrayRecord = CreateConditionalValueLogicalStringArrayRecord();
         (_nestedRecordCollectionRecord, _nestedRecordListRecord) = CreateNestedRecordCollectionRecords();
         _specificRecord = new SpecificBenchmarkRecord { Id = 42, Name = "benchmark" };
-        _interfaceSpecificRecord = _specificRecord;
         _serializeBuffer = new ArrayBufferWriter<byte>();
         _serializer.Serialize(_stableRecord, ref _serializeBuffer, _context);
         _serializeBuffer.ResetWrittenCount();
@@ -233,7 +228,6 @@ public class AvroSchemaRegistrySerializerBenchmarks
         _serializeBuffer.ResetWrittenCount();
         _specificSerializer.Serialize(_specificRecord, ref _serializeBuffer, _context);
         _serializeBuffer.ResetWrittenCount();
-        _interfaceSpecificSerializer.Serialize(_interfaceSpecificRecord, ref _serializeBuffer, _context);
     }
 
     [GlobalCleanup]
@@ -241,7 +235,6 @@ public class AvroSchemaRegistrySerializerBenchmarks
     {
         await _serializer.DisposeAsync().ConfigureAwait(false);
         await _specificSerializer.DisposeAsync().ConfigureAwait(false);
-        await _interfaceSpecificSerializer.DisposeAsync().ConfigureAwait(false);
     }
 
     [Benchmark(Baseline = true, Description = "Prepare stable generic Avro schema")]
@@ -343,13 +336,6 @@ public class AvroSchemaRegistrySerializerBenchmarks
     {
         _serializeBuffer.ResetWrittenCount();
         _specificSerializer.Serialize(_specificRecord, ref _serializeBuffer, _context);
-    }
-
-    [Benchmark(Description = "Serialize interface-typed SpecificRecord (int + string)")]
-    public void SerializeInterfaceSpecificRecord()
-    {
-        _serializeBuffer.ResetWrittenCount();
-        _interfaceSpecificSerializer.Serialize(_interfaceSpecificRecord, ref _serializeBuffer, _context);
     }
 
     private static GenericRecord CreateRecord(int id)

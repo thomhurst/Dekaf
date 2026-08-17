@@ -11,25 +11,13 @@ internal sealed unsafe class AllocationFreeSpecificRecordWriter<
 
     private AllocationFreeSpecificRecordWriter(FieldPlan[] fields) => _fields = fields;
 
-    internal static AllocationFreeSpecificRecordWriter<T> Create(global::Avro.Schema schema) =>
-        Create(schema, typeof(T), rejectOverridableGetters: true);
-
-    internal static AllocationFreeSpecificRecordWriter<T> Create(
-        global::Avro.Schema schema,
-        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)]
-        Type recordType) =>
-        Create(schema, recordType, rejectOverridableGetters: false);
-
-    private static AllocationFreeSpecificRecordWriter<T> Create(
-        global::Avro.Schema schema,
-        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)]
-        Type recordType,
-        bool rejectOverridableGetters)
+    internal static AllocationFreeSpecificRecordWriter<T> Create(global::Avro.Schema schema)
     {
-        if (recordType.IsValueType || !typeof(T).IsAssignableFrom(recordType))
+        var recordType = typeof(T);
+        if (recordType.IsValueType)
         {
             throw new NotSupportedException(
-                $"SpecificRecord type {recordType} must be a reference type assignable to {typeof(T)} for allocation-free serialization.");
+                $"SpecificRecord type {recordType} must be a reference type for allocation-free serialization.");
         }
 
         if (schema is not global::Avro.RecordSchema recordSchema)
@@ -47,8 +35,7 @@ internal sealed unsafe class AllocationFreeSpecificRecordWriter<
                 recordSchema.Fields[i],
                 recordType,
                 properties,
-                claimedProperties,
-                rejectOverridableGetters);
+                claimedProperties);
         }
 
         return new AllocationFreeSpecificRecordWriter<T>(fields);
@@ -97,8 +84,7 @@ internal sealed unsafe class AllocationFreeSpecificRecordWriter<
         global::Avro.Field field,
         Type recordType,
         PropertyInfo[] properties,
-        HashSet<PropertyInfo> claimedProperties,
-        bool rejectOverridableGetters)
+        HashSet<PropertyInfo> claimedProperties)
     {
         var kind = GetFieldKind(field, recordType);
         if (kind == FieldKind.Null)
@@ -114,7 +100,7 @@ internal sealed unsafe class AllocationFreeSpecificRecordWriter<
                 $"a readable public property named '{field.Name}' was not found");
         }
 
-        if (rejectOverridableGetters && getter is { IsVirtual: true, IsFinal: false })
+        if (getter is { IsVirtual: true, IsFinal: false })
         {
             throw UnsupportedField(
                 recordType,
