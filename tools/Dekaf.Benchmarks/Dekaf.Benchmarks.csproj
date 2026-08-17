@@ -16,6 +16,7 @@
     <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Avro\Dekaf.SchemaRegistry.Avro.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Json\Dekaf.SchemaRegistry.Json.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Protobuf\Dekaf.SchemaRegistry.Protobuf.csproj" />
+    <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Kms.Vault\Dekaf.SchemaRegistry.Kms.Vault.csproj" />
   </ItemGroup>
 
   <ItemGroup>

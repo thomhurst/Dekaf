@@ -350,7 +350,8 @@ Use KMS type `hcvault` and a Confluent-compatible key identifier in
 and `orders-kek` as the key name. For nested mounts, use a path such as
 `https://vault.example:8200/team/transit/keys/orders-kek`. The key identifier's scheme, host, and
 port must exactly match the locally configured `vaultAddress`; this prevents a Schema Registry KEK
-from redirecting Vault credentials to another server. The namespace is sent as `X-Vault-Namespace`.
+from redirecting Vault credentials to another server. Configure `vaultAddress` as a root authority
+without a path prefix. The namespace is sent as `X-Vault-Namespace`.
 
 Grant `update` capability on `<mount>/encrypt/<key>` and `<mount>/decrypt/<key>`. The supplied
 `HttpClient` is caller-owned; `VaultTransitHttpClient`, `VaultKmsProvider`, and both token providers

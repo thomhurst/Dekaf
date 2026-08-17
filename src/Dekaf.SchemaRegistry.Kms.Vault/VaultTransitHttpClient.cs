@@ -366,10 +366,11 @@ public sealed class VaultTransitHttpClient : IVaultTransitClient
             || vaultAddress.Scheme is not ("http" or "https")
             || vaultAddress.UserInfo.Length != 0
             || vaultAddress.Query.Length != 0
-            || vaultAddress.Fragment.Length != 0)
+            || vaultAddress.Fragment.Length != 0
+            || vaultAddress.AbsolutePath is not ("" or "/"))
         {
             throw new ArgumentException(
-                "Vault address must be an absolute HTTP or HTTPS URI without credentials, query, or fragment.",
+                "Vault address must be an absolute HTTP or HTTPS URI without a path, credentials, query, or fragment.",
                 nameof(vaultAddress));
         }
 
@@ -419,7 +420,8 @@ public sealed class VaultTransitHttpClient : IVaultTransitClient
         if (content.Headers.ContentLength is > MaximumResponseBytes)
             throw new InvalidOperationException("Vault response exceeded the maximum allowed size.");
 
-        await using var stream = await content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        var stream = await content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        await using var configuredStream = stream.ConfigureAwait(false);
         var readBuffer = ArrayPool<byte>.Shared.Rent(4096);
         var responseBuffer = new ArrayBufferWriter<byte>();
         try
@@ -466,7 +468,9 @@ public sealed class VaultTransitHttpClient : IVaultTransitClient
         vaultAddress = NormalizeAddress(vaultAddress);
         var normalizedMountPoint = NormalizeMountPoint(mountPoint);
         vaultNamespace = NormalizeNamespace(vaultNamespace);
-        if (string.IsNullOrWhiteSpace(keyName) || keyName.Contains('/'))
+        if (string.IsNullOrWhiteSpace(keyName)
+            || keyName.Contains('/')
+            || keyName is "." or "..")
             throw new ArgumentException("Vault Transit key name is invalid.", nameof(keyName));
 
         var token = await _tokenProvider

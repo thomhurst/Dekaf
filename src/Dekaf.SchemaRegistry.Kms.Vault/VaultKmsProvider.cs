@@ -48,7 +48,7 @@ public sealed class VaultKmsProvider : ISchemaRegistryKmsProvider
     /// Creates a provider using an injected Vault Transit client.
     /// </summary>
     /// <param name="client">Thread-safe Vault Transit client.</param>
-    /// <param name="vaultAddress">Allowed Vault server address.</param>
+    /// <param name="vaultAddress">Allowed root Vault server address without a path.</param>
     /// <param name="vaultNamespace">Optional Vault Enterprise namespace.</param>
     /// <param name="type">Schema Registry KMS provider type.</param>
     public VaultKmsProvider(
@@ -167,7 +167,7 @@ public sealed class VaultKmsProvider : ISchemaRegistryKmsProvider
                 "Vault key identifier must be an absolute HTTP or HTTPS Vault key URL.");
         }
 
-        var keyAddress = VaultTransitHttpClient.NormalizeAddress(keyUri);
+        var keyAddress = new Uri(keyUri.GetLeftPart(UriPartial.Authority) + "/", UriKind.Absolute);
         if (keyAddress != _vaultAddress)
         {
             throw new SchemaRegistryKmsException(

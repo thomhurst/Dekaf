@@ -234,6 +234,69 @@ public class VaultKmsProviderTests
     }
 
     [Test]
+    public async Task Provider_RejectsBaseAddressPath()
+    {
+        var client = Substitute.For<IVaultTransitClient>();
+        var action = () => new VaultKmsProvider(
+            client,
+            new Uri("https://vault.example:8200/prefix/"));
+
+        await Assert.That(action).Throws<ArgumentException>();
+    }
+
+    [Test]
+    [Arguments(".")]
+    [Arguments("..")]
+    public async Task HttpClient_RejectsDotSegmentKeyName(string keyName)
+    {
+        var handler = new RecordingHandler(static (_, _) =>
+            throw new InvalidOperationException("HTTP request was not expected."));
+        using var httpClient = new HttpClient(handler);
+        var client = new VaultTransitHttpClient(httpClient, new VaultStaticTokenProvider("token"));
+
+        await Assert.That(async () => await client.EncryptAsync(
+                VaultAddress,
+                "transit",
+                keyName,
+                null,
+                new byte[] { 1 }))
+            .Throws<ArgumentException>();
+    }
+
+    [Test]
+    public async Task ResponseStream_AsyncDisposalDoesNotCaptureCallerContext()
+    {
+        var synchronizationContext = new QueueingSynchronizationContext();
+        var operation = Task.Run(() =>
+        {
+            var previousContext = SynchronizationContext.Current;
+            try
+            {
+                SynchronizationContext.SetSynchronizationContext(synchronizationContext);
+                using var content = new StreamContent(new AsynchronousDisposeStream());
+                return VaultTransitHttpClient
+                    .ReadResponseBytesAsync(content, CancellationToken.None)
+                    .AsTask()
+                    .GetAwaiter()
+                    .GetResult();
+            }
+            finally
+            {
+                SynchronizationContext.SetSynchronizationContext(previousContext);
+            }
+        });
+
+        try
+        {
+            await Assert.That(await operation.WaitAsync(TimeSpan.FromSeconds(1))).IsEmpty();
+        }
+        finally
+        {
+            synchronizationContext.Drain();
+        }
+    }
+
+    [Test]
     public async Task AppRoleProvider_LogsInOnceForConcurrentCallers()
     {
         var loginCount = 0;
@@ -321,6 +384,41 @@ public class VaultKmsProviderTests
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken) => send(request, cancellationToken);
+    }
+
+    private sealed class AsynchronousDisposeStream : MemoryStream
+    {
+        public override async ValueTask DisposeAsync()
+        {
+            await Task.Delay(10).ConfigureAwait(false);
+            await base.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+    private sealed class QueueingSynchronizationContext : SynchronizationContext
+    {
+        private readonly Queue<(SendOrPostCallback Callback, object? State)> _callbacks = new();
+
+        public override void Post(SendOrPostCallback d, object? state)
+        {
+            lock (_callbacks)
+                _callbacks.Enqueue((d, state));
+        }
+
+        internal void Drain()
+        {
+            while (true)
+            {
+                (SendOrPostCallback Callback, object? State) callback;
+                lock (_callbacks)
+                {
+                    if (!_callbacks.TryDequeue(out callback))
+                        return;
+                }
+
+                callback.Callback(callback.State);
+            }
+        }
     }
 
     private sealed class TestTimeProvider(DateTimeOffset utcNow) : TimeProvider
