@@ -213,10 +213,22 @@ public sealed class Headers : IEnumerable<Header>
             return;
         }
 
-        _headers.Insert(traceparentIndex, header);
+        var traceparent = _headers[traceparentIndex];
+        var tracestateIndex = _deferredTracestateIndex;
+        if (tracestateIndex < 0)
+        {
+            _headers.Add(traceparent);
+            _headers[traceparentIndex] = header;
+            _deferredTraceparentIndex = traceparentIndex + 1;
+            return;
+        }
+
+        var tracestate = _headers[tracestateIndex];
+        _headers.Add(tracestate);
+        _headers[traceparentIndex] = header;
+        _headers[tracestateIndex] = traceparent;
         _deferredTraceparentIndex = traceparentIndex + 1;
-        if (_deferredTracestateIndex >= 0)
-            _deferredTracestateIndex++;
+        _deferredTracestateIndex = tracestateIndex + 1;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
