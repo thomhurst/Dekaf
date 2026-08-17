@@ -48,17 +48,29 @@ internal sealed class AllocationFreeBinaryEncoder(Stream stream) : global::Avro.
 
     public void WriteBytes(byte[] value)
     {
+        if (value is null)
+            throw new global::Avro.AvroTypeException("Null cannot be written as Avro bytes.");
+
         WriteLong(value.Length);
         _stream.Write(value, 0, value.Length);
     }
 
     public void WriteBytes(byte[] value, int offset, int length)
     {
+        if (value is null)
+            throw new global::Avro.AvroTypeException("Null cannot be written as Avro bytes.");
+
         WriteLong(length);
         _stream.Write(value, offset, length);
     }
 
-    public void WriteString(string value) => WriteString(value.AsSpan());
+    public void WriteString(string value)
+    {
+        if (value is null)
+            throw new global::Avro.AvroTypeException("Null cannot be written as an Avro string.");
+
+        WriteString(value.AsSpan());
+    }
 
     internal void WriteString(ReadOnlySpan<char> value)
     {
