@@ -58,6 +58,12 @@ public sealed class AvroSerializerConfig
 public sealed class AvroDeserializerConfig
 {
     /// <summary>
+    /// Whether to use the latest registered subject version as the reader schema and execute
+    /// any migration rules between the writer and reader versions.
+    /// </summary>
+    public bool UseLatestVersion { get; init; }
+
+    /// <summary>
     /// Subject-name strategy used when deserialization rules execute.
     /// </summary>
     public SubjectNameStrategy SubjectNameStrategy { get; init; } = SubjectNameStrategy.TopicName;

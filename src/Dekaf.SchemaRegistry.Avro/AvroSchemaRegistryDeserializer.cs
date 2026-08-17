@@ -46,6 +46,7 @@ public sealed class AvroSchemaRegistryDeserializer<
     private readonly ISchemaRegistryClient _schemaRegistry;
     private readonly AvroDeserializerConfig _config;
     private readonly bool _ownsClient;
+    private readonly ISchemaRegistryRuleExecutor? _ruleExecutor;
     private readonly ConcurrentDictionary<int, Lazy<Task<AvroSchema>>> _schemaCache = new();
     private readonly ConcurrentDictionary<AvroSchemaPair, GenericDatumReader<GenericRecord>> _genericReaders =
         new(AvroSchemaPairReferenceComparer.Instance);
@@ -53,6 +54,7 @@ public sealed class AvroSchemaRegistryDeserializer<
         new(AvroSchemaPairReferenceComparer.Instance);
     private readonly AvroSchema? _readerSchema;
     private readonly DeserializerSubjectNameCache? _subjectNames;
+    private readonly SchemaRegistryMigrationRunner? _migrationRunner;
 
     /// <summary>
     /// Creates a new Avro Schema Registry deserializer.
@@ -67,11 +69,27 @@ public sealed class AvroSchemaRegistryDeserializer<
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _config = config ?? new AvroDeserializerConfig();
+        _ruleExecutor = _config.RuleExecutor;
         _ownsClient = ownsClient;
+        if (_config.UseLatestVersion && !string.IsNullOrEmpty(_config.ReaderSchema))
+        {
+            throw new ArgumentException(
+                $"{nameof(AvroDeserializerConfig.UseLatestVersion)} and {nameof(AvroDeserializerConfig.ReaderSchema)} cannot both be configured.",
+                nameof(config));
+        }
+
         _subjectNames = DeserializerSubjectNameCache.Create(
             _config.SubjectNameStrategy,
             _config.CustomSubjectNameStrategy,
             _config.UseLegacySubjectNames);
+        if (_config.UseLatestVersion)
+        {
+            _migrationRunner = new SchemaRegistryMigrationRunner(
+                schemaRegistry,
+                _config.RuleExecutor,
+                SchemaRegistryTimeout);
+            _ruleExecutor ??= SchemaRegistryMigrationRunner.MarkerRuleExecutor;
+        }
 
         // Parse custom reader schema if provided, otherwise derive from type
         _readerSchema = GetReaderSchema();
@@ -123,7 +141,8 @@ public sealed class AvroSchemaRegistryDeserializer<
 
         // Extract Avro payload. Array-backed payloads decode in place; other memory falls back to a pooled copy.
         var payloadMemory = data.Slice(5);
-        if (_config.RuleExecutor is not null)
+        AvroSchema? migrationReaderSchema = null;
+        if (_ruleExecutor is not null)
         {
             string subject;
             if (_subjectNames is null)
@@ -139,25 +158,40 @@ public sealed class AvroSchemaRegistryDeserializer<
             }
 
             var schema = _schemaRegistry.GetSchemaSync(schemaId, subject, SchemaRegistryTimeout);
-            var ruleContext = SchemaRegistryRuleContext.Rent(
-                context.Topic,
-                context.Component,
-                schemaId,
-                subject,
-                schema,
-                SchemaRegistryPayloadFormat.Avro);
-            try
+            if (_migrationRunner is null)
             {
-                payloadMemory = _config.RuleExecutor.TransformDeserializedPayload(payloadMemory, ruleContext);
+                var ruleContext = SchemaRegistryRuleContext.Rent(
+                    context.Topic,
+                    context.Component,
+                    schemaId,
+                    subject,
+                    schema,
+                    SchemaRegistryPayloadFormat.Avro);
+                try
+                {
+                    payloadMemory = _ruleExecutor.TransformDeserializedPayload(payloadMemory, ruleContext);
+                }
+                finally
+                {
+                    ruleContext.Return();
+                }
             }
-            finally
+            else
             {
-                ruleContext.Return();
+                var migration = _migrationRunner.Transform(
+                    payloadMemory,
+                    schemaId,
+                    subject,
+                    schema,
+                    context,
+                    SchemaRegistryPayloadFormat.Avro);
+                payloadMemory = migration.Payload;
+                migrationReaderSchema = GetWriterSchemaCached(migration.ReaderSchema.Id);
             }
         }
 
         var codecState = AvroCodecThreadStateCache.Deserialization ??= new AvroDeserializationThreadState();
-        return ReadAvroPayload(payloadMemory, writerSchema, codecState);
+        return ReadAvroPayload(payloadMemory, writerSchema, migrationReaderSchema, codecState);
     }
 
     private string GetSubjectName(int schemaId, Schema schema, SerializationContext context)
@@ -175,6 +209,7 @@ public sealed class AvroSchemaRegistryDeserializer<
     private T ReadAvroPayload(
         ReadOnlyMemory<byte> payloadMemory,
         AvroSchema writerSchema,
+        AvroSchema? migrationReaderSchema,
         AvroDeserializationThreadState codecState)
     {
         var memoryStream = codecState.Stream;
@@ -184,7 +219,7 @@ public sealed class AvroSchemaRegistryDeserializer<
             memoryStream.Reset(segment.Array, segment.Offset, segment.Count);
             try
             {
-                return ReadAvroValue(writerSchema, codecState.Decoder);
+                return ReadAvroValue(writerSchema, migrationReaderSchema, codecState.Decoder);
             }
             finally
             {
@@ -199,7 +234,7 @@ public sealed class AvroSchemaRegistryDeserializer<
             payload.CopyTo(rentedBuffer);
             memoryStream.Reset(rentedBuffer, payload.Length);
 
-            return ReadAvroValue(writerSchema, codecState.Decoder);
+            return ReadAvroValue(writerSchema, migrationReaderSchema, codecState.Decoder);
         }
         finally
         {
@@ -208,9 +243,12 @@ public sealed class AvroSchemaRegistryDeserializer<
         }
     }
 
-    private T ReadAvroValue(AvroSchema writerSchema, BinaryDecoder decoder)
+    private T ReadAvroValue(
+        AvroSchema writerSchema,
+        AvroSchema? migrationReaderSchema,
+        BinaryDecoder decoder)
     {
-        var readerSchema = _readerSchema ?? writerSchema;
+        var readerSchema = migrationReaderSchema ?? _readerSchema ?? writerSchema;
 
         if (typeof(T) == typeof(GenericRecord))
         {

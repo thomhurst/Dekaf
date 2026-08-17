@@ -50,6 +50,9 @@ public sealed class SchemaRegistryRuleContext
     private int _schemaId;
     private string? _subject;
     private Schema? _schema;
+    private Schema? _sourceSchema;
+    private Schema? _targetSchema;
+    private SchemaRuleMode? _ruleMode;
     private SchemaRegistryPayloadFormat _payloadFormat;
     private bool _inUse;
     private SchemaRegistryRuleContext? _next;
@@ -117,6 +120,21 @@ public sealed class SchemaRegistryRuleContext
     }
 
     /// <summary>
+    /// Gets the source schema for a migration rule, or <see langword="null" /> outside migration execution.
+    /// </summary>
+    public Schema? SourceSchema => _sourceSchema;
+
+    /// <summary>
+    /// Gets the target schema for a migration rule, or <see langword="null" /> outside migration execution.
+    /// </summary>
+    public Schema? TargetSchema => _targetSchema;
+
+    /// <summary>
+    /// Gets the active migration mode, or <see langword="null" /> outside migration execution.
+    /// </summary>
+    public SchemaRuleMode? RuleMode => _ruleMode;
+
+    /// <summary>
     /// Gets the codec payload format.
     /// </summary>
     public required SchemaRegistryPayloadFormat PayloadFormat
@@ -135,7 +153,10 @@ public sealed class SchemaRegistryRuleContext
         int schemaId,
         string? subject,
         Schema? schema,
-        SchemaRegistryPayloadFormat payloadFormat)
+        SchemaRegistryPayloadFormat payloadFormat,
+        Schema? sourceSchema = null,
+        Schema? targetSchema = null,
+        SchemaRuleMode? ruleMode = null)
     {
         var context = t_primary;
         if (context is null)
@@ -149,13 +170,14 @@ public sealed class SchemaRegistryRuleContext
                 Schema = schema,
                 PayloadFormat = payloadFormat
             };
+            context.SetMigration(sourceSchema, targetSchema, ruleMode);
             context._inUse = true;
             t_primary = context;
         }
         else if (!context._inUse)
         {
             context._inUse = true;
-            context.Reset(topic, component, schemaId, subject, schema, payloadFormat);
+            context.Reset(topic, component, schemaId, subject, schema, payloadFormat, sourceSchema, targetSchema, ruleMode);
         }
         else
         {
@@ -171,12 +193,13 @@ public sealed class SchemaRegistryRuleContext
                     Schema = schema,
                     PayloadFormat = payloadFormat
                 };
+                context.SetMigration(sourceSchema, targetSchema, ruleMode);
             }
             else
             {
                 t_overflow = context._next;
                 context._next = null;
-                context.Reset(topic, component, schemaId, subject, schema, payloadFormat);
+                context.Reset(topic, component, schemaId, subject, schema, payloadFormat, sourceSchema, targetSchema, ruleMode);
             }
         }
 
@@ -189,6 +212,9 @@ public sealed class SchemaRegistryRuleContext
         _topic = null!;
         _subject = null;
         _schema = null;
+        _sourceSchema = null;
+        _targetSchema = null;
+        _ruleMode = null;
 
         if (ReferenceEquals(this, t_primary))
         {
@@ -213,7 +239,10 @@ public sealed class SchemaRegistryRuleContext
         int schemaId,
         string? subject,
         Schema? schema,
-        SchemaRegistryPayloadFormat payloadFormat)
+        SchemaRegistryPayloadFormat payloadFormat,
+        Schema? sourceSchema,
+        Schema? targetSchema,
+        SchemaRuleMode? ruleMode)
     {
         _topic = topic;
         _component = component;
@@ -221,6 +250,15 @@ public sealed class SchemaRegistryRuleContext
         _subject = subject;
         _schema = schema;
         _payloadFormat = payloadFormat;
+        SetMigration(sourceSchema, targetSchema, ruleMode);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void SetMigration(Schema? sourceSchema, Schema? targetSchema, SchemaRuleMode? ruleMode)
+    {
+        _sourceSchema = sourceSchema;
+        _targetSchema = targetSchema;
+        _ruleMode = ruleMode;
     }
 }
 
@@ -557,6 +595,98 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         SchemaRegistryRuleContext context)
         => ApplyRules(payload, context, SchemaRegistryRuleDirection.Read);
 
+    internal ReadOnlyMemory<byte> TransformDeserializedEncodingPayload(
+        ReadOnlyMemory<byte> payload,
+        SchemaRegistryRuleContext context)
+        => ApplyReadRuleCollection(payload, context, useEncodingRules: true);
+
+    internal ReadOnlyMemory<byte> TransformDeserializedDomainPayload(
+        ReadOnlyMemory<byte> payload,
+        SchemaRegistryRuleContext context)
+        => ApplyReadRuleCollection(payload, context, useEncodingRules: false);
+
+    internal ReadOnlyMemory<byte> TransformMigrationPayload(
+        ReadOnlyMemory<byte> payload,
+        SchemaRegistryRuleContext context,
+        SchemaRuleMode mode)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+
+        var ruleSet = context.Schema?.RuleSet;
+        var rules = ruleSet?.MigrationRules;
+        if (rules is null || rules.Count == 0 || !ShouldExecute(ruleSet!))
+            return payload;
+
+        var isUpgrade = mode == SchemaRuleMode.Upgrade;
+        var index = isUpgrade ? 0 : rules.Count - 1;
+        var end = isUpgrade ? rules.Count : -1;
+        var step = isUpgrade ? 1 : -1;
+        var direction = isUpgrade ? SchemaRegistryRuleDirection.Write : SchemaRegistryRuleDirection.Read;
+        for (; index != end; index += step)
+        {
+            var rule = rules[index];
+            if (!IsActiveMigrationRule(rule, mode))
+                continue;
+
+            _handlers.TryGetValue(rule.Type, out var handler);
+            payload = ApplyRule(payload, context, rule, handler, direction);
+        }
+
+        return payload;
+    }
+
+    internal static bool HasActiveMigrationRule(SchemaRuleSet? ruleSet, SchemaRuleMode mode)
+    {
+        if (ruleSet is null || !ShouldExecute(ruleSet))
+            return false;
+
+        var rules = ruleSet.MigrationRules;
+        if (rules is null)
+            return false;
+
+        for (var i = 0; i < rules.Count; i++)
+        {
+            if (IsActiveMigrationRule(rules[i], mode))
+                return true;
+        }
+
+        return false;
+    }
+
+    private ReadOnlyMemory<byte> ApplyReadRuleCollection(
+        ReadOnlyMemory<byte> payload,
+        SchemaRegistryRuleContext context,
+        bool useEncodingRules)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+
+        var ruleSet = context.Schema?.RuleSet;
+        if (ruleSet is null || !ruleSet.HasDomainOrEncodingRules || !ShouldExecute(ruleSet))
+            return payload;
+
+        if (ruleSet.HasFixedRuleCollections)
+        {
+            var plan = _executionPlans.GetValue(ruleSet, _createExecutionPlan);
+            var start = useEncodingRules ? 0 : plan.ReadEncodingStepCount;
+            var count = useEncodingRules
+                ? plan.ReadEncodingStepCount
+                : plan.ReadSteps.Length - plan.ReadEncodingStepCount;
+            return ApplyRules(
+                payload,
+                context,
+                plan.ReadSteps,
+                start,
+                count,
+                SchemaRegistryRuleDirection.Read);
+        }
+
+        return ApplyRules(
+            payload,
+            context,
+            useEncodingRules ? ruleSet.EncodingRules : ruleSet.DomainRules,
+            SchemaRegistryRuleDirection.Read);
+    }
+
     private ReadOnlyMemory<byte> ApplyRules(
         ReadOnlyMemory<byte> payload,
         SchemaRegistryRuleContext context,
@@ -568,16 +698,8 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         if (ruleSet is null || !ruleSet.HasDomainOrEncodingRules)
             return payload;
 
-        switch (ruleSet.EnableAt)
-        {
-            case null or "" or "ALL" or "CLIENT":
-                break;
-            case "GATEWAY" or "SERVER" or "NONE":
-                return payload;
-            case { } enabledEnvironment:
-                throw new SchemaRegistryRuleException(
-                    $"Unknown Schema Registry rule execution environment '{enabledEnvironment}'.");
-        }
+        if (!ShouldExecute(ruleSet))
+            return payload;
 
         if (ruleSet.HasFixedRuleCollections)
         {
@@ -759,8 +881,13 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
 
         var readSteps = new List<RuleExecutionStep>();
         AddExecutionSteps(readSteps, ruleSet.EncodingRules, SchemaRegistryRuleDirection.Read, reverse: true);
+        var readEncodingStepCount = readSteps.Count;
         AddExecutionSteps(readSteps, ruleSet.DomainRules, SchemaRegistryRuleDirection.Read, reverse: true);
-        return new RuleExecutionPlan([.. writeSteps], writeDomainStepCount, [.. readSteps]);
+        return new RuleExecutionPlan(
+            [.. writeSteps],
+            writeDomainStepCount,
+            [.. readSteps],
+            readEncodingStepCount);
     }
 
     private void AddExecutionSteps(
@@ -864,7 +991,7 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         if (configuredAction is null)
             return null;
 
-        if (ruleMode != SchemaRuleMode.WriteRead)
+        if (ruleMode is not (SchemaRuleMode.WriteRead or SchemaRuleMode.UpDown))
             return new RuleActionName(configuredAction);
 
         var separator = configuredAction.IndexOf(',');
@@ -893,10 +1020,36 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
             : rule.Mode is SchemaRuleMode.Read or SchemaRuleMode.WriteRead;
     }
 
+    private static bool IsActiveMigrationRule(SchemaRule rule, SchemaRuleMode mode)
+    {
+        if (rule.Disabled || string.IsNullOrWhiteSpace(rule.Type))
+            return false;
+
+        if (rule.Kind is not (SchemaRuleKind.Transform or SchemaRuleKind.Condition))
+            return false;
+
+        return rule.Mode == mode || rule.Mode == SchemaRuleMode.UpDown;
+    }
+
+    private static bool ShouldExecute(SchemaRuleSet ruleSet)
+    {
+        switch (ruleSet.EnableAt)
+        {
+            case null or "" or "ALL" or "CLIENT":
+                return true;
+            case "GATEWAY" or "SERVER" or "NONE":
+                return false;
+            case { } enabledEnvironment:
+                throw new SchemaRegistryRuleException(
+                    $"Unknown Schema Registry rule execution environment '{enabledEnvironment}'.");
+        }
+    }
+
     private sealed record RuleExecutionPlan(
         RuleExecutionStep[] WriteSteps,
         int WriteDomainStepCount,
-        RuleExecutionStep[] ReadSteps);
+        RuleExecutionStep[] ReadSteps,
+        int ReadEncodingStepCount);
 
     private readonly record struct RuleExecutionStep(
         SchemaRule Rule,

@@ -20,6 +20,58 @@ namespace Dekaf.Tests.Integration;
 public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryContainer testInfra)
 {
     [Test]
+    public async Task RegisteredMigrationRules_UseLatestVersion_ExecutesUpgradePath()
+    {
+        var topic = await testInfra.CreateTestTopicAsync();
+        var subject = $"{topic}-value";
+        using var registryClient = new SchemaRegistryClient(new SchemaRegistryConfig
+        {
+            Url = testInfra.RegistryUrl
+        });
+        var v1 = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = """{ "type": "string", "title": "MigrationV1" }"""
+        };
+        var v2 = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = """{ "type": "string", "title": "MigrationV2" }""",
+            RuleSet = new SchemaRuleSet
+            {
+                MigrationRules =
+                [
+                    new SchemaRule
+                    {
+                        Name = "append-version",
+                        Kind = SchemaRuleKind.Transform,
+                        Mode = SchemaRuleMode.Upgrade,
+                        Type = AppendMigrationRuleHandler.RuleType
+                    }
+                ]
+            }
+        };
+        var writerId = await registryClient.RegisterSchemaAsync(subject, v1);
+        await registryClient.RegisterSchemaAsync(subject, v2);
+        var calls = new ConcurrentQueue<string>();
+        var executor = new SchemaRegistryRuleExecutor([new AppendMigrationRuleHandler(calls)]);
+        await using var deserializer = SchemaRegistryDeserializer.Create(
+            registryClient,
+            static (ReadOnlyMemory<byte> payload, Schema _) => Encoding.UTF8.GetString(payload.Span),
+            new SchemaRegistryDeserializerConfig { UseLatestVersion = true },
+            ruleExecutor: executor);
+        var payload = "payload"u8;
+        var wire = new byte[5 + payload.Length];
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian(wire.AsSpan(1, 4), writerId);
+        payload.CopyTo(wire.AsSpan(5));
+
+        var result = deserializer.Deserialize(wire, CreateContext(topic));
+
+        await Assert.That(result).IsEqualTo("payload|v2");
+        await Assert.That(calls).IsEquivalentTo(["Upgrade:MigrationV1->MigrationV2"]);
+    }
+
+    [Test]
     public async Task RegisteredDomainRules_ProduceAndConsume_RoundTrip()
     {
         var topic = await testInfra.CreateTestTopicAsync();
@@ -265,6 +317,41 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
                 result[i] ^= mask;
 
             return result;
+        }
+    }
+
+    private sealed class AppendMigrationRuleHandler(ConcurrentQueue<string> calls)
+        : ISchemaRegistryRuleHandler
+    {
+        internal const string RuleType = "APPEND-MIGRATION";
+
+        public string Type => RuleType;
+
+        public ReadOnlyMemory<byte> TransformSerializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleHandlerContext context) => Transform(payload, context);
+
+        public ReadOnlyMemory<byte> TransformDeserializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleHandlerContext context) => Transform(payload, context);
+
+        private ReadOnlyMemory<byte> Transform(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleHandlerContext context)
+        {
+            calls.Enqueue(
+                $"{context.PayloadContext.RuleMode}:{GetTitle(context.PayloadContext.SourceSchema!)}->{GetTitle(context.PayloadContext.TargetSchema!)}");
+            var suffix = "|v2"u8;
+            var result = new byte[payload.Length + suffix.Length];
+            payload.Span.CopyTo(result);
+            suffix.CopyTo(result.AsSpan(payload.Length));
+            return result;
+        }
+
+        private static string GetTitle(Schema schema)
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(schema.SchemaString);
+            return document.RootElement.GetProperty("title").GetString()!;
         }
     }
 }

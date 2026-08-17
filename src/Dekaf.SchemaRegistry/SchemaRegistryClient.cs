@@ -517,10 +517,22 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
     public bool TryGetCachedSchema(int id, string subject, out Schema schema)
         => _schemaBySubjectAndIdCache.TryGetValue((id, subject), out schema!);
 
-    public async Task<RegisteredSchema> GetSchemaBySubjectAsync(string subject, string version = "latest", CancellationToken cancellationToken = default)
+    public Task<RegisteredSchema> GetSchemaBySubjectAsync(
+        string subject,
+        string version = "latest",
+        CancellationToken cancellationToken = default) =>
+        GetSchemaBySubjectAsync(subject, version, ignoreDeletedSchemas: true, cancellationToken);
+
+    public async Task<RegisteredSchema> GetSchemaBySubjectAsync(
+        string subject,
+        string version,
+        bool ignoreDeletedSchemas,
+        CancellationToken cancellationToken = default)
     {
         using var response = await GetWithFailoverAsync(
-            $"subjects/{Uri.EscapeDataString(subject)}/versions/{Uri.EscapeDataString(version)}",
+            WithQuery(
+                $"subjects/{Uri.EscapeDataString(subject)}/versions/{Uri.EscapeDataString(version)}",
+                ("deleted", ignoreDeletedSchemas ? null : "true")),
             cancellationToken).ConfigureAwait(false);
 
         await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);

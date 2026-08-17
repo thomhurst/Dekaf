@@ -28,8 +28,10 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IA
     private readonly ISchemaRegistryClient _schemaRegistry;
     private readonly ProtobufDeserializerConfig _config;
     private readonly bool _ownsClient;
+    private readonly ISchemaRegistryRuleExecutor? _ruleExecutor;
     private readonly MessageParser<T> _parser;
     private readonly DeserializerSubjectNameCache? _subjectNames;
+    private readonly SchemaRegistryMigrationRunner? _migrationRunner;
 
     /// <summary>
     /// Creates a new Protobuf Schema Registry deserializer.
@@ -44,12 +46,21 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IA
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _config = config ?? new ProtobufDeserializerConfig();
+        _ruleExecutor = _config.RuleExecutor;
         _ownsClient = ownsClient;
         _parser = new MessageParser<T>(() => new T());
         _subjectNames = DeserializerSubjectNameCache.Create(
             _config.SubjectNameStrategy,
             _config.CustomSubjectNameStrategy,
             _config.UseLegacySubjectNames);
+        if (_config.UseLatestVersion)
+        {
+            _migrationRunner = new SchemaRegistryMigrationRunner(
+                schemaRegistry,
+                _config.RuleExecutor,
+                SchemaRegistryTimeout);
+            _ruleExecutor ??= SchemaRegistryMigrationRunner.MarkerRuleExecutor;
+        }
     }
 
     /// <inheritdoc />
@@ -70,7 +81,7 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IA
         // Optionally validate the schema exists (with timeout to prevent indefinite hang)
         Schema? schema = null;
         string? ruleSubject = null;
-        if (!_config.SkipSchemaValidation || _config.RuleExecutor is SchemaRegistryRuleExecutor)
+        if (!_config.SkipSchemaValidation || _config.RuleExecutor is SchemaRegistryRuleExecutor || _migrationRunner is not null)
         {
             if (_config.RuleExecutor is not null && _subjectNames is null)
             {
@@ -106,25 +117,39 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IA
 
         // The rest is the protobuf message
         var protobufData = payloadMemory.Slice(bytesRead);
-        if (_config.RuleExecutor is not null)
+        if (_ruleExecutor is not null)
         {
             var subject = ruleSubject ?? GetSubjectName(schemaId, schema, context);
             if (schema is not null && ruleSubject is null)
                 schema = _schemaRegistry.GetSchemaSync(schemaId, subject, SchemaRegistryTimeout);
-            var ruleContext = SchemaRegistryRuleContext.Rent(
-                context.Topic,
-                context.Component,
-                schemaId,
-                subject,
-                schema,
-                SchemaRegistryPayloadFormat.Protobuf);
-            try
+            if (_migrationRunner is null)
             {
-                protobufData = _config.RuleExecutor.TransformDeserializedPayload(protobufData, ruleContext);
+                var ruleContext = SchemaRegistryRuleContext.Rent(
+                    context.Topic,
+                    context.Component,
+                    schemaId,
+                    subject,
+                    schema,
+                    SchemaRegistryPayloadFormat.Protobuf);
+                try
+                {
+                    protobufData = _ruleExecutor.TransformDeserializedPayload(protobufData, ruleContext);
+                }
+                finally
+                {
+                    ruleContext.Return();
+                }
             }
-            finally
+            else
             {
-                ruleContext.Return();
+                var migration = _migrationRunner.Transform(
+                    protobufData,
+                    schemaId,
+                    subject,
+                    schema!,
+                    context,
+                    SchemaRegistryPayloadFormat.Protobuf);
+                protobufData = migration.Payload;
             }
         }
 

@@ -27,8 +27,20 @@ public sealed class SchemaRegistryRuleExecutorTests
 
         overflow.Return();
         primary.Return();
-        var primaryReferencesCleared = primary.Topic is null && primary.Subject is null && primary.Schema is null;
-        var overflowReferencesCleared = overflow.Topic is null && overflow.Subject is null && overflow.Schema is null;
+        var primaryReferencesCleared =
+            primary.Topic is null &&
+            primary.Subject is null &&
+            primary.Schema is null &&
+            primary.SourceSchema is null &&
+            primary.TargetSchema is null &&
+            primary.RuleMode is null;
+        var overflowReferencesCleared =
+            overflow.Topic is null &&
+            overflow.Subject is null &&
+            overflow.Schema is null &&
+            overflow.SourceSchema is null &&
+            overflow.TargetSchema is null &&
+            overflow.RuleMode is null;
 
         var reused = SchemaRegistryRuleContext.Rent(
             "reused",

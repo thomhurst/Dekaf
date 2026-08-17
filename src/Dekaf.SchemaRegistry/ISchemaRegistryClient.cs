@@ -68,6 +68,21 @@ public interface ISchemaRegistryClient : IDisposable
     Task<RegisteredSchema> GetSchemaBySubjectAsync(string subject, string version = "latest", CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Gets the schema registered under a subject at a specific version, optionally including deleted versions.
+    /// </summary>
+    /// <param name="subject">The subject name.</param>
+    /// <param name="version">The version number, or "latest" for latest.</param>
+    /// <param name="ignoreDeletedSchemas">Whether deleted schemas are excluded.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The registered schema with metadata.</returns>
+    Task<RegisteredSchema> GetSchemaBySubjectAsync(
+        string subject,
+        string version,
+        bool ignoreDeletedSchemas,
+        CancellationToken cancellationToken = default) =>
+        GetSchemaBySubjectAsync(subject, version, cancellationToken);
+
+    /// <summary>
     /// Looks up an exact schema under a subject without registering it.
     /// </summary>
     /// <param name="subject">The subject name.</param>
