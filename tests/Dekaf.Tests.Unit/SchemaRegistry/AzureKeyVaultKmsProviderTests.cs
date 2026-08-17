@@ -284,6 +284,48 @@ public class AzureKeyVaultKmsProviderTests
     }
 
     [Test]
+    public async Task WrapKey_FactoryFailure_IsRetried()
+    {
+        var client = CreateClient(KeyUri);
+        client.WrapKeyAsync(Arg.Any<KeyWrapAlgorithm>(), Arg.Any<byte[]>(), Arg.Any<CancellationToken>())
+            .Returns(CryptographyModelFactory.WrapResult(
+                keyId: VersionedKeyUri,
+                key: [4, 5, 6],
+                algorithm: KeyWrapAlgorithm.RsaOaep256));
+        var factory = new RecordingFactory(_ => client);
+        factory.FailNextCreation(new InvalidOperationException("transient factory failure"));
+        var provider = new AzureKeyVaultKmsProvider(factory);
+
+        await Assert.That(async () => await provider.WrapKeyAsync(new byte[] { 1 }, CreateKeyReference()))
+            .Throws<InvalidOperationException>();
+        var encrypted = await provider.WrapKeyAsync(new byte[] { 1 }, CreateKeyReference());
+
+        await Assert.That(encrypted).IsEquivalentTo(new byte[] { 4, 5, 6 });
+        await Assert.That(factory.CreateCount).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task VersionlessUnwrap_FactoryFailure_IsRetried()
+    {
+        var client = CreateClient(KeyUri);
+        client.UnwrapKeyAsync(Arg.Any<KeyWrapAlgorithm>(), Arg.Any<byte[]>(), Arg.Any<CancellationToken>())
+            .Returns(CryptographyModelFactory.UnwrapResult(
+                keyId: VersionedKeyUri,
+                key: [1, 2, 3],
+                algorithm: KeyWrapAlgorithm.RsaOaep256));
+        var factory = new RecordingFactory(_ => client);
+        factory.FailNextCreation(new RequestFailedException(503, "Unavailable"));
+        var provider = new AzureKeyVaultKmsProvider(factory);
+
+        await Assert.That(async () => await provider.UnwrapKeyAsync(new byte[] { 4, 5, 6 }, CreateKeyReference()))
+            .Throws<SchemaRegistryKmsException>();
+        var plaintext = await provider.UnwrapKeyAsync(new byte[] { 4, 5, 6 }, CreateKeyReference());
+
+        await Assert.That(plaintext).IsEquivalentTo(new byte[] { 1, 2, 3 });
+        await Assert.That(factory.CreateCount).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task SharedProvider_CreatesOneClientPerKey()
     {
         var client = CreateClient(KeyUri);
@@ -383,15 +425,22 @@ public class AzureKeyVaultKmsProviderTests
     private sealed class RecordingFactory(Func<Uri, CryptographyClient> create) : IAzureKeyVaultCryptographyClientFactory
     {
         private int _createCount;
+        private Exception? _nextCreationException;
 
         internal ConcurrentBag<Uri> CreatedKeyIds { get; } = [];
 
         internal int CreateCount => Volatile.Read(ref _createCount);
 
+        internal void FailNextCreation(Exception exception) =>
+            Interlocked.Exchange(ref _nextCreationException, exception);
+
         public CryptographyClient CreateClient(Uri keyId)
         {
             Interlocked.Increment(ref _createCount);
             CreatedKeyIds.Add(keyId);
+            if (Interlocked.Exchange(ref _nextCreationException, null) is { } exception)
+                throw exception;
+
             return create(keyId);
         }
     }

@@ -116,9 +116,10 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
 
         var key = ResolveKey(keyReference);
         var plaintext = GetInputArray(keyMaterial, out var temporaryPlaintext);
+        var client = GetClientEntry(key.KeyId);
         try
         {
-            var result = await GetClient(key.KeyId)
+            var result = await client.Value
                 .WrapKeyAsync(KeyWrapAlgorithm.RsaOaep256, plaintext, cancellationToken)
                 .ConfigureAwait(false);
             var ciphertext = RequireMaterial(result.EncryptedKey, "wrap");
@@ -134,6 +135,14 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
             }
 
             return AddVersionHeader(ciphertext, resolvedKey.Version!);
+        }
+        catch (Exception ex) when (!client.IsValueCreated)
+        {
+            _clients.TryRemove(KeyValuePair.Create(key.KeyId, client));
+            if (IsAzureFailure(ex))
+                throw new SchemaRegistryKmsException("Azure Key Vault wrap failed.");
+
+            throw;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -183,6 +192,18 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
             var plaintext = RequireMaterial(result.Key, "unwrap");
             return plaintext;
         }
+        catch (Exception ex) when (!client.IsValueCreated)
+        {
+            if (hasEmbeddedVersion)
+                RemoveEmbeddedVersionClient(key.KeyId, version, client);
+            else
+                _clients.TryRemove(KeyValuePair.Create(key.KeyId, client));
+
+            if (IsAzureFailure(ex))
+                throw new SchemaRegistryKmsException("Azure Key Vault unwrap failed.");
+
+            throw;
+        }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
@@ -201,8 +222,6 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
     }
 
     private static int VersionHeaderLength => VersionHeaderPrefix.Length + AzureKeyVersionLength + 1;
-
-    private CryptographyClient GetClient(Uri keyId) => GetClientEntry(keyId).Value;
 
     private Lazy<CryptographyClient> GetClientEntry(Uri keyId) => _clients.GetOrAdd(
         keyId,
