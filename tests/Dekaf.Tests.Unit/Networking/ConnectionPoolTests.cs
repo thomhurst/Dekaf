@@ -192,6 +192,33 @@ public sealed class ConnectionPoolTests
     }
 
     [Test]
+    public async Task StatusSnapshot_AggregatesControllerEndpointAliases()
+    {
+        await using var pool = new ConnectionPool(
+            clientId: "status-test",
+            connectionOptions: new ConnectionOptions(),
+            connectionsPerBroker: 1,
+            connectionFactory: (_, host, port, _, _) =>
+                ValueTask.FromResult<IKafkaConnection>(new TestIdleConnection(-1, host, port)));
+        _ = await pool.GetConnectionAsync("controller-alias-a", 29093);
+        _ = await pool.GetConnectionAsync("controller-alias-b", 39093);
+
+        var status = ((IConnectionPoolStatusSource)pool).GetEndpointConnectionStatus(
+            [new ConnectionStatusEndpoint(
+                2,
+                "controller-a",
+                19093,
+                [
+                    new ConnectionStatusEndpointAlias("controller-alias-a", 29093),
+                    new ConnectionStatusEndpointAlias("controller-alias-b", 39093),
+                    new ConnectionStatusEndpointAlias("controller-alias-a", 29093)
+                ])]).Single();
+
+        await Assert.That(status.ConnectionCount).IsEqualTo(2);
+        await Assert.That(status.ConnectedConnectionCount).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task StatusSnapshot_PreservesControllerDisconnectTimeWhenReplacementFails()
     {
         long statusTimestamp = 100;
@@ -335,8 +362,7 @@ public sealed class ConnectionPoolTests
                 2,
                 "controller-a",
                 19093,
-                "controller-alias",
-                29093)]).Single();
+                [new ConnectionStatusEndpointAlias("controller-alias", 29093)])]).Single();
 
         await Assert.That(status.LastConnectionStateChangeAtUtc).IsNull();
         await Assert.That(status.LastError).IsEqualTo("controller-alias refused");
@@ -365,8 +391,7 @@ public sealed class ConnectionPoolTests
                 2,
                 "controller-a",
                 19093,
-                "CONTROLLER-A",
-                19093)]).Single();
+                [new ConnectionStatusEndpointAlias("CONTROLLER-A", 19093)])]).Single();
 
         await Assert.That(status.State).IsEqualTo(BrokerConnectionState.Disconnected);
         await Assert.That(status.LastError).IsEqualTo("CONTROLLER-A refused");

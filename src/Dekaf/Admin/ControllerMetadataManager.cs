@@ -152,7 +152,7 @@ internal sealed class ControllerMetadataManager : IDisposable
                                     response.ClusterId,
                                     response.ControllerId,
                                     controllers,
-                                    IdentifyDiscoveryConnection(endpoint, controllers),
+                                    BuildDiscoveryConnections(snapshot, endpoint, controllers),
                                     DateTimeOffset.UtcNow));
                             return;
                         }
@@ -372,20 +372,63 @@ internal sealed class ControllerMetadataManager : IDisposable
 
         return endpoint;
     }
+
+    private static IReadOnlyDictionary<int, ConnectionStatusEndpointAlias[]> BuildDiscoveryConnections(
+        ControllerMetadataSnapshot previous,
+        ControllerEndpoint endpoint,
+        IReadOnlyDictionary<int, ControllerEndpoint> controllers)
+    {
+        var result = new Dictionary<int, ConnectionStatusEndpointAlias[]>(previous.DiscoveryConnections.Count + 1);
+        foreach (var pair in previous.DiscoveryConnections)
+        {
+            if (controllers.ContainsKey(pair.Key))
+                result.Add(pair.Key, pair.Value);
+        }
+
+        var discovery = IdentifyDiscoveryConnection(endpoint, controllers);
+        if (discovery.NodeId >= 0)
+        {
+            var alias = new ConnectionStatusEndpointAlias(discovery.Host, discovery.Port);
+            if (!result.TryGetValue(discovery.NodeId, out var aliases))
+                result.Add(discovery.NodeId, [alias]);
+            else if (!ContainsAlias(aliases, alias))
+            {
+                var expanded = new ConnectionStatusEndpointAlias[aliases.Length + 1];
+                aliases.CopyTo(expanded, 0);
+                expanded[^1] = alias;
+                result[discovery.NodeId] = expanded;
+            }
+        }
+
+        return result;
+    }
+
+    private static bool ContainsAlias(
+        ConnectionStatusEndpointAlias[] aliases,
+        ConnectionStatusEndpointAlias candidate)
+    {
+        for (var i = 0; i < aliases.Length; i++)
+        {
+            if (aliases[i] == candidate)
+                return true;
+        }
+
+        return false;
+    }
 }
 
 internal sealed record ControllerMetadataSnapshot(
     string? ClusterId,
     int ActiveControllerId,
     IReadOnlyDictionary<int, ControllerEndpoint> Controllers,
-    ControllerEndpoint? DiscoveryConnection,
+    IReadOnlyDictionary<int, ConnectionStatusEndpointAlias[]> DiscoveryConnections,
     DateTimeOffset LastRefreshed)
 {
     internal static ControllerMetadataSnapshot Empty { get; } = new(
         null,
         -1,
         new Dictionary<int, ControllerEndpoint>(),
-        null,
+        new Dictionary<int, ConnectionStatusEndpointAlias[]>(),
         default);
 }
 

@@ -85,8 +85,9 @@ internal readonly record struct ConnectionStatusEndpoint(
     int NodeId,
     string Host,
     int Port,
-    string? ConnectionHost = null,
-    int ConnectionPort = 0);
+    IReadOnlyList<ConnectionStatusEndpointAlias>? ConnectionAliases = null);
+
+internal readonly record struct ConnectionStatusEndpointAlias(string Host, int Port);
 
 internal interface IConnectionCapabilityObserverPool
 {

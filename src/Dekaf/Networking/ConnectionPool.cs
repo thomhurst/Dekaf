@@ -1927,11 +1927,16 @@ public sealed partial class ConnectionPool :
                 AccumulateConnectionStatus(connection, ref connections);
             _endpointConnectionRuntimeStates.TryGetValue(endpointKey, out var runtimeState);
             AccumulateRuntimeState(runtimeState, ref connections);
-            if (endpoint.ConnectionHost is { } connectionHost)
+            var aliases = endpoint.ConnectionAliases;
+            if (aliases is not null)
             {
-                var connectionEndpointKey = new EndpointKey(connectionHost, endpoint.ConnectionPort);
-                if (connectionEndpointKey != endpointKey)
+                for (var aliasIndex = 0; aliasIndex < aliases.Count; aliasIndex++)
                 {
+                    var alias = aliases[aliasIndex];
+                    var connectionEndpointKey = new EndpointKey(alias.Host, alias.Port);
+                    if (connectionEndpointKey == endpointKey || AliasAlreadyVisited(aliases, aliasIndex, connectionEndpointKey))
+                        continue;
+
                     if (_connectionsByEndpoint.TryGetValue(connectionEndpointKey, out connection))
                         AccumulateConnectionStatus(connection, ref connections);
                     _endpointConnectionRuntimeStates.TryGetValue(connectionEndpointKey, out var connectionRuntimeState);
@@ -1950,6 +1955,21 @@ public sealed partial class ConnectionPool :
 
         result.Sort(static (left, right) => left.BrokerId.CompareTo(right.BrokerId));
         return result.AsReadOnly();
+    }
+
+    private static bool AliasAlreadyVisited(
+        IReadOnlyList<ConnectionStatusEndpointAlias> aliases,
+        int currentIndex,
+        EndpointKey endpoint)
+    {
+        for (var i = 0; i < currentIndex; i++)
+        {
+            var alias = aliases[i];
+            if (new EndpointKey(alias.Host, alias.Port) == endpoint)
+                return true;
+        }
+
+        return false;
     }
 
     private static bool HasLaterFailure(

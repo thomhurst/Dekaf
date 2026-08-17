@@ -183,15 +183,12 @@ public sealed class AdminClient : IAdminClient, IKafkaClientStatusProvider
             var index = 0;
             foreach (var endpoint in snapshot.Controllers.Values)
             {
-                var discoveryConnection = snapshot.DiscoveryConnection;
-                endpoints[index++] = discoveryConnection?.NodeId == endpoint.NodeId
-                    ? new ConnectionStatusEndpoint(
-                        endpoint.NodeId,
-                        endpoint.Host,
-                        endpoint.Port,
-                        discoveryConnection.Host,
-                        discoveryConnection.Port)
-                    : new ConnectionStatusEndpoint(endpoint.NodeId, endpoint.Host, endpoint.Port);
+                snapshot.DiscoveryConnections.TryGetValue(endpoint.NodeId, out var aliases);
+                endpoints[index++] = new ConnectionStatusEndpoint(
+                    endpoint.NodeId,
+                    endpoint.Host,
+                    endpoint.Port,
+                    aliases);
             }
             brokers = statusSource.GetEndpointConnectionStatus(endpoints);
         }
