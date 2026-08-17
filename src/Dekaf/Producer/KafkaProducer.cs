@@ -655,7 +655,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             {
                 // A preparer that throws synchronously must still stop and tag the started span,
                 // matching the invariant AwaitWithActivity enforces on every other completion path.
-                RecordActivityFault(activity, ex);
+                RecordActivityFault(activity, message.Headers, ex);
                 throw;
             }
 
@@ -676,8 +676,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     // Stops and error-tags a started span when async serializer preparation fails before the
     // message is appended. ProduceAfterPrepare owns the activity on all post-preparation paths,
     // so this only runs when preparation itself throws or faults. No-op when tracing is disabled.
-    private static void RecordActivityFault(Activity? activity, Exception ex)
+    private static void RecordActivityFault(Activity? activity, Headers? headers, Exception ex)
     {
+        headers?.RemoveDeferredTraceContext();
         if (activity is null)
         {
             return;
@@ -745,7 +746,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         {
             // Preparation faulted (e.g. Schema Registry unreachable or cancelled mid-fetch) before the
             // message was appended. Stop and error-tag the span here; ProduceAfterPrepare never runs.
-            RecordActivityFault(activity, ex);
+            RecordActivityFault(activity, message.Headers, ex);
             throw;
         }
 
@@ -1264,6 +1265,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             {
                 // BufferMemory backpressure timeout must propagate
                 if (activity is not null) Diagnostics.DekafDiagnostics.RecordException(activity, ex);
+                message.Headers?.RemoveDeferredTraceContext();
                 activity?.Dispose();
                 throw;
             }
@@ -1271,6 +1273,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             {
                 // Fire-and-forget: swallow exception but log
                 LogFireAndForgetProduceFailed(ex, message.Topic);
+                message.Headers?.RemoveDeferredTraceContext();
                 activity?.Dispose();
                 return default;
             }
@@ -1560,6 +1563,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         catch (Exception ex)
         {
             RecordAccumulator.ReturnPooledHeaders(pooledHeaderArray, headerCount);
+            headers?.RemoveDeferredTraceContext();
             customPartitionerKey.Return();
             customPartitionerValue.Return();
             if (ex is not ObjectDisposedException)
@@ -1848,6 +1852,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             key.Return();
             value.Return();
             RecordAccumulator.ReturnPooledHeaders(pooledHeaderArray, headerCount);
+            message.Headers?.RemoveDeferredTraceContext();
             throw;
         }
     }
@@ -4482,6 +4487,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         }
         finally
         {
+            message.Headers?.RemoveDeferredTraceContext();
             activity?.Dispose();
         }
     }
@@ -5120,6 +5126,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         }
         finally
         {
+            message.Headers?.RemoveDeferredTraceContext();
             activity?.Dispose();
         }
     }
@@ -5223,6 +5230,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         // Use index-based iteration to avoid enumerator boxing allocation
         for (var i = 0; i < count; i++)
             result[i] = headers[i];
+
+        headers.RemoveDeferredTraceContext();
     }
 
     public async ValueTask DisposeAsync()

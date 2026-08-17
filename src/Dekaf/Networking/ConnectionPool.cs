@@ -1680,8 +1680,7 @@ public sealed partial class ConnectionPool :
             return false;
         }
 
-        if (connection.BrokerId >= 0)
-            RecordBrokerConnectionStateChange(connection.BrokerId);
+        PreserveRemovedConnectionState(connection, connection.BrokerId, endpoint);
         return true;
     }
 

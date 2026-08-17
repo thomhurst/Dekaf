@@ -158,6 +158,29 @@ public sealed class Headers : IEnumerable<Header>
         _headers.Clear();
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void RemoveDeferredTraceContext()
+    {
+        var lastIndex = _headers.Count - 1;
+        if (lastIndex < 0)
+            return;
+
+        if (_headers[lastIndex].HasDeferredTraceparent)
+        {
+            _headers.RemoveAt(lastIndex);
+            return;
+        }
+
+        // Trace injection appends traceparent followed only by optional tracestate.
+        if (lastIndex > 0
+            && _headers[lastIndex - 1].HasDeferredTraceparent
+            && _headers[lastIndex].Key == "tracestate")
+        {
+            _headers.RemoveAt(lastIndex);
+            _headers.RemoveAt(lastIndex - 1);
+        }
+    }
+
     /// <summary>
     /// Adds multiple headers from a collection of key-value pairs.
     /// </summary>

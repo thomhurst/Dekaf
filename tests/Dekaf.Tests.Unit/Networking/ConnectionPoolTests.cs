@@ -1056,6 +1056,40 @@ public sealed class ConnectionPoolTests
     }
 
     [Test]
+    public async Task ReapIdleConnectionsAsync_ControllerEndpoint_RecordsStateChange()
+    {
+        long statusTimestamp = 100;
+        var connection = new TestIdleConnection(-1, "controller-a", 19093)
+        {
+            LastSuccessfulRequestTimestampMs = 99
+        };
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions { ConnectionsMaxIdleMs = IdleThresholdMs },
+            connectionsPerBroker: 1,
+            connectionFactory: (_, _, _, _, _) => new ValueTask<IKafkaConnection>(connection),
+            statusTimestampProvider: () => Volatile.Read(ref statusTimestamp));
+
+        await using (pool)
+        {
+            _ = await pool.GetConnectionAsync("controller-a", 19093);
+            connection.LastUsedTimestampMs = StaleIdleTimestamp();
+            Volatile.Write(ref statusTimestamp, 101);
+
+            var reaped = await pool.ReapIdleConnectionsAsync();
+            var status = ((IConnectionPoolStatusSource)pool).GetEndpointConnectionStatus(
+                [new ConnectionStatusEndpoint(2, "controller-a", 19093)]).Single();
+
+            await Assert.That(reaped).IsEqualTo(1);
+            await Assert.That(status.State).IsEqualTo(BrokerConnectionState.Disconnected);
+            await Assert.That(status.ConnectionCount).IsEqualTo(0);
+            await Assert.That(GetEndpointStateChangeTimestamp(pool, "controller-a", 19093))
+                .IsGreaterThanOrEqualTo(101);
+            await Assert.That(GetEndpointSuccessfulRequestTimestamp(pool, "controller-a", 19093)).IsEqualTo(99);
+        }
+    }
+
+    [Test]
     public async Task ReapIdleConnectionsAsync_ActiveLease_DrainsBeforeDisposal()
     {
         var connection = new TestIdleConnection(1, "localhost", 9092);

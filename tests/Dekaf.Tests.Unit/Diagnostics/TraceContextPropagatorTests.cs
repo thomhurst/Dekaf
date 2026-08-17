@@ -87,6 +87,23 @@ public sealed class TraceContextPropagatorTests
     }
 
     [Test]
+    public async Task RemoveDeferredTraceContext_RestoresCallerOwnedHeaders()
+    {
+        using var firstActivity = new Activity("first-trace")
+            .SetIdFormat(ActivityIdFormat.W3C)
+            .Start();
+        firstActivity.TraceStateString = "vendor=value";
+        var headers = new Headers(3).Add("existing", "value");
+
+        TraceContextPropagator.InjectTraceContext(headers, firstActivity);
+        headers.RemoveDeferredTraceContext();
+
+        await Assert.That(headers.Count).IsEqualTo(1);
+        await Assert.That(headers[0].Key).IsEqualTo("existing");
+        await Assert.That(headers[0].GetValueAsString()).IsEqualTo("value");
+    }
+
+    [Test]
     public async Task InjectTraceContext_WithTracestate_AddsBothHeaders()
     {
         using var listener = new ActivityListener
