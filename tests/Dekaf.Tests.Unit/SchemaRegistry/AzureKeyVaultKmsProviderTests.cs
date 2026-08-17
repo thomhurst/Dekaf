@@ -166,7 +166,7 @@ public class AzureKeyVaultKmsProviderTests
     }
 
     [Test]
-    public async Task FailedEmbeddedVersions_AreNotRetained()
+    public async Task PermanentEmbeddedVersionFailures_AreNotRetained()
     {
         var client = CreateClient(KeyUri);
         client.DecryptAsync(Arg.Any<EncryptionAlgorithm>(), Arg.Any<byte[]>(), Arg.Any<CancellationToken>())
@@ -187,6 +187,52 @@ public class AzureKeyVaultKmsProviderTests
         }
 
         await Assert.That(factory.CreateCount).IsEqualTo(64);
+    }
+
+    [Test]
+    [Arguments(408)]
+    [Arguments(429)]
+    [Arguments(500)]
+    [Arguments(503)]
+    public async Task TransientEmbeddedVersionFailures_RetainClient(int status)
+    {
+        var client = CreateClient(VersionedKeyUri);
+        client.DecryptAsync(Arg.Any<EncryptionAlgorithm>(), Arg.Any<byte[]>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromException<DecryptResult>(new RequestFailedException(status, "transient")));
+        var factory = new RecordingFactory(_ => client);
+        var provider = new AzureKeyVaultKmsProvider(factory);
+        var ciphertext = Encoding.ASCII.GetBytes($"azure:v1:{KeyVersion}:wrapped");
+
+        for (var pass = 0; pass < 2; pass++)
+        {
+            await Assert.That(async () => await provider.UnwrapKeyAsync(ciphertext, CreateKeyReference()))
+                .Throws<SchemaRegistryKmsException>();
+        }
+
+        await Assert.That(factory.CreateCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task CancelledEmbeddedVersion_RetainsClient()
+    {
+        var client = CreateClient(VersionedKeyUri);
+        client.DecryptAsync(Arg.Any<EncryptionAlgorithm>(), Arg.Any<byte[]>(), Arg.Any<CancellationToken>())
+            .Returns(call => WaitForDecryptCancellationAsync(call.Arg<CancellationToken>()));
+        var factory = new RecordingFactory(_ => client);
+        var provider = new AzureKeyVaultKmsProvider(factory);
+        var ciphertext = Encoding.ASCII.GetBytes($"azure:v1:{KeyVersion}:wrapped");
+
+        for (var pass = 0; pass < 2; pass++)
+        {
+            using var cancellation = new CancellationTokenSource();
+            var operation = provider.UnwrapKeyAsync(ciphertext, CreateKeyReference(), cancellation.Token).AsTask();
+
+            cancellation.Cancel();
+
+            await Assert.That(async () => await operation).Throws<OperationCanceledException>();
+        }
+
+        await Assert.That(factory.CreateCount).IsEqualTo(1);
     }
 
     [Test]
@@ -261,6 +307,12 @@ public class AzureKeyVaultKmsProviderTests
     };
 
     private static async Task<EncryptResult> WaitForCancellationAsync(CancellationToken cancellationToken)
+    {
+        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        throw new InvalidOperationException("Cancellation was not observed.");
+    }
+
+    private static async Task<DecryptResult> WaitForDecryptCancellationAsync(CancellationToken cancellationToken)
     {
         await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
         throw new InvalidOperationException("Cancellation was not observed.");

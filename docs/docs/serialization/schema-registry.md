@@ -445,10 +445,11 @@ existing data keeps decrypting after rotation. For a versionless key, set the KE
 `encrypt.azure.key.version.save=true` to embed the exact Azure key version in newly wrapped key
 material.
 
-Grant the identity `keys/encrypt` and `keys/decrypt` permissions, for example through the Key Vault
-Crypto Service Encryption User RBAC role. One provider instance is safe for concurrent use and
-caches one `CryptographyClient` per resolved key identifier. Cancellation is forwarded to Azure;
-provider error messages do not include service response text or key material.
+For RBAC-enabled vaults, grant the identity the Key Vault Crypto User role. For vaults using legacy
+access policies, grant the `keys/encrypt` and `keys/decrypt` permissions. One provider instance is
+safe for concurrent use and caches one `CryptographyClient` per resolved key identifier.
+Cancellation is forwarded to Azure; provider error messages do not include service response text
+or key material.
 
 ## Consumer
 

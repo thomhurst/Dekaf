@@ -168,14 +168,13 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
 
         var ciphertext = GetInputArray(wrappedMaterial, out var temporaryCiphertext);
         var client = GetClientEntry(key.KeyId);
-        var retainClient = false;
+        var evictClient = false;
         try
         {
             var result = await client.Value
                 .DecryptAsync(EncryptionAlgorithm.RsaOaep256, ciphertext, cancellationToken)
                 .ConfigureAwait(false);
             var plaintext = RequireMaterial(result.Plaintext, "unwrap");
-            retainClient = true;
             return plaintext;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -184,12 +183,13 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
         }
         catch (Exception ex) when (IsAzureFailure(ex))
         {
+            evictClient = ShouldEvictFailedVersionClient(ex);
             throw new SchemaRegistryKmsException("Azure Key Vault unwrap failed.");
         }
         finally
         {
             ClearTemporaryBuffer(temporaryCiphertext);
-            if (hasEmbeddedVersion && !retainClient)
+            if (hasEmbeddedVersion && evictClient)
                 _clients.TryRemove(KeyValuePair.Create(key.KeyId, client));
         }
     }
@@ -355,6 +355,13 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
         or CredentialUnavailableException
         or CryptographicException
         or ArgumentException;
+
+    private static bool ShouldEvictFailedVersionClient(Exception exception) => exception switch
+    {
+        RequestFailedException { Status: 0 or 408 or 429 or >= 500 } => false,
+        AuthenticationFailedException or CredentialUnavailableException => false,
+        _ => true
+    };
 
     private static void ClearTemporaryBuffer(byte[]? temporaryBuffer)
     {
