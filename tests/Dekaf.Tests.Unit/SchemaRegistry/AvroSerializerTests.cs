@@ -571,6 +571,41 @@ public sealed class AvroSerializerTests
     }
 
     [Test]
+    public async Task Serializer_GenericRecord_CustomStructInterfaceUnionList_IsRejectedBeforeIndexing()
+    {
+        Avro.Util.LogicalTypeFactory.Instance.Register(new CustomStructInterfaceBytesLogicalType());
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry);
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(
+            $$"""
+            {
+                "type": "record",
+                "name": "CustomStructInterfaceUnionListRecord",
+                "fields": [{
+                    "name": "values",
+                    "type": {
+                        "type": "array",
+                        "items": [
+                            { "type": "bytes", "logicalType": "{{CustomStructInterfaceBytesLogicalType.LogicalName}}" },
+                            "string"
+                        ]
+                    }
+                }]
+            }
+            """);
+        var record = new GenericRecord(schema);
+        record.Add("values", new ThrowingNonGenericIndexerValues());
+
+        await Assert.That(Serialize).Throws<Avro.AvroTypeException>();
+
+        void Serialize()
+        {
+            var buffer = new ArrayBufferWriter<byte>();
+            serializer.Serialize(record, ref buffer, CreateContext());
+        }
+    }
+
+    [Test]
     [Arguments(0, false)]
     [Arguments(0, true)]
     [Arguments(1, false)]
@@ -745,6 +780,41 @@ public sealed class AvroSerializerTests
             """);
         var record = new GenericRecord(schema);
         record.Add("value", new List<int> { -1, 2 });
+
+        await Assert.That(Serialize).Throws<Avro.AvroTypeException>();
+
+        void Serialize()
+        {
+            var buffer = new ArrayBufferWriter<byte>();
+            serializer.Serialize(record, ref buffer, CreateContext());
+        }
+    }
+
+    [Test]
+    public async Task Serializer_GenericRecord_AssignableLogicalValueTypeArray_IsRejected()
+    {
+        Avro.Util.LogicalTypeFactory.Instance.Register(new ComparableBytesLogicalType());
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry);
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(
+            $$"""
+            {
+                "type": "record",
+                "name": "AssignableLogicalValueTypeArrayRecord",
+                "fields": [{
+                    "name": "values",
+                    "type": {
+                        "type": "array",
+                        "items": [
+                            { "type": "bytes", "logicalType": "{{ComparableBytesLogicalType.LogicalName}}" },
+                            "int"
+                        ]
+                    }
+                }]
+            }
+            """);
+        var record = new GenericRecord(schema);
+        record.Add("values", CustomLogicalValueTypeValues);
 
         await Assert.That(Serialize).Throws<Avro.AvroTypeException>();
 
@@ -1742,7 +1812,19 @@ public sealed class AvroSerializerTests
             logicalValue is IList<int> { Count: > 0 } values && values[0] < 0;
     }
 
-    private readonly record struct CustomLogicalValue(int Value);
+    private interface ICustomLogicalValue;
+
+    private readonly record struct CustomLogicalValue(int Value) : ICustomLogicalValue;
+
+    private sealed class ThrowingNonGenericIndexerValues()
+        : Collection<CustomLogicalValue>([new(1)]), System.Collections.IList
+    {
+        object? System.Collections.IList.this[int index]
+        {
+            get => throw new InvalidOperationException("The non-generic indexer must not be read.");
+            set => throw new NotSupportedException();
+        }
+    }
 
     private sealed class CustomStructBytesLogicalType() : Avro.Util.LogicalType(LogicalName)
     {
@@ -1755,6 +1837,21 @@ public sealed class AvroSerializerTests
             new CustomLogicalValue(BitConverter.ToInt32((byte[])baseValue));
 
         public override Type GetCSharpType(bool nullible) => typeof(CustomLogicalValue);
+
+        public override bool IsInstanceOfLogicalType(object logicalValue) => logicalValue is CustomLogicalValue;
+    }
+
+    private sealed class CustomStructInterfaceBytesLogicalType() : Avro.Util.LogicalType(LogicalName)
+    {
+        internal const string LogicalName = "dekaf-custom-struct-interface-bytes";
+
+        public override object ConvertToBaseValue(object logicalValue, Avro.LogicalSchema schema) =>
+            BitConverter.GetBytes(((CustomLogicalValue)logicalValue).Value);
+
+        public override object ConvertToLogicalValue(object baseValue, Avro.LogicalSchema schema) =>
+            new CustomLogicalValue(BitConverter.ToInt32((byte[])baseValue));
+
+        public override Type GetCSharpType(bool nullible) => typeof(ICustomLogicalValue);
 
         public override bool IsInstanceOfLogicalType(object logicalValue) => logicalValue is CustomLogicalValue;
     }

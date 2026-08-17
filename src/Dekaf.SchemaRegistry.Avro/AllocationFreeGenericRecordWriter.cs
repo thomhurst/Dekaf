@@ -1002,7 +1002,8 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
         private readonly Dictionary<Type, MultipleConditionalUnionBranches>? _multipleConditionalBranches;
         private readonly ConditionalUnionCandidateByType[]? _conditionalCandidates;
         private readonly ConditionalUnionCandidateByType[]? _assignableConditionalCandidates;
-        private readonly bool _hasConditionalValueTypeBranch;
+        private readonly ValueTypeFlags _conditionalValueTypes;
+        private readonly bool _hasPotentialConditionalValueTypeBranch;
         private readonly UnionBranch _arrayBranch;
         private readonly UnionBranch _booleanBranch;
         private readonly UnionBranch _bytesBranch;
@@ -1033,7 +1034,8 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
             UnionBranch stringBranch = default;
             UnionBranch timeSpanBranch = default;
             Dictionary<Type, ConditionalUnionBranchBuilder>? conditionalBranchBuilders = null;
-            var hasConditionalValueTypeBranch = false;
+            var conditionalValueTypes = ValueTypeFlags.None;
+            var hasPotentialConditionalValueTypeBranch = false;
             for (var i = 0; i < schema.Count; i++)
             {
                 var branch = schema[i];
@@ -1086,7 +1088,13 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
                         var logical = (global::Avro.LogicalSchema)branch;
                         var type = logical.LogicalType.GetCSharpType(nullible: false);
                         var conditional = IsSpecializedLogicalType(logical.LogicalType) ? null : logical;
-                        hasConditionalValueTypeBranch |= conditional is not null && type.IsValueType;
+                        if (conditional is not null)
+                        {
+                            conditionalValueTypes |= GetAssignableValueTypes(type);
+                            hasPotentialConditionalValueTypeBranch |=
+                                type.IsValueType || type.IsInterface ||
+                                type == typeof(object) || type == typeof(ValueType) || type == typeof(Enum);
+                        }
                         if (type == typeof(bool))
                         {
                             SetCompatibleBranch(type, ref booleanBranch, resolved, conditional, ref conditionalBranchBuilders);
@@ -1163,14 +1171,15 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
             _conditionalCandidates = BuildConditionalCandidates(
                 conditionalBranchBuilders,
                 out _assignableConditionalCandidates);
-            _hasConditionalValueTypeBranch = hasConditionalValueTypeBranch;
+            _conditionalValueTypes = conditionalValueTypes;
+            _hasPotentialConditionalValueTypeBranch = hasPotentialConditionalValueTypeBranch;
         }
 
         public global::Avro.UnionSchema Schema => _schema;
 
         public bool HasConditionalBranches => _conditionalBranches is not null;
 
-        public bool HasConditionalValueTypeBranch => _hasConditionalValueTypeBranch;
+        public bool HasConditionalValueTypeBranch => _hasPotentialConditionalValueTypeBranch;
 
         public int NullIndex { get; }
 
@@ -1548,9 +1557,43 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
             }
         }
 
-        private bool HasConditionalValueBranch(Type type) =>
-            _conditionalBranches?.ContainsKey(type) == true ||
-            _multipleConditionalBranches?.ContainsKey(type) == true;
+        private bool HasConditionalValueBranch(Type type)
+        {
+            var valueType = GetValueType(type);
+            return valueType != ValueTypeFlags.None
+                ? (_conditionalValueTypes & valueType) != 0
+                : _conditionalBranches?.ContainsKey(type) == true ||
+                  _multipleConditionalBranches?.ContainsKey(type) == true;
+        }
+
+        private static ValueTypeFlags GetAssignableValueTypes(Type type)
+        {
+            var flags = ValueTypeFlags.None;
+            if (type.IsAssignableFrom(typeof(bool))) flags |= ValueTypeFlags.Boolean;
+            if (type.IsAssignableFrom(typeof(int))) flags |= ValueTypeFlags.Int;
+            if (type.IsAssignableFrom(typeof(long))) flags |= ValueTypeFlags.Long;
+            if (type.IsAssignableFrom(typeof(float))) flags |= ValueTypeFlags.Float;
+            if (type.IsAssignableFrom(typeof(double))) flags |= ValueTypeFlags.Double;
+            if (type.IsAssignableFrom(typeof(DateTime))) flags |= ValueTypeFlags.DateTime;
+            if (type.IsAssignableFrom(typeof(TimeSpan))) flags |= ValueTypeFlags.TimeSpan;
+            if (type.IsAssignableFrom(typeof(Guid))) flags |= ValueTypeFlags.Guid;
+            if (type.IsAssignableFrom(typeof(global::Avro.AvroDecimal))) flags |= ValueTypeFlags.Decimal;
+            return flags;
+        }
+
+        private static ValueTypeFlags GetValueType(Type type)
+        {
+            if (type == typeof(bool)) return ValueTypeFlags.Boolean;
+            if (type == typeof(int)) return ValueTypeFlags.Int;
+            if (type == typeof(long)) return ValueTypeFlags.Long;
+            if (type == typeof(float)) return ValueTypeFlags.Float;
+            if (type == typeof(double)) return ValueTypeFlags.Double;
+            if (type == typeof(DateTime)) return ValueTypeFlags.DateTime;
+            if (type == typeof(TimeSpan)) return ValueTypeFlags.TimeSpan;
+            if (type == typeof(Guid)) return ValueTypeFlags.Guid;
+            if (type == typeof(global::Avro.AvroDecimal)) return ValueTypeFlags.Decimal;
+            return ValueTypeFlags.None;
+        }
 
         private static bool IsSpecializedLogicalType(global::Avro.Util.LogicalType logicalType) =>
             logicalType is Date or TimestampMillisecond or LocalTimestampMillisecond or
@@ -1559,6 +1602,21 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
 
         private global::Avro.AvroException NoMatch(object? value) =>
             new($"Cannot find a union match for {value?.GetType()} in {_schema}.");
+    }
+
+    [Flags]
+    private enum ValueTypeFlags : ushort
+    {
+        None = 0,
+        Boolean = 1 << 0,
+        Int = 1 << 1,
+        Long = 1 << 2,
+        Float = 1 << 3,
+        Double = 1 << 4,
+        DateTime = 1 << 5,
+        TimeSpan = 1 << 6,
+        Guid = 1 << 7,
+        Decimal = 1 << 8
     }
 
     private readonly record struct UnionBranch(int Index, global::Avro.Schema Schema);
