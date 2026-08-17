@@ -448,9 +448,12 @@ existing data keeps decrypting after rotation. For a versionless key, set the KE
 material.
 
 For RBAC-enabled vaults, grant the identity the Key Vault Crypto User role. For vaults using legacy
-access policies, grant the `keys/wrapKey` and `keys/unwrapKey` permissions. One provider instance is
-safe for concurrent use and caches one `CryptographyClient` per configured key identifier. Clients
-for key versions read from ciphertext use a bounded cache.
+access policies, grant the `keys/wrapKey` and `keys/unwrapKey` permissions. Managed HSM uses its own
+local RBAC system: grant the identity the
+[Managed HSM Crypto User role](https://learn.microsoft.com/azure/key-vault/managed-hsm/role-management)
+at the `/keys` scope or the specific key's scope. One provider instance is safe for concurrent use
+and caches one `CryptographyClient` per configured key identifier. Clients for key versions read
+from ciphertext use a bounded cache.
 Cancellation is forwarded to Azure; provider error messages do not include service response text
 or key material.
 
