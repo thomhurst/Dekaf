@@ -317,6 +317,39 @@ public sealed class JsonSchemaValidationTests
     }
 
     [Test]
+    public async Task Serializer_AutoRegistrationWithValidation_UsesIdOnlyLookup()
+    {
+        const string schemaText = """{ "type": "object", "required": ["id"] }""";
+        var schema = CreateSchema(schemaText);
+        using var registry = Substitute.For<ISchemaRegistryClient>();
+        registry.GetOrRegisterSchemaAsync(
+                "validation-value",
+                Arg.Any<Schema>(),
+                Arg.Any<CancellationToken>())
+            .Returns(42);
+        registry.GetSchemaAsync(42, Arg.Any<CancellationToken>())
+            .Returns(schema);
+        await using var serializer = new JsonSchemaRegistrySerializer<ValidationPayload>(
+            registry,
+            schemaText,
+            jsonOptions: null,
+            validationOptions: new JsonSchemaValidationOptions
+            {
+                ValidatorFactory = new StreamingJsonSchemaValidatorFactory(registry),
+                Mode = JsonSchemaValidationMode.Serialize
+            });
+        var buffer = new ArrayBufferWriter<byte>();
+
+        serializer.Serialize(new ValidationPayload(7), ref buffer, Context);
+
+        await registry.Received(1).GetSchemaAsync(42, Arg.Any<CancellationToken>());
+        await registry.DidNotReceive().GetSchemaAsync(
+            42,
+            "validation-value",
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
     public async Task Serializer_ValidatesAfterDomainRulesBeforeEncodingRules()
     {
         const string schemaText = """{ "type": "string" }""";
@@ -470,13 +503,6 @@ public sealed class JsonSchemaValidationTests
             """,
             """
             {
-              "schema":"{\"$id\":\"https://example.test/root.json\",\"properties\":{\"address\":{\"$ref\":\"address.json\"}},\"required\":[\"address\"]}",
-              "schemaType":"JSON",
-              "references":[{"name":"address.json","subject":"address-value","version":1}]
-            }
-            """,
-            """
-            {
               "subject":"address-value","version":1,"id":43,
               "schema":"{\"type\":\"object\",\"required\":[\"postcode\"]}",
               "schemaType":"JSON"
@@ -509,7 +535,7 @@ public sealed class JsonSchemaValidationTests
         await Assert.That(resolved.Schema.References).IsNotNull();
         await Assert.That(resolved.Schema.References!.Count).IsEqualTo(1);
         await Assert.That(buffer.WrittenCount).IsGreaterThan(5);
-        await Assert.That(handler.RequestCount).IsEqualTo(3);
+        await Assert.That(handler.RequestCount).IsEqualTo(2);
     }
 
     [Test]

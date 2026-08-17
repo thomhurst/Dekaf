@@ -584,9 +584,11 @@ public sealed class JsonSchemaRegistrySerializer<T> :
                     subject,
                     schema,
                     cancellationToken).ConfigureAwait(false);
-            var registeredSchema = _validatorFactory is null && _ruleExecutor is null
-                ? schema
-                : await _schemaRegistry.GetSchemaAsync(schemaId, subject, cancellationToken).ConfigureAwait(false);
+            var registeredSchema = _ruleExecutor is not null
+                ? await _schemaRegistry.GetSchemaAsync(schemaId, subject, cancellationToken).ConfigureAwait(false)
+                : _validatorFactory is not null
+                    ? await _schemaRegistry.GetSchemaAsync(schemaId, cancellationToken).ConfigureAwait(false)
+                    : schema;
             return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(schemaId, registeredSchema);
         }
 
