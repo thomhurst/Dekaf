@@ -3,7 +3,6 @@ using System.Buffers.Text;
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Headers;
-using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -413,8 +412,14 @@ public sealed class VaultTransitHttpClient : IVaultTransitClient
         }
     }
 
+    internal static ValueTask<byte[]> ReadResponseBytesAsync(
+        HttpContent content,
+        CancellationToken cancellationToken) =>
+        ReadResponseBytesAsync(content, ArrayPool<byte>.Shared, cancellationToken);
+
     internal static async ValueTask<byte[]> ReadResponseBytesAsync(
         HttpContent content,
+        ArrayPool<byte> bufferPool,
         CancellationToken cancellationToken)
     {
         if (content.Headers.ContentLength is > MaximumResponseBytes)
@@ -422,33 +427,62 @@ public sealed class VaultTransitHttpClient : IVaultTransitClient
 
         var stream = await content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
         await using var configuredStream = stream.ConfigureAwait(false);
-        var readBuffer = ArrayPool<byte>.Shared.Rent(4096);
-        var responseBuffer = new ArrayBufferWriter<byte>();
+        var initialCapacity = content.Headers.ContentLength is > 0 and var contentLength
+            ? (int)contentLength
+            : 4096;
+        var responseBuffer = bufferPool.Rent(initialCapacity);
+        var written = 0;
         try
         {
             while (true)
             {
+                if (written == MaximumResponseBytes)
+                {
+                    var probeBuffer = bufferPool.Rent(1);
+                    try
+                    {
+                        if (await stream.ReadAsync(probeBuffer.AsMemory(0, 1), cancellationToken)
+                                .ConfigureAwait(false) != 0)
+                        {
+                            throw new InvalidOperationException("Vault response exceeded the maximum allowed size.");
+                        }
+                    }
+                    finally
+                    {
+                        ReturnSensitiveBuffer(bufferPool, probeBuffer);
+                    }
+
+                    return responseBuffer.AsSpan(0, written).ToArray();
+                }
+
+                if (written == responseBuffer.Length)
+                {
+                    var nextCapacity = Math.Min(MaximumResponseBytes, responseBuffer.Length * 2);
+                    var retiredBuffer = responseBuffer;
+                    responseBuffer = bufferPool.Rent(nextCapacity);
+                    try
+                    {
+                        retiredBuffer.AsSpan(0, written).CopyTo(responseBuffer);
+                    }
+                    finally
+                    {
+                        ReturnSensitiveBuffer(bufferPool, retiredBuffer);
+                    }
+                }
+
+                var available = Math.Min(responseBuffer.Length - written, MaximumResponseBytes - written);
                 var read = await stream
-                    .ReadAsync(readBuffer.AsMemory(), cancellationToken)
+                    .ReadAsync(responseBuffer.AsMemory(written, available), cancellationToken)
                     .ConfigureAwait(false);
                 if (read == 0)
-                    return responseBuffer.WrittenSpan.ToArray();
+                    return responseBuffer.AsSpan(0, written).ToArray();
 
-                if (responseBuffer.WrittenCount > MaximumResponseBytes - read)
-                    throw new InvalidOperationException("Vault response exceeded the maximum allowed size.");
-
-                responseBuffer.Write(readBuffer.AsSpan(0, read));
+                written += read;
             }
         }
         finally
         {
-            CryptographicOperations.ZeroMemory(readBuffer);
-            ArrayPool<byte>.Shared.Return(readBuffer);
-            if (MemoryMarshal.TryGetArray(responseBuffer.WrittenMemory, out var segment) &&
-                segment.Array is not null)
-            {
-                CryptographicOperations.ZeroMemory(segment.Array.AsSpan(segment.Offset, segment.Count));
-            }
+            ReturnSensitiveBuffer(bufferPool, responseBuffer);
         }
     }
 
@@ -550,9 +584,12 @@ public sealed class VaultTransitHttpClient : IVaultTransitClient
     }
 
     private static void ReturnSensitiveBuffer(byte[] buffer)
+        => ReturnSensitiveBuffer(ArrayPool<byte>.Shared, buffer);
+
+    private static void ReturnSensitiveBuffer(ArrayPool<byte> bufferPool, byte[] buffer)
     {
         CryptographicOperations.ZeroMemory(buffer);
-        ArrayPool<byte>.Shared.Return(buffer);
+        bufferPool.Return(buffer);
     }
 }
 

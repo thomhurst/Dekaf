@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Net;
 using System.Text;
 using Dekaf.SchemaRegistry;
@@ -297,6 +298,27 @@ public class VaultKmsProviderTests
     }
 
     [Test]
+    public async Task ResponseStream_GrowthZeroesEveryReturnedBuffer()
+    {
+        var expected = Enumerable.Range(0, 9000)
+            .Select(static value => (byte)((value % 251) + 1))
+            .ToArray();
+        using var content = new StreamContent(new MemoryStream(expected, writable: false));
+        content.Headers.ContentLength = null;
+        var bufferPool = new TrackingArrayPool();
+
+        var actual = await VaultTransitHttpClient.ReadResponseBytesAsync(
+            content,
+            bufferPool,
+            CancellationToken.None);
+
+        await Assert.That(actual.SequenceEqual(expected)).IsTrue();
+        await Assert.That(bufferPool.ReturnedBuffers.Count).IsGreaterThan(1);
+        foreach (var buffer in bufferPool.ReturnedBuffers)
+            await Assert.That(buffer.All(static value => value == 0)).IsTrue();
+    }
+
+    [Test]
     public async Task AppRoleProvider_LogsInOnceForConcurrentCallers()
     {
         var loginCount = 0;
@@ -419,6 +441,15 @@ public class VaultKmsProviderTests
                 callback.Callback(callback.State);
             }
         }
+    }
+
+    private sealed class TrackingArrayPool : ArrayPool<byte>
+    {
+        internal List<byte[]> ReturnedBuffers { get; } = [];
+
+        public override byte[] Rent(int minimumLength) => new byte[minimumLength];
+
+        public override void Return(byte[] array, bool clearArray = false) => ReturnedBuffers.Add(array);
     }
 
     private sealed class TestTimeProvider(DateTimeOffset utcNow) : TimeProvider
