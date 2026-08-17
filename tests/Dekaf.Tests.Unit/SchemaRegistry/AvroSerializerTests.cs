@@ -648,6 +648,50 @@ public sealed class AvroSerializerTests
     }
 
     [Test]
+    [Arguments("string", 0)]
+    [Arguments("string", 1)]
+    [Arguments("string", 2)]
+    [Arguments("bytes", 0)]
+    [Arguments("bytes", 1)]
+    [Arguments("bytes", 2)]
+    public async Task Serializer_GenericRecord_NullInNonNullableReferenceCollection_IsRejected(
+        string itemType,
+        int collectionKind)
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry);
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(
+            $$"""
+            {
+                "type": "record",
+                "name": "NonNullableReferenceArray",
+                "fields": [{ "name": "values", "type": { "type": "array", "items": "{{itemType}}" } }]
+            }
+            """);
+        object values = (itemType, collectionKind) switch
+        {
+            ("string", 0) => new string?[] { "first", null, "second" },
+            ("string", 1) => new List<string?> { "first", null, "second" },
+            ("string", 2) => new Collection<string?>(["first", null, "second"]),
+            ("bytes", 0) => new byte[]?[] { new byte[] { 1 }, null, new byte[] { 2 } },
+            ("bytes", 1) => new List<byte[]?> { new byte[] { 1 }, null, new byte[] { 2 } },
+            ("bytes", 2) => new Collection<byte[]?>(
+                new byte[]?[] { new byte[] { 1 }, null, new byte[] { 2 } }),
+            _ => throw new ArgumentOutOfRangeException(nameof(collectionKind))
+        };
+        var record = new GenericRecord(schema);
+        record.Add("values", values);
+
+        await Assert.That(Serialize).Throws<Avro.AvroTypeException>();
+
+        void Serialize()
+        {
+            var buffer = new ArrayBufferWriter<byte>();
+            serializer.Serialize(record, ref buffer, CreateContext());
+        }
+    }
+
+    [Test]
     public async Task Serializer_GenericRecord_NestedRecordList_MatchesApacheAvroBytes()
     {
         using var schemaRegistry = new MockSchemaRegistryClient();
