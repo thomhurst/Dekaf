@@ -1142,10 +1142,11 @@ public sealed partial class MetadataManager : IAsyncDisposable
         using var deadlineCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         // A zero budget still gets one bounded probe so an immediate DNS failure retains
         // its endpoint details instead of racing a pre-cancelled refresh lock.
+        var refresh = RefreshMetadataForInitializationAsync(deadlineCts.Token);
         deadlineCts.CancelAfter(TimeSpan.FromMilliseconds(Math.Max(1, remainingMs)));
         try
         {
-            await RefreshMetadataForInitializationAsync(deadlineCts.Token).ConfigureAwait(false);
+            await refresh.ConfigureAwait(false);
         }
         catch (OperationCanceledException ex) when (
             !cancellationToken.IsCancellationRequested
