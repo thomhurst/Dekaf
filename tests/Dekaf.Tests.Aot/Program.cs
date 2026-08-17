@@ -386,6 +386,19 @@ internal static class AotSmoke
             return Task.FromResult(_schemasById[id]);
         }
 
+        public Task<Schema> GetSchemaAsync(
+            int id,
+            string subject,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var registered = _schemasBySubject[subject];
+            if (registered.Id != id)
+                throw new KeyNotFoundException($"Schema {id} is not registered under subject '{subject}'.");
+
+            return Task.FromResult(registered.Schema);
+        }
+
         public Task<RegisteredSchema> GetSchemaBySubjectAsync(
             string subject,
             string version = "latest",
@@ -440,6 +453,19 @@ internal static class AotSmoke
             if (_schemasById.TryGetValue(id, out var cached))
             {
                 schema = cached;
+                return true;
+            }
+
+            schema = null!;
+            return false;
+        }
+
+        public bool TryGetCachedSchema(int id, string subject, out Schema schema)
+        {
+            if (_schemasBySubject.TryGetValue(subject, out var registered)
+                && registered.Id == id)
+            {
+                schema = registered.Schema;
                 return true;
             }
 

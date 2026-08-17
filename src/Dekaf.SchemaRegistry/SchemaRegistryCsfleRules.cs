@@ -1887,12 +1887,14 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
     {
         private const int MaxRetainedBufferSize = 1024 * 1024;
         private const int OutputBufferCount = 4;
-        // Rotation is a cold path; cap retained cipher/key state without adding work to cache hits.
-        private const int CryptoCacheCapacity = 16;
+        // Rotation is a cold path; retain a practical working set and evict one cipher at a time.
+        private const int CryptoCacheCapacity = 64;
         private readonly byte[]?[] _outputs = new byte[OutputBufferCount][];
         private readonly byte[]?[] _temporaries = new byte[2][];
         private readonly Dictionary<byte[], GcmCipher> _gcmCiphers = new(ReferenceEqualityComparer.Instance);
         private readonly Dictionary<byte[], SivCiphers> _sivCiphers = new(ReferenceEqualityComparer.Instance);
+        private readonly Queue<byte[]> _gcmCipherOrder = new(CryptoCacheCapacity);
+        private readonly Queue<byte[]> _sivCipherOrder = new(CryptoCacheCapacity);
         private readonly JsonPathNode?[] _jsonNodes = new JsonPathNode?[65];
         private readonly int[] _jsonArrayIndices = new int[65];
         private int _nextOutput;
@@ -1940,12 +1942,13 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
 
             if (_gcmCiphers.Count >= CryptoCacheCapacity)
             {
-                foreach (var cachedCipher in _gcmCiphers.Values)
-                    cachedCipher.Dispose();
-                _gcmCiphers.Clear();
+                var evictedKey = _gcmCipherOrder.Dequeue();
+                if (_gcmCiphers.Remove(evictedKey, out var evictedCipher))
+                    evictedCipher.Dispose();
             }
             cipher = new GcmCipher(key);
             _gcmCiphers.Add(key, cipher);
+            _gcmCipherOrder.Enqueue(key);
             return cipher;
         }
 
@@ -1955,12 +1958,13 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
             {
                 if (_sivCiphers.Count >= CryptoCacheCapacity)
                 {
-                    foreach (var cachedCiphers in _sivCiphers.Values)
-                        cachedCiphers.Dispose();
-                    _sivCiphers.Clear();
+                    var evictedKey = _sivCipherOrder.Dequeue();
+                    if (_sivCiphers.Remove(evictedKey, out var evictedCiphers))
+                        evictedCiphers.Dispose();
                 }
                 ciphers = new SivCiphers(key);
                 _sivCiphers.Add(key, ciphers);
+                _sivCipherOrder.Enqueue(key);
             }
 
             return ciphers.Get(offset);

@@ -10,6 +10,7 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 [MemoryDiagnoser]
 public class SchemaRegistryCsfleRuleBenchmarks
 {
+    private const int RotatingDekCount = 17;
     private static readonly byte[] Payload = "benchmark-payload"u8.ToArray();
     private static readonly byte[] JsonPayload = "{\"name\":\"Ada\",\"ssn\":\"123-45-6789\"}"u8.ToArray();
 
@@ -20,6 +21,8 @@ public class SchemaRegistryCsfleRuleBenchmarks
     private SchemaRegistryRuleContext _taggedJsonContext = null!;
     private SchemaRegistryRuleContext _mutableTaggedJsonContext = null!;
     private SchemaRegistryRuleContext _mutableSortedTaggedJsonContext = null!;
+    private SchemaRegistryRuleContext[] _rotatingGcmContexts = null!;
+    private SchemaRegistryRuleContext[] _rotatingSivContexts = null!;
     private byte[] _encryptedPayload = null!;
     private byte[] _mutableEncryptedPayload = null!;
     private byte[] _deterministicEncryptedPayload = null!;
@@ -35,6 +38,8 @@ public class SchemaRegistryCsfleRuleBenchmarks
         _wholePayloadContext = CreateContext(CreateSchema(CreateRule()));
         _mutableWholePayloadContext = CreateContext(CreateSchema(CreateRule(), fixedCollections: false));
         _deterministicContext = CreateContext(CreateSchema(CreateRule(algorithm: "AES256_SIV")));
+        _rotatingGcmContexts = CreateRotatingContexts("benchmark-gcm", algorithm: null);
+        _rotatingSivContexts = CreateRotatingContexts("benchmark-siv", "AES256_SIV");
 
         var taggedRule = CreateRule(new HashSet<string>(StringComparer.Ordinal) { "PII" });
         _taggedJsonContext = CreateContext(
@@ -134,6 +139,12 @@ public class SchemaRegistryCsfleRuleBenchmarks
     public ReadOnlyMemory<byte> DecryptMutableSortedTaggedJsonField() =>
         _executor.TransformDeserializedPayload(_mutableSortedEncryptedJsonPayload, _mutableSortedTaggedJsonContext);
 
+    [Benchmark]
+    public ReadOnlyMemory<byte> EncryptRotatingGcmDeks() => EncryptRotating(_rotatingGcmContexts);
+
+    [Benchmark]
+    public ReadOnlyMemory<byte> EncryptRotatingSivDeks() => EncryptRotating(_rotatingSivContexts);
+
     private void Warm()
     {
         EncryptWholePayload();
@@ -148,6 +159,25 @@ public class SchemaRegistryCsfleRuleBenchmarks
         DecryptMutableTaggedJsonField();
         EncryptMutableSortedTaggedJsonField();
         DecryptMutableSortedTaggedJsonField();
+        EncryptRotating(_rotatingGcmContexts);
+        EncryptRotating(_rotatingSivContexts);
+    }
+
+    private ReadOnlyMemory<byte> EncryptRotating(SchemaRegistryRuleContext[] contexts)
+    {
+        ReadOnlyMemory<byte> result = default;
+        for (var i = 0; i < contexts.Length; i++)
+            result = _executor.TransformSerializedPayload(Payload, contexts[i]);
+        return result;
+    }
+
+    private static SchemaRegistryRuleContext[] CreateRotatingContexts(string subjectPrefix, string? algorithm)
+    {
+        var schema = CreateSchema(CreateRule(algorithm: algorithm));
+        var contexts = new SchemaRegistryRuleContext[RotatingDekCount];
+        for (var i = 0; i < contexts.Length; i++)
+            contexts[i] = CreateContext(schema, subject: $"{subjectPrefix}-{i}-value");
+        return contexts;
     }
 
     private static SchemaRule CreateRule(IReadOnlySet<string>? tags = null, string? algorithm = null) =>
@@ -183,13 +213,14 @@ public class SchemaRegistryCsfleRuleBenchmarks
 
     private static SchemaRegistryRuleContext CreateContext(
         Schema schema,
-        SchemaRegistryPayloadFormat format = SchemaRegistryPayloadFormat.Custom) =>
+        SchemaRegistryPayloadFormat format = SchemaRegistryPayloadFormat.Custom,
+        string subject = "benchmark-topic-value") =>
         new()
         {
             Topic = "benchmark-topic",
             Component = SerializationComponent.Value,
             SchemaId = 1,
-            Subject = "benchmark-topic-value",
+            Subject = subject,
             Schema = schema,
             PayloadFormat = format
         };
@@ -223,6 +254,12 @@ public class SchemaRegistryCsfleRuleBenchmarks
             Timestamp = 0
         };
 
+        private static readonly IReadOnlyDictionary<string, Dek> RotatingGcmDeks =
+            CreateRotatingDeks("benchmark-gcm", DekAlgorithm.Aes256Gcm, keySize: 32, version: 1);
+
+        private static readonly IReadOnlyDictionary<string, Dek> RotatingSivDeks =
+            CreateRotatingDeks("benchmark-siv", DekAlgorithm.Aes256Siv, keySize: 64, version: 2);
+
         public Task<Kek> GetKekAsync(
             string name,
             bool deleted = false,
@@ -233,8 +270,17 @@ public class SchemaRegistryCsfleRuleBenchmarks
             string subject,
             DekAlgorithm? algorithm = null,
             bool deleted = false,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(algorithm == DekAlgorithm.Aes256Siv ? BenchmarkSivDek : BenchmarkGcmDek);
+            CancellationToken cancellationToken = default)
+        {
+            var rotatingDeks = algorithm == DekAlgorithm.Aes256Siv
+                ? RotatingSivDeks
+                : RotatingGcmDeks;
+            if (rotatingDeks.TryGetValue(subject, out var rotatingDek))
+                return Task.FromResult(rotatingDek);
+
+            return Task.FromResult(
+                algorithm == DekAlgorithm.Aes256Siv ? BenchmarkSivDek : BenchmarkGcmDek);
+        }
 
         public Task<Dek> GetDekAsync(
             string kekName,
@@ -282,6 +328,32 @@ public class SchemaRegistryCsfleRuleBenchmarks
 
         public void Dispose()
         {
+        }
+
+        private static IReadOnlyDictionary<string, Dek> CreateRotatingDeks(
+            string subjectPrefix,
+            DekAlgorithm algorithm,
+            int keySize,
+            int version)
+        {
+            var deks = new Dictionary<string, Dek>(RotatingDekCount, StringComparer.Ordinal);
+            for (var i = 0; i < RotatingDekCount; i++)
+            {
+                var key = new byte[keySize];
+                key[0] = (byte)(i + 1);
+                var subject = $"{subjectPrefix}-{i}-value";
+                deks.Add(subject, new Dek
+                {
+                    KekName = "benchmark-kek",
+                    Subject = subject,
+                    Version = version,
+                    Algorithm = algorithm,
+                    KeyMaterial = Convert.ToBase64String(key),
+                    Timestamp = 0
+                });
+            }
+
+            return deks;
         }
     }
 }
