@@ -3176,6 +3176,12 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
         var allRerouted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var reroutedCount = 0;
+        var firstBatch = CreateTestBatch(valueTaskSourcePool, topic, partition: 0);
+        var secondBatch = CreateTestBatch(valueTaskSourcePool, topic, partition: 1);
+        using var waveCoalesceStarted = new ManualResetEventSlim();
+        using var bulkPublishCompleted = new ManualResetEventSlim();
+        var eventChannel = new FirstWriteBlockingChannel<BrokerSender.SendLoopEvent>(
+            () => waveCoalesceStarted.Wait(cancellationToken));
         var sender = CreateSender(
             pool,
             options,
@@ -3186,24 +3192,47 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             {
                 if (Interlocked.Increment(ref reroutedCount) == 2)
                     allRerouted.TrySetResult();
-            });
+            },
+            onWaveCoalesceStarted: () =>
+            {
+                waveCoalesceStarted.Set();
+                bulkPublishCompleted.Wait(cancellationToken);
+            },
+            eventChannel: eventChannel);
+
+        var knownPartitions = (HashSet<TopicPartition>)typeof(BrokerSender).GetField(
+            "_knownPartitions",
+            BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(sender)!;
+        knownPartitions.Add(firstBatch.TopicPartition);
+        knownPartitions.Add(secondBatch.TopicPartition);
 
         try
         {
-            sender.EnqueueBulk(
-            [
-                CreateTestBatch(valueTaskSourcePool, topic, partition: 0),
-                CreateTestBatch(valueTaskSourcePool, topic, partition: 1)
-            ]);
+            var bulkPublish = Task.Run(
+                () =>
+                {
+                    try
+                    {
+                        sender.EnqueueBulk([firstBatch, secondBatch]);
+                    }
+                    finally
+                    {
+                        bulkPublishCompleted.Set();
+                    }
+                },
+                CancellationToken.None);
 
             var firstResult = await Task.WhenAny(allRerouted.Task, duplicateMetadataRequest.Task)
                 .WaitAsync(cancellationToken);
+            await bulkPublish.WaitAsync(cancellationToken);
 
             await Assert.That(firstResult).IsSameReferenceAs(allRerouted.Task);
             await Assert.That(Volatile.Read(ref metadataRequests)).IsEqualTo(1);
         }
         finally
         {
+            waveCoalesceStarted.Set();
+            bulkPublishCompleted.Set();
             await sender.DisposeAsync();
             await accumulator.DisposeAsync();
             await valueTaskSourcePool.DisposeAsync();
