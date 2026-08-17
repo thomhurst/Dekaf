@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>Dekaf.SchemaRegistry.Kms.Aws</PackageId>
+    <Description>AWS KMS provider for Dekaf Schema Registry client-side field-level encryption</Description>
+    <PackageTags>kafka;schema-registry;encryption;aws;kms</PackageTags>
+    <PackageValidationBaselineVersion></PackageValidationBaselineVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="AWSSDK.KeyManagementService" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Dekaf.SchemaRegistry\Dekaf.SchemaRegistry.csproj" />
+  </ItemGroup>
+
+</Project>
