@@ -78,6 +78,8 @@ internal interface IConnectionPoolStatusSource
     IReadOnlyList<Diagnostics.BrokerConnectionStatus> GetEndpointConnectionStatus(
         IReadOnlyList<ConnectionStatusEndpoint> endpoints);
 
+    bool ContainsEndpointConnection(string host, int port);
+
     void UpdateBrokerStatusSnapshot(int[] brokerIds);
 }
 

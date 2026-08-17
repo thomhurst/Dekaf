@@ -1962,6 +1962,9 @@ public sealed partial class ConnectionPool :
         return result.AsReadOnly();
     }
 
+    bool IConnectionPoolStatusSource.ContainsEndpointConnection(string host, int port) =>
+        _connectionsByEndpoint.ContainsKey(new EndpointKey(host, port));
+
     private static bool AliasAlreadyVisited(
         IReadOnlyList<ConnectionStatusEndpointAlias> aliases,
         int currentIndex,

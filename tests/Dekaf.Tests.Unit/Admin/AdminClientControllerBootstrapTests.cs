@@ -112,6 +112,32 @@ public sealed class AdminClientControllerBootstrapTests
     }
 
     [Test]
+    public async Task GetStatus_PrunesDiscoveryAliasAfterConnectionIsRemoved()
+    {
+        await using var context = new ControllerAdminContext(
+            CreateDiscoveryResponse(
+                activeControllerId: 1,
+                controllerOneHost: "seed",
+                controllerOnePort: 9093),
+            refreshInterval: TimeSpan.Zero);
+        context.EnqueueDiscovery(CreateDiscoveryResponse(activeControllerId: 1));
+        context.EnqueueDiscovery(CreateDiscoveryResponse(activeControllerId: 1));
+
+        _ = await context.Client.DescribeClusterAsync();
+        _ = await context.Client.DescribeClusterAsync();
+        await Assert.That(context.GetDiscoveryAliases(1)).IsEquivalentTo([
+            new ConnectionStatusEndpointAlias("seed", 9093)
+        ]);
+
+        await context.Pool.CloseAllAsync();
+        _ = await context.Client.DescribeClusterAsync();
+
+        await Assert.That(context.GetDiscoveryAliases(1)).IsEquivalentTo([
+            new ConnectionStatusEndpointAlias("controller-1", 19093)
+        ]);
+    }
+
+    [Test]
     public async Task GetStatus_RemapsDiscoveryAliasWhenEndpointGetsNewControllerId()
     {
         await using var context = new ControllerAdminContext(
@@ -507,6 +533,16 @@ public sealed class AdminClientControllerBootstrapTests
         internal int DiscoveryRequests { get; private set; }
         internal DescribeClusterRequest? LastDiscoveryRequest { get; private set; }
         internal short LastDiscoveryVersion { get; private set; }
+
+        internal ConnectionStatusEndpointAlias[] GetDiscoveryAliases(int controllerId)
+        {
+            var manager = (ControllerMetadataManager)typeof(AdminClient)
+                .GetField(
+                    "_controllerMetadataManager",
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                .GetValue(Client)!;
+            return manager.Snapshot.DiscoveryConnections[controllerId];
+        }
 
         internal void EnqueueDiscovery(DescribeClusterResponse response) => _discoveryOutcomes.Enqueue(response);
 
