@@ -9,8 +9,7 @@ internal sealed class SchemaResolutionCache<TValue>
         new(SchemaResolutionKeyComparer.Instance);
     private readonly ConcurrentDictionary<SchemaResolutionKey, Entry> _inFlight =
         new(SchemaResolutionKeyComparer.Instance);
-    private readonly Queue<SchemaResolutionKey> _evictionQueue = new();
-    private readonly object _cacheMutationLock = new();
+    private readonly ConcurrentQueue<SchemaResolutionKey> _evictionQueue = new();
     private readonly int _maxCachedEntries;
     private int _cacheCount;
 
@@ -128,22 +127,39 @@ internal sealed class SchemaResolutionCache<TValue>
 
     private void CacheSuccessfulResolution(SchemaResolutionKey key, TValue value)
     {
-        lock (_cacheMutationLock)
+        if (!_cache.TryAdd(key, value))
+            return;
+
+        Interlocked.Increment(ref _cacheCount);
+        _evictionQueue.Enqueue(key);
+        TrimOverflow();
+    }
+
+    private void TrimOverflow()
+    {
+        while (true)
         {
-            if (_cache.ContainsKey(key))
+            var count = Volatile.Read(ref _cacheCount);
+            if (count <= _maxCachedEntries)
                 return;
 
-            if (_cacheCount == _maxCachedEntries)
+            if (Interlocked.CompareExchange(ref _cacheCount, count - 1, count) != count)
+                continue;
+
+            var removed = false;
+            while (_evictionQueue.TryDequeue(out var oldest))
             {
-                var oldest = _evictionQueue.Dequeue();
-                _cache.TryRemove(oldest, out _);
-                _cacheCount--;
+                if (_cache.TryRemove(oldest, out _))
+                {
+                    removed = true;
+                    break;
+                }
             }
 
-            if (_cache.TryAdd(key, value))
+            if (!removed)
             {
-                _evictionQueue.Enqueue(key);
-                _cacheCount++;
+                Interlocked.Increment(ref _cacheCount);
+                return;
             }
         }
     }

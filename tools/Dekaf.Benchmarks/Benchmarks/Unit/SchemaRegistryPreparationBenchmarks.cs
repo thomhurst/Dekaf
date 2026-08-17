@@ -15,12 +15,15 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 public class SchemaRegistryPreparationBenchmarks
 {
     private const int DistinctDataContractCount = 128;
+    private const int ResolutionTurnoverCapacity = 16;
+    private const int ResolutionTurnoverWorkingSetSize = ResolutionTurnoverCapacity * 2;
     private const int SubjectTurnoverWorkingSetSize = 14;
     private readonly ArrayBufferWriter<byte> _genericDestination = new(64);
     private readonly ArrayBufferWriter<byte> _jsonDestination = new(128);
     private readonly SchemaResolutionCache<int> _equivalentDataContractCache = new(maxCachedEntries: 1);
     private readonly SchemaResolutionCache<int> _distinctDataContractCache = new();
     private readonly SchemaResolutionCache<int> _referencedSchemaCache = new();
+    private readonly SchemaResolutionCache<int> _resolutionTurnoverCache = new(ResolutionTurnoverCapacity);
     private readonly SubjectSchemaIdCache _subjectTurnoverCache = new();
     private SchemaRegistrySerializer<int> _genericSerializer = null!;
     private SchemaRegistrySerializer<int> _genericOverflowSerializer = null!;
@@ -33,6 +36,7 @@ public class SchemaRegistryPreparationBenchmarks
     private SerializationContext _overflowContextE;
     private SerializationContext[] _overflowContexts = null!;
     private int _overflowContextIndex;
+    private int _resolutionTurnoverIndex;
     private int _subjectTurnoverIndex;
     private int _equivalentDataContractIndex;
     private int _distinctDataContractIndex;
@@ -41,6 +45,7 @@ public class SchemaRegistryPreparationBenchmarks
     private Schema _dataContractSchemaB = null!;
     private Schema[] _distinctDataContractSchemas = null!;
     private Schema _referencedSchema = null!;
+    private string[] _resolutionTurnoverSubjects = null!;
     private string[] _subjectTurnoverTopics = null!;
 
     [GlobalSetup]
@@ -124,6 +129,7 @@ public class SchemaRegistryPreparationBenchmarks
         await _genericSerializer.PrepareAsync(42, _context).ConfigureAwait(false);
         await _jsonSerializer.PrepareAsync(_jsonValue, _context).ConfigureAwait(false);
         await InitializeGenericOverflowAsync().ConfigureAwait(false);
+        await InitializeResolutionTurnoverAsync().ConfigureAwait(false);
         InitializeSubjectTurnover();
         await _equivalentDataContractCache.ResolveAsync(
             "data-contract-value",
@@ -202,6 +208,25 @@ public class SchemaRegistryPreparationBenchmarks
         }
     }
 
+    private async Task InitializeResolutionTurnoverAsync()
+    {
+        _resolutionTurnoverSubjects = new string[ResolutionTurnoverWorkingSetSize];
+        for (var index = 0; index < _resolutionTurnoverSubjects.Length; index++)
+        {
+            var subject = $"resolution-cache-turnover-{index}";
+            _resolutionTurnoverSubjects[index] = subject;
+            if (index < ResolutionTurnoverCapacity)
+            {
+                _ = await _resolutionTurnoverCache.ResolveAsync(
+                    subject,
+                    _dataContractSchemaA,
+                    subject.Length,
+                    static (value, _, _) => Task.FromResult(value),
+                    CancellationToken.None).ConfigureAwait(false);
+            }
+        }
+    }
+
     [GlobalCleanup]
     public async Task Cleanup()
     {
@@ -276,6 +301,19 @@ public class SchemaRegistryPreparationBenchmarks
             state: 0,
             static (_, candidate, _) => candidate,
             static (_, subject) => new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(subject.Length, null)).SchemaId;
+    }
+
+    [Benchmark]
+    public ValueTask<int> RotateResolutionCache()
+    {
+        var subject = _resolutionTurnoverSubjects[
+            _resolutionTurnoverIndex++ % _resolutionTurnoverSubjects.Length];
+        return _resolutionTurnoverCache.ResolveAsync(
+            subject,
+            _dataContractSchemaA,
+            subject.Length,
+            static (value, _, _) => Task.FromResult(value),
+            CancellationToken.None);
     }
 
     [Benchmark]

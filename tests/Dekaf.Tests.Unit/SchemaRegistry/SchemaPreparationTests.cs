@@ -216,6 +216,32 @@ public sealed class SchemaPreparationTests
     }
 
     [Test]
+    public async Task Generic_PrepareAsync_LookupReturnsRegisteredSchema()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        var registeredSchema = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = "registered-schema"
+        };
+        var schemaId = await registry.RegisterSchemaAsync("orders-value", registeredSchema);
+        var factorySchema = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = "factory-schema"
+        };
+        await using var serializer = CreateGenericSerializer(
+            registry,
+            factorySchema,
+            autoRegisterSchemas: false);
+
+        var resolved = await serializer.PrepareAsync("orders", 42);
+
+        await Assert.That(resolved.SchemaId).IsEqualTo(schemaId);
+        await Assert.That(resolved.Schema).IsSameReferenceAs(registeredSchema);
+    }
+
+    [Test]
     public async Task Avro_WarmupAsync_DelegatesToResolvedContext()
     {
         using var registry = new MockSchemaRegistryClient();
@@ -756,6 +782,34 @@ public sealed class SchemaPreparationTests
     }
 
     [Test]
+    public async Task ResolutionCache_ConcurrentTurnoverStaysBounded()
+    {
+        const int capacity = 16;
+        var cache = new SchemaResolutionCache<int>(capacity);
+        var schema = new Schema { SchemaType = SchemaType.Json, SchemaString = "{}" };
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var resolutions = new Task<int>[1_024];
+        for (var index = 0; index < resolutions.Length; index++)
+        {
+            resolutions[index] = cache.ResolveAsync(
+                $"orders-{index}",
+                schema,
+                (Value: index, Gate: gate),
+                static async (state, _, _) =>
+                {
+                    await state.Gate.Task;
+                    return state.Value;
+                },
+                CancellationToken.None).AsTask();
+        }
+
+        gate.SetResult();
+        await Task.WhenAll(resolutions);
+
+        await Assert.That(cache.CachedEntryCount).IsEqualTo(capacity);
+    }
+
+    [Test]
     public async Task ResolutionCache_CanceledResolutionDoesNotPoisonRetry()
     {
         var cache = new SchemaResolutionCache<int>();
@@ -808,7 +862,8 @@ public sealed class SchemaPreparationTests
 
     private static SchemaRegistrySerializer<int> CreateGenericSerializer(
         ISchemaRegistryClient registry,
-        Schema schema) =>
+        Schema schema,
+        bool autoRegisterSchemas = true) =>
         new(
             registry,
             static (value, writer) =>
@@ -817,7 +872,8 @@ public sealed class SchemaPreparationTests
                 BinaryPrimitives.WriteInt32BigEndian(span, value);
                 writer.Advance(sizeof(int));
             },
-            () => schema);
+            () => schema,
+            autoRegisterSchemas: autoRegisterSchemas);
 
     private static GenericRecord CreateAvroRecord(int id)
     {
