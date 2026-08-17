@@ -13,7 +13,7 @@ namespace Dekaf.SchemaRegistry.Avro;
 internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTransformer
 {
     [ThreadStatic]
-    private static ConditionalWeakTable<AvroTaggedFieldTransformer, Workspace>? t_workspaces;
+    private static Workspace? t_workspace;
 
     private static readonly ConditionalWeakTable<AvroSchema, SchemaTransformers> Transformers = new();
 
@@ -47,7 +47,7 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
         var plan = _plans.Get(
             context.Rule,
             context.PayloadContext.Schema?.RuleSet?.HasFixedRuleCollections != true);
-        var workspace = GetWorkspace(this);
+        var workspace = GetWorkspace();
         try
         {
             workspace.Reset(payload.Span, payload.Length + 128);
@@ -74,8 +74,10 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static Workspace GetWorkspace(AvroTaggedFieldTransformer transformer) =>
-        (t_workspaces ??= new()).GetValue(transformer, static _ => new Workspace());
+    private static Workspace GetWorkspace() => t_workspace ??= new Workspace();
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static void ReleaseOversizedOutputs() => t_workspace?.ReleaseOversizedOutputs();
 
     private static void TransformValue<TState>(
         AvroSchema schema,
@@ -1165,6 +1167,31 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
                 ReleaseConsumedOversizedOutputSlow(input);
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void ReleaseOversizedOutputs()
+        {
+            if (_oversizedOutputMask != 0)
+                ReleaseOversizedOutputsSlow();
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private void ReleaseOversizedOutputsSlow()
+        {
+            for (var i = 0; i < _outputs.Length; i++)
+            {
+                var slotMask = 1 << i;
+                if ((_oversizedOutputMask & slotMask) == 0)
+                    continue;
+
+                var output = _outputs[i]!;
+                _outputs[i] = null;
+                _outputLengths[i] = 0;
+                ArrayPool<byte>.Shared.Return(output, clearArray: true);
+            }
+
+            _oversizedOutputMask = 0;
+        }
+
         [MethodImpl(MethodImplOptions.NoInlining)]
         private void ReleaseConsumedOversizedOutputSlow(ReadOnlySpan<byte> input)
         {
@@ -1268,9 +1295,9 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
 
 internal sealed class AvroTaggedFieldTransformerProvider : ISchemaRegistryTaggedFieldTransformerProvider
 {
-    private readonly ConditionalWeakTable<RegistrySchema, TransformerEntry> _transformers = new();
+    private readonly ConditionalWeakTable<AvroSchema, SerializerPayloadTransformers> _serializerPayloads = new();
     private readonly ConditionalWeakTable<RegistrySchema, PayloadSchemaTransformers> _payloadSchemas = new();
-    private TransformerEntry? _lastTransformer;
+    private SerializerTransformerEntry? _lastSerializerTransformer;
     private PayloadSchemaTransformers? _lastPayloadSchema;
 
     public ISchemaRegistryTaggedFieldTransformer Get(
@@ -1292,22 +1319,58 @@ internal sealed class AvroTaggedFieldTransformerProvider : ISchemaRegistryTagged
 
     internal AvroTaggedFieldTransformer Get(RegistrySchema schema, AvroSchema avroSchema)
     {
-        var entry = Volatile.Read(ref _lastTransformer);
-        if (entry is not null && ReferenceEquals(entry.Schema, schema))
+        var entry = Volatile.Read(ref _lastSerializerTransformer);
+        if (entry is not null &&
+            ReferenceEquals(entry.Schema, schema) &&
+            ReferenceEquals(entry.PayloadSchema, avroSchema))
+        {
             return entry.Transformer;
+        }
 
-        if (!_transformers.TryGetValue(schema, out entry))
-            entry = GetSlow(schema, avroSchema);
-        Volatile.Write(ref _lastTransformer, entry);
+        entry = _serializerPayloads.GetValue(
+                avroSchema,
+                static value => new SerializerPayloadTransformers(value))
+            .Get(schema);
+        Volatile.Write(ref _lastSerializerTransformer, entry);
         return entry.Transformer;
     }
 
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    private TransformerEntry GetSlow(RegistrySchema schema, AvroSchema avroSchema) =>
-        _transformers.GetValue(schema, value =>
-            new TransformerEntry(
-                value,
-                AvroTaggedFieldTransformer.Get(avroSchema, value, avroSchema)));
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static void ReleaseOversizedOutputs() => AvroTaggedFieldTransformer.ReleaseOversizedOutputs();
+
+    private sealed class SerializerPayloadTransformers
+    {
+        private readonly ConditionalWeakTable<RegistrySchema, SerializerTransformerEntry> _owners = new();
+        private readonly ConditionalWeakTable<RegistrySchema, SerializerTransformerEntry>.CreateValueCallback _create;
+        private readonly AvroSchema _payloadSchema;
+        private SerializerTransformerEntry? _lastOwner;
+
+        public SerializerPayloadTransformers(AvroSchema payloadSchema)
+        {
+            _payloadSchema = payloadSchema;
+            _create = Create;
+        }
+
+        public SerializerTransformerEntry Get(RegistrySchema owner)
+        {
+            var entry = Volatile.Read(ref _lastOwner);
+            if (entry is null || !ReferenceEquals(entry.Schema, owner))
+            {
+                entry = _owners.GetValue(owner, _create);
+                Volatile.Write(ref _lastOwner, entry);
+            }
+
+            return entry;
+        }
+
+        private SerializerTransformerEntry Create(RegistrySchema owner) => new(
+            owner,
+            _payloadSchema,
+            AvroTaggedFieldTransformer.Get(
+                _payloadSchema,
+                owner,
+                AvroSchema.Parse(owner.SchemaString)));
+    }
 
     private sealed class PayloadSchemaTransformers
     {
@@ -1350,6 +1413,18 @@ internal sealed class AvroTaggedFieldTransformerProvider : ISchemaRegistryTagged
         AvroTaggedFieldTransformer transformer)
     {
         public RegistrySchema Schema { get; } = schema;
+
+        public AvroTaggedFieldTransformer Transformer { get; } = transformer;
+    }
+
+    private sealed class SerializerTransformerEntry(
+        RegistrySchema schema,
+        AvroSchema payloadSchema,
+        AvroTaggedFieldTransformer transformer)
+    {
+        public RegistrySchema Schema { get; } = schema;
+
+        public AvroSchema PayloadSchema { get; } = payloadSchema;
 
         public AvroTaggedFieldTransformer Transformer { get; } = transformer;
     }

@@ -154,7 +154,17 @@ public sealed class AvroSchemaRegistryDeserializer<
         // Extract Avro payload. Array-backed payloads decode in place; other memory falls back to a pooled copy.
         var payloadMemory = data.Slice(5);
         AvroSchema? migrationReaderSchema = null;
-        if (_ruleExecutor is not null)
+        if (_ruleExecutor is null)
+        {
+            var directCodecState = AvroCodecThreadStateCache.Deserialization ??= new AvroDeserializationThreadState();
+            return ReadAvroPayload(
+                payloadMemory,
+                writerSchema,
+                migrationReaderSchema: null,
+                codecState: directCodecState);
+        }
+
+        try
         {
             string subject;
             if (_subjectNames is null)
@@ -202,10 +212,13 @@ public sealed class AvroSchemaRegistryDeserializer<
                 payloadMemory = migration.Payload;
                 migrationReaderSchema = GetWriterSchemaCached(migration.ReaderSchema.Id);
             }
+            var codecState = AvroCodecThreadStateCache.Deserialization ??= new AvroDeserializationThreadState();
+            return ReadAvroPayload(payloadMemory, writerSchema, migrationReaderSchema, codecState);
         }
-
-        var codecState = AvroCodecThreadStateCache.Deserialization ??= new AvroDeserializationThreadState();
-        return ReadAvroPayload(payloadMemory, writerSchema, migrationReaderSchema, codecState);
+        finally
+        {
+            AvroTaggedFieldTransformerProvider.ReleaseOversizedOutputs();
+        }
     }
 
     private string GetSubjectName(int schemaId, Schema schema, SerializationContext context)

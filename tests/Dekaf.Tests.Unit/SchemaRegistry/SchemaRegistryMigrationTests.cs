@@ -73,6 +73,7 @@ public sealed class SchemaRegistryMigrationTests
             provider);
 
         await Assert.That(provider.Calls.Count).IsEqualTo(4);
+        await Assert.That(provider.Calls[0].PayloadSchema).IsSameReferenceAs(writer);
         await Assert.That(provider.Calls[1].PayloadSchema).IsSameReferenceAs(writer);
         await Assert.That(provider.Calls[1].RuleOwnerSchema).IsSameReferenceAs(intermediate);
         await Assert.That(provider.Calls[2].PayloadSchema).IsSameReferenceAs(writer);

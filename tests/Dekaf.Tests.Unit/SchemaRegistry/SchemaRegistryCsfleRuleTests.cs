@@ -350,6 +350,90 @@ public sealed class SchemaRegistryCsfleRuleTests
     }
 
     [Test]
+    public async Task AvroSerializer_UseLatestVersion_UsesRegisteredInlineTags()
+    {
+        const string payloadSchemaText = """
+            {"type":"record","name":"LatestTaggedPayment","namespace":"test","fields":[
+                {"name":"secret","type":"string"}
+            ]}
+            """;
+        const string registeredSchemaText = """
+            {"type":"record","name":"LatestTaggedPayment","namespace":"test","fields":[
+                {"name":"secret","type":"string","confluent:tags":["PII"]}
+            ]}
+            """;
+        var client = CreateDekClient();
+        var rule = CreateRule(tags: new HashSet<string>(StringComparer.Ordinal) { "PII" });
+        _ = await client.RegisterSchemaAsync("latest-tagged-payments-value", new Schema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = registeredSchemaText,
+            RuleSet = new SchemaRuleSet { DomainRules = [rule] }
+        });
+        var executor = new SchemaRegistryRuleExecutor([CreateHandler(client)]);
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(
+            client,
+            new AvroSerializerConfig { UseLatestVersion = true, RuleExecutor = executor });
+        var payloadSchema = (Avro.RecordSchema)AvroSchema.Parse(payloadSchemaText);
+        var record = new GenericRecord(payloadSchema);
+        record.Add("secret", "latest-secret");
+        await serializer.WarmupAsync("latest-tagged-payments", record);
+        var output = new ArrayBufferWriter<byte>();
+
+        serializer.Serialize(record, ref output, new SerializationContext
+        {
+            Topic = "latest-tagged-payments",
+            Component = SerializationComponent.Value
+        });
+
+        await Assert.That(output.WrittenSpan.IndexOf("latest-secret"u8)).IsEqualTo(-1);
+    }
+
+    [Test]
+    public async Task AvroSerializerAndDeserializer_ReleaseFinalOversizedTaggedOutputs()
+    {
+        const int maxRetainedBufferSize = 1024 * 1024;
+        const string schemaText = """
+            {"type":"record","name":"OversizedPayment","namespace":"test","fields":[
+                {"name":"secret","type":"bytes","confluent:tags":["PII"]}
+            ]}
+            """;
+        var client = CreateDekClient();
+        var rule = CreateRule(tags: new HashSet<string>(StringComparer.Ordinal) { "PII" });
+        _ = await client.RegisterSchemaAsync("oversized-payments-value", new Schema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = schemaText,
+            RuleSet = new SchemaRuleSet { DomainRules = [rule] }
+        });
+        var executor = new SchemaRegistryRuleExecutor([CreateHandler(client)]);
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(
+            client,
+            new AvroSerializerConfig { AutoRegisterSchemas = false, RuleExecutor = executor });
+        await using var deserializer = new AvroSchemaRegistryDeserializer<GenericRecord>(
+            client,
+            new AvroDeserializerConfig { RuleExecutor = executor });
+        var avroSchema = (Avro.RecordSchema)AvroSchema.Parse(schemaText);
+        var record = new GenericRecord(avroSchema);
+        record.Add("secret", new byte[maxRetainedBufferSize + 1]);
+        var context = new SerializationContext
+        {
+            Topic = "oversized-payments",
+            Component = SerializationComponent.Value
+        };
+        var output = new ArrayBufferWriter<byte>();
+
+        serializer.Serialize(record, ref output, context);
+        await Assert.That(GetAvroWorkspaceOutputs().Where(static buffer => buffer is not null).All(
+            buffer => buffer!.Length <= maxRetainedBufferSize)).IsTrue();
+
+        var roundTripped = deserializer.Deserialize(output.WrittenMemory, context);
+        await Assert.That(((byte[])roundTripped["secret"]!).Length).IsEqualTo(maxRetainedBufferSize + 1);
+        await Assert.That(GetAvroWorkspaceOutputs().Where(static buffer => buffer is not null).All(
+            buffer => buffer!.Length <= maxRetainedBufferSize)).IsTrue();
+    }
+
+    [Test]
     public async Task AvroTaggedTransformer_ConcurrentTagGain_NeverWritesPlaintext()
     {
         const string schemaText = """
@@ -466,7 +550,7 @@ public sealed class SchemaRegistryCsfleRuleTests
     }
 
     [Test]
-    public async Task AvroTaggedTransformer_OversizedOutputBuffer_IsReturnedAfterInputLifetime()
+    public async Task AvroTaggedTransformer_OversizedOutputBuffer_IsReturnedAfterConsumerRelease()
     {
         const int maxRetainedBufferSize = 1024 * 1024;
         const string schemaText = """
@@ -486,7 +570,8 @@ public sealed class SchemaRegistryCsfleRuleTests
                 HasFixedRuleCollections = true
             }
         };
-        var transformer = AvroTaggedFieldTransformer.Get(avroSchema, schema);
+        var provider = new AvroTaggedFieldTransformerProvider();
+        var transformer = provider.Get(schema, avroSchema);
         var context = CreateHandlerContext(rule, schema);
         var transformed = transformer.Transform(
             WriteAvroRecord(avroSchema, [1]),
@@ -499,19 +584,8 @@ public sealed class SchemaRegistryCsfleRuleTests
             new byte[] { 2 },
             static (_, _, replacement) => replacement);
         await Assert.That(ReadAvroBytes(avroSchema, consumed)).IsEquivalentTo(new byte[] { 2 });
-        _ = transformer.Transform(
-            consumed,
-            context,
-            new byte[] { 3 },
-            static (_, _, replacement) => replacement);
-        var workspaces = typeof(AvroTaggedFieldTransformer)
-            .GetField("t_workspaces", BindingFlags.NonPublic | BindingFlags.Static)!
-            .GetValue(null)!;
-        var arguments = new object?[] { transformer, null };
-        _ = workspaces.GetType().GetMethod("TryGetValue")!.Invoke(workspaces, arguments);
-        var outputs = (byte[]?[])arguments[1]!.GetType()
-            .GetField("_outputs", BindingFlags.NonPublic | BindingFlags.Instance)!
-            .GetValue(arguments[1])!;
+        AvroTaggedFieldTransformerProvider.ReleaseOversizedOutputs();
+        var outputs = GetAvroWorkspaceOutputs();
 
         await Assert.That(outputs.Where(static output => output is not null).All(
             output => output!.Length <= maxRetainedBufferSize)).IsTrue();
@@ -544,14 +618,12 @@ public sealed class SchemaRegistryCsfleRuleTests
             CreateHandlerContext(rule, schema),
             new byte[maxRetainedBufferSize + 1],
             static (_, _, replacement) => replacement);
-        var workspaces = typeof(AvroTaggedFieldTransformer)
-            .GetField("t_workspaces", BindingFlags.NonPublic | BindingFlags.Static)!
+        var workspace = typeof(AvroTaggedFieldTransformer)
+            .GetField("t_workspace", BindingFlags.NonPublic | BindingFlags.Static)!
             .GetValue(null)!;
-        var arguments = new object?[] { transformer, null };
-        _ = workspaces.GetType().GetMethod("TryGetValue")!.Invoke(workspaces, arguments);
-        var temporary = (byte[]?)arguments[1]!.GetType()
+        var temporary = (byte[]?)workspace.GetType()
             .GetField("_temporary", BindingFlags.NonPublic | BindingFlags.Instance)!
-            .GetValue(arguments[1]);
+            .GetValue(workspace);
 
         await Assert.That(temporary).IsNull();
         GC.KeepAlive(transformed);
@@ -1535,6 +1607,16 @@ public sealed class SchemaRegistryCsfleRuleTests
         return (
             (byte[]?[])workspaceType.GetField("_outputs", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(workspace)!,
             (byte[]?[])workspaceType.GetField("_temporaries", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(workspace)!);
+    }
+
+    private static byte[]?[] GetAvroWorkspaceOutputs()
+    {
+        var workspace = typeof(AvroTaggedFieldTransformer)
+            .GetField("t_workspace", BindingFlags.NonPublic | BindingFlags.Static)!
+            .GetValue(null)!;
+        return (byte[]?[])workspace.GetType()
+            .GetField("_outputs", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(workspace)!;
     }
 
     private static object GetWorkspace(SchemaRegistryCsfleRuleHandler handler)

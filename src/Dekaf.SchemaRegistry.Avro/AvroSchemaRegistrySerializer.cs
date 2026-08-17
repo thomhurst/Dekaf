@@ -292,6 +292,7 @@ public sealed class AvroSchemaRegistrySerializer<
         }
         finally
         {
+            AvroTaggedFieldTransformerProvider.ReleaseOversizedOutputs();
             if (memoryStream.Capacity > MaxRetainedAvroPayloadBufferSize)
                 memoryStream.DetachBuffer();
         }
