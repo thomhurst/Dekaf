@@ -374,11 +374,14 @@ public sealed class SchemaRegistrySerializer<T> :
 
     private sealed class SubjectSchemaCache
     {
-        private const int OverflowCapacity = 4;
+        private const int FixedOverflowCapacity = 8;
+        private const int TurnoverCapacity = 4;
         private readonly ConcurrentDictionary<string, FactorySchema> _cache = new(StringComparer.Ordinal);
-        private readonly CachedSubjectSchema?[] _overflow = new CachedSubjectSchema?[OverflowCapacity];
+        private readonly CachedSubjectSchema?[] _overflow = new CachedSubjectSchema?[FixedOverflowCapacity];
         private int _cacheCount;
-        private int _overflowCursor = -1;
+        private int _turnoverCursor = -1;
+        private readonly TurnoverSubjectSchema[] _turnover = CreateTurnoverSlots();
+        private int _turnoverCount;
 
         internal FactorySchema GetOrAdd(
             string subject,
@@ -408,7 +411,7 @@ public sealed class SchemaRegistrySerializer<T> :
 
         private bool TryGetOverflow(string subject, out FactorySchema factorySchema)
         {
-            for (var index = 0; index < OverflowCapacity; index++)
+            for (var index = 0; index < FixedOverflowCapacity; index++)
             {
                 var cached = Volatile.Read(ref _overflow[index]);
                 if (cached is not null && string.Equals(cached.Subject, subject, StringComparison.Ordinal))
@@ -418,6 +421,12 @@ public sealed class SchemaRegistrySerializer<T> :
                 }
             }
 
+            for (var index = 0; index < TurnoverCapacity; index++)
+            {
+                if (_turnover[index].TryGet(subject, out factorySchema))
+                    return true;
+            }
+
             factorySchema = default;
             return false;
         }
@@ -425,7 +434,7 @@ public sealed class SchemaRegistrySerializer<T> :
         private FactorySchema PublishOverflow(string subject, FactorySchema factorySchema)
         {
             CachedSubjectSchema? candidate = null;
-            for (var index = 0; index < OverflowCapacity; index++)
+            for (var index = 0; index < FixedOverflowCapacity; index++)
             {
                 var cached = Volatile.Read(ref _overflow[index]);
                 if (cached is null)
@@ -440,10 +449,47 @@ public sealed class SchemaRegistrySerializer<T> :
                     return cached.Value;
             }
 
-            candidate ??= new CachedSubjectSchema(subject, factorySchema);
-            var replacementIndex = Interlocked.Increment(ref _overflowCursor) & (OverflowCapacity - 1);
-            _ = Interlocked.Exchange(ref _overflow[replacementIndex], candidate);
+            if (Volatile.Read(ref _turnoverCount) >= TurnoverCapacity)
+            {
+                for (var index = 0; index < TurnoverCapacity; index++)
+                {
+                    if (_turnover[index].TryGet(subject, out var cached))
+                        return cached;
+                }
+
+                var fullReplacementIndex = Interlocked.Increment(ref _turnoverCursor) & (TurnoverCapacity - 1);
+                _turnover[fullReplacementIndex].Publish(subject, factorySchema);
+                return factorySchema;
+            }
+
+            for (var index = 0; index < TurnoverCapacity; index++)
+            {
+                var turnover = _turnover[index];
+                if (turnover.TryGet(subject, out var cached))
+                    return cached;
+
+                if (turnover.TryPublishEmpty(subject, factorySchema))
+                {
+                    Interlocked.Increment(ref _turnoverCount);
+                    return factorySchema;
+                }
+
+                if (turnover.TryGet(subject, out cached))
+                    return cached;
+            }
+
+            var replacementIndex = Interlocked.Increment(ref _turnoverCursor) & (TurnoverCapacity - 1);
+            _turnover[replacementIndex].Publish(subject, factorySchema);
             return factorySchema;
+        }
+
+        private static TurnoverSubjectSchema[] CreateTurnoverSlots()
+        {
+            var slots = new TurnoverSubjectSchema[TurnoverCapacity];
+            for (var index = 0; index < slots.Length; index++)
+                slots[index] = new TurnoverSubjectSchema();
+
+            return slots;
         }
 
         private bool TryReserveSlot()
@@ -471,6 +517,77 @@ public sealed class SchemaRegistrySerializer<T> :
     {
         internal string Subject { get; } = subject;
         internal FactorySchema Value { get; } = value;
+    }
+
+    private sealed class TurnoverSubjectSchema
+    {
+        private string? _subject;
+        private FactorySchema _value;
+        private int _version;
+
+        internal bool TryGet(string subject, out FactorySchema value)
+        {
+            while (true)
+            {
+                var version = Volatile.Read(ref _version);
+                if (version == 0)
+                {
+                    value = default;
+                    return false;
+                }
+
+                if ((version & 1) != 0)
+                {
+                    Thread.SpinWait(1);
+                    continue;
+                }
+
+                var candidateSubject = _subject;
+                var candidateValue = _value;
+                if (version != Volatile.Read(ref _version))
+                    continue;
+
+                if (string.Equals(candidateSubject, subject, StringComparison.Ordinal))
+                {
+                    value = candidateValue;
+                    return true;
+                }
+
+                value = default;
+                return false;
+            }
+        }
+
+        internal void Publish(string subject, FactorySchema value)
+        {
+            while (true)
+            {
+                var version = Volatile.Read(ref _version);
+                if ((version & 1) != 0 ||
+                    Interlocked.CompareExchange(ref _version, unchecked(version + 1), version) != version)
+                {
+                    Thread.SpinWait(1);
+                    continue;
+                }
+
+                _subject = subject;
+                _value = value;
+                var publishedVersion = unchecked(version + 2);
+                Volatile.Write(ref _version, publishedVersion == 0 ? 2 : publishedVersion);
+                return;
+            }
+        }
+
+        internal bool TryPublishEmpty(string subject, FactorySchema value)
+        {
+            if (Interlocked.CompareExchange(ref _version, 1, 0) != 0)
+                return false;
+
+            _subject = subject;
+            _value = value;
+            Volatile.Write(ref _version, 2);
+            return true;
+        }
     }
 
     private int GetSchemaIdSync(string subject, Schema schema)

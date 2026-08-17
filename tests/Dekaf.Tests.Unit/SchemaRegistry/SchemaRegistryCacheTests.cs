@@ -155,11 +155,11 @@ public sealed class SchemaRegistryCacheTests
         };
 
     [Test]
-    public async Task SubjectSchemaIdCache_RetainsFixedEntriesAndNewestFourOverflowEntries()
+    public async Task SubjectSchemaIdCache_RetainsFixedEntriesAndNewestOverflowWindow()
     {
         var cache = new SubjectSchemaIdCache();
 
-        for (var i = 0; i < SubjectSchemaIdCache.MaxCachedEntries + 10; i++)
+        for (var i = 0; i < SubjectSchemaIdCache.MaxCachedEntries + 14; i++)
         {
             _ = cache.GetOrAdd(
                 $"topic-{i}",
@@ -171,26 +171,27 @@ public sealed class SchemaRegistryCacheTests
 
         await Assert.That(cache.CachedEntryCount).IsEqualTo(SubjectSchemaIdCache.MaxCachedEntries);
         await Assert.That(cache.TryGet("topic-0", isKey: false, out _)).IsTrue();
-        await Assert.That(cache.TryGet(
-            $"topic-{SubjectSchemaIdCache.MaxCachedEntries}",
-            isKey: false,
-            out _)).IsFalse();
-        await Assert.That(cache.TryGet(
-            $"topic-{SubjectSchemaIdCache.MaxCachedEntries + 6}",
-            isKey: false,
-            out _)).IsTrue();
-        await Assert.That(cache.TryGet(
-            $"topic-{SubjectSchemaIdCache.MaxCachedEntries + 7}",
-            isKey: false,
-            out _)).IsTrue();
-        await Assert.That(cache.TryGet(
-            $"topic-{SubjectSchemaIdCache.MaxCachedEntries + 8}",
-            isKey: false,
-            out _)).IsTrue();
-        await Assert.That(cache.TryGet(
-            $"topic-{SubjectSchemaIdCache.MaxCachedEntries + 9}",
-            isKey: false,
-            out _)).IsTrue();
+        for (var index = 0; index < SubjectSchemaIdCache.FixedOverflowCapacity; index++)
+        {
+            await Assert.That(cache.TryGet(
+                $"topic-{SubjectSchemaIdCache.MaxCachedEntries + index}",
+                isKey: false,
+                out _)).IsTrue();
+        }
+        for (var index = 8; index < 10; index++)
+        {
+            await Assert.That(cache.TryGet(
+                $"topic-{SubjectSchemaIdCache.MaxCachedEntries + index}",
+                isKey: false,
+                out _)).IsFalse();
+        }
+        for (var index = 10; index < 14; index++)
+        {
+            await Assert.That(cache.TryGet(
+                $"topic-{SubjectSchemaIdCache.MaxCachedEntries + index}",
+                isKey: false,
+                out _)).IsTrue();
+        }
     }
 
     [Test]
@@ -209,6 +210,41 @@ public sealed class SchemaRegistryCacheTests
                 static (_, subject) => new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(subject.Length, null)));
 
         await Assert.That(cache.CachedEntryCount).IsEqualTo(SubjectSchemaIdCache.MaxCachedEntries);
+    }
+
+    [Test]
+    public async Task SubjectSchemaIdCache_ConcurrentTurnoverPublishesCoherentEntries()
+    {
+        var cache = new SubjectSchemaIdCache();
+        for (var index = 0; index < SubjectSchemaIdCache.MaxCachedEntries; index++)
+        {
+            _ = cache.GetOrAdd(
+                $"seed-{index}",
+                isKey: false,
+                state: index,
+                static (_, topic, _) => topic,
+                static (schemaId, _) => new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(schemaId, null));
+        }
+
+        var topics = new string[SubjectSchemaIdCache.TurnoverCapacity * 8];
+        for (var index = 0; index < topics.Length; index++)
+            topics[index] = $"turnover-{index}";
+
+        var mismatches = 0;
+        Parallel.For(0, 100_000, iteration =>
+        {
+            var schemaId = iteration & (topics.Length - 1);
+            var entry = cache.GetOrAdd(
+                topics[schemaId],
+                isKey: false,
+                state: schemaId,
+                static (_, topic, _) => topic,
+                static (id, _) => new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(id, null));
+            if (entry.SchemaId != schemaId)
+                Interlocked.Increment(ref mismatches);
+        });
+
+        await Assert.That(mismatches).IsEqualTo(0);
     }
 
     private sealed record JsonPayload(int Id, string Name);

@@ -4,7 +4,8 @@ namespace Dekaf.SchemaRegistry;
 
 internal sealed class SubjectSchemaIdCache
 {
-    private const int OverflowCapacity = 4;
+    internal const int FixedOverflowCapacity = 8;
+    internal const int TurnoverCapacity = 4;
 
     // Match CachingStringDeserializer: fixed topic sets stay cached,
     // dynamic topic names cannot grow without bound.
@@ -17,7 +18,13 @@ internal sealed class SubjectSchemaIdCache
     private CachedEntry? _overflowThird;
     private CachedEntry? _overflowFourth;
     private int _cacheCount;
-    private int _overflowCursor = -1;
+    private int _turnoverCursor = -1;
+    private readonly TurnoverEntry[] _turnover = CreateTurnoverSlots();
+    private CachedEntry? _overflowFifth;
+    private CachedEntry? _overflowSixth;
+    private CachedEntry? _overflowSeventh;
+    private CachedEntry? _overflowEighth;
+    private int _turnoverCount;
 
     internal int CachedEntryCount => Volatile.Read(ref _cacheCount);
 
@@ -57,7 +64,8 @@ internal sealed class SubjectSchemaIdCache
         out SubjectSchemaIdCacheEntry entry) =>
         TryGetCached(new SubjectSchemaIdCacheKey(topic, isKey), out entry);
 
-    // Shared lookup: the single-entry MRU (_last) fast-check followed by the concurrent dictionary.
+    // Preserve the four-slot fast path before the dictionary. Keep the secondary
+    // and turnover tiers out of this method so common-path code size stays fixed.
     private bool TryGetCached(in SubjectSchemaIdCacheKey key, out SubjectSchemaIdCacheEntry entry)
     {
         var last = Volatile.Read(ref _last);
@@ -106,6 +114,52 @@ internal sealed class SubjectSchemaIdCache
             return true;
         }
 
+        return TryGetSecondary(key, out entry);
+    }
+
+    private bool TryGetSecondary(
+        in SubjectSchemaIdCacheKey key,
+        out SubjectSchemaIdCacheEntry entry)
+    {
+        var overflowFifth = Volatile.Read(ref _overflowFifth);
+        if (overflowFifth is not null && overflowFifth.Key.Equals(key))
+        {
+            Volatile.Write(ref _last, overflowFifth);
+            entry = overflowFifth.Value;
+            return true;
+        }
+
+        var overflowSixth = Volatile.Read(ref _overflowSixth);
+        if (overflowSixth is not null && overflowSixth.Key.Equals(key))
+        {
+            Volatile.Write(ref _last, overflowSixth);
+            entry = overflowSixth.Value;
+            return true;
+        }
+
+        var overflowSeventh = Volatile.Read(ref _overflowSeventh);
+        if (overflowSeventh is not null && overflowSeventh.Key.Equals(key))
+        {
+            Volatile.Write(ref _last, overflowSeventh);
+            entry = overflowSeventh.Value;
+            return true;
+        }
+
+        var overflowEighth = Volatile.Read(ref _overflowEighth);
+        if (overflowEighth is not null && overflowEighth.Key.Equals(key))
+        {
+            Volatile.Write(ref _last, overflowEighth);
+            entry = overflowEighth.Value;
+            return true;
+        }
+
+        var hashCode = key.GetHashCode();
+        for (var index = 0; index < TurnoverCapacity; index++)
+        {
+            if (_turnover[index].TryGet(key, hashCode, out entry))
+                return true;
+        }
+
         entry = default;
         return false;
     }
@@ -118,7 +172,11 @@ internal sealed class SubjectSchemaIdCache
         Schema schema) =>
         Cache(new SubjectSchemaIdCacheKey(topic, isKey), subject, schemaId, schema);
 
-    private SubjectSchemaIdCacheEntry Cache(SubjectSchemaIdCacheKey key, string? subject, int schemaId, Schema? schema)
+    private SubjectSchemaIdCacheEntry Cache(
+        SubjectSchemaIdCacheKey key,
+        string? subject,
+        int schemaId,
+        Schema? schema)
     {
         if (TryGetCached(key, out var existing))
             return existing;
@@ -143,88 +201,91 @@ internal sealed class SubjectSchemaIdCache
 
     private SubjectSchemaIdCacheEntry PublishOverflow(SubjectSchemaIdCacheEntry entry)
     {
-        var first = Volatile.Read(ref _overflowFirst);
-        if (first is null)
+        CachedEntry? candidate = null;
+        if (TryPublishFixed(ref _overflowFirst, entry, ref candidate, out var cached) ||
+            TryPublishFixed(ref _overflowSecond, entry, ref candidate, out cached) ||
+            TryPublishFixed(ref _overflowThird, entry, ref candidate, out cached) ||
+            TryPublishFixed(ref _overflowFourth, entry, ref candidate, out cached) ||
+            TryPublishFixed(ref _overflowFifth, entry, ref candidate, out cached) ||
+            TryPublishFixed(ref _overflowSixth, entry, ref candidate, out cached) ||
+            TryPublishFixed(ref _overflowSeventh, entry, ref candidate, out cached) ||
+            TryPublishFixed(ref _overflowEighth, entry, ref candidate, out cached))
         {
-            var candidate = new CachedEntry(entry);
-            first = Interlocked.CompareExchange(ref _overflowFirst, candidate, null);
-            if (first is null)
+            return cached;
+        }
+
+        var hashCode = entry.Key.GetHashCode();
+        if (Volatile.Read(ref _turnoverCount) >= TurnoverCapacity)
+        {
+            for (var index = 0; index < TurnoverCapacity; index++)
             {
-                Volatile.Write(ref _last, candidate);
+                if (_turnover[index].TryGet(entry.Key, hashCode, out cached))
+                    return cached;
+            }
+
+            var fullReplacementIndex = Interlocked.Increment(ref _turnoverCursor) & (TurnoverCapacity - 1);
+            _turnover[fullReplacementIndex].Publish(entry, hashCode);
+            return entry;
+        }
+
+        for (var index = 0; index < TurnoverCapacity; index++)
+        {
+            var turnover = _turnover[index];
+            if (turnover.TryGet(entry.Key, hashCode, out cached))
+                return cached;
+
+            if (turnover.TryPublishEmpty(entry, hashCode))
+            {
+                Interlocked.Increment(ref _turnoverCount);
                 return entry;
             }
+
+            if (turnover.TryGet(entry.Key, hashCode, out cached))
+                return cached;
         }
 
-        if (first.Key.Equals(entry.Key))
-        {
-            Volatile.Write(ref _last, first);
-            return first.Value;
-        }
-
-        var second = Volatile.Read(ref _overflowSecond);
-        if (second is null)
-        {
-            var candidate = new CachedEntry(entry);
-            second = Interlocked.CompareExchange(ref _overflowSecond, candidate, null);
-            if (second is null)
-            {
-                Volatile.Write(ref _last, candidate);
-                return entry;
-            }
-        }
-
-        if (second.Key.Equals(entry.Key))
-        {
-            Volatile.Write(ref _last, second);
-            return second.Value;
-        }
-
-        var third = Volatile.Read(ref _overflowThird);
-        if (third is null)
-        {
-            var candidate = new CachedEntry(entry);
-            third = Interlocked.CompareExchange(ref _overflowThird, candidate, null);
-            if (third is null)
-            {
-                Volatile.Write(ref _last, candidate);
-                return entry;
-            }
-        }
-
-        if (third.Key.Equals(entry.Key))
-        {
-            Volatile.Write(ref _last, third);
-            return third.Value;
-        }
-
-        var fourth = Volatile.Read(ref _overflowFourth);
-        if (fourth is null)
-        {
-            var candidate = new CachedEntry(entry);
-            fourth = Interlocked.CompareExchange(ref _overflowFourth, candidate, null);
-            if (fourth is null)
-            {
-                Volatile.Write(ref _last, candidate);
-                return entry;
-            }
-        }
-
-        if (fourth.Key.Equals(entry.Key))
-        {
-            Volatile.Write(ref _last, fourth);
-            return fourth.Value;
-        }
-
-        var replacement = new CachedEntry(entry);
-        _ = (Interlocked.Increment(ref _overflowCursor) & (OverflowCapacity - 1)) switch
-        {
-            0 => Interlocked.Exchange(ref _overflowFirst, replacement),
-            1 => Interlocked.Exchange(ref _overflowSecond, replacement),
-            2 => Interlocked.Exchange(ref _overflowThird, replacement),
-            _ => Interlocked.Exchange(ref _overflowFourth, replacement)
-        };
-        Volatile.Write(ref _last, replacement);
+        var replacementIndex = Interlocked.Increment(ref _turnoverCursor) & (TurnoverCapacity - 1);
+        _turnover[replacementIndex].Publish(entry, hashCode);
         return entry;
+    }
+
+    private bool TryPublishFixed(
+        ref CachedEntry? slot,
+        SubjectSchemaIdCacheEntry entry,
+        ref CachedEntry? candidate,
+        out SubjectSchemaIdCacheEntry cachedEntry)
+    {
+        var cached = Volatile.Read(ref slot);
+        if (cached is null)
+        {
+            candidate ??= new CachedEntry(entry);
+            cached = Interlocked.CompareExchange(ref slot, candidate, null);
+            if (cached is null)
+            {
+                Volatile.Write(ref _last, candidate);
+                cachedEntry = entry;
+                return true;
+            }
+        }
+
+        if (cached.Key.Equals(entry.Key))
+        {
+            Volatile.Write(ref _last, cached);
+            cachedEntry = cached.Value;
+            return true;
+        }
+
+        cachedEntry = default;
+        return false;
+    }
+
+    private static TurnoverEntry[] CreateTurnoverSlots()
+    {
+        var slots = new TurnoverEntry[TurnoverCapacity];
+        for (var index = 0; index < slots.Length; index++)
+            slots[index] = new TurnoverEntry();
+
+        return slots;
     }
 
     private bool TryReserveCacheSlot()
@@ -254,5 +315,84 @@ internal sealed class SubjectSchemaIdCache
     {
         internal SubjectSchemaIdCacheKey Key => Value.Key;
         internal SubjectSchemaIdCacheEntry Value { get; } = value;
+    }
+
+    private sealed class TurnoverEntry
+    {
+        private SubjectSchemaIdCacheEntry _value;
+        private int _hashCode;
+        private int _version;
+
+        internal bool TryGet(
+            in SubjectSchemaIdCacheKey key,
+            int hashCode,
+            out SubjectSchemaIdCacheEntry value)
+        {
+            if (Volatile.Read(ref _hashCode) != hashCode)
+            {
+                value = default;
+                return false;
+            }
+
+            while (true)
+            {
+                var version = Volatile.Read(ref _version);
+                if (version == 0)
+                {
+                    value = default;
+                    return false;
+                }
+
+                if ((version & 1) != 0)
+                {
+                    Thread.SpinWait(1);
+                    continue;
+                }
+
+                var candidate = _value;
+                if (version != Volatile.Read(ref _version))
+                    continue;
+
+                if (candidate.Key.Equals(key))
+                {
+                    value = candidate;
+                    return true;
+                }
+
+                value = default;
+                return false;
+            }
+        }
+
+        internal void Publish(SubjectSchemaIdCacheEntry value, int hashCode)
+        {
+            while (true)
+            {
+                var version = Volatile.Read(ref _version);
+                if ((version & 1) != 0 ||
+                    Interlocked.CompareExchange(ref _version, unchecked(version + 1), version) != version)
+                {
+                    Thread.SpinWait(1);
+                    continue;
+                }
+
+                _value = value;
+                Volatile.Write(ref _hashCode, hashCode);
+                var publishedVersion = unchecked(version + 2);
+                Volatile.Write(ref _version, publishedVersion == 0 ? 2 : publishedVersion);
+                return;
+            }
+        }
+
+        internal bool TryPublishEmpty(SubjectSchemaIdCacheEntry value, int hashCode)
+        {
+            if (Interlocked.CompareExchange(ref _version, 1, 0) != 0)
+                return false;
+
+            _value = value;
+            Volatile.Write(ref _hashCode, hashCode);
+            Volatile.Write(ref _version, 2);
+            return true;
+        }
     }
 }

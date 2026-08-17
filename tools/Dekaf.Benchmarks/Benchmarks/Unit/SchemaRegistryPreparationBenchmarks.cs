@@ -20,6 +20,7 @@ public class SchemaRegistryPreparationBenchmarks
     private readonly SchemaResolutionCache<int> _equivalentDataContractCache = new(maxCachedEntries: 1);
     private readonly SchemaResolutionCache<int> _distinctDataContractCache = new();
     private readonly SchemaResolutionCache<int> _referencedSchemaCache = new();
+    private readonly SubjectSchemaIdCache _subjectTurnoverCache = new();
     private SchemaRegistrySerializer<int> _genericSerializer = null!;
     private SchemaRegistrySerializer<int> _genericOverflowSerializer = null!;
     private JsonSchemaRegistrySerializer<BenchmarkPayload> _jsonSerializer = null!;
@@ -30,6 +31,7 @@ public class SchemaRegistryPreparationBenchmarks
     private SerializationContext _overflowContextD;
     private SerializationContext _overflowContextE;
     private int _overflowContextIndex;
+    private int _subjectTurnoverIndex;
     private int _equivalentDataContractIndex;
     private int _distinctDataContractIndex;
     private BenchmarkPayload _jsonValue = null!;
@@ -37,6 +39,7 @@ public class SchemaRegistryPreparationBenchmarks
     private Schema _dataContractSchemaB = null!;
     private Schema[] _distinctDataContractSchemas = null!;
     private Schema _referencedSchema = null!;
+    private string[] _subjectTurnoverTopics = null!;
 
     [GlobalSetup]
     public async Task Setup()
@@ -133,6 +136,28 @@ public class SchemaRegistryPreparationBenchmarks
         await _genericOverflowSerializer.PrepareAsync(42, _overflowContextC).ConfigureAwait(false);
         await _genericOverflowSerializer.PrepareAsync(42, _overflowContextD).ConfigureAwait(false);
         await _genericOverflowSerializer.PrepareAsync(42, _overflowContextE).ConfigureAwait(false);
+        _subjectTurnoverTopics = new string[
+            SubjectSchemaIdCache.FixedOverflowCapacity + SubjectSchemaIdCache.TurnoverCapacity + 1];
+        for (var index = 0; index < SubjectSchemaIdCache.MaxCachedEntries; index++)
+        {
+            _ = _subjectTurnoverCache.GetOrAdd(
+                $"subject-cache-seed-{index}",
+                isKey: false,
+                state: 0,
+                static (_, topic, _) => topic,
+                static (_, subject) => new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(subject.Length, null));
+        }
+        for (var index = 0; index < _subjectTurnoverTopics.Length; index++)
+        {
+            var topic = $"subject-cache-overflow-{index}";
+            _subjectTurnoverTopics[index] = topic;
+            _ = _subjectTurnoverCache.GetOrAdd(
+                topic,
+                isKey: false,
+                state: 0,
+                static (_, candidate, _) => candidate,
+                static (_, subject) => new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(subject.Length, null));
+        }
         await _equivalentDataContractCache.ResolveAsync(
             "data-contract-value",
             _dataContractSchemaA,
@@ -186,6 +211,32 @@ public class SchemaRegistryPreparationBenchmarks
     [Benchmark]
     public ValueTask PrepareGenericNewestAfterSubjectCacheTurnover() =>
         _genericOverflowSerializer.PrepareAsync(42, _overflowContextE);
+
+    [Benchmark]
+    public ValueTask PrepareGenericFiveWayAfterSubjectCacheTurnover()
+    {
+        var context = (_overflowContextIndex++ % 5) switch
+        {
+            0 => _overflowContextA,
+            1 => _overflowContextB,
+            2 => _overflowContextC,
+            3 => _overflowContextD,
+            _ => _overflowContextE
+        };
+        return _genericOverflowSerializer.PrepareAsync(42, context);
+    }
+
+    [Benchmark]
+    public int RotateSubjectSchemaIdOverflow()
+    {
+        var topic = _subjectTurnoverTopics[_subjectTurnoverIndex++ % _subjectTurnoverTopics.Length];
+        return _subjectTurnoverCache.GetOrAdd(
+            topic,
+            isKey: false,
+            state: 0,
+            static (_, candidate, _) => candidate,
+            static (_, subject) => new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(subject.Length, null)).SchemaId;
+    }
 
     [Benchmark]
     public ValueTask<int> ResolveEquivalentDataContractSchema()
