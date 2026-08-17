@@ -2424,14 +2424,19 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         var (batch1, delivery1) = CreateTestBatchWithDelivery(vtPool, "test-topic", 0);
         var (batch2, delivery2) = CreateTestBatchWithDelivery(vtPool, "test-topic", 1);
         var deliveries = Task.WhenAll(delivery1, delivery2);
+        Task deliveryCompletion = deliveries;
+        var batch1Enqueued = false;
+        var batch2Enqueued = false;
 
         try
         {
             SeedKnownPartitions(sender, batch1.TopicPartition, batch2.TopicPartition);
             sender.Enqueue(batch1);
+            batch1Enqueued = true;
             await coalesceStarted.Task.WaitAsync(cancellationToken);
 
             sender.Enqueue(batch2);
+            batch2Enqueued = true;
             releaseCoalesce.Set();
             await requestSent.Task.WaitAsync(cancellationToken);
 
@@ -2474,8 +2479,16 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         {
             releaseCoalesce.Set();
             response.TrySetCanceled(CancellationToken.None);
+            if (!batch1Enqueued || !batch2Enqueued)
+            {
+                var failure = new OperationCanceledException("Batch was not enqueued before test cleanup.");
+                if (!batch1Enqueued)
+                    batch1.Fail(failure);
+                if (!batch2Enqueued)
+                    batch2.Fail(failure);
+            }
             await sender.DisposeAsync();
-            await ((Task)deliveries).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+            await deliveryCompletion.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
             await accumulator.DisposeAsync();
             await vtPool.DisposeAsync();
         }
