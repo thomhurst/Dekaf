@@ -3,7 +3,6 @@ using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using Avro.Generic;
-using Avro.IO;
 using Avro.Specific;
 using Dekaf.Serialization;
 using AvroSchema = Avro.Schema;
@@ -32,9 +31,14 @@ namespace Dekaf.SchemaRegistry.Avro;
 /// blocks on Schema Registry calls.
 /// </para>
 /// </remarks>
-/// <typeparam name="T">The type to serialize. Must be either an Avro ISpecificRecord or GenericRecord.</typeparam>
+/// <typeparam name="T">
+/// The type to serialize. Must be either a concrete Avro ISpecificRecord type with a statically
+/// discoverable schema or GenericRecord. Runtime SpecificRecord type discovery is unsupported.
+/// </typeparam>
 public sealed class AvroSchemaRegistrySerializer<
-    [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicFields)] T>
+    [DynamicallyAccessedMembers(
+        DynamicallyAccessedMemberTypes.PublicFields |
+        DynamicallyAccessedMemberTypes.PublicProperties)] T>
     : ISerializer<T>, IAsyncSerializerPreparer<T>, IAsyncDisposable
 {
     private const byte MagicByte = 0x00;
@@ -50,8 +54,7 @@ public sealed class AvroSchemaRegistrySerializer<
     private readonly SubjectSchemaIdCache _subjectSchemaIdCache = new();
     private readonly ConcurrentDictionary<AvroSchema, DynamicSchemaCache> _dynamicSchemaCaches =
         new(AvroSchemaLogicalComparer.Instance);
-    private readonly ConcurrentDictionary<AvroSchema, SpecificDefaultWriter> _specificWriters =
-        new(AvroSchemaReferenceComparer.Instance);
+    private readonly AllocationFreeSpecificRecordWriter<T>? _specificWriter;
     private readonly AvroSchema? _writerSchema;
     private DynamicSchemaCache? _lastDynamicSchemaCache;
 
@@ -72,10 +75,17 @@ public sealed class AvroSchemaRegistrySerializer<
 
         // Try to get schema from type T if it's a specific record
         _writerSchema = GetSchemaFromType();
+        if (_writerSchema is not null)
+            _specificWriter = AllocationFreeSpecificRecordWriter<T>.Create(_writerSchema);
+        else if (typeof(ISpecificRecord).IsAssignableFrom(typeof(T)))
+        {
+            throw new NotSupportedException(
+                $"Allocation-free SpecificRecord serialization requires a concrete type with a statically discoverable schema; {typeof(T)} requires trimming-unsafe runtime type discovery.");
+        }
     }
 
     internal int CachedGenericWriterCount => _dynamicSchemaCaches.Count;
-    internal int CachedSpecificWriterCount => _specificWriters.Count;
+    internal int CachedSpecificWriterCount => _specificWriter is null ? 0 : 1;
     internal int CachedDynamicSubjectSchemaCount => _dynamicSchemaCaches.Count;
 
     /// <summary>
@@ -345,16 +355,15 @@ public sealed class AvroSchemaRegistrySerializer<
     {
         switch (value)
         {
-            case ISpecificRecord specificRecord:
-                var specificWriter = _specificWriters.GetOrAdd(
-                    specificRecord.Schema,
-                    static schema => new SpecificDefaultWriter(schema));
-                specificWriter.Write(specificRecord.Schema, specificRecord, encoder);
-                break;
-
             case GenericRecord genericRecord:
                 var genericWriter = GetGenericWriter(genericRecord.Schema);
                 genericWriter.Write(genericRecord, encoder);
+                break;
+
+            case ISpecificRecord:
+                (_specificWriter ?? throw new InvalidOperationException(
+                    $"SpecificRecord type {typeof(T)} does not have a prepared allocation-free writer."))
+                    .Write(value, encoder);
                 break;
 
             default:

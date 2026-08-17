@@ -473,6 +473,12 @@ These formats match Confluent serializers. Avro `GenericRecord` subjects use the
 record's runtime schema, JSON Schema subjects use the schema `title` when present, and Protobuf
 subjects use the message descriptor's full name.
 
+Avro generated `ISpecificRecord` types serialize without per-message allocations when their record
+fields are scalar `null`, `boolean`, `int`, `long`, `float`, `double`, `string`, or `bytes` fields
+exposed by matching public properties. Unsupported SpecificRecord shapes fail when the serializer is
+created instead of silently falling back to Apache Avro's allocating `Get(int): object` path. Use
+`GenericRecord` for collection, union, enum, fixed, logical, or nested record fields.
+
 When using the generic `SchemaRegistrySerializer` with a record-based strategy, prefer its
 subject-independent `Func<Schema>` schema factory overload. The subject-aware `Func<string, Schema>`
 overload may be called again with the schema-derived subject until the callback and schema name agree.

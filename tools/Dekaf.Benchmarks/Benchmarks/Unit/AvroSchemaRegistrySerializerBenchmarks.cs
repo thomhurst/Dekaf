@@ -13,7 +13,7 @@ using RegistrySchema = Dekaf.SchemaRegistry.Schema;
 namespace Dekaf.Benchmarks.Benchmarks.Unit;
 
 /// <summary>
-/// Measures the producer's generic Avro path and the unchanged Apache SpecificRecord control.
+/// Measures prepared GenericRecord and SpecificRecord serialization paths.
 /// </summary>
 [MemoryDiagnoser(displayGenColumns: false)]
 public class AvroSchemaRegistrySerializerBenchmarks
@@ -227,6 +227,7 @@ public class AvroSchemaRegistrySerializerBenchmarks
         _serializer.Serialize(_nestedRecordListRecord, ref _serializeBuffer, _context);
         _serializeBuffer.ResetWrittenCount();
         _specificSerializer.Serialize(_specificRecord, ref _serializeBuffer, _context);
+        _serializeBuffer.ResetWrittenCount();
     }
 
     [GlobalCleanup]
@@ -330,7 +331,7 @@ public class AvroSchemaRegistrySerializerBenchmarks
         _serializer.Serialize(_nestedRecordListRecord, ref _serializeBuffer, _context);
     }
 
-    [Benchmark(Description = "Control: Apache writer prepared SpecificRecord")]
+    [Benchmark(Description = "Serialize prepared SpecificRecord (int + string)")]
     public void SerializeSpecificRecord()
     {
         _serializeBuffer.ResetWrittenCount();
