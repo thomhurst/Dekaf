@@ -35,6 +35,7 @@ public sealed class AvroPocoGeneratorDiagnosticsTests
             ("DKAVRO012", "[AvroRecord] public partial class Value { public First A { get; set; } = new(); public Second B { get; set; } = new(); } [AvroRecord(Name=\"Shared\", Namespace=\"Example\")] public partial class First { public int Id { get; set; } } [AvroRecord(Name=\"Shared\", Namespace=\"Example\")] public partial class Second { public string Name { get; set; } = string.Empty; }"),
             ("DKAVRO012", "[AvroRecord] public partial class Value { public Other.Status A { get; set; } public Collision B { get; set; } = new(); } [AvroRecord(Name=\"Status\", Namespace=\"Other\")] public partial class Collision { public int Id { get; set; } } namespace Other { public enum Status { Ready } }"),
             ("DKAVRO010", "[AvroRecord] public partial class Value { public Status State { get; set; } } public enum Status { Café }"),
+            ("DKAVRO014", "[AvroRecord] public partial class Value { public Status State { get; set; } } public enum Status { First = 1, Second = 1 }"),
             ("DKAVRO009", "[AvroRecord] public partial class Value { [AvroField(UnionTypes=new[] { typeof(Base), typeof(Derived) })] public object Data { get; set; } = null!; } [AvroRecord] public partial class Base { public int Id { get; set; } } [AvroRecord] public partial class Derived : Base { public string Name { get; set; } = string.Empty; }"),
             ("DKAVRO013", "public class Base { public int Id { get; set; } } [AvroRecord] public partial class Value : Base { public string Name { get; set; } = string.Empty; }")
         ];
@@ -46,6 +47,21 @@ public sealed class AvroPocoGeneratorDiagnosticsTests
                 .IsTrue()
                 .Because($"Expected {id}, got: {string.Join(", ", diagnostics.Select(static diagnostic => diagnostic.Id))}");
         }
+    }
+
+    [Test]
+    public async Task Generator_SupportedPublicContract_ReportsNoDekafDiagnostics()
+    {
+        var diagnostics = RunGenerator(
+            "[AvroRecord] public partial class Value { " +
+            "private readonly int _state; public int Id { get; set; } " +
+            "public string Hidden { get; private set; } = string.Empty; }");
+
+        await Assert.That(diagnostics.Any(static diagnostic =>
+                diagnostic.Id.StartsWith("DKAVRO", StringComparison.Ordinal)))
+            .IsFalse()
+            .Because($"Supported declaration must not report diagnostics, got: " +
+                $"{string.Join(", ", diagnostics.Select(static diagnostic => diagnostic.Id))}");
     }
 
     private static ImmutableArray<Diagnostic> RunGenerator(string declaration)

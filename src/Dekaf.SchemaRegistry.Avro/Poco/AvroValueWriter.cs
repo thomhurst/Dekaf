@@ -7,7 +7,7 @@ namespace Dekaf.SchemaRegistry.Avro.Poco;
 /// <summary>Allocation-free Avro binary writer used by generated codecs.</summary>
 public ref struct AvroValueWriter
 {
-    private Span<byte> _destination;
+    private readonly Span<byte> _destination;
     private int _position;
 
     internal AvroValueWriter(Span<byte> destination) => _destination = destination;

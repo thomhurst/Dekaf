@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Buffers.Binary;
 using System.Numerics;
 using System.Text;
 using Avro;
@@ -95,14 +96,126 @@ public sealed class AvroPocoSchemaRegistryTests
     [Test]
     public async Task GeneratedSchema_IsDeterministicAndValidAvro()
     {
+        const string expectedSchemaJson =
+            """
+            {"type":"record","name":"PocoOrder","namespace":"Dekaf.Tests","fields":[{"name":"Id","type":"int"},{"name":"Customer","type":"string"},{"name":"OptionalNote","type":["null","string"],"default":null},{"name":"Status","type":{"type":"enum","name":"PocoStatus","namespace":"Dekaf.Tests.Unit.SchemaRegistry","symbols":["Pending","Ready","Complete"]}},{"name":"Scores","type":{"type":"array","items":"int"}},{"name":"Tags","type":{"type":"array","items":"string"}},{"name":"Totals","type":{"type":"map","values":"long"}},{"name":"Address","type":{"type":"record","name":"PocoAddress","namespace":"Dekaf.Tests","fields":[{"name":"City","type":"string"},{"name":"PostCode","type":"string"}]}},{"name":"Created","type":{"type":"long","logicalType":"timestamp-micros"}},{"name":"CorrelationId","type":{"type":"string","logicalType":"uuid"}},{"name":"Amount","type":{"type":"bytes","logicalType":"decimal","precision":10,"scale":2}}]}
+            """;
         var parsed = Schema.Parse(PocoOrder.AvroCodec.SchemaJson);
         var schemaUtf8 = PocoOrder.AvroCodec.SchemaUtf8.ToArray();
 
         await Assert.That(parsed.Fullname).IsEqualTo("Dekaf.Tests.PocoOrder");
-        await Assert.That(PocoOrder.AvroCodec.SchemaJson).IsEqualTo(PocoOrder.AvroCodec.SchemaJson);
+        await Assert.That(PocoOrder.AvroCodec.SchemaJson).IsEqualTo(expectedSchemaJson);
         await Assert.That(schemaUtf8).IsEquivalentTo(Encoding.UTF8.GetBytes(PocoOrder.AvroCodec.SchemaJson));
         await Assert.That(PocoOrder.AvroCodec.ParsingFingerprint64)
             .IsEqualTo(SchemaNormalization.ParsingFingerprint64(parsed));
+    }
+
+    [Test]
+    public async Task GeneratedCodec_RoundTripsNestedMaps()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        await using var serializer = PocoNestedMap.CreateAvroSerializer(registry);
+        await using var deserializer = PocoNestedMap.CreateAvroDeserializer(registry);
+        var context = new SerializationContext
+        {
+            Topic = "poco-nested-map",
+            Component = SerializationComponent.Value
+        };
+        var expected = new PocoNestedMap
+        {
+            Values = new Dictionary<string, Dictionary<string, int>>
+            {
+                ["outer"] = new Dictionary<string, int> { ["inner"] = 42 }
+            }
+        };
+        var destination = new ArrayBufferWriter<byte>();
+
+        serializer.Serialize(expected, ref destination, context);
+        var actual = deserializer.Deserialize(destination.WrittenMemory, context);
+
+        await Assert.That(actual.Values["outer"]["inner"]).IsEqualTo(42);
+    }
+
+    [Test]
+    public async Task GeneratedCodec_RejectsUnspecifiedDateTime()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        await using var serializer = PocoTemporal.CreateAvroSerializer(registry);
+        var context = new SerializationContext
+        {
+            Topic = "poco-temporal",
+            Component = SerializationComponent.Value
+        };
+        var destination = new ArrayBufferWriter<byte>();
+        var value = new PocoTemporal
+        {
+            Timestamp = new DateTime(2026, 8, 17, 12, 0, 0, DateTimeKind.Unspecified),
+            Time = TimeSpan.Zero
+        };
+
+        await Assert.That(() => serializer.Serialize(value, ref destination, context))
+            .Throws<InvalidOperationException>()
+            .WithMessageContaining("DateTimeKind.Unspecified");
+    }
+
+    [Test]
+    public async Task GeneratedCodec_RoundTripsValidTemporalValues()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        await using var serializer = PocoTemporal.CreateAvroSerializer(registry);
+        await using var deserializer = PocoTemporal.CreateAvroDeserializer(registry);
+        var context = new SerializationContext
+        {
+            Topic = "poco-temporal-roundtrip",
+            Component = SerializationComponent.Value
+        };
+        var expected = new PocoTemporal
+        {
+            Timestamp = DateTime.UnixEpoch.AddTicks(123_456_780),
+            Time = TimeSpan.FromTicks(234_567_890)
+        };
+        var destination = new ArrayBufferWriter<byte>();
+
+        serializer.Serialize(expected, ref destination, context);
+        var actual = deserializer.Deserialize(destination.WrittenMemory, context);
+
+        await Assert.That(actual.Timestamp).IsEqualTo(expected.Timestamp);
+        await Assert.That(actual.Time).IsEqualTo(expected.Time);
+    }
+
+    [Test]
+    [Arguments(-1L)]
+    [Arguments(TimeSpan.TicksPerDay)]
+    public async Task GeneratedCodec_RejectsOutOfRangeTimeSpan(long ticks)
+    {
+        using var registry = new MockSchemaRegistryClient();
+        await using var serializer = PocoTemporal.CreateAvroSerializer(registry);
+        var context = new SerializationContext
+        {
+            Topic = "poco-temporal-range",
+            Component = SerializationComponent.Value
+        };
+        var destination = new ArrayBufferWriter<byte>();
+        var value = new PocoTemporal
+        {
+            Timestamp = DateTime.UnixEpoch,
+            Time = TimeSpan.FromTicks(ticks)
+        };
+
+        await Assert.That(() => serializer.Serialize(value, ref destination, context))
+            .Throws<InvalidOperationException>()
+            .WithMessageContaining("time-micros");
+    }
+
+    [Test]
+    public async Task GeneratedSchema_ExcludesNonPublicContractMembers()
+    {
+        await Assert.That(PocoPublicContract.AvroCodec.SchemaJson).IsEqualTo(
+            """
+            {"type":"record","name":"PocoPublicContract","namespace":"Dekaf.Tests","fields":[{"name":"Id","type":"int"}]}
+            """);
+        await Assert.That(Schema.Parse(PocoReadonlyRecord.AvroCodec.SchemaJson).Fullname)
+            .IsEqualTo("Dekaf.Tests.PocoReadonlyRecord");
     }
 
     [Test]
@@ -289,6 +402,20 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    public async Task GeneratedCodec_RejectsRecursiveSkippedWriterRecordWithoutStackOverflow()
+    {
+        const string writerSchemaJson =
+            """
+            {"type":"record","name":"PocoEvolved","namespace":"Dekaf.Tests","fields":[{"name":"legacy_id","type":"int"},{"name":"recursive","type":["null","Dekaf.Tests.PocoEvolved"]}]}
+            """;
+
+        await Assert.That(() =>
+                AvroPocoReaderPlanBuilder.Build<PocoEvolved, PocoEvolved.AvroCodec>(writerSchemaJson))
+            .Throws<InvalidOperationException>()
+            .WithMessageContaining("Recursive writer record");
+    }
+
+    [Test]
     public async Task GeneratedCodec_RejectsDecimalPrecisionOrScaleMismatch()
     {
         const string writerSchemaJson =
@@ -390,6 +517,48 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    public async Task GeneratedCodec_MigrationDefersIncompatibleWriterPlanResolution()
+    {
+        const string incompatibleWriterSchema =
+            """
+            {"type":"record","name":"LegacyWireRecord","namespace":"Dekaf.Tests","fields":[{"name":"Legacy","type":"string"}]}
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        var oldSchemaId = await registry.RegisterSchemaAsync(
+            "poco-migration-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = incompatibleWriterSchema
+            });
+        _ = await registry.RegisterSchemaAsync(
+            "poco-migration-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = PocoWireRecord.AvroCodec.SchemaJson
+            });
+        await using var serializer = PocoWireRecord.CreateAvroSerializer(registry);
+        await using var deserializer = PocoWireRecord.CreateAvroDeserializer(
+            registry,
+            new AvroDeserializerConfig { UseLatestVersion = true });
+        var context = new SerializationContext
+        {
+            Topic = "poco-migration",
+            Component = SerializationComponent.Value
+        };
+        var destination = new ArrayBufferWriter<byte>();
+        serializer.Serialize(new PocoWireRecord { Id = 42, Name = "migrated" }, ref destination, context);
+        var wire = destination.WrittenMemory.ToArray();
+        BinaryPrimitives.WriteInt32BigEndian(wire.AsSpan(1, sizeof(int)), oldSchemaId);
+
+        var actual = deserializer.Deserialize(wire, context);
+
+        await Assert.That(actual.Id).IsEqualTo(42);
+        await Assert.That(actual.Name).IsEqualTo("migrated");
+    }
+
+    [Test]
     public async Task GeneratedCodec_WithoutAutoRegistrationLooksUpGeneratedSchema()
     {
         const string differentSchemaJson =
@@ -483,20 +652,35 @@ public sealed class AvroPocoSchemaRegistryTests
         public int WrittenCount { get; private set; }
         public int GetMemoryCallCount { get; private set; }
 
-        public void Advance(int count) => WrittenCount = count;
+        public void Advance(int count)
+        {
+            if ((uint)count > (uint)(_buffer.Length - WrittenCount))
+                throw new ArgumentOutOfRangeException(nameof(count));
+            WrittenCount += count;
+        }
 
         public Memory<byte> GetMemory(int sizeHint = 0)
         {
             GetMemoryCallCount++;
-            return _buffer.AsMemory(0, sizeHint);
+            return _buffer.AsMemory(WrittenCount, GetLength(sizeHint));
         }
 
-        public Span<byte> GetSpan(int sizeHint = 0) => _buffer.AsSpan(0, sizeHint);
+        public Span<byte> GetSpan(int sizeHint = 0) =>
+            _buffer.AsSpan(WrittenCount, GetLength(sizeHint));
 
         internal void Clear()
         {
             WrittenCount = 0;
             GetMemoryCallCount = 0;
+        }
+
+        private int GetLength(int sizeHint)
+        {
+            ArgumentOutOfRangeException.ThrowIfNegative(sizeHint);
+            var length = Math.Max(sizeHint, 1);
+            if (length > _buffer.Length - WrittenCount)
+                throw new ArgumentException("Requested buffer exceeds remaining capacity.", nameof(sizeHint));
+            return length;
         }
     }
 }
@@ -647,6 +831,36 @@ internal sealed partial class PocoGrowingPayload
 internal sealed partial class PocoLargeGrowingPayload
 {
     public required string Value { get; init; }
+}
+
+[AvroRecord(Name = "PocoNestedMap", Namespace = "Dekaf.Tests")]
+internal sealed partial class PocoNestedMap
+{
+    public required Dictionary<string, Dictionary<string, int>> Values { get; init; }
+}
+
+[AvroRecord(Name = "PocoTemporal", Namespace = "Dekaf.Tests")]
+internal sealed partial class PocoTemporal
+{
+    [AvroField(Order = 0)]
+    public DateTime Timestamp { get; init; }
+
+    [AvroField(Order = 1)]
+    public TimeSpan Time { get; init; }
+}
+
+[AvroRecord(Name = "PocoPublicContract", Namespace = "Dekaf.Tests")]
+internal sealed partial class PocoPublicContract
+{
+    private int State { get; set; }
+    public string Hidden { get; private set; } = string.Empty;
+    public int Id { get; init; }
+}
+
+[AvroRecord(Name = "PocoReadonlyRecord", Namespace = "Dekaf.Tests")]
+internal readonly partial record struct PocoReadonlyRecord
+{
+    public int Id { get; init; }
 }
 
 [AvroRecord(Name = "PocoFixedEvolution", Namespace = "Dekaf.Tests")]

@@ -143,7 +143,7 @@ internal static class AvroPocoReaderPlanBuilder
         return new AvroPocoReadNode(AvroPocoTypeKind.Record)
         {
             RecordPlan = plan,
-            Fields = BuildSkipFields(writer),
+            Fields = BuildSkipNode(writer).Fields,
             RequiresWriterUnionDispatch = plan.RequiresWriterUnionDispatch
         };
     }
@@ -257,7 +257,12 @@ internal static class AvroPocoReaderPlanBuilder
             _ => false
         };
 
-    private static AvroPocoReadNode BuildSkipNode(AvroSchema writer)
+    private static AvroPocoReadNode BuildSkipNode(AvroSchema writer) =>
+        BuildSkipNode(writer, new HashSet<RecordSchema>(ReferenceEqualityComparer.Instance));
+
+    private static AvroPocoReadNode BuildSkipNode(
+        AvroSchema writer,
+        HashSet<RecordSchema> activeRecords)
     {
         if (writer is LogicalSchema logical)
         {
@@ -280,21 +285,18 @@ internal static class AvroPocoReaderPlanBuilder
 
         return writer switch
         {
-            RecordSchema record => new AvroPocoReadNode(AvroPocoTypeKind.Record)
-            {
-                Fields = BuildSkipFields(record)
-            },
+            RecordSchema record => BuildSkipRecord(record, activeRecords),
             ArraySchema array => new AvroPocoReadNode(AvroPocoTypeKind.Array)
             {
-                Item = BuildSkipNode(array.ItemSchema)
+                Item = BuildSkipNode(array.ItemSchema, activeRecords)
             },
             MapSchema map => new AvroPocoReadNode(AvroPocoTypeKind.Map)
             {
-                Item = BuildSkipNode(map.ValueSchema)
+                Item = BuildSkipNode(map.ValueSchema, activeRecords)
             },
             UnionSchema union => new AvroPocoReadNode(AvroPocoTypeKind.Union)
             {
-                Branches = BuildSkipBranches(union)
+                Branches = BuildSkipBranches(union, activeRecords)
             },
             EnumSchema => new AvroPocoReadNode(AvroPocoTypeKind.Enum),
             FixedSchema fixedSchema => new AvroPocoReadNode(AvroPocoTypeKind.Bytes)
@@ -305,19 +307,46 @@ internal static class AvroPocoReaderPlanBuilder
         };
     }
 
-    private static AvroPocoReadNode[] BuildSkipFields(RecordSchema record)
+    private static AvroPocoReadNode BuildSkipRecord(
+        RecordSchema record,
+        HashSet<RecordSchema> activeRecords)
+    {
+        if (!activeRecords.Add(record))
+        {
+            throw new InvalidOperationException(
+                $"Recursive writer record '{record.Fullname}' cannot be skipped by a generated POCO reader.");
+        }
+
+        try
+        {
+            return new AvroPocoReadNode(AvroPocoTypeKind.Record)
+            {
+                Fields = BuildSkipFields(record, activeRecords)
+            };
+        }
+        finally
+        {
+            activeRecords.Remove(record);
+        }
+    }
+
+    private static AvroPocoReadNode[] BuildSkipFields(
+        RecordSchema record,
+        HashSet<RecordSchema> activeRecords)
     {
         var nodes = new AvroPocoReadNode[record.Count];
         for (var index = 0; index < nodes.Length; index++)
-            nodes[index] = BuildSkipNode(record.Fields[index].Schema);
+            nodes[index] = BuildSkipNode(record.Fields[index].Schema, activeRecords);
         return nodes;
     }
 
-    private static AvroPocoReadNode[] BuildSkipBranches(UnionSchema union)
+    private static AvroPocoReadNode[] BuildSkipBranches(
+        UnionSchema union,
+        HashSet<RecordSchema> activeRecords)
     {
         var nodes = new AvroPocoReadNode[union.Count];
         for (var index = 0; index < nodes.Length; index++)
-            nodes[index] = BuildSkipNode(union[index]);
+            nodes[index] = BuildSkipNode(union[index], activeRecords);
         return nodes;
     }
 

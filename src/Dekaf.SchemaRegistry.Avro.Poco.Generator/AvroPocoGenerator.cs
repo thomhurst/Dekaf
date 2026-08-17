@@ -123,6 +123,14 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
         DiagnosticSeverity.Error,
         isEnabledByDefault: true);
 
+    private static readonly DiagnosticDescriptor DuplicateEnumValue = new(
+        "DKAVRO014",
+        "Duplicate Avro enum value",
+        "Enum '{0}' maps symbols '{1}' and '{2}' to the same CLR value; Avro enum aliases are unsupported",
+        "Dekaf.Avro",
+        DiagnosticSeverity.Error,
+        isEnabledByDefault: true);
+
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
         var records = context.SyntaxProvider.ForAttributeWithMetadataName(
@@ -252,6 +260,11 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             {
                 if (member.IsStatic || GetAttribute(member, IgnoreAttribute) is not null)
                     continue;
+                if (member is IPropertySymbol or IFieldSymbol &&
+                    member.DeclaredAccessibility != Accessibility.Public)
+                {
+                    continue;
+                }
 
                 ITypeSymbol? memberType = null;
                 var sourceOrder = int.MaxValue;
@@ -261,6 +274,11 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                         if (property.GetMethod is null || property.SetMethod is null)
                         {
                             Error(InvalidMember, property.Locations.FirstOrDefault(), property.Name);
+                            continue;
+                        }
+                        if (property.GetMethod.DeclaredAccessibility != Accessibility.Public ||
+                            property.SetMethod.DeclaredAccessibility != Accessibility.Public)
+                        {
                             continue;
                         }
                         memberType = property.Type;
@@ -523,12 +541,28 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                     return null;
                 }
 
-                var symbols = enumSymbol.GetMembers()
+                var enumFields = enumSymbol.GetMembers()
                     .OfType<IFieldSymbol>()
                     .Where(static field => field.HasConstantValue)
                     .OrderBy(GetSourceOrder)
-                    .Select(static field => field.Name)
                     .ToImmutableArray();
+                for (var left = 0; left < enumFields.Length; left++)
+                {
+                    for (var right = left + 1; right < enumFields.Length; right++)
+                    {
+                        if (!Equals(enumFields[left].ConstantValue, enumFields[right].ConstantValue))
+                            continue;
+                        Error(
+                            DuplicateEnumValue,
+                            member.Locations.FirstOrDefault(),
+                            enumSymbol.ToDisplayString(),
+                            enumFields[left].Name,
+                            enumFields[right].Name);
+                        return null;
+                    }
+                }
+
+                var symbols = enumFields.Select(static field => field.Name).ToImmutableArray();
                 foreach (var enumValue in symbols)
                 {
                     if (IsAvroName(enumValue))
@@ -1038,6 +1072,13 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                         .AppendLine(".DayNumber - global::System.DateOnly.FromDateTime(global::System.DateTime.UnixEpoch).DayNumber);");
                     break;
                 case TypeKindModel.TimeMicroseconds:
+                    if (type.SymbolType == "global::System.TimeSpan")
+                    {
+                        code.Append(indent).Append("if (").Append(value)
+                            .Append(".Ticks < 0 || ").Append(value)
+                            .AppendLine(".Ticks >= global::System.TimeSpan.TicksPerDay)");
+                        code.Append(indent).AppendLine("    throw new global::System.InvalidOperationException(\"Avro time-micros requires a TimeSpan from zero through less than 24 hours.\");");
+                    }
                     code.Append(indent).Append("writer.WriteInt64(").Append(value).AppendLine(".Ticks / 10L);");
                     break;
                 case TypeKindModel.TimestampMicroseconds:
@@ -1045,8 +1086,13 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                         code.Append(indent).Append("writer.WriteInt64((").Append(value)
                             .AppendLine(".UtcTicks - global::System.DateTimeOffset.UnixEpoch.UtcTicks) / 10L);");
                     else
+                    {
+                        code.Append(indent).Append("if (").Append(value)
+                            .AppendLine(".Kind == global::System.DateTimeKind.Unspecified)");
+                        code.Append(indent).AppendLine("    throw new global::System.InvalidOperationException(\"Avro timestamp-micros does not support DateTimeKind.Unspecified.\");");
                         code.Append(indent).Append("writer.WriteInt64((").Append(value)
                             .AppendLine(".ToUniversalTime().Ticks - global::System.DateTime.UnixEpoch.Ticks) / 10L);");
+                    }
                     break;
                 case TypeKindModel.Uuid:
                     code.Append(indent).Append("writer.WriteUuid(").Append(value).AppendLine(");");
@@ -1330,11 +1376,13 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             code.Append(indent).Append("    for (var ").Append(index).Append(" = 0; ").Append(index)
                 .Append(" < ").Append(block).Append("; ").Append(index).AppendLine("++)");
             code.Append(indent).AppendLine("    {");
-            code.Append(indent).AppendLine("        var __key = reader.ReadString();");
+            var key = "__key" + _localId++;
+            code.Append(indent).Append("        var ").Append(key).AppendLine(" = reader.ReadString();");
             var item = "__item" + _localId++;
             code.Append(indent).Append("        ").Append(type.Item!.SymbolType).Append(' ').Append(item).AppendLine(" = default!;");
             EmitReadValue(code, type.Item, node + ".Item!", item, indent + "        ", resolveWriterUnions);
-            code.Append(indent).Append("        ").Append(result).Append(".Add(__key, ").Append(item).AppendLine(");");
+            code.Append(indent).Append("        ").Append(result).Append(".Add(").Append(key).Append(", ")
+                .Append(item).AppendLine(");");
             code.Append(indent).AppendLine("    }");
             code.Append(indent).Append("    ").Append(block).AppendLine(" = reader.ReadBlockCount();");
             code.Append(indent).AppendLine("}");
@@ -1728,7 +1776,11 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
         private static string GetDeclaration(INamedTypeSymbol symbol)
         {
             if (symbol.IsRecord)
-                return symbol.TypeKind == TypeKind.Struct ? "partial record struct" : "partial record";
+            {
+                if (symbol.TypeKind != TypeKind.Struct)
+                    return "partial record";
+                return symbol.IsReadOnly ? "readonly partial record struct" : "partial record struct";
+            }
             if (symbol.TypeKind == TypeKind.Struct)
                 return symbol.IsReadOnly ? "readonly partial struct" : "partial struct";
             return "partial class";

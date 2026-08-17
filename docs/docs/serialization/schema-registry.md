@@ -85,7 +85,6 @@ typed codec at build time; serialization uses constrained static dispatch with n
 boxing, runtime schema walk, or codec lookup.
 
 ```csharp
-using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Avro.Poco;
 
 [AvroRecord(Name = "Order", Namespace = "example.orders")]
@@ -100,6 +99,11 @@ public sealed partial class Order
     [AvroField(Order = 2, DefaultJson = "null")]
     public string? Note { get; init; }
 }
+```
+
+```csharp
+using Dekaf.SchemaRegistry;
+using Dekaf.SchemaRegistry.Avro.Poco;
 
 using var registry = new SchemaRegistryClient(new SchemaRegistryConfig
 {
@@ -117,7 +121,8 @@ Supported generated shapes are primitives, nullable members, enums, arrays, `Lis
 `UnionTypes`. Logical mappings are `DateOnly` → `date`, `TimeOnly`/`TimeSpan` → `time-micros`,
 `DateTime`/`DateTimeOffset` → `timestamp-micros`, `Guid` → `uuid`, and `decimal` → `decimal`.
 Decimal members require `Precision` from 1 through 29 and `Scale` from 0 through the smaller of
-28 and `Precision`.
+28 and `Precision`. `DateTimeKind.Unspecified` is rejected, and `TimeSpan` values must represent a
+time of day from zero through less than 24 hours.
 
 Use `Name`, `Aliases`, and `DefaultJson` for schema evolution. Defaults must match the first Avro
 union branch; nullable fields therefore use `DefaultJson = "null"`. Current generated defaults

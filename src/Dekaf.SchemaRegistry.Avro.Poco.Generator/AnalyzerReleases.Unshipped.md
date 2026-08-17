@@ -17,3 +17,4 @@ DKAVRO010 | Dekaf.Avro | Error | Invalid Avro record, namespace, field, or alias
 DKAVRO011 | Dekaf.Avro | Error | POCO cannot be constructed by generated deserialization
 DKAVRO012 | Dekaf.Avro | Error | Distinct POCO records map to the same Avro full name
 DKAVRO013 | Dekaf.Avro | Error | Inherited POCO record members are unsupported
+DKAVRO014 | Dekaf.Avro | Error | Duplicate CLR enum values are unsupported

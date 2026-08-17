@@ -65,7 +65,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec> : IDeserialize
             throw new InvalidOperationException($"Unknown magic byte: {span[0]}. Expected 0x00.");
 
         var schemaId = BinaryPrimitives.ReadInt32BigEndian(span.Slice(1, 4));
-        var plan = GetPlanCached(schemaId);
+        var planSchemaId = schemaId;
         var payload = data.Slice(WireHeaderSize);
 
         if (_ruleExecutor is not null)
@@ -100,10 +100,11 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec> : IDeserialize
                     context,
                     SchemaRegistryPayloadFormat.Avro);
                 payload = migration.Payload;
-                plan = GetPlanCached(migration.ReaderSchema.Id);
+                planSchemaId = migration.ReaderSchema.Id;
             }
         }
 
+        var plan = GetPlanCached(planSchemaId);
         var reader = new AvroValueReader(payload.Span);
         return TCodec.Read(ref reader, plan);
     }
@@ -133,7 +134,10 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec> : IDeserialize
     {
         try
         {
-            var schema = await _schemaRegistry.GetSchemaAsync(schemaId, CancellationToken.None)
+            var schema = await SchemaRegistryOperationTimeout.ExecuteAsync(
+                    cancellationToken => _schemaRegistry.GetSchemaAsync(schemaId, cancellationToken),
+                    RegistryTimeout,
+                    $"Schema Registry lookup for schema {schemaId} timed out.")
                 .ConfigureAwait(false);
             if (schema.SchemaType != SchemaType.Avro)
                 throw new InvalidOperationException($"Schema {schemaId} is {schema.SchemaType}, not Avro.");

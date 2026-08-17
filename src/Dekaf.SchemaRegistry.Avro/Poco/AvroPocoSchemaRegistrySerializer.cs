@@ -174,7 +174,7 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         , allows ref struct
 #endif
     {
-        var buffer = t_ruleBuffer ??= GC.AllocateUninitializedArray<byte>(1024);
+        var buffer = GetOrCreateRuleBuffer();
         int length;
         while (true)
         {
@@ -189,7 +189,7 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
             var nextLength = Grow(buffer.Length);
             buffer = GC.AllocateUninitializedArray<byte>(nextLength);
             if (nextLength <= MaxRetainedPayloadSize)
-                t_ruleBuffer = buffer;
+                RetainRuleBuffer(buffer);
         }
 
         var payload = new ReadOnlyMemory<byte>(buffer, 0, length);
@@ -338,6 +338,11 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
             throw new NotSupportedException($"Avro payloads larger than {maximum} bytes are not supported.");
         return (int)Math.Min((long)current * 2, maximum);
     }
+
+    private static byte[] GetOrCreateRuleBuffer() =>
+        t_ruleBuffer ??= GC.AllocateUninitializedArray<byte>(1024);
+
+    private static void RetainRuleBuffer(byte[] buffer) => t_ruleBuffer = buffer;
 
     /// <inheritdoc />
     public ValueTask DisposeAsync()
