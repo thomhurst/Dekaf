@@ -21,6 +21,9 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleHandler
     [ThreadStatic]
     private static Utf8TextCache? t_utf8Values;
 
+    [ThreadStatic]
+    private static Utf8TextCache? t_utf8TransformOutputs;
+
     /// <inheritdoc />
     public string Type => "CEL";
 
@@ -617,7 +620,7 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleHandler
     private static ReadOnlyMemory<byte> GetUtf8Memory(CelValue value) =>
         value.Kind == CelValueKind.Utf8String
             ? value.Utf8
-            : (t_utf8Values ??= new Utf8TextCache()).GetMemory(value.String);
+            : (t_utf8TransformOutputs ??= new Utf8TextCache()).GetMemory(value.String);
 
     private static ReadOnlySpan<byte> GetUtf8Span(CelValue value)
     {
