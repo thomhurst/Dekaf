@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Collections.Frozen;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
@@ -373,7 +374,10 @@ public sealed class SchemaRegistryCsfleRuleTests
             }
             """;
         var ruleTags = new HashSet<string>(StringComparer.Ordinal) { "PUBLIC" };
-        var metadataTags = new HashSet<string>(StringComparer.Ordinal) { "ACCOUNT" };
+        var metadataTags = new Dictionary<string, IReadOnlySet<string>>(StringComparer.Ordinal)
+        {
+            ["test.SecretItem.secret"] = new HashSet<string>(StringComparer.Ordinal) { "ACCOUNT" }
+        };
         var rule = CreateRule(tags: ruleTags);
         var schema = new Schema
         {
@@ -381,10 +385,7 @@ public sealed class SchemaRegistryCsfleRuleTests
             SchemaString = schemaText,
             Metadata = new SchemaMetadata
             {
-                Tags = new Dictionary<string, IReadOnlySet<string>>(StringComparer.Ordinal)
-                {
-                    ["test.SecretItem.secret"] = metadataTags
-                }
+                Tags = metadataTags
             },
             RuleSet = new SchemaRuleSet { DomainRules = [rule] }
         };
@@ -405,6 +406,14 @@ public sealed class SchemaRegistryCsfleRuleTests
 
         await Assert.That(Serialize)
             .Throws<SchemaRegistryRuleException>()
+            .WithMessageContaining("conditionally visited");
+
+        metadataTags.Remove("test.SecretItem.secret");
+        metadataTags.Add(
+            "test.SecretItem.secret",
+            new HashSet<string>(StringComparer.Ordinal) { "ACCOUNT" }.ToFrozenSet(StringComparer.Ordinal));
+        await Assert.That(Serialize)
+            .Throws<SchemaRegistryRuleException>()
             .WithMessageContaining("did not match");
 
         ruleTags.Clear();
@@ -417,12 +426,16 @@ public sealed class SchemaRegistryCsfleRuleTests
             .Throws<SchemaRegistryRuleException>()
             .WithMessageContaining("did not match");
 
-        metadataTags.Clear();
-        metadataTags.Add("PUBLIC");
+        metadataTags.Remove("test.SecretItem.secret");
+        metadataTags.Add(
+            "test.SecretItem.secret",
+            new HashSet<string>(StringComparer.Ordinal) { "PUBLIC" }.ToFrozenSet(StringComparer.Ordinal));
         Serialize();
 
-        metadataTags.Clear();
-        metadataTags.Add("ACCOUNT");
+        metadataTags.Remove("test.SecretItem.secret");
+        metadataTags.Add(
+            "test.SecretItem.secret",
+            new HashSet<string>(StringComparer.Ordinal) { "ACCOUNT" }.ToFrozenSet(StringComparer.Ordinal));
         await Assert.That(Serialize)
             .Throws<SchemaRegistryRuleException>()
             .WithMessageContaining("did not match");
