@@ -429,9 +429,10 @@ public sealed class AvroSerializerTests
     }
 
     [Test]
-    [Arguments(false)]
-    [Arguments(true)]
-    public async Task Serializer_GenericRecord_CustomLogicalValueTypeList_IsRejected(bool useCollection)
+    [Arguments(0)]
+    [Arguments(1)]
+    [Arguments(2)]
+    public async Task Serializer_GenericRecord_CustomLogicalValueTypeList_IsRejected(int collectionKind)
     {
         Avro.Util.LogicalTypeFactory.Instance.Register(new IntBytesLogicalType());
         using var schemaRegistry = new MockSchemaRegistryClient();
@@ -450,9 +451,13 @@ public sealed class AvroSerializerTests
                 }]
             }
             """);
-        object values = useCollection
-            ? new Collection<int>([1, 2])
-            : new List<int> { 1, 2 };
+        object values = collectionKind switch
+        {
+            0 => new List<int> { 1, 2 },
+            1 => new Collection<int>([1, 2]),
+            2 => new NonGenericIntValues(),
+            _ => throw new ArgumentOutOfRangeException(nameof(collectionKind))
+        };
         var record = new GenericRecord(schema);
         record.Add("values", values);
 
@@ -1367,6 +1372,13 @@ public sealed class AvroSerializerTests
         public override Type GetCSharpType(bool nullible) => typeof(int);
 
         public override bool IsInstanceOfLogicalType(object logicalValue) => logicalValue is int;
+    }
+
+    private sealed class NonGenericIntValues : Collection<int>
+    {
+        internal NonGenericIntValues() : base(new List<int> { 1, 2 })
+        {
+        }
     }
 
     private sealed class IntListBytesLogicalType() : Avro.Util.LogicalType(LogicalName)
