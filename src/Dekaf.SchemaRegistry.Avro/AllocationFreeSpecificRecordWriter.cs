@@ -12,12 +12,19 @@ internal sealed unsafe class AllocationFreeSpecificRecordWriter<
     private AllocationFreeSpecificRecordWriter(FieldPlan[] fields) => _fields = fields;
 
     internal static AllocationFreeSpecificRecordWriter<T> Create(global::Avro.Schema schema) =>
-        Create(schema, typeof(T));
+        Create(schema, typeof(T), rejectOverridableGetters: true);
 
     internal static AllocationFreeSpecificRecordWriter<T> Create(
         global::Avro.Schema schema,
         [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)]
-        Type recordType)
+        Type recordType) =>
+        Create(schema, recordType, rejectOverridableGetters: false);
+
+    private static AllocationFreeSpecificRecordWriter<T> Create(
+        global::Avro.Schema schema,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)]
+        Type recordType,
+        bool rejectOverridableGetters)
     {
         if (recordType.IsValueType || !typeof(T).IsAssignableFrom(recordType))
         {
@@ -32,8 +39,17 @@ internal sealed unsafe class AllocationFreeSpecificRecordWriter<
         }
 
         var fields = new FieldPlan[recordSchema.Fields.Count];
+        var properties = recordType.GetProperties();
+        var claimedProperties = new HashSet<PropertyInfo>();
         for (var i = 0; i < fields.Length; i++)
-            fields[i] = CreateFieldPlan(recordSchema.Fields[i], recordType);
+        {
+            fields[i] = CreateFieldPlan(
+                recordSchema.Fields[i],
+                recordType,
+                properties,
+                claimedProperties,
+                rejectOverridableGetters);
+        }
 
         return new AllocationFreeSpecificRecordWriter<T>(fields);
     }
@@ -79,13 +95,16 @@ internal sealed unsafe class AllocationFreeSpecificRecordWriter<
 
     private static FieldPlan CreateFieldPlan(
         global::Avro.Field field,
-        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] Type recordType)
+        Type recordType,
+        PropertyInfo[] properties,
+        HashSet<PropertyInfo> claimedProperties,
+        bool rejectOverridableGetters)
     {
         var kind = GetFieldKind(field, recordType);
         if (kind == FieldKind.Null)
             return new FieldPlan(kind, 0);
 
-        var property = FindProperty(recordType, field.Name);
+        var property = FindProperty(recordType, field, properties);
         if (property?.GetMethod is not { IsStatic: false, IsAbstract: false } getter ||
             property.GetIndexParameters().Length != 0)
         {
@@ -93,6 +112,14 @@ internal sealed unsafe class AllocationFreeSpecificRecordWriter<
                 recordType,
                 field,
                 $"a readable public property named '{field.Name}' was not found");
+        }
+
+        if (rejectOverridableGetters && getter is { IsVirtual: true, IsFinal: false })
+        {
+            throw UnsupportedField(
+                recordType,
+                field,
+                $"property '{property.Name}' has an overridable getter");
         }
 
         var expectedType = GetExpectedType(kind);
@@ -104,25 +131,59 @@ internal sealed unsafe class AllocationFreeSpecificRecordWriter<
                 $"property '{property.Name}' has type {property.PropertyType}, expected {expectedType}");
         }
 
+        if (!claimedProperties.Add(property))
+        {
+            throw UnsupportedField(
+                recordType,
+                field,
+                $"property '{property.Name}' also matches another schema field");
+        }
+
         return new FieldPlan(kind, getter.MethodHandle.GetFunctionPointer());
     }
 
     private static PropertyInfo? FindProperty(
-        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] Type recordType,
-        string name)
+        Type recordType,
+        global::Avro.Field field,
+        PropertyInfo[] properties)
     {
-        var property = recordType.GetProperty(name);
-        if (property is not null)
-            return property;
-
-        var properties = recordType.GetProperties();
+        PropertyInfo? match = null;
         for (var i = 0; i < properties.Length; i++)
         {
-            if (string.Equals(properties[i].Name, name, StringComparison.OrdinalIgnoreCase))
-                return properties[i];
+            if (!string.Equals(properties[i].Name, field.Name, StringComparison.Ordinal))
+                continue;
+
+            if (match is not null)
+            {
+                throw UnsupportedField(
+                    recordType,
+                    field,
+                    $"multiple public properties named '{field.Name}' were found");
+            }
+
+            match = properties[i];
         }
 
-        return null;
+        if (match is not null)
+            return match;
+
+        for (var i = 0; i < properties.Length; i++)
+        {
+            if (!string.Equals(properties[i].Name, field.Name, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            if (match is not null)
+            {
+                throw UnsupportedField(
+                    recordType,
+                    field,
+                    $"multiple public properties match '{field.Name}' ignoring case");
+            }
+
+            match = properties[i];
+        }
+
+        return match;
     }
 
     private static FieldKind GetFieldKind(global::Avro.Field field, Type recordType) => field.Schema.Tag switch

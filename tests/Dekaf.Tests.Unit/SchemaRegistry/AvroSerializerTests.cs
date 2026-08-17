@@ -90,6 +90,36 @@ public sealed class AvroSerializerTests
         }
         """;
 
+    private const string SpecificVirtualPropertySchema = """
+        {
+            "type": "record",
+            "name": "SpecificVirtualPropertyRecord",
+            "namespace": "test",
+            "fields": [{ "name": "count", "type": "int" }]
+        }
+        """;
+
+    private const string SpecificAmbiguousPropertySchema = """
+        {
+            "type": "record",
+            "name": "SpecificAmbiguousPropertyRecord",
+            "namespace": "test",
+            "fields": [{ "name": "count", "type": "int" }]
+        }
+        """;
+
+    private const string SpecificAliasedPropertySchema = """
+        {
+            "type": "record",
+            "name": "SpecificAliasedPropertyRecord",
+            "namespace": "test",
+            "fields": [
+                { "name": "Name", "type": "string" },
+                { "name": "name", "type": "string" }
+            ]
+        }
+        """;
+
     private const string AllFieldTypesSchema = """
         {
             "type": "record",
@@ -1452,6 +1482,40 @@ public sealed class AvroSerializerTests
     }
 
     [Test]
+    public async Task Serializer_SpecificRecord_OverridablePropertyFailsDuringPreparation()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        GC.KeepAlive(new SpecificVirtualPropertyDerivedRecord());
+
+        var exception = Assert.Throws<NotSupportedException>(
+            () => GC.KeepAlive(new AvroSchemaRegistrySerializer<SpecificVirtualPropertyRecord>(schemaRegistry)));
+
+        await Assert.That(exception!.Message).Contains("property 'Count' has an overridable getter");
+    }
+
+    [Test]
+    public async Task Serializer_SpecificRecord_AmbiguousPropertyFailsDuringPreparation()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+
+        var exception = Assert.Throws<NotSupportedException>(
+            () => GC.KeepAlive(new AvroSchemaRegistrySerializer<SpecificAmbiguousPropertyRecord>(schemaRegistry)));
+
+        await Assert.That(exception!.Message).Contains("multiple public properties match 'count' ignoring case");
+    }
+
+    [Test]
+    public async Task Serializer_SpecificRecord_PropertyCannotMatchMultipleSchemaFields()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+
+        var exception = Assert.Throws<NotSupportedException>(
+            () => GC.KeepAlive(new AvroSchemaRegistrySerializer<SpecificAliasedPropertyRecord>(schemaRegistry)));
+
+        await Assert.That(exception!.Message).Contains("property 'Name' also matches another schema field");
+    }
+
+    [Test]
     public async Task Serializer_UsesTopicNameStrategy_ByDefault()
     {
         // Arrange
@@ -2035,6 +2099,52 @@ public sealed class AvroSerializerTests
         public AvroSchema Schema => _SCHEMA;
         public object Get(int fieldPos) => fieldPos == 0
             ? UserId
+            : throw new ArgumentOutOfRangeException(nameof(fieldPos));
+        public void Put(int fieldPos, object fieldValue) => throw new NotSupportedException();
+    }
+
+    private class SpecificVirtualPropertyRecord : ISpecificRecord
+    {
+        public static readonly AvroSchema _SCHEMA = AvroSchema.Parse(SpecificVirtualPropertySchema);
+
+        public virtual int Count { get; init; }
+        public AvroSchema Schema => _SCHEMA;
+        public object Get(int fieldPos) => fieldPos == 0
+            ? Count
+            : throw new ArgumentOutOfRangeException(nameof(fieldPos));
+        public void Put(int fieldPos, object fieldValue) => throw new NotSupportedException();
+    }
+
+    private sealed class SpecificVirtualPropertyDerivedRecord : SpecificVirtualPropertyRecord
+    {
+        public override int Count { get; init; }
+    }
+
+    private class SpecificAmbiguousPropertyBase
+    {
+        public long Count { get; init; }
+    }
+
+    private sealed class SpecificAmbiguousPropertyRecord : SpecificAmbiguousPropertyBase, ISpecificRecord
+    {
+        public static readonly AvroSchema _SCHEMA = AvroSchema.Parse(SpecificAmbiguousPropertySchema);
+
+        public new int Count { get; init; }
+        public AvroSchema Schema => _SCHEMA;
+        public object Get(int fieldPos) => fieldPos == 0
+            ? Count
+            : throw new ArgumentOutOfRangeException(nameof(fieldPos));
+        public void Put(int fieldPos, object fieldValue) => throw new NotSupportedException();
+    }
+
+    private sealed class SpecificAliasedPropertyRecord : ISpecificRecord
+    {
+        public static readonly AvroSchema _SCHEMA = AvroSchema.Parse(SpecificAliasedPropertySchema);
+
+        public string Name { get; init; } = string.Empty;
+        public AvroSchema Schema => _SCHEMA;
+        public object Get(int fieldPos) => fieldPos is 0 or 1
+            ? Name
             : throw new ArgumentOutOfRangeException(nameof(fieldPos));
         public void Put(int fieldPos, object fieldValue) => throw new NotSupportedException();
     }

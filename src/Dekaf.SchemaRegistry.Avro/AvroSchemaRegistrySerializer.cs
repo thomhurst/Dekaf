@@ -32,7 +32,10 @@ namespace Dekaf.SchemaRegistry.Avro;
 /// blocks on Schema Registry calls.
 /// </para>
 /// </remarks>
-/// <typeparam name="T">The type to serialize. Must be either an Avro ISpecificRecord or GenericRecord.</typeparam>
+/// <typeparam name="T">
+/// The type to serialize. Must be either an Avro ISpecificRecord or GenericRecord. NativeAOT requires
+/// a concrete SpecificRecord type with a statically discoverable schema; runtime SpecificRecord discovery is unsupported.
+/// </typeparam>
 public sealed class AvroSchemaRegistrySerializer<
     [DynamicallyAccessedMembers(
         DynamicallyAccessedMemberTypes.PublicFields |
@@ -78,6 +81,11 @@ public sealed class AvroSchemaRegistrySerializer<
         _writerSchema = GetSchemaFromType();
         if (_writerSchema is not null)
             _specificWriter = AllocationFreeSpecificRecordWriter<T>.Create(_writerSchema);
+        else if (!RuntimeFeature.IsDynamicCodeSupported && typeof(ISpecificRecord).IsAssignableFrom(typeof(T)))
+        {
+            throw new PlatformNotSupportedException(
+                $"NativeAOT serialization requires a concrete SpecificRecord type with a statically discoverable schema; {typeof(T)} requires runtime type discovery.");
+        }
     }
 
     internal int CachedGenericWriterCount => _dynamicSchemaCaches.Count;
