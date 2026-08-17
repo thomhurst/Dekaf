@@ -119,9 +119,9 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
         try
         {
             var result = await GetClient(key.KeyId)
-                .EncryptAsync(EncryptionAlgorithm.RsaOaep256, plaintext, cancellationToken)
+                .WrapKeyAsync(KeyWrapAlgorithm.RsaOaep256, plaintext, cancellationToken)
                 .ConfigureAwait(false);
-            var ciphertext = RequireMaterial(result.Ciphertext, "wrap");
+            var ciphertext = RequireMaterial(result.EncryptedKey, "wrap");
 
             if (!ShouldSaveVersion(keyReference.KmsProps))
                 return ciphertext;
@@ -178,9 +178,9 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
         try
         {
             var result = await client.Value
-                .DecryptAsync(EncryptionAlgorithm.RsaOaep256, ciphertext, cancellationToken)
+                .UnwrapKeyAsync(KeyWrapAlgorithm.RsaOaep256, ciphertext, cancellationToken)
                 .ConfigureAwait(false);
-            var plaintext = RequireMaterial(result.Plaintext, "unwrap");
+            var plaintext = RequireMaterial(result.Key, "unwrap");
             return plaintext;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

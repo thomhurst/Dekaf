@@ -36,13 +36,13 @@ public class AzureKeyVaultKmsProviderBenchmarks
 
     private sealed class SuccessfulClient : CryptographyClient
     {
-        private readonly Task<DecryptResult> _result = Task.FromResult(CryptographyModelFactory.DecryptResult(
+        private readonly Task<UnwrapResult> _result = Task.FromResult(CryptographyModelFactory.UnwrapResult(
             keyId: $"{KeyUri}/{KeyVersion}",
-            plaintext: [1, 2, 3],
-            algorithm: EncryptionAlgorithm.RsaOaep256));
+            key: [1, 2, 3],
+            algorithm: KeyWrapAlgorithm.RsaOaep256));
 
-        public override Task<DecryptResult> DecryptAsync(
-            EncryptionAlgorithm algorithm,
+        public override Task<UnwrapResult> UnwrapKeyAsync(
+            KeyWrapAlgorithm algorithm,
             byte[] ciphertext,
             CancellationToken cancellationToken = default) => _result;
     }
