@@ -39,6 +39,7 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
     private const int AesGcmNonceLength = 12;
     private const int AesGcmTagLength = 16;
     private const int AesSivLength = 16;
+    private const int DekCacheCapacity = 256;
     private const long MillisInDay = 24L * 60 * 60 * 1000;
     private const byte VersionPrefixMagic = 0x00;
 
@@ -50,8 +51,12 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
     private readonly ISchemaRegistryClient _schemaRegistryClient;
     private readonly SchemaRegistryKmsProviderRegistry _kmsProviders;
     private readonly TimeSpan _operationTimeout;
-    private readonly ConcurrentDictionary<WriteDekCacheKey, Lazy<ResolvedDek>> _writeDeks = new();
-    private readonly ConcurrentDictionary<ReadDekCacheKey, Lazy<ResolvedDek>> _readDeks = new();
+    private readonly ConcurrentDictionary<WriteDekCacheKey, DekCacheEntry> _writeDeks = new();
+    private readonly Queue<(WriteDekCacheKey Key, DekCacheEntry Entry)> _writeDekOrder = new(DekCacheCapacity);
+    private readonly object _writeDekCacheLock = new();
+    private readonly ConcurrentDictionary<ReadDekCacheKey, DekCacheEntry> _readDeks = new();
+    private readonly Queue<(ReadDekCacheKey Key, DekCacheEntry Entry)> _readDekOrder = new(DekCacheCapacity);
+    private readonly object _readDekCacheLock = new();
     private readonly ConditionalWeakTable<SchemaRule, RuleSettingsCache> _settings = new();
     private readonly ConditionalWeakTable<SchemaMetadata, TaggedJsonPlanCache> _taggedJsonPlans = new();
 
@@ -244,6 +249,7 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
         var length = GetEncryptedPayloadLength(payload.Length, settings.Algorithm, settings.IsDekRotated);
         var output = workspace.CreateOutput(payload.Span, length);
         EncryptPayload(payload.Span, dek, settings, workspace, output.GetSpan(length)[..length]);
+        GC.KeepAlive(dek);
         output.Advance(length);
         return output.WrittenMemory;
     }
@@ -274,6 +280,7 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
             workspace,
             output.GetSpan(plaintextLength)[..plaintextLength],
             context.Rule.Name);
+        GC.KeepAlive(dek);
         output.Advance(plaintextLength);
         return output.WrittenMemory;
     }
@@ -317,6 +324,7 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
             var outputLength = GetEncryptedPayloadLength(valueLength, settings.Algorithm, settings.IsDekRotated);
             var encrypted = workspace.GetTemporary(1, outputLength);
             EncryptPayload(encodedValue[..valueLength], dek, settings, workspace, encrypted[..outputLength]);
+            GC.KeepAlive(dek);
 
             output.Append((byte)'"');
             var encodedLength = Base64.GetMaxEncodedToUtf8Length(outputLength);
@@ -353,6 +361,7 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
         var plaintextLength = GetPlaintextLength(ciphertext, readDek.Algorithm, context.Rule.Name);
         var plaintext = workspace.GetTemporary(1, plaintextLength);
         DecryptPayload(ciphertext, readDek, workspace, plaintext[..plaintextLength], context.Rule.Name);
+        GC.KeepAlive(readDek);
         WriteJsonString(ref output, plaintext[..plaintextLength]);
     }
 
@@ -559,47 +568,93 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
         var key = new WriteDekCacheKey(settings.KekName, settings.Subject, settings.Algorithm);
         while (true)
         {
-            var lazy = _writeDeks.GetOrAdd(
-                key,
-                static (_, state) => new Lazy<ResolvedDek>(
-                    () => state.Handler.ResolveWriteDek(state.Settings),
-                    LazyThreadSafetyMode.ExecutionAndPublication),
-                (Handler: this, Settings: settings));
+            if (!_writeDeks.TryGetValue(key, out var entry))
+            {
+                entry = _writeDeks.GetOrAdd(
+                    key,
+                    static (_, state) => new DekCacheEntry(
+                        () => state.Handler.ResolveWriteDek(state.Settings)),
+                    (Handler: this, Settings: settings));
+                TrackCachedDek(
+                    _writeDeks,
+                    _writeDekOrder,
+                    _writeDekCacheLock,
+                    key,
+                    entry);
+            }
 
             try
             {
-                var dek = lazy.Value;
-                if (!IsExpired(settings, dek))
-                    return dek;
+                if (entry.TryGetValue(out var dek))
+                {
+                    if (!IsExpired(settings, dek))
+                        return dek;
+                }
             }
             catch
             {
-                RemoveCachedDek(_writeDeks, key, lazy);
+                RemoveCachedDek(_writeDeks, key, entry);
                 throw;
             }
 
-            RemoveCachedDek(_writeDeks, key, lazy);
+            RemoveCachedDek(_writeDeks, key, entry);
         }
     }
 
     private ResolvedDek GetReadDek(EncryptionSettings settings, int? version)
     {
         var key = new ReadDekCacheKey(settings.KekName, settings.Subject, settings.Algorithm, version);
-        var lazy = _readDeks.GetOrAdd(
-            key,
-            static (_, state) => new Lazy<ResolvedDek>(
-                () => state.Handler.ResolveReadDek(state.Settings, state.Version),
-                LazyThreadSafetyMode.ExecutionAndPublication),
-            (Handler: this, Settings: settings, Version: version));
+        while (true)
+        {
+            if (!_readDeks.TryGetValue(key, out var entry))
+            {
+                entry = _readDeks.GetOrAdd(
+                    key,
+                    static (_, state) => new DekCacheEntry(
+                        () => state.Handler.ResolveReadDek(state.Settings, state.Version)),
+                    (Handler: this, Settings: settings, Version: version));
+                TrackCachedDek(
+                    _readDeks,
+                    _readDekOrder,
+                    _readDekCacheLock,
+                    key,
+                    entry);
+            }
 
-        try
-        {
-            return lazy.Value;
+            try
+            {
+                if (entry.TryGetValue(out var dek))
+                    return dek;
+            }
+            catch
+            {
+                RemoveCachedDek(_readDeks, key, entry);
+                throw;
+            }
+
+            RemoveCachedDek(_readDeks, key, entry);
         }
-        catch
+    }
+
+    private static void TrackCachedDek<TKey>(
+        ConcurrentDictionary<TKey, DekCacheEntry> cache,
+        Queue<(TKey Key, DekCacheEntry Entry)> order,
+        object cacheLock,
+        TKey key,
+        DekCacheEntry entry)
+        where TKey : notnull
+    {
+        if (!entry.TryTrack())
+            return;
+
+        lock (cacheLock)
         {
-            RemoveCachedDek(_readDeks, key, lazy);
-            throw;
+            order.Enqueue((key, entry));
+            while (order.Count > DekCacheCapacity)
+            {
+                var evicted = order.Dequeue();
+                RemoveCachedDek(cache, evicted.Key, evicted.Entry);
+            }
         }
     }
 
@@ -1352,13 +1407,16 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
     }
 
     private static void RemoveCachedDek<TKey>(
-        ConcurrentDictionary<TKey, Lazy<ResolvedDek>> cache,
+        ConcurrentDictionary<TKey, DekCacheEntry> cache,
         TKey key,
-        Lazy<ResolvedDek> value)
+        DekCacheEntry value)
         where TKey : notnull
     {
-        ((ICollection<KeyValuePair<TKey, Lazy<ResolvedDek>>>)cache).Remove(
-            new KeyValuePair<TKey, Lazy<ResolvedDek>>(key, value));
+        if (((ICollection<KeyValuePair<TKey, DekCacheEntry>>)cache).Remove(
+                new KeyValuePair<TKey, DekCacheEntry>(key, value)))
+        {
+            value.Retire();
+        }
     }
 
     private static bool IsNotFound(SchemaRegistryException exception)
@@ -1389,7 +1447,45 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
         public bool IsDekRotated => DekExpiryDays > 0;
     }
 
-    private sealed record ResolvedDek(DekAlgorithm Algorithm, int Version, byte[] KeyMaterial, long? Timestamp);
+    private sealed class ResolvedDek(
+        DekAlgorithm algorithm,
+        int version,
+        byte[] keyMaterial,
+        long? timestamp)
+    {
+        public DekAlgorithm Algorithm { get; } = algorithm;
+
+        public int Version { get; } = version;
+
+        public byte[] KeyMaterial { get; } = keyMaterial;
+
+        public long? Timestamp { get; } = timestamp;
+
+        ~ResolvedDek() => CryptographicOperations.ZeroMemory(KeyMaterial);
+    }
+
+    private sealed class DekCacheEntry(Func<ResolvedDek> valueFactory)
+    {
+        private Lazy<ResolvedDek>? _value = new(valueFactory, LazyThreadSafetyMode.ExecutionAndPublication);
+        private int _tracked;
+
+        public bool TryGetValue(out ResolvedDek value)
+        {
+            var lazy = _value;
+            if (lazy is null)
+            {
+                value = null!;
+                return false;
+            }
+
+            value = lazy.Value;
+            return true;
+        }
+
+        public bool TryTrack() => Interlocked.Exchange(ref _tracked, 1) == 0;
+
+        public void Retire() => _value = null;
+    }
 
     private readonly record struct WriteDekCacheKey(string KekName, string Subject, DekAlgorithm Algorithm);
 
@@ -1887,8 +1983,7 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
     {
         private const int MaxRetainedBufferSize = 1024 * 1024;
         private const int OutputBufferCount = 4;
-        // Rotation is a cold path; retain a practical working set and evict one cipher at a time.
-        private const int CryptoCacheCapacity = 64;
+        private const int CryptoCacheCapacity = DekCacheCapacity;
         private readonly byte[]?[] _outputs = new byte[OutputBufferCount][];
         private readonly byte[]?[] _temporaries = new byte[2][];
         private readonly Dictionary<byte[], GcmCipher> _gcmCiphers = new(ReferenceEqualityComparer.Instance);

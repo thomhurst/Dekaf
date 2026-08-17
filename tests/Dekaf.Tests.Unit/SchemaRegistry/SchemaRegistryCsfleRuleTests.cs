@@ -470,6 +470,54 @@ public sealed class SchemaRegistryCsfleRuleTests
     }
 
     [Test]
+    public async Task TransformPayload_RotatingSubjects_BoundsDekCachesAndClearsEvictedKeys()
+    {
+        const int subjectCount = 257;
+        var client = CreateDekClient();
+        var handler = CreateHandler(client);
+        var payload = "payload"u8.ToArray();
+        byte[]? firstWriteKey = null;
+        byte[]? firstReadKey = null;
+
+        for (var i = 0; i < subjectCount; i++)
+        {
+            var subject = $"orders-{i}-value";
+            var key = new byte[32];
+            BinaryPrimitives.WriteInt32BigEndian(key, i + 1);
+            client.AddDek(new Dek
+            {
+                KekName = "payments-kek",
+                Subject = subject,
+                Version = 1,
+                Algorithm = DekAlgorithm.Aes256Gcm,
+                KeyMaterial = Convert.ToBase64String(key)
+            });
+
+            var rule = CreateRule();
+            var context = CreateHandlerContext(rule, subject: subject);
+            var encrypted = handler.TransformSerializedPayload(payload, context).ToArray();
+            var decrypted = handler.TransformDeserializedPayload(encrypted, context);
+
+            await Assert.That(decrypted.ToArray()).IsEquivalentTo(payload);
+            if (i == 0)
+            {
+                firstWriteKey = GetOnlyCachedDekKeyMaterial(handler, "_writeDeks");
+                firstReadKey = GetOnlyCachedDekKeyMaterial(handler, "_readDeks");
+            }
+        }
+
+        await Assert.That(GetCachedDekCount(handler, "_writeDeks")).IsEqualTo(256);
+        await Assert.That(GetCachedDekCount(handler, "_readDeks")).IsEqualTo(256);
+        await Assert.That(GetWorkspaceCipherCount(handler, "_gcmCiphers")).IsEqualTo(256);
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        await Assert.That(firstWriteKey).IsNotNull();
+        await Assert.That(firstReadKey).IsNotNull();
+        await Assert.That(firstWriteKey!.All(static value => value == 0)).IsTrue();
+        await Assert.That(firstReadKey!.All(static value => value == 0)).IsTrue();
+    }
+
+    [Test]
     public async Task TransformSerializedPayload_ConfluentKekAndDekNotFoundCodes_AutoRegisters()
     {
         var client = new FakeDekRegistryClient();
@@ -622,21 +670,24 @@ public sealed class SchemaRegistryCsfleRuleTests
 
     private static SchemaRegistryRuleHandlerContext CreateHandlerContext(
         SchemaRule rule,
-        Schema? schema = null) =>
+        Schema? schema = null,
+        string subject = "orders-value") =>
         new()
         {
-            PayloadContext = CreateRuleContext(schema ?? CreateRuleSchema(rule)),
+            PayloadContext = CreateRuleContext(schema ?? CreateRuleSchema(rule), subject),
             Rule = rule,
             Direction = SchemaRegistryRuleDirection.Write
         };
 
-    private static SchemaRegistryRuleContext CreateRuleContext(Schema? schema) =>
+    private static SchemaRegistryRuleContext CreateRuleContext(
+        Schema? schema,
+        string subject = "orders-value") =>
         new()
         {
             Topic = "orders",
             Component = SerializationComponent.Value,
             SchemaId = 12,
-            Subject = "orders-value",
+            Subject = subject,
             Schema = schema,
             PayloadFormat = schema?.SchemaType == SchemaType.Json
                 ? SchemaRegistryPayloadFormat.Json
@@ -699,6 +750,15 @@ public sealed class SchemaRegistryCsfleRuleTests
     private static (byte[]?[] Outputs, byte[]?[] Temporaries) GetWorkspaceBuffers(
         SchemaRegistryCsfleRuleHandler handler)
     {
+        var workspace = GetWorkspace(handler);
+        var workspaceType = workspace.GetType();
+        return (
+            (byte[]?[])workspaceType.GetField("_outputs", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(workspace)!,
+            (byte[]?[])workspaceType.GetField("_temporaries", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(workspace)!);
+    }
+
+    private static object GetWorkspace(SchemaRegistryCsfleRuleHandler handler)
+    {
         var workspaces = typeof(SchemaRegistryCsfleRuleHandler)
             .GetField("t_workspaces", BindingFlags.NonPublic | BindingFlags.Static)!
             .GetValue(null)!;
@@ -707,11 +767,40 @@ public sealed class SchemaRegistryCsfleRuleTests
         if (!found)
             throw new InvalidOperationException("CSFLE workspace was not created.");
 
-        var workspace = arguments[1]!;
-        var workspaceType = workspace.GetType();
-        return (
-            (byte[]?[])workspaceType.GetField("_outputs", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(workspace)!,
-            (byte[]?[])workspaceType.GetField("_temporaries", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(workspace)!);
+        return arguments[1]!;
+    }
+
+    private static int GetCachedDekCount(SchemaRegistryCsfleRuleHandler handler, string fieldName)
+    {
+        var cache = typeof(SchemaRegistryCsfleRuleHandler)
+            .GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(handler)!;
+        return (int)cache.GetType().GetProperty("Count")!.GetValue(cache)!;
+    }
+
+    private static int GetWorkspaceCipherCount(
+        SchemaRegistryCsfleRuleHandler handler,
+        string fieldName)
+    {
+        var workspace = GetWorkspace(handler);
+        var cache = workspace.GetType()
+            .GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(workspace)!;
+        return (int)cache.GetType().GetProperty("Count")!.GetValue(cache)!;
+    }
+
+    private static byte[] GetOnlyCachedDekKeyMaterial(
+        SchemaRegistryCsfleRuleHandler handler,
+        string fieldName)
+    {
+        var cache = typeof(SchemaRegistryCsfleRuleHandler)
+            .GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(handler)!;
+        var values = (System.Collections.IEnumerable)cache.GetType().GetProperty("Values")!.GetValue(cache)!;
+        var entry = values.Cast<object>().Single();
+        var lazy = entry.GetType().GetField("_value", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(entry)!;
+        var resolved = lazy.GetType().GetProperty("Value")!.GetValue(lazy)!;
+        return (byte[])resolved.GetType().GetProperty("KeyMaterial")!.GetValue(resolved)!;
     }
 
     private sealed class UntrackableTagSet(params string[] tags) : IReadOnlySet<string>

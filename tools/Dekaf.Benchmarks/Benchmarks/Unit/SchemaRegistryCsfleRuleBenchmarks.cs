@@ -10,7 +10,7 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 [MemoryDiagnoser]
 public class SchemaRegistryCsfleRuleBenchmarks
 {
-    private const int RotatingDekCount = 17;
+    private const int RotatingDekCount = 65;
     private static readonly byte[] Payload = "benchmark-payload"u8.ToArray();
     private static readonly byte[] JsonPayload = "{\"name\":\"Ada\",\"ssn\":\"123-45-6789\"}"u8.ToArray();
 
