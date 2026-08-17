@@ -149,8 +149,10 @@ public class AvroSchemaRegistrySerializerBenchmarks
     private GenericRecord _conditionalValueLogicalStringArrayRecord = null!;
     private GenericRecord _nestedRecordCollectionRecord = null!;
     private GenericRecord _nestedRecordListRecord = null!;
+    private GenericRecord[] _variableSizeRecords = null!;
     private SpecificBenchmarkRecord _specificRecord = null!;
     private ArrayBufferWriter<byte> _serializeBuffer = null!;
+    private ExactSizeBufferWriter _exactSizeSerializeBuffer = null!;
     private GenericRecord _stableRecord = null!;
     private SerializationContext _context;
     private int _recordIndex;
@@ -183,8 +185,14 @@ public class AvroSchemaRegistrySerializerBenchmarks
         _conditionalLogicalUnionRecord = CreateConditionalLogicalUnionRecord();
         _conditionalValueLogicalStringArrayRecord = CreateConditionalValueLogicalStringArrayRecord();
         (_nestedRecordCollectionRecord, _nestedRecordListRecord) = CreateNestedRecordCollectionRecords();
+        _variableSizeRecords =
+        [
+            CreateRecord(1, "small"),
+            CreateRecord(2, new string('x', 4096))
+        ];
         _specificRecord = new SpecificBenchmarkRecord { Id = 42, Name = "benchmark" };
         _serializeBuffer = new ArrayBufferWriter<byte>();
+        _exactSizeSerializeBuffer = new ExactSizeBufferWriter(8192);
         _serializer.Serialize(_stableRecord, ref _serializeBuffer, _context);
         _serializeBuffer.ResetWrittenCount();
         _serializer.Serialize(_intRecord, ref _serializeBuffer, _context);
@@ -207,6 +215,10 @@ public class AvroSchemaRegistrySerializerBenchmarks
         _serializeBuffer.ResetWrittenCount();
         _specificSerializer.Serialize(_specificRecord, ref _serializeBuffer, _context);
         _serializeBuffer.ResetWrittenCount();
+        _serializer.Serialize(_variableSizeRecords[1], ref _exactSizeSerializeBuffer, _context);
+        _exactSizeSerializeBuffer.Reset();
+        _serializer.Serialize(_variableSizeRecords[0], ref _exactSizeSerializeBuffer, _context);
+        _exactSizeSerializeBuffer.Reset();
     }
 
     [GlobalCleanup]
@@ -310,12 +322,20 @@ public class AvroSchemaRegistrySerializerBenchmarks
         _specificSerializer.Serialize(_specificRecord, ref _serializeBuffer, _context);
     }
 
-    private static GenericRecord CreateRecord(int id)
+    [Benchmark(Description = "Serialize alternating small/large generic Avro records")]
+    public void SerializeAlternatingSizeRecords()
+    {
+        _exactSizeSerializeBuffer.Reset();
+        _recordIndex ^= 1;
+        _serializer.Serialize(_variableSizeRecords[_recordIndex], ref _exactSizeSerializeBuffer, _context);
+    }
+
+    private static GenericRecord CreateRecord(int id, string name = "benchmark")
     {
         var schema = (Avro.RecordSchema)AvroSchema.Parse(RecordSchema);
         var record = new GenericRecord(schema);
         record.Add("id", id);
-        record.Add("name", "benchmark");
+        record.Add("name", name);
         return record;
     }
 
@@ -325,6 +345,22 @@ public class AvroSchemaRegistrySerializerBenchmarks
         var record = new GenericRecord(schema);
         record.Add("id", 42);
         return record;
+    }
+
+    private sealed class ExactSizeBufferWriter(int capacity) : IBufferWriter<byte>
+    {
+        private readonly byte[] _buffer = new byte[capacity];
+        private int _written;
+
+        public void Advance(int count) => _written += count;
+
+        public Memory<byte> GetMemory(int sizeHint = 0) =>
+            _buffer.AsMemory(_written, Math.Max(1, sizeHint));
+
+        public Span<byte> GetSpan(int sizeHint = 0) =>
+            _buffer.AsSpan(_written, Math.Max(1, sizeHint));
+
+        internal void Reset() => _written = 0;
     }
 
     private static GenericRecord CreateNullableIntArrayRecord()

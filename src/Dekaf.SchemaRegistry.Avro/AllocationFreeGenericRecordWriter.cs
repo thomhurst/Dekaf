@@ -162,10 +162,10 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
 
     private void WriteTypedArray(global::Avro.Schema itemSchema, Array array, AllocationFreeBinaryEncoder encoder)
     {
-        if (itemSchema is global::Avro.UnionSchema unionSchema)
+        if (itemSchema is global::Avro.UnionSchema unionSchema
+            && TryWriteValueTypeUnionArray(unionSchema, array, encoder))
         {
-            if (TryWriteValueTypeUnionArray(unionSchema, array, encoder))
-                return;
+            return;
         }
 
         switch (itemSchema.Tag)

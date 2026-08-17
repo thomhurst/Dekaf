@@ -335,6 +335,43 @@ public sealed class AvroSerializerTests
     }
 
     [Test]
+    public async Task Serializer_DirectPath_RetainsPayloadSizeHighWaterMark()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry);
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(SimpleRecordSchema);
+        var largeRecord = new GenericRecord(schema);
+        largeRecord.Add("id", 1);
+        largeRecord.Add("name", new string('x', 4096));
+        var smallRecord = new GenericRecord(schema);
+        smallRecord.Add("id", 2);
+        smallRecord.Add("name", "small");
+        var buffer = new ArrayBufferWriter<byte>();
+        var context = CreateContext();
+        var previousState = AvroCodecThreadStateCache.Serialization;
+        int largePayloadHint;
+        int smallPayloadHint;
+
+        try
+        {
+            AvroCodecThreadStateCache.Serialization = new AvroSerializationThreadState();
+            serializer.Serialize(largeRecord, ref buffer, context);
+            largePayloadHint = AvroCodecThreadStateCache.Serialization.PayloadSizeHint;
+            buffer.ResetWrittenCount();
+
+            serializer.Serialize(smallRecord, ref buffer, context);
+            smallPayloadHint = AvroCodecThreadStateCache.Serialization.PayloadSizeHint;
+        }
+        finally
+        {
+            AvroCodecThreadStateCache.Serialization = previousState;
+        }
+
+        await Assert.That(largePayloadHint).IsGreaterThan(1024);
+        await Assert.That(smallPayloadHint).IsEqualTo(largePayloadHint);
+    }
+
+    [Test]
     public async Task Serializer_GenericRecord_AllFieldTypes_MatchesApacheAvroBytes()
     {
         using var schemaRegistry = new MockSchemaRegistryClient();

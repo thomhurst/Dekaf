@@ -215,7 +215,7 @@ public sealed class AvroSchemaRegistrySerializer<
                 destination.Advance(WireHeaderSize + payloadLength);
                 codecState.PayloadSizeHint = payloadLength > MaxRetainedAvroPayloadBufferSize
                     ? InitialAvroPayloadBufferSize
-                    : Math.Max(InitialAvroPayloadBufferSize, payloadLength);
+                    : Math.Max(codecState.PayloadSizeHint, payloadLength);
                 stream.Reset(default);
                 return;
             }
