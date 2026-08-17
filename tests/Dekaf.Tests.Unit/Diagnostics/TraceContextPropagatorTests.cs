@@ -84,6 +84,22 @@ public sealed class TraceContextPropagatorTests
     }
 
     [Test]
+    public async Task DeferredHeader_WithUnexpectedValue_FailsBeforeWritingMalformedRecord()
+    {
+        var header = Header.CreateDeferredTraceparent("traceparent", new object());
+        var output = new ArrayBufferWriter<byte>();
+
+        void Act()
+        {
+            var writer = new KafkaProtocolWriter(output);
+            HeaderProtocol.Write(in header, ref writer);
+        }
+
+        await Assert.That(Act).Throws<InvalidOperationException>()
+            .WithMessage("Unsupported deferred header value.");
+    }
+
+    [Test]
     public async Task InjectTraceContext_DeferredTracestateWritesExpectedWireValue()
     {
         using var activity = new Activity("tracestate-wire")

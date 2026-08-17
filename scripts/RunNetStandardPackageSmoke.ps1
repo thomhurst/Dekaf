@@ -153,6 +153,7 @@ $abstractionsAdapterProject = Join-Path $repoRoot 'samples/PackageSmoke/Dekaf.Pa
 if (-not (Test-Path -LiteralPath $smokeProject)) {
     throw "Package smoke project not found: $smokeProject"
 }
+$packageRestoreSources = "$packageSource%3B$($abstractionsPackage.DirectoryName)"
 
 $artifactsDir = Join-Path $repoRoot 'artifacts/package-smoke'
 $nugetPackages = Join-Path $artifactsDir 'nuget-cache'
@@ -167,7 +168,7 @@ try {
         $smokeProject,
         "-p:DekafPackageVersion=$PackageVersion",
         '-p:UseDekafPackages=true',
-        "-p:RestoreAdditionalProjectSources=$packageSource"
+        "-p:RestoreAdditionalProjectSources=$packageRestoreSources"
     )
 
     Invoke-DotNet -Step 'package smoke build' -Arguments @(

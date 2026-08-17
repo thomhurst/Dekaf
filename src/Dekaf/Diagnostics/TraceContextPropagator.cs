@@ -13,7 +13,7 @@ internal static class TraceContextPropagator
 {
     private const string TraceparentHeader = "traceparent";
     private const string TracestateHeader = "tracestate";
-    internal const int TraceparentLength = 55;
+    internal const int TraceparentLength = Header.TraceparentLength;
 
     static TraceContextPropagator()
     {

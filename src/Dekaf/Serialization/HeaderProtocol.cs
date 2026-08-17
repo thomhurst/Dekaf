@@ -45,6 +45,8 @@ internal static class HeaderProtocol
                 writer.BufferWriter.Advance(traceStateLength);
                 writer.AddBytesWritten(traceStateLength);
                 break;
+            default:
+                throw new InvalidOperationException("Unsupported deferred header value.");
         }
     }
 
@@ -120,7 +122,7 @@ internal static class HeaderProtocol
             null => header.RawValue.Length,
             Activity => Header.TraceparentLength,
             string traceState => Encoding.UTF8.GetByteCount(traceState),
-            _ => throw new UnreachableException()
+            _ => throw new InvalidOperationException("Unsupported deferred header value.")
         };
         Record.WriteVarInt(destination, ref offset, valueLength);
         switch (header.DeferredValue)
@@ -156,7 +158,7 @@ internal static class HeaderProtocol
             null => header.RawValue.Length,
             Activity => Header.TraceparentLength,
             string traceState => Encoding.UTF8.GetByteCount(traceState),
-            _ => throw new UnreachableException()
+            _ => throw new InvalidOperationException("Unsupported deferred header value.")
         };
         return size + Record.VarIntSize(valueLength) + valueLength;
     }

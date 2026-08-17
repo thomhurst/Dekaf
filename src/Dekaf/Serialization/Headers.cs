@@ -416,8 +416,8 @@ public readonly record struct Header
         if (_deferredValue is string traceState)
             return traceState;
         if (_deferredValue is null)
-#if NETSTANDARD2_0
         {
+#if NETSTANDARD2_0
             if (MemoryMarshal.TryGetArray(_value, out var segment))
             {
                 return Encoding.UTF8.GetString(
@@ -427,10 +427,10 @@ public readonly record struct Header
             }
 
             return Encoding.UTF8.GetString(_value.ToArray());
-        }
 #else
             return Encoding.UTF8.GetString(_value.Span);
 #endif
+        }
 
         Span<byte> value = stackalloc byte[TraceparentLength];
         WriteTraceparentUnchecked(_deferredValue, value);
