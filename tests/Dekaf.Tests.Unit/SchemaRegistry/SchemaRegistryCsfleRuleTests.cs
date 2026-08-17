@@ -507,6 +507,46 @@ public sealed class SchemaRegistryCsfleRuleTests
     }
 
     [Test]
+    public async Task AvroTaggedTransformer_OversizedTemporaryBuffer_IsNotRetained()
+    {
+        const int maxRetainedBufferSize = 1024 * 1024;
+        const string schemaText = """
+            {"type":"record","name":"LargeStringPayload","fields":[
+                {"name":"secret","type":"string","confluent:tags":["PII"]}
+            ]}
+            """;
+        var avroSchema = (Avro.RecordSchema)AvroSchema.Parse(schemaText);
+        var rule = CreateRule(tags: new HashSet<string>(StringComparer.Ordinal) { "PII" });
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = schemaText,
+            RuleSet = new SchemaRuleSet
+            {
+                DomainRules = [rule],
+                HasFixedRuleCollections = true
+            }
+        };
+        var transformer = AvroTaggedFieldTransformer.Get(avroSchema, schema);
+        var transformed = transformer.Transform(
+            WriteAvroStringRecord(avroSchema, "initial"),
+            CreateHandlerContext(rule, schema),
+            new byte[maxRetainedBufferSize + 1],
+            static (_, _, replacement) => replacement);
+        var workspaces = typeof(AvroTaggedFieldTransformer)
+            .GetField("t_workspaces", BindingFlags.NonPublic | BindingFlags.Static)!
+            .GetValue(null)!;
+        var arguments = new object?[] { transformer, null };
+        _ = workspaces.GetType().GetMethod("TryGetValue")!.Invoke(workspaces, arguments);
+        var temporary = (byte[]?)arguments[1]!.GetType()
+            .GetField("_temporary", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(arguments[1]);
+
+        await Assert.That(temporary).IsNull();
+        GC.KeepAlive(transformed);
+    }
+
+    [Test]
     public async Task AvroTaggedTransformerProvider_ConcurrentSchemas_KeepCachePairAtomic()
     {
         const string firstSchemaText = """
@@ -578,7 +618,7 @@ public sealed class SchemaRegistryCsfleRuleTests
     }
 
     [Test]
-    public async Task AvroTaggedTransformerProvider_UsesOwnerTagsWithPayloadLayout()
+    public async Task AvroTaggedTransformerProvider_UsesOwnerAliasesWithPayloadLayout()
     {
         const string payloadSchemaText = """
             {"type":"record","name":"MigratedPayment","namespace":"test","fields":[
@@ -588,7 +628,7 @@ public sealed class SchemaRegistryCsfleRuleTests
         const string ownerSchemaText = """
             {"type":"record","name":"MigratedPayment","namespace":"test","fields":[
                 {"name":"prefix","type":"string","default":""},
-                {"name":"secret","type":"bytes","confluent:tags":["PII"]}
+                {"name":"renamed_secret","aliases":["secret"],"type":"bytes","confluent:tags":["PII"]}
             ]}
             """;
         var rule = CreateRule(tags: new HashSet<string>(StringComparer.Ordinal) { "PII" });
@@ -1344,6 +1384,17 @@ public sealed class SchemaRegistryCsfleRuleTests
         };
 
     private static byte[] WriteAvroRecord(Avro.RecordSchema schema, byte[] value)
+    {
+        var record = new GenericRecord(schema);
+        record.Add("secret", value);
+        using var stream = new MemoryStream();
+        var encoder = new BinaryEncoder(stream);
+        new GenericDatumWriter<GenericRecord>(schema).Write(record, encoder);
+        encoder.Flush();
+        return stream.ToArray();
+    }
+
+    private static byte[] WriteAvroStringRecord(Avro.RecordSchema schema, string value)
     {
         var record = new GenericRecord(schema);
         record.Add("secret", value);

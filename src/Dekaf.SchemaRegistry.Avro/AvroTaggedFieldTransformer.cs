@@ -48,21 +48,28 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
             context.Rule,
             context.PayloadContext.Schema?.RuleSet?.HasFixedRuleCollections != true);
         var workspace = GetWorkspace(this);
-        workspace.Reset(payload.Span, payload.Length + 128);
-        var reader = new AvroReader(payload);
-        TransformValue(_schema, target: false, plan, ref reader, workspace, context, state, transform);
-        if (!plan.HasTargets)
+        try
         {
-            throw new SchemaRegistryRuleException(
-                $"Schema Registry rule '{context.Rule.Name}' did not match any Avro field tags.");
-        }
-        if (!reader.End)
-        {
-            throw new SchemaRegistryRuleException(
-                $"Schema Registry rule '{context.Rule.Name}' encountered trailing Avro payload bytes.");
-        }
+            workspace.Reset(payload.Span, payload.Length + 128);
+            var reader = new AvroReader(payload);
+            TransformValue(_schema, target: false, plan, ref reader, workspace, context, state, transform);
+            if (!plan.HasTargets)
+            {
+                throw new SchemaRegistryRuleException(
+                    $"Schema Registry rule '{context.Rule.Name}' did not match any Avro field tags.");
+            }
+            if (!reader.End)
+            {
+                throw new SchemaRegistryRuleException(
+                    $"Schema Registry rule '{context.Rule.Name}' encountered trailing Avro payload bytes.");
+            }
 
-        return workspace.WrittenMemory;
+            return workspace.WrittenMemory;
+        }
+        finally
+        {
+            workspace.ReleaseOversizedTemporary();
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -607,8 +614,7 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
                     for (var i = 0; i < fields.Count; i++)
                     {
                         var field = fields[i];
-                        global::Avro.Field? tagField = null;
-                        _ = tagRecord?.TryGetField(field.Name, out tagField);
+                        var tagField = FindTagField(tagRecord, field.Name);
                         var fullName = record.Fullname + "." + field.Name;
                         if (mutableTags)
                         {
@@ -686,6 +692,32 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
                     }
                     break;
             }
+        }
+
+        private static global::Avro.Field? FindTagField(
+            global::Avro.RecordSchema? record,
+            string payloadFieldName)
+        {
+            if (record is null)
+                return null;
+            if (record.TryGetField(payloadFieldName, out var field))
+                return field;
+
+            var fields = record.Fields;
+            for (var i = 0; i < fields.Count; i++)
+            {
+                var candidate = fields[i];
+                var aliases = candidate.Aliases;
+                if (aliases is null)
+                    continue;
+                for (var aliasIndex = 0; aliasIndex < aliases.Count; aliasIndex++)
+                {
+                    if (string.Equals(aliases[aliasIndex], payloadFieldName, StringComparison.Ordinal))
+                        return candidate;
+                }
+            }
+
+            return null;
         }
 
         private static AvroSchema? FindUnionBranch(
@@ -1065,6 +1097,17 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
                 throw new InvalidOperationException("Could not encode the encrypted Avro string field as Base64.");
             _temporaryLength = written;
             return new ReadOnlyMemory<byte>(_temporary!, 0, written);
+        }
+
+        public void ReleaseOversizedTemporary()
+        {
+            var temporary = _temporary;
+            if (temporary is null || temporary.Length <= MaxRetainedBufferSize)
+                return;
+
+            _temporary = null;
+            _temporaryLength = 0;
+            ArrayPool<byte>.Shared.Return(temporary, clearArray: true);
         }
 
         private Span<byte> GetTemporary(int minimumLength)
