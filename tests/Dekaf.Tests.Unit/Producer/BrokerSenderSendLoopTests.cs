@@ -739,6 +739,8 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
         var injectedFailure = new InvalidOperationException("injected pending-response failure");
         var allRerouted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var coalesceStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var releaseCoalesce = new ManualResetEventSlim();
         var reroutedSequences = new ConcurrentQueue<int>();
         var reroutedCount = 0;
         var crashEnabled = 0;
@@ -758,14 +760,24 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             {
                 if (Interlocked.Exchange(ref crashEnabled, 0) != 0)
                     throw injectedFailure;
+
+                coalesceStarted.TrySetResult();
+                releaseCoalesce.Wait(cancellationToken);
             });
 
         try
         {
             var pendingFirst = CreateTestBatchWithDelivery(valueTaskSourcePool, "test-topic", 0);
             var pendingSecond = CreateTestBatchWithDelivery(valueTaskSourcePool, "test-topic", 1);
-            sender.EnqueueBulk([pendingFirst.Batch, pendingSecond.Batch]);
+            SeedKnownPartitions(sender, pendingFirst.Batch.TopicPartition, pendingSecond.Batch.TopicPartition);
+            sender.Enqueue(pendingFirst.Batch);
+            await coalesceStarted.Task.WaitAsync(cancellationToken);
+
+            sender.Enqueue(pendingSecond.Batch);
+            releaseCoalesce.Set();
             await WaitUntilAsync(() => GetPendingResponseCount(sender) == 1, cancellationToken);
+            await Assert.That(pendingFirst.Batch.RecordBatch.BaseSequence).IsGreaterThanOrEqualTo(0);
+            await Assert.That(pendingSecond.Batch.RecordBatch.BaseSequence).IsGreaterThanOrEqualTo(0);
 
             var coalesced = CreateTestBatchWithDelivery(valueTaskSourcePool, "test-topic", 0);
             Volatile.Write(ref crashEnabled, 1);
@@ -787,6 +799,7 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         }
         finally
         {
+            releaseCoalesce.Set();
             pendingResponse.TrySetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 0));
             await sender.DisposeAsync();
             await accumulator.DisposeAsync();
