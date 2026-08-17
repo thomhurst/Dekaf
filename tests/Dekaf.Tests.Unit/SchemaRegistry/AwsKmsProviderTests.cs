@@ -53,7 +53,7 @@ public class AwsKmsProviderTests
     [Test]
     [Arguments(true)]
     [Arguments(false)]
-    public async Task AwsFailure_IsSanitizedAndPreservesCause(bool wrap)
+    public async Task AwsFailure_IsSanitizedWithoutSensitiveCause(bool wrap)
     {
         var client = Substitute.For<IAmazonKeyManagementService>();
         var failure = new AmazonKeyManagementServiceException("secret provider response");
@@ -66,13 +66,14 @@ public class AwsKmsProviderTests
             : await Assert.ThrowsAsync<SchemaRegistryKmsException>(() => provider.UnwrapKeyAsync(new byte[] { 1 }, CreateKeyReference()).AsTask());
 
         await Assert.That(exception!.Message).IsEqualTo(wrap ? "AWS KMS wrap failed." : "AWS KMS unwrap failed.");
-        await Assert.That(exception.InnerException).IsSameReferenceAs(failure);
+        await Assert.That(exception.InnerException).IsNull();
+        await Assert.That(exception.ToString()).DoesNotContain("secret provider response");
     }
 
     [Test]
     [Arguments(true)]
     [Arguments(false)]
-    public async Task AwsClientFailure_IsSanitizedAndPreservesCause(bool wrap)
+    public async Task AwsClientFailure_IsSanitizedWithoutSensitiveCause(bool wrap)
     {
         var client = Substitute.For<IAmazonKeyManagementService>();
         var failure = new AmazonClientException("credential provider response: sensitive");
@@ -91,7 +92,35 @@ public class AwsKmsProviderTests
         await Assert.That(exception!.Message)
             .IsEqualTo(wrap ? "AWS KMS wrap failed." : "AWS KMS unwrap failed.");
         await Assert.That(exception.Message).DoesNotContain("sensitive");
-        await Assert.That(exception.InnerException).IsSameReferenceAs(failure);
+        await Assert.That(exception.InnerException).IsNull();
+        await Assert.That(exception.ToString()).DoesNotContain("sensitive");
+    }
+
+    [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task TransportFailure_IsSanitizedWithoutSensitiveCause(bool wrap)
+    {
+        var client = Substitute.For<IAmazonKeyManagementService>();
+        Exception failure = wrap
+            ? new HttpRequestException("transport response: sensitive")
+            : new TimeoutException("timeout response: sensitive");
+        client.EncryptAsync(Arg.Any<EncryptRequest>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromException<EncryptResponse>(failure));
+        client.DecryptAsync(Arg.Any<DecryptRequest>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromException<DecryptResponse>(failure));
+        using var provider = new AwsKmsProvider(client);
+
+        var exception = wrap
+            ? await Assert.ThrowsAsync<SchemaRegistryKmsException>(
+                () => provider.WrapKeyAsync(new byte[] { 1 }, CreateKeyReference()).AsTask())
+            : await Assert.ThrowsAsync<SchemaRegistryKmsException>(
+                () => provider.UnwrapKeyAsync(new byte[] { 1 }, CreateKeyReference()).AsTask());
+
+        await Assert.That(exception!.Message)
+            .IsEqualTo(wrap ? "AWS KMS wrap failed." : "AWS KMS unwrap failed.");
+        await Assert.That(exception.InnerException).IsNull();
+        await Assert.That(exception.ToString()).DoesNotContain("sensitive");
     }
 
     [Test]
@@ -143,7 +172,8 @@ public class AwsKmsProviderTests
 
         await Assert.That(exception!.Message).IsEqualTo("AWS KMS wrap failed.");
         await Assert.That(exception.Message).DoesNotContain("sensitive");
-        await Assert.That(exception.InnerException).IsSameReferenceAs(denied);
+        await Assert.That(exception.InnerException).IsNull();
+        await Assert.That(exception.ToString()).DoesNotContain("sensitive");
     }
 
     [Test]
@@ -211,6 +241,35 @@ public class AwsKmsProviderTests
     }
 
     [Test]
+    public async Task CustomType_ResolvesMatchingRegionalProvider()
+    {
+        const string regionalType = "aws-kms-eu-west-2";
+        var client = Substitute.For<IAmazonKeyManagementService>();
+        client.EncryptAsync(Arg.Any<EncryptRequest>(), Arg.Any<CancellationToken>())
+            .Returns(new EncryptResponse { CiphertextBlob = new MemoryStream([9]) });
+        using var provider = new AwsKmsProvider(client, type: regionalType);
+
+        var encrypted = await provider.WrapKeyAsync(
+            new byte[] { 1 },
+            CreateKeyReference(KeyArn, regionalType));
+
+        await Assert.That(provider.Type).IsEqualTo(regionalType);
+        await Assert.That(encrypted).IsEquivalentTo(new byte[] { 9 });
+        await client.Received(1).EncryptAsync(
+            Arg.Is<EncryptRequest>(request => request.KeyId == KeyArn),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task EmptyCustomType_IsRejected()
+    {
+        var client = Substitute.For<IAmazonKeyManagementService>();
+
+        await Assert.That(() => new AwsKmsProvider(client, type: " "))
+            .Throws<ArgumentException>();
+    }
+
+    [Test]
     public async Task EmptyKeyIdentifier_IsRejectedBeforeAwsCall()
     {
         var client = Substitute.For<IAmazonKeyManagementService>();
@@ -226,9 +285,11 @@ public class AwsKmsProviderTests
         await client.DidNotReceiveWithAnyArgs().EncryptAsync(default!, default);
     }
 
-    private static SchemaRegistryKmsKeyReference CreateKeyReference(string keyId = KeyArn) => new()
+    private static SchemaRegistryKmsKeyReference CreateKeyReference(
+        string keyId = KeyArn,
+        string type = AwsKmsProvider.DefaultType) => new()
     {
-        KmsType = AwsKmsProvider.DefaultType,
+        KmsType = type,
         KmsKeyId = keyId
     };
 

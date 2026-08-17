@@ -1,4 +1,7 @@
+using System.Net;
+using System.Net.Sockets;
 using System.Runtime.InteropServices;
+using System.Security.Authentication;
 using System.Security.Cryptography;
 using Amazon;
 using Amazon.KeyManagementService;
@@ -34,8 +37,9 @@ public sealed class AwsKmsProvider : ISchemaRegistryKmsProvider, IDisposable
     /// <summary>
     /// Creates a provider using the AWS SDK default credential and region provider chains.
     /// </summary>
-    public AwsKmsProvider()
-        : this(new AmazonKeyManagementServiceClient(), ownsClient: true)
+    /// <param name="type">Schema Registry KMS provider type.</param>
+    public AwsKmsProvider(string type = DefaultType)
+        : this(CreateOwnedClient(type), ownsClient: true, type: type)
     {
     }
 
@@ -43,8 +47,12 @@ public sealed class AwsKmsProvider : ISchemaRegistryKmsProvider, IDisposable
     /// Creates a provider using the AWS SDK default credential provider chain in <paramref name="region" />.
     /// </summary>
     /// <param name="region">AWS region containing the KMS key.</param>
-    public AwsKmsProvider(RegionEndpoint region)
-        : this(new AmazonKeyManagementServiceClient(region ?? throw new ArgumentNullException(nameof(region))), ownsClient: true)
+    /// <param name="type">Schema Registry KMS provider type.</param>
+    public AwsKmsProvider(RegionEndpoint region, string type = DefaultType)
+        : this(
+            CreateOwnedClient(region, type),
+            ownsClient: true,
+            type: type)
     {
     }
 
@@ -52,8 +60,12 @@ public sealed class AwsKmsProvider : ISchemaRegistryKmsProvider, IDisposable
     /// Creates a provider using the AWS SDK default credential provider chain and client configuration.
     /// </summary>
     /// <param name="config">AWS KMS client configuration, including region or custom service endpoint.</param>
-    public AwsKmsProvider(AmazonKeyManagementServiceConfig config)
-        : this(new AmazonKeyManagementServiceClient(config ?? throw new ArgumentNullException(nameof(config))), ownsClient: true)
+    /// <param name="type">Schema Registry KMS provider type.</param>
+    public AwsKmsProvider(AmazonKeyManagementServiceConfig config, string type = DefaultType)
+        : this(
+            CreateOwnedClient(config, type),
+            ownsClient: true,
+            type: type)
     {
     }
 
@@ -62,15 +74,22 @@ public sealed class AwsKmsProvider : ISchemaRegistryKmsProvider, IDisposable
     /// </summary>
     /// <param name="client">Thread-safe AWS KMS client.</param>
     /// <param name="ownsClient">Whether disposing this provider also disposes <paramref name="client" />.</param>
-    public AwsKmsProvider(IAmazonKeyManagementService client, bool ownsClient = false)
+    /// <param name="type">Schema Registry KMS provider type.</param>
+    public AwsKmsProvider(
+        IAmazonKeyManagementService client,
+        bool ownsClient = false,
+        string type = DefaultType)
     {
         ArgumentNullException.ThrowIfNull(client);
+        ValidateType(type);
+
         _client = client;
         _ownsClient = ownsClient;
+        Type = type;
     }
 
     /// <inheritdoc />
-    public string Type => DefaultType;
+    public string Type { get; }
 
     /// <inheritdoc />
     public async ValueTask<byte[]> WrapKeyAsync(
@@ -105,9 +124,9 @@ public sealed class AwsKmsProvider : ISchemaRegistryKmsProvider, IDisposable
         {
             throw;
         }
-        catch (Exception ex) when (ex is AmazonServiceException or AmazonClientException)
+        catch (Exception ex) when (IsAwsFailure(ex))
         {
-            throw new SchemaRegistryKmsException("AWS KMS wrap failed.", ex);
+            throw new SchemaRegistryKmsException("AWS KMS wrap failed.");
         }
         finally
         {
@@ -142,9 +161,9 @@ public sealed class AwsKmsProvider : ISchemaRegistryKmsProvider, IDisposable
         {
             throw;
         }
-        catch (Exception ex) when (ex is AmazonServiceException or AmazonClientException)
+        catch (Exception ex) when (IsAwsFailure(ex))
         {
-            throw new SchemaRegistryKmsException("AWS KMS unwrap failed.", ex);
+            throw new SchemaRegistryKmsException("AWS KMS unwrap failed.");
         }
         finally
         {
@@ -161,13 +180,13 @@ public sealed class AwsKmsProvider : ISchemaRegistryKmsProvider, IDisposable
         _client.Dispose();
     }
 
-    private static string ResolveKeyId(SchemaRegistryKmsKeyReference keyReference)
+    private string ResolveKeyId(SchemaRegistryKmsKeyReference keyReference)
     {
         ArgumentNullException.ThrowIfNull(keyReference);
-        if (!string.Equals(keyReference.KmsType, DefaultType, StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(keyReference.KmsType, Type, StringComparison.OrdinalIgnoreCase))
         {
             throw new SchemaRegistryKmsException(
-                $"AWS KMS provider cannot resolve KMS type '{keyReference.KmsType}'.");
+                $"AWS KMS provider '{Type}' cannot resolve KMS type '{keyReference.KmsType}'.");
         }
 
         var keyId = keyReference.KmsKeyId;
@@ -224,6 +243,45 @@ public sealed class AwsKmsProvider : ISchemaRegistryKmsProvider, IDisposable
     {
         if (temporaryBuffer is not null)
             CryptographicOperations.ZeroMemory(temporaryBuffer);
+    }
+
+    private static bool IsAwsFailure(Exception exception) => exception is
+        AmazonServiceException
+        or AmazonClientException
+        or HttpRequestException
+        or IOException
+        or WebException
+        or SocketException
+        or TimeoutException
+        or AuthenticationException
+        or OperationCanceledException;
+
+    private static AmazonKeyManagementServiceClient CreateOwnedClient(string type)
+    {
+        ValidateType(type);
+        return new AmazonKeyManagementServiceClient();
+    }
+
+    private static AmazonKeyManagementServiceClient CreateOwnedClient(RegionEndpoint region, string type)
+    {
+        ArgumentNullException.ThrowIfNull(region);
+        ValidateType(type);
+        return new AmazonKeyManagementServiceClient(region);
+    }
+
+    private static AmazonKeyManagementServiceClient CreateOwnedClient(
+        AmazonKeyManagementServiceConfig config,
+        string type)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        ValidateType(type);
+        return new AmazonKeyManagementServiceClient(config);
+    }
+
+    private static void ValidateType(string type)
+    {
+        if (string.IsNullOrWhiteSpace(type))
+            throw new ArgumentException("KMS provider type cannot be null or whitespace.", nameof(type));
     }
 
     private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed != 0, this);

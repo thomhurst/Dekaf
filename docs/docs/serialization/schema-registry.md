@@ -393,6 +393,15 @@ Schema Registry key references may contain a raw key ARN/alias or a Confluent-co
 cancellation to the AWS SDK, is safe for concurrent use, never logs key material or ciphertext, and
 clears temporary plaintext buffers where the runtime exposes them.
 
+Each provider instance registers one KMS type. Applications using keys in multiple regions can give
+each regional provider a distinct type and use that type on the matching KEK:
+
+```csharp
+using var euKms = new AwsKmsProvider(RegionEndpoint.EUWest2, type: "aws-kms-eu-west-2");
+using var usKms = new AwsKmsProvider(RegionEndpoint.USEast1, type: "aws-kms-us-east-1");
+var multiRegionCsfle = new SchemaRegistryCsfleRuleHandler(schemaRegistry, [euKms, usKms]);
+```
+
 ## Consumer
 
 ```csharp
