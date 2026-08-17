@@ -289,7 +289,9 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
             if (TryWriteValueTypeUnionList(unionSchema, list, encoder))
                 return;
 
-            if (_writerCache.GetUnion(unionSchema).HasConditionalValueTypeBranch)
+            if (_writerCache.GetUnion(unionSchema).HasConditionalValueTypeBranch &&
+                list is not IEnumerable<object?> &&
+                list is not ArrayList)
             {
                 throw new global::Avro.AvroTypeException(
                     $"List type {list.GetType()} is not supported for value-dependent Avro union items.");
@@ -760,7 +762,7 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
         WriteValue(branch.Schema, value, encoder);
     }
 
-    private void WriteLogical(
+    private static void WriteLogical(
         global::Avro.LogicalSchema schema,
         object? value,
         AllocationFreeBinaryEncoder encoder)
@@ -793,11 +795,8 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
                 return;
 
             default:
-                WriteValue(
-                    schema.BaseSchema,
-                    schema.LogicalType.ConvertToBaseValue(value, schema),
-                    encoder);
-                return;
+                throw new global::Avro.AvroTypeException(
+                    $"Custom logical type '{schema.LogicalTypeName}' is not supported by the allocation-free writer.");
         }
     }
 
