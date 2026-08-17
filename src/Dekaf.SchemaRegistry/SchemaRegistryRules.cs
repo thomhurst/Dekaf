@@ -33,38 +33,166 @@ public enum SchemaRegistryPayloadFormat
 /// <summary>
 /// Context passed to Schema Registry payload rule executors.
 /// </summary>
+/// <remarks>
+/// Context instances supplied to an executor are borrowed and valid only for the synchronous
+/// duration of the transform call. Implementations must not retain them.
+/// </remarks>
 public sealed class SchemaRegistryRuleContext
 {
+    [ThreadStatic]
+    private static SchemaRegistryRuleContext? t_primary;
+
+    [ThreadStatic]
+    private static SchemaRegistryRuleContext? t_overflow;
+
+    private string _topic = null!;
+    private SerializationComponent _component;
+    private int _schemaId;
+    private string? _subject;
+    private Schema? _schema;
+    private SchemaRegistryPayloadFormat _payloadFormat;
+    private bool _inUse;
+    private SchemaRegistryRuleContext? _next;
+
     /// <summary>
     /// Gets the Kafka topic.
     /// </summary>
-    public required string Topic { get; init; }
+    public required string Topic
+    {
+        get => _topic;
+        init => _topic = value;
+    }
 
     /// <summary>
     /// Gets whether the payload is for the key or value component.
     /// </summary>
-    public required SerializationComponent Component { get; init; }
+    public required SerializationComponent Component
+    {
+        get => _component;
+        init => _component = value;
+    }
 
     /// <summary>
     /// Gets the Schema Registry schema ID from the wire envelope.
     /// </summary>
-    public required int SchemaId { get; init; }
+    public required int SchemaId
+    {
+        get => _schemaId;
+        init => _schemaId = value;
+    }
 
     /// <summary>
     /// Gets the Schema Registry subject when known.
     /// </summary>
-    public string? Subject { get; init; }
+    public string? Subject
+    {
+        get => _subject;
+        init => _subject = value;
+    }
 
     /// <summary>
     /// Gets the Schema Registry schema when available. This can be <see langword="null" />
     /// when a deserializer skips schema validation or when the subject is unknown.
     /// </summary>
-    public Schema? Schema { get; init; }
+    public Schema? Schema
+    {
+        get => _schema;
+        init => _schema = value;
+    }
 
     /// <summary>
     /// Gets the codec payload format.
     /// </summary>
-    public required SchemaRegistryPayloadFormat PayloadFormat { get; init; }
+    public required SchemaRegistryPayloadFormat PayloadFormat
+    {
+        get => _payloadFormat;
+        init => _payloadFormat = value;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static SchemaRegistryRuleContext Rent(
+        string topic,
+        SerializationComponent component,
+        int schemaId,
+        string? subject,
+        Schema? schema,
+        SchemaRegistryPayloadFormat payloadFormat)
+    {
+        var context = t_primary;
+        if (context is null)
+        {
+            context = new SchemaRegistryRuleContext
+            {
+                Topic = topic,
+                Component = component,
+                SchemaId = schemaId,
+                Subject = subject,
+                Schema = schema,
+                PayloadFormat = payloadFormat
+            };
+            context._inUse = true;
+            t_primary = context;
+        }
+        else if (!context._inUse)
+        {
+            context._inUse = true;
+            context.Reset(topic, component, schemaId, subject, schema, payloadFormat);
+        }
+        else
+        {
+            context = t_overflow;
+            if (context is null)
+            {
+                context = new SchemaRegistryRuleContext
+                {
+                    Topic = topic,
+                    Component = component,
+                    SchemaId = schemaId,
+                    Subject = subject,
+                    Schema = schema,
+                    PayloadFormat = payloadFormat
+                };
+            }
+            else
+            {
+                t_overflow = context._next;
+                context._next = null;
+                context.Reset(topic, component, schemaId, subject, schema, payloadFormat);
+            }
+        }
+
+        return context;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void Return()
+    {
+        if (ReferenceEquals(this, t_primary))
+        {
+            _inUse = false;
+            return;
+        }
+
+        _next = t_overflow;
+        t_overflow = this;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void Reset(
+        string topic,
+        SerializationComponent component,
+        int schemaId,
+        string? subject,
+        Schema? schema,
+        SchemaRegistryPayloadFormat payloadFormat)
+    {
+        _topic = topic;
+        _component = component;
+        _schemaId = schemaId;
+        _subject = subject;
+        _schema = schema;
+        _payloadFormat = payloadFormat;
+    }
 }
 
 /// <summary>

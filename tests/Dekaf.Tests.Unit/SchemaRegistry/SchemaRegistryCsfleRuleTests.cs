@@ -202,11 +202,67 @@ public sealed class SchemaRegistryCsfleRuleTests
     }
 
     [Test]
+    public async Task TransformSerializedPayload_CallerOwnedSortedMetadata_ObservesSameCountReplacement()
+    {
+        var ruleTags = new HashSet<string>(StringComparer.Ordinal) { "PII" };
+        var metadataTags = new SortedDictionary<string, IReadOnlySet<string>>(StringComparer.Ordinal)
+        {
+            ["$.ssn"] = new HashSet<string>(StringComparer.Ordinal) { "PII" }
+        };
+        var rule = CreateRule(tags: ruleTags);
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = "{}",
+            Metadata = new SchemaMetadata { Tags = metadataTags },
+            RuleSet = new SchemaRuleSet { DomainRules = [rule] }
+        };
+        var handler = CreateHandler(CreateDekClient());
+        var context = CreateHandlerContext(rule, schema);
+        var payload = """{"name":"Ada","ssn":"123-45-6789"}"""u8.ToArray();
+
+        _ = handler.TransformSerializedPayload(payload, context);
+        metadataTags.Remove("$.ssn");
+        metadataTags["$.name"] = new HashSet<string>(StringComparer.Ordinal) { "PII" };
+
+        var encrypted = handler.TransformSerializedPayload(payload, context);
+
+        using var document = JsonDocument.Parse(encrypted);
+        await Assert.That(document.RootElement.GetProperty("name").GetString()).IsNotEqualTo("Ada");
+        await Assert.That(document.RootElement.GetProperty("ssn").GetString()).IsEqualTo("123-45-6789");
+    }
+
+    [Test]
     public async Task TransformSerializedPayload_UntrackableCallerOwnedTags_FailsClosed()
     {
         var rule = CreateRule(tags: new UntrackableTagSet("PII"));
         var handler = CreateHandler(CreateDekClient());
         var context = CreateHandlerContext(rule, CreateTaggedSchema(rule));
+
+        await Assert.That(() => handler.TransformSerializedPayload("""{"ssn":"secret"}"""u8.ToArray(), context))
+            .Throws<SchemaRegistryRuleException>()
+            .WithMessageContaining("cannot be tracked for mutation");
+    }
+
+    [Test]
+    public async Task TransformSerializedPayload_UntrackableMetadataMap_FailsClosed()
+    {
+        var rule = CreateRule(tags: new HashSet<string>(StringComparer.Ordinal) { "PII" });
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = "{}",
+            Metadata = new SchemaMetadata
+            {
+                Tags = new SortedList<string, IReadOnlySet<string>>(StringComparer.Ordinal)
+                {
+                    ["$.ssn"] = new HashSet<string>(StringComparer.Ordinal) { "PII" }
+                }
+            },
+            RuleSet = new SchemaRuleSet { DomainRules = [rule] }
+        };
+        var handler = CreateHandler(CreateDekClient());
+        var context = CreateHandlerContext(rule, schema);
 
         await Assert.That(() => handler.TransformSerializedPayload("""{"ssn":"secret"}"""u8.ToArray(), context))
             .Throws<SchemaRegistryRuleException>()

@@ -1,3 +1,4 @@
+using System.Buffers;
 using BenchmarkDotNet.Attributes;
 using Dekaf.SchemaRegistry;
 using Dekaf.Serialization;
@@ -266,21 +267,175 @@ public class SchemaRegistryCelFreshContextBenchmarks
             ]
         }
     };
+    private readonly Schema _transformSchema = new()
+    {
+        SchemaType = SchemaType.Json,
+        SchemaString = "{}",
+        RuleSet = new SchemaRuleSet
+        {
+            HasFixedRuleCollections = true,
+            DomainRules =
+            [
+                new SchemaRule
+                {
+                    Name = "fresh-topic-transform",
+                    Kind = SchemaRuleKind.Transform,
+                    Mode = SchemaRuleMode.Write,
+                    Type = "CEL",
+                    Expr = "topic"
+                }
+            ]
+        }
+    };
     private SchemaRegistryRuleContext _context = null!;
+    private SchemaRegistryRuleContext _transformContext = null!;
 
     [IterationSetup]
     public void CreateFreshTopicContext() =>
-        _context = new SchemaRegistryRuleContext
-        {
-            Topic = new string("benchmark-payload".AsSpan()),
-            Component = SerializationComponent.Value,
-            SchemaId = 1,
-            Subject = "benchmark-topic-value",
-            Schema = _schema,
-            PayloadFormat = SchemaRegistryPayloadFormat.Json
-        };
+        (_context, _transformContext) =
+        (
+            new SchemaRegistryRuleContext
+            {
+                Topic = new string("benchmark-payload".AsSpan()),
+                Component = SerializationComponent.Value,
+                SchemaId = 1,
+                Subject = "benchmark-topic-value",
+                Schema = _schema,
+                PayloadFormat = SchemaRegistryPayloadFormat.Json
+            },
+            new SchemaRegistryRuleContext
+            {
+                Topic = new string("benchmark-payload".AsSpan()),
+                Component = SerializationComponent.Value,
+                SchemaId = 1,
+                Subject = "benchmark-topic-value",
+                Schema = _transformSchema,
+                PayloadFormat = SchemaRegistryPayloadFormat.Json
+            }
+        );
 
     [Benchmark]
     public ReadOnlyMemory<byte> ActiveCelConditionWithFreshEqualTopic() =>
         _executor.TransformSerializedPayload(Payload, _context);
+
+    [Benchmark]
+    public ReadOnlyMemory<byte> ActiveCelTransformWithFreshEqualTopic() =>
+        _executor.TransformSerializedPayload(Payload, _transformContext);
+}
+
+/// <summary>
+/// Guards the full custom serializer and deserializer rule-enabled paths against per-message context allocations.
+/// </summary>
+[MemoryDiagnoser]
+[SimpleJob(launchCount: 1, warmupCount: 3, iterationCount: 10)]
+public class SchemaRegistryRuleContextBenchmarks
+{
+    private static readonly byte[] Payload = "benchmark-payload"u8.ToArray();
+    private static readonly Schema BenchmarkSchema = new()
+    {
+        SchemaType = SchemaType.Json,
+        SchemaString = "{}"
+    };
+
+    private ArrayBufferWriter<byte> _destination = new(256);
+    private readonly SerializationContext _context = new()
+    {
+        Topic = "benchmark-topic",
+        Component = SerializationComponent.Value
+    };
+    private ReadOnlyMemory<byte> _encodedPayload;
+    private SchemaRegistryDeserializer<ReadOnlyMemory<byte>> _deserializer = null!;
+    private SchemaRegistrySerializer<byte[]> _serializer = null!;
+
+    [GlobalSetup]
+    public void Setup()
+    {
+        var client = new BenchmarkSchemaRegistryClient();
+        _serializer = new SchemaRegistrySerializer<byte[]>(
+            client,
+            static (value, writer) => writer.Write(value),
+            static () => BenchmarkSchema,
+            ruleExecutor: PassThroughRuleExecutor.Instance);
+        _serializer.Serialize(Payload, ref _destination, _context);
+        _encodedPayload = _destination.WrittenMemory.ToArray();
+        _deserializer = new SchemaRegistryDeserializer<ReadOnlyMemory<byte>>(
+            client,
+            static (payload, _) => payload,
+            ownsClient: false,
+            ruleExecutor: PassThroughRuleExecutor.Instance);
+        _ = _deserializer.Deserialize(_encodedPayload, _context);
+    }
+
+    [Benchmark]
+    public void SerializeWithRuleExecutor()
+    {
+        _destination.ResetWrittenCount();
+        _serializer.Serialize(Payload, ref _destination, _context);
+    }
+
+    [Benchmark]
+    public ReadOnlyMemory<byte> DeserializeWithRuleExecutor() =>
+        _deserializer.Deserialize(_encodedPayload, _context);
+
+    private sealed class PassThroughRuleExecutor : ISchemaRegistryRuleExecutor
+    {
+        public static PassThroughRuleExecutor Instance { get; } = new();
+
+        public ReadOnlyMemory<byte> TransformSerializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleContext context) => payload;
+
+        public ReadOnlyMemory<byte> TransformDeserializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleContext context) => payload;
+    }
+
+    private sealed class BenchmarkSchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistryCache
+    {
+        public bool TryGetCachedSchema(int id, out Schema schema)
+        {
+            schema = BenchmarkSchema;
+            return true;
+        }
+
+        public Task<int> RegisterSchemaAsync(
+            string subject,
+            Schema schema,
+            CancellationToken cancellationToken = default) => Task.FromResult(1);
+
+        public Task<Schema> GetSchemaAsync(int id, CancellationToken cancellationToken = default) =>
+            Task.FromResult(BenchmarkSchema);
+
+        public Task<RegisteredSchema> GetSchemaBySubjectAsync(
+            string subject,
+            string version = "latest",
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task<int> GetOrRegisterSchemaAsync(
+            string subject,
+            Schema schema,
+            CancellationToken cancellationToken = default) => Task.FromResult(1);
+
+        public Task<IReadOnlyList<string>> GetAllSubjectsAsync(CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<IReadOnlyList<int>> GetVersionsAsync(
+            string subject,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task<bool> IsCompatibleAsync(
+            string subject,
+            Schema schema,
+            string version = "latest",
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task<IReadOnlyList<int>> DeleteSubjectAsync(
+            string subject,
+            bool permanent = false,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public void Dispose()
+        {
+        }
+    }
 }

@@ -216,6 +216,25 @@ public sealed class SchemaRegistryCelRuleTests
         await Assert.That(result.ToArray()).IsEquivalentTo(payload);
     }
 
+    [Test]
+    public async Task Utf8Transform_ReusesFreshEqualContextStringByContent()
+    {
+        var executor = new SchemaRegistryRuleExecutor([new CelSchemaRegistryRuleHandler()]);
+        var schema = CreateSchema(CreateCelRule(
+            "fresh-context-transform",
+            SchemaRuleKind.Transform,
+            SchemaRuleMode.Write,
+            "topic"));
+        var payload = "payload"u8.ToArray();
+
+        _ = executor.TransformSerializedPayload(payload, CreateContext(schema, new string("payload".AsSpan())));
+        var result = executor.TransformSerializedPayload(
+            payload,
+            CreateContext(schema, new string("payload".AsSpan())));
+
+        await Assert.That(result.ToArray()).IsEquivalentTo(payload);
+    }
+
     private static SchemaRegistryRuleContext CreateContext(Schema schema, string topic = "orders") =>
         new()
         {

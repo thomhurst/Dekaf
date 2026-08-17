@@ -129,17 +129,21 @@ public sealed class ProtobufSchemaRegistrySerializer<
         ReadOnlyMemory<byte> transformedPayload = default;
         if (_config.RuleExecutor is not null)
         {
-            transformedPayload = _config.RuleExecutor.TransformSerializedPayload(
-                value.ToByteArray(),
-                new SchemaRegistryRuleContext
-                {
-                    Topic = context.Topic,
-                    Component = context.Component,
-                    SchemaId = schemaId,
-                    Subject = schemaEntry.Subject,
-                    Schema = schemaEntry.Schema,
-                    PayloadFormat = SchemaRegistryPayloadFormat.Protobuf
-                });
+            var ruleContext = SchemaRegistryRuleContext.Rent(
+                context.Topic,
+                context.Component,
+                schemaId,
+                schemaEntry.Subject,
+                schemaEntry.Schema,
+                SchemaRegistryPayloadFormat.Protobuf);
+            try
+            {
+                transformedPayload = _config.RuleExecutor.TransformSerializedPayload(value.ToByteArray(), ruleContext);
+            }
+            finally
+            {
+                ruleContext.Return();
+            }
         }
 
         // Total size: magic byte + schema ID + indexes + message

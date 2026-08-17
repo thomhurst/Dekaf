@@ -17,7 +17,6 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleHandler
 {
     private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
     private static readonly ConditionalWeakTable<SchemaRule, ParsedCelExpression> ParsedExpressions = new();
-    private static readonly ConditionalWeakTable<string, byte[]> TransformUtf8Values = new();
 
     [ThreadStatic]
     private static Utf8TextCache? t_utf8Values;
@@ -618,7 +617,7 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleHandler
     private static ReadOnlyMemory<byte> GetUtf8Memory(CelValue value) =>
         value.Kind == CelValueKind.Utf8String
             ? value.Utf8
-            : TransformUtf8Values.GetValue(value.String, static text => StrictUtf8.GetBytes(text));
+            : (t_utf8Values ??= new Utf8TextCache()).GetMemory(value.String);
 
     private static ReadOnlySpan<byte> GetUtf8Span(CelValue value)
     {
@@ -661,6 +660,32 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleHandler
             _lengths[slot] = StrictUtf8.GetBytes(text, buffer);
             _texts[slot] = text;
             return buffer.AsSpan(0, _lengths[slot]);
+        }
+
+        public ReadOnlyMemory<byte> GetMemory(string text)
+        {
+            for (var index = 0; index < _count; index++)
+            {
+                var cached = _texts[index];
+                if (ReferenceEquals(cached, text) || string.Equals(cached, text, StringComparison.Ordinal))
+                {
+                    _texts[index] = text;
+                    return _buffers[index].AsMemory(0, _lengths[index]);
+                }
+            }
+
+            var slot = _count < Capacity ? _count++ : _next++ & (Capacity - 1);
+            var byteCount = StrictUtf8.GetByteCount(text);
+            var buffer = _buffers[slot];
+            if (buffer is null || buffer.Length < byteCount)
+            {
+                buffer = GC.AllocateUninitializedArray<byte>(Math.Max(byteCount, 256));
+                _buffers[slot] = buffer;
+            }
+
+            _lengths[slot] = StrictUtf8.GetBytes(text, buffer);
+            _texts[slot] = text;
+            return buffer.AsMemory(0, _lengths[slot]);
         }
     }
 

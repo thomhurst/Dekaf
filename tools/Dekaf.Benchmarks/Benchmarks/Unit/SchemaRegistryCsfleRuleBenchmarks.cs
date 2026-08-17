@@ -66,7 +66,7 @@ public class SchemaRegistryCsfleRuleBenchmarks
                 sortedTaggedRule,
                 new SchemaMetadata
                 {
-                    Tags = new Dictionary<string, IReadOnlySet<string>>(StringComparer.Ordinal)
+                    Tags = new SortedDictionary<string, IReadOnlySet<string>>(StringComparer.Ordinal)
                     {
                         ["$.ssn"] = new SortedSet<string>(StringComparer.Ordinal) { "PII" }
                     }

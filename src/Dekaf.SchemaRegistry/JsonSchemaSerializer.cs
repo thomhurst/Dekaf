@@ -457,27 +457,32 @@ public sealed class JsonSchemaRegistrySerializer<T> :
         }
         else
         {
-            var ruleContext = new SchemaRegistryRuleContext
+            var ruleContext = SchemaRegistryRuleContext.Rent(
+                context.Topic,
+                context.Component,
+                schemaId,
+                schemaEntry.Subject,
+                schemaEntry.Schema,
+                SchemaRegistryPayloadFormat.Json);
+            try
             {
-                Topic = context.Topic,
-                Component = context.Component,
-                SchemaId = schemaId,
-                Subject = schemaEntry.Subject,
-                Schema = schemaEntry.Schema,
-                PayloadFormat = SchemaRegistryPayloadFormat.Json
-            };
-            if (_ruleExecutor is SchemaRegistryRuleExecutor builtInRuleExecutor && validator is not null)
-            {
-                payload = builtInRuleExecutor.TransformSerializedPayload(
-                    payload,
-                    ruleContext,
-                    validator,
-                    schemaId);
+                if (_ruleExecutor is SchemaRegistryRuleExecutor builtInRuleExecutor && validator is not null)
+                {
+                    payload = builtInRuleExecutor.TransformSerializedPayload(
+                        payload,
+                        ruleContext,
+                        validator,
+                        schemaId);
+                }
+                else
+                {
+                    validator?.Validate(payload.Span, schemaId);
+                    payload = _ruleExecutor.TransformSerializedPayload(payload, ruleContext);
+                }
             }
-            else
+            finally
             {
-                validator?.Validate(payload.Span, schemaId);
-                payload = _ruleExecutor.TransformSerializedPayload(payload, ruleContext);
+                ruleContext.Return();
             }
         }
 
@@ -829,17 +834,21 @@ public sealed class JsonSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
         var payload = data.Slice(5);
         if (_ruleExecutor is not null)
         {
-            payload = _ruleExecutor.TransformDeserializedPayload(
-                payload,
-                new SchemaRegistryRuleContext
-                {
-                    Topic = context.Topic,
-                    Component = context.Component,
-                    SchemaId = schemaId,
-                    Subject = GetSubjectName(schemaId, schema, context),
-                    Schema = schema,
-                    PayloadFormat = SchemaRegistryPayloadFormat.Json
-                });
+            var ruleContext = SchemaRegistryRuleContext.Rent(
+                context.Topic,
+                context.Component,
+                schemaId,
+                GetSubjectName(schemaId, schema, context),
+                schema,
+                SchemaRegistryPayloadFormat.Json);
+            try
+            {
+                payload = _ruleExecutor.TransformDeserializedPayload(payload, ruleContext);
+            }
+            finally
+            {
+                ruleContext.Return();
+            }
         }
 
         if (_validatorFactory is not null)

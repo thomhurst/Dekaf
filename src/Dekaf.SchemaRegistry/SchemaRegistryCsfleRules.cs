@@ -1561,6 +1561,8 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
         private TaggedJsonPlan _plan;
         private int _metadataCount;
         private int _metadataVersion;
+        private SortedDictionary<string, IReadOnlySet<string>>.Enumerator _sortedMetadataVersion;
+        private MetadataTagsKind _metadataKind;
 
         public MutableTaggedJsonPlan(SchemaMetadata metadata, SchemaRule rule)
         {
@@ -1590,18 +1592,70 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
         private bool IsCurrent()
         {
             var tags = _metadata.Tags!;
-            return tags.Count == _metadataCount
-                && (tags is not Dictionary<string, IReadOnlySet<string>> metadata
-                    || Volatile.Read(ref GetMetadataVersion(metadata)) == _metadataVersion);
+            if (tags.Count != _metadataCount)
+                return false;
+
+            return _metadataKind switch
+            {
+                MetadataTagsKind.Dictionary =>
+                    tags is Dictionary<string, IReadOnlySet<string>> dictionary
+                    && Volatile.Read(ref GetMetadataVersion(dictionary)) == _metadataVersion,
+                MetadataTagsKind.SortedDictionary =>
+                    tags is SortedDictionary<string, IReadOnlySet<string>> && SortedMetadataIsCurrent(),
+                MetadataTagsKind.Immutable =>
+                    tags is FrozenDictionary<string, IReadOnlySet<string>>
+                        or IImmutableDictionary<string, IReadOnlySet<string>>,
+                _ => false
+            };
         }
 
         private void CaptureVersions()
         {
             var tags = _metadata.Tags!;
             _metadataCount = tags.Count;
-            if (tags is Dictionary<string, IReadOnlySet<string>> metadata)
-                _metadataVersion = Volatile.Read(ref GetMetadataVersion(metadata));
+            switch (tags)
+            {
+                case Dictionary<string, IReadOnlySet<string>> dictionary:
+                    _metadataKind = MetadataTagsKind.Dictionary;
+                    _metadataVersion = Volatile.Read(ref GetMetadataVersion(dictionary));
+                    break;
+                case SortedDictionary<string, IReadOnlySet<string>> sortedDictionary:
+                    _metadataKind = MetadataTagsKind.SortedDictionary;
+                    _sortedMetadataVersion = sortedDictionary.GetEnumerator();
+                    while (_sortedMetadataVersion.MoveNext())
+                    {
+                    }
+                    break;
+                case FrozenDictionary<string, IReadOnlySet<string>> or
+                    IImmutableDictionary<string, IReadOnlySet<string>>:
+                    _metadataKind = MetadataTagsKind.Immutable;
+                    break;
+                default:
+                    throw new SchemaRegistryRuleException(
+                        $"Caller-owned CSFLE metadata tag map type '{tags.GetType().FullName}' cannot be tracked for mutation without a per-message scan. " +
+                        "Use Dictionary<string, IReadOnlySet<string>>, SortedDictionary<string, IReadOnlySet<string>>, " +
+                        "FrozenDictionary<string, IReadOnlySet<string>>, or IImmutableDictionary<string, IReadOnlySet<string>>.");
+            }
         }
+
+        private bool SortedMetadataIsCurrent()
+        {
+            try
+            {
+                return !_sortedMetadataVersion.MoveNext();
+            }
+            catch (InvalidOperationException)
+            {
+                return false;
+            }
+        }
+    }
+
+    private enum MetadataTagsKind : byte
+    {
+        Dictionary,
+        SortedDictionary,
+        Immutable
     }
 
     private sealed class JsonPathNode

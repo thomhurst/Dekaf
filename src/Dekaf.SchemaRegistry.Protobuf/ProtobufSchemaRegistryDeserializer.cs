@@ -96,17 +96,21 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IA
         var protobufData = payloadMemory.Slice(bytesRead);
         if (_config.RuleExecutor is not null)
         {
-            protobufData = _config.RuleExecutor.TransformDeserializedPayload(
-                protobufData,
-                new SchemaRegistryRuleContext
-                {
-                    Topic = context.Topic,
-                    Component = context.Component,
-                    SchemaId = schemaId,
-                    Subject = GetSubjectName(schemaId, schema, context),
-                    Schema = schema,
-                    PayloadFormat = SchemaRegistryPayloadFormat.Protobuf
-                });
+            var ruleContext = SchemaRegistryRuleContext.Rent(
+                context.Topic,
+                context.Component,
+                schemaId,
+                GetSubjectName(schemaId, schema, context),
+                schema,
+                SchemaRegistryPayloadFormat.Protobuf);
+            try
+            {
+                protobufData = _config.RuleExecutor.TransformDeserializedPayload(protobufData, ruleContext);
+            }
+            finally
+            {
+                ruleContext.Return();
+            }
         }
 
         // Parse directly from span — zero allocation (Google.Protobuf 3.21+).

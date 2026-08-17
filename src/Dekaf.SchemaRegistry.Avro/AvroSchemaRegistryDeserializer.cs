@@ -126,17 +126,21 @@ public sealed class AvroSchemaRegistryDeserializer<
         if (_config.RuleExecutor is not null)
         {
             var schema = _schemaRegistry.GetSchemaSync(schemaId, SchemaRegistryTimeout);
-            payloadMemory = _config.RuleExecutor.TransformDeserializedPayload(
-                payloadMemory,
-                new SchemaRegistryRuleContext
-                {
-                    Topic = context.Topic,
-                    Component = context.Component,
-                    SchemaId = schemaId,
-                    Subject = GetSubjectName(schemaId, schema, context),
-                    Schema = schema,
-                    PayloadFormat = SchemaRegistryPayloadFormat.Avro
-                });
+            var ruleContext = SchemaRegistryRuleContext.Rent(
+                context.Topic,
+                context.Component,
+                schemaId,
+                GetSubjectName(schemaId, schema, context),
+                schema,
+                SchemaRegistryPayloadFormat.Avro);
+            try
+            {
+                payloadMemory = _config.RuleExecutor.TransformDeserializedPayload(payloadMemory, ruleContext);
+            }
+            finally
+            {
+                ruleContext.Return();
+            }
         }
 
         var codecState = AvroCodecThreadStateCache.Deserialization ??= new AvroDeserializationThreadState();

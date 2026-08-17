@@ -253,17 +253,21 @@ public sealed class SchemaRegistrySerializer<T> :
         var payload = payloadBuffer.WrittenMemory;
         if (_ruleExecutor is not null)
         {
-            payload = _ruleExecutor.TransformSerializedPayload(
-                payload,
-                new SchemaRegistryRuleContext
-                {
-                    Topic = context.Topic,
-                    Component = context.Component,
-                    SchemaId = schemaId,
-                    Subject = schemaEntry.Subject,
-                    Schema = schemaEntry.Schema,
-                    PayloadFormat = SchemaRegistryPayloadFormat.Custom
-                });
+            var ruleContext = SchemaRegistryRuleContext.Rent(
+                context.Topic,
+                context.Component,
+                schemaId,
+                schemaEntry.Subject,
+                schemaEntry.Schema,
+                SchemaRegistryPayloadFormat.Custom);
+            try
+            {
+                payload = _ruleExecutor.TransformSerializedPayload(payload, ruleContext);
+            }
+            finally
+            {
+                ruleContext.Return();
+            }
         }
 
         // Write wire format: [0x00] [schema ID] [payload]
@@ -831,17 +835,21 @@ public sealed class SchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisp
         var payload = data.Slice(5);
         if (_ruleExecutor is not null)
         {
-            payload = _ruleExecutor.TransformDeserializedPayload(
-                payload,
-                new SchemaRegistryRuleContext
-                {
-                    Topic = context.Topic,
-                    Component = context.Component,
-                    SchemaId = schemaId,
-                    Subject = GetSubjectName(schemaId, schema, context),
-                    Schema = schema,
-                    PayloadFormat = SchemaRegistryPayloadFormat.Custom
-                });
+            var ruleContext = SchemaRegistryRuleContext.Rent(
+                context.Topic,
+                context.Component,
+                schemaId,
+                GetSubjectName(schemaId, schema, context),
+                schema,
+                SchemaRegistryPayloadFormat.Custom);
+            try
+            {
+                payload = _ruleExecutor.TransformDeserializedPayload(payload, ruleContext);
+            }
+            finally
+            {
+                ruleContext.Return();
+            }
         }
 
         return _deserialize(payload, schema);

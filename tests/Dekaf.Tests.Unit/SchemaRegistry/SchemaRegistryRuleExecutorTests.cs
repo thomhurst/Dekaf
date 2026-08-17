@@ -7,6 +7,50 @@ namespace Dekaf.Tests.Unit.SchemaRegistry;
 public sealed class SchemaRegistryRuleExecutorTests
 {
     [Test]
+    public async Task RuleContextPool_ReusesPrimaryContext_AfterNestedRental()
+    {
+        var primary = SchemaRegistryRuleContext.Rent(
+            "primary",
+            SerializationComponent.Key,
+            1,
+            "primary-key",
+            null,
+            SchemaRegistryPayloadFormat.Custom);
+        var overflow = SchemaRegistryRuleContext.Rent(
+            "overflow",
+            SerializationComponent.Value,
+            2,
+            "overflow-value",
+            null,
+            SchemaRegistryPayloadFormat.Json);
+
+        overflow.Return();
+        primary.Return();
+
+        var reused = SchemaRegistryRuleContext.Rent(
+            "reused",
+            SerializationComponent.Value,
+            3,
+            "reused-value",
+            null,
+            SchemaRegistryPayloadFormat.Avro);
+        var reusedPrimary = ReferenceEquals(primary, reused);
+        var topic = reused.Topic;
+        var component = reused.Component;
+        var schemaId = reused.SchemaId;
+        var subject = reused.Subject;
+        var payloadFormat = reused.PayloadFormat;
+        reused.Return();
+
+        await Assert.That(reusedPrimary).IsTrue();
+        await Assert.That(topic).IsEqualTo("reused");
+        await Assert.That(component).IsEqualTo(SerializationComponent.Value);
+        await Assert.That(schemaId).IsEqualTo(3);
+        await Assert.That(subject).IsEqualTo("reused-value");
+        await Assert.That(payloadFormat).IsEqualTo(SchemaRegistryPayloadFormat.Avro);
+    }
+
+    [Test]
     public async Task TransformSerializedPayload_AppliesDomainBeforeEncodingRules()
     {
         var calls = new List<string>();
