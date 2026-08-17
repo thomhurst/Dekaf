@@ -426,7 +426,7 @@ public readonly record struct Header
                     segment.Count);
             }
 
-            return Encoding.UTF8.GetString(_value.ToArray());
+            return GetUtf8String(_value.Span);
 #else
             return Encoding.UTF8.GetString(_value.Span);
 #endif
@@ -435,7 +435,7 @@ public readonly record struct Header
         Span<byte> value = stackalloc byte[TraceparentLength];
         WriteTraceparentUnchecked(_deferredValue, value);
 #if NETSTANDARD2_0
-        return Encoding.UTF8.GetString(value.ToArray());
+        return GetUtf8String(value);
 #else
         return Encoding.UTF8.GetString(value);
 #endif
@@ -450,6 +450,19 @@ public readonly record struct Header
 
     internal static void ConfigureDeferredTraceparentWriter(DeferredTraceparentWriter writer) =>
         s_deferredTraceparentWriter = writer;
+
+#if NETSTANDARD2_0
+    private static unsafe string GetUtf8String(ReadOnlySpan<byte> value)
+    {
+        if (value.IsEmpty)
+            return string.Empty;
+
+        fixed (byte* valuePointer = value)
+        {
+            return Encoding.UTF8.GetString(valuePointer, value.Length);
+        }
+    }
+#endif
 
     private static byte[] EncodeTraceparent(object activity)
     {

@@ -91,6 +91,29 @@ public class HeaderRecordStructTests
     }
 
     [Test]
+    public async Task GetValueAsString_MemoryManagerSlice_ReturnsSlice()
+    {
+        var bytes = "xxhéllo 世界yy"u8.ToArray();
+        using var manager = new NonArrayMemoryManager(bytes);
+        var header = new Header("key", manager.Memory.Slice(2, bytes.Length - 4));
+
+        var result = header.GetValueAsString();
+
+        await Assert.That(result).IsEqualTo("héllo 世界");
+    }
+
+    [Test]
+    public async Task GetValueAsString_EmptyMemoryManager_ReturnsEmptyString()
+    {
+        using var manager = new NonArrayMemoryManager([]);
+        var header = new Header("key", manager.Memory);
+
+        var result = header.GetValueAsString();
+
+        await Assert.That(result).IsEmpty();
+    }
+
+    [Test]
     public async Task GetValueAsString_Null_ReturnsNull()
     {
         var header = new Header("key", (byte[]?)null);
@@ -161,5 +184,21 @@ public class HeaderRecordStructTests
 
         var reader = new KafkaProtocolReader(buffer.WrittenMemory);
         return HeaderProtocol.Read(ref reader);
+    }
+
+    private sealed class NonArrayMemoryManager(byte[] bytes) : MemoryManager<byte>
+    {
+        public override Span<byte> GetSpan() => bytes;
+
+        public override MemoryHandle Pin(int elementIndex = 0) =>
+            throw new NotSupportedException();
+
+        public override void Unpin()
+        {
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+        }
     }
 }
