@@ -577,7 +577,7 @@ public sealed class JsonSchemaRegistrySerializer<T> :
             .ConfigureAwait(false);
         return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(
             registered.Id,
-            _validatorFactory is null ? schema : registered.Schema);
+            registered.Schema);
     }
 
     private static ResolvedSchemaContext ToResolvedContext(

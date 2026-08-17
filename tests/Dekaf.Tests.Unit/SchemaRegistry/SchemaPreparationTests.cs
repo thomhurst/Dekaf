@@ -195,6 +195,27 @@ public sealed class SchemaPreparationTests
     }
 
     [Test]
+    public async Task Json_PrepareAsync_LookupReturnsRegisteredSchemaWithoutValidation()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        var registeredSchema = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = """{"type":"object","required":["id"]}"""
+        };
+        var schemaId = await registry.RegisterSchemaAsync("orders-value", registeredSchema);
+        await using var serializer = new JsonSchemaRegistrySerializer<PreparationPayload>(
+            registry,
+            """{"type":"object"}""",
+            autoRegisterSchemas: false);
+
+        var resolved = await serializer.PrepareAsync("orders", new PreparationPayload { Id = 42 });
+
+        await Assert.That(resolved.SchemaId).IsEqualTo(schemaId);
+        await Assert.That(resolved.Schema).IsSameReferenceAs(registeredSchema);
+    }
+
+    [Test]
     public async Task Avro_WarmupAsync_DelegatesToResolvedContext()
     {
         using var registry = new MockSchemaRegistryClient();
