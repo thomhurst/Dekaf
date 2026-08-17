@@ -16,6 +16,11 @@ namespace Dekaf.SchemaRegistry.Protobuf;
 /// <para>
 /// The blocking call includes a timeout to prevent indefinite hangs.
 /// </para>
+/// <para>
+/// Kafka value tombstones return <see langword="default"/> without reading Confluent framing
+/// or contacting Schema Registry. This is <see langword="null"/> for reference and nullable
+/// types; non-nullable value types receive their normal default value.
+/// </para>
 /// </remarks>
 /// <typeparam name="T">The Protobuf message type to deserialize.</typeparam>
 public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisposable
@@ -68,7 +73,12 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IA
         var span = data.Span;
 
         if (span.Length < 5)
+        {
+            if (context is { IsNull: true, Component: SerializationComponent.Value })
+                return default!;
+
             throw new InvalidOperationException("Message too short to contain Schema Registry wire format");
+        }
 
         // Verify magic byte
         if (span[0] != MagicByte)

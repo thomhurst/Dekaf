@@ -27,6 +27,11 @@ namespace Dekaf.SchemaRegistry.Avro;
 /// cached schema without any blocking or async overhead.
 /// </para>
 /// <para>
+/// Kafka value tombstones return <see langword="default"/> without reading Confluent framing
+/// or contacting Schema Registry. This is <see langword="null"/> for reference and nullable
+/// types; non-nullable value types receive their normal default value.
+/// </para>
+/// <para>
 /// For high-throughput scenarios where you know the schema IDs in advance, use
 /// <see cref="WarmupAsync"/> to pre-warm the cache before starting consumption. This ensures
 /// the synchronous <see cref="Deserialize"/> method never blocks on Schema Registry calls.
@@ -130,7 +135,12 @@ public sealed class AvroSchemaRegistryDeserializer<
         var span = data.Span;
 
         if (span.Length < 5)
+        {
+            if (context is { IsNull: true, Component: SerializationComponent.Value })
+                return default!;
+
             throw new InvalidOperationException("Message too short to contain Schema Registry wire format");
+        }
 
         if (span[0] != MagicByte)
             throw new InvalidOperationException($"Unknown magic byte: {span[0]}. Expected Schema Registry format (0x00).");
