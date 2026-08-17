@@ -155,7 +155,7 @@ public class SchemaRegistryPreparationBenchmarks
                     Component = SerializationComponent.Value
                 }).ConfigureAwait(false);
         }
-        _overflowContexts = new SerializationContext[13];
+        _overflowContexts = new SerializationContext[14];
         _overflowContexts[0] = _overflowContextA;
         _overflowContexts[1] = _overflowContextB;
         _overflowContexts[2] = _overflowContextC;
@@ -254,6 +254,13 @@ public class SchemaRegistryPreparationBenchmarks
 
     [Benchmark]
     public ValueTask PrepareGenericThirteenWayAfterSubjectCacheTurnover()
+    {
+        var context = _overflowContexts[_overflowContextIndex++ % 13];
+        return _genericOverflowSerializer.PrepareAsync(42, context);
+    }
+
+    [Benchmark]
+    public ValueTask PrepareGenericFourteenWayAfterSubjectCacheTurnover()
     {
         var context = _overflowContexts[_overflowContextIndex++ % _overflowContexts.Length];
         return _genericOverflowSerializer.PrepareAsync(42, context);

@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using Dekaf.Serialization;
 
 namespace Dekaf.SchemaRegistry;
@@ -427,6 +428,18 @@ public sealed class SchemaRegistrySerializer<T> :
                     return true;
             }
 
+            return TryGetRetainedOverflow(subject, out factorySchema);
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private bool TryGetRetainedOverflow(string subject, out FactorySchema factorySchema)
+        {
+            for (var index = 0; index < TurnoverCapacity; index++)
+            {
+                if (_turnover[index].TryGetRetained(subject, out factorySchema))
+                    return true;
+            }
+
             factorySchema = default;
             return false;
         }
@@ -456,6 +469,9 @@ public sealed class SchemaRegistrySerializer<T> :
                     if (_turnover[index].TryGet(subject, out var cached))
                         return cached;
                 }
+
+                if (TryGetRetainedOverflow(subject, out var retained))
+                    return retained;
 
                 return PublishTurnover(subject, factorySchema);
             }
@@ -549,6 +565,31 @@ public sealed class SchemaRegistrySerializer<T> :
             var activeIndex = Volatile.Read(ref _activeIndex);
             var candidateSubject = activeIndex == 0 ? _firstSubject : _secondSubject;
             var candidateValue = activeIndex == 0 ? _firstValue : _secondValue;
+            if (activeIndex != Volatile.Read(ref _activeIndex)
+                || version != Volatile.Read(ref _version)
+                || !string.Equals(candidateSubject, subject, StringComparison.Ordinal))
+            {
+                value = default;
+                return false;
+            }
+
+            value = candidateValue;
+            return true;
+        }
+
+        internal bool TryGetRetained(string subject, out FactorySchema value)
+        {
+            var version = Volatile.Read(ref _version);
+            if (version == 0 || (version & 1) != 0)
+            {
+                value = default;
+                return false;
+            }
+
+            var activeIndex = Volatile.Read(ref _activeIndex);
+            var retainedIndex = activeIndex ^ 1;
+            var candidateSubject = retainedIndex == 0 ? _firstSubject : _secondSubject;
+            var candidateValue = retainedIndex == 0 ? _firstValue : _secondValue;
             if (activeIndex != Volatile.Read(ref _activeIndex)
                 || version != Volatile.Read(ref _version)
                 || !string.Equals(candidateSubject, subject, StringComparison.Ordinal))

@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 
 namespace Dekaf.SchemaRegistry;
 
@@ -6,6 +7,7 @@ internal sealed class SubjectSchemaIdCache
 {
     internal const int FixedOverflowCapacity = 9;
     internal const int TurnoverCapacity = 4;
+    internal const int TurnoverRetentionCapacity = TurnoverCapacity * 2;
 
     // Match CachingStringDeserializer: fixed topic sets stay cached,
     // dynamic topic names cannot grow without bound.
@@ -169,6 +171,21 @@ internal sealed class SubjectSchemaIdCache
                 return true;
         }
 
+        return TryGetRetained(key, hashCode, out entry);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private bool TryGetRetained(
+        in SubjectSchemaIdCacheKey key,
+        int hashCode,
+        out SubjectSchemaIdCacheEntry entry)
+    {
+        for (var index = 0; index < TurnoverCapacity; index++)
+        {
+            if (_turnover[index].TryGetRetained(key, hashCode, out entry))
+                return true;
+        }
+
         entry = default;
         return false;
     }
@@ -232,6 +249,9 @@ internal sealed class SubjectSchemaIdCache
                 if (_turnover[index].TryGet(entry.Key, hashCode, out cached))
                     return cached;
             }
+
+            if (TryGetRetained(entry.Key, hashCode, out cached))
+                return cached;
 
             return PublishTurnover(entry, hashCode);
         }
@@ -368,6 +388,40 @@ internal sealed class SubjectSchemaIdCache
             }
 
             var candidate = activeIndex == 0 ? _firstValue : _secondValue;
+            if (activeIndex != Volatile.Read(ref _activeIndex)
+                || version != Volatile.Read(ref _version)
+                || !candidate.Key.Equals(key))
+            {
+                value = default;
+                return false;
+            }
+
+            value = candidate;
+            return true;
+        }
+
+        internal bool TryGetRetained(
+            in SubjectSchemaIdCacheKey key,
+            int hashCode,
+            out SubjectSchemaIdCacheEntry value)
+        {
+            var version = Volatile.Read(ref _version);
+            if (version == 0 || (version & 1) != 0)
+            {
+                value = default;
+                return false;
+            }
+
+            var activeIndex = Volatile.Read(ref _activeIndex);
+            var retainedIndex = activeIndex ^ 1;
+            var candidateHashCode = retainedIndex == 0 ? _firstHashCode : _secondHashCode;
+            if (candidateHashCode != hashCode)
+            {
+                value = default;
+                return false;
+            }
+
+            var candidate = retainedIndex == 0 ? _firstValue : _secondValue;
             if (activeIndex != Volatile.Read(ref _activeIndex)
                 || version != Volatile.Read(ref _version)
                 || !candidate.Key.Equals(key))

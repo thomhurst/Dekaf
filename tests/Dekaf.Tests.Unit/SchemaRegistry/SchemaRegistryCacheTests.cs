@@ -162,7 +162,7 @@ public sealed class SchemaRegistryCacheTests
 
         const int extraEntries = 2;
         var overflowEntryCount = SubjectSchemaIdCache.FixedOverflowCapacity
-            + SubjectSchemaIdCache.TurnoverCapacity
+            + SubjectSchemaIdCache.TurnoverRetentionCapacity
             + extraEntries;
         for (var i = 0; i < SubjectSchemaIdCache.MaxCachedEntries + overflowEntryCount; i++)
         {
