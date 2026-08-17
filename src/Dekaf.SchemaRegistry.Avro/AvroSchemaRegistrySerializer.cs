@@ -536,17 +536,24 @@ public sealed class AvroSchemaRegistrySerializer<
         if (last is not null &&
             AvroSchemaLogicalComparer.Instance.Equals(last.Key.Schema, schema))
         {
+            IndexOverflowSchemaIdentity(last, schema);
             return PublishLastDynamicSchemaCache(last, schema);
         }
         if (previous is not null && AvroSchemaLogicalComparer.Instance.Equals(previous.Key.Schema, schema))
+        {
+            IndexOverflowSchemaIdentity(previous, schema);
             return PublishOverflowDynamicSchemaCache(previous, schema);
+        }
 
         var key = DynamicSchemaKey.Create(schema);
         if (_dynamicSchemaCaches.TryGetValue(key, out var logicalEntry))
             return PublishStrongDynamicSchemaCache(logicalEntry, schema);
 
         if (_overflowDynamicSchemaCaches.TryGetValue(key, out var overflowEntry))
+        {
+            IndexOverflowSchemaIdentity(overflowEntry, schema);
             return PublishOverflowDynamicSchemaCache(overflowEntry, schema);
+        }
 
         return AddDynamicSchemaCache(schema, key);
     }
@@ -562,7 +569,10 @@ public sealed class AvroSchemaRegistrySerializer<
                 return PublishStrongDynamicSchemaCache(existingLogicalEntry, schema);
 
             if (_overflowDynamicSchemaCaches.TryGetValue(key, out var existingOverflowEntry))
+            {
+                IndexOverflowSchemaIdentity(existingOverflowEntry, schema);
                 return PublishOverflowDynamicSchemaCache(existingOverflowEntry, schema);
+            }
 
             if (_dynamicSchemaCacheCount < _maxCachedSchemas)
             {
@@ -649,6 +659,12 @@ public sealed class AvroSchemaRegistrySerializer<
                 Volatile.Read(ref previous.LastSeenSchema),
                 previous);
         }
+    }
+
+    private void IndexOverflowSchemaIdentity(DynamicSchemaCache entry, AvroSchema schema)
+    {
+        if (!entry.IsStrong)
+            _weakDynamicSchemaCaches.TryAdd(schema, entry);
     }
 
     private sealed class DynamicSchemaCache

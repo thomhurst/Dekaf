@@ -483,10 +483,10 @@ equivalent to an existing schema; safely proving that equivalence requires a str
 or comparison. Parse and cache schemas during startup or producer setup instead of constructing a
 new runtime schema for every message.
 
-Weak exact-identity tracking is also bounded. If more than two live, logically equivalent overflow
-schema objects rotate through one cache entry before eviction, replaying an intermediate object after
-both logical-cache and hot-set eviction can require one cold writer and schema-resolution rebuild.
-Avoiding that rare rebuild would require per-identity association allocations.
+Each first-seen overflow schema identity gets a weak association with its logical cache entry. This
+adds metadata only on the cold first-seen path, does not retain the schema object, and lets any live
+equivalent instance reuse its writer after logical-cache and hot-set eviction. Repeated use of an
+observed schema identity remains allocation-free.
 
 ## Subject Naming Strategies
 

@@ -644,6 +644,42 @@ public sealed class SubjectNameStrategyTests
     }
 
     [Test]
+    public async Task AvroSerializer_IntermediateOverflowIdentity_ReusesWriterAfterEviction()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        var config = new AvroSerializerConfig { MaxCachedSchemas = 1 };
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry, config);
+        var context = CreateContext("intermediate-overflow-topic");
+        var buffer = new ArrayBufferWriter<byte>();
+        var retained = RuntimeGenericRecord.Create("RetainedIntermediateOverflowRecord", 0);
+        var first = RuntimeGenericRecord.Create("IntermediateOverflowRecord", 1);
+        var intermediate = RuntimeGenericRecord.Create("IntermediateOverflowRecord", 2);
+        var last = RuntimeGenericRecord.Create("IntermediateOverflowRecord", 3);
+
+        serializer.Serialize(retained, ref buffer, context);
+        buffer.ResetWrittenCount();
+        serializer.Serialize(first, ref buffer, context);
+        buffer.ResetWrittenCount();
+        serializer.Serialize(intermediate, ref buffer, context);
+        buffer.ResetWrittenCount();
+        serializer.Serialize(last, ref buffer, context);
+
+        for (var i = 0; i < 3; i++)
+        {
+            buffer.ResetWrittenCount();
+            serializer.Serialize(RuntimeGenericRecord.Create($"IntermediateOverflowEviction{i}", i), ref buffer, context);
+        }
+
+        buffer.ResetWrittenCount();
+        var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+        serializer.Serialize(intermediate, ref buffer, context);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+
+        await Assert.That(allocated).IsEqualTo(0);
+        await Assert.That(schemaRegistry.GetOrRegisterSchemaCallCount).IsEqualTo(5);
+    }
+
+    [Test]
     public async Task AvroSerializer_ThreeRotatingOverflowSchemas_ReuseSubjectCaches()
     {
         using var schemaRegistry = new MockSchemaRegistryClient();
