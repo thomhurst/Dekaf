@@ -371,7 +371,7 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
             if (!elementType.IsValueType)
                 elementType = null;
         }
-        else if (itemSchema.Tag is global::Avro.Schema.Type.Logical)
+        else
         {
             var cache = Volatile.Read(ref _lastValueTypeListElement);
             if (cache is null || !ReferenceEquals(cache.ListType, listType))
