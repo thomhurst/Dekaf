@@ -33,6 +33,12 @@ internal static class AotSmoke
         Component = SerializationComponent.Value
     };
 
+    private static readonly SerializationContext PocoValueContext = new()
+    {
+        Topic = "aot-poco-topic",
+        Component = SerializationComponent.Value
+    };
+
     public static async Task RunAsync()
     {
         RunCompressionSmoke();
@@ -212,10 +218,10 @@ internal static class AotSmoke
         var poco = new AotAvroPoco { Id = 12, Name = "poco", Amount = 34.56m };
         var pocoBuffer = new ArrayBufferWriter<byte>();
 
-        await pocoSerializer.WarmupAsync(ValueContext.Topic);
-        pocoSerializer.Serialize(poco, ref pocoBuffer, ValueContext);
+        await pocoSerializer.WarmupAsync(PocoValueContext.Topic);
+        pocoSerializer.Serialize(poco, ref pocoBuffer, PocoValueContext);
 
-        var pocoRoundTrip = pocoDeserializer.Deserialize(pocoBuffer.WrittenMemory, ValueContext);
+        var pocoRoundTrip = pocoDeserializer.Deserialize(pocoBuffer.WrittenMemory, PocoValueContext);
         Require(pocoRoundTrip.Id == poco.Id, "POCO Avro Schema Registry ID mismatch.");
         Require(pocoRoundTrip.Name == poco.Name, "POCO Avro Schema Registry name mismatch.");
         Require(pocoRoundTrip.Amount == poco.Amount, "POCO Avro Schema Registry decimal mismatch.");

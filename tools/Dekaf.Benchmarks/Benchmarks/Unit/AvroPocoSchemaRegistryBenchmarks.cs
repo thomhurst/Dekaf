@@ -305,6 +305,43 @@ public sealed partial class PocoBenchmarkRecord
     public required string Name { get; init; }
 }
 
+/// <summary>Guards stable large generated POCO payloads against repeated sizing traversals.</summary>
+[MemoryDiagnoser(displayGenColumns: false)]
+public class AvroPocoLargePayloadSerializationBenchmarks
+{
+    private const int PayloadLength = 1024 * 1024 + 1;
+    private readonly SerializationContext _context = new()
+    {
+        Topic = "avro-poco-large",
+        Component = SerializationComponent.Value
+    };
+    private AvroPocoSchemaRegistrySerializer<PocoLargeBenchmarkRecord, PocoLargeBenchmarkRecord.AvroCodec>
+        _serializer = null!;
+    private PocoLargeBenchmarkRecord _value = null!;
+    private ArrayBufferWriter<byte> _buffer = null!;
+
+    [GlobalSetup]
+    public void Setup()
+    {
+        _serializer = PocoLargeBenchmarkRecord.CreateAvroSerializer(
+            new AvroSchemaRegistrySerializerBenchmarks.BenchmarkSchemaRegistryClient());
+        _value = new PocoLargeBenchmarkRecord { Values = new int[PayloadLength] };
+        _buffer = new ArrayBufferWriter<byte>(PayloadLength + 16);
+        _serializer.Serialize(_value, ref _buffer, _context);
+        _buffer.Clear();
+    }
+
+    [GlobalCleanup]
+    public async ValueTask Cleanup() => await _serializer.DisposeAsync().ConfigureAwait(false);
+
+    [Benchmark]
+    public void SerializeLargePayload()
+    {
+        _buffer.Clear();
+        _serializer.Serialize(_value, ref _buffer, _context);
+    }
+}
+
 [AvroRecord(Name = "PocoBenchmarkDecimalRecord", Namespace = "Dekaf.Benchmarks.Benchmarks.Unit")]
 public sealed partial class PocoBenchmarkDecimalRecord
 {
@@ -369,6 +406,12 @@ public sealed partial class RepresentativePocoRecord
 public sealed partial class RepresentativePocoAddress
 {
     public required string City { get; init; }
+}
+
+[AvroRecord(Name = "PocoLargeBenchmarkRecord", Namespace = "Dekaf.Benchmarks")]
+public sealed partial class PocoLargeBenchmarkRecord
+{
+    public required int[] Values { get; init; }
 }
 
 public enum RepresentativePocoStatus

@@ -115,6 +115,14 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
         DiagnosticSeverity.Error,
         isEnabledByDefault: true);
 
+    private static readonly DiagnosticDescriptor UnsupportedInheritance = new(
+        "DKAVRO013",
+        "Inherited Avro POCO members are unsupported",
+        "Type '{0}' derives from '{1}'; generated Avro records do not support inherited instance members",
+        "Dekaf.Avro",
+        DiagnosticSeverity.Error,
+        isEnabledByDefault: true);
+
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
         var records = context.SyntaxProvider.ForAttributeWithMetadataName(
@@ -184,7 +192,7 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
         private readonly SourceProductionContext _context;
         private readonly Dictionary<INamedTypeSymbol, RecordModel> _records =
             new(SymbolEqualityComparer.Default);
-        private readonly Dictionary<string, INamedTypeSymbol> _recordsByFullName =
+        private readonly Dictionary<string, INamedTypeSymbol> _namedTypesByFullName =
             new(StringComparer.Ordinal);
         private readonly HashSet<INamedTypeSymbol> _building = new(SymbolEqualityComparer.Default);
 
@@ -199,6 +207,18 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             if (!_building.Add(symbol))
             {
                 Error(RecursiveShape, symbol.Locations.FirstOrDefault(), symbol.ToDisplayString());
+                return null;
+            }
+
+            if (symbol.TypeKind == TypeKind.Class &&
+                symbol.BaseType is { SpecialType: not SpecialType.System_Object } baseType)
+            {
+                Error(
+                    UnsupportedInheritance,
+                    symbol.Locations.FirstOrDefault(),
+                    symbol.ToDisplayString(),
+                    baseType.ToDisplayString());
+                _building.Remove(symbol);
                 return null;
             }
 
@@ -221,20 +241,11 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             var fullName = string.IsNullOrEmpty(avroNamespace)
                 ? avroName
                 : avroNamespace + "." + avroName;
-            if (_recordsByFullName.TryGetValue(fullName, out var existingSymbol) &&
-                !SymbolEqualityComparer.Default.Equals(existingSymbol, symbol))
+            if (!TryRegisterNamedType(fullName, symbol, symbol.Locations.FirstOrDefault()))
             {
-                Error(
-                    DuplicateFullName,
-                    symbol.Locations.FirstOrDefault(),
-                    existingSymbol.ToDisplayString(),
-                    symbol.ToDisplayString(),
-                    fullName);
                 _building.Remove(symbol);
                 return null;
             }
-            if (existingSymbol is null)
-                _recordsByFullName.Add(fullName, symbol);
 
             var members = new List<MemberModel>();
             foreach (var member in symbol.GetMembers())
@@ -393,6 +404,25 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                 var branches = ImmutableArray.CreateBuilder<TypeModel>();
                 if (symbol.NullableAnnotation == NullableAnnotation.Annotated)
                     branches.Add(TypeModel.Primitive(TypeKindModel.Null));
+                for (var left = 0; left < unionTypes.Length; left++)
+                {
+                    for (var right = left + 1; right < unionTypes.Length; right++)
+                    {
+                        if (!IsAssignableTo(unionTypes[left], unionTypes[right]) &&
+                            !IsAssignableTo(unionTypes[right], unionTypes[left]))
+                        {
+                            continue;
+                        }
+
+                        Error(
+                            AmbiguousUnion,
+                            member.Locations.FirstOrDefault(),
+                            member.Name,
+                            $"overlapping CLR branches '{unionTypes[left].ToDisplayString()}' and " +
+                            $"'{unionTypes[right].ToDisplayString()}'");
+                        return null;
+                    }
+                }
                 foreach (var unionType in unionTypes)
                 {
                     if (unionType is null)
@@ -401,10 +431,7 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                             "<null>", "union branch types cannot be null");
                         return null;
                     }
-                    if (symbol.TypeKind == TypeKind.Interface &&
-                        !SymbolEqualityComparer.Default.Equals(unionType, symbol) &&
-                        !unionType.AllInterfaces.Any(candidate =>
-                            SymbolEqualityComparer.Default.Equals(candidate, symbol)))
+                    if (symbol.TypeKind == TypeKind.Interface && !IsAssignableTo(unionType, symbol))
                     {
                         Error(UnsupportedType, member.Locations.FirstOrDefault(), member.Name,
                             unionType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
@@ -483,13 +510,37 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
 
             if (model is null && symbol.TypeKind == TypeKind.Enum && symbol is INamedTypeSymbol enumSymbol)
             {
+                var enumNamespace = enumSymbol.ContainingNamespace.IsGlobalNamespace
+                    ? string.Empty
+                    : enumSymbol.ContainingNamespace.ToDisplayString();
+                if (!IsAvroName(enumSymbol.Name) || !IsAvroNamespace(enumNamespace))
+                {
+                    Error(
+                        InvalidAvroName,
+                        member.Locations.FirstOrDefault(),
+                        !IsAvroName(enumSymbol.Name) ? enumSymbol.Name : enumNamespace,
+                        !IsAvroName(enumSymbol.Name) ? "enum name" : "enum namespace");
+                    return null;
+                }
+
                 var symbols = enumSymbol.GetMembers()
                     .OfType<IFieldSymbol>()
                     .Where(static field => field.HasConstantValue)
                     .OrderBy(GetSourceOrder)
                     .Select(static field => field.Name)
                     .ToImmutableArray();
-                model = TypeModel.Enum(display, GetFullName(enumSymbol), symbols);
+                foreach (var enumValue in symbols)
+                {
+                    if (IsAvroName(enumValue))
+                        continue;
+                    Error(InvalidAvroName, member.Locations.FirstOrDefault(), enumValue, "enum symbol");
+                    return null;
+                }
+
+                var fullName = GetFullName(enumSymbol);
+                if (!TryRegisterNamedType(fullName, enumSymbol, member.Locations.FirstOrDefault()))
+                    return null;
+                model = TypeModel.Enum(display, fullName, symbols);
             }
 
             if (model is null && symbol is INamedTypeSymbol recordSymbol &&
@@ -548,6 +599,49 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
         {
             HasErrors = true;
             _context.ReportDiagnostic(Diagnostic.Create(descriptor, location, arguments));
+        }
+
+        private bool TryRegisterNamedType(
+            string fullName,
+            INamedTypeSymbol symbol,
+            Location? location)
+        {
+            if (_namedTypesByFullName.TryGetValue(fullName, out var existingSymbol))
+            {
+                if (SymbolEqualityComparer.Default.Equals(existingSymbol, symbol))
+                    return true;
+                Error(
+                    DuplicateFullName,
+                    location,
+                    existingSymbol.ToDisplayString(),
+                    symbol.ToDisplayString(),
+                    fullName);
+                return false;
+            }
+
+            _namedTypesByFullName.Add(fullName, symbol);
+            return true;
+        }
+
+        private static bool IsAssignableTo(ITypeSymbol source, ITypeSymbol target)
+        {
+            if (SymbolEqualityComparer.Default.Equals(source, target))
+                return true;
+            if (source is not INamedTypeSymbol namedSource)
+                return false;
+            if (target.TypeKind == TypeKind.Interface && namedSource.AllInterfaces.Any(candidate =>
+                    SymbolEqualityComparer.Default.Equals(candidate, target)))
+            {
+                return true;
+            }
+
+            for (var baseType = namedSource.BaseType; baseType is not null; baseType = baseType.BaseType)
+            {
+                if (SymbolEqualityComparer.Default.Equals(baseType, target))
+                    return true;
+            }
+
+            return false;
         }
 
         private static int GetSourceOrder(ISymbol symbol) =>

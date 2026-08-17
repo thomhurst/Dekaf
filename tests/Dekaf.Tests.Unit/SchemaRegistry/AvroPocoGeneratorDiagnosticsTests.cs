@@ -32,7 +32,11 @@ public sealed class AvroPocoGeneratorDiagnosticsTests
             ("DKAVRO009", "[AvroRecord] public partial class Value { [AvroField(UnionTypes=new[] { typeof(string), typeof(Guid) })] public object Data { get; set; } = null!; }"),
             ("DKAVRO010", "[AvroRecord(Name=\"not-valid\")] public partial class Value { public int Id { get; set; } }"),
             ("DKAVRO011", "[AvroRecord] public abstract partial class Value { public int Id { get; set; } }"),
-            ("DKAVRO012", "[AvroRecord] public partial class Value { public First A { get; set; } = new(); public Second B { get; set; } = new(); } [AvroRecord(Name=\"Shared\", Namespace=\"Example\")] public partial class First { public int Id { get; set; } } [AvroRecord(Name=\"Shared\", Namespace=\"Example\")] public partial class Second { public string Name { get; set; } = string.Empty; }")
+            ("DKAVRO012", "[AvroRecord] public partial class Value { public First A { get; set; } = new(); public Second B { get; set; } = new(); } [AvroRecord(Name=\"Shared\", Namespace=\"Example\")] public partial class First { public int Id { get; set; } } [AvroRecord(Name=\"Shared\", Namespace=\"Example\")] public partial class Second { public string Name { get; set; } = string.Empty; }"),
+            ("DKAVRO012", "[AvroRecord] public partial class Value { public Other.Status A { get; set; } public Collision B { get; set; } = new(); } [AvroRecord(Name=\"Status\", Namespace=\"Other\")] public partial class Collision { public int Id { get; set; } } namespace Other { public enum Status { Ready } }"),
+            ("DKAVRO010", "[AvroRecord] public partial class Value { public Status State { get; set; } } public enum Status { Café }"),
+            ("DKAVRO009", "[AvroRecord] public partial class Value { [AvroField(UnionTypes=new[] { typeof(Base), typeof(Derived) })] public object Data { get; set; } = null!; } [AvroRecord] public partial class Base { public int Id { get; set; } } [AvroRecord] public partial class Derived : Base { public string Name { get; set; } = string.Empty; }"),
+            ("DKAVRO013", "public class Base { public int Id { get; set; } } [AvroRecord] public partial class Value : Base { public string Name { get; set; } = string.Empty; }")
         ];
 
         foreach (var (id, declaration) in cases)

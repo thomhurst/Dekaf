@@ -241,6 +241,26 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    public async Task GeneratedCodec_RetainsLargePayloadSizeHint()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        await using var serializer = PocoLargeGrowingPayload.CreateAvroSerializer(registry);
+        var context = new SerializationContext
+        {
+            Topic = "poco-large-growing-hint",
+            Component = SerializationComponent.Value
+        };
+        var value = new PocoLargeGrowingPayload { Value = new string('x', 1024 * 1024 + 1) };
+        var destination = new ExactSizeBufferWriter(2 * 1024 * 1024 + 16);
+
+        serializer.Serialize(value, ref destination, context);
+        destination.Clear();
+        serializer.Serialize(value, ref destination, context);
+
+        await Assert.That(destination.GetMemoryCallCount).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task GeneratedCodec_ResolvesAliasesDefaultsPromotionsAndSkippedFields()
     {
         const string writerSchemaJson =
@@ -347,6 +367,29 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    public async Task GeneratedCodec_RejectsLatestSchemaWithDifferentLogicalMetadata()
+    {
+        const string latestSchemaJson =
+            """
+            {"type":"record","name":"PocoDecimal","namespace":"Dekaf.Tests","fields":[{"name":"Amount","type":{"type":"bytes","logicalType":"decimal","precision":10,"scale":3}}]}
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        await registry.RegisterSchemaAsync(
+            "poco-latest-decimal-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = latestSchemaJson
+            });
+        await using var serializer = PocoDecimal.CreateAvroSerializer(
+            registry,
+            new AvroSerializerConfig { UseLatestVersion = true });
+
+        await Assert.That(async () => await serializer.WarmupAsync("poco-latest-decimal"))
+            .Throws<InvalidOperationException>();
+    }
+
+    [Test]
     public async Task GeneratedCodec_WithoutAutoRegistrationLooksUpGeneratedSchema()
     {
         const string differentSchemaJson =
@@ -438,14 +481,23 @@ public sealed class AvroPocoSchemaRegistryTests
         private readonly byte[] _buffer = GC.AllocateUninitializedArray<byte>(capacity);
 
         public int WrittenCount { get; private set; }
+        public int GetMemoryCallCount { get; private set; }
 
         public void Advance(int count) => WrittenCount = count;
 
-        public Memory<byte> GetMemory(int sizeHint = 0) => _buffer.AsMemory(0, sizeHint);
+        public Memory<byte> GetMemory(int sizeHint = 0)
+        {
+            GetMemoryCallCount++;
+            return _buffer.AsMemory(0, sizeHint);
+        }
 
         public Span<byte> GetSpan(int sizeHint = 0) => _buffer.AsSpan(0, sizeHint);
 
-        internal void Clear() => WrittenCount = 0;
+        internal void Clear()
+        {
+            WrittenCount = 0;
+            GetMemoryCallCount = 0;
+        }
     }
 }
 
@@ -587,6 +639,12 @@ internal sealed partial class PocoWriterUnions
 
 [AvroRecord(Name = "PocoGrowingPayload", Namespace = "Dekaf.Tests")]
 internal sealed partial class PocoGrowingPayload
+{
+    public required string Value { get; init; }
+}
+
+[AvroRecord(Name = "PocoLargeGrowingPayload", Namespace = "Dekaf.Tests")]
+internal sealed partial class PocoLargeGrowingPayload
 {
     public required string Value { get; init; }
 }

@@ -159,9 +159,7 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
             span[0] = MagicByte;
             BinaryPrimitives.WriteInt32BigEndian(span.Slice(1, 4), schemaId);
             destination.Advance(WireHeaderSize + writer.WrittenCount);
-            t_payloadSizeHint = writer.WrittenCount > MaxRetainedPayloadSize
-                ? InitialPayloadSize
-                : Math.Max(payloadSize, writer.WrittenCount);
+            t_payloadSizeHint = Math.Max(InitialPayloadSize, writer.WrittenCount);
             return;
         }
     }
@@ -309,10 +307,7 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         RegisteredSchema registered)
     {
         if (registered.Schema.SchemaType != SchemaType.Avro ||
-            !string.Equals(
-                SchemaNormalization.ToParsingForm(AvroSchema.Parse(registered.Schema.SchemaString)),
-                GeneratedSchema.ParsingForm,
-                StringComparison.Ordinal))
+            !GeneratedSchema.Value.Equals(AvroSchema.Parse(registered.Schema.SchemaString)))
         {
             throw new InvalidOperationException(
                 $"Latest schema version {registered.Version} for subject '{registered.Subject}' does not match " +
@@ -324,8 +319,7 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
 
     private static class GeneratedSchema
     {
-        internal static readonly string ParsingForm =
-            SchemaNormalization.ToParsingForm(AvroSchema.Parse(TCodec.SchemaJson));
+        internal static readonly AvroSchema Value = AvroSchema.Parse(TCodec.SchemaJson);
     }
 
     private string GetSubjectName(string topic, bool isKey) =>
