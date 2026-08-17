@@ -267,15 +267,18 @@ public sealed class TransactionOffsetCommitTests
     public async Task TV2_TransportFailuresUntilDeadline_ArePreservedAsTimeoutCause()
     {
         var transactionClock = new FakeTransactionClock();
-        var outcomes = new Queue<object>([new IOException("coordinator connection lost")]);
+        var outcomes = new Queue<object>(
+        [
+            new IOException("coordinator connection lost"),
+            new IOException("coordinator connection lost")
+        ]);
         await using var harness = CreateHarness(
             transactionVersion: 2,
             txnOffsetCommitMaxVersion: 5,
             commitOutcomes: outcomes,
-            retryBackoffMs: 10,
             maxBlockMs: 2000,
             transactionClock: transactionClock,
-            commitFailureAdvanceMs: 2001);
+            commitFailureAdvanceMs: 1000);
 
         var exception = await Assert.That(() => harness.Producer.SendOffsetsToTransactionInternalAsync(
                 [new TopicPartitionOffset("orders", 0, 42)],
@@ -286,6 +289,7 @@ public sealed class TransactionOffsetCommitTests
         await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Transaction);
         await Assert.That(exception.InnerException).IsTypeOf<IOException>();
         await Assert.That(exception.InnerException!.Message).IsEqualTo("coordinator connection lost");
+        await Assert.That(harness.Connection.CommitRequests).Count().IsEqualTo(2);
     }
 
     [Test]
