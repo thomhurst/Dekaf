@@ -610,45 +610,46 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
-    public async Task GeneratedCodec_MigrationDefersIncompatibleWriterPlanResolution()
+    public async Task GeneratedCodec_UsesIncomingWriterPlanWhenMigrationHasNoRules()
     {
-        const string incompatibleWriterSchema =
+        const string writerSchemaJson =
             """
-            {"type":"record","name":"LegacyWireRecord","namespace":"Dekaf.Tests","fields":[{"name":"Legacy","type":"string"}]}
+            {"type":"record","name":"PocoEvolved","namespace":"Dekaf.Tests","fields":[{"name":"legacy_id","type":"int"}]}
             """;
         using var registry = new MockSchemaRegistryClient();
-        var oldSchemaId = await registry.RegisterSchemaAsync(
+        _ = await registry.RegisterSchemaAsync(
             "poco-migration-value",
             new Dekaf.SchemaRegistry.Schema
             {
                 SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
-                SchemaString = incompatibleWriterSchema
+                SchemaString = writerSchemaJson
             });
         _ = await registry.RegisterSchemaAsync(
             "poco-migration-value",
             new Dekaf.SchemaRegistry.Schema
             {
                 SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
-                SchemaString = PocoWireRecord.AvroCodec.SchemaJson
+                SchemaString = PocoEvolved.AvroCodec.SchemaJson
             });
-        await using var serializer = PocoWireRecord.CreateAvroSerializer(registry);
-        await using var deserializer = PocoWireRecord.CreateAvroDeserializer(
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(registry);
+        await using var deserializer = PocoEvolved.CreateAvroDeserializer(
             registry,
             new AvroDeserializerConfig { UseLatestVersion = true });
+        var writerSchema = (RecordSchema)Schema.Parse(writerSchemaJson);
+        var generic = new GenericRecord(writerSchema);
+        generic.Add("legacy_id", 42);
         var context = new SerializationContext
         {
             Topic = "poco-migration",
             Component = SerializationComponent.Value
         };
         var destination = new ArrayBufferWriter<byte>();
-        serializer.Serialize(new PocoWireRecord { Id = 42, Name = "migrated" }, ref destination, context);
-        var wire = destination.WrittenMemory.ToArray();
-        BinaryPrimitives.WriteInt32BigEndian(wire.AsSpan(1, sizeof(int)), oldSchemaId);
+        serializer.Serialize(generic, ref destination, context);
 
-        var actual = deserializer.Deserialize(wire, context);
+        var actual = deserializer.Deserialize(destination.WrittenMemory, context);
 
-        await Assert.That(actual.Id).IsEqualTo(42);
-        await Assert.That(actual.Name).IsEqualTo("migrated");
+        await Assert.That(actual.Id).IsEqualTo(42L);
+        await Assert.That(actual.Note).IsEqualTo("added-by-reader");
     }
 
     [Test]
