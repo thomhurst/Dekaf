@@ -16,9 +16,6 @@ dotnet add package Dekaf.SchemaRegistry
 # For Avro serialization
 dotnet add package Dekaf.SchemaRegistry.Avro
 
-# For source-generated POCO Avro serialization
-dotnet add package Dekaf.SchemaRegistry.Avro.Poco
-
 # For Protobuf serialization
 dotnet add package Dekaf.SchemaRegistry.Protobuf
 
@@ -81,11 +78,11 @@ require a per-message candidate scan.
 
 ### With source-generated POCOs
 
-Install `Dekaf.SchemaRegistry.Avro.Poco` when you want plain CLR models without Apache Avro's
-`ISpecificRecord` implementation. Opt in with `[AvroRecord]` on a top-level `partial` class,
-record, or struct. The package's source generator emits the schema and strongly typed codec at
-build time; serialization uses constrained static dispatch with no reflection, boxing, runtime
-schema walk, or codec lookup.
+`Dekaf.SchemaRegistry.Avro` includes source-generated POCO support for plain CLR models that do
+not implement Apache Avro's `ISpecificRecord`. Opt in with `[AvroRecord]` on a top-level `partial`
+class, record, or struct. The package's bundled source generator emits the schema and strongly
+typed codec at build time; serialization uses constrained static dispatch with no reflection,
+boxing, runtime schema walk, or codec lookup.
 
 ```csharp
 using Dekaf.SchemaRegistry;

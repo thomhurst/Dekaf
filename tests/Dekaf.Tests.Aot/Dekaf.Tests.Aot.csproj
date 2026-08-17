@@ -19,7 +19,6 @@
     <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry\Dekaf.SchemaRegistry.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Json\Dekaf.SchemaRegistry.Json.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Avro\Dekaf.SchemaRegistry.Avro.csproj" />
-    <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Avro.Poco\Dekaf.SchemaRegistry.Avro.Poco.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Avro.Poco.Generator\Dekaf.SchemaRegistry.Avro.Poco.Generator.csproj"
                       OutputItemType="Analyzer"
                       ReferenceOutputAssembly="false" />

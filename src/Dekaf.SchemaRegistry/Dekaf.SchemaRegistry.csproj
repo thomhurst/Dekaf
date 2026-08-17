@@ -11,7 +11,6 @@
     <InternalsVisibleTo Include="Dekaf.Tests.Aot" />
     <InternalsVisibleTo Include="Dekaf.Benchmarks" />
     <InternalsVisibleTo Include="Dekaf.SchemaRegistry.Avro" />
-    <InternalsVisibleTo Include="Dekaf.SchemaRegistry.Avro.Poco" />
     <InternalsVisibleTo Include="Dekaf.SchemaRegistry.Protobuf" />
     <ProjectReference Include="..\Dekaf\Dekaf.csproj" />
   </ItemGroup>

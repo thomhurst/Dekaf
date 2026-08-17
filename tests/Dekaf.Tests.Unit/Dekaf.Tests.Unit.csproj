@@ -20,7 +20,6 @@
     <ProjectReference Include="..\..\src\Dekaf.Compression.Zstd\Dekaf.Compression.Zstd.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.Compression.Brotli\Dekaf.Compression.Brotli.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Avro\Dekaf.SchemaRegistry.Avro.csproj" />
-    <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Avro.Poco\Dekaf.SchemaRegistry.Avro.Poco.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Avro.Poco.Generator\Dekaf.SchemaRegistry.Avro.Poco.Generator.csproj"
                       OutputItemType="Analyzer"
                       ReferenceOutputAssembly="true" />

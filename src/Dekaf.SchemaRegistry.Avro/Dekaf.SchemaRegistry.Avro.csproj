@@ -2,8 +2,8 @@
 
   <PropertyGroup>
     <PackageId>Dekaf.SchemaRegistry.Avro</PackageId>
-    <Description>Apache Avro serialization with Schema Registry integration for Dekaf Kafka client</Description>
-    <PackageTags>kafka;schema-registry;avro;serialization</PackageTags>
+    <Description>Apache Avro serialization, including source-generated POCO codecs, with Schema Registry integration for Dekaf Kafka client</Description>
+    <PackageTags>kafka;schema-registry;avro;serialization;source-generator;aot</PackageTags>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
@@ -17,6 +17,17 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Dekaf.SchemaRegistry\Dekaf.SchemaRegistry.csproj" />
+    <ProjectReference Include="..\Dekaf.SchemaRegistry.Avro.Poco.Generator\Dekaf.SchemaRegistry.Avro.Poco.Generator.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+    <None Include="..\Dekaf.SchemaRegistry.Avro.Poco.Generator\bin\$(Configuration)\netstandard2.0\*.dll"
+          Exclude="..\Dekaf.SchemaRegistry.Avro.Poco.Generator\bin\$(Configuration)\netstandard2.0\Microsoft.CodeAnalysis*.dll;
+                   ..\Dekaf.SchemaRegistry.Avro.Poco.Generator\bin\$(Configuration)\netstandard2.0\System.Collections.Immutable.dll;
+                   ..\Dekaf.SchemaRegistry.Avro.Poco.Generator\bin\$(Configuration)\netstandard2.0\System.Reflection.Metadata.dll;
+                   ..\Dekaf.SchemaRegistry.Avro.Poco.Generator\bin\$(Configuration)\netstandard2.0\System.Text.Encoding.CodePages.dll"
+          Pack="true"
+          PackagePath="analyzers/dotnet/cs"
+          Visible="false" />
   </ItemGroup>
 
 </Project>
