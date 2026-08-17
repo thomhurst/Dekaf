@@ -71,6 +71,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Dekaf.Tests.Mutation.Protoc
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Dekaf.Serialization.Routing", "src\Dekaf.Serialization.Routing\Dekaf.Serialization.Routing.csproj", "{9AF82E67-E0BD-42A2-9539-AA72FB845FEE}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Dekaf.SchemaRegistry.Kms.Gcp", "src\Dekaf.SchemaRegistry.Kms.Gcp\Dekaf.SchemaRegistry.Kms.Gcp.csproj", "{52043965-88BE-40BE-B801-70A13249AAE8}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -441,6 +443,18 @@ Global
 		{9AF82E67-E0BD-42A2-9539-AA72FB845FEE}.Release|x64.Build.0 = Release|Any CPU
 		{9AF82E67-E0BD-42A2-9539-AA72FB845FEE}.Release|x86.ActiveCfg = Release|Any CPU
 		{9AF82E67-E0BD-42A2-9539-AA72FB845FEE}.Release|x86.Build.0 = Release|Any CPU
+		{52043965-88BE-40BE-B801-70A13249AAE8}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{52043965-88BE-40BE-B801-70A13249AAE8}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{52043965-88BE-40BE-B801-70A13249AAE8}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{52043965-88BE-40BE-B801-70A13249AAE8}.Debug|x64.Build.0 = Debug|Any CPU
+		{52043965-88BE-40BE-B801-70A13249AAE8}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{52043965-88BE-40BE-B801-70A13249AAE8}.Debug|x86.Build.0 = Debug|Any CPU
+		{52043965-88BE-40BE-B801-70A13249AAE8}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{52043965-88BE-40BE-B801-70A13249AAE8}.Release|Any CPU.Build.0 = Release|Any CPU
+		{52043965-88BE-40BE-B801-70A13249AAE8}.Release|x64.ActiveCfg = Release|Any CPU
+		{52043965-88BE-40BE-B801-70A13249AAE8}.Release|x64.Build.0 = Release|Any CPU
+		{52043965-88BE-40BE-B801-70A13249AAE8}.Release|x86.ActiveCfg = Release|Any CPU
+		{52043965-88BE-40BE-B801-70A13249AAE8}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -476,5 +490,6 @@ Global
 		{DF2BABFD-6483-43F3-8AC1-B6A1C36CB777} = {B2C3D4E5-F6A7-8901-BCDE-F12345678901}
 		{50CD7D4E-24BC-4CA1-A183-1257129A66DE} = {B2C3D4E5-F6A7-8901-BCDE-F12345678901}
 		{9AF82E67-E0BD-42A2-9539-AA72FB845FEE} = {A1B2C3D4-E5F6-7890-ABCD-EF1234567890}
+		{52043965-88BE-40BE-B801-70A13249AAE8} = {A1B2C3D4-E5F6-7890-ABCD-EF1234567890}
 	EndGlobalSection
 EndGlobal

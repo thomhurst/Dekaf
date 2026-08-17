@@ -264,6 +264,48 @@ owns validation when set; otherwise `ValidateServerCertificate`,
 `ValidateServerCertificateHostName`, custom roots, revocation, and protocol settings are enforced by
 the default pipeline.
 
+## Google Cloud KMS
+
+Install the opt-in Google Cloud provider when Schema Registry client-side field-level encryption
+(CSFLE) uses a Cloud KMS key:
+
+```bash
+dotnet add package Dekaf.SchemaRegistry.Kms.Gcp
+```
+
+```csharp
+using Dekaf.SchemaRegistry;
+using Dekaf.SchemaRegistry.Kms.Gcp;
+
+var gcpKms = new GcpKmsProvider();
+var csfle = new SchemaRegistryCsfleRuleHandler(schemaRegistry, [gcpKms]);
+```
+
+The default constructor uses Google Application Default Credentials and the default Cloud KMS
+endpoint. Build and inject a client to select a regional endpoint, explicit credentials, emulator,
+or custom channel configuration:
+
+```csharp
+using Google.Cloud.Kms.V1;
+
+var kmsClient = new KeyManagementServiceClientBuilder
+{
+    Endpoint = "europe-west2-kms.googleapis.com"
+}.Build();
+var gcpKms = new GcpKmsProvider(kmsClient);
+```
+
+The supplied `KeyManagementServiceClient` is caller-owned and safe to share. Use the full CryptoKey
+resource name
+`projects/<project>/locations/<location>/keyRings/<key-ring>/cryptoKeys/<key>`. An optional
+`gcp-kms://` prefix is accepted. Cloud KMS embeds the primary key version in its ciphertext, so the
+CryptoKey resource—not a CryptoKeyVersion—is used for both encryption and decryption.
+
+Grant the runtime identity `cloudkms.cryptoKeyVersions.useToEncrypt` and
+`cloudkms.cryptoKeyVersions.useToDecrypt`, for example with the Cloud KMS CryptoKey Encrypter/
+Decrypter role. Cancellation is forwarded to the gRPC call. Provider errors omit service response
+text and key material, and temporary SDK plaintext buffers are cleared after copy-out.
+
 ## Consumer
 
 ```csharp
