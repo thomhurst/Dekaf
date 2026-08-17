@@ -112,6 +112,29 @@ public sealed class AdminClientControllerBootstrapTests
     }
 
     [Test]
+    public async Task GetStatus_RemapsDiscoveryAliasWhenEndpointGetsNewControllerId()
+    {
+        await using var context = new ControllerAdminContext(
+            CreateDiscoveryResponse(
+                activeControllerId: 1,
+                controllerOneHost: "seed",
+                controllerOnePort: 9093),
+            refreshInterval: TimeSpan.Zero);
+        context.EnqueueDiscovery(CreateDiscoveryResponse(
+            activeControllerId: 3,
+            controllerOneHost: "seed",
+            controllerOnePort: 9093,
+            controllerOneNodeId: 3));
+
+        _ = await context.Client.DescribeClusterAsync();
+        _ = await context.Client.DescribeClusterAsync();
+        var replacement = context.Client.GetStatus().Brokers.Single(static broker => broker.BrokerId == 3);
+
+        await Assert.That(replacement.ConnectionCount).IsEqualTo(1);
+        await Assert.That(replacement.ConnectedConnectionCount).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task DescribeClusterAsync_RetriesWhileControllerElectionIsPending()
     {
         await using var context = new ControllerAdminContext(
@@ -394,7 +417,8 @@ public sealed class AdminClientControllerBootstrapTests
     private static DescribeClusterResponse CreateDiscoveryResponse(
         int activeControllerId,
         string controllerOneHost = "controller-1",
-        int controllerOnePort = 19093) => new()
+        int controllerOnePort = 19093,
+        int controllerOneNodeId = 1) => new()
     {
         ErrorCode = ErrorCode.None,
         EndpointType = DescribeClusterEndpointType.Controller,
@@ -404,7 +428,7 @@ public sealed class AdminClientControllerBootstrapTests
         [
             new DescribeClusterNode
             {
-                NodeId = 1,
+                NodeId = controllerOneNodeId,
                 Host = controllerOneHost,
                 Port = controllerOnePort
             },

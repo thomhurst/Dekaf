@@ -358,20 +358,25 @@ internal sealed class ControllerMetadataManager : IDisposable
         ControllerEndpoint endpoint,
         IReadOnlyDictionary<int, ControllerEndpoint> controllers)
     {
-        if (endpoint.NodeId >= 0)
+        if (endpoint.NodeId >= 0
+            && controllers.TryGetValue(endpoint.NodeId, out var identifiedController)
+            && HasSameAddress(endpoint, identifiedController))
+        {
             return endpoint;
+        }
 
         foreach (var controller in controllers.Values)
         {
-            if (endpoint.Port == controller.Port &&
-                string.Equals(endpoint.Host, controller.Host, StringComparison.OrdinalIgnoreCase))
-            {
+            if (HasSameAddress(endpoint, controller))
                 return endpoint with { NodeId = controller.NodeId };
-            }
         }
 
-        return endpoint;
+        return endpoint with { NodeId = -1 };
     }
+
+    private static bool HasSameAddress(ControllerEndpoint left, ControllerEndpoint right) =>
+        left.Port == right.Port
+        && string.Equals(left.Host, right.Host, StringComparison.OrdinalIgnoreCase);
 
     private static IReadOnlyDictionary<int, ConnectionStatusEndpointAlias[]> BuildDiscoveryConnections(
         ControllerMetadataSnapshot previous,

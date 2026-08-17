@@ -807,6 +807,7 @@ public sealed partial class ConnectionPool :
             Array.Copy(currentGroup, shrunkGroup, shrunkGroup.Length);
 
             // Atomically swap the connection group
+            PreserveSuccessfulRequest(removedConnection, brokerId);
             _connectionGroupsById[brokerId] = shrunkGroup;
             RecordBrokerConnectionStateChange(brokerId);
 
@@ -1711,7 +1712,10 @@ public sealed partial class ConnectionPool :
         if (!result.Reaped && result.CanRestore && connection.IsConnected)
             Interlocked.CompareExchange(ref group[index], connection, null!);
         else if (result.Reaped)
+        {
+            PreserveSuccessfulRequest(connection, brokerId);
             RecordBrokerConnectionStateChange(brokerId);
+        }
 
         return result.Reaped;
     }

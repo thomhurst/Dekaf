@@ -1059,15 +1059,21 @@ public sealed class ConnectionPoolTests
     public async Task ShrinkConnectionGroupAsync_RecordsExactStatusTransition()
     {
         long statusTimestamp = 100;
+        var created = new List<TestIdleConnection>();
         await using var pool = new ConnectionPool(
             clientId: "status-test",
             connectionOptions: new ConnectionOptions(),
             connectionsPerBroker: 3,
             connectionFactory: (brokerId, host, port, _, _) =>
-                ValueTask.FromResult<IKafkaConnection>(new TestIdleConnection(brokerId, host, port)),
+            {
+                var connection = new TestIdleConnection(brokerId, host, port);
+                created.Add(connection);
+                return ValueTask.FromResult<IKafkaConnection>(connection);
+            },
             statusTimestampProvider: () => Volatile.Read(ref statusTimestamp));
         pool.RegisterBroker(1, "localhost", 9092);
         _ = await pool.GetConnectionAsync(1);
+        created[^1].LastSuccessfulRequestTimestampMs = 99;
         var stateChangeBeforeShrink = GetBrokerStateChangeTimestamp(pool, 1);
         Volatile.Write(ref statusTimestamp, 101);
 
@@ -1076,6 +1082,7 @@ public sealed class ConnectionPoolTests
         await Assert.That(removed).IsNotNull();
         await Assert.That(GetBrokerStateChangeTimestamp(pool, 1)).IsEqualTo(101);
         await Assert.That(GetBrokerStateChangeTimestamp(pool, 1)).IsGreaterThan(stateChangeBeforeShrink);
+        await Assert.That(GetBrokerSuccessfulRequestTimestamp(pool, 1)).IsEqualTo(99);
         await removed!.DisposeAsync();
     }
 
@@ -1148,6 +1155,7 @@ public sealed class ConnectionPoolTests
             pool.RegisterBroker(1, "localhost", 9092);
 
             var first = await pool.GetConnectionAsync(1);
+            created[0].LastSuccessfulRequestTimestampMs = 99;
             var stateChangeBeforeReap = GetBrokerStateChangeTimestamp(pool, 1);
             Volatile.Write(ref statusTimestamp, 101);
             created[0].LastUsedTimestampMs = StaleIdleTimestamp();
@@ -1160,6 +1168,7 @@ public sealed class ConnectionPoolTests
             await Assert.That(created[0].DisposeCount).IsEqualTo(1);
             await Assert.That(first).IsNotSameReferenceAs(second);
             await Assert.That(stateChangeAfterReap).IsGreaterThan(stateChangeBeforeReap);
+            await Assert.That(GetBrokerSuccessfulRequestTimestamp(pool, 1)).IsEqualTo(99);
 
             var diagnostic = pool.GetConnectionReapDiagnosticsSnapshot().Single();
             await Assert.That(diagnostic.BrokerId).IsEqualTo(1);
