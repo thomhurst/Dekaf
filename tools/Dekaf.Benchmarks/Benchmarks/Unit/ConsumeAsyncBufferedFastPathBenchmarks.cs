@@ -93,16 +93,30 @@ public class ConsumeAsyncBufferedFastPathBenchmarks
         BufferedConsumerHarness.InitializeForBufferedFastPath(_consumer, Topic, Partition);
     }
 
-    [IterationSetup]
-    public void IterationSetup()
+    [IterationSetup(Target = nameof(ConsumeBufferedStream))]
+    public void UnboundedIterationSetup()
     {
         _iterationCancellation = new CancellationTokenSource();
         BufferedConsumerHarness.ReseedPendingFetches(
             _consumer, Topic, Partition, _batchRecords, BatchCount, RecordsPerBatch);
     }
 
+    [IterationSetup(Target = nameof(ConsumeSnapshotBufferedStream))]
+    public void SnapshotIterationSetup()
+    {
+        _iterationCancellation = new CancellationTokenSource();
+        BufferedConsumerHarness.ReseedPendingFetches(
+            _consumer, Topic, Partition, _batchRecords, BatchCount, RecordsPerBatch);
+        BufferedConsumerHarness.ActivateSnapshotForBufferedFastPath(
+            _consumer, Topic, Partition, MessageCount);
+    }
+
     [IterationCleanup]
-    public void IterationCleanup() => _iterationCancellation.Dispose();
+    public void IterationCleanup()
+    {
+        BufferedConsumerHarness.DeactivateSnapshotForBufferedFastPath(_consumer);
+        _iterationCancellation.Dispose();
+    }
 
     [Benchmark(OperationsPerInvoke = MessageCount)]
     public async Task<int> ConsumeBufferedStream()
@@ -120,6 +134,26 @@ public class ConsumeAsyncBufferedFastPathBenchmarks
         {
             // ConsumeAsync polls indefinitely once buffered data is drained. The token ends
             // the invocation only after the pending-fetch cleanup measured above completes.
+        }
+
+        return count;
+    }
+
+    [Benchmark(OperationsPerInvoke = MessageCount)]
+    public async Task<int> ConsumeSnapshotBufferedStream()
+    {
+        var count = 0;
+        try
+        {
+            await foreach (var _ in _consumer.ConsumeAsync(_iterationCancellation.Token).ConfigureAwait(false))
+            {
+                if (++count == MessageCount)
+                    _iterationCancellation.Cancel();
+            }
+        }
+        catch (OperationCanceledException) when (_iterationCancellation.IsCancellationRequested)
+        {
+            // End only after the final bounded record completed validation and position tracking.
         }
 
         return count;

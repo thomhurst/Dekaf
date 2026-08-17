@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Text;
 using Dekaf.Consumer;
 using Dekaf.Producer;
@@ -234,6 +235,32 @@ public sealed class InMemoryBoundedConsumerTests
     }
 
     [Test]
+    public async Task ConsumeSnapshotAsync_CloseDuringAsyncDeserializationThrowsWithoutAdvancing()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("events");
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await ProduceRangeAsync(producer, "events", partition: 0, count: 1);
+        var deserializer = new BlockingAsyncDeserializer();
+        await using var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            Serializers.String,
+            deserializer,
+            new InMemoryConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest });
+        var partition = new TopicPartition("events", 0);
+        consumer.Assign(partition);
+        await using var snapshot = consumer.ConsumeSnapshotAsync().GetAsyncEnumerator();
+        var moveNext = snapshot.MoveNextAsync().AsTask();
+        await deserializer.WaitUntilEnteredAsync();
+
+        await consumer.CloseAsync();
+        deserializer.Release();
+
+        await Assert.That(async () => await moveNext).Throws<ObjectDisposedException>();
+        await Assert.That(GetPositionAfterClose(consumer, partition)).IsEqualTo(0L);
+    }
+
+    [Test]
     public async Task ConsumeSnapshotAsync_SeekDuringEnumerationThrows()
     {
         var cluster = new InMemoryKafkaCluster();
@@ -358,6 +385,16 @@ public sealed class InMemoryBoundedConsumerTests
         await foreach (var record in records)
             values.Add(record.Value);
         return values;
+    }
+
+    private static long GetPositionAfterClose(
+        InMemoryConsumer<string, string> consumer,
+        TopicPartition partition)
+    {
+        var field = typeof(InMemoryConsumer<string, string>).GetField(
+            "_positions",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+        return ((Dictionary<TopicPartition, long>)field.GetValue(consumer)!)[partition];
     }
 
     private sealed class BlockingAsyncDeserializer : IAsyncDeserializer<string>

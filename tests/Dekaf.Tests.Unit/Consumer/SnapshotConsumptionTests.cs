@@ -64,6 +64,22 @@ public sealed class SnapshotConsumptionTests
     }
 
     [Test]
+    public async Task SnapshotState_ExplicitInvalidationThrows()
+    {
+        var assignment = new HashSet<TopicPartition> { Partition0 };
+        var paused = new HashSet<TopicPartition>();
+        var state = new SnapshotConsumeState(new Dictionary<TopicPartition, long>
+        {
+            [Partition0] = 10
+        }, assignment, paused);
+
+        state.InvalidateConsumerState();
+
+        await Assert.That(() => state.ThrowIfConsumerStateChanged(assignment, paused))
+            .Throws<InvalidOperationException>();
+    }
+
+    [Test]
     [Arguments(RecordBatchAttributes.IsControlBatch, false)]
     [Arguments(RecordBatchAttributes.IsTransactional, true)]
     public async Task ExhaustedFilteredBatch_AdvancesConsumerPosition(
@@ -165,6 +181,40 @@ public sealed class SnapshotConsumptionTests
 
         await Assert.That(pending.MoveNext()).IsFalse();
         await Assert.That(pending.IsExhausted).IsTrue();
+    }
+
+    [Test]
+    public async Task SnapshotBound_UsesLeaderEpochFromBoundaryBatch()
+    {
+        var beforeBoundary = new RecordBatch
+        {
+            BaseOffset = 0,
+            LastOffsetDelta = 9,
+            PartitionLeaderEpoch = 3,
+            Records = []
+        };
+        var boundaryBatch = new RecordBatch
+        {
+            BaseOffset = 10,
+            LastOffsetDelta = 9,
+            PartitionLeaderEpoch = 4,
+            Records = []
+        };
+        var trailingBatch = new RecordBatch
+        {
+            BaseOffset = 20,
+            LastOffsetDelta = 9,
+            PartitionLeaderEpoch = 5,
+            Records = []
+        };
+        using var pending = PendingFetchData.Create(
+            Partition0.Topic,
+            Partition0.Partition,
+            [beforeBoundary, boundaryBatch, trailingBatch],
+            stopAtOffsetExclusive: 15);
+
+        await Assert.That(pending.FetchEndOffsetExclusive).IsEqualTo(15L);
+        await Assert.That(pending.FetchEndLeaderEpoch).IsEqualTo(4);
     }
 
     [Test]

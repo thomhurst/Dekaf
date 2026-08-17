@@ -717,6 +717,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             // The in-memory cluster has no broker session timer. Always unregister on close so
             // RemainInGroup cannot create an immortal member that permanently owns partitions.
             UnregisterConsumerGroupMemberUnderLock();
+            _consumerStateVersion++;
             _disposed = true;
         }
 
@@ -1016,6 +1017,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         int consumerStateVersion,
         int consumerGroupGeneration)
     {
+        ThrowIfDisposed();
+
         if (_consumerStateVersion != consumerStateVersion)
             ThrowSnapshotStateChanged();
 
