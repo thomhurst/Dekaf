@@ -87,8 +87,7 @@ public sealed class AvroSchemaRegistrySerializer<
         ArgumentOutOfRangeException.ThrowIfLessThan(_config.MaxCachedSchemas, 1);
         _maxCachedSchemas = _config.MaxCachedSchemas;
         _maxOverflowLogicalSchemas = Math.Max(3, _maxCachedSchemas);
-        _schemaResolutionCache = new SchemaResolutionCache<SubjectSchemaIdCache.SubjectSchemaIdCacheValue>(
-            _maxCachedSchemas);
+        _schemaResolutionCache = new();
         _ownsClient = ownsClient;
 
         // Try to get schema from type T if it's a specific record

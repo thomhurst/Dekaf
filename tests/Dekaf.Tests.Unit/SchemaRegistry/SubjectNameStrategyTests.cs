@@ -516,7 +516,7 @@ public sealed class SubjectNameStrategyTests
     }
 
     [Test]
-    public async Task AvroSerializer_RuntimeSchemaCaches_StayWithinConfiguredBound()
+    public async Task AvroSerializer_RuntimeSchemaCaches_StayWithinConfiguredBound_WithoutShrinkingResolutionCache()
     {
         const int maxCachedSchemas = 4;
         using var schemaRegistry = new MockSchemaRegistryClient();
@@ -559,7 +559,7 @@ public sealed class SubjectNameStrategyTests
         await Assert.That(serializer.CachedDynamicSubjectSchemaCount).IsLessThanOrEqualTo(maxCachedSchemas);
         await Assert.That(serializer.CachedOverflowLogicalSchemaCount).IsLessThanOrEqualTo(maxCachedSchemas);
         await Assert.That(serializer.CachedGenericWriterCount).IsLessThanOrEqualTo(maxCachedSchemas);
-        await Assert.That(serializer.CachedSchemaIdCount).IsEqualTo(maxCachedSchemas);
+        await Assert.That(serializer.CachedSchemaIdCount).IsEqualTo(10);
         await Assert.That(schemaRegistry.GetOrRegisterSchemaCallCount).IsEqualTo(10);
 
         buffer.ResetWrittenCount();
@@ -609,7 +609,7 @@ public sealed class SubjectNameStrategyTests
 
         await Assert.That(serializer.CachedDynamicSubjectSchemaCount).IsEqualTo(1);
         await Assert.That(serializer.CachedGenericWriterCount).IsEqualTo(1);
-        await Assert.That(serializer.CachedSchemaIdCount).IsEqualTo(1);
+        await Assert.That(serializer.CachedSchemaIdCount).IsEqualTo(2);
         await Assert.That(schemaRegistry.GetOrRegisterSchemaCallCount).IsEqualTo(2);
     }
 
@@ -670,7 +670,7 @@ public sealed class SubjectNameStrategyTests
         await Assert.That(serializer.CachedDynamicSubjectSchemaCount).IsEqualTo(1);
         await Assert.That(serializer.CachedOverflowLogicalSchemaCount).IsEqualTo(3);
         await Assert.That(serializer.CachedGenericWriterCount).IsEqualTo(1);
-        await Assert.That(serializer.CachedSchemaIdCount).IsEqualTo(1);
+        await Assert.That(serializer.CachedSchemaIdCount).IsEqualTo(4);
         await Assert.That(schemaRegistry.GetOrRegisterSchemaCallCount).IsEqualTo(4);
     }
 
