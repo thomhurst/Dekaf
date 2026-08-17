@@ -9,23 +9,26 @@ public sealed class SchemaRegistryRuleExecutorTests
     [Test]
     public async Task RuleContextPool_ReusesPrimaryContext_AfterNestedRental()
     {
+        var schema = new Schema { SchemaString = "{}" };
         var primary = SchemaRegistryRuleContext.Rent(
             "primary",
             SerializationComponent.Key,
             1,
             "primary-key",
-            null,
+            schema,
             SchemaRegistryPayloadFormat.Custom);
         var overflow = SchemaRegistryRuleContext.Rent(
             "overflow",
             SerializationComponent.Value,
             2,
             "overflow-value",
-            null,
+            schema,
             SchemaRegistryPayloadFormat.Json);
 
         overflow.Return();
         primary.Return();
+        var primaryReferencesCleared = primary.Topic is null && primary.Subject is null && primary.Schema is null;
+        var overflowReferencesCleared = overflow.Topic is null && overflow.Subject is null && overflow.Schema is null;
 
         var reused = SchemaRegistryRuleContext.Rent(
             "reused",
@@ -43,6 +46,8 @@ public sealed class SchemaRegistryRuleExecutorTests
         reused.Return();
 
         await Assert.That(reusedPrimary).IsTrue();
+        await Assert.That(primaryReferencesCleared).IsTrue();
+        await Assert.That(overflowReferencesCleared).IsTrue();
         await Assert.That(topic).IsEqualTo("reused");
         await Assert.That(component).IsEqualTo(SerializationComponent.Value);
         await Assert.That(schemaId).IsEqualTo(3);

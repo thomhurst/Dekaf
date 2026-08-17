@@ -217,7 +217,7 @@ public class SchemaRegistryCsfleRuleBenchmarks
         {
             KekName = "benchmark-kek",
             Subject = "benchmark-topic-value",
-            Version = 1,
+            Version = 2,
             Algorithm = DekAlgorithm.Aes256Siv,
             KeyMaterial = Convert.ToBase64String(new byte[64]),
             Timestamp = 0

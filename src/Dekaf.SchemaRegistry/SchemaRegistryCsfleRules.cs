@@ -1798,7 +1798,7 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
         }
     }
 
-    private sealed class GcmCipher
+    private sealed class GcmCipher : IDisposable
     {
         private const int NibbleCount = 32;
         private const int NibbleValues = 16;
@@ -1836,6 +1836,8 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
             return result;
         }
 
+        public void Dispose() => Cipher.Dispose();
+
         private static UInt128 MultiplySlow(UInt128 value, UInt128 hash)
         {
             var reduction = (UInt128)0xE1 << 120;
@@ -1852,7 +1854,7 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
         }
     }
 
-    private sealed class BlockCipher
+    private sealed class BlockCipher : IDisposable
     {
         private readonly Aes _aes;
         private readonly ICryptoTransform _encryptor;
@@ -1873,6 +1875,12 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
             input.CopyTo(_input);
             _encryptor.TransformBlock(_input, 0, 16, _output, 0);
             _output.CopyTo(output);
+        }
+
+        public void Dispose()
+        {
+            _encryptor.Dispose();
+            _aes.Dispose();
         }
     }
 
@@ -1932,7 +1940,11 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
                 return cipher;
 
             if (_gcmCiphers.Count >= CryptoCacheCapacity)
+            {
+                foreach (var cachedCipher in _gcmCiphers.Values)
+                    cachedCipher.Dispose();
                 _gcmCiphers.Clear();
+            }
             cipher = new GcmCipher(key);
             _gcmCiphers.Add(key, cipher);
             return cipher;
@@ -1943,7 +1955,11 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
             if (!_sivCiphers.TryGetValue(key, out var ciphers))
             {
                 if (_sivCiphers.Count >= CryptoCacheCapacity)
+                {
+                    foreach (var cachedCiphers in _sivCiphers.Values)
+                        cachedCiphers.Dispose();
                     _sivCiphers.Clear();
+                }
                 ciphers = new SivCiphers(key);
                 _sivCiphers.Add(key, ciphers);
             }
@@ -2027,7 +2043,7 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
         }
     }
 
-    private sealed class SivCiphers
+    private sealed class SivCiphers : IDisposable
     {
         public SivCiphers(byte[] key)
         {
@@ -2040,5 +2056,11 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
         private BlockCipher Encryption { get; }
 
         public BlockCipher Get(int offset) => offset == 0 ? Mac : Encryption;
+
+        public void Dispose()
+        {
+            Mac.Dispose();
+            Encryption.Dispose();
+        }
     }
 }

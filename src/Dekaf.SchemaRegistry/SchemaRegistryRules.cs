@@ -57,9 +57,13 @@ public sealed class SchemaRegistryRuleContext
     /// <summary>
     /// Gets the Kafka topic.
     /// </summary>
+    // Preserve the CompilerGenerated accessor metadata emitted by the shipped auto-properties.
     public required string Topic
     {
+        [CompilerGenerated]
         get => _topic;
+
+        [CompilerGenerated]
         init => _topic = value;
     }
 
@@ -68,7 +72,10 @@ public sealed class SchemaRegistryRuleContext
     /// </summary>
     public required SerializationComponent Component
     {
+        [CompilerGenerated]
         get => _component;
+
+        [CompilerGenerated]
         init => _component = value;
     }
 
@@ -77,7 +84,10 @@ public sealed class SchemaRegistryRuleContext
     /// </summary>
     public required int SchemaId
     {
+        [CompilerGenerated]
         get => _schemaId;
+
+        [CompilerGenerated]
         init => _schemaId = value;
     }
 
@@ -86,7 +96,10 @@ public sealed class SchemaRegistryRuleContext
     /// </summary>
     public string? Subject
     {
+        [CompilerGenerated]
         get => _subject;
+
+        [CompilerGenerated]
         init => _subject = value;
     }
 
@@ -96,7 +109,10 @@ public sealed class SchemaRegistryRuleContext
     /// </summary>
     public Schema? Schema
     {
+        [CompilerGenerated]
         get => _schema;
+
+        [CompilerGenerated]
         init => _schema = value;
     }
 
@@ -105,7 +121,10 @@ public sealed class SchemaRegistryRuleContext
     /// </summary>
     public required SchemaRegistryPayloadFormat PayloadFormat
     {
+        [CompilerGenerated]
         get => _payloadFormat;
+
+        [CompilerGenerated]
         init => _payloadFormat = value;
     }
 
@@ -167,6 +186,10 @@ public sealed class SchemaRegistryRuleContext
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void Return()
     {
+        _topic = null!;
+        _subject = null;
+        _schema = null;
+
         if (ReferenceEquals(this, t_primary))
         {
             _inUse = false;

@@ -21,7 +21,7 @@ public class ProtobufSchemaRegistrySerializerTests
             ReadOnlyMemory<byte> payload,
             SchemaRegistryRuleContext context)
         {
-            Context = context;
+            Context = SchemaRegistryRuleContextSnapshot.Capture(context);
             return serializedPayload;
         }
 

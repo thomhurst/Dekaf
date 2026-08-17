@@ -56,7 +56,7 @@ public sealed class AvroSerializerTests
             ReadOnlyMemory<byte> payload,
             SchemaRegistryRuleContext context)
         {
-            SerializeContext = context;
+            SerializeContext = SchemaRegistryRuleContextSnapshot.Capture(context);
             return serializedPayload ?? payload;
         }
 
@@ -64,7 +64,7 @@ public sealed class AvroSerializerTests
             ReadOnlyMemory<byte> payload,
             SchemaRegistryRuleContext context)
         {
-            DeserializeContext = context;
+            DeserializeContext = SchemaRegistryRuleContextSnapshot.Capture(context);
             return deserializedPayload ?? payload;
         }
     }
