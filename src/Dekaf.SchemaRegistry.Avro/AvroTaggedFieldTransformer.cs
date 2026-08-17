@@ -53,7 +53,7 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
             workspace.Reset(payload.Span, payload.Length + 128);
             var reader = new AvroReader(payload);
             TransformValue(_schema, target: false, plan, ref reader, workspace, context, state, transform);
-            if (!plan.HasTargets)
+            if (!workspace.MatchedTarget && !plan.HasTarget(context.Rule))
             {
                 throw new SchemaRegistryRuleException(
                     $"Schema Registry rule '{context.Rule.Name}' did not match any Avro field tags.");
@@ -167,9 +167,11 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
         for (var i = 0; i < fields.Count; i++)
         {
             var field = fields[i];
+            var target = targets.IsTarget(field.Pos, context.Rule);
+            output.MatchedTarget |= target;
             TransformValue(
                 field.Schema,
-                targets.IsTarget(field.Pos, context.Rule),
+                target,
                 plan,
                 ref reader,
                 output,
@@ -549,24 +551,20 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
         MutableFieldTarget[]? mutableTargets,
         bool hasFixedTargets)
     {
-        private readonly TargetCounter? _targetCounter = CreateTargetCounter(mutableTargets);
-
-        public bool HasTargets => _targetCounter?.HasTargets ?? hasFixedTargets;
-
         public RecordTargets GetTargets(global::Avro.RecordSchema schema) => records[schema];
 
-        private static TargetCounter? CreateTargetCounter(MutableFieldTarget[]? targets)
+        public bool HasTarget(SchemaRule rule)
         {
-            if (targets is null)
-                return null;
+            if (mutableTargets is null)
+                return hasFixedTargets;
 
-            var count = 0;
-            for (var i = 0; i < targets.Length; i++)
-                count += targets[i].IsTarget ? 1 : 0;
-            var counter = new TargetCounter(count);
-            for (var i = 0; i < targets.Length; i++)
-                targets[i].SetCounter(counter);
-            return counter;
+            for (var i = 0; i < mutableTargets.Length; i++)
+            {
+                if (mutableTargets[i].Refresh(rule))
+                    return true;
+            }
+
+            return false;
         }
 
         public static RulePlan Create(
@@ -878,16 +876,6 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
         }
     }
 
-    private sealed class TargetCounter(int count)
-    {
-        private int _count = count;
-
-        public bool HasTargets => Volatile.Read(ref _count) != 0;
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void Add(int delta) => Interlocked.Add(ref _count, delta);
-    }
-
     private sealed class MutableFieldTarget(
         string[] inlineTags,
         IReadOnlySet<string>[] metadataTags,
@@ -899,7 +887,6 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
         private int _ruleTagsVersion = GetSetVersion(rule.Tags!);
         private int _isTarget =
             TagsOverlap(inlineTags, rule.Tags!) || MetadataTagsOverlap(metadataTags, rule.Tags!) ? 1 : 0;
-        private TargetCounter? _counter;
 
         public bool IsTarget => Volatile.Read(ref _isTarget) != 0;
 
@@ -929,9 +916,6 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
             return new MutableFieldTarget(inlineTags, matchingMetadata?.ToArray() ?? [], rule);
         }
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void SetCounter(TargetCounter counter) => _counter = counter;
-
         public bool Refresh(SchemaRule rule)
         {
             var ruleTags = rule.Tags!;
@@ -948,11 +932,8 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
                 for (var i = 0; i < metadataTags.Length; i++)
                     _pendingMetadataVersions[i] = GetSetVersion(metadataTags[i]);
 
-                var previous = IsTarget;
                 var current = TagsOverlap(inlineTags, ruleTags) || MetadataTagsOverlap(metadataTags, ruleTags);
                 Volatile.Write(ref _isTarget, current ? 1 : 0);
-                if (current != previous)
-                    _counter!.Add(current ? 1 : -1);
                 Volatile.Write(ref _ruleTagsVersion, ruleVersion);
                 for (var i = 0; i < metadataTags.Length; i++)
                     Volatile.Write(ref _metadataVersions[i], _pendingMetadataVersions[i]);
@@ -1058,6 +1039,8 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
         private int _length;
         private int _temporaryLength;
 
+        public bool MatchedTarget { get; set; }
+
         public ReadOnlyMemory<byte> WrittenMemory
         {
             get
@@ -1082,6 +1065,7 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
                 CryptographicOperations.ZeroMemory(output.AsSpan(0, outputLength));
             _outputLengths[_outputSlot] = 0;
             _length = 0;
+            MatchedTarget = false;
             EnsureOutput(minimumCapacity);
         }
 

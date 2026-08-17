@@ -350,6 +350,91 @@ public sealed class SchemaRegistryCsfleRuleTests
     }
 
     [Test]
+    public async Task AvroSerializer_CallerOwnedTags_RefreshesTargetsInsideEmptyCollections()
+    {
+        const string schemaText = """
+            {
+                "type": "record",
+                "name": "OptionalSecrets",
+                "namespace": "test",
+                "fields": [{
+                    "name": "items",
+                    "type": {
+                        "type": "array",
+                        "items": {
+                            "type": "record",
+                            "name": "SecretItem",
+                            "fields": [
+                                { "name": "secret", "type": "string", "confluent:tags": ["PII"] }
+                            ]
+                        }
+                    }
+                }]
+            }
+            """;
+        var ruleTags = new HashSet<string>(StringComparer.Ordinal) { "PUBLIC" };
+        var metadataTags = new HashSet<string>(StringComparer.Ordinal) { "ACCOUNT" };
+        var rule = CreateRule(tags: ruleTags);
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = schemaText,
+            Metadata = new SchemaMetadata
+            {
+                Tags = new Dictionary<string, IReadOnlySet<string>>(StringComparer.Ordinal)
+                {
+                    ["test.SecretItem.secret"] = metadataTags
+                }
+            },
+            RuleSet = new SchemaRuleSet { DomainRules = [rule] }
+        };
+        var client = CreateDekClient();
+        _ = await client.RegisterSchemaAsync("optional-secrets-value", schema);
+        var executor = new SchemaRegistryRuleExecutor([CreateHandler(client)]);
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(
+            client,
+            new AvroSerializerConfig { AutoRegisterSchemas = false, RuleExecutor = executor });
+        var avroSchema = (Avro.RecordSchema)AvroSchema.Parse(schemaText);
+        var record = new GenericRecord(avroSchema);
+        record.Add("items", Array.Empty<object>());
+        var context = new SerializationContext
+        {
+            Topic = "optional-secrets",
+            Component = SerializationComponent.Value
+        };
+
+        await Assert.That(Serialize)
+            .Throws<SchemaRegistryRuleException>()
+            .WithMessageContaining("did not match");
+
+        ruleTags.Clear();
+        ruleTags.Add("PII");
+        Serialize();
+
+        ruleTags.Clear();
+        ruleTags.Add("PUBLIC");
+        await Assert.That(Serialize)
+            .Throws<SchemaRegistryRuleException>()
+            .WithMessageContaining("did not match");
+
+        metadataTags.Clear();
+        metadataTags.Add("PUBLIC");
+        Serialize();
+
+        metadataTags.Clear();
+        metadataTags.Add("ACCOUNT");
+        await Assert.That(Serialize)
+            .Throws<SchemaRegistryRuleException>()
+            .WithMessageContaining("did not match");
+
+        void Serialize()
+        {
+            var destination = new ArrayBufferWriter<byte>();
+            serializer.Serialize(record, ref destination, context);
+        }
+    }
+
+    [Test]
     public async Task AvroSerializer_UseLatestVersion_UsesRegisteredInlineTags()
     {
         const string payloadSchemaText = """
