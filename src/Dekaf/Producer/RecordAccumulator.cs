@@ -5490,8 +5490,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     /// <summary>
     /// Checks active partitions for batches that have reached their linger deadline
-    /// and seals eligible current batches. The sweep drains <c>_lingerPartitions</c>
-    /// and conditionally detaches <c>CurrentBatch</c> while holding each partition lock.
+    /// and seals eligible current batches. Each sweep processes at most the captured
+    /// <c>_lingerPartitions</c> count, leaving later notifications queued for the next pass.
+    /// Eligible batches are detached while holding each partition lock.
     /// </summary>
     /// <remarks>
     /// Optimized with multiple fast paths:
