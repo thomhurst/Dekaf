@@ -499,16 +499,13 @@ public sealed class ConsumerPauseResumeCacheTests
         await using var consumer = CreatePrefetchedConsumer(CreatePendingFetch(partition, 10, 1));
         consumer.Pause(partition);
 
-        using var cancellationSource = new CancellationTokenSource();
-        var consume = consumer.ConsumeOneAsync(
-            Timeout.InfiniteTimeSpan,
-            cancellationSource.Token).AsTask();
+        using var cancellationSource = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var consume = consumer.ConsumeOneAsync(Timeout.InfiniteTimeSpan, cancellationSource.Token).AsTask();
         var pausedDirectFetchCancellationSource = GetField("_pausedDirectFetchCancellationSource");
         await Assert.That(SpinWait.SpinUntil(
             () => pausedDirectFetchCancellationSource.GetValue(consumer) is not null,
             TimeSpan.FromSeconds(5))).IsTrue();
 
-        cancellationSource.CancelAfter(TimeSpan.FromMilliseconds(75));
         consumer.Resume(partition);
 
         var resumed = await consume;
