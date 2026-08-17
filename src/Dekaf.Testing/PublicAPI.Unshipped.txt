@@ -1,3 +1,5 @@
 #nullable enable
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.ConsumeSnapshotAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Collections.Generic.IAsyncEnumerable<Dekaf.Consumer.ConsumeResult<TKey, TValue>>!
+Dekaf.Testing.InMemoryConsumer<TKey, TValue>.SeekToTailAsync(Dekaf.TopicPartition partition, int offsetCount, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.TopicPartitionOffset>
 Dekaf.Testing.InMemoryConsumer<TKey, TValue>.StoreOffsets(System.ReadOnlySpan<Dekaf.TopicPartitionOffset> offsets) -> void
 Dekaf.Testing.InMemoryConsumer<TKey, TValue>.StoreOffsets<TOffsets>(TOffsets offsets) -> void

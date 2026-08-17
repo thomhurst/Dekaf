@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using Dekaf.Compression;
+using Dekaf.Diagnostics;
 using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
@@ -24,7 +25,9 @@ namespace Dekaf.ShareConsumer;
 /// record-level acknowledgement. Records are acquired with locks and must be acknowledged
 /// (accepted, released, or rejected).
 /// </summary>
-internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareConsumer<TKey, TValue>
+internal sealed partial class KafkaShareConsumer<TKey, TValue> :
+    IKafkaShareConsumer<TKey, TValue>,
+    IKafkaClientStatusProvider
 {
     private readonly ShareConsumerOptions _options;
     private readonly IDeserializer<TKey> _keyDeserializer;
@@ -163,6 +166,22 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
     public StringSet Subscription => _subscriptionSnapshot;
     public TopicPartitionSet Assignment => _assignmentSnapshot;
     public string? MemberId => _coordinator.MemberId;
+
+    /// <inheritdoc />
+    public string? ClusterId => _metadataManager.ClusterId;
+
+    /// <inheritdoc />
+    public KafkaClientStatus GetStatus()
+    {
+        var stopped = Volatile.Read(ref _closed) != 0 || Volatile.Read(ref _disposed) != 0;
+        return KafkaClientStatusFactory.Capture(
+            KafkaClientRole.ShareConsumer,
+            _connectionPool,
+            _metadataManager,
+            stopped,
+            consumerGroup: _coordinator.CaptureGroupStatus());
+    }
+
     public int? AcquisitionLockTimeoutMs
     {
         get
@@ -1083,11 +1102,17 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
 
                     t_serializationContext.Topic = topicInfo.Name;
                     t_serializationContext.Component = SerializationComponent.Key;
+                    t_serializationContext.KeyData = ReadOnlyMemory<byte>.Empty;
+                    t_serializationContext.IsNull = record.IsKeyNull;
                     var key = record.IsKeyNull
                         ? default
                         : _keyDeserializer.Deserialize(record.Key, t_serializationContext);
 
                     t_serializationContext.Component = SerializationComponent.Value;
+                    t_serializationContext.KeyData = SerializationContext.NormalizeKeyData(
+                        record.Key,
+                        record.IsKeyNull);
+                    t_serializationContext.IsNull = record.IsValueNull;
                     var value = record.IsValueNull
                         ? default!
                         : _valueDeserializer.Deserialize(record.Value, t_serializationContext);

@@ -1,0 +1,10 @@
+#nullable enable
+Dekaf.SchemaRegistry.Json.StreamingJsonSchemaValidatorFactory
+Dekaf.SchemaRegistry.Json.StreamingJsonSchemaValidatorFactory.GetOrCreate(Dekaf.SchemaRegistry.Schema! schema) -> Dekaf.SchemaRegistry.IJsonSchemaValidator!
+Dekaf.SchemaRegistry.Json.StreamingJsonSchemaValidatorFactory.StreamingJsonSchemaValidatorFactory(Dekaf.SchemaRegistry.ISchemaRegistryClient! schemaRegistry, Dekaf.SchemaRegistry.Json.StreamingJsonSchemaValidatorOptions? options = null) -> void
+Dekaf.SchemaRegistry.Json.StreamingJsonSchemaValidatorOptions
+Dekaf.SchemaRegistry.Json.StreamingJsonSchemaValidatorOptions.StreamingJsonSchemaValidatorOptions() -> void
+Dekaf.SchemaRegistry.Json.StreamingJsonSchemaValidatorOptions.MaxSchemaDepth.get -> int
+Dekaf.SchemaRegistry.Json.StreamingJsonSchemaValidatorOptions.MaxSchemaDepth.init -> void
+Dekaf.SchemaRegistry.Json.StreamingJsonSchemaValidatorOptions.ReferenceResolutionTimeout.get -> System.TimeSpan
+Dekaf.SchemaRegistry.Json.StreamingJsonSchemaValidatorOptions.ReferenceResolutionTimeout.init -> void

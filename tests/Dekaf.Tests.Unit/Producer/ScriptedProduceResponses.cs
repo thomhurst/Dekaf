@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Reflection;
+using System.Threading.Channels;
 using Dekaf.Compression;
 using Dekaf.Metadata;
 using Dekaf.Networking;
@@ -263,6 +264,7 @@ public abstract class ScriptedProduceResponseFixture
         Action? onPipelinedResponseAcquired = null,
         Action? onWaveCoalesceStarted = null,
         Action? onIdleWaitStarted = null,
+        Channel<BrokerSender.SendLoopEvent>? eventChannel = null,
         BrokerUnackedByteBudget? unackedBudget = null,
         int produceApiVersion = 9,
         bool isTransactional = false,
@@ -293,5 +295,6 @@ public abstract class ScriptedProduceResponseFixture
             usesTransactionV2: () => usesTransactionV2,
             onPipelinedResponseAcquired: onPipelinedResponseAcquired,
             onWaveCoalesceStarted: onWaveCoalesceStarted,
-            onIdleWaitStarted: onIdleWaitStarted);
+            onIdleWaitStarted: onIdleWaitStarted,
+            eventChannel: eventChannel);
 }

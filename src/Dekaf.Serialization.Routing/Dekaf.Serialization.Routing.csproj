@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>Dekaf.Serialization.Routing</PackageId>
+    <Description>Allocation-free routing serializers and deserializers for Dekaf</Description>
+    <PackageTags>kafka;serialization;routing</PackageTags>
+    <!-- New package: no previously published baseline exists yet. -->
+    <PackageValidationBaselineVersion></PackageValidationBaselineVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Dekaf\Dekaf.csproj" />
+  </ItemGroup>
+
+</Project>

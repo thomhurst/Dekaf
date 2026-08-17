@@ -1,7 +1,66 @@
 #nullable enable
+Dekaf.SchemaRegistry.ISchemaRegistryCache.TryGetCachedSchema(int id, string! subject, out Dekaf.SchemaRegistry.Schema! schema) -> bool
+Dekaf.SchemaRegistry.ISchemaRegistryClient.GetSchemaAsync(int id, string! subject, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Dekaf.SchemaRegistry.Schema!>!
+Dekaf.SchemaRegistry.SchemaRegistryClient.GetSchemaAsync(int id, string! subject, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Dekaf.SchemaRegistry.Schema!>!
+Dekaf.SchemaRegistry.SchemaRegistryClient.TryGetCachedSchema(int id, string! subject, out Dekaf.SchemaRegistry.Schema! schema) -> bool
+Dekaf.SchemaRegistry.JsonSchemaRegistryDeserializer<T>.JsonSchemaRegistryDeserializer(Dekaf.SchemaRegistry.ISchemaRegistryClient! schemaRegistry, System.Text.Json.JsonSerializerOptions? jsonOptions, Dekaf.SchemaRegistry.SchemaRegistryDeserializerConfig! config, bool ownsClient = false, Dekaf.SchemaRegistry.ISchemaRegistryRuleExecutor? ruleExecutor = null) -> void
+Dekaf.SchemaRegistry.JsonSchemaRegistryDeserializer<T>.JsonSchemaRegistryDeserializer(Dekaf.SchemaRegistry.ISchemaRegistryClient! schemaRegistry, System.Text.Json.JsonSerializerOptions? jsonOptions, Dekaf.SchemaRegistry.JsonSchemaValidationOptions! validationOptions, Dekaf.SchemaRegistry.SchemaRegistryDeserializerConfig! config, bool ownsClient = false, Dekaf.SchemaRegistry.ISchemaRegistryRuleExecutor? ruleExecutor = null) -> void
+Dekaf.SchemaRegistry.JsonSchemaRegistryDeserializer<T>.JsonSchemaRegistryDeserializer(Dekaf.SchemaRegistry.ISchemaRegistryClient! schemaRegistry, System.Text.Json.Serialization.Metadata.JsonTypeInfo<T>! jsonTypeInfo, Dekaf.SchemaRegistry.SchemaRegistryDeserializerConfig! config, bool ownsClient = false, Dekaf.SchemaRegistry.ISchemaRegistryRuleExecutor? ruleExecutor = null) -> void
+Dekaf.SchemaRegistry.JsonSchemaRegistryDeserializer<T>.JsonSchemaRegistryDeserializer(Dekaf.SchemaRegistry.ISchemaRegistryClient! schemaRegistry, System.Text.Json.Serialization.Metadata.JsonTypeInfo<T>! jsonTypeInfo, Dekaf.SchemaRegistry.JsonSchemaValidationOptions! validationOptions, Dekaf.SchemaRegistry.SchemaRegistryDeserializerConfig! config, bool ownsClient = false, Dekaf.SchemaRegistry.ISchemaRegistryRuleExecutor? ruleExecutor = null) -> void
+Dekaf.SchemaRegistry.SchemaRegistryDeserializerConfig
+Dekaf.SchemaRegistry.SchemaRegistryDeserializerConfig.CustomSubjectNameStrategy.get -> Dekaf.SchemaRegistry.ISubjectNameStrategy?
+Dekaf.SchemaRegistry.SchemaRegistryDeserializerConfig.CustomSubjectNameStrategy.init -> void
+Dekaf.SchemaRegistry.SchemaRegistryDeserializerConfig.SchemaRegistryDeserializerConfig() -> void
+Dekaf.SchemaRegistry.SchemaRegistryDeserializerConfig.SubjectNameStrategy.get -> Dekaf.SchemaRegistry.SubjectNameStrategy
+Dekaf.SchemaRegistry.SchemaRegistryDeserializerConfig.SubjectNameStrategy.init -> void
+Dekaf.SchemaRegistry.SchemaRegistryDeserializerConfig.UseLegacySubjectNames.get -> bool
+Dekaf.SchemaRegistry.SchemaRegistryDeserializerConfig.UseLegacySubjectNames.init -> void
+static Dekaf.SchemaRegistry.SchemaRegistryDeserializer.Create<T>(Dekaf.SchemaRegistry.ISchemaRegistryClient! schemaRegistry, System.Func<System.ReadOnlyMemory<byte>, Dekaf.SchemaRegistry.Schema!, T>! deserialize, Dekaf.SchemaRegistry.SchemaRegistryDeserializerConfig! config, bool ownsClient = false, Dekaf.SchemaRegistry.ISchemaRegistryRuleExecutor? ruleExecutor = null) -> Dekaf.SchemaRegistry.SchemaRegistryDeserializer<T>!
+Dekaf.SchemaRegistry.IJsonSchemaValidator
+Dekaf.SchemaRegistry.IJsonSchemaValidator.Validate(System.ReadOnlySpan<byte> payload, int schemaId) -> void
+Dekaf.SchemaRegistry.IJsonSchemaValidatorFactory
+Dekaf.SchemaRegistry.IJsonSchemaValidatorFactory.GetOrCreate(Dekaf.SchemaRegistry.Schema! schema) -> Dekaf.SchemaRegistry.IJsonSchemaValidator!
+Dekaf.SchemaRegistry.ISchemaRegistryRuleAction
+Dekaf.SchemaRegistry.ISchemaRegistryRuleAction.Run(System.ReadOnlyMemory<byte> payload, Dekaf.SchemaRegistry.SchemaRegistryRuleHandlerContext! context, Dekaf.SchemaRegistry.SchemaRegistryRuleException? exception) -> void
+Dekaf.SchemaRegistry.ISchemaRegistryRuleAction.Type.get -> string!
 Dekaf.SchemaRegistry.ISchemaRegistryClient.GetCompatibilityAsync(string? subject = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Dekaf.SchemaRegistry.SchemaCompatibilityLevel>!
 Dekaf.SchemaRegistry.ISchemaRegistryClient.LookupSchemaAsync(string! subject, Dekaf.SchemaRegistry.Schema! schema, bool ignoreDeletedSchemas = true, bool normalize = false, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Dekaf.SchemaRegistry.RegisteredSchema!>!
 Dekaf.SchemaRegistry.ISchemaRegistryClient.UpdateCompatibilityAsync(Dekaf.SchemaRegistry.SchemaCompatibilityLevel level, string? subject = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Dekaf.SchemaRegistry.SchemaCompatibilityLevel>!
+Dekaf.SchemaRegistry.JsonSchemaRegistrySerializer<T>.PrepareAsync(string! topic, T value, bool isKey = false, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.SchemaRegistry.ResolvedSchemaContext>
+Dekaf.SchemaRegistry.JsonSchemaRegistrySerializer<T>.PrepareAsync(T value, Dekaf.Serialization.SerializationContext context, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.SchemaRegistry.ResolvedSchemaContext
+Dekaf.SchemaRegistry.ResolvedSchemaContext.Deconstruct(out string! Subject, out int SchemaId, out Dekaf.SchemaRegistry.Schema! Schema) -> void
+Dekaf.SchemaRegistry.ResolvedSchemaContext.Equals(Dekaf.SchemaRegistry.ResolvedSchemaContext other) -> bool
+Dekaf.SchemaRegistry.ResolvedSchemaContext.ResolvedSchemaContext() -> void
+Dekaf.SchemaRegistry.ResolvedSchemaContext.ResolvedSchemaContext(string! Subject, int SchemaId, Dekaf.SchemaRegistry.Schema! Schema) -> void
+Dekaf.SchemaRegistry.ResolvedSchemaContext.Schema.get -> Dekaf.SchemaRegistry.Schema!
+Dekaf.SchemaRegistry.ResolvedSchemaContext.Schema.init -> void
+Dekaf.SchemaRegistry.ResolvedSchemaContext.SchemaId.get -> int
+Dekaf.SchemaRegistry.ResolvedSchemaContext.SchemaId.init -> void
+Dekaf.SchemaRegistry.ResolvedSchemaContext.Subject.get -> string!
+Dekaf.SchemaRegistry.ResolvedSchemaContext.Subject.init -> void
+Dekaf.SchemaRegistry.JsonSchemaRegistryDeserializer<T>.JsonSchemaRegistryDeserializer(Dekaf.SchemaRegistry.ISchemaRegistryClient! schemaRegistry, System.Text.Json.JsonSerializerOptions? jsonOptions, Dekaf.SchemaRegistry.JsonSchemaValidationOptions! validationOptions, bool ownsClient = false, Dekaf.SchemaRegistry.ISchemaRegistryRuleExecutor? ruleExecutor = null) -> void
+Dekaf.SchemaRegistry.JsonSchemaRegistryDeserializer<T>.JsonSchemaRegistryDeserializer(Dekaf.SchemaRegistry.ISchemaRegistryClient! schemaRegistry, System.Text.Json.Serialization.Metadata.JsonTypeInfo<T>! jsonTypeInfo, Dekaf.SchemaRegistry.JsonSchemaValidationOptions! validationOptions, bool ownsClient = false, Dekaf.SchemaRegistry.ISchemaRegistryRuleExecutor? ruleExecutor = null) -> void
+Dekaf.SchemaRegistry.JsonSchemaRegistrySerializer<T>.JsonSchemaRegistrySerializer(Dekaf.SchemaRegistry.ISchemaRegistryClient! schemaRegistry, string! jsonSchema, Dekaf.SchemaRegistry.ISubjectNameStrategy! customSubjectNameStrategy, System.Text.Json.JsonSerializerOptions? jsonOptions, Dekaf.SchemaRegistry.JsonSchemaValidationOptions! validationOptions, bool autoRegisterSchemas = true, bool ownsClient = false, Dekaf.SchemaRegistry.ISchemaRegistryRuleExecutor? ruleExecutor = null, bool normalizeSchemas = false) -> void
+Dekaf.SchemaRegistry.JsonSchemaRegistrySerializer<T>.JsonSchemaRegistrySerializer(Dekaf.SchemaRegistry.ISchemaRegistryClient! schemaRegistry, string! jsonSchema, Dekaf.SchemaRegistry.ISubjectNameStrategy! customSubjectNameStrategy, System.Text.Json.Serialization.Metadata.JsonTypeInfo<T>! jsonTypeInfo, Dekaf.SchemaRegistry.JsonSchemaValidationOptions! validationOptions, bool autoRegisterSchemas = true, bool ownsClient = false, Dekaf.SchemaRegistry.ISchemaRegistryRuleExecutor? ruleExecutor = null, bool normalizeSchemas = false) -> void
+Dekaf.SchemaRegistry.JsonSchemaRegistrySerializer<T>.JsonSchemaRegistrySerializer(Dekaf.SchemaRegistry.ISchemaRegistryClient! schemaRegistry, string! jsonSchema, System.Text.Json.JsonSerializerOptions? jsonOptions, Dekaf.SchemaRegistry.JsonSchemaValidationOptions! validationOptions, Dekaf.SchemaRegistry.SubjectNameStrategy subjectNameStrategy = Dekaf.SchemaRegistry.SubjectNameStrategy.TopicName, bool autoRegisterSchemas = true, bool ownsClient = false, Dekaf.SchemaRegistry.ISchemaRegistryRuleExecutor? ruleExecutor = null, bool normalizeSchemas = false) -> void
+Dekaf.SchemaRegistry.JsonSchemaRegistrySerializer<T>.JsonSchemaRegistrySerializer(Dekaf.SchemaRegistry.ISchemaRegistryClient! schemaRegistry, string! jsonSchema, System.Text.Json.Serialization.Metadata.JsonTypeInfo<T>! jsonTypeInfo, Dekaf.SchemaRegistry.JsonSchemaValidationOptions! validationOptions, Dekaf.SchemaRegistry.SubjectNameStrategy subjectNameStrategy = Dekaf.SchemaRegistry.SubjectNameStrategy.TopicName, bool autoRegisterSchemas = true, bool ownsClient = false, Dekaf.SchemaRegistry.ISchemaRegistryRuleExecutor? ruleExecutor = null, bool normalizeSchemas = false) -> void
+Dekaf.SchemaRegistry.JsonSchemaValidationException
+Dekaf.SchemaRegistry.JsonSchemaValidationException.JsonPath.get -> string!
+Dekaf.SchemaRegistry.JsonSchemaValidationException.JsonSchemaValidationException(int schemaId, string! keyword, string! jsonPath, string! message, System.Exception? innerException = null) -> void
+Dekaf.SchemaRegistry.JsonSchemaValidationException.Keyword.get -> string!
+Dekaf.SchemaRegistry.JsonSchemaValidationException.SchemaId.get -> int
+Dekaf.SchemaRegistry.JsonSchemaValidationMode
+Dekaf.SchemaRegistry.JsonSchemaValidationMode.Both = Dekaf.SchemaRegistry.JsonSchemaValidationMode.Serialize | Dekaf.SchemaRegistry.JsonSchemaValidationMode.Deserialize -> Dekaf.SchemaRegistry.JsonSchemaValidationMode
+Dekaf.SchemaRegistry.JsonSchemaValidationMode.Deserialize = 2 -> Dekaf.SchemaRegistry.JsonSchemaValidationMode
+Dekaf.SchemaRegistry.JsonSchemaValidationMode.None = 0 -> Dekaf.SchemaRegistry.JsonSchemaValidationMode
+Dekaf.SchemaRegistry.JsonSchemaValidationMode.Serialize = 1 -> Dekaf.SchemaRegistry.JsonSchemaValidationMode
+Dekaf.SchemaRegistry.JsonSchemaValidationOptions
+Dekaf.SchemaRegistry.JsonSchemaValidationOptions.JsonSchemaValidationOptions() -> void
+Dekaf.SchemaRegistry.JsonSchemaValidationOptions.Mode.get -> Dekaf.SchemaRegistry.JsonSchemaValidationMode
+Dekaf.SchemaRegistry.JsonSchemaValidationOptions.Mode.init -> void
+Dekaf.SchemaRegistry.JsonSchemaValidationOptions.ValidatorFactory.get -> Dekaf.SchemaRegistry.IJsonSchemaValidatorFactory!
+Dekaf.SchemaRegistry.JsonSchemaValidationOptions.ValidatorFactory.init -> void
 Dekaf.SchemaRegistry.SchemaCompatibilityLevel
 Dekaf.SchemaRegistry.SchemaCompatibilityLevel.Backward = 1 -> Dekaf.SchemaRegistry.SchemaCompatibilityLevel
 Dekaf.SchemaRegistry.SchemaCompatibilityLevel.BackwardTransitive = 2 -> Dekaf.SchemaRegistry.SchemaCompatibilityLevel
@@ -10,6 +69,66 @@ Dekaf.SchemaRegistry.SchemaCompatibilityLevel.ForwardTransitive = 4 -> Dekaf.Sch
 Dekaf.SchemaRegistry.SchemaCompatibilityLevel.Full = 5 -> Dekaf.SchemaRegistry.SchemaCompatibilityLevel
 Dekaf.SchemaRegistry.SchemaCompatibilityLevel.FullTransitive = 6 -> Dekaf.SchemaRegistry.SchemaCompatibilityLevel
 Dekaf.SchemaRegistry.SchemaCompatibilityLevel.None = 0 -> Dekaf.SchemaRegistry.SchemaCompatibilityLevel
+Dekaf.SchemaRegistry.SchemaRegistryRuleExecutor.SchemaRegistryRuleExecutor(System.Collections.Generic.IEnumerable<Dekaf.SchemaRegistry.ISchemaRegistryRuleHandler!>! handlers, System.Collections.Generic.IEnumerable<Dekaf.SchemaRegistry.ISchemaRegistryRuleAction!>! actions) -> void
 Dekaf.SchemaRegistry.SchemaRegistryClient.GetCompatibilityAsync(string? subject = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Dekaf.SchemaRegistry.SchemaCompatibilityLevel>!
 Dekaf.SchemaRegistry.SchemaRegistryClient.LookupSchemaAsync(string! subject, Dekaf.SchemaRegistry.Schema! schema, bool ignoreDeletedSchemas = true, bool normalize = false, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Dekaf.SchemaRegistry.RegisteredSchema!>!
+Dekaf.SchemaRegistry.SchemaRegistryClient.SchemaRegistryClient(Dekaf.SchemaRegistry.SchemaRegistryConfig! config, System.Func<System.Net.Http.HttpMessageHandler!>! handlerFactory) -> void
+Dekaf.SchemaRegistry.SchemaRegistryClient.SchemaRegistryClient(Dekaf.SchemaRegistry.SchemaRegistryConfig! config, System.Net.Http.HttpMessageHandler! handler) -> void
 Dekaf.SchemaRegistry.SchemaRegistryClient.UpdateCompatibilityAsync(Dekaf.SchemaRegistry.SchemaCompatibilityLevel level, string? subject = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Dekaf.SchemaRegistry.SchemaCompatibilityLevel>!
+static Dekaf.SchemaRegistry.SchemaRegistryExtensions.UseJsonSchemaRegistry<TKey, TValue>(this Dekaf.ConsumerBuilder<TKey, TValue>! builder, Dekaf.SchemaRegistry.ISchemaRegistryClient! schemaRegistry, System.Text.Json.JsonSerializerOptions? jsonOptions, Dekaf.SchemaRegistry.JsonSchemaValidationOptions! validationOptions) -> Dekaf.ConsumerBuilder<TKey, TValue>!
+static Dekaf.SchemaRegistry.SchemaRegistryExtensions.UseJsonSchemaRegistry<TKey, TValue>(this Dekaf.ConsumerBuilder<TKey, TValue>! builder, Dekaf.SchemaRegistry.ISchemaRegistryClient! schemaRegistry, System.Text.Json.Serialization.Metadata.JsonTypeInfo<TValue>! jsonTypeInfo, Dekaf.SchemaRegistry.JsonSchemaValidationOptions! validationOptions) -> Dekaf.ConsumerBuilder<TKey, TValue>!
+static Dekaf.SchemaRegistry.SchemaRegistryExtensions.UseJsonSchemaRegistry<TKey, TValue>(this Dekaf.ProducerBuilder<TKey, TValue>! builder, Dekaf.SchemaRegistry.ISchemaRegistryClient! schemaRegistry, string! jsonSchema, System.Text.Json.JsonSerializerOptions? jsonOptions, Dekaf.SchemaRegistry.JsonSchemaValidationOptions! validationOptions, Dekaf.SchemaRegistry.SubjectNameStrategy subjectNameStrategy = Dekaf.SchemaRegistry.SubjectNameStrategy.TopicName, bool autoRegisterSchemas = true) -> Dekaf.ProducerBuilder<TKey, TValue>!
+static Dekaf.SchemaRegistry.SchemaRegistryExtensions.UseJsonSchemaRegistry<TKey, TValue>(this Dekaf.ProducerBuilder<TKey, TValue>! builder, Dekaf.SchemaRegistry.ISchemaRegistryClient! schemaRegistry, string! jsonSchema, System.Text.Json.Serialization.Metadata.JsonTypeInfo<TValue>! jsonTypeInfo, Dekaf.SchemaRegistry.JsonSchemaValidationOptions! validationOptions, Dekaf.SchemaRegistry.SubjectNameStrategy subjectNameStrategy = Dekaf.SchemaRegistry.SubjectNameStrategy.TopicName, bool autoRegisterSchemas = true) -> Dekaf.ProducerBuilder<TKey, TValue>!
+Dekaf.SchemaRegistry.SchemaRegistryConfig.DefaultHeaders.get -> System.Collections.Generic.IReadOnlyDictionary<string!, string!>?
+Dekaf.SchemaRegistry.SchemaRegistryConfig.DefaultHeaders.init -> void
+Dekaf.SchemaRegistry.SchemaRegistryConfig.Proxy.get -> System.Net.IWebProxy?
+Dekaf.SchemaRegistry.SchemaRegistryConfig.Proxy.init -> void
+Dekaf.SchemaRegistry.SchemaRegistryConfig.Tls.get -> Dekaf.SchemaRegistry.SchemaRegistryTlsConfig?
+Dekaf.SchemaRegistry.SchemaRegistryConfig.Tls.init -> void
+Dekaf.SchemaRegistry.SchemaRegistryConfig.UseProxy.get -> bool
+Dekaf.SchemaRegistry.SchemaRegistryConfig.UseProxy.init -> void
+Dekaf.SchemaRegistry.SchemaRegistryConfig.UserAgent.get -> string?
+Dekaf.SchemaRegistry.SchemaRegistryConfig.UserAgent.init -> void
+Dekaf.SchemaRegistry.SchemaRegistryTlsConfig
+Dekaf.SchemaRegistry.SchemaRegistryTlsConfig.CaCertificate.get -> System.Security.Cryptography.X509Certificates.X509Certificate2?
+Dekaf.SchemaRegistry.SchemaRegistryTlsConfig.CaCertificate.init -> void
+Dekaf.SchemaRegistry.SchemaRegistryTlsConfig.CaCertificatePassword.get -> string?
+Dekaf.SchemaRegistry.SchemaRegistryTlsConfig.CaCertificatePassword.init -> void
+Dekaf.SchemaRegistry.SchemaRegistryTlsConfig.CaCertificatePath.get -> string?
+Dekaf.SchemaRegistry.SchemaRegistryTlsConfig.CaCertificatePath.init -> void
+Dekaf.SchemaRegistry.SchemaRegistryTlsConfig.CaCertificatePem.get -> string?
+Dekaf.SchemaRegistry.SchemaRegistryTlsConfig.CaCertificatePem.init -> void
+Dekaf.SchemaRegistry.SchemaRegistryTlsConfig.CaCertificates.get -> System.Security.Cryptography.X509Certificates.X509Certificate2Collection?
+Dekaf.SchemaRegistry.SchemaRegistryTlsConfig.CaCertificates.init -> void
+Dekaf.SchemaRegistry.SchemaRegistryTlsConfig.CheckCertificateRevocation.get -> bool
+Dekaf.SchemaRegistry.SchemaRegistryTlsConfig.CheckCertificateRevocation.init -> void
+Dekaf.SchemaRegistry.SchemaRegistryTlsConfig.ClientCertificate.get -> System.Security.Cryptography.X509Certificates.X509Certificate2?
+Dekaf.SchemaRegistry.SchemaRegistryTlsConfig.ClientCertificate.init -> void
+Dekaf.SchemaRegistry.SchemaRegistryTlsConfig.ClientCertificatePassword.get -> string?
+Dekaf.SchemaRegistry.SchemaRegistryTlsConfig.ClientCertificatePassword.init -> void
+Dekaf.SchemaRegistry.SchemaRegistryTlsConfig.ClientCertificatePath.get -> string?
+Dekaf.SchemaRegistry.SchemaRegistryTlsConfig.ClientCertificatePath.init -> void
+Dekaf.SchemaRegistry.SchemaRegistryTlsConfig.ClientCertificatePem.get -> string?
+Dekaf.SchemaRegistry.SchemaRegistryTlsConfig.ClientCertificatePem.init -> void
+Dekaf.SchemaRegistry.SchemaRegistryTlsConfig.ClientPrivateKeyPath.get -> string?
+Dekaf.SchemaRegistry.SchemaRegistryTlsConfig.ClientPrivateKeyPath.init -> void
+Dekaf.SchemaRegistry.SchemaRegistryTlsConfig.ClientPrivateKeyPem.get -> string?
+Dekaf.SchemaRegistry.SchemaRegistryTlsConfig.ClientPrivateKeyPem.init -> void
+Dekaf.SchemaRegistry.SchemaRegistryTlsConfig.EnabledSslProtocols.get -> System.Security.Authentication.SslProtocols?
+Dekaf.SchemaRegistry.SchemaRegistryTlsConfig.EnabledSslProtocols.init -> void
+Dekaf.SchemaRegistry.SchemaRegistryTlsConfig.RemoteCertificateValidationCallback.get -> System.Net.Security.RemoteCertificateValidationCallback?
+Dekaf.SchemaRegistry.SchemaRegistryTlsConfig.RemoteCertificateValidationCallback.init -> void
+Dekaf.SchemaRegistry.SchemaRegistryTlsConfig.SchemaRegistryTlsConfig() -> void
+Dekaf.SchemaRegistry.SchemaRegistryTlsConfig.ValidateServerCertificate.get -> bool
+Dekaf.SchemaRegistry.SchemaRegistryTlsConfig.ValidateServerCertificate.init -> void
+Dekaf.SchemaRegistry.SchemaRegistryTlsConfig.ValidateServerCertificateHostName.get -> bool
+Dekaf.SchemaRegistry.SchemaRegistryTlsConfig.ValidateServerCertificateHostName.init -> void
+Dekaf.SchemaRegistry.SchemaRegistrySerializer<T>.PrepareAsync(string! topic, T value, bool isKey = false, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.SchemaRegistry.ResolvedSchemaContext>
+Dekaf.SchemaRegistry.SchemaRegistrySerializer<T>.PrepareAsync(T value, Dekaf.Serialization.SerializationContext context, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.SchemaRegistry.ISchemaRegistryClient.GetDekAsync(string! kekName, string! subject, int version, Dekaf.SchemaRegistry.DekAlgorithm algorithm, bool deleted = false, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Dekaf.SchemaRegistry.Dek!>!
+Dekaf.SchemaRegistry.SchemaRegistryClient.GetDekAsync(string! kekName, string! subject, int version, Dekaf.SchemaRegistry.DekAlgorithm algorithm, bool deleted = false, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Dekaf.SchemaRegistry.Dek!>!
+override Dekaf.SchemaRegistry.ResolvedSchemaContext.GetHashCode() -> int
+static Dekaf.SchemaRegistry.ResolvedSchemaContext.operator !=(Dekaf.SchemaRegistry.ResolvedSchemaContext left, Dekaf.SchemaRegistry.ResolvedSchemaContext right) -> bool
+static Dekaf.SchemaRegistry.ResolvedSchemaContext.operator ==(Dekaf.SchemaRegistry.ResolvedSchemaContext left, Dekaf.SchemaRegistry.ResolvedSchemaContext right) -> bool
+~override Dekaf.SchemaRegistry.ResolvedSchemaContext.Equals(object obj) -> bool
+~override Dekaf.SchemaRegistry.ResolvedSchemaContext.ToString() -> string

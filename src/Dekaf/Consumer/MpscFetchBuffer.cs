@@ -355,6 +355,12 @@ internal sealed class MpscFetchBuffer
 
     public bool IsCompleted => _completed;
 
+    /// <summary>
+    /// Wakes the single reader for a control-plane change that may make externally
+    /// retained data readable without publishing a new buffer item.
+    /// </summary>
+    internal void SignalReader() => SignalConsumerWaitingForData();
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal bool HasDataAvailable()
     {

@@ -1,4 +1,5 @@
 using Dekaf.Admin;
+using Dekaf.Diagnostics;
 using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
@@ -16,15 +17,63 @@ public sealed class AdminClientControllerBootstrapTests
         await using var context = new ControllerAdminContext();
 
         var result = await context.Client.DescribeClusterAsync();
+        var status = context.Client.GetStatus();
+        var activeControllerStatus = status.Brokers.Single(static broker => broker.BrokerId == 2);
 
         await Assert.That(result.ClusterId).IsEqualTo("cluster-a");
+        await Assert.That(context.Client.ClusterId).IsEqualTo("cluster-a");
+        await Assert.That(status.ClusterId).IsEqualTo("cluster-a");
+        await Assert.That(status.MetadataLastRefreshedAtUtc).IsNotNull();
+        await Assert.That(status.Brokers.Select(static broker => broker.BrokerId)).IsEquivalentTo([1, 2]);
+        await Assert.That(activeControllerStatus.State).IsEqualTo(BrokerConnectionState.Disconnected);
+        await Assert.That(activeControllerStatus.ConnectionCount).IsEqualTo(0);
         await Assert.That(result.ControllerId).IsEqualTo(2);
         await Assert.That(result.Nodes.Select(static node => node.NodeId)).IsEquivalentTo([1, 2]);
-        context.Pool.DidNotReceiveWithAnyArgs().RegisterBroker(default, default!, default);
+        await Assert.That(async () => { _ = await context.Pool.GetConnectionAsync(1); })
+            .Throws<InvalidOperationException>();
         await Assert.That(context.DiscoveryRequests).IsEqualTo(1);
         await Assert.That(context.LastDiscoveryRequest!.EndpointType)
             .IsEqualTo(DescribeClusterEndpointType.Controller);
         await Assert.That(context.LastDiscoveryVersion).IsGreaterThanOrEqualTo((short)1);
+    }
+
+    [Test]
+    public async Task GetStatus_DoesNotProjectFollowerDiscoveryConnectionOntoActiveController()
+    {
+        await using var context = new ControllerAdminContext(
+            CreateDiscoveryResponse(
+                activeControllerId: 2,
+                controllerOneHost: "seed",
+                controllerOnePort: 9093));
+
+        _ = await context.Client.DescribeClusterAsync();
+        var status = context.Client.GetStatus();
+        var follower = status.Brokers.Single(static broker => broker.BrokerId == 1);
+        var active = status.Brokers.Single(static broker => broker.BrokerId == 2);
+
+        await Assert.That(follower.ConnectionCount).IsEqualTo(1);
+        await Assert.That(active.ConnectionCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task GetStatus_PreservesDiscoveryAliasAcrossAdvertisedEndpointRefresh()
+    {
+        await using var context = new ControllerAdminContext(
+            CreateDiscoveryResponse(
+                activeControllerId: 2,
+                controllerOneHost: "seed",
+                controllerOnePort: 9093),
+            refreshInterval: TimeSpan.Zero);
+        context.EnqueueDiscovery(CreateDiscoveryResponse(activeControllerId: 2));
+
+        _ = await context.Client.DescribeClusterAsync();
+        _ = await context.Client.DescribeClusterAsync();
+        var status = context.Client.GetStatus();
+        var follower = status.Brokers.Single(static broker => broker.BrokerId == 1);
+        var active = status.Brokers.Single(static broker => broker.BrokerId == 2);
+
+        await Assert.That(follower.ConnectionCount).IsEqualTo(1);
+        await Assert.That(active.ConnectionCount).IsEqualTo(1);
     }
 
     [Test]
@@ -39,6 +88,172 @@ public sealed class AdminClientControllerBootstrapTests
         await Assert.That(initial.ControllerId).IsEqualTo(2);
         await Assert.That(refreshed.ControllerId).IsEqualTo(1);
         await Assert.That(context.DiscoveryRequests).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task GetStatus_PreservesLiveDiscoveryAliasAcrossAdvertisedRefreshes()
+    {
+        await using var context = new ControllerAdminContext(
+            CreateDiscoveryResponse(
+                activeControllerId: 1,
+                controllerOneHost: "seed",
+                controllerOnePort: 9093),
+            refreshInterval: TimeSpan.Zero);
+        context.EnqueueDiscovery(CreateDiscoveryResponse(activeControllerId: 1));
+        context.EnqueueDiscovery(CreateDiscoveryResponse(activeControllerId: 1));
+
+        _ = await context.Client.DescribeClusterAsync();
+        _ = await context.Client.DescribeClusterAsync();
+        _ = await context.Client.DescribeClusterAsync();
+        var controller = context.Client.GetStatus().Brokers.Single(static broker => broker.BrokerId == 1);
+
+        await Assert.That(controller.ConnectionCount).IsEqualTo(2);
+        await Assert.That(controller.ConnectedConnectionCount).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task GetStatus_PrunesDiscoveryAliasAfterConnectionIsRemoved()
+    {
+        await using var context = new ControllerAdminContext(
+            CreateDiscoveryResponse(
+                activeControllerId: 1,
+                controllerOneHost: "seed",
+                controllerOnePort: 9093),
+            refreshInterval: TimeSpan.Zero);
+        context.EnqueueDiscovery(CreateDiscoveryResponse(activeControllerId: 1));
+        context.EnqueueDiscovery(CreateDiscoveryResponse(activeControllerId: 1));
+
+        _ = await context.Client.DescribeClusterAsync();
+        _ = await context.Client.DescribeClusterAsync();
+        await Assert.That(context.GetDiscoveryAliases(1)).IsEquivalentTo([
+            new ConnectionStatusEndpointAlias("seed", 9093)
+        ]);
+
+        await context.Pool.CloseAllAsync();
+        _ = await context.Client.DescribeClusterAsync();
+
+        await Assert.That(context.GetDiscoveryAliases(1)).IsEquivalentTo([
+            new ConnectionStatusEndpointAlias("controller-1", 19093)
+        ]);
+    }
+
+    [Test]
+    public async Task GetStatus_RemapsDiscoveryAliasWhenEndpointGetsNewControllerId()
+    {
+        await using var context = new ControllerAdminContext(
+            CreateDiscoveryResponse(
+                activeControllerId: 1,
+                controllerOneHost: "seed",
+                controllerOnePort: 9093),
+            refreshInterval: TimeSpan.Zero);
+        context.EnqueueDiscovery(CreateDiscoveryResponse(
+            activeControllerId: 3,
+            controllerOneHost: "seed",
+            controllerOnePort: 9093,
+            controllerOneNodeId: 3));
+
+        _ = await context.Client.DescribeClusterAsync();
+        _ = await context.Client.DescribeClusterAsync();
+        var replacement = context.Client.GetStatus().Brokers.Single(static broker => broker.BrokerId == 3);
+
+        await Assert.That(replacement.ConnectionCount).IsEqualTo(1);
+        await Assert.That(replacement.ConnectedConnectionCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task DescribeClusterAsync_RetriesWhileControllerElectionIsPending()
+    {
+        await using var context = new ControllerAdminContext(
+            CreateDiscoveryResponse(activeControllerId: -1));
+        context.EnqueueDiscovery(CreateDiscoveryResponse(activeControllerId: 1));
+
+        var result = await context.Client.DescribeClusterAsync();
+
+        await Assert.That(result.ControllerId).IsEqualTo(1);
+        await Assert.That(context.DiscoveryRequests).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task DescribeClusterAsync_RetainsPendingElectionAcrossRetriableFailure()
+    {
+        await using var context = new ControllerAdminContext(
+            CreateDiscoveryResponse(activeControllerId: -1));
+        context.EnqueueDiscovery(new KafkaException(ErrorCode.RequestTimedOut, "Controller unavailable"));
+        context.EnqueueDiscovery(CreateDiscoveryResponse(activeControllerId: 1));
+
+        var result = await context.Client.DescribeClusterAsync();
+
+        await Assert.That(result.ControllerId).IsEqualTo(1);
+        await Assert.That(context.DiscoveryRequests).IsEqualTo(3);
+    }
+
+    [Test]
+    public async Task DescribeClusterAsync_DeadlineCancelsInFlightDiscovery()
+    {
+        await using var context = new ControllerAdminContext(
+            CreateDiscoveryResponse(activeControllerId: -1),
+            initTimeoutMs: 250);
+        context.EnqueueDiscovery(WaitForDiscoveryCancellationAsync);
+
+        var exception = await Assert.That(async () => await context.Client.DescribeClusterAsync())
+            .Throws<KafkaTimeoutException>();
+
+        await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Metadata);
+        await Assert.That(context.DiscoveryRequests).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task DescribeClusterAsync_CallerCancellationWinsOverInitializationDeadline()
+    {
+        var discoveryStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var context = new ControllerAdminContext(
+            CreateDiscoveryResponse(activeControllerId: -1),
+            initTimeoutMs: 10_000);
+        context.EnqueueDiscovery(async cancellationToken =>
+        {
+            discoveryStarted.TrySetResult(true);
+            return await WaitForDiscoveryCancellationAsync(cancellationToken);
+        });
+        using var cancellation = new CancellationTokenSource();
+        var operation = context.Client.DescribeClusterAsync(cancellation.Token).AsTask();
+        await discoveryStarted.Task;
+
+        cancellation.Cancel();
+
+        var exception = await Assert.ThrowsAsync<OperationCanceledException>(() => operation);
+        await Assert.That(exception).IsNotTypeOf<KafkaTimeoutException>();
+    }
+
+    [Test]
+    public async Task RefreshAsync_InitializationDeadlineIncludesRefreshLockWait()
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        await using var versionManager = new MetadataManager(pool, []);
+        using var manager = new ControllerMetadataManager(
+            pool,
+            versionManager,
+            ["seed:9093"],
+            new MetadataOptions { InitTimeoutMs = 0 });
+        var refreshLock = (SemaphoreSlim)typeof(ControllerMetadataManager)
+            .GetField("_refreshLock", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .GetValue(manager)!;
+        await refreshLock.WaitAsync();
+        var lockHeld = true;
+
+        try
+        {
+            var operation = manager.RefreshAsync(CancellationToken.None);
+
+            await Assert.That(operation.IsCompleted).IsTrue();
+            refreshLock.Release();
+            lockHeld = false;
+            await Assert.That(async () => await operation).Throws<KafkaTimeoutException>();
+        }
+        finally
+        {
+            if (lockHeld)
+                refreshLock.Release();
+        }
     }
 
     [Test]
@@ -111,7 +326,7 @@ public sealed class AdminClientControllerBootstrapTests
                 pool,
                 metadataManager,
                 ["controller-1:9093", "invalid"],
-                TimeSpan.FromMinutes(15)))
+                new MetadataOptions()))
             .Throws<ArgumentException>();
 
         await Assert.That(exception!.Message).Contains("invalid");
@@ -135,6 +350,7 @@ public sealed class AdminClientControllerBootstrapTests
 
         await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.MismatchedEndpointType);
         await Assert.That(exception.Message).Contains("Expected broker endpoint");
+        await Assert.That(context.DiscoveryRequests).IsEqualTo(1);
     }
 
     [Test]
@@ -163,8 +379,6 @@ public sealed class AdminClientControllerBootstrapTests
             Arg.Any<DescribeQuorumRequest>(),
             Arg.Any<short>(),
             Arg.Any<CancellationToken>());
-        await context.Pool.DidNotReceiveWithAnyArgs()
-            .GetConnectionAsync(default(int), default);
     }
 
     [Test]
@@ -226,7 +440,11 @@ public sealed class AdminClientControllerBootstrapTests
         Nodes = []
     };
 
-    private static DescribeClusterResponse CreateDiscoveryResponse(int activeControllerId) => new()
+    private static DescribeClusterResponse CreateDiscoveryResponse(
+        int activeControllerId,
+        string controllerOneHost = "controller-1",
+        int controllerOnePort = 19093,
+        int controllerOneNodeId = 1) => new()
     {
         ErrorCode = ErrorCode.None,
         EndpointType = DescribeClusterEndpointType.Controller,
@@ -234,28 +452,42 @@ public sealed class AdminClientControllerBootstrapTests
         ControllerId = activeControllerId,
         Nodes =
         [
-            new DescribeClusterNode { NodeId = 1, Host = "controller-1", Port = 19093 },
+            new DescribeClusterNode
+            {
+                NodeId = controllerOneNodeId,
+                Host = controllerOneHost,
+                Port = controllerOnePort
+            },
             new DescribeClusterNode { NodeId = 2, Host = "controller-2", Port = 19094 }
         ]
     };
 
+    private static async ValueTask<DescribeClusterResponse> WaitForDiscoveryCancellationAsync(
+        CancellationToken cancellationToken)
+    {
+        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        throw new InvalidOperationException("Controller discovery cancellation was not observed.");
+    }
+
     private sealed class ControllerAdminContext : IAsyncDisposable
     {
         private readonly MetadataManager _metadataManager;
-        private readonly Queue<DescribeClusterResponse> _discoveryResponses = new();
+        private readonly Queue<object> _discoveryOutcomes = new();
 
         internal ControllerAdminContext(
             DescribeClusterResponse? discoveryResponse = null,
-            TimeSpan? refreshInterval = null)
+            TimeSpan? refreshInterval = null,
+            int initTimeoutMs = 60_000)
         {
             BootstrapController = CreateConnection("seed", 9093);
             ActiveController = CreateConnection("controller-2", 19094);
             OtherController = CreateConnection("controller-1", 19093);
-            Pool = Substitute.For<IConnectionPool>();
-            Pool.GetConnectionAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
-                .Returns(callInfo =>
+            Pool = new ConnectionPool(
+                "controller-admin-test",
+                new ConnectionOptions(),
+                connectionsPerBroker: 1,
+                connectionFactory: (_, host, _, _, _) =>
                 {
-                    var host = callInfo.ArgAt<string>(0);
                     return ValueTask.FromResult(host switch
                     {
                         "controller-1" => OtherController,
@@ -264,7 +496,7 @@ public sealed class AdminClientControllerBootstrapTests
                     });
                 });
 
-            _discoveryResponses.Enqueue(discoveryResponse ?? CreateDiscoveryResponse(activeControllerId: 2));
+            _discoveryOutcomes.Enqueue(discoveryResponse ?? CreateDiscoveryResponse(activeControllerId: 2));
             ConfigureDiscovery(BootstrapController);
             ConfigureDiscovery(ActiveController);
             ConfigureDiscovery(OtherController);
@@ -286,7 +518,10 @@ public sealed class AdminClientControllerBootstrapTests
                 ownsResources: true,
                 metadataOptions: new MetadataOptions
                 {
-                    MetadataRefreshInterval = refreshInterval ?? TimeSpan.FromMinutes(15)
+                    MetadataRefreshInterval = refreshInterval ?? TimeSpan.FromMinutes(15),
+                    RetryBackoffMs = 1,
+                    RetryBackoffMaxMs = 1,
+                    InitTimeoutMs = initTimeoutMs
                 });
         }
 
@@ -299,7 +534,23 @@ public sealed class AdminClientControllerBootstrapTests
         internal DescribeClusterRequest? LastDiscoveryRequest { get; private set; }
         internal short LastDiscoveryVersion { get; private set; }
 
-        internal void EnqueueDiscovery(DescribeClusterResponse response) => _discoveryResponses.Enqueue(response);
+        internal ConnectionStatusEndpointAlias[] GetDiscoveryAliases(int controllerId)
+        {
+            var manager = (ControllerMetadataManager)typeof(AdminClient)
+                .GetField(
+                    "_controllerMetadataManager",
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                .GetValue(Client)!;
+            return manager.Snapshot.DiscoveryConnections[controllerId];
+        }
+
+        internal void EnqueueDiscovery(DescribeClusterResponse response) => _discoveryOutcomes.Enqueue(response);
+
+        internal void EnqueueDiscovery(Exception exception) => _discoveryOutcomes.Enqueue(exception);
+
+        internal void EnqueueDiscovery(
+            Func<CancellationToken, ValueTask<DescribeClusterResponse>> operation) =>
+            _discoveryOutcomes.Enqueue(operation);
 
         public async ValueTask DisposeAsync() => await Client.DisposeAsync().ConfigureAwait(false);
 
@@ -314,10 +565,17 @@ public sealed class AdminClientControllerBootstrapTests
                     DiscoveryRequests++;
                     LastDiscoveryRequest = callInfo.ArgAt<DescribeClusterRequest>(0);
                     LastDiscoveryVersion = callInfo.ArgAt<short>(1);
-                    var response = _discoveryResponses.Count > 1
-                        ? _discoveryResponses.Dequeue()
-                        : _discoveryResponses.Peek();
-                    return ValueTask.FromResult(response);
+                    var outcome = _discoveryOutcomes.Count > 1
+                        ? _discoveryOutcomes.Dequeue()
+                        : _discoveryOutcomes.Peek();
+                    return outcome switch
+                    {
+                        DescribeClusterResponse response => ValueTask.FromResult(response),
+                        Exception exception => ValueTask.FromException<DescribeClusterResponse>(exception),
+                        Func<CancellationToken, ValueTask<DescribeClusterResponse>> operation =>
+                            operation(callInfo.ArgAt<CancellationToken>(2)),
+                        _ => throw new InvalidOperationException("Unknown controller discovery outcome.")
+                    };
                 });
         }
 

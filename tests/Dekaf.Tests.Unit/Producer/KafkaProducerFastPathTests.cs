@@ -1,6 +1,8 @@
+using System.Diagnostics;
 using System.Reflection;
 using System.Runtime.ExceptionServices;
 using System.Text;
+using Dekaf.Diagnostics;
 using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Producer;
@@ -10,6 +12,7 @@ using Dekaf.Serialization;
 
 namespace Dekaf.Tests.Unit.Producer;
 
+[NotInParallel("ActivityListener")]
 public class KafkaProducerFastPathTests
 {
     private const string Topic = "test-topic";
@@ -109,6 +112,54 @@ public class KafkaProducerFastPathTests
         await Assert.That(metadata.Topic).IsEqualTo(Topic);
         await Assert.That(metadata.Partition).IsEqualTo(0);
         await Assert.That(metadata.Offset).IsEqualTo(7);
+    }
+
+    [Test]
+    public async Task ProduceAsync_Tracing_RestoresCallerOwnedHeadersAfterAppend()
+    {
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name == DekafDiagnostics.ActivitySourceName,
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData
+        };
+        ActivitySource.AddActivityListener(listener);
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 4096,
+            LingerMs = 10,
+            RequestTimeoutMs = 500,
+            DeliveryTimeoutMs = 1000,
+            CloseTimeoutMs = 1000
+        };
+
+        await using var producer = new KafkaProducer<string, string>(
+            options,
+            Serializers.String,
+            Serializers.String);
+        await StopProducerBackgroundLoopsAsync(producer);
+        SeedProducerMetadata(producer);
+        SetInstanceField(producer, "_initialized", true);
+        var headers = new Headers(3).Add("existing", "value");
+
+        var produceTask = producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Key = "key",
+            Value = "value",
+            Headers = headers
+        });
+
+        await Assert.That(headers.Count).IsEqualTo(1);
+        await Assert.That(headers[0].Key).IsEqualTo("existing");
+
+        var readyBatch = CompleteCurrentBatch(producer.RecordAccumulator, new TopicPartition(Topic, 0));
+        readyBatch.CompleteSend(baseOffset: 7, DateTimeOffset.UtcNow);
+        _ = await produceTask;
+
+        await Assert.That(headers.Count).IsEqualTo(1);
     }
 
     [Test]

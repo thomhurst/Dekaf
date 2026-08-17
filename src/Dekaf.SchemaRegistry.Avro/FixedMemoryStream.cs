@@ -34,6 +34,16 @@ internal sealed class FixedMemoryStream : Stream
         _position = newPosition;
     }
 
+    public override void Write(ReadOnlySpan<byte> buffer)
+    {
+        var newPosition = _position + buffer.Length;
+        if (newPosition > _memory.Length)
+            throw new FixedMemoryStreamOverflowException(newPosition);
+
+        buffer.CopyTo(_memory.Span.Slice(_position));
+        _position = newPosition;
+    }
+
     public override void WriteByte(byte value)
     {
         var newPosition = _position + 1;

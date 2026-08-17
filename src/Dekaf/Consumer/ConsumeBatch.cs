@@ -11,19 +11,43 @@ namespace Dekaf.Consumer
         // is being published and must not be adopted by a batch iterator.
         private readonly object _publicationLock = new();
         public int Version;
+        // One-read hot-path marker. Cleared only after ConsumeOne applies every change from
+        // a stable epoch, so validating one partition cannot hide a change for another.
+        public int ConsumeOneDeliveryChangesPending;
+        // Set only when a batch iterator stops before reading because its partition paused.
+        // Batch completion probes once to distinguish a remaining record from exhaustion.
+        public int BatchExhaustionProbePending;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Invalidate()
         {
             lock (_publicationLock)
+            {
+                Volatile.Write(ref ConsumeOneDeliveryChangesPending, 1);
                 Interlocked.Add(ref Version, 2);
+            }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void BeginPublication()
         {
             Monitor.Enter(_publicationLock);
-            Interlocked.Increment(ref Version);
+            Volatile.Write(ref ConsumeOneDeliveryChangesPending, 1);
+            // Snapshot delivery can reserve the odd epoch without entering this monitor.
+            // Wait until that tiny position-publication section completes, then claim the
+            // epoch with CAS so publication cannot overlap it.
+            var spin = new SpinWait();
+            while (true)
+            {
+                var version = Volatile.Read(ref Version);
+                if ((version & 1) == 0
+                    && Interlocked.CompareExchange(ref Version, version + 1, version) == version)
+                {
+                    return;
+                }
+
+                spin.SpinOnce();
+            }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -32,21 +56,71 @@ namespace Dekaf.Consumer
             Interlocked.Increment(ref Version);
             Monitor.Exit(_publicationLock);
         }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool TryBeginSnapshotDelivery(int expectedVersion) =>
+            (expectedVersion & 1) == 0
+            && Interlocked.CompareExchange(
+                ref Version,
+                expectedVersion + 1,
+                expectedVersion) == expectedVersion;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public int EndSnapshotDelivery(int deliveryVersion)
+        {
+            var stableVersion = deliveryVersion + 2;
+            Volatile.Write(ref Version, stableVersion);
+            return stableVersion;
+        }
+
+        public int CaptureStableVersion()
+        {
+            var spin = new SpinWait();
+            while (true)
+            {
+                var version = Volatile.Read(ref Version);
+                if ((version & 1) == 0)
+                    return version;
+
+                spin.SpinOnce();
+            }
+        }
+
+        public bool TryAcknowledgeConsumeOneDeliveryChanges(int expectedVersion)
+        {
+            lock (_publicationLock)
+            {
+                if (Version != expectedVersion)
+                    return false;
+
+                Volatile.Write(ref ConsumeOneDeliveryChangesPending, 0);
+                return true;
+            }
+        }
     }
+
+    internal enum BatchIterationStatus : byte
+    {
+        Continue,
+        Paused,
+        Stopped
+    }
+
+    internal delegate BatchIterationStatus BatchIterationContinuation(TopicPartition partition);
 
     internal readonly struct BatchIterationGuard(
         BatchIterationEpoch? epoch,
         int capturedVersion,
-        Func<TopicPartition, bool>? canContinue = null)
+        BatchIterationContinuation? getStatus = null)
     {
         public int CapturedVersion => capturedVersion;
 
         public bool CanStart(TopicPartition partition, ref int observedVersion)
         {
             if (epoch is null)
-                return canContinue is null || canContinue(partition);
+                return getStatus is null || getStatus(partition) == BatchIterationStatus.Continue;
 
-            if (canContinue is null)
+            if (getStatus is null)
             {
                 var currentVersion = Volatile.Read(ref epoch.Version);
                 return (currentVersion & 1) == 0 && currentVersion == observedVersion;
@@ -62,8 +136,13 @@ namespace Dekaf.Consumer
                     continue;
                 }
 
-                if (!canContinue(partition))
+                var status = getStatus(partition);
+                if (status != BatchIterationStatus.Continue)
+                {
+                    if (status == BatchIterationStatus.Paused)
+                        Volatile.Write(ref epoch.BatchExhaustionProbePending, 1);
                     return false;
+                }
 
                 if (Volatile.Read(ref epoch.Version) == currentVersion)
                 {
@@ -77,7 +156,7 @@ namespace Dekaf.Consumer
         public bool IsCurrent(TopicPartition partition, ref int observedVersion)
         {
             if (epoch is null)
-                return canContinue is null || canContinue(partition);
+                return getStatus is null || getStatus(partition) == BatchIterationStatus.Continue;
 
             var spin = new SpinWait();
             while (true)
@@ -92,13 +171,47 @@ namespace Dekaf.Consumer
                 if (currentVersion == observedVersion)
                     return true;
 
-                if (canContinue is null || !canContinue(partition))
+                var status = getStatus?.Invoke(partition) ?? BatchIterationStatus.Stopped;
+                if (status != BatchIterationStatus.Continue)
+                {
+                    if (status == BatchIterationStatus.Paused)
+                        Volatile.Write(ref epoch.BatchExhaustionProbePending, 1);
                     return false;
+                }
 
                 if (Volatile.Read(ref epoch.Version) == currentVersion)
                 {
                     observedVersion = currentVersion;
                     return true;
+                }
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public BatchIterationStatus GetStatusAfterRead(TopicPartition partition, ref int observedVersion)
+        {
+            if (epoch is null)
+                return getStatus?.Invoke(partition) ?? BatchIterationStatus.Continue;
+
+            var spin = new SpinWait();
+            while (true)
+            {
+                var currentVersion = Volatile.Read(ref epoch.Version);
+                if ((currentVersion & 1) != 0)
+                {
+                    spin.SpinOnce();
+                    continue;
+                }
+
+                if (currentVersion == observedVersion)
+                    return BatchIterationStatus.Continue;
+
+                var status = getStatus?.Invoke(partition) ?? BatchIterationStatus.Stopped;
+                if (Volatile.Read(ref epoch.Version) == currentVersion)
+                {
+                    if (status == BatchIterationStatus.Continue)
+                        observedVersion = currentVersion;
+                    return status;
                 }
             }
         }
@@ -246,8 +359,14 @@ namespace Dekaf.Consumer
             {
                 PendingFetchData pending = _batch._pendingFetchData;
 
-                if (!_canContinue || !_batch._iterationGuard.IsCurrent(pending.TopicPartition, ref _observedVersion))
+                if (!_canContinue)
                     return false;
+
+                if (!_batch._iterationGuard.IsCurrent(pending.TopicPartition, ref _observedVersion))
+                {
+                    _canContinue = false;
+                    return false;
+                }
 
                 if (_recordsYielded >= _batch._maxRecords)
                 {
@@ -301,8 +420,16 @@ namespace Dekaf.Consumer
                     return false;
                 }
 
-                if (!_batch._iterationGuard.IsCurrent(pending.TopicPartition, ref _observedVersion))
+                var iterationStatus = _batch._iterationGuard.GetStatusAfterRead(
+                    pending.TopicPartition,
+                    ref _observedVersion);
+                if (iterationStatus != BatchIterationStatus.Continue)
+                {
+                    _canContinue = false;
+                    if (iterationStatus == BatchIterationStatus.Paused)
+                        pending.BufferCurrentForRedelivery();
                     return false;
+                }
 
                 pending.TrackConsumed(offset, messageBytes);
                 _batch._storeOffsetOnDelivery?.Invoke(

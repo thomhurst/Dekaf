@@ -33,6 +33,7 @@ public static class DekafDiagnostics
     internal const string MessagingDestinationPartitionId = "messaging.destination.partition.id";
     internal const string MessagingConsumerGroupName = "messaging.consumer.group.name";
     internal const string MessagingMessageKey = "messaging.kafka.message.key";
+    internal const string MessagingKafkaClusterId = "messaging.kafka.cluster.id";
     internal const string MessagingKafkaTombstone = "messaging.kafka.message.tombstone";
     internal const string MessagingClientId = "messaging.client.id";
 

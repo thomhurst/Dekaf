@@ -301,7 +301,31 @@ public sealed class InMemoryAsyncSerdeTests
 
         await Assert.That(record.Key).IsEqualTo("k");
         await Assert.That(record.Value).IsEqualTo("v");
+        await Assert.That(Encoding.UTF8.GetString(serde.LastDeserializeContext.KeyData.Span)).IsEqualTo("v:k");
+        await Assert.That(serde.LastDeserializeContext.IsKeyNull).IsFalse();
         await Assert.That(offsets[new TopicPartition("shared", 0)]).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task ShareConsumer_SyncValueDeserializer_ReceivesRawKeyContext()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var valueDeserializer = new CapturingStringDeserializer();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        var shareConsumer = new InMemoryShareConsumer<string, string>(
+            cluster,
+            Serializers.String,
+            valueDeserializer,
+            new InMemoryShareConsumerOptions { GroupId = "sync-key-context" });
+
+        await producer.ProduceAsync("shared", "key", "value");
+        shareConsumer.Subscribe("shared");
+
+        var record = await shareConsumer.PollAsync().FirstAsync();
+
+        await Assert.That(record.Value).IsEqualTo("value");
+        await Assert.That(Encoding.UTF8.GetString(valueDeserializer.Context.KeyData.Span)).IsEqualTo("key");
+        await Assert.That(valueDeserializer.Context.IsKeyNull).IsFalse();
     }
 
     [Test]
@@ -409,6 +433,17 @@ public sealed class InMemoryAsyncSerdeTests
     {
         public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
             throw new InvalidOperationException("Deserialization failed.");
+    }
+
+    private sealed class CapturingStringDeserializer : IDeserializer<string>
+    {
+        public SerializationContext Context { get; private set; }
+
+        public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
+        {
+            Context = context;
+            return Encoding.UTF8.GetString(data.Span);
+        }
     }
 
     /// <summary>

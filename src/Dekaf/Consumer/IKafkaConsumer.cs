@@ -343,11 +343,27 @@ public interface IConsumerPartitions
     /// <summary>
     /// Pauses consumption from partitions.
     /// </summary>
+    /// <remarks>
+    /// Records already fetched for a paused partition are retained but suppressed by
+    /// <see cref="IKafkaConsumer{TKey,TValue}.ConsumeOneAsync"/>,
+    /// <see cref="IKafkaConsumer{TKey,TValue}.ConsumeAsync"/>,
+    /// <see cref="IKafkaConsumer{TKey,TValue}.ConsumeBatchAsync"/>, and
+    /// <see cref="IKafkaConsumer{TKey,TValue}.ConsumeRawBatchAsync"/> until
+    /// <see cref="Resume"/> is called. Records whose final delivery check completed before
+    /// a concurrent pause belong to the in-progress consume operation; the pause applies
+    /// at the next record-delivery boundary. If pause wins the final delivery check after
+    /// deserialization or interceptor execution, the suppressed record is replayed after
+    /// resume; deserializers and interceptors must therefore tolerate repeated execution.
+    /// </remarks>
     void Pause(params TopicPartition[] partitions);
 
     /// <summary>
     /// Resumes consumption from partitions.
     /// </summary>
+    /// <remarks>
+    /// Preserved prefetched records are delivered in their original per-partition order
+    /// and retain their original offsets.
+    /// </remarks>
     void Resume(params TopicPartition[] partitions);
 }
 
@@ -632,6 +648,7 @@ public readonly struct ConsumeResult<TKey, TValue>
             serializationContext.Topic = topic;
             serializationContext.Component = SerializationComponent.Key;
             serializationContext.Headers = null;
+            serializationContext.KeyData = ReadOnlyMemory<byte>.Empty;
             serializationContext.IsNull = false;
 
             Key = keyDeserializer.Deserialize(keyData, serializationContext);
@@ -646,6 +663,7 @@ public readonly struct ConsumeResult<TKey, TValue>
             serializationContext.Topic = topic;
             serializationContext.Component = SerializationComponent.Value;
             serializationContext.Headers = null;
+            serializationContext.KeyData = SerializationContext.NormalizeKeyData(keyData, isKeyNull);
             serializationContext.IsNull = isValueNull;
 
             Value = isValueNull

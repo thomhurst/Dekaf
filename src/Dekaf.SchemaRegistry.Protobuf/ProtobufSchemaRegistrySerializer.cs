@@ -24,7 +24,7 @@ namespace Dekaf.SchemaRegistry.Protobuf;
 /// <typeparam name="T">The Protobuf message type to serialize.</typeparam>
 public sealed class ProtobufSchemaRegistrySerializer<
     [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>
-    : ISerializer<T>, IAsyncDisposable
+    : ISerializer<T>, IAsyncSerializerPreparer<T>, IAsyncDisposable
     where T : IMessage<T>
 {
     private const byte MagicByte = 0x00;
@@ -37,7 +37,9 @@ public sealed class ProtobufSchemaRegistrySerializer<
     private readonly SubjectSchemaIdCache _subjectSchemaIdCache = new();
     private readonly string _schemaString;
     private readonly byte[] _encodedMessageIndexes;
-    private readonly SubjectSchemaIdCache _resolvedSubjectCache = new();
+    private readonly SchemaResolutionCache<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> _schemaResolutionCache = new();
+    private readonly SchemaResolutionCache<RegisteredDependency> _referenceResolutionCache = new();
+    private readonly Schema _resolutionIdentitySchema;
 
     /// <summary>
     /// Creates a new Protobuf Schema Registry serializer.
@@ -59,11 +61,56 @@ public sealed class ProtobufSchemaRegistrySerializer<
 
         // Schema Registry's canonical Protobuf representation is the serialized FileDescriptorProto.
         _schemaString = _descriptor.File.SerializedData.ToBase64();
+        _resolutionIdentitySchema = new Schema
+        {
+            SchemaType = SchemaType.Protobuf,
+            SchemaString = _schemaString
+        };
 
         // Pre-encode the immutable message index path once per serializer.
         _encodedMessageIndexes = VarintEncoder.EncodeMessageIndexes(
             CalculateMessageIndexes(_descriptor),
             _config.UseDeprecatedFormat);
+    }
+
+    /// <summary>
+    /// Resolves and caches the subject, schema ID, and schema for a serialization context.
+    /// </summary>
+    public ValueTask<ResolvedSchemaContext> PrepareAsync(
+        string topic,
+        T value,
+        bool isKey = false,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+
+        if (_subjectSchemaIdCache.TryGet(topic, isKey, out var cached))
+            return new ValueTask<ResolvedSchemaContext>(ToResolvedContext(cached));
+
+        return PrepareCoreAsync(topic, isKey, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public ValueTask PrepareAsync(
+        T value,
+        SerializationContext context,
+        CancellationToken cancellationToken = default)
+    {
+        var preparation = PrepareAsync(
+            context.Topic,
+            value,
+            context.Component == SerializationComponent.Key,
+            cancellationToken);
+        if (preparation.IsCompletedSuccessfully)
+        {
+            _ = preparation.Result;
+            return ValueTask.CompletedTask;
+        }
+
+        return AwaitPreparationAsync(preparation);
+
+        static async ValueTask AwaitPreparationAsync(ValueTask<ResolvedSchemaContext> preparation) =>
+            _ = await preparation.ConfigureAwait(false);
     }
 
     /// <inheritdoc />
@@ -82,17 +129,21 @@ public sealed class ProtobufSchemaRegistrySerializer<
         ReadOnlyMemory<byte> transformedPayload = default;
         if (_config.RuleExecutor is not null)
         {
-            transformedPayload = _config.RuleExecutor.TransformSerializedPayload(
-                value.ToByteArray(),
-                new SchemaRegistryRuleContext
-                {
-                    Topic = context.Topic,
-                    Component = context.Component,
-                    SchemaId = schemaId,
-                    Subject = schemaEntry.Subject,
-                    Schema = schemaEntry.Schema,
-                    PayloadFormat = SchemaRegistryPayloadFormat.Protobuf
-                });
+            var ruleContext = SchemaRegistryRuleContext.Rent(
+                context.Topic,
+                context.Component,
+                schemaId,
+                schemaEntry.Subject,
+                schemaEntry.Schema,
+                SchemaRegistryPayloadFormat.Protobuf);
+            try
+            {
+                transformedPayload = _config.RuleExecutor.TransformSerializedPayload(value.ToByteArray(), ruleContext);
+            }
+            finally
+            {
+                ruleContext.Return();
+            }
         }
 
         // Total size: magic byte + schema ID + indexes + message
@@ -130,45 +181,11 @@ public sealed class ProtobufSchemaRegistrySerializer<
     private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry ResolveSchemaSync(string topic, bool isKey)
     {
         var subject = GetSubjectName(topic, isKey);
-        // Built-in reference strategies depend only on the import name. A custom strategy may use topic/key.
-        if (!_config.UseSchemaReferences ||
-            _config.UseLatestVersion ||
-            _config.CustomReferenceSubjectNameStrategy is null)
-        {
-            return _resolvedSubjectCache.GetOrAdd(
-                subject,
-                false,
-                new SchemaResolutionState(this, subject, topic, isKey),
-                static (state, _, _) => state.Serializer.ResolveSubjectSchemaSync(
-                    state.Subject,
-                    state.Topic,
-                    state.IsKey));
-        }
-
-        return ResolveSubjectSchemaSync(subject, topic, isKey);
-    }
-
-    private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry ResolveSubjectSchemaSync(
-        string subject,
-        string topic,
-        bool isKey)
-    {
-        using var timeoutSource = new CancellationTokenSource(SchemaRegistryTimeout);
-        var resolutionTask = ResolveSchemaAsync(subject, topic, isKey, timeoutSource.Token);
-        SubjectSchemaIdCache.SubjectSchemaIdCacheValue resolved;
-        try
-        {
-            resolved = resolutionTask
-                .WaitAsync(timeoutSource.Token)
-                .ConfigureAwait(false)
-                .GetAwaiter()
-                .GetResult();
-        }
-        catch (OperationCanceledException exception) when (timeoutSource.IsCancellationRequested)
-        {
-            ObserveLateFault(resolutionTask);
-            throw new TimeoutException("Schema Registry resolution timed out.", exception);
-        }
+        var resolved = ResolveSchemaShared(
+            subject,
+            topic,
+            isKey,
+            SchemaRegistryTimeout);
 
         return new SubjectSchemaIdCache.SubjectSchemaIdCacheEntry(
             new SubjectSchemaIdCache.SubjectSchemaIdCacheKey(topic, isKey),
@@ -176,6 +193,96 @@ public sealed class ProtobufSchemaRegistrySerializer<
             resolved.SchemaId,
             resolved.Schema);
     }
+
+    private ValueTask<ResolvedSchemaContext> PrepareCoreAsync(
+        string topic,
+        bool isKey,
+        CancellationToken cancellationToken)
+    {
+        var subject = GetSubjectName(topic, isKey);
+        var resolved = ResolveSchemaSharedAsync(
+            subject,
+            topic,
+            isKey,
+            cancellationToken);
+        if (resolved.IsCompletedSuccessfully)
+        {
+            var value = resolved.Result;
+            return new ValueTask<ResolvedSchemaContext>(ToResolvedContext(
+                _subjectSchemaIdCache.CacheEntry(
+                    topic,
+                    isKey,
+                    subject,
+                    value.SchemaId,
+                    value.Schema!)));
+        }
+
+        return AwaitSchemaAsync(this, topic, isKey, subject, resolved);
+
+        static async ValueTask<ResolvedSchemaContext> AwaitSchemaAsync(
+            ProtobufSchemaRegistrySerializer<T> serializer,
+            string topic,
+            bool isKey,
+            string subject,
+            ValueTask<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> resolved)
+        {
+            var value = await resolved.ConfigureAwait(false);
+            return ToResolvedContext(serializer._subjectSchemaIdCache.CacheEntry(
+                topic,
+                isKey,
+                subject,
+                value.SchemaId,
+                value.Schema!));
+        }
+    }
+
+    private ValueTask<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> ResolveSchemaSharedAsync(
+        string subject,
+        string topic,
+        bool isKey,
+        CancellationToken cancellationToken) =>
+        _schemaResolutionCache.ResolveAsync(
+            subject,
+            _resolutionIdentitySchema,
+            GetSchemaResolutionScope(topic, isKey),
+            new SchemaResolutionState(this, topic, isKey),
+            static (state, resolvedSubject, _) => state.Serializer.ResolveSchemaWithTimeoutAsync(
+                resolvedSubject,
+                state.Topic,
+                state.IsKey),
+            cancellationToken);
+
+    private SubjectSchemaIdCache.SubjectSchemaIdCacheValue ResolveSchemaShared(
+        string subject,
+        string topic,
+        bool isKey,
+        TimeSpan timeout) =>
+        _schemaResolutionCache.Resolve(
+            subject,
+            _resolutionIdentitySchema,
+            GetSchemaResolutionScope(topic, isKey),
+            new SchemaResolutionState(this, topic, isKey),
+            static (state, resolvedSubject, _) => state.Serializer.ResolveSchemaWithTimeoutAsync(
+                resolvedSubject,
+                state.Topic,
+                state.IsKey),
+            timeout);
+
+    private SchemaResolutionScope GetSchemaResolutionScope(string topic, bool isKey) =>
+        _config.UseSchemaReferences &&
+        !_config.UseLatestVersion &&
+        _config.CustomReferenceSubjectNameStrategy is not null
+            ? new SchemaResolutionScope(topic, isKey)
+            : default;
+
+    private Task<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> ResolveSchemaWithTimeoutAsync(
+        string subject,
+        string topic,
+        bool isKey) =>
+        SchemaRegistryOperationTimeout.ExecuteAsync(
+            cancellationToken => ResolveSchemaAsync(subject, topic, isKey, cancellationToken),
+            SchemaRegistryTimeout,
+            "Schema Registry resolution timed out.");
 
     private async Task<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> ResolveSchemaAsync(
         string subject,
@@ -220,7 +327,10 @@ public sealed class ProtobufSchemaRegistrySerializer<
                     subject,
                     schema,
                     cancellationToken).ConfigureAwait(false);
-            return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(id, schema);
+            var executionSchema = _config.RuleExecutor is SchemaRegistryRuleExecutor
+                ? await _schemaRegistry.GetSchemaAsync(id, subject, cancellationToken).ConfigureAwait(false)
+                : schema;
+            return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(id, executionSchema);
         }
 
         var registered = await _schemaRegistry.LookupSchemaAsync(
@@ -325,33 +435,13 @@ public sealed class ProtobufSchemaRegistrySerializer<
                 References = references
             };
             var subject = GetReferenceSubjectName(state.Topic, dependency.Name, state.IsKey);
-
-            if (_config.AutoRegisterSchemas)
-            {
-                if (_config.NormalizeSchemas)
-                {
-                    await _schemaRegistry.RegisterSchemaAsync(
-                        subject,
-                        schema,
-                        normalize: true,
-                        cancellationToken).ConfigureAwait(false);
-                }
-                else
-                {
-                    await _schemaRegistry.RegisterSchemaAsync(
-                        subject,
-                        schema,
-                        cancellationToken).ConfigureAwait(false);
-                }
-            }
-
-            var registered = await _schemaRegistry.LookupSchemaAsync(
+            var result = await _referenceResolutionCache.ResolveAsync(
                 subject,
                 schema,
-                ignoreDeletedSchemas: true,
-                normalize: _config.NormalizeSchemas,
+                this,
+                static (serializer, resolvedSubject, resolvedSchema) =>
+                    serializer.ResolveDependencyWithTimeoutAsync(resolvedSubject, resolvedSchema),
                 cancellationToken).ConfigureAwait(false);
-            var result = new RegisteredDependency(subject, registered.Version);
             state.Completed.Add(dependency.Name, result);
             return result;
         }
@@ -359,6 +449,47 @@ public sealed class ProtobufSchemaRegistrySerializer<
         {
             state.Visiting.Remove(dependency.Name);
         }
+    }
+
+    private Task<RegisteredDependency> ResolveDependencyWithTimeoutAsync(
+        string subject,
+        Schema schema) =>
+        SchemaRegistryOperationTimeout.ExecuteAsync(
+            cancellationToken => ResolveDependencyAsync(subject, schema, cancellationToken),
+            SchemaRegistryTimeout,
+            "Schema Registry reference resolution timed out.");
+
+    private async Task<RegisteredDependency> ResolveDependencyAsync(
+        string subject,
+        Schema schema,
+        CancellationToken cancellationToken)
+    {
+        if (_config.AutoRegisterSchemas)
+        {
+            if (_config.NormalizeSchemas)
+            {
+                await _schemaRegistry.RegisterSchemaAsync(
+                    subject,
+                    schema,
+                    normalize: true,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                await _schemaRegistry.RegisterSchemaAsync(
+                    subject,
+                    schema,
+                    cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        var registered = await _schemaRegistry.LookupSchemaAsync(
+            subject,
+            schema,
+            ignoreDeletedSchemas: true,
+            normalize: _config.NormalizeSchemas,
+            cancellationToken).ConfigureAwait(false);
+        return new RegisteredDependency(subject, registered.Version);
     }
 
     private string GetReferenceSubjectName(string topic, string referenceName, bool isKey)
@@ -417,20 +548,14 @@ public sealed class ProtobufSchemaRegistrySerializer<
             "google/protobuf/type.proto" or
             "google/protobuf/wrappers.proto";
 
-    private static void ObserveLateFault(Task task)
-    {
-        if (task.IsCompleted)
-        {
-            _ = task.Exception;
-            return;
-        }
+    private static ResolvedSchemaContext ToResolvedContext(
+        SubjectSchemaIdCache.SubjectSchemaIdCacheEntry entry) =>
+        new(entry.Subject!, entry.SchemaId, entry.Schema!);
 
-        _ = task.ContinueWith(
-            static completed => _ = completed.Exception,
-            CancellationToken.None,
-            TaskContinuationOptions.ExecuteSynchronously,
-            TaskScheduler.Default);
-    }
+    private readonly record struct SchemaResolutionState(
+        ProtobufSchemaRegistrySerializer<T> Serializer,
+        string Topic,
+        bool IsKey);
 
     private sealed class ReferenceRegistrationState(string topic, bool isKey)
     {
@@ -441,12 +566,6 @@ public sealed class ProtobufSchemaRegistrySerializer<
     }
 
     private readonly record struct RegisteredDependency(string Subject, int Version);
-
-    private readonly record struct SchemaResolutionState(
-        ProtobufSchemaRegistrySerializer<T> Serializer,
-        string Subject,
-        string Topic,
-        bool IsKey);
 
     private static int[] CalculateMessageIndexes(MessageDescriptor descriptor)
     {

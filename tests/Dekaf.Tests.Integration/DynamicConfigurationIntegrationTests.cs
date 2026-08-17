@@ -215,7 +215,11 @@ public sealed class DynamicConfigurationIntegrationTests(RackAwareKafkaContainer
             await Assert.That(failure.Exception.TimeoutKind).IsEqualTo(TimeoutKind.Delivery);
             await Assert.That(replicaError).IsEqualTo(ErrorCode.NotEnoughReplicas);
             await Assert.That(replicaError!.Value.IsRetriable()).IsTrue();
-            await Assert.That(recovered.Offset).IsEqualTo(failure.LastSuccessfulOffset + 1);
+            // A delivery timeout is ambiguous: the broker may have appended the idempotent
+            // record without returning a successful response. Recovery must therefore resume
+            // at either the next offset or one offset after that single timed-out record.
+            await Assert.That(recovered.Offset)
+                .IsBetween(failure.LastSuccessfulOffset + 1, failure.LastSuccessfulOffset + 2);
         }
         finally
         {

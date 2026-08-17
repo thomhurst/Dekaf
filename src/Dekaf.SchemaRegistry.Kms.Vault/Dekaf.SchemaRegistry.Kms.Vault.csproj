@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>Dekaf.SchemaRegistry.Kms.Vault</PackageId>
+    <Description>HashiCorp Vault Transit provider for Dekaf Schema Registry client-side field-level encryption</Description>
+    <PackageTags>kafka;schema-registry;encryption;hashicorp;vault;transit</PackageTags>
+    <PackageValidationBaselineVersion></PackageValidationBaselineVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Dekaf.SchemaRegistry\Dekaf.SchemaRegistry.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Dekaf.Tests.Unit" />
+  </ItemGroup>
+
+</Project>

@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Net;
 using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json.Serialization;
 using Avro.Specific;
@@ -12,6 +13,7 @@ using Dekaf.Compression.Snappy;
 using Dekaf.Compression.Zstd;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Avro;
+using Dekaf.SchemaRegistry.Json;
 using Dekaf.SchemaRegistry.Protobuf;
 using Dekaf.Security.Sasl;
 using Dekaf.Serialization;
@@ -34,10 +36,36 @@ internal static class AotSmoke
     {
         RunCompressionSmoke();
         RunJsonSmoke();
+        RunSchemaRegistryHttpPipelineConstructionSmoke();
         await RunSchemaRegistrySmokeAsync();
         await RunSchemaRegistryCompatibilitySmokeAsync();
         await RunSchemaRegistryPackageSmokeAsync();
         await RunCoreSmokeAsync();
+    }
+
+    private static void RunSchemaRegistryHttpPipelineConstructionSmoke()
+    {
+        using var key = RSA.Create(2048);
+        var request = new CertificateRequest(
+            "CN=Dekaf NativeAOT Schema Registry CA",
+            key,
+            HashAlgorithmName.SHA256,
+            RSASignaturePadding.Pkcs1);
+        request.CertificateExtensions.Add(new X509BasicConstraintsExtension(true, false, 0, true));
+        using var certificate = request.CreateSelfSigned(
+            DateTimeOffset.UtcNow.AddDays(-1),
+            DateTimeOffset.UtcNow.AddDays(1));
+        using var defaultPipeline = new SchemaRegistryClient(new SchemaRegistryConfig
+        {
+            Url = "https://schema-registry.example.test",
+            Tls = new SchemaRegistryTlsConfig
+            {
+                CaCertificatePem = certificate.ExportCertificatePem()
+            }
+        });
+        using var factoryPipeline = new SchemaRegistryClient(
+            new SchemaRegistryConfig { Url = "https://schema-registry.example.test" },
+            static () => new CompatibilityConfigurationHandler());
     }
 
     private static async Task RunCoreSmokeAsync()
@@ -95,14 +123,20 @@ internal static class AotSmoke
         using var registry = new InMemorySchemaRegistry();
         var payload = new AotPayload(8, "schema-registry");
         var buffer = new ArrayBufferWriter<byte>();
+        var validation = new JsonSchemaValidationOptions
+        {
+            ValidatorFactory = new StreamingJsonSchemaValidatorFactory(registry)
+        };
 
         await using var serializer = new JsonSchemaRegistrySerializer<AotPayload>(
             registry,
             AotPayloadJsonSchema,
-            AotJsonContext.Default.AotPayload);
+            AotJsonContext.Default.AotPayload,
+            validation);
         await using var deserializer = new JsonSchemaRegistryDeserializer<AotPayload>(
             registry,
-            AotJsonContext.Default.AotPayload);
+            AotJsonContext.Default.AotPayload,
+            validation);
 
         serializer.Serialize(payload, ref buffer, ValueContext);
 
@@ -157,6 +191,8 @@ internal static class AotSmoke
 
     private static async Task RunAvroSchemaRegistryPackageSmokeAsync(InMemorySchemaRegistry registry)
     {
+        RequireInterfaceTypedAvroSerializerRejected(registry);
+
         await using var serializer = new AvroSchemaRegistrySerializer<AotAvroRecord>(registry);
         await using var deserializer = new AvroSchemaRegistryDeserializer<AotAvroRecord>(registry);
 
@@ -169,6 +205,21 @@ internal static class AotSmoke
         var roundTrip = deserializer.Deserialize(buffer.WrittenMemory, ValueContext);
         Require(roundTrip.Id == payload.Id, "Avro Schema Registry ID mismatch.");
         Require(roundTrip.Name == payload.Name, "Avro Schema Registry name mismatch.");
+    }
+
+    private static void RequireInterfaceTypedAvroSerializerRejected(InMemorySchemaRegistry registry)
+    {
+        try
+        {
+            _ = new AvroSchemaRegistrySerializer<ISpecificRecord>(registry);
+        }
+        catch (NotSupportedException)
+        {
+            return;
+        }
+
+        throw new InvalidOperationException(
+            "Interface-typed Avro serialization must reject trimming-unsafe runtime type discovery.");
     }
 
     private static async Task RunProtobufSchemaRegistryPackageSmokeAsync(InMemorySchemaRegistry registry)
@@ -352,6 +403,19 @@ internal static class AotSmoke
             return Task.FromResult(_schemasById[id]);
         }
 
+        public Task<Schema> GetSchemaAsync(
+            int id,
+            string subject,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var registered = _schemasBySubject[subject];
+            if (registered.Id != id)
+                throw new KeyNotFoundException($"Schema {id} is not registered under subject '{subject}'.");
+
+            return Task.FromResult(registered.Schema);
+        }
+
         public Task<RegisteredSchema> GetSchemaBySubjectAsync(
             string subject,
             string version = "latest",
@@ -406,6 +470,19 @@ internal static class AotSmoke
             if (_schemasById.TryGetValue(id, out var cached))
             {
                 schema = cached;
+                return true;
+            }
+
+            schema = null!;
+            return false;
+        }
+
+        public bool TryGetCachedSchema(int id, string subject, out Schema schema)
+        {
+            if (_schemasBySubject.TryGetValue(subject, out var registered)
+                && registered.Id == id)
+            {
+                schema = registered.Schema;
                 return true;
             }
 

@@ -1,9 +1,63 @@
+using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 
 namespace Dekaf.SchemaRegistry;
 
 internal static class SubjectNameResolver
 {
+    private const int MaxCachedTopicCount = 1024;
+    private static readonly ConditionalWeakTable<string, TopicSubjects> TopicSubjectsByIdentity = new();
+    private static readonly ConcurrentDictionary<string, TopicSubjects> TopicSubjectNames =
+        new(StringComparer.Ordinal);
+    private static readonly Queue<string> TopicSubjectOrder = new(MaxCachedTopicCount);
+    private static readonly object TopicSubjectNamesLock = new();
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static string GetTopicSubjectName(string topic, bool isKey)
+    {
+        if (TopicSubjectsByIdentity.TryGetValue(topic, out var subjects))
+            return isKey ? subjects.Key : subjects.Value;
+
+        return GetTopicSubjectNameSlow(topic, isKey);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static string GetTopicSubjectNameSlow(string topic, bool isKey)
+    {
+        if (!TopicSubjectNames.TryGetValue(topic, out var subjects) || subjects.ShouldPromoteIdentity(topic))
+        {
+            subjects = TopicSubjectsByIdentity.GetValue(
+                topic,
+                static value => GetOrAddTopicSubjects(value));
+        }
+
+        return isKey ? subjects.Key : subjects.Value;
+    }
+
+    private static TopicSubjects GetOrAddTopicSubjects(string topic)
+    {
+        if (TopicSubjectNames.TryGetValue(topic, out var subjects))
+            return subjects;
+
+        lock (TopicSubjectNamesLock)
+        {
+            if (TopicSubjectNames.TryGetValue(topic, out subjects))
+                return subjects;
+
+            if (TopicSubjectOrder.Count >= MaxCachedTopicCount)
+            {
+                var evictedTopic = TopicSubjectOrder.Dequeue();
+                TopicSubjectNames.TryRemove(evictedTopic, out _);
+            }
+
+            subjects = new TopicSubjects(topic);
+            TopicSubjectNames[topic] = subjects;
+            TopicSubjectOrder.Enqueue(topic);
+            return subjects;
+        }
+    }
+
     internal static string GetSubjectName(
         SubjectNameStrategy strategy,
         string topic,
@@ -78,5 +132,25 @@ internal static class SubjectNameResolver
             return recordName;
 
         throw new InvalidOperationException($"{strategy} requires a fully-qualified record name.");
+    }
+
+    private sealed class TopicSubjects(string topic)
+    {
+        private string? _candidateIdentity;
+
+        public string Key { get; } = topic + "-key";
+        public string Value { get; } = topic + "-value";
+
+        internal bool ShouldPromoteIdentity(string topic)
+        {
+            var candidate = Volatile.Read(ref _candidateIdentity);
+            if (ReferenceEquals(candidate, topic))
+                return true;
+
+            // One-shot equal strings stay in the bounded value cache. Repeated identities
+            // earn the faster weak identity entry on their second observation.
+            Volatile.Write(ref _candidateIdentity, topic);
+            return false;
+        }
     }
 }

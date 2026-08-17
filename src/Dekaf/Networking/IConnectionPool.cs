@@ -71,6 +71,26 @@ internal interface IConnectionPoolDiagnostics
     int GetMaxObservedBrokerThrottleTimeMs();
 }
 
+internal interface IConnectionPoolStatusSource
+{
+    IReadOnlyList<Diagnostics.BrokerConnectionStatus> GetBrokerConnectionStatus();
+
+    IReadOnlyList<Diagnostics.BrokerConnectionStatus> GetEndpointConnectionStatus(
+        IReadOnlyList<ConnectionStatusEndpoint> endpoints);
+
+    bool ContainsEndpointConnection(string host, int port);
+
+    void UpdateBrokerStatusSnapshot(int[] brokerIds);
+}
+
+internal readonly record struct ConnectionStatusEndpoint(
+    int NodeId,
+    string Host,
+    int Port,
+    IReadOnlyList<ConnectionStatusEndpointAlias>? ConnectionAliases = null);
+
+internal readonly record struct ConnectionStatusEndpointAlias(string Host, int Port);
+
 internal interface IConnectionCapabilityObserverPool
 {
     void SetConnectionCapabilityObserver(Action<KafkaConnectionCapabilities> observer);

@@ -79,6 +79,7 @@ public sealed partial class KafkaConnection :
     IKafkaConnection,
     IKafkaCapabilityProvider,
     IIdleTrackedKafkaConnection,
+    IKafkaConnectionStatusSource,
     IRetirableKafkaConnection,
     IKafkaPipelinedWriteCompletionConnection,
     IKafkaRequestWriteObserverConnection
@@ -168,6 +169,8 @@ public sealed partial class KafkaConnection :
     private readonly Action<KafkaConnectionCapabilities>? _capabilitiesObserver;
     private bool _hasReceivedResponse;
     private long _lastUsedTimestampMs = Dekaf.MonotonicClock.GetMilliseconds();
+    private long _lastSuccessfulRequestTimestampMs;
+    private long _lastConnectionStateChangeTimestampMs = Dekaf.MonotonicClock.GetMilliseconds();
     private readonly SemaphoreSlim _connectLock = new(1, 1);
 
     // SASL re-authentication (KIP-368)
@@ -195,6 +198,12 @@ public sealed partial class KafkaConnection :
     int IIdleTrackedKafkaConnection.PendingRequestCount => GetPendingRequestCount();
 
     void IIdleTrackedKafkaConnection.Touch() => Touch();
+
+    long IKafkaConnectionStatusSource.LastSuccessfulRequestTimestampMs =>
+        Volatile.Read(ref _lastSuccessfulRequestTimestampMs);
+
+    long IKafkaConnectionStatusSource.LastConnectionStateChangeTimestampMs =>
+        Volatile.Read(ref _lastConnectionStateChangeTimestampMs);
 
     int IRetirableKafkaConnection.LeaseCount => Volatile.Read(ref _leaseCount);
 
@@ -509,7 +518,9 @@ public sealed partial class KafkaConnection :
         _capabilitiesObserver?.Invoke(capabilities);
         Volatile.Write(ref _capabilities, capabilities);
 
-        Touch();
+        var connectedTimestampMs = Dekaf.MonotonicClock.GetMilliseconds();
+        Touch(connectedTimestampMs);
+        Volatile.Write(ref _lastConnectionStateChangeTimestampMs, connectedTimestampMs);
         Volatile.Write(ref _connected, 1);
         _telemetryMetricCollector?.RecordConnectionCreated();
 
@@ -691,7 +702,7 @@ public sealed partial class KafkaConnection :
             // Response phase: await response with timeout and parse
             var response = await AwaitAndParseResponseAsync<TRequest, TResponse>(
                 pending, correlationId, apiVersion, callerOwnsTimeout: false, cancellationToken).ConfigureAwait(false);
-            Touch();
+            TouchSuccessful();
             _telemetryMetricCollector?.RecordRequestLatency(BrokerId, telemetryStartTimestamp);
             return response;
         }
@@ -883,7 +894,7 @@ public sealed partial class KafkaConnection :
         await PreSerializeAndWriteAsync<TRequest, TResponse>(request, correlationId, apiVersion, headerVersion, cancellationToken, callerOwnsTimeout)
             .ConfigureAwait(false);
 
-        Touch();
+        TouchSuccessful();
         LogFireAndForgetRequestSent(correlationId);
     }
 
@@ -1236,7 +1247,7 @@ public sealed partial class KafkaConnection :
                     pending.TakeResponseMemoryReservation());
                 connection.ObserveBrokerThrottle<TRequest, TResponse>(response, _apiVersion);
 
-                connection.Touch();
+                connection.TouchSuccessful();
                 connection._telemetryMetricCollector?.RecordRequestLatency(
                     connection.BrokerId,
                     _telemetryStartTimestamp);
@@ -2561,7 +2572,13 @@ public sealed partial class KafkaConnection :
 
     private void MarkDisposed()
     {
-        Volatile.Write(ref _disposed, 1);
+        if (Interlocked.Exchange(ref _disposed, 1) == 0)
+        {
+            Volatile.Write(
+                ref _lastConnectionStateChangeTimestampMs,
+                Dekaf.MonotonicClock.GetMilliseconds());
+        }
+
         DisarmReceiveTimeout();
         CancelPendingRequestSlotWaiters();
     }
@@ -2855,7 +2872,16 @@ public sealed partial class KafkaConnection :
     private long GetReceiveTimeoutDeadlineTimestamp()
         => Stopwatch.GetTimestamp() + _receiveTimeoutStopwatchTicks;
 
-    private void Touch() => Volatile.Write(ref _lastUsedTimestampMs, Dekaf.MonotonicClock.GetMilliseconds());
+    private void Touch() => Touch(Dekaf.MonotonicClock.GetMilliseconds());
+
+    private void Touch(long timestampMs) => Volatile.Write(ref _lastUsedTimestampMs, timestampMs);
+
+    private void TouchSuccessful()
+    {
+        var timestampMs = Dekaf.MonotonicClock.GetMilliseconds();
+        Volatile.Write(ref _lastUsedTimestampMs, timestampMs);
+        Volatile.Write(ref _lastSuccessfulRequestTimestampMs, timestampMs);
+    }
 
     /// <summary>
     /// After adding a pending request, double-check that the connection hasn't been disposed.

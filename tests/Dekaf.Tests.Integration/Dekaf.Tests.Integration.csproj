@@ -13,7 +13,9 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Dekaf\Dekaf.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.Serialization.Json\Dekaf.Serialization.Json.csproj" />
+    <ProjectReference Include="..\..\src\Dekaf.Serialization.Routing\Dekaf.Serialization.Routing.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry\Dekaf.SchemaRegistry.csproj" />
+    <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Json\Dekaf.SchemaRegistry.Json.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Avro\Dekaf.SchemaRegistry.Avro.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Protobuf\Dekaf.SchemaRegistry.Protobuf.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.Compression.Lz4\Dekaf.Compression.Lz4.csproj" />
@@ -31,6 +33,7 @@
   <ItemGroup Condition="'$(PublishAot)' == 'true'">
     <Compile Remove="OutboxRelayIntegrationTests.cs" />
     <Compile Remove="SchemaRegistrySubjectCompatibilityTests.cs" />
+    <Compile Remove="RoutingSerdeIntegrationTests.cs" />
   </ItemGroup>
 
   <ItemGroup>

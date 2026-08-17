@@ -3,6 +3,8 @@ using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Net.Security;
+using System.Security.Authentication;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
@@ -21,6 +23,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
     private readonly HttpClient _httpClient;
     private readonly SchemaRegistryConfig _config;
     private readonly ConcurrentDictionary<int, Schema> _schemaByIdCache = new();
+    private readonly ConcurrentDictionary<(int Id, string Subject), Schema> _schemaBySubjectAndIdCache = new();
     private readonly ConcurrentDictionary<(string Subject, Schema Schema, bool Normalize), int> _idBySchemaCache = new();
     private readonly object _cacheLock = new();
     private readonly int _maxCachedSchemas;
@@ -29,58 +32,279 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
     private bool _disposed;
 
     public SchemaRegistryClient(SchemaRegistryConfig config)
-        : this(config, CreateConfiguredHttpHandler(config))
+        : this(config, CreateConfiguredHttpHandler(config), oauthBearerTokenProviderFactory: null)
+    {
+    }
+
+    /// <summary>
+    /// Creates a Schema Registry client over a caller-owned <see cref="HttpMessageHandler"/>.
+    /// Disposing this instance does not dispose <paramref name="handler"/>.
+    /// </summary>
+    public SchemaRegistryClient(SchemaRegistryConfig config, HttpMessageHandler handler)
+        : this(config, CreateCallerOwnedHttpMessageHandler(config, handler), oauthBearerTokenProviderFactory: null)
+    {
+    }
+
+    /// <summary>
+    /// Creates a Schema Registry client using a handler produced by <paramref name="handlerFactory"/>.
+    /// The produced handler is owned and disposed by this instance.
+    /// </summary>
+    public SchemaRegistryClient(SchemaRegistryConfig config, Func<HttpMessageHandler> handlerFactory)
+        : this(config, CreateOwnedFactoryHttpMessageHandler(config, handlerFactory), oauthBearerTokenProviderFactory: null)
     {
     }
 
     internal SchemaRegistryClient(
         SchemaRegistryConfig config,
         HttpMessageHandler handler,
-        Func<OAuthBearerConfig, Func<CancellationToken, ValueTask<OAuthBearerToken>>>? oauthBearerTokenProviderFactory = null)
+        Func<OAuthBearerConfig, Func<CancellationToken, ValueTask<OAuthBearerToken>>>? oauthBearerTokenProviderFactory)
     {
-        _config = config ?? throw new ArgumentNullException(nameof(config));
-        _maxCachedSchemas = Math.Max(0, config.MaxCachedSchemas);
-        _baseUris = ResolveBaseUris(config);
+        ArgumentNullException.ThrowIfNull(config);
+        ArgumentNullException.ThrowIfNull(handler);
 
-        var authHandler = new SchemaRegistryAuthenticationHandler(
-            handler,
-            config,
-            oauthBearerTokenProviderFactory);
-
-        _httpClient = new HttpClient(authHandler, disposeHandler: true)
+        HttpClient? httpClient = null;
+        SchemaRegistryAuthenticationHandler? authHandler = null;
+        try
         {
-            Timeout = TimeSpan.FromMilliseconds(config.RequestTimeoutMs)
-        };
+            ValidateConfig(config);
+            _config = config;
+            _maxCachedSchemas = Math.Max(0, config.MaxCachedSchemas);
+            _baseUris = ResolveBaseUris(config);
 
-        _httpClient.DefaultRequestHeaders.Accept.Add(
-            new MediaTypeWithQualityHeaderValue("application/vnd.schemaregistry.v1+json"));
+            authHandler = new SchemaRegistryAuthenticationHandler(
+                handler,
+                config,
+                oauthBearerTokenProviderFactory);
+
+            httpClient = new HttpClient(authHandler, disposeHandler: true)
+            {
+                Timeout = TimeSpan.FromMilliseconds(config.RequestTimeoutMs)
+            };
+
+            httpClient.DefaultRequestHeaders.Accept.Add(
+                new MediaTypeWithQualityHeaderValue("application/vnd.schemaregistry.v1+json"));
+            ConfigureDefaultHeaders(httpClient.DefaultRequestHeaders, config);
+            _httpClient = httpClient;
+        }
+        catch
+        {
+            if (httpClient is not null)
+                httpClient.Dispose();
+            else if (authHandler is not null)
+                authHandler.Dispose();
+            else
+                handler.Dispose();
+            throw;
+        }
+
     }
 
     internal int CachedSchemaByIdCount => _schemaByIdCache.Count;
+    internal int CachedSchemaBySubjectAndIdCount => _schemaBySubjectAndIdCache.Count;
     internal int CachedSchemaIdCount => _idBySchemaCache.Count;
 
-    internal static SocketsHttpHandler CreateHttpHandler(X509Certificate2? clientCertificate = null)
+    internal static HttpMessageHandler CreateConfiguredHttpHandler(SchemaRegistryConfig? config)
     {
-        var handler = new SocketsHttpHandler
+        ArgumentNullException.ThrowIfNull(config);
+        ValidateConfig(config);
+
+        var tlsConfig = ResolveTlsConfig(config);
+        SchemaRegistryCertificateMaterial? certificateMaterial = null;
+        SocketsHttpHandler? handler = null;
+        try
         {
-            PooledConnectionLifetime = PooledConnectionLifetime
+            certificateMaterial = tlsConfig is null
+                ? null
+                : SchemaRegistryCertificateMaterial.Load(tlsConfig);
+            handler = new SocketsHttpHandler
+            {
+                PooledConnectionLifetime = PooledConnectionLifetime,
+                UseProxy = config.UseProxy,
+                Proxy = config.Proxy
+            };
+
+            if (tlsConfig is not null)
+                ConfigureTls(handler, tlsConfig, certificateMaterial!);
+
+            if (certificateMaterial is null)
+                return handler;
+
+            return new CertificateOwningHttpMessageHandler(handler, certificateMaterial);
+        }
+        catch
+        {
+            handler?.Dispose();
+            certificateMaterial?.Dispose();
+            throw;
+        }
+    }
+
+    private static HttpMessageHandler CreateCallerOwnedHttpMessageHandler(
+        SchemaRegistryConfig? config,
+        HttpMessageHandler? handler)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        ArgumentNullException.ThrowIfNull(handler);
+        ValidateConfig(config);
+        ValidateCustomPipelineConfig(config);
+        return new NonDisposingHttpMessageHandler(handler);
+    }
+
+    private static HttpMessageHandler CreateOwnedFactoryHttpMessageHandler(
+        SchemaRegistryConfig? config,
+        Func<HttpMessageHandler>? handlerFactory)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        ArgumentNullException.ThrowIfNull(handlerFactory);
+        ValidateConfig(config);
+        ValidateCustomPipelineConfig(config);
+        return handlerFactory() ?? throw new InvalidOperationException("The HTTP message handler factory returned null.");
+    }
+
+    private static void ValidateConfig(SchemaRegistryConfig config)
+    {
+        if (config.RequestTimeoutMs <= 0 && config.RequestTimeoutMs != Timeout.Infinite)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(config),
+                "RequestTimeoutMs must be positive or -1 for an infinite timeout.");
+        }
+
+        if (!config.UseProxy && config.Proxy is not null)
+            throw new ArgumentException("Proxy cannot be supplied when UseProxy is false.", nameof(config));
+
+        if (config.Tls is not null && config.ClientCertificate is not null)
+        {
+            throw new ArgumentException(
+                "ClientCertificate cannot be combined with Tls. Configure the certificate through Tls instead.",
+                nameof(config));
+        }
+    }
+
+    private static void ValidateCustomPipelineConfig(SchemaRegistryConfig config)
+    {
+        if (config.Tls is not null ||
+            config.ClientCertificate is not null ||
+            config.Proxy is not null ||
+            !config.UseProxy)
+        {
+            throw new ArgumentException(
+                "TLS and proxy settings cannot be combined with a caller-supplied HTTP pipeline.",
+                nameof(config));
+        }
+    }
+
+    private static SchemaRegistryTlsConfig? ResolveTlsConfig(SchemaRegistryConfig config) =>
+        config.Tls ?? (config.ClientCertificate is null
+            ? null
+            : new SchemaRegistryTlsConfig { ClientCertificate = config.ClientCertificate });
+
+    private static void ConfigureTls(
+        SocketsHttpHandler handler,
+        SchemaRegistryTlsConfig config,
+        SchemaRegistryCertificateMaterial material)
+    {
+        var sslOptions = new SslClientAuthenticationOptions
+        {
+            CertificateRevocationCheckMode = config.CheckCertificateRevocation
+                ? X509RevocationMode.Online
+                : X509RevocationMode.NoCheck
         };
 
-        if (clientCertificate is not null)
+        if (config.EnabledSslProtocols is not null)
+            sslOptions.EnabledSslProtocols = config.EnabledSslProtocols.Value;
+
+        if (material.ClientCertificate is not null)
         {
-            handler.SslOptions.ClientCertificates = new X509CertificateCollection
+            if (material.ClientIntermediateCertificates is { Count: > 0 } intermediateCertificates)
             {
-                clientCertificate
+                sslOptions.ClientCertificateContext = SslStreamCertificateContext.Create(
+                    material.ClientCertificate,
+                    intermediateCertificates,
+                    offline: true);
+            }
+            else
+            {
+                sslOptions.ClientCertificates = [material.ClientCertificate];
+            }
+        }
+
+        if (config.RemoteCertificateValidationCallback is not null)
+        {
+            sslOptions.RemoteCertificateValidationCallback = config.RemoteCertificateValidationCallback;
+        }
+        else if (!config.ValidateServerCertificate)
+        {
+#pragma warning disable CA5359 // Explicit opt-out requested by the caller.
+            sslOptions.RemoteCertificateValidationCallback = static (_, _, _, _) => true;
+#pragma warning restore CA5359
+        }
+        else if (material.CaCertificates is not null || !config.ValidateServerCertificateHostName)
+        {
+            sslOptions.RemoteCertificateValidationCallback = (_, certificate, chain, errors) =>
+            {
+                if (material.CaCertificates is null)
+                {
+                    return (errors & ~SslPolicyErrors.RemoteCertificateNameMismatch) ==
+                           SslPolicyErrors.None;
+                }
+
+                return SchemaRegistryCertificateValidator.Validate(
+                    certificate,
+                    chain,
+                    errors,
+                    material.CaCertificates,
+                    config.ValidateServerCertificateHostName,
+                    config.CheckCertificateRevocation);
             };
         }
 
-        return handler;
+        handler.SslOptions = sslOptions;
     }
 
-    private static SocketsHttpHandler CreateConfiguredHttpHandler(SchemaRegistryConfig? config)
+    private static void ConfigureDefaultHeaders(HttpRequestHeaders headers, SchemaRegistryConfig config)
     {
-        ArgumentNullException.ThrowIfNull(config);
-        return CreateHttpHandler(config.ClientCertificate);
+        var userAgent = config.UserAgent ?? GetDefaultUserAgent();
+        try
+        {
+            headers.UserAgent.ParseAdd(userAgent);
+        }
+        catch (FormatException ex)
+        {
+            throw new ArgumentException("UserAgent is not a valid HTTP User-Agent value.", nameof(config), ex);
+        }
+
+        if (config.DefaultHeaders is null)
+            return;
+
+        foreach (var (name, value) in config.DefaultHeaders)
+        {
+            if (string.Equals(name, "User-Agent", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(name, "Accept", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new ArgumentException(
+                    $"The {name} header is managed by SchemaRegistryClient and cannot be overridden.",
+                    nameof(config));
+            }
+
+            try
+            {
+                headers.Add(name, value);
+            }
+            catch (Exception ex) when (ex is FormatException or InvalidOperationException)
+            {
+                throw new ArgumentException(
+                    $"Default header '{name}' is invalid or is a content header.",
+                    nameof(config),
+                    ex);
+            }
+        }
+    }
+
+    private static string GetDefaultUserAgent()
+    {
+        var version = typeof(SchemaRegistryClient).Assembly.GetName().Version;
+        return $"Dekaf.SchemaRegistry/{version?.ToString(3) ?? "unknown"}";
     }
 
     private static Uri[] ResolveBaseUris(SchemaRegistryConfig config)
@@ -262,6 +486,37 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
     public bool TryGetCachedSchema(int id, out Schema schema)
         => _schemaByIdCache.TryGetValue(id, out schema!);
 
+    public async Task<Schema> GetSchemaAsync(
+        int id,
+        string subject,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(subject);
+        var key = (id, subject);
+        if (_schemaBySubjectAndIdCache.TryGetValue(key, out var cached))
+            return cached;
+
+        using var response = await GetWithFailoverAsync(
+            WithQuery(
+                $"schemas/ids/{id.ToString(CultureInfo.InvariantCulture)}",
+                ("subject", subject)),
+            cancellationToken).ConfigureAwait(false);
+
+        await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
+
+        var result = await response.Content.ReadFromJsonAsync<GetSchemaResponse>(
+            SchemaRegistryJsonContext.Default.GetSchemaResponse, cancellationToken).ConfigureAwait(false);
+        if (result is null)
+            throw new SchemaRegistryException((int)response.StatusCode, "Schema Registry returned an empty schema response");
+
+        var schema = CreateSchema(result);
+        CacheSubjectSchema(id, subject, schema);
+        return schema;
+    }
+
+    public bool TryGetCachedSchema(int id, string subject, out Schema schema)
+        => _schemaBySubjectAndIdCache.TryGetValue((id, subject), out schema!);
+
     public async Task<RegisteredSchema> GetSchemaBySubjectAsync(string subject, string version = "latest", CancellationToken cancellationToken = default)
     {
         using var response = await GetWithFailoverAsync(
@@ -317,7 +572,12 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             throw new SchemaRegistryException((int)response.StatusCode, "Schema Registry returned an empty schema response");
 
         var registeredSchema = CreateSchema(result);
-        CacheSchema(result.Id, subject, schema, effectiveNormalize, schemaById: registeredSchema);
+        CacheSchema(
+            result.Id,
+            ignoreDeletedSchemas ? subject : null,
+            schema,
+            effectiveNormalize,
+            schemaById: registeredSchema);
 
         return new RegisteredSchema
         {
@@ -371,11 +631,10 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         if (result is null)
             throw new SchemaRegistryException((int)response.StatusCode, "Schema Registry returned an empty schema response");
 
-        var id = result.Id;
+        var registeredSchema = CreateSchema(result);
+        CacheSchema(result.Id, subject, schema, effectiveNormalize, schemaById: registeredSchema);
 
-        CacheSchema(id, subject, schema, effectiveNormalize);
-
-        return id;
+        return result.Id;
     }
 
     internal void CacheSchema(
@@ -390,11 +649,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
 
         lock (_cacheLock)
         {
-            if (_schemaByIdCache.Count >= _maxCachedSchemas || _idBySchemaCache.Count >= _maxCachedSchemas)
-            {
-                _schemaByIdCache.Clear();
-                _idBySchemaCache.Clear();
-            }
+            ClearCachesIfFull();
 
             if (schemaById is not null)
                 _schemaByIdCache[id] = schemaById;
@@ -405,6 +660,31 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
                 _idBySchemaCache.TryAdd((subject, schema, normalize), id);
             }
         }
+    }
+
+    private void CacheSubjectSchema(int id, string subject, Schema schema)
+    {
+        if (_maxCachedSchemas == 0)
+            return;
+
+        lock (_cacheLock)
+        {
+            ClearCachesIfFull();
+
+            _schemaBySubjectAndIdCache[(id, subject)] = schema;
+        }
+    }
+
+    private void ClearCachesIfFull()
+    {
+        if (_schemaByIdCache.Count < _maxCachedSchemas &&
+            _schemaBySubjectAndIdCache.Count < _maxCachedSchemas &&
+            _idBySchemaCache.Count < _maxCachedSchemas)
+            return;
+
+        _schemaByIdCache.Clear();
+        _schemaBySubjectAndIdCache.Clear();
+        _idBySchemaCache.Clear();
     }
 
     public async Task<IReadOnlyList<string>> GetAllSubjectsAsync(CancellationToken cancellationToken = default)
@@ -721,6 +1001,31 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         return ToDek(result);
     }
 
+    public async Task<Dek> GetDekAsync(
+        string kekName,
+        string subject,
+        int version,
+        DekAlgorithm algorithm,
+        bool deleted = false,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await GetWithFailoverAsync(
+            WithQuery(
+                $"dek-registry/v1/keks/{Uri.EscapeDataString(kekName)}/deks/{Uri.EscapeDataString(subject)}/versions/{version.ToString(CultureInfo.InvariantCulture)}",
+                ("algorithm", FormatDekAlgorithm(algorithm)),
+                ("deleted", BoolQuery(deleted))),
+            cancellationToken).ConfigureAwait(false);
+
+        await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
+
+        var result = await response.Content.ReadFromJsonAsync<DekDto>(
+            SchemaRegistryJsonContext.Default.DekDto, cancellationToken).ConfigureAwait(false);
+        if (result is null)
+            throw new SchemaRegistryException((int)response.StatusCode, "Schema Registry returned an empty DEK response");
+
+        return ToDek(result);
+    }
+
     public async Task<IReadOnlyList<int>> GetDekVersionsAsync(
         string kekName,
         string subject,
@@ -877,12 +1182,18 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
 
         return new SchemaRuleSet
         {
-            MigrationRules = ruleSet.MigrationRules?.Select(ToRule).ToList(),
-            DomainRules = ruleSet.DomainRules?.Select(ToRule).ToList(),
-            EncodingRules = ruleSet.EncodingRules?.Select(ToRule).ToList(),
-            EnableAt = ruleSet.EnableAt
+            MigrationRules = ToReadOnlyRules(ruleSet.MigrationRules),
+            DomainRules = ToReadOnlyRules(ruleSet.DomainRules),
+            EncodingRules = ToReadOnlyRules(ruleSet.EncodingRules),
+            EnableAt = ruleSet.EnableAt,
+            HasFixedRuleCollections = true
         };
     }
+
+    private static IReadOnlyList<SchemaRule>? ToReadOnlyRules(IReadOnlyList<SchemaRuleDto>? rules) =>
+        rules is null
+            ? null
+            : Array.AsReadOnly(rules.Select(ToRule).ToArray());
 
     private static SchemaRuleDto ToRuleDto(SchemaRule rule) => new()
     {
@@ -1130,7 +1441,35 @@ public sealed class SchemaRegistryConfig
     public X509Certificate2? ClientCertificate { get; init; }
 
     /// <summary>
-    /// Request timeout in milliseconds.
+    /// TLS certificate, trust, validation, and protocol settings for the default HTTP pipeline.
+    /// Cannot be combined with a caller-supplied HTTP handler.
+    /// </summary>
+    public SchemaRegistryTlsConfig? Tls { get; init; }
+
+    /// <summary>
+    /// Whether the default pipeline uses a proxy. Default is true, which uses the platform proxy.
+    /// Cannot be configured when a caller supplies the HTTP pipeline.
+    /// </summary>
+    public bool UseProxy { get; init; } = true;
+
+    /// <summary>
+    /// Proxy used by the default HTTP pipeline.
+    /// </summary>
+    public IWebProxy? Proxy { get; init; }
+
+    /// <summary>
+    /// Default request headers applied to every Schema Registry request.
+    /// Content headers, Accept, and User-Agent are rejected.
+    /// </summary>
+    public IReadOnlyDictionary<string, string>? DefaultHeaders { get; init; }
+
+    /// <summary>
+    /// User-Agent header value. Defaults to a versioned Dekaf.SchemaRegistry product value.
+    /// </summary>
+    public string? UserAgent { get; init; }
+
+    /// <summary>
+    /// Request timeout in milliseconds. Use -1 for an infinite timeout.
     /// </summary>
     public int RequestTimeoutMs { get; init; } = 30000;
 

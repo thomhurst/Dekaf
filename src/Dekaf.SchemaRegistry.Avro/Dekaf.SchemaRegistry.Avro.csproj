@@ -4,6 +4,7 @@
     <PackageId>Dekaf.SchemaRegistry.Avro</PackageId>
     <Description>Apache Avro serialization with Schema Registry integration for Dekaf Kafka client</Description>
     <PackageTags>kafka;schema-registry;avro;serialization</PackageTags>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <ItemGroup>

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Dekaf.Consumer;
+using Dekaf.Diagnostics;
 using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
@@ -42,6 +43,8 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     private Task? _heartbeatTask;
 
     private volatile CoordinatorState _state = CoordinatorState.Unjoined;
+    private long _lastSuccessfulHeartbeatTimestamp;
+    private string? _lastHeartbeatFailure;
     private int _disposed;
     private readonly Func<int> _getCoordinationConnectionIndex;
 
@@ -76,6 +79,26 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     public int MemberEpoch => _memberEpoch;
     public CoordinatorState State => _state;
     public TopicPartitionSet Assignment => _assignedPartitions;
+
+    internal ConsumerGroupStatus CaptureGroupStatus()
+    {
+        var assignment = _assignedPartitions;
+        var lastHeartbeatTimestamp = Volatile.Read(ref _lastSuccessfulHeartbeatTimestamp);
+        return new ConsumerGroupStatus
+        {
+            HasConsumerGroup = true,
+            State = _state,
+            CoordinatorId = _coordinatorId,
+            MemberId = _memberId,
+            GenerationOrMemberEpoch = _memberEpoch,
+            HeartbeatInterval = TimeSpan.FromMilliseconds(Math.Max(_heartbeatIntervalMs, 1)),
+            TimeSinceLastHeartbeat = lastHeartbeatTimestamp == 0
+                ? null
+                : Stopwatch.GetElapsedTime(lastHeartbeatTimestamp),
+            LastHeartbeatFailure = Volatile.Read(ref _lastHeartbeatFailure),
+            Assignment = KafkaClientStatusFactory.CopyAssignment(assignment, assignment.Count)
+        };
+    }
 
     /// <summary>
     /// Forces the coordinator to rejoin the group on the next
@@ -285,23 +308,9 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
         bool isInitial,
         CancellationToken cancellationToken)
     {
-        using var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
-            _coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
+        using var connectionLease = await LeaseHeartbeatConnectionAsync(cancellationToken)
             .ConfigureAwait(false);
         var connection = connectionLease.Connection;
-
-        if (!_metadataManager.HasApiKey(connection, ApiKey.ShareGroupHeartbeat))
-        {
-            throw new BrokerVersionException(
-                "The target Kafka broker does not support the ShareGroupHeartbeat API " +
-                "(KIP-932, introduced in Kafka 4.0). Share group consumption requires Kafka 4.0 or later.");
-        }
-
-        var version = _metadataManager.GetNegotiatedApiVersion(
-            connection,
-            ApiKey.ShareGroupHeartbeat,
-            ShareGroupHeartbeatRequest.LowestSupportedVersion,
-            ShareGroupHeartbeatRequest.HighestSupportedVersion);
 
         // Share groups always use client-generated UUID v4 member IDs.
         // Generate once when _memberId is null; subsequent heartbeats reuse the stored ID.
@@ -323,13 +332,39 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
             SubscribedTopicNames = subscribedTopics
         };
 
-        var response = await connection.SendAsync<ShareGroupHeartbeatRequest, ShareGroupHeartbeatResponse>(
-            request, version, cancellationToken).ConfigureAwait(false);
+        ShareGroupHeartbeatResponse response;
+        try
+        {
+            var version = _metadataManager.GetNegotiatedApiVersion(
+                connection,
+                ApiKey.ShareGroupHeartbeat,
+                ShareGroupHeartbeatRequest.LowestSupportedVersion,
+                ShareGroupHeartbeatRequest.HighestSupportedVersion);
+            response = await connection.SendAsync<ShareGroupHeartbeatRequest, ShareGroupHeartbeatResponse>(
+                request, version, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (
+            ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            Volatile.Write(ref _lastHeartbeatFailure, ex.Message);
+            throw;
+        }
 
         if (response.ErrorCode != ErrorCode.None)
         {
-            HandleShareGroupHeartbeatError(response);
+            try
+            {
+                HandleShareGroupHeartbeatError(response);
+            }
+            catch (Exception ex)
+            {
+                Volatile.Write(ref _lastHeartbeatFailure, ex.Message);
+                throw;
+            }
         }
+
+        Volatile.Write(ref _lastSuccessfulHeartbeatTimestamp, Stopwatch.GetTimestamp());
+        Volatile.Write(ref _lastHeartbeatFailure, null);
 
         if (response.MemberId is not null)
             _memberId = response.MemberId;
@@ -350,6 +385,33 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
         }
 
         return false;
+    }
+
+    private async ValueTask<KafkaConnectionLease> LeaseHeartbeatConnectionAsync(
+        CancellationToken cancellationToken)
+    {
+        var connectionLease = default(KafkaConnectionLease);
+        try
+        {
+            connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
+                _coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
+                .ConfigureAwait(false);
+            if (!_metadataManager.HasApiKey(connectionLease.Connection, ApiKey.ShareGroupHeartbeat))
+            {
+                throw new BrokerVersionException(
+                    "The target Kafka broker does not support the ShareGroupHeartbeat API " +
+                    "(KIP-932, introduced in Kafka 4.0). Share group consumption requires Kafka 4.0 or later.");
+            }
+
+            return connectionLease;
+        }
+        catch (Exception ex) when (
+            ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            connectionLease.Dispose();
+            Volatile.Write(ref _lastHeartbeatFailure, ex.Message);
+            throw;
+        }
     }
 
     /// <summary>

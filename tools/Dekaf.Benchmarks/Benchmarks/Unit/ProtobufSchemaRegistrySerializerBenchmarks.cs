@@ -15,7 +15,7 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 [ShortRunJob]
 public class ProtobufSchemaRegistrySerializerBenchmarks
 {
-    private ArrayBufferWriter<byte> _destination = new(256);
+    private readonly ArrayBufferWriter<byte> _destination = new(256);
     private ProtobufSchemaRegistrySerializer<StringValue> _serializer = null!;
     private StringValue _value = null!;
     private SerializationContext _context;
@@ -31,7 +31,8 @@ public class ProtobufSchemaRegistrySerializerBenchmarks
             Component = SerializationComponent.Value
         };
 
-        _serializer.Serialize(_value, ref _destination, _context);
+        var destination = _destination;
+        _serializer.Serialize(_value, ref destination, _context);
     }
 
     [GlobalCleanup]
@@ -41,8 +42,12 @@ public class ProtobufSchemaRegistrySerializerBenchmarks
     public void SerializeCached()
     {
         _destination.Clear();
-        _serializer.Serialize(_value, ref _destination, _context);
+        var destination = _destination;
+        _serializer.Serialize(_value, ref destination, _context);
     }
+
+    [Benchmark]
+    public ValueTask PrepareCached() => _serializer.PrepareAsync(_value, _context);
 
     private sealed class BenchmarkSchemaRegistryClient : ISchemaRegistryClient
     {

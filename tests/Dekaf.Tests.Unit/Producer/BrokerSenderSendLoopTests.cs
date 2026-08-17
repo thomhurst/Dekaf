@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using System.Reflection;
+using System.Threading.Channels;
 using System.Threading.Tasks.Sources;
 using Dekaf.Compression;
 using Dekaf.Diagnostics;
@@ -738,6 +739,8 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
         var injectedFailure = new InvalidOperationException("injected pending-response failure");
         var allRerouted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var coalesceStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var releaseCoalesce = new ManualResetEventSlim();
         var reroutedSequences = new ConcurrentQueue<int>();
         var reroutedCount = 0;
         var crashEnabled = 0;
@@ -757,14 +760,24 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             {
                 if (Interlocked.Exchange(ref crashEnabled, 0) != 0)
                     throw injectedFailure;
+
+                coalesceStarted.TrySetResult();
+                releaseCoalesce.Wait(cancellationToken);
             });
 
         try
         {
             var pendingFirst = CreateTestBatchWithDelivery(valueTaskSourcePool, "test-topic", 0);
             var pendingSecond = CreateTestBatchWithDelivery(valueTaskSourcePool, "test-topic", 1);
-            sender.EnqueueBulk([pendingFirst.Batch, pendingSecond.Batch]);
+            SeedKnownPartitions(sender, pendingFirst.Batch.TopicPartition, pendingSecond.Batch.TopicPartition);
+            sender.Enqueue(pendingFirst.Batch);
+            await coalesceStarted.Task.WaitAsync(cancellationToken);
+
+            sender.Enqueue(pendingSecond.Batch);
+            releaseCoalesce.Set();
             await WaitUntilAsync(() => GetPendingResponseCount(sender) == 1, cancellationToken);
+            await Assert.That(pendingFirst.Batch.RecordBatch.BaseSequence).IsGreaterThanOrEqualTo(0);
+            await Assert.That(pendingSecond.Batch.RecordBatch.BaseSequence).IsGreaterThanOrEqualTo(0);
 
             var coalesced = CreateTestBatchWithDelivery(valueTaskSourcePool, "test-topic", 0);
             Volatile.Write(ref crashEnabled, 1);
@@ -786,6 +799,7 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         }
         finally
         {
+            releaseCoalesce.Set();
             pendingResponse.TrySetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 0));
             await sender.DisposeAsync();
             await accumulator.DisposeAsync();
@@ -1511,7 +1525,7 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         // The original defect (#2529) was counters wired onto a path production traffic never
         // took, so this drives the real send loop end to end rather than calling CompleteSend
         // directly: enqueue -> serialize -> scripted ack -> per-batch counter emission.
-        const string topic = "test-topic";
+        const string topic = "sent-counter-real-path-topic";
         // Resolve instrument names before the listener starts (static-initializer re-entry
         // landmine — see FireAndForgetDeliveryErrorMetricTests).
         var messagesSentName = DekafMetrics.MessagesSent.Name;
@@ -1546,7 +1560,7 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         {
             sender.Enqueue(CreateTestBatch(valueTaskSourcePool, topic, partition: 0, messageCount: 3));
 
-            await WaitUntilAsync(() => Volatile.Read(ref messagesSent) == 3, cancellationToken);
+            await WaitUntilAsync(() => Volatile.Read(ref messagesSent) >= 3, cancellationToken);
 
             // Bytes are the batch's encoded wire size, stamped during serialization.
             await Assert.That(Volatile.Read(ref bytesSent)).IsGreaterThan(0);
@@ -2390,63 +2404,56 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
     [Timeout(120_000)]
     public async Task SendLoop_InFlightLimitEnforced_SecondBatchWaitsForFirstResponse(CancellationToken cancellationToken)
     {
-        // With maxInFlight=1 and two batches on different partitions, they coalesce into
-        // one request. After the response completes, both batches are acknowledged.
-        // This verifies in-flight limiting uses _pendingResponses.Count and that
-        // response completion correctly wakes the send loop.
-
-        var tcs1 = new TaskCompletionSource<ProduceResponse>();
-        var tcs2 = new TaskCompletionSource<ProduceResponse>();
-        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>();
-        responseQueue.Enqueue(tcs1);
-        responseQueue.Enqueue(tcs2);
-
-        var requestSent = new TaskCompletionSource();
-        var (pool, _) = CreateMockConnection(responseQueue, onSend: () => requestSent.TrySetResult());
+        // Publish batch 2 while the send loop is deliberately held at the coalescing gate.
+        // EnqueueBulk writes separate channel events, so relying on two consecutive writes
+        // allowed caller preemption to split the wave and strand the unused scripted response.
+        var response = new TaskCompletionSource<ProduceResponse>();
+        var requestSent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var coalesceStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var releaseCoalesce = new ManualResetEventSlim();
+        var sendCount = 0;
+        var (pool, connection) = CreateMockConnection(
+            new Queue<TaskCompletionSource<ProduceResponse>>([response]),
+            onSend: () =>
+            {
+                Interlocked.Increment(ref sendCount);
+                requestSent.TrySetResult();
+            });
+        connection.CaptureProduceRequests = true;
         cancellationToken = GuardUnscriptedSends(cancellationToken);
         var options = CreateOptions(maxInFlight: 1);
         var accumulator = new RecordAccumulator(options);
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
-
-        var ackOffsets = new List<long>();
-        var allAcknowledged = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        var sender = CreateSender(pool, options, accumulator, (_, offset, _, _, ex) =>
-        {
-            if (ex is null)
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            static (_, _, _, _, _) => { },
+            onWaveCoalesceStarted: () =>
             {
-                lock (ackOffsets)
-                {
-                    ackOffsets.Add(offset);
-                    if (ackOffsets.Count >= 2)
-                        allAcknowledged.TrySetResult();
-                }
-            }
-        });
+                coalesceStarted.TrySetResult();
+                releaseCoalesce.Wait(cancellationToken);
+            });
+        var (batch1, delivery1) = CreateTestBatchWithDelivery(vtPool, "test-topic", 0);
+        var (batch2, delivery2) = CreateTestBatchWithDelivery(vtPool, "test-topic", 1);
+        var deliveries = Task.WhenAll(delivery1, delivery2);
+        Task deliveryCompletion = deliveries;
+        var batch1Enqueued = false;
+        var batch2Enqueued = false;
 
         try
         {
-            // Enqueue two batches on different partitions so both can coalesce
-            // (same partition would cause carry-over due to one-per-partition rule)
-            var batch1 = CreateTestBatch(vtPool, "test-topic", 0);
-            var batch2 = CreateTestBatch(vtPool, "test-topic", 1);
+            SeedKnownPartitions(sender, batch1.TopicPartition, batch2.TopicPartition);
+            sender.Enqueue(batch1);
+            batch1Enqueued = true;
+            await coalesceStarted.Task.WaitAsync(cancellationToken);
 
-            // The first batch teaches the live sender only one known partition. Predeclare
-            // the complete test wave so it waits for both separately queued bulk events
-            // instead of dispatching whichever event wins the startup race.
-            var knownPartitions = (HashSet<TopicPartition>)typeof(BrokerSender).GetField(
-                "_knownPartitions",
-                BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(sender)!;
-            knownPartitions.Add(batch1.TopicPartition);
-            knownPartitions.Add(batch2.TopicPartition);
-            sender.EnqueueBulk([batch1, batch2]);
-
-            // Wait for the send loop to send the coalesced request
+            sender.Enqueue(batch2);
+            batch2Enqueued = true;
+            releaseCoalesce.Set();
             await requestSent.Task.WaitAsync(cancellationToken);
 
-            // Complete the first response — this should process both batches since
-            // they were coalesced into one request
-            tcs1.SetResult(new ProduceResponse
+            response.SetResult(new ProduceResponse
             {
                 TopicCount = 1,
                 Responses =
@@ -2474,15 +2481,27 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
                 ]
             });
 
-            // Wait for all acknowledgements
-            await allAcknowledged.Task.WaitAsync(cancellationToken);
-
-            await Assert.That(ackOffsets).Contains(100L);
-            await Assert.That(ackOffsets).Contains(200L);
+            var metadata = await deliveries.WaitAsync(cancellationToken);
+            await Assert.That(metadata[0].Offset).IsEqualTo(100);
+            await Assert.That(metadata[1].Offset).IsEqualTo(200);
+            await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(1);
+            await Assert.That(connection.CapturedProduceRequests.Count).IsEqualTo(1);
+            await Assert.That(connection.CapturedProduceRequests[0].Topics.Count).IsEqualTo(2);
         }
         finally
         {
+            releaseCoalesce.Set();
+            response.TrySetCanceled(CancellationToken.None);
+            if (!batch1Enqueued || !batch2Enqueued)
+            {
+                var failure = new OperationCanceledException("Batch was not enqueued before test cleanup.");
+                if (!batch1Enqueued)
+                    batch1.Fail(failure);
+                if (!batch2Enqueued)
+                    batch2.Fail(failure);
+            }
             await sender.DisposeAsync();
+            await deliveryCompletion.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
             await accumulator.DisposeAsync();
             await vtPool.DisposeAsync();
         }
@@ -2936,7 +2955,7 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
 
     [Test]
     [Timeout(30_000)]
-    public async Task SendLoop_CoalescedSendFailure_RefreshesMetadataOncePerTopic(
+    public async Task SendLoop_SingleRequestWaveFailure_RefreshesMetadataOncePerTopic(
         CancellationToken cancellationToken)
     {
         const string topic = "test-topic";
@@ -2986,6 +3005,12 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
         var rerouted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var reroutedCount = 0;
+        var firstBatch = CreateTestBatch(valueTaskSourcePool, topic, partition: 0);
+        var secondBatch = CreateTestBatch(valueTaskSourcePool, topic, partition: 1);
+        using var waveCoalesceStarted = new ManualResetEventSlim();
+        using var bulkPublishCompleted = new ManualResetEventSlim();
+        var eventChannel = new FirstWriteBlockingChannel<BrokerSender.SendLoopEvent>(
+            () => waveCoalesceStarted.Wait(cancellationToken));
         var sender = CreateSender(
             pool,
             options,
@@ -2996,29 +3021,89 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             {
                 if (Interlocked.Increment(ref reroutedCount) == 2)
                     rerouted.TrySetResult();
-            });
+            },
+            onWaveCoalesceStarted: () =>
+            {
+                waveCoalesceStarted.Set();
+                bulkPublishCompleted.Wait(cancellationToken);
+            },
+            eventChannel: eventChannel);
+
+        // Model producer-thread preemption after publishing the first of two bulk events.
+        // Pre-seeding the known wave width makes the sender enter its coalescing hook; the
+        // hook then deterministically publishes the sibling before the request is sealed.
+        var knownPartitions = (HashSet<TopicPartition>)typeof(BrokerSender).GetField(
+            "_knownPartitions",
+            BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(sender)!;
+        knownPartitions.Add(new TopicPartition(topic, 0));
+        knownPartitions.Add(new TopicPartition(topic, 1));
 
         try
         {
-            var firstBatch = CreateTestBatch(valueTaskSourcePool, topic, partition: 0);
-            var secondBatch = CreateTestBatch(valueTaskSourcePool, topic, partition: 1);
-            sender.EnqueueBulk(
-            [
-                firstBatch,
-                secondBatch
-            ]);
+            var bulkPublish = Task.Run(
+                () =>
+                {
+                    try
+                    {
+                        sender.EnqueueBulk([firstBatch, secondBatch]);
+                    }
+                    finally
+                    {
+                        bulkPublishCompleted.Set();
+                    }
+                },
+                CancellationToken.None);
 
             await rerouted.Task.WaitAsync(cancellationToken);
+            await bulkPublish.WaitAsync(cancellationToken);
 
+            await Assert.That(staleConnection.SendPipelinedAfterWriteCalls).IsEqualTo(1);
             await Assert.That(Volatile.Read(ref metadataRequests)).IsEqualTo(1);
             await Assert.That(accumulator.IsMuted(firstBatch.TopicPartition)).IsFalse();
             await Assert.That(accumulator.IsMuted(secondBatch.TopicPartition)).IsFalse();
         }
         finally
         {
+            waveCoalesceStarted.Set();
+            bulkPublishCompleted.Set();
             await sender.DisposeAsync();
             await accumulator.DisposeAsync();
             await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    private sealed class FirstWriteBlockingChannel<T> : Channel<T>
+    {
+        internal FirstWriteBlockingChannel(Action afterFirstWrite)
+        {
+            var inner = Channel.CreateUnbounded<T>(new UnboundedChannelOptions
+            {
+                SingleReader = true,
+                SingleWriter = false
+            });
+            Reader = inner.Reader;
+            Writer = new FirstWriteBlockingWriter(inner.Writer, afterFirstWrite);
+        }
+
+        private sealed class FirstWriteBlockingWriter(
+            ChannelWriter<T> inner,
+            Action afterFirstWrite) : ChannelWriter<T>
+        {
+            private Action? _afterFirstWrite = afterFirstWrite;
+
+            public override bool TryComplete(Exception? error = null) => inner.TryComplete(error);
+
+            public override bool TryWrite(T item)
+            {
+                var written = inner.TryWrite(item);
+                if (written)
+                    Interlocked.Exchange(ref _afterFirstWrite, null)?.Invoke();
+
+                return written;
+            }
+
+            public override ValueTask<bool> WaitToWriteAsync(CancellationToken cancellationToken = default) =>
+                inner.WaitToWriteAsync(cancellationToken);
         }
     }
 
@@ -3090,35 +3175,68 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             topic, leaderId: 1, leaderEpoch: 1, partitionCount: 2));
         var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
         var allRerouted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var reroutedBatches = new ConcurrentQueue<ReadyBatch>();
         var reroutedCount = 0;
+        var firstBatch = CreateTestBatch(valueTaskSourcePool, topic, partition: 0);
+        var secondBatch = CreateTestBatch(valueTaskSourcePool, topic, partition: 1);
+        using var waveCoalesceStarted = new ManualResetEventSlim();
+        using var bulkPublishCompleted = new ManualResetEventSlim();
+        var eventChannel = new FirstWriteBlockingChannel<BrokerSender.SendLoopEvent>(
+            () => waveCoalesceStarted.Wait(cancellationToken));
         var sender = CreateSender(
             pool,
             options,
             accumulator,
             onAcknowledgement: (_, _, _, _, _) => { },
             metadataManager,
-            rerouteBatch: (_, _) =>
+            rerouteBatch: (batch, _) =>
             {
+                reroutedBatches.Enqueue(batch);
                 if (Interlocked.Increment(ref reroutedCount) == 2)
                     allRerouted.TrySetResult();
-            });
+            },
+            onWaveCoalesceStarted: () =>
+            {
+                waveCoalesceStarted.Set();
+                bulkPublishCompleted.Wait(cancellationToken);
+            },
+            eventChannel: eventChannel);
+
+        var knownPartitions = (HashSet<TopicPartition>)typeof(BrokerSender).GetField(
+            "_knownPartitions",
+            BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(sender)!;
+        knownPartitions.Add(firstBatch.TopicPartition);
+        knownPartitions.Add(secondBatch.TopicPartition);
 
         try
         {
-            sender.EnqueueBulk(
-            [
-                CreateTestBatch(valueTaskSourcePool, topic, partition: 0),
-                CreateTestBatch(valueTaskSourcePool, topic, partition: 1)
-            ]);
+            var bulkPublish = Task.Run(
+                () =>
+                {
+                    try
+                    {
+                        sender.EnqueueBulk([firstBatch, secondBatch]);
+                    }
+                    finally
+                    {
+                        bulkPublishCompleted.Set();
+                    }
+                },
+                CancellationToken.None);
 
             var firstResult = await Task.WhenAny(allRerouted.Task, duplicateMetadataRequest.Task)
                 .WaitAsync(cancellationToken);
+            await bulkPublish.WaitAsync(cancellationToken);
 
             await Assert.That(firstResult).IsSameReferenceAs(allRerouted.Task);
             await Assert.That(Volatile.Read(ref metadataRequests)).IsEqualTo(1);
+            await Assert.That(reroutedBatches.Any(batch => ReferenceEquals(batch, firstBatch))).IsTrue();
+            await Assert.That(reroutedBatches.Any(batch => ReferenceEquals(batch, secondBatch))).IsTrue();
         }
         finally
         {
+            waveCoalesceStarted.Set();
+            bulkPublishCompleted.Set();
             await sender.DisposeAsync();
             await accumulator.DisposeAsync();
             await valueTaskSourcePool.DisposeAsync();

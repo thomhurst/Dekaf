@@ -207,6 +207,23 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
+        // Acks.None cannot observe or retry a request rejected while the new partition leader
+        // is still becoming ready. Prove readiness with an acknowledged write first.
+        await using (var warmupProducer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-producer-acks-none-warmup")
+            .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync())
+        {
+            await warmupProducer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Key = "warmup",
+                Value = "warmup"
+            }, CancellationToken.None);
+        }
+
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-acks-none")
@@ -241,6 +258,9 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
+            if (msg.Key == "warmup")
+                continue;
+
             await Assert.That(msg.Key).IsEqualTo("key1");
             await Assert.That(msg.Value).IsEqualTo("value1");
             break;

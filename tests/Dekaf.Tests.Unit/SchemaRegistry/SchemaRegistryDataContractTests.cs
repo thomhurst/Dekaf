@@ -135,6 +135,37 @@ public sealed class SchemaRegistryDataContractTests
             .IsEqualTo("PROTOBUF");
     }
 
+    [Test]
+    public async Task LookupSchemaAsync_IncludesDeletedSchemasWithoutCachingActiveRegistration()
+    {
+        var handler = new CapturingSchemaRegistryHandler("""
+            {
+              "subject": "shared/common.proto",
+              "version": 4,
+              "id": 42,
+              "schema": "descriptor-base64",
+              "schemaType": "PROTOBUF"
+            }
+            """);
+        using var client = new SchemaRegistryClient(new SchemaRegistryConfig
+        {
+            Url = "http://schema-registry.local"
+        }, handler);
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Protobuf,
+            SchemaString = "descriptor-base64"
+        };
+
+        await client.LookupSchemaAsync("shared/common.proto", schema, ignoreDeletedSchemas: false);
+
+        await Assert.That(handler.LastRequestUri!.Query).IsEqualTo("?normalize=false&deleted=true");
+
+        await client.GetOrRegisterSchemaAsync("shared/common.proto", schema);
+
+        await Assert.That(handler.RequestCount).IsEqualTo(2);
+    }
+
     private static Schema CreateDataContractSchema() => new()
     {
         SchemaType = SchemaType.Json,
@@ -176,11 +207,13 @@ public sealed class SchemaRegistryDataContractTests
     {
         public string? LastRequestBody { get; private set; }
         public Uri? LastRequestUri { get; private set; }
+        public int RequestCount { get; private set; }
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
+            RequestCount++;
             LastRequestUri = request.RequestUri;
             if (request.Content is not null)
                 LastRequestBody = await request.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);

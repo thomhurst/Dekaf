@@ -2,7 +2,6 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
 using Avro.Generic;
-using Avro.Specific;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Avro;
 using Dekaf.SchemaRegistry.Protobuf;
@@ -699,116 +698,6 @@ public sealed class SubjectNameStrategyTests
     }
 
     [Test]
-    public async Task AvroSerializer_SpecificWriterCache_StaysWithinConfiguredBound()
-    {
-        const int maxCachedSchemas = 2;
-        using var schemaRegistry = new MockSchemaRegistryClient();
-        var config = new AvroSerializerConfig { MaxCachedSchemas = maxCachedSchemas };
-        await using var serializer = new AvroSchemaRegistrySerializer<RuntimeSpecificRecord>(
-            schemaRegistry,
-            config);
-        var context = CreateContext("bounded-specific-topic");
-        var buffer = new ArrayBufferWriter<byte>();
-        RuntimeSpecificRecord? firstRecord = null;
-        RuntimeSpecificRecord? overflowRecord = null;
-
-        for (var i = 0; i < 5; i++)
-        {
-            var record = RuntimeSpecificRecord.Create(i);
-            firstRecord ??= record;
-            overflowRecord = record;
-            buffer.ResetWrittenCount();
-            serializer.Serialize(record, ref buffer, context);
-        }
-
-        await Assert.That(AvroSchemaRegistrySerializer<RuntimeSpecificRecord>.CachedSpecificWriterCount)
-            .IsEqualTo(1);
-        await Assert.That(serializer.CachedDynamicSubjectSchemaCount).IsEqualTo(maxCachedSchemas);
-        await Assert.That(serializer.CachedSchemaIdCount).IsEqualTo(maxCachedSchemas);
-        await Assert.That(schemaRegistry.GetOrRegisterSchemaCallCount).IsEqualTo(5);
-
-        buffer.ResetWrittenCount();
-        serializer.Serialize(firstRecord!, ref buffer, context);
-        buffer.ResetWrittenCount();
-        serializer.Serialize(overflowRecord!, ref buffer, context);
-
-        await Assert.That(schemaRegistry.GetOrRegisterSchemaCallCount).IsEqualTo(5);
-    }
-
-    [Test]
-    public async Task AvroSerializer_EquivalentSpecificOverflowSchemas_ReuseWriter()
-    {
-        using var schemaRegistry = new MockSchemaRegistryClient();
-        var config = new AvroSerializerConfig { MaxCachedSchemas = 1 };
-        await using var serializer = new AvroSchemaRegistrySerializer<RuntimeSpecificRecord>(
-            schemaRegistry,
-            config);
-        var context = CreateContext("equivalent-specific-overflow-topic");
-        var records = new RuntimeSpecificRecord[100];
-        for (var i = 0; i < records.Length; i++)
-            records[i] = RuntimeSpecificRecord.CreateEquivalent(i);
-
-        var buffer = new ArrayBufferWriter<byte>();
-        serializer.Serialize(RuntimeSpecificRecord.Create(0), ref buffer, context);
-        buffer.ResetWrittenCount();
-        serializer.Serialize(records[0], ref buffer, context);
-        buffer.ResetWrittenCount();
-        serializer.Serialize(records[1], ref buffer, context);
-
-        var stableBefore = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 2; i < records.Length; i++)
-        {
-            buffer.ResetWrittenCount();
-            serializer.Serialize(records[0], ref buffer, context);
-        }
-        var stableAllocated = GC.GetAllocatedBytesForCurrentThread() - stableBefore;
-
-        var equivalentBefore = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 2; i < records.Length; i++)
-        {
-            buffer.ResetWrittenCount();
-            serializer.Serialize(records[i], ref buffer, context);
-        }
-        var equivalentAllocated = GC.GetAllocatedBytesForCurrentThread() - equivalentBefore;
-
-        await Assert.That(AvroSchemaRegistrySerializer<RuntimeSpecificRecord>.CachedSpecificWriterCount)
-            .IsEqualTo(1);
-        await Assert.That(serializer.CachedDynamicSubjectSchemaCount).IsEqualTo(1);
-        await Assert.That(serializer.CachedSchemaIdCount).IsEqualTo(1);
-        await Assert.That(schemaRegistry.GetOrRegisterSchemaCallCount).IsEqualTo(2);
-        await Assert.That(equivalentAllocated).IsEqualTo(stableAllocated);
-    }
-
-    [Test]
-    public async Task AvroSerializer_WeakSpecificOverflowCache_DoesNotRetainSchema()
-    {
-        using var schemaRegistry = new MockSchemaRegistryClient();
-        var config = new AvroSerializerConfig { MaxCachedSchemas = 1 };
-        await using var serializer = new AvroSchemaRegistrySerializer<RuntimeSpecificRecord>(
-            schemaRegistry,
-            config);
-        var context = CreateContext("weak-specific-overflow-topic");
-        var retainedRecord = RuntimeSpecificRecord.Create(0);
-        var buffer = new ArrayBufferWriter<byte>();
-        serializer.Serialize(retainedRecord, ref buffer, context);
-        var overflowReferences = SerializeTransientSpecificOverflowRecord(serializer, context);
-
-        buffer.ResetWrittenCount();
-        serializer.Serialize(retainedRecord, ref buffer, context);
-        for (var i = 2; i < 5; i++)
-        {
-            buffer.ResetWrittenCount();
-            serializer.Serialize(RuntimeSpecificRecord.Create(i), ref buffer, context);
-        }
-
-        for (var i = 0; i < 3; i++)
-            ForceFullCollection();
-
-        await Assert.That(overflowReferences.Record.TryGetTarget(out _)).IsFalse();
-        await Assert.That(overflowReferences.Schema.TryGetTarget(out _)).IsFalse();
-    }
-
-    [Test]
     public async Task AvroSerializer_RuntimeSchemaCache_DoesNotRetainRecords()
     {
         using var schemaRegistry = new MockSchemaRegistryClient();
@@ -885,18 +774,6 @@ public sealed class SubjectNameStrategyTests
         var buffer = new ArrayBufferWriter<byte>();
         serializer.Serialize(record, ref buffer, context);
         return (new WeakReference<GenericRecord>(record), new WeakReference<AvroSchema>(schema));
-    }
-
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    private static (WeakReference<RuntimeSpecificRecord> Record, WeakReference<AvroSchema> Schema)
-        SerializeTransientSpecificOverflowRecord(
-            AvroSchemaRegistrySerializer<RuntimeSpecificRecord> serializer,
-            SerializationContext context)
-    {
-        var record = RuntimeSpecificRecord.Create(1);
-        var buffer = new ArrayBufferWriter<byte>();
-        serializer.Serialize(record, ref buffer, context);
-        return (new WeakReference<RuntimeSpecificRecord>(record), new WeakReference<AvroSchema>(record.Schema));
     }
 
     private static void ForceFullCollection()
@@ -1131,50 +1008,6 @@ public sealed class SubjectNameStrategyTests
         {
             var suffix = isKey ? "key" : "value";
             return $"{_prefix}.{topic}-{suffix}";
-        }
-    }
-
-    private sealed class RuntimeSpecificRecord(AvroSchema schema, int id) : ISpecificRecord
-    {
-        public AvroSchema Schema { get; } = schema;
-        private int Id { get; set; } = id;
-
-        internal static RuntimeSpecificRecord Create(int id)
-        {
-            var schema = AvroSchema.Parse(
-                $$"""
-                {
-                  "type": "record",
-                  "name": "SpecificRecord{{id}}",
-                  "namespace": "test",
-                  "fields": [{ "name": "id", "type": "int" }]
-                }
-                """);
-            return new RuntimeSpecificRecord(schema, id);
-        }
-
-        internal static RuntimeSpecificRecord CreateEquivalent(int id)
-        {
-            var schema = AvroSchema.Parse(
-                """
-                {
-                  "type": "record",
-                  "name": "EquivalentSpecificRecord",
-                  "namespace": "test",
-                  "fields": [{ "name": "id", "type": "int" }]
-                }
-                """);
-            return new RuntimeSpecificRecord(schema, id);
-        }
-
-        public object Get(int fieldPos) => fieldPos == 0
-            ? Id
-            : throw new ArgumentOutOfRangeException(nameof(fieldPos));
-
-        public void Put(int fieldPos, object fieldValue)
-        {
-            ArgumentOutOfRangeException.ThrowIfNotEqual(fieldPos, 0);
-            Id = (int)fieldValue;
         }
     }
 

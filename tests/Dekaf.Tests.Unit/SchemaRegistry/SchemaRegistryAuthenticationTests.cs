@@ -182,18 +182,6 @@ public sealed class SchemaRegistryAuthenticationTests
         await Assert.That(authorization?.Parameter).IsEqualTo("oidc-token");
     }
 
-    [Test]
-    public async Task CreateHttpHandler_AddsClientCertificate()
-    {
-        using var certificate = CreateSelfSignedCertificate();
-        using var handler = SchemaRegistryClient.CreateHttpHandler(certificate);
-
-        var certificates = handler.SslOptions.ClientCertificates;
-        await Assert.That(certificates).IsNotNull();
-        await Assert.That(certificates!.Count).IsEqualTo(1);
-        await Assert.That(certificates![0]).IsSameReferenceAs(certificate);
-    }
-
     private static OAuthBearerToken NewToken(string tokenValue) => new()
     {
         TokenValue = tokenValue,

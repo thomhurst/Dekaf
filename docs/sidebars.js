@@ -52,6 +52,7 @@ const sidebars = {
         'serialization/built-in',
         'serialization/json',
         'serialization/schema-registry',
+        'serialization/routing',
         'serialization/custom',
       ],
     },
@@ -71,6 +72,11 @@ const sidebars = {
     'performance',
     'benchmarks',
     'stress-tests',
+    {
+      type: 'category',
+      label: 'RFCs',
+      items: ['rfcs/dekaf-streams'],
+    },
   ],
 };
 

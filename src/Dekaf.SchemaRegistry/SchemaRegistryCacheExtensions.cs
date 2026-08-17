@@ -14,4 +14,21 @@ internal static class SchemaRegistryCacheExtensions
             .GetAwaiter()
             .GetResult();
     }
+
+    internal static Schema GetSchemaSync(
+        this ISchemaRegistryClient schemaRegistry,
+        int schemaId,
+        string subject,
+        TimeSpan timeout)
+    {
+        if (schemaRegistry is ISchemaRegistryCache cache
+            && cache.TryGetCachedSchema(schemaId, subject, out var cached))
+            return cached;
+
+        return schemaRegistry.GetSchemaAsync(schemaId, subject)
+            .WaitAsync(timeout)
+            .ConfigureAwait(false)
+            .GetAwaiter()
+            .GetResult();
+    }
 }

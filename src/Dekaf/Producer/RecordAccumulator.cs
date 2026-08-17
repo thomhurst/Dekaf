@@ -3016,14 +3016,31 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         workItem.Key.Return();
         workItem.Value.Return();
-        ReturnPooledHeaders(workItem.Headers);
+        ReturnPooledHeaders(workItem.Headers, workItem.HeaderCount);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal static void ReturnPooledHeaders(Header[]? headers)
+    internal static void ReturnPooledHeaders(Header[]? headers, int headerCount)
     {
-        if (headers is not null)
-            ProducerContainerPools.Headers.Return(headers);
+        if (headers is null)
+            return;
+
+        // Headers keeps deferred tracing headers at the tail so cleanup remains O(1) without
+        // clearing every live element in the rented array.
+        var lastHeaderIndex = headerCount - 1;
+        if ((uint)lastHeaderIndex < (uint)headers.Length)
+        {
+            if (headers[lastHeaderIndex].HasDeferredTraceparent)
+            {
+                headers[lastHeaderIndex] = default;
+            }
+            else if (lastHeaderIndex > 0 && headers[lastHeaderIndex - 1].HasDeferredTraceparent)
+            {
+                headers[lastHeaderIndex - 1] = default;
+            }
+        }
+
+        ProducerContainerPools.Headers.Return(headers);
     }
 
     /// <summary>
@@ -3102,7 +3119,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // throw (disposal race in worker startup) leaves ownership here.
             key.Return();
             value.Return();
-            ReturnPooledHeaders(headers);
+            ReturnPooledHeaders(headers, headerCount);
             throw;
         }
     }
@@ -3399,7 +3416,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             key.Return();
             value.Return();
-            ReturnPooledHeaders(headers);
+            ReturnPooledHeaders(headers, headerCount);
             throw;
         }
 
@@ -3471,7 +3488,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             {
                 key.Return();
                 value.Return();
-                ReturnPooledHeaders(headers);
+                ReturnPooledHeaders(headers, headerCount);
                 ownsRecordResources = false;
             }
         }
@@ -3716,7 +3733,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             key.Return();
             value.Return();
-            ReturnPooledHeaders(headers);
+            ReturnPooledHeaders(headers, headerCount);
             return new ValueTask<bool>(Task.FromException<bool>(new ObjectDisposedException(nameof(RecordAccumulator))));
         }
 
@@ -3724,7 +3741,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             key.Return();
             value.Return();
-            ReturnPooledHeaders(headers);
+            ReturnPooledHeaders(headers, headerCount);
             return new ValueTask<bool>(Task.FromException<bool>(new OperationCanceledException(cancellationToken)));
         }
 
@@ -3735,16 +3752,21 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             completionSource, callback, recordSize, startTicks, deadline,
             this, _pendingAppendPool, cancellationToken);
 
-        bool wasQueueEmpty;
+        bool wasQueueEmpty = false;
+        bool enqueueRejected;
         lock (_pendingAppendQueueLock)
         {
-            wasQueueEmpty = _pendingAppends.IsEmpty;
-            _pendingAppends.Enqueue(op);
+            enqueueRejected = Volatile.Read(ref _disposed) != 0;
+            if (!enqueueRejected)
+            {
+                wasQueueEmpty = _pendingAppends.IsEmpty;
+                _pendingAppends.Enqueue(op);
+            }
         }
 
-        // Close TOCTOU window: if DisposeAsync ran between the _disposed check above and the
-        // Enqueue, this op would sit in the queue until its timer fires. Fail it promptly.
-        if (Volatile.Read(ref _disposed) != 0)
+        // DisposeAsync serializes its final drain with this check. Once disposal starts,
+        // ownership cannot enter the queue after that drain has completed.
+        if (enqueueRejected)
         {
             var disposedException = new ObjectDisposedException(nameof(RecordAccumulator));
             if (op.TryFail(disposedException))
@@ -3797,7 +3819,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             key.Return();
             value.Return();
-            ReturnPooledHeaders(headers);
+            ReturnPooledHeaders(headers, headerCount);
             throw;
         }
 
@@ -3923,7 +3945,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
             if (ownsHeaderResources)
             {
-                ReturnPooledHeaders(headers);
+                ReturnPooledHeaders(headers, headerCount);
                 ownsHeaderResources = false;
             }
         }
@@ -4101,6 +4123,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                      completionSource,
                                      callback,
                                      headers,
+                                     headerCount,
                                      recordSize);
                                 drainPendingAfterAppend = CommitAdmissionReservationUnderLock(
                                     reservedAppendBatch,
@@ -4284,7 +4307,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
         catch
         {
-            ReturnPooledHeaders(headers);
+            ReturnPooledHeaders(headers, headerCount);
             throw;
         }
 
@@ -7192,12 +7215,24 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         while (Interlocked.CompareExchange(ref _draining, 1, 0) != 0)
             spinWait.SpinOnce();
 
-        while (_pendingAppends.TryDequeue(out var op))
+        try
         {
-            op.TryFail(new ObjectDisposedException(nameof(RecordAccumulator)));
-        }
+            lock (_pendingAppendQueueLock)
+            {
+                while (_pendingAppends.TryDequeue(out var op))
+                    _pendingAppendScan.Add(op);
+            }
 
-        Volatile.Write(ref _draining, 0);
+            // TryFail disposes cancellation registrations. Complete outside the queue lock:
+            // an in-flight cancellation callback may be waiting to inspect this queue.
+            foreach (var op in _pendingAppendScan)
+                op.TryFail(new ObjectDisposedException(nameof(RecordAccumulator)));
+        }
+        finally
+        {
+            _pendingAppendScan.Clear();
+            Volatile.Write(ref _draining, 0);
+        }
 
         // Cancel the disposal token to interrupt any remaining blocked operations
         // (e.g., append workers, metadata waits). Do this AFTER graceful shutdown attempt
@@ -7939,7 +7974,7 @@ internal sealed class PartitionBatch
         {
             key.Return();
             value.Return();
-            RecordAccumulator.ReturnPooledHeaders(headers);
+            RecordAccumulator.ReturnPooledHeaders(headers, headerCount);
         }
 
         return result;
@@ -7992,7 +8027,13 @@ internal sealed class PartitionBatch
                 throw;
             }
 
-            CommitReservedAppendFromSpans(reservedAppend, completionSource, callback, headers, estimatedSize);
+            CommitReservedAppendFromSpans(
+                reservedAppend,
+                completionSource,
+                callback,
+                headers,
+                headerCount,
+                estimatedSize);
         }
 
         return result;
@@ -8251,10 +8292,11 @@ internal sealed class PartitionBatch
         PooledValueTaskSource<RecordMetadata>? completionSource,
         Action<RecordMetadata, Exception?>? callback,
         Header[]? headers,
+        int headerCount,
         int estimatedSize)
     {
         CommitReservedAppend(reservedAppend, completionSource, callback, estimatedSize);
-        RecordAccumulator.ReturnPooledHeaders(headers);
+        RecordAccumulator.ReturnPooledHeaders(headers, headerCount);
     }
 
     private void CommitReservedAppend(

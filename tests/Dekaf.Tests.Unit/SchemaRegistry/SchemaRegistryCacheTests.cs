@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Net;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
@@ -29,7 +30,9 @@ public sealed class SchemaRegistryCacheTests
     {
         private readonly ConcurrentDictionary<string, int> _callCounts = new();
         private readonly ConcurrentDictionary<string, int> _idsBySubject = new();
+        private readonly ConcurrentDictionary<int, Schema> _schemasById = new();
         private int _nextId;
+        private int _subjectGetSchemaCallCount;
 
         /// <summary>
         /// Returns the number of times GetOrRegisterSchemaAsync was called for a given subject.
@@ -42,6 +45,8 @@ public sealed class SchemaRegistryCacheTests
         /// </summary>
         public int TotalCallCount => _callCounts.Values.Sum();
 
+        public int SubjectGetSchemaCallCount => _subjectGetSchemaCallCount;
+
         public int GetSchemaId(string subject) =>
             _idsBySubject[subject];
 
@@ -49,14 +54,31 @@ public sealed class SchemaRegistryCacheTests
         {
             _callCounts.AddOrUpdate(subject, 1, static (_, count) => count + 1);
             var id = _idsBySubject.GetOrAdd(subject, static (_, state) => Interlocked.Increment(ref state._nextId), this);
+            _schemasById[id] = schema;
             return Task.FromResult(id);
         }
 
         public Task<int> RegisterSchemaAsync(string subject, Schema schema, CancellationToken cancellationToken = default)
-            => Task.FromResult(Interlocked.Increment(ref _nextId));
+        {
+            var id = Interlocked.Increment(ref _nextId);
+            _schemasById[id] = schema;
+            return Task.FromResult(id);
+        }
 
         public Task<Schema> GetSchemaAsync(int id, CancellationToken cancellationToken = default)
-            => throw new NotImplementedException();
+            => Task.FromResult(_schemasById[id]);
+
+        public Task<Schema> GetSchemaAsync(
+            int id,
+            string subject,
+            CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref _subjectGetSchemaCallCount);
+            if (_idsBySubject.TryGetValue(subject, out var subjectId) && subjectId == id)
+                return Task.FromResult(_schemasById[id]);
+
+            throw new SchemaRegistryException(40403, $"Schema {id} not found under subject '{subject}'");
+        }
 
         public Task<RegisteredSchema> GetSchemaBySubjectAsync(string subject, string version = "latest", CancellationToken cancellationToken = default)
             => throw new NotImplementedException();
@@ -134,7 +156,7 @@ public sealed class SchemaRegistryCacheTests
             ReadOnlyMemory<byte> payload,
             SchemaRegistryRuleContext context)
         {
-            SerializeContext = context;
+            SerializeContext = SchemaRegistryRuleContextSnapshot.Capture(context);
             return serializedPayload ?? payload;
         }
 
@@ -142,7 +164,7 @@ public sealed class SchemaRegistryCacheTests
             ReadOnlyMemory<byte> payload,
             SchemaRegistryRuleContext context)
         {
-            DeserializeContext = context;
+            DeserializeContext = SchemaRegistryRuleContextSnapshot.Capture(context);
             return deserializedPayload ?? payload;
         }
     }
@@ -155,11 +177,15 @@ public sealed class SchemaRegistryCacheTests
         };
 
     [Test]
-    public async Task SubjectSchemaIdCache_StopsAddingEntriesAtMaxCachedEntries()
+    public async Task SubjectSchemaIdCache_RetainsFixedEntriesAndNewestOverflowWindow()
     {
         var cache = new SubjectSchemaIdCache();
 
-        for (var i = 0; i < SubjectSchemaIdCache.MaxCachedEntries + 10; i++)
+        const int extraEntries = 2;
+        var overflowEntryCount = SubjectSchemaIdCache.FixedOverflowCapacity
+            + SubjectSchemaIdCache.TurnoverRetentionCapacity
+            + extraEntries;
+        for (var i = 0; i < SubjectSchemaIdCache.MaxCachedEntries + overflowEntryCount; i++)
         {
             _ = cache.GetOrAdd(
                 $"topic-{i}",
@@ -170,6 +196,122 @@ public sealed class SchemaRegistryCacheTests
         }
 
         await Assert.That(cache.CachedEntryCount).IsEqualTo(SubjectSchemaIdCache.MaxCachedEntries);
+        await Assert.That(cache.TryGet("topic-0", isKey: false, out _)).IsTrue();
+        for (var index = 0; index < SubjectSchemaIdCache.FixedOverflowCapacity; index++)
+        {
+            await Assert.That(cache.TryGet(
+                $"topic-{SubjectSchemaIdCache.MaxCachedEntries + index}",
+                isKey: false,
+                out _)).IsTrue();
+        }
+        for (var index = SubjectSchemaIdCache.FixedOverflowCapacity;
+             index < SubjectSchemaIdCache.FixedOverflowCapacity + extraEntries;
+             index++)
+        {
+            await Assert.That(cache.TryGet(
+                $"topic-{SubjectSchemaIdCache.MaxCachedEntries + index}",
+                isKey: false,
+                out _)).IsFalse();
+        }
+        for (var index = SubjectSchemaIdCache.FixedOverflowCapacity + extraEntries;
+             index < overflowEntryCount;
+             index++)
+        {
+            await Assert.That(cache.TryGet(
+                $"topic-{SubjectSchemaIdCache.MaxCachedEntries + index}",
+                isKey: false,
+                out _)).IsTrue();
+        }
+    }
+
+    [Test]
+    public async Task SubjectSchemaIdCache_ConcurrentTurnoverStaysBounded()
+    {
+        var cache = new SubjectSchemaIdCache();
+
+        Parallel.For(
+            0,
+            SubjectSchemaIdCache.MaxCachedEntries + 1_024,
+            index => _ = cache.GetOrAdd(
+                $"concurrent-topic-{index}",
+                isKey: false,
+                state: 0,
+                static (_, topic, isKey) => topic + (isKey ? "-key" : "-value"),
+                static (_, subject) => new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(subject.Length, null)));
+
+        await Assert.That(cache.CachedEntryCount).IsEqualTo(SubjectSchemaIdCache.MaxCachedEntries);
+    }
+
+    [Test]
+    public async Task SubjectSchemaIdCache_ConcurrentTurnoverPublishesCoherentEntries()
+    {
+        var cache = new SubjectSchemaIdCache();
+        for (var index = 0; index < SubjectSchemaIdCache.MaxCachedEntries; index++)
+        {
+            _ = cache.GetOrAdd(
+                $"seed-{index}",
+                isKey: false,
+                state: index,
+                static (_, topic, _) => topic,
+                static (schemaId, _) => new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(schemaId, null));
+        }
+
+        var topics = new string[SubjectSchemaIdCache.TurnoverCapacity * 8];
+        for (var index = 0; index < topics.Length; index++)
+            topics[index] = $"turnover-{index}";
+
+        var mismatches = 0;
+        Parallel.For(0, 100_000, iteration =>
+        {
+            var schemaId = iteration & (topics.Length - 1);
+            var entry = cache.GetOrAdd(
+                topics[schemaId],
+                isKey: false,
+                state: schemaId,
+                static (_, topic, _) => topic,
+                static (id, _) => new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(id, null));
+            if (entry.SchemaId != schemaId)
+                Interlocked.Increment(ref mismatches);
+        });
+
+        await Assert.That(mismatches).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task SubjectSchemaIdCache_PreemptedTurnoverWriterDoesNotBlockReaders()
+    {
+        var cache = new SubjectSchemaIdCache();
+        var entryCount = SubjectSchemaIdCache.MaxCachedEntries
+            + SubjectSchemaIdCache.FixedOverflowCapacity
+            + 1;
+        for (var index = 0; index < entryCount; index++)
+        {
+            _ = cache.GetOrAdd(
+                $"preemption-{index}",
+                isKey: false,
+                state: index,
+                static (_, topic, _) => topic,
+                static (schemaId, _) => new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(schemaId, null));
+        }
+
+        var turnoverField = typeof(SubjectSchemaIdCache).GetField("_turnover", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var turnover = (Array)turnoverField.GetValue(cache)!;
+        var firstSlot = turnover.GetValue(0)!;
+        var versionField = firstSlot.GetType().GetField("_version", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        const int stableVersion = 2;
+        const int writerOwnedVersion = 3;
+        versionField.SetValue(firstSlot, writerOwnedVersion);
+
+        var turnoverTopic = $"preemption-{SubjectSchemaIdCache.MaxCachedEntries + SubjectSchemaIdCache.FixedOverflowCapacity}";
+        var lookup = Task.Run(() => cache.TryGet(turnoverTopic, isKey: false, out _));
+        try
+        {
+            await Assert.That(await lookup.WaitAsync(TimeSpan.FromSeconds(1))).IsTrue();
+        }
+        finally
+        {
+            versionField.SetValue(firstSlot, stableVersion);
+        }
     }
 
     private sealed record JsonPayload(int Id, string Name);
@@ -247,6 +389,7 @@ public sealed class SchemaRegistryCacheTests
         await Assert.That(strategy.CallCount).IsEqualTo(1);
         await Assert.That(schemaFactoryCalls).IsEqualTo(1);
         await Assert.That(registry.GetCallCount("topic-value")).IsEqualTo(1);
+        await Assert.That(registry.SubjectGetSchemaCallCount).IsEqualTo(0);
     }
 
     [Test]
@@ -287,6 +430,7 @@ public sealed class SchemaRegistryCacheTests
         await Assert.That(executor.SerializeContext.Schema).IsSameReferenceAs(schema);
         await Assert.That(schemaFactoryCalls).IsEqualTo(1);
         await Assert.That(registry.GetCallCount("topic-value")).IsEqualTo(1);
+        await Assert.That(registry.SubjectGetSchemaCallCount).IsEqualTo(0);
     }
 
     [Test]
@@ -326,8 +470,12 @@ public sealed class SchemaRegistryCacheTests
     public async Task Deserializer_RuleExecutor_TransformsDeserializedPayload()
     {
         var registry = new MockSchemaRegistryClient();
-        var schema = new Schema { SchemaType = SchemaType.Json, SchemaString = """{ "type": "string" }""" };
-        var schemaId = await registry.RegisterSchemaAsync("topic-value", schema);
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = """{ "type": "string", "title": "CustomRecord" }"""
+        };
+        var schemaId = await registry.RegisterSchemaAsync("CustomRecord", schema);
         var cipherText = "encrypted"u8.ToArray();
         var wireBytes = new byte[5 + cipherText.Length];
         wireBytes[0] = 0;
@@ -338,6 +486,10 @@ public sealed class SchemaRegistryCacheTests
         await using var deserializer = SchemaRegistryDeserializer.Create(
             registry,
             static (ReadOnlyMemory<byte> payload, Schema _) => Encoding.UTF8.GetString(payload.Span),
+            new SchemaRegistryDeserializerConfig
+            {
+                CustomSubjectNameStrategy = SubjectNameStrategies.Record
+            },
             ruleExecutor: executor);
 
         var result = deserializer.Deserialize(wireBytes, CreateContext());
@@ -345,8 +497,70 @@ public sealed class SchemaRegistryCacheTests
         await Assert.That(result).IsEqualTo("plain");
         await Assert.That(executor.DeserializeContext).IsNotNull();
         await Assert.That(executor.DeserializeContext!.PayloadFormat).IsEqualTo(SchemaRegistryPayloadFormat.Custom);
+        await Assert.That(executor.DeserializeContext.Subject).IsEqualTo("CustomRecord");
         await Assert.That(executor.DeserializeContext.SchemaId).IsEqualTo(schemaId);
         await Assert.That(executor.DeserializeContext.Schema).IsSameReferenceAs(schema);
+    }
+
+    [Test]
+    public async Task Deserializer_RuleExecutor_RequiresSubjectScopedSchemaLookup()
+    {
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = """{ "type": "string" }"""
+        };
+        var registry = new NonCachingSchemaRegistryClient(schema);
+        var wireBytes = new byte[6];
+        BinaryPrimitives.WriteInt32BigEndian(wireBytes.AsSpan(1, 4), 42);
+        wireBytes[5] = (byte)'x';
+        await using var deserializer = SchemaRegistryDeserializer.Create(
+            registry,
+            static (ReadOnlyMemory<byte> payload, Schema _) => Encoding.UTF8.GetString(payload.Span),
+            ruleExecutor: new ReplacingRuleExecutor());
+
+        var act = () => deserializer.Deserialize(wireBytes, CreateContext());
+
+        await Assert.That(act).Throws<NotSupportedException>()
+            .And.HasMessageContaining("subject-scoped schema lookup");
+        await Assert.That(registry.GetSchemaCallCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Deserializer_RuleExecutor_CachesRuleMetadataBySubjectAndId()
+    {
+        using var handler = new QueueingSchemaRegistryHandler()
+            .Enqueue(HttpStatusCode.OK, SchemaWithRuleJson("topic-a-rule"))
+            .Enqueue(HttpStatusCode.OK, SchemaWithRuleJson("topic-b-rule"));
+        using var registry = new SchemaRegistryClient(new SchemaRegistryConfig
+        {
+            Url = "http://registry:8081"
+        }, handler);
+        var payload = "plain"u8.ToArray();
+        var wireBytes = new byte[5 + payload.Length];
+        wireBytes[0] = 0;
+        BinaryPrimitives.WriteInt32BigEndian(wireBytes.AsSpan(1, 4), 42);
+        payload.CopyTo(wireBytes.AsSpan(5));
+        var executor = new ReplacingRuleExecutor();
+        await using var deserializer = SchemaRegistryDeserializer.Create(
+            registry,
+            static (ReadOnlyMemory<byte> value, Schema _) => Encoding.UTF8.GetString(value.Span),
+            ruleExecutor: executor);
+
+        _ = deserializer.Deserialize(wireBytes, CreateContext("topic-a"));
+        var firstSchema = executor.DeserializeContext!.Schema!;
+        _ = deserializer.Deserialize(wireBytes, CreateContext("topic-b"));
+        var secondSchema = executor.DeserializeContext!.Schema!;
+        _ = deserializer.Deserialize(wireBytes, CreateContext("topic-a"));
+
+        await Assert.That(firstSchema.RuleSet!.EncodingRules![0].Name).IsEqualTo("topic-a-rule");
+        await Assert.That(secondSchema.RuleSet!.EncodingRules![0].Name).IsEqualTo("topic-b-rule");
+        await Assert.That(firstSchema).IsNotSameReferenceAs(secondSchema);
+        await Assert.That(handler.RequestUris).Count().IsEqualTo(2);
+        await Assert.That(handler.RequestUris[0].Query).IsEqualTo("?subject=topic-a-value");
+        await Assert.That(handler.RequestUris[1].Query).IsEqualTo("?subject=topic-b-value");
+        await Assert.That(registry.TryGetCachedSchema(42, "topic-a-value", out var cached)).IsTrue();
+        await Assert.That(cached).IsSameReferenceAs(firstSchema);
     }
 
     [Test]
@@ -579,9 +793,14 @@ public sealed class SchemaRegistryCacheTests
     [Test]
     public async Task Client_CreateHttpHandler_SetsPooledConnectionLifetime()
     {
-        using var handler = SchemaRegistryClient.CreateHttpHandler();
+        using var handler = SchemaRegistryClient.CreateConfiguredHttpHandler(new SchemaRegistryConfig
+        {
+            Url = "http://localhost:8081"
+        });
+        var socketsHandler = handler as SocketsHttpHandler;
 
-        await Assert.That(handler.PooledConnectionLifetime).IsEqualTo(TimeSpan.FromMinutes(2));
+        await Assert.That(socketsHandler).IsNotNull();
+        await Assert.That(socketsHandler!.PooledConnectionLifetime).IsEqualTo(TimeSpan.FromMinutes(2));
     }
 
     [Test]
@@ -684,11 +903,50 @@ public sealed class SchemaRegistryCacheTests
     }
 
     [Test]
+    public async Task Client_GetOrRegisterSchema_CachesServerSchemaReferencesById()
+    {
+        using var handler = new QueueingSchemaRegistryHandler()
+            .Enqueue(HttpStatusCode.OK, """
+                {
+                  "subject": "topic-value",
+                  "version": 2,
+                  "id": 42,
+                  "schema": "{ \"$ref\": \"address.json\" }",
+                  "schemaType": "JSON",
+                  "references": [
+                    { "name": "address.json", "subject": "address-value", "version": 1 }
+                  ]
+                }
+                """);
+        using var client = new SchemaRegistryClient(new SchemaRegistryConfig
+        {
+            Url = "http://registry:8081"
+        }, handler);
+        var localSchema = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = """{ "$ref": "address.json" }"""
+        };
+
+        var id = await client.GetOrRegisterSchemaAsync("topic-value", localSchema);
+        var cached = client.TryGetCachedSchema(id, out var schema);
+
+        await Assert.That(cached).IsTrue();
+        await Assert.That(schema).IsNotSameReferenceAs(localSchema);
+        await Assert.That(schema.References).Count().IsEqualTo(1);
+        await Assert.That(schema.References![0].Name).IsEqualTo("address.json");
+    }
+
+    [Test]
     public async Task Deserializer_UsesCachedSchema_AndPassesPayloadWithoutCopy()
     {
         var registry = new MockSchemaRegistryClient();
-        var schema = new Schema { SchemaType = SchemaType.Json, SchemaString = """{ "type": "string" }""" };
-        var schemaId = await registry.RegisterSchemaAsync("topic-value", schema);
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = """{ "type": "string", "title": "JsonRecord" }"""
+        };
+        var schemaId = await registry.RegisterSchemaAsync("JsonRecord", schema);
         var payloadBytes = "hello"u8.ToArray();
         var wireBytes = new byte[5 + payloadBytes.Length];
         wireBytes[0] = 0;
@@ -767,8 +1025,12 @@ public sealed class SchemaRegistryCacheTests
     public async Task JsonDeserializer_RuleExecutor_TransformsPayload()
     {
         var registry = new MockSchemaRegistryClient();
-        var schema = new Schema { SchemaType = SchemaType.Json, SchemaString = """{ "type": "string" }""" };
-        var schemaId = await registry.RegisterSchemaAsync("topic-value", schema);
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = """{ "type": "string", "title": "JsonRecord" }"""
+        };
+        var schemaId = await registry.RegisterSchemaAsync("JsonRecord", schema);
         var cipherText = "encrypted-json"u8.ToArray();
         var wireBytes = new byte[5 + cipherText.Length];
         wireBytes[0] = 0;
@@ -779,6 +1041,11 @@ public sealed class SchemaRegistryCacheTests
         var executor = new ReplacingRuleExecutor(deserializedPayload: plainJson);
         await using var deserializer = new JsonSchemaRegistryDeserializer<string>(
             registry,
+            jsonOptions: null,
+            config: new SchemaRegistryDeserializerConfig
+            {
+                SubjectNameStrategy = SubjectNameStrategy.RecordName
+            },
             ruleExecutor: executor);
 
         var result = deserializer.Deserialize(wireBytes, CreateContext());
@@ -786,6 +1053,7 @@ public sealed class SchemaRegistryCacheTests
         await Assert.That(result).IsEqualTo("plain");
         await Assert.That(executor.DeserializeContext).IsNotNull();
         await Assert.That(executor.DeserializeContext!.PayloadFormat).IsEqualTo(SchemaRegistryPayloadFormat.Json);
+        await Assert.That(executor.DeserializeContext.Subject).IsEqualTo("JsonRecord");
         await Assert.That(executor.DeserializeContext.SchemaId).IsEqualTo(schemaId);
         await Assert.That(executor.DeserializeContext.Schema).IsSameReferenceAs(schema);
     }
@@ -804,6 +1072,22 @@ public sealed class SchemaRegistryCacheTests
           "id": {{id}},
           "schema": "{ \"type\": \"string\" }",
           "schemaType": "JSON"
+        }
+        """;
+
+    private static string SchemaWithRuleJson(string ruleName) =>
+        $$"""
+        {
+          "schema": "{ \"type\": \"string\" }",
+          "schemaType": "JSON",
+          "ruleSet": {
+            "encodingRules": [{
+              "name": "{{ruleName}}",
+              "kind": "TRANSFORM",
+              "mode": "READ",
+              "type": "TEST"
+            }]
+          }
         }
         """;
 

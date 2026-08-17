@@ -339,6 +339,30 @@ public sealed class ConsumerLeaderDiscoveryTests
     }
 
     [Test]
+    public async Task ResetToDivergingEpoch_DoesNotPreserveFilteredNewEpochProgress()
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        await using var metadataManager = CreateMetadataManager(pool);
+        await using var consumer = CreateConsumer(pool, metadataManager);
+        var partition = new TopicPartition(Topic, 0);
+        consumer.IncrementalAssign([new TopicPartitionOffset(Topic, 0, 0)]);
+
+        var pending = CreatePendingFetchData(leaderEpoch: 9, baseOffset: 43);
+        while (pending.MoveNext())
+        {
+            // Exhaust the stale fetch without delivering any records.
+        }
+        GetPendingFetches(consumer).Enqueue(pending);
+
+        InvokeResetToDivergingEpoch(
+            consumer,
+            CreateDivergingEpochResponse(epoch: 7, endOffset: 42));
+
+        await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
+        await Assert.That(consumer.GetPosition(partition)).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task ResetToDivergingEpoch_ClearsActiveAutoCommitSnapshot()
     {
         var pool = Substitute.For<IConnectionPool>();
@@ -871,7 +895,7 @@ public sealed class ConsumerLeaderDiscoveryTests
             }
         };
 
-    private static PendingFetchData CreatePendingFetchData(int leaderEpoch = -1)
+    private static PendingFetchData CreatePendingFetchData(int leaderEpoch = -1, long baseOffset = 0)
     {
         var records = new Record[3];
         for (var i = 0; i < records.Length; i++)
@@ -887,7 +911,7 @@ public sealed class ConsumerLeaderDiscoveryTests
         var pending = PendingFetchData.Create(
             Topic,
             partitionIndex: 0,
-            [new RecordBatch { BaseOffset = 0, PartitionLeaderEpoch = leaderEpoch, Records = records }]);
+            [new RecordBatch { BaseOffset = baseOffset, PartitionLeaderEpoch = leaderEpoch, Records = records }]);
         pending.EagerParseAll();
         return pending;
     }
@@ -897,17 +921,20 @@ public sealed class ConsumerLeaderDiscoveryTests
     {
         var consumerType = typeof(KafkaConsumer<string, string>);
         var assignmentMethod = consumerType.GetMethod(
-            "CanContinueBatchIteration",
+            "GetBatchIterationStatus",
             BindingFlags.NonPublic | BindingFlags.Instance)
-            ?? throw new InvalidOperationException("CanContinueBatchIteration method not found");
+            ?? throw new InvalidOperationException("GetBatchIterationStatus method not found");
         var epochField = consumerType.GetField(
             "_batchIterationEpoch",
             BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("_batchIterationEpoch field not found");
 
-        var isAssigned = assignmentMethod.CreateDelegate<Func<TopicPartition, bool>>(consumer);
+        var getStatus = assignmentMethod.CreateDelegate<BatchIterationContinuation>(consumer);
         var epoch = (BatchIterationEpoch)epochField.GetValue(consumer)!;
-        return new BatchIterationGuard(epoch, Volatile.Read(ref epoch.Version), isAssigned);
+        return new BatchIterationGuard(
+            epoch,
+            Volatile.Read(ref epoch.Version),
+            getStatus);
     }
 
     private static async ValueTask InvokeHandleLeaderEpochRefreshAsync(
@@ -1037,7 +1064,7 @@ public sealed class ConsumerLeaderDiscoveryTests
             .GetMethod("TryGetActiveConsumedPosition", BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("TryGetActiveConsumedPosition method not found");
 
-        object?[] arguments = [partition, 0L, -1];
+        object?[] arguments = [partition, 0L, -1, true];
         if (!(bool)method.Invoke(consumer, arguments)!)
             return null;
 

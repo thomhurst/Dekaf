@@ -24,7 +24,12 @@ namespace Dekaf.Producer;
 /// </summary>
 /// <typeparam name="TKey">Key type.</typeparam>
 /// <typeparam name="TValue">Value type.</typeparam>
-public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>, IProducerDiagnostics, IProducerFastPath<TKey, TValue>, IBudgetedInstance
+public sealed partial class KafkaProducer<TKey, TValue> :
+    IKafkaProducer<TKey, TValue>,
+    IKafkaClientStatusProvider,
+    IProducerDiagnostics,
+    IProducerFastPath<TKey, TValue>,
+    IBudgetedInstance
 {
     internal ValueTask CloseConnectionsForTestingAsync() => _connectionPool.CloseAllAsync();
 
@@ -93,6 +98,23 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
     internal bool IsDisposed => Volatile.Read(ref _disposed) != 0;
 
+    /// <inheritdoc />
+    public string? ClusterId => _metadataManager.ClusterId;
+
+    /// <inheritdoc />
+    public KafkaClientStatus GetStatus() => KafkaClientStatusFactory.Capture(
+        KafkaClientRole.Producer,
+        _connectionPool,
+        _metadataManager,
+        Volatile.Read(ref _disposed) != 0,
+        producer: new ProducerBacklogStatus(
+            _accumulator.BufferedBytes,
+            _accumulator.MaxBufferMemory,
+            _accumulator.UnsealedBatchCount,
+            _accumulator.DispatchQueuedBatchCount,
+            _accumulator.InFlightBatchCount,
+            _accumulator.BufferPressureEvents));
+
     // Idempotent / transaction state
     // Memory ordering: _idempotentInitialized is volatile (acquire/release semantics).
     // InitIdempotentProducerAsync sets _producerId, _producerEpoch, _accumulator.ProducerId/Epoch
@@ -109,6 +131,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     // the fail-fast produce guard for context. ErrorCode is short-backed, so volatile is valid.
     internal volatile ErrorCode _lastTransactionError = ErrorCode.None;
     private readonly SemaphoreSlim _transactionLock = new(1, 1);
+    private readonly Func<long>? _transactionTimestampProvider;
     private readonly System.Threading.Lock _epochBumpLock = new();
     internal readonly System.Threading.Lock _partitionsInTransactionLock = new();
     internal readonly HashSet<TopicPartition> _partitionsInTransaction = [];
@@ -225,7 +248,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         ILoggerFactory? loggerFactory = null,
         Func<IReadOnlyList<TopicPartition>, CancellationToken, ValueTask>? addPartitionsToTransaction = null,
         IAsyncSerializer<TKey>? asyncKeySerializer = null,
-        IAsyncSerializer<TValue>? asyncValueSerializer = null)
+        IAsyncSerializer<TValue>? asyncValueSerializer = null,
+        Func<long>? transactionTimestampProvider = null)
         : this(
             options,
             keySerializer,
@@ -236,7 +260,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             memoryBudget,
             addPartitionsToTransaction,
             asyncKeySerializer,
-            asyncValueSerializer)
+            asyncValueSerializer,
+            transactionTimestampProvider)
     {
     }
 
@@ -323,11 +348,13 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         IDekafMemoryBudget memoryBudget,
         Func<IReadOnlyList<TopicPartition>, CancellationToken, ValueTask>? addPartitionsToTransaction = null,
         IAsyncSerializer<TKey>? asyncKeySerializer = null,
-        IAsyncSerializer<TValue>? asyncValueSerializer = null)
+        IAsyncSerializer<TValue>? asyncValueSerializer = null,
+        Func<long>? transactionTimestampProvider = null)
     {
         ExponentialRetryBackoff.Validate(options.RetryBackoffMs, options.RetryBackoffMaxMs);
         _options = options;
         _addPartitionsToTransaction = addPartitionsToTransaction ?? AddPartitionsToTransactionAsync;
+        _transactionTimestampProvider = transactionTimestampProvider;
         // When an async serializer is configured for a component, its sync slot is forced to the
         // throwing placeholder here — by construction, not by builder convention — so a direct
         // constructor caller can never pair an async serializer with a live sync one that would
@@ -633,7 +660,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             {
                 // A preparer that throws synchronously must still stop and tag the started span,
                 // matching the invariant AwaitWithActivity enforces on every other completion path.
-                RecordActivityFault(activity, ex);
+                RecordActivityFault(activity, message.Headers, ex);
                 throw;
             }
 
@@ -654,8 +681,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     // Stops and error-tags a started span when async serializer preparation fails before the
     // message is appended. ProduceAfterPrepare owns the activity on all post-preparation paths,
     // so this only runs when preparation itself throws or faults. No-op when tracing is disabled.
-    private static void RecordActivityFault(Activity? activity, Exception ex)
+    private static void RecordActivityFault(Activity? activity, Headers? headers, Exception ex)
     {
+        headers?.RemoveDeferredTraceContext();
         if (activity is null)
         {
             return;
@@ -723,7 +751,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         {
             // Preparation faulted (e.g. Schema Registry unreachable or cancelled mid-fetch) before the
             // message was appended. Stop and error-tag the span here; ProduceAfterPrepare never runs.
-            RecordActivityFault(activity, ex);
+            RecordActivityFault(activity, message.Headers, ex);
             throw;
         }
 
@@ -1242,6 +1270,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             {
                 // BufferMemory backpressure timeout must propagate
                 if (activity is not null) Diagnostics.DekafDiagnostics.RecordException(activity, ex);
+                message.Headers?.RemoveDeferredTraceContext();
                 activity?.Dispose();
                 throw;
             }
@@ -1249,6 +1278,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             {
                 // Fire-and-forget: swallow exception but log
                 LogFireAndForgetProduceFailed(ex, message.Topic);
+                message.Headers?.RemoveDeferredTraceContext();
                 activity?.Dispose();
                 return default;
             }
@@ -1412,6 +1442,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         CancellationToken cancellationToken)
     {
         Header[]? pooledHeaderArray = null;
+        var headerCount = 0;
         var customPartitionerKey = PooledMemory.Null;
         var customPartitionerValue = PooledMemory.Null;
 
@@ -1479,7 +1510,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             var timestampMs = timestamp?.ToUnixTimeMilliseconds() ?? GetFastTimestampMs();
 
             // Convert headers
-            var headerCount = 0;
             if (headers is not null && headers.Count > 0)
             {
                 RentAndFillHeaders(headers, out pooledHeaderArray, out headerCount);
@@ -1537,7 +1567,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
         catch (Exception ex)
         {
-            RecordAccumulator.ReturnPooledHeaders(pooledHeaderArray);
+            RecordAccumulator.ReturnPooledHeaders(pooledHeaderArray, headerCount);
+            headers?.RemoveDeferredTraceContext();
             customPartitionerKey.Return();
             customPartitionerValue.Return();
             if (ex is not ObjectDisposedException)
@@ -1616,6 +1647,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingDestinationName, message.Topic);
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingOperationName, Diagnostics.DekafDiagnostics.OperationNameSend);
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingOperationType, Diagnostics.DekafDiagnostics.OperationTypeSend);
+            var clusterId = _metadataManager.ClusterId;
+            if (clusterId is not null)
+                activity.SetTag(Diagnostics.DekafDiagnostics.MessagingKafkaClusterId, clusterId);
             if (_options.ClientId is not null)
                 activity.SetTag(Diagnostics.DekafDiagnostics.MessagingClientId, _options.ClientId);
             if (message.Key is string stringKey)
@@ -1765,6 +1799,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         var key = PooledMemory.Null;
         var value = PooledMemory.Null;
         Header[]? pooledHeaderArray = null;
+        var headerCount = 0;
         try
         {
             if (!keyIsNull)
@@ -1796,7 +1831,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             var timestampMs = timestamp.ToUnixTimeMilliseconds();
 
             // Convert headers with minimal allocations
-            var headerCount = 0;
             if (message.Headers is not null && message.Headers.Count > 0)
             {
                 RentAndFillHeaders(message.Headers, out pooledHeaderArray, out headerCount);
@@ -1822,7 +1856,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             // must return them here.
             key.Return();
             value.Return();
-            RecordAccumulator.ReturnPooledHeaders(pooledHeaderArray);
+            RecordAccumulator.ReturnPooledHeaders(pooledHeaderArray, headerCount);
+            message.Headers?.RemoveDeferredTraceContext();
             throw;
         }
     }
@@ -2512,7 +2547,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
     private TransactionRetryBudget CreateTransactionRetryBudget()
     {
-        var startedAtMs = MonotonicClock.GetMilliseconds();
+        var startedAtMs = GetTransactionTimestampMilliseconds();
         var deadlineMs = long.MaxValue - startedAtMs > _options.MaxBlockMs
             ? startedAtMs + _options.MaxBlockMs
             : long.MaxValue;
@@ -2534,11 +2569,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         return true;
     }
 
-    private static bool TryGetTransactionRemainingMilliseconds(
+    private bool TryGetTransactionRemainingMilliseconds(
         TransactionRetryBudget retryBudget,
         out int remainingMs)
     {
-        var remaining = retryBudget.DeadlineMs - MonotonicClock.GetMilliseconds();
+        var remaining = retryBudget.DeadlineMs - GetTransactionTimestampMilliseconds();
         if (remaining <= 0)
         {
             remainingMs = 0;
@@ -2549,13 +2584,13 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         return true;
     }
 
-    private static CancellationTokenSource CreateTransactionRetryCancellationSource(
+    private CancellationTokenSource CreateTransactionRetryCancellationSource(
         TransactionRetryBudget retryBudget,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var remainingMs = Math.Max(0, retryBudget.DeadlineMs - MonotonicClock.GetMilliseconds());
+        var remainingMs = Math.Max(0, retryBudget.DeadlineMs - GetTransactionTimestampMilliseconds());
         timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(remainingMs));
         return timeoutCts;
     }
@@ -2566,7 +2601,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         int attempts,
         Exception? innerException = null)
     {
-        var elapsedMs = Math.Max(0, MonotonicClock.GetMilliseconds() - retryBudget.StartedAtMs);
+        var elapsedMs = Math.Max(0, GetTransactionTimestampMilliseconds() - retryBudget.StartedAtMs);
         var configured = TimeSpan.FromMilliseconds(_options.MaxBlockMs);
         var message =
             $"{operation} did not complete within max.block.ms ({_options.MaxBlockMs}ms) after {attempts} attempts.";
@@ -2583,6 +2618,12 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 message,
                 innerException);
     }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal long GetTransactionTimestampMilliseconds() =>
+        _transactionTimestampProvider is null
+            ? MonotonicClock.GetMilliseconds()
+            : _transactionTimestampProvider();
 
     internal async ValueTask ReinitializeProducerIdAsync(
         CancellationToken cancellationToken,
@@ -4457,6 +4498,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
         finally
         {
+            message.Headers?.RemoveDeferredTraceContext();
             activity?.Dispose();
         }
     }
@@ -5095,6 +5137,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
         finally
         {
+            message.Headers?.RemoveDeferredTraceContext();
             activity?.Dispose();
         }
     }
@@ -5185,7 +5228,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     /// Assumes headers is non-null and non-empty; callers must guard before invoking.
     /// </remarks>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void RentAndFillHeaders(Headers headers, out Header[] pooledArray, out int headerCount)
+    internal static void RentAndFillHeaders(Headers headers, out Header[] pooledArray, out int headerCount)
     {
         var count = headers.Count;
         headerCount = count;
@@ -5197,15 +5240,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         // Use index-based iteration to avoid enumerator boxing allocation
         for (var i = 0; i < count; i++)
-        {
-            var h = headers[i];
-            result[i] = new Header
-            {
-                Key = h.Key,
-                Value = h.Value,
-                IsValueNull = h.IsValueNull
-            };
-        }
+            result[i] = headers[i];
+
+        headers.RemoveDeferredTraceContext();
     }
 
     public async ValueTask DisposeAsync()

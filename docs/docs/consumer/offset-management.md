@@ -223,6 +223,46 @@ consumer.Positions.SeekToBeginning(new TopicPartition("my-topic", 0));
 consumer.Positions.SeekToEnd(new TopicPartition("my-topic", 0));
 ```
 
+### Tail and Finite Snapshots
+
+`SeekToTailAsync` resolves an isolation-aware watermark and seeks to the final number of Kafka
+**offsets**. The count is deliberately not a visible-record count: compacted records, aborted
+transactions, and control batches occupy offsets but are not returned.
+
+```csharp
+var partition = new TopicPartition("my-topic", 0);
+
+// Resolves max(low watermark, high watermark - 100) and applies the seek.
+TopicPartitionOffset start = await consumer.SeekToTailAsync(partition, 100, ct);
+
+// Captures the assigned partitions' ends once, then terminates at those bounds.
+await foreach (var record in consumer.ConsumeSnapshotAsync(ct))
+{
+    await ProcessAsync(record, ct);
+}
+```
+
+`ConsumeSnapshotAsync` starts at the consumer's current positions. It captures the current
+assignment and each partition's isolation-aware end offset when enumeration begins. Records
+appended afterward remain available to a later normal consume loop. Empty partitions finish
+immediately; control batches, aborted transactions, compaction holes, and retention gaps advance
+progress without being returned, so the snapshot cannot wait forever for a user-visible record
+after its bound.
+
+With `ReadCommitted`, the captured end is the last stable offset. Open transactions beyond it do
+not delay completion, and aborted records plus transaction markers advance progress without being
+returned.
+
+Snapshot ordering is the normal consumer ordering: offsets increase within each partition, while
+cross-partition order follows fetch arrival. Topic partitions added after capture are excluded. A
+rebalance, manual assignment change, or pause-state change invalidates the snapshot and throws
+`InvalidOperationException`; restart it after the consumer state stabilizes. Resume paused assigned
+partitions before starting a snapshot. Cancellation bounds the wait; there is no implicit timeout.
+
+The methods are exposed as extensions on `IKafkaConsumer<TKey, TValue>`. Dekaf's broker-backed and
+in-memory consumers implement `IBoundedKafkaConsumer<TKey, TValue>`; custom consumer wrappers can
+implement that capability to participate without breaking existing `IKafkaConsumer` implementations.
+
 Seek and pause/resume operations mutate current consumer state and return `void`. Keep them as separate statements:
 
 ```csharp
