@@ -72,6 +72,11 @@ const sidebars = {
     'performance',
     'benchmarks',
     'stress-tests',
+    {
+      type: 'category',
+      label: 'RFCs',
+      items: ['rfcs/dekaf-streams'],
+    },
   ],
 };
 
