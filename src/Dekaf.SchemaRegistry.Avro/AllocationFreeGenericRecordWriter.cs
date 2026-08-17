@@ -360,6 +360,13 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
                 return;
         }
 
+        var listType = list.GetType();
+        if (listType.IsGenericType && listType.GetGenericArguments()[0] is { IsValueType: true } elementType)
+        {
+            throw new global::Avro.AvroTypeException(
+                $"List element type {elementType} is not supported for Avro {itemSchema.Tag} items.");
+        }
+
         for (var i = 0; i < list.Count; i++)
         {
             encoder.StartItem();
@@ -1150,7 +1157,11 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
 
         public bool TryGetValueBranch(Type type, out UnionBranch branch)
         {
-            ThrowIfConditionalValueBranch(type);
+            if (HasConditionalValueBranch(type))
+            {
+                branch = default;
+                return false;
+            }
 
             if (type == typeof(bool)) branch = _booleanBranch;
             else if (type == typeof(int)) branch = _intBranch;
@@ -1232,11 +1243,15 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
             if (value is not null &&
                 _conditionalBranches!.TryGetValue(value.GetType(), out var conditional))
             {
+                var fallback = GetConditionalFallback(value, conditional.Fallback);
+                if (fallback.Schema is not null && fallback.Index < conditional.Primary.Index)
+                    return fallback;
+
                 if (conditional.LogicalSchema.LogicalType.IsInstanceOfLogicalType(value))
                     return conditional.Primary;
 
-                if (conditional.Fallback.Schema is not null)
-                    return conditional.Fallback;
+                if (fallback.Schema is not null)
+                    return fallback;
                 throw NoMatch(value);
             }
 
@@ -1244,14 +1259,17 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
                 _multipleConditionalBranches?.TryGetValue(value.GetType(), out var multiple) == true)
             {
                 var candidates = multiple.Candidates;
+                var fallback = GetConditionalFallback(value, multiple.Fallback);
                 for (var i = 0; i < candidates.Length; i++)
                 {
                     var candidate = candidates[i];
+                    if (fallback.Schema is not null && fallback.Index < candidate.Branch.Index)
+                        return fallback;
                     if (candidate.LogicalSchema.LogicalType.IsInstanceOfLogicalType(value))
                         return candidate.Branch;
                 }
-                if (multiple.Fallback.Schema is not null)
-                    return multiple.Fallback;
+                if (fallback.Schema is not null)
+                    return fallback;
                 throw NoMatch(value);
             }
 
@@ -1262,6 +1280,25 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
             _typedBranches.TryGetValue(type, out var typedBranch) && typedBranch.Index < schemaBranch.Index
                 ? typedBranch
                 : schemaBranch;
+
+        private UnionBranch GetConditionalFallback(object value, UnionBranch fallback)
+        {
+            var structural = ResolveStructuralBranch(value);
+            return structural.Schema is not null &&
+                   (fallback.Schema is null || structural.Index < fallback.Index)
+                ? structural
+                : fallback;
+        }
+
+        private UnionBranch ResolveStructuralBranch(object value) => value switch
+        {
+            GenericRecord record when _recordBranches.TryGetValue(record.Schema.SchemaName, out var branch) => branch,
+            GenericEnum genericEnum when _enumBranches.TryGetValue(genericEnum.Schema.SchemaName, out var branch) => branch,
+            GenericFixed fixedValue when _fixedBranches.TryGetValue(fixedValue.Schema.SchemaName, out var branch) => branch,
+            (Array or IList) and not byte[] => _arrayBranch,
+            IDictionary<string, object> => _mapBranch,
+            _ => default
+        };
 
         private static void SetCompatibleBranch(
             Type type,
@@ -1328,14 +1365,17 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
 
         private void ThrowIfConditionalValueBranch(Type type)
         {
-            if (_conditionalBranches?.ContainsKey(type) == true ||
-                _multipleConditionalBranches?.ContainsKey(type) == true)
+            if (HasConditionalValueBranch(type))
             {
                 throw new global::Avro.AvroTypeException(
                     $"Union {_schema} uses a value-dependent custom logical branch for {type}; " +
                     "allocation-free value-type collection serialization cannot evaluate it without boxing.");
             }
         }
+
+        private bool HasConditionalValueBranch(Type type) =>
+            _conditionalBranches?.ContainsKey(type) == true ||
+            _multipleConditionalBranches?.ContainsKey(type) == true;
 
         private static bool IsSpecializedLogicalType(global::Avro.Util.LogicalType logicalType) =>
             logicalType is Date or TimestampMillisecond or LocalTimestampMillisecond or
