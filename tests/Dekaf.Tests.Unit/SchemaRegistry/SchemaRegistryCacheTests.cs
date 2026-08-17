@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Net;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
@@ -155,11 +156,15 @@ public sealed class SchemaRegistryCacheTests
         };
 
     [Test]
-    public async Task SubjectSchemaIdCache_StopsAddingEntriesAtMaxCachedEntries()
+    public async Task SubjectSchemaIdCache_RetainsFixedEntriesAndNewestOverflowWindow()
     {
         var cache = new SubjectSchemaIdCache();
 
-        for (var i = 0; i < SubjectSchemaIdCache.MaxCachedEntries + 10; i++)
+        const int extraEntries = 2;
+        var overflowEntryCount = SubjectSchemaIdCache.FixedOverflowCapacity
+            + SubjectSchemaIdCache.TurnoverRetentionCapacity
+            + extraEntries;
+        for (var i = 0; i < SubjectSchemaIdCache.MaxCachedEntries + overflowEntryCount; i++)
         {
             _ = cache.GetOrAdd(
                 $"topic-{i}",
@@ -170,6 +175,122 @@ public sealed class SchemaRegistryCacheTests
         }
 
         await Assert.That(cache.CachedEntryCount).IsEqualTo(SubjectSchemaIdCache.MaxCachedEntries);
+        await Assert.That(cache.TryGet("topic-0", isKey: false, out _)).IsTrue();
+        for (var index = 0; index < SubjectSchemaIdCache.FixedOverflowCapacity; index++)
+        {
+            await Assert.That(cache.TryGet(
+                $"topic-{SubjectSchemaIdCache.MaxCachedEntries + index}",
+                isKey: false,
+                out _)).IsTrue();
+        }
+        for (var index = SubjectSchemaIdCache.FixedOverflowCapacity;
+             index < SubjectSchemaIdCache.FixedOverflowCapacity + extraEntries;
+             index++)
+        {
+            await Assert.That(cache.TryGet(
+                $"topic-{SubjectSchemaIdCache.MaxCachedEntries + index}",
+                isKey: false,
+                out _)).IsFalse();
+        }
+        for (var index = SubjectSchemaIdCache.FixedOverflowCapacity + extraEntries;
+             index < overflowEntryCount;
+             index++)
+        {
+            await Assert.That(cache.TryGet(
+                $"topic-{SubjectSchemaIdCache.MaxCachedEntries + index}",
+                isKey: false,
+                out _)).IsTrue();
+        }
+    }
+
+    [Test]
+    public async Task SubjectSchemaIdCache_ConcurrentTurnoverStaysBounded()
+    {
+        var cache = new SubjectSchemaIdCache();
+
+        Parallel.For(
+            0,
+            SubjectSchemaIdCache.MaxCachedEntries + 1_024,
+            index => _ = cache.GetOrAdd(
+                $"concurrent-topic-{index}",
+                isKey: false,
+                state: 0,
+                static (_, topic, isKey) => topic + (isKey ? "-key" : "-value"),
+                static (_, subject) => new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(subject.Length, null)));
+
+        await Assert.That(cache.CachedEntryCount).IsEqualTo(SubjectSchemaIdCache.MaxCachedEntries);
+    }
+
+    [Test]
+    public async Task SubjectSchemaIdCache_ConcurrentTurnoverPublishesCoherentEntries()
+    {
+        var cache = new SubjectSchemaIdCache();
+        for (var index = 0; index < SubjectSchemaIdCache.MaxCachedEntries; index++)
+        {
+            _ = cache.GetOrAdd(
+                $"seed-{index}",
+                isKey: false,
+                state: index,
+                static (_, topic, _) => topic,
+                static (schemaId, _) => new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(schemaId, null));
+        }
+
+        var topics = new string[SubjectSchemaIdCache.TurnoverCapacity * 8];
+        for (var index = 0; index < topics.Length; index++)
+            topics[index] = $"turnover-{index}";
+
+        var mismatches = 0;
+        Parallel.For(0, 100_000, iteration =>
+        {
+            var schemaId = iteration & (topics.Length - 1);
+            var entry = cache.GetOrAdd(
+                topics[schemaId],
+                isKey: false,
+                state: schemaId,
+                static (_, topic, _) => topic,
+                static (id, _) => new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(id, null));
+            if (entry.SchemaId != schemaId)
+                Interlocked.Increment(ref mismatches);
+        });
+
+        await Assert.That(mismatches).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task SubjectSchemaIdCache_PreemptedTurnoverWriterDoesNotBlockReaders()
+    {
+        var cache = new SubjectSchemaIdCache();
+        var entryCount = SubjectSchemaIdCache.MaxCachedEntries
+            + SubjectSchemaIdCache.FixedOverflowCapacity
+            + 1;
+        for (var index = 0; index < entryCount; index++)
+        {
+            _ = cache.GetOrAdd(
+                $"preemption-{index}",
+                isKey: false,
+                state: index,
+                static (_, topic, _) => topic,
+                static (schemaId, _) => new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(schemaId, null));
+        }
+
+        var turnoverField = typeof(SubjectSchemaIdCache).GetField("_turnover", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var turnover = (Array)turnoverField.GetValue(cache)!;
+        var firstSlot = turnover.GetValue(0)!;
+        var versionField = firstSlot.GetType().GetField("_version", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        const int stableVersion = 2;
+        const int writerOwnedVersion = 3;
+        versionField.SetValue(firstSlot, writerOwnedVersion);
+
+        var turnoverTopic = $"preemption-{SubjectSchemaIdCache.MaxCachedEntries + SubjectSchemaIdCache.FixedOverflowCapacity}";
+        var lookup = Task.Run(() => cache.TryGet(turnoverTopic, isKey: false, out _));
+        try
+        {
+            await Assert.That(await lookup.WaitAsync(TimeSpan.FromSeconds(1))).IsTrue();
+        }
+        finally
+        {
+            versionField.SetValue(firstSlot, stableVersion);
+        }
     }
 
     private sealed record JsonPayload(int Id, string Name);

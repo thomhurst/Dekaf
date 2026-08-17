@@ -1,1 +1,2 @@
 #nullable enable
+Dekaf.SchemaRegistry.Avro.AvroSchemaRegistrySerializer<T>.PrepareAsync(string! topic, T value, bool isKey = false, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.SchemaRegistry.ResolvedSchemaContext>

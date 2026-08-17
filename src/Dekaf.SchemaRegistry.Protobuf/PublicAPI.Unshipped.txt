@@ -1,6 +1,8 @@
 #nullable enable
 Dekaf.SchemaRegistry.Protobuf.IReferenceSubjectNameStrategy
 Dekaf.SchemaRegistry.Protobuf.IReferenceSubjectNameStrategy.GetSubjectName(string! topic, string! referenceName, bool isKey) -> string!
+Dekaf.SchemaRegistry.Protobuf.ProtobufSchemaRegistrySerializer<T>.PrepareAsync(string! topic, T value, bool isKey = false, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.SchemaRegistry.ResolvedSchemaContext>
+Dekaf.SchemaRegistry.Protobuf.ProtobufSchemaRegistrySerializer<T>.PrepareAsync(T value, Dekaf.Serialization.SerializationContext context, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
 Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig.CustomReferenceSubjectNameStrategy.get -> Dekaf.SchemaRegistry.Protobuf.IReferenceSubjectNameStrategy?
 Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig.CustomReferenceSubjectNameStrategy.init -> void
 Dekaf.SchemaRegistry.Protobuf.ReferenceSubjectNameStrategy.Qualified = 1 -> Dekaf.SchemaRegistry.Protobuf.ReferenceSubjectNameStrategy

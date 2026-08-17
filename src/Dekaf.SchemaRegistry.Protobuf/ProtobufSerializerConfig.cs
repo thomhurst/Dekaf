@@ -101,8 +101,9 @@ public enum ReferenceSubjectNameStrategy
 
     /// <summary>
     /// Use the qualified reference path as the subject name.
+    /// The string form of this value is now "Qualified".
     /// </summary>
-    [Obsolete($"Use {nameof(Qualified)}.")]
+    [Obsolete($"Use {nameof(Qualified)}. The string form of this value is now \"{nameof(Qualified)}\".")]
     QualifiedRecordName = Qualified
 }
 

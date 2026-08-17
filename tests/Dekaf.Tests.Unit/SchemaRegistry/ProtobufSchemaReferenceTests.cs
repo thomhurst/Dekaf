@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Collections.Concurrent;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Protobuf;
 using Dekaf.Serialization;
@@ -210,6 +211,60 @@ public sealed class ProtobufSchemaReferenceTests
         await Assert.That(config.SkipKnownTypes).IsTrue();
         await Assert.That(config.ReferenceSubjectNameStrategy)
             .IsEqualTo(ReferenceSubjectNameStrategy.ReferenceName);
+    }
+
+    [Test]
+    public async Task PrepareAsync_ConcurrentTopics_CoalescesSharedReferenceResolution()
+    {
+        var schemaRegistry = Substitute.For<ISchemaRegistryClient>();
+        var sharedEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sharedRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var registrationCounts = new ConcurrentDictionary<string, int>(StringComparer.Ordinal);
+        var nextId = 10;
+        schemaRegistry.RegisterSchemaAsync(
+                Arg.Any<string>(),
+                Arg.Any<Schema>(),
+                Arg.Any<CancellationToken>())
+            .Returns(async call =>
+            {
+                var subject = call.ArgAt<string>(0);
+                registrationCounts.AddOrUpdate(subject, 1, static (_, count) => count + 1);
+                if (subject == "shared/base.proto")
+                {
+                    sharedEntered.TrySetResult();
+                    await sharedRelease.Task.ConfigureAwait(false);
+                }
+
+                return Interlocked.Increment(ref nextId);
+            });
+        schemaRegistry.LookupSchemaAsync(
+                Arg.Any<string>(),
+                Arg.Any<Schema>(),
+                true,
+                false,
+                Arg.Any<CancellationToken>())
+            .Returns(call => Task.FromResult(new RegisteredSchema
+            {
+                Id = Volatile.Read(ref nextId),
+                Subject = call.ArgAt<string>(0),
+                Version = 1,
+                Schema = call.ArgAt<Schema>(1)
+            }));
+        schemaRegistry.GetOrRegisterSchemaAsync(
+                Arg.Any<string>(),
+                Arg.Any<Schema>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ => Task.FromResult(Interlocked.Increment(ref nextId)));
+        await using var serializer = new ProtobufSchemaRegistrySerializer<ReferenceGraphMessage>(schemaRegistry);
+
+        var first = serializer.PrepareAsync("graph-a", new ReferenceGraphMessage());
+        await sharedEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        var second = serializer.PrepareAsync("graph-b", new ReferenceGraphMessage());
+
+        sharedRelease.TrySetResult();
+        await Task.WhenAll(first.AsTask(), second.AsTask());
+
+        await Assert.That(registrationCounts.Values.All(static count => count == 1)).IsTrue();
     }
 
     private static ISchemaRegistryClient CreateRegistry(List<Registration> registrations)
