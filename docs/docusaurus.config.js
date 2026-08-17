@@ -53,6 +53,13 @@ const config = {
 
   headTags: [
     {
+      tagName: 'link',
+      attributes: {
+        rel: 'apple-touch-icon',
+        href: '/Dekaf/img/apple-touch-icon.png',
+      },
+    },
+    {
       tagName: 'meta',
       attributes: {
         name: 'algolia-site-verification',
@@ -150,7 +157,8 @@ const config = {
         title: 'Dekaf',
         logo: {
           alt: 'Dekaf Logo',
-          src: 'img/logo.svg',
+          src: 'img/logo-light.png',
+          srcDark: 'img/logo-dark.png',
         },
         items: [
           {
