@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Reflection;
 using Dekaf.Consumer;
 using Dekaf.Errors;
@@ -267,16 +266,16 @@ public sealed class TransactionOffsetCommitTests
     [Test]
     public async Task TV2_TransportFailuresUntilDeadline_ArePreservedAsTimeoutCause()
     {
-        var outcomes = new Queue<object>(Enumerable.Range(0, 1000)
-            .Select(static _ => (object)new IOException("coordinator connection lost")));
+        var transactionClock = new FakeTransactionClock();
+        var outcomes = new Queue<object>([new IOException("coordinator connection lost")]);
         await using var harness = CreateHarness(
             transactionVersion: 2,
             txnOffsetCommitMaxVersion: 5,
             commitOutcomes: outcomes,
-            findCoordinatorDelayMs: 1200,
             retryBackoffMs: 10,
-            maxBlockMs: 2000);
-        var stopwatch = Stopwatch.StartNew();
+            maxBlockMs: 2000,
+            transactionClock: transactionClock,
+            commitFailureAdvanceMs: 2001);
 
         var exception = await Assert.That(() => harness.Producer.SendOffsetsToTransactionInternalAsync(
                 [new TopicPartitionOffset("orders", 0, 42)],
@@ -287,7 +286,6 @@ public sealed class TransactionOffsetCommitTests
         await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Transaction);
         await Assert.That(exception.InnerException).IsTypeOf<IOException>();
         await Assert.That(exception.InnerException!.Message).IsEqualTo("coordinator connection lost");
-        await Assert.That(stopwatch.Elapsed).IsLessThan(TimeSpan.FromMilliseconds(2800));
     }
 
     [Test]
@@ -354,14 +352,18 @@ public sealed class TransactionOffsetCommitTests
         int emptyCoordinatorResponsesBeforeSuccess = 0,
         bool startWithEmptyBrokerMetadata = false,
         int retryBackoffMs = 0,
-        int maxBlockMs = 1000)
+        int maxBlockMs = 1000,
+        FakeTransactionClock? transactionClock = null,
+        int commitFailureAdvanceMs = 0)
     {
         var connection = new RecordingConnection(
             txnOffsetCommitMaxVersion,
             commitOutcomes,
             topicId,
             findCoordinatorDelayMs,
-            emptyCoordinatorResponsesBeforeSuccess);
+            emptyCoordinatorResponsesBeforeSuccess,
+            transactionClock,
+            commitFailureAdvanceMs);
         var connectionPool = new ConnectionPool(
             "transaction-offset-tests",
             connectionOptions: null,
@@ -403,7 +405,8 @@ public sealed class TransactionOffsetCommitTests
             Serializers.String,
             connectionPool,
             metadataManager,
-            DekafMemoryBudget.Global);
+            DekafMemoryBudget.Global,
+            transactionTimestampProvider: transactionClock is null ? null : transactionClock.GetMilliseconds);
         SetField(producer, "_initialized", true);
         SetField(producer, "_producerId", 42L);
         SetField(producer, "_producerEpoch", (short)3);
@@ -438,12 +441,23 @@ public sealed class TransactionOffsetCommitTests
         }
     }
 
+    private sealed class FakeTransactionClock
+    {
+        private long _milliseconds;
+
+        internal long GetMilliseconds() => Volatile.Read(ref _milliseconds);
+
+        internal void Advance(int milliseconds) => Interlocked.Add(ref _milliseconds, milliseconds);
+    }
+
     private sealed class RecordingConnection(
         short txnOffsetCommitMaxVersion,
         Queue<object>? commitOutcomes,
         Guid topicId,
         int findCoordinatorDelayMs,
-        int emptyCoordinatorResponsesBeforeSuccess) : IKafkaConnection, IKafkaCapabilityProvider
+        int emptyCoordinatorResponsesBeforeSuccess,
+        FakeTransactionClock? transactionClock,
+        int commitFailureAdvanceMs) : IKafkaConnection, IKafkaCapabilityProvider
     {
         private int _findCoordinatorRequests;
         public int BrokerId => 1;
@@ -534,7 +548,10 @@ public sealed class TransactionOffsetCommitTests
                 ? commitOutcomes.Dequeue()
                 : ErrorCode.None;
             if (outcome is Exception exception)
+            {
+                transactionClock?.Advance(commitFailureAdvanceMs);
                 throw exception;
+            }
 
             var errorCode = (ErrorCode)outcome;
             return new TxnOffsetCommitResponse
