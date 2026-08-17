@@ -61,6 +61,16 @@ public class AvroSchemaRegistrySerializerBenchmarks
         }
         """;
 
+    private const string NullableStringArraySchema =
+        """
+        {
+          "type": "record",
+          "name": "NullableStringArrayBenchmarkRecord",
+          "namespace": "Dekaf.Benchmarks",
+          "fields": [{ "name": "values", "type": { "type": "array", "items": ["null", "string"] } }]
+        }
+        """;
+
     private const string DictionaryMapSchema =
         """
         {
@@ -87,6 +97,19 @@ public class AvroSchemaRegistrySerializerBenchmarks
         }
         """;
 
+    private const string LogicalStringArraySchema =
+        """
+        {
+          "type": "record",
+          "name": "LogicalStringArrayBenchmarkRecord",
+          "namespace": "Dekaf.Benchmarks",
+          "fields": [{
+            "name": "values",
+            "type": { "type": "array", "items": { "type": "string", "logicalType": "dekaf-benchmark-string" } }
+          }]
+        }
+        """;
+
     private const string ConditionalLogicalStructuralUnionSchema =
         """
         {
@@ -103,16 +126,39 @@ public class AvroSchemaRegistrySerializerBenchmarks
         }
         """;
 
+    private const string NestedRecordArraySchema =
+        """
+        {
+          "type": "record",
+          "name": "NestedRecordArrayBenchmarkRecord",
+          "namespace": "Dekaf.Benchmarks",
+          "fields": [{
+            "name": "values",
+            "type": {
+              "type": "array",
+              "items": {
+                "type": "record",
+                "name": "NestedBenchmarkValue",
+                "fields": [{ "name": "id", "type": "int" }]
+              }
+            }
+          }]
+        }
+        """;
+
     private AvroSchemaRegistrySerializer<GenericRecord> _serializer = null!;
     private AvroSchemaRegistrySerializer<SpecificBenchmarkRecord> _specificSerializer = null!;
     private GenericRecord[] _equivalentRecords = null!;
     private GenericRecord _intRecord = null!;
     private GenericRecord _nullableIntArrayRecord = null!;
     private GenericRecord _nullableIntCollectionRecord = null!;
+    private GenericRecord _nullableStringCollectionRecord = null!;
     private GenericRecord _scalarUnionRecord = null!;
     private GenericRecord _dictionaryMapRecord = null!;
     private GenericRecord _conditionalLogicalUnionRecord = null!;
+    private GenericRecord _logicalStringCollectionRecord = null!;
     private GenericRecord _conditionalLogicalStructuralUnionRecord = null!;
+    private GenericRecord _nestedRecordCollectionRecord = null!;
     private SpecificBenchmarkRecord _specificRecord = null!;
     private ArrayBufferWriter<byte> _serializeBuffer = null!;
     private GenericRecord _stableRecord = null!;
@@ -122,6 +168,7 @@ public class AvroSchemaRegistrySerializerBenchmarks
     [GlobalSetup]
     public void Setup()
     {
+        Avro.Util.LogicalTypeFactory.Instance.Register(new BenchmarkStringLogicalType());
         Avro.Util.LogicalTypeFactory.Instance.Register(new BenchmarkStringBytesLogicalType());
         Avro.Util.LogicalTypeFactory.Instance.Register(new BenchmarkIntListBytesLogicalType());
         _serializer = new AvroSchemaRegistrySerializer<GenericRecord>(new BenchmarkSchemaRegistryClient());
@@ -141,10 +188,13 @@ public class AvroSchemaRegistrySerializerBenchmarks
         _intRecord = CreateIntRecord();
         _nullableIntArrayRecord = CreateNullableIntArrayRecord();
         _nullableIntCollectionRecord = CreateNullableIntCollectionRecord();
+        _nullableStringCollectionRecord = CreateNullableStringCollectionRecord();
         _scalarUnionRecord = CreateScalarUnionRecord();
         _dictionaryMapRecord = CreateDictionaryMapRecord();
         _conditionalLogicalUnionRecord = CreateConditionalLogicalUnionRecord();
+        _logicalStringCollectionRecord = CreateLogicalStringCollectionRecord();
         _conditionalLogicalStructuralUnionRecord = CreateConditionalLogicalStructuralUnionRecord();
+        _nestedRecordCollectionRecord = CreateNestedRecordCollectionRecord();
         _specificRecord = new SpecificBenchmarkRecord { Id = 42, Name = "benchmark" };
         _serializeBuffer = new ArrayBufferWriter<byte>();
         _serializer.Serialize(_stableRecord, ref _serializeBuffer, _context);
@@ -153,13 +203,19 @@ public class AvroSchemaRegistrySerializerBenchmarks
         _serializeBuffer.ResetWrittenCount();
         _serializer.Serialize(_nullableIntArrayRecord, ref _serializeBuffer, _context);
         _serializeBuffer.ResetWrittenCount();
+        _serializer.Serialize(_nullableStringCollectionRecord, ref _serializeBuffer, _context);
+        _serializeBuffer.ResetWrittenCount();
         _serializer.Serialize(_scalarUnionRecord, ref _serializeBuffer, _context);
         _serializeBuffer.ResetWrittenCount();
         _serializer.Serialize(_dictionaryMapRecord, ref _serializeBuffer, _context);
         _serializeBuffer.ResetWrittenCount();
         _serializer.Serialize(_conditionalLogicalUnionRecord, ref _serializeBuffer, _context);
         _serializeBuffer.ResetWrittenCount();
+        _serializer.Serialize(_logicalStringCollectionRecord, ref _serializeBuffer, _context);
+        _serializeBuffer.ResetWrittenCount();
         _serializer.Serialize(_conditionalLogicalStructuralUnionRecord, ref _serializeBuffer, _context);
+        _serializeBuffer.ResetWrittenCount();
+        _serializer.Serialize(_nestedRecordCollectionRecord, ref _serializeBuffer, _context);
         _serializeBuffer.ResetWrittenCount();
         _specificSerializer.Serialize(_specificRecord, ref _serializeBuffer, _context);
     }
@@ -216,6 +272,13 @@ public class AvroSchemaRegistrySerializerBenchmarks
         _serializer.Serialize(_scalarUnionRecord, ref _serializeBuffer, _context);
     }
 
+    [Benchmark(Description = "Serialize nullable-string non-generic collection")]
+    public void SerializeNullableStringCollectionRecord()
+    {
+        _serializeBuffer.ResetWrittenCount();
+        _serializer.Serialize(_nullableStringCollectionRecord, ref _serializeBuffer, _context);
+    }
+
     [Benchmark(Description = "Serialize dictionary-map generic Avro record")]
     public void SerializeDictionaryMapRecord()
     {
@@ -230,11 +293,25 @@ public class AvroSchemaRegistrySerializerBenchmarks
         _serializer.Serialize(_conditionalLogicalUnionRecord, ref _serializeBuffer, _context);
     }
 
+    [Benchmark(Description = "Serialize logical-string non-generic collection")]
+    public void SerializeLogicalStringCollectionRecord()
+    {
+        _serializeBuffer.ResetWrittenCount();
+        _serializer.Serialize(_logicalStringCollectionRecord, ref _serializeBuffer, _context);
+    }
+
     [Benchmark(Description = "Serialize conditional-logical structural union fallback")]
     public void SerializeConditionalLogicalStructuralUnionFallback()
     {
         _serializeBuffer.ResetWrittenCount();
         _serializer.Serialize(_conditionalLogicalStructuralUnionRecord, ref _serializeBuffer, _context);
+    }
+
+    [Benchmark(Description = "Serialize non-generic nested-record collection")]
+    public void SerializeNestedRecordCollection()
+    {
+        _serializeBuffer.ResetWrittenCount();
+        _serializer.Serialize(_nestedRecordCollectionRecord, ref _serializeBuffer, _context);
     }
 
     [Benchmark(Description = "Control: Apache writer prepared SpecificRecord")]
@@ -287,6 +364,14 @@ public class AvroSchemaRegistrySerializerBenchmarks
         return record;
     }
 
+    private static GenericRecord CreateNullableStringCollectionRecord()
+    {
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(NullableStringArraySchema);
+        var record = new GenericRecord(schema);
+        record.Add("values", new NonGenericStringCollection(["first", null, "second"]));
+        return record;
+    }
+
     private static GenericRecord CreateDictionaryMapRecord()
     {
         var schema = (Avro.RecordSchema)AvroSchema.Parse(DictionaryMapSchema);
@@ -309,12 +394,55 @@ public class AvroSchemaRegistrySerializerBenchmarks
         return record;
     }
 
+    private static GenericRecord CreateLogicalStringCollectionRecord()
+    {
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(LogicalStringArraySchema);
+        var record = new GenericRecord(schema);
+        record.Add("values", new NonGenericStringCollection(["logical-first", "logical-second"]));
+        return record;
+    }
+
     private static GenericRecord CreateConditionalLogicalStructuralUnionRecord()
     {
         var schema = (Avro.RecordSchema)AvroSchema.Parse(ConditionalLogicalStructuralUnionSchema);
         var record = new GenericRecord(schema);
         record.Add("value", new List<int> { 1, 2, 3, 4 });
         return record;
+    }
+
+    private static GenericRecord CreateNestedRecordCollectionRecord()
+    {
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(NestedRecordArraySchema);
+        var arraySchema = (Avro.ArraySchema)schema.Fields[0].Schema;
+        var itemSchema = (Avro.RecordSchema)arraySchema.ItemSchema;
+        var first = new GenericRecord(itemSchema);
+        first.Add("id", 1);
+        var second = new GenericRecord(itemSchema);
+        second.Add("id", 2);
+        var record = new GenericRecord(schema);
+        record.Add("values", new NonGenericRecordCollection([first, second]));
+        return record;
+    }
+
+    private sealed class NonGenericRecordCollection(IList<GenericRecord> values)
+        : Collection<GenericRecord>(values);
+
+    private sealed class NonGenericStringCollection(IList<string?> values)
+        : Collection<string?>(values);
+
+    private sealed class BenchmarkStringLogicalType()
+        : Avro.Util.LogicalType("dekaf-benchmark-string")
+    {
+        public override object ConvertToBaseValue(object logicalValue, Avro.LogicalSchema schema) =>
+            logicalValue;
+
+        public override object ConvertToLogicalValue(object baseValue, Avro.LogicalSchema schema) =>
+            baseValue;
+
+        public override Type GetCSharpType(bool nullible) => typeof(string);
+
+        public override bool IsInstanceOfLogicalType(object logicalValue) =>
+            logicalValue is string value && value.StartsWith("logical-", StringComparison.Ordinal);
     }
 
     private sealed class BenchmarkStringBytesLogicalType()

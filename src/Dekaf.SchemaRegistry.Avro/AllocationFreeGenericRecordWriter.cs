@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Collections;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using global::Avro.Generic;
@@ -12,8 +13,10 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
     private const int StackBufferSize = 256;
     private static readonly DateTime UnixEpoch = new(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
     private static readonly DateTime LocalUnixEpoch = new(1970, 1, 1, 0, 0, 0, DateTimeKind.Unspecified);
+    private static readonly ConditionalWeakTable<Type, ValueTypeListElement> ValueTypeListElements = new();
     private readonly global::Avro.RecordSchema _schema = schema;
     private readonly WriterCache _writerCache = WriterCache.Create(schema);
+    private ValueTypeListElement? _lastValueTypeListElement;
 
     internal void Write(GenericRecord record, AllocationFreeBinaryEncoder encoder) =>
         WriteRecord(_schema, record, encoder, validateSchema: false);
@@ -361,7 +364,28 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
         }
 
         var listType = list.GetType();
-        if (listType.IsGenericType && listType.GetGenericArguments()[0] is { IsValueType: true } elementType)
+        Type? elementType = null;
+        if (listType.IsGenericType)
+        {
+            elementType = listType.GetGenericArguments()[0];
+            if (!elementType.IsValueType)
+                elementType = null;
+        }
+        else if (itemSchema.Tag is global::Avro.Schema.Type.Logical)
+        {
+            var cache = Volatile.Read(ref _lastValueTypeListElement);
+            if (cache is null || !ReferenceEquals(cache.ListType, listType))
+            {
+                cache = ValueTypeListElements.GetValue(
+                    listType,
+                    static type => new ValueTypeListElement(type, FindValueTypeListElement(type)));
+                Volatile.Write(ref _lastValueTypeListElement, cache);
+            }
+
+            elementType = cache.ElementType;
+        }
+
+        if (elementType is not null)
         {
             throw new global::Avro.AvroTypeException(
                 $"List element type {elementType} is not supported for Avro {itemSchema.Tag} items.");
@@ -372,6 +396,30 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
             encoder.StartItem();
             WriteValue(itemSchema, list[i], encoder);
         }
+    }
+
+    [UnconditionalSuppressMessage(
+        "Trimming",
+        "IL2070",
+        Justification = "A live IList instance retains the implemented interface needed for this rejection check.")]
+    private static Type? FindValueTypeListElement(Type listType)
+    {
+        var interfaces = listType.GetInterfaces();
+        for (var index = 0; index < interfaces.Length; index++)
+        {
+            var candidate = interfaces[index];
+            if (!candidate.IsGenericType
+                || candidate.GetGenericTypeDefinition() != typeof(IList<>))
+            {
+                continue;
+            }
+
+            var elementType = candidate.GetGenericArguments()[0];
+            if (elementType.IsValueType)
+                return elementType;
+        }
+
+        return null;
     }
 
     private static void WriteListItems<T, TWriter>(
@@ -1405,6 +1453,12 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
     {
         public List<ConditionalUnionCandidate> Candidates { get; } = [];
         public UnionBranch Fallback { get; set; }
+    }
+
+    private sealed class ValueTypeListElement(Type listType, Type? elementType)
+    {
+        internal Type ListType { get; } = listType;
+        internal Type? ElementType { get; } = elementType;
     }
 
     private sealed class ReferenceComparer<T> : IEqualityComparer<T>
