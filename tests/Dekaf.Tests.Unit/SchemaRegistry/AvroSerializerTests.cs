@@ -524,6 +524,41 @@ public sealed class AvroSerializerTests
     }
 
     [Test]
+    public async Task Serializer_GenericRecord_CustomStructUnionList_IsRejectedBeforeIndexing()
+    {
+        Avro.Util.LogicalTypeFactory.Instance.Register(new CustomStructBytesLogicalType());
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry);
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(
+            $$"""
+            {
+                "type": "record",
+                "name": "CustomStructUnionListRecord",
+                "fields": [{
+                    "name": "values",
+                    "type": {
+                        "type": "array",
+                        "items": [
+                            { "type": "bytes", "logicalType": "{{CustomStructBytesLogicalType.LogicalName}}" },
+                            "string"
+                        ]
+                    }
+                }]
+            }
+            """);
+        var record = new GenericRecord(schema);
+        record.Add("values", new Collection<CustomLogicalValue>([new(1)]));
+
+        await Assert.That(Serialize).Throws<Avro.AvroTypeException>();
+
+        void Serialize()
+        {
+            var buffer = new ArrayBufferWriter<byte>();
+            serializer.Serialize(record, ref buffer, CreateContext());
+        }
+    }
+
+    [Test]
     [Arguments(0, false)]
     [Arguments(0, true)]
     [Arguments(1, false)]
@@ -615,6 +650,60 @@ public sealed class AvroSerializerTests
                     "type": [
                         { "type": "bytes", "logicalType": "{{IntListBytesLogicalType.LogicalName}}" },
                         { "type": "array", "items": "int" }
+                    ]
+                }]
+            }
+            """);
+        var record = new GenericRecord(schema);
+        record.Add("value", new List<int> { -1, 2 });
+
+        await AssertSerializedPayloadMatchesApache(serializer, schema, record);
+    }
+
+    [Test]
+    [Arguments(false, "plain-value")]
+    [Arguments(false, "logical-value")]
+    [Arguments(true, "logical-value")]
+    public async Task Serializer_GenericRecord_AssignableLogicalAndPrimitiveBranches_UseSchemaOrder(
+        bool stringFirst,
+        string value)
+    {
+        Avro.Util.LogicalTypeFactory.Instance.Register(new ComparableBytesLogicalType());
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry);
+        var logicalBranch = $$"""{ "type": "bytes", "logicalType": "{{ComparableBytesLogicalType.LogicalName}}" }""";
+        var branches = stringFirst ? $"\"string\", {logicalBranch}" : $"{logicalBranch}, \"string\"";
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(
+            $$"""
+            {
+                "type": "record",
+                "name": "AssignableLogicalPrimitiveUnionRecord",
+                "fields": [{ "name": "value", "type": [{{branches}}] }]
+            }
+            """);
+        var record = new GenericRecord(schema);
+        record.Add("value", value);
+
+        await AssertSerializedPayloadMatchesApache(serializer, schema, record);
+    }
+
+    [Test]
+    public async Task Serializer_GenericRecord_ExactAndAssignableLogicalBranches_UseSchemaOrder()
+    {
+        Avro.Util.LogicalTypeFactory.Instance.Register(new IntListBytesLogicalType());
+        Avro.Util.LogicalTypeFactory.Instance.Register(new IntListStringLogicalType());
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry);
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(
+            $$"""
+            {
+                "type": "record",
+                "name": "ExactAndAssignableLogicalUnionRecord",
+                "fields": [{
+                    "name": "value",
+                    "type": [
+                        { "type": "bytes", "logicalType": "{{IntListBytesLogicalType.LogicalName}}" },
+                        { "type": "string", "logicalType": "{{IntListStringLogicalType.LogicalName}}" }
                     ]
                 }]
             }
@@ -1537,6 +1626,53 @@ public sealed class AvroSerializerTests
 
         public override bool IsInstanceOfLogicalType(object logicalValue) =>
             logicalValue is IList<int> { Count: > 0 } values && values[0] < 0;
+    }
+
+    private readonly record struct CustomLogicalValue(int Value);
+
+    private sealed class CustomStructBytesLogicalType() : Avro.Util.LogicalType(LogicalName)
+    {
+        internal const string LogicalName = "dekaf-custom-struct-bytes";
+
+        public override object ConvertToBaseValue(object logicalValue, Avro.LogicalSchema schema) =>
+            BitConverter.GetBytes(((CustomLogicalValue)logicalValue).Value);
+
+        public override object ConvertToLogicalValue(object baseValue, Avro.LogicalSchema schema) =>
+            new CustomLogicalValue(BitConverter.ToInt32((byte[])baseValue));
+
+        public override Type GetCSharpType(bool nullible) => typeof(CustomLogicalValue);
+
+        public override bool IsInstanceOfLogicalType(object logicalValue) => logicalValue is CustomLogicalValue;
+    }
+
+    private sealed class ComparableBytesLogicalType() : Avro.Util.LogicalType(LogicalName)
+    {
+        internal const string LogicalName = "dekaf-comparable-bytes";
+
+        public override object ConvertToBaseValue(object logicalValue, Avro.LogicalSchema schema) =>
+            Encoding.UTF8.GetBytes((string)logicalValue);
+
+        public override object ConvertToLogicalValue(object baseValue, Avro.LogicalSchema schema) =>
+            Encoding.UTF8.GetString((byte[])baseValue);
+
+        public override Type GetCSharpType(bool nullible) => typeof(IComparable);
+
+        public override bool IsInstanceOfLogicalType(object logicalValue) =>
+            logicalValue is string value && value.StartsWith("logical-", StringComparison.Ordinal);
+    }
+
+    private sealed class IntListStringLogicalType() : Avro.Util.LogicalType(LogicalName)
+    {
+        internal const string LogicalName = "dekaf-int-list-string";
+
+        public override object ConvertToBaseValue(object logicalValue, Avro.LogicalSchema schema) => "list";
+
+        public override object ConvertToLogicalValue(object baseValue, Avro.LogicalSchema schema) =>
+            throw new NotSupportedException();
+
+        public override Type GetCSharpType(bool nullible) => typeof(List<int>);
+
+        public override bool IsInstanceOfLogicalType(object logicalValue) => logicalValue is List<int>;
     }
 
     private sealed class StringTextLogicalType() : Avro.Util.LogicalType(LogicalName)

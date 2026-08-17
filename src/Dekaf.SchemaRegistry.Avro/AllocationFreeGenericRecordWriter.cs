@@ -284,10 +284,16 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
 
     private void WriteTypedList(global::Avro.Schema itemSchema, IList list, AllocationFreeBinaryEncoder encoder)
     {
-        if (itemSchema is global::Avro.UnionSchema unionSchema &&
-            TryWriteValueTypeUnionList(unionSchema, list, encoder))
+        if (itemSchema is global::Avro.UnionSchema unionSchema)
         {
-            return;
+            if (TryWriteValueTypeUnionList(unionSchema, list, encoder))
+                return;
+
+            if (_writerCache.GetUnion(unionSchema).HasConditionalValueTypeBranch)
+            {
+                throw new global::Avro.AvroTypeException(
+                    $"List type {list.GetType()} is not supported for value-dependent Avro union items.");
+            }
         }
 
         switch (itemSchema.Tag)
@@ -995,7 +1001,9 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
         private readonly Dictionary<global::Avro.SchemaName, UnionBranch> _fixedBranches = new();
         private readonly Dictionary<Type, ConditionalUnionBranch>? _conditionalBranches;
         private readonly Dictionary<Type, MultipleConditionalUnionBranches>? _multipleConditionalBranches;
-        private readonly AssignableConditionalUnionCandidate[]? _assignableConditionalCandidates;
+        private readonly ConditionalUnionCandidateByType[]? _conditionalCandidates;
+        private readonly ConditionalUnionCandidateByType[]? _assignableConditionalCandidates;
+        private readonly bool _hasConditionalValueTypeBranch;
         private readonly UnionBranch _arrayBranch;
         private readonly UnionBranch _booleanBranch;
         private readonly UnionBranch _bytesBranch;
@@ -1026,6 +1034,7 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
             UnionBranch stringBranch = default;
             UnionBranch timeSpanBranch = default;
             Dictionary<Type, ConditionalUnionBranchBuilder>? conditionalBranchBuilders = null;
+            var hasConditionalValueTypeBranch = false;
             for (var i = 0; i < schema.Count; i++)
             {
                 var branch = schema[i];
@@ -1078,6 +1087,7 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
                         var logical = (global::Avro.LogicalSchema)branch;
                         var type = logical.LogicalType.GetCSharpType(nullible: false);
                         var conditional = IsSpecializedLogicalType(logical.LogicalType) ? null : logical;
+                        hasConditionalValueTypeBranch |= conditional is not null && type.IsValueType;
                         if (type == typeof(bool))
                         {
                             SetCompatibleBranch(type, ref booleanBranch, resolved, conditional, ref conditionalBranchBuilders);
@@ -1151,13 +1161,17 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
             _conditionalBranches = BuildConditionalBranches(
                 conditionalBranchBuilders,
                 out _multipleConditionalBranches);
-            _assignableConditionalCandidates = BuildAssignableConditionalCandidates(
-                conditionalBranchBuilders);
+            _conditionalCandidates = BuildConditionalCandidates(
+                conditionalBranchBuilders,
+                out _assignableConditionalCandidates);
+            _hasConditionalValueTypeBranch = hasConditionalValueTypeBranch;
         }
 
         public global::Avro.UnionSchema Schema => _schema;
 
         public bool HasConditionalBranches => _conditionalBranches is not null;
+
+        public bool HasConditionalValueTypeBranch => _hasConditionalValueTypeBranch;
 
         public int NullIndex { get; }
 
@@ -1246,72 +1260,154 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
 
         public UnionBranch ResolveConditional(object? value)
         {
-            if (value is not null &&
-                _conditionalBranches!.TryGetValue(value.GetType(), out var conditional))
+            if (value is not null)
             {
-                var fallback = GetConditionalFallback(value, conditional.Fallback);
-                if (fallback.Schema is not null && fallback.Index < conditional.Primary.Index)
-                    return fallback;
-
-                if (conditional.LogicalSchema.LogicalType.IsInstanceOfLogicalType(value))
-                    return conditional.Primary;
-
-                if (fallback.Schema is not null)
-                    return fallback;
-                throw NoMatch(value);
-            }
-
-            if (value is not null &&
-                _multipleConditionalBranches?.TryGetValue(value.GetType(), out var multiple) == true)
-            {
-                var candidates = multiple.Candidates;
-                var fallback = GetConditionalFallback(value, multiple.Fallback);
-                for (var i = 0; i < candidates.Length; i++)
+                var runtimeType = value.GetType();
+                if (_conditionalBranches!.TryGetValue(runtimeType, out var conditional))
                 {
-                    var candidate = candidates[i];
-                    if (fallback.Schema is not null && fallback.Index < candidate.Branch.Index)
+                    if (_assignableConditionalCandidates is not null &&
+                        HasAssignableConditionalCandidate(value, runtimeType))
+                        return ResolveCombinedConditional(value, runtimeType);
+
+                    var fallback = GetConditionalFallback(value, conditional.Fallback);
+                    if (fallback.Schema is not null && fallback.Index < conditional.Primary.Index)
                         return fallback;
-                    if (candidate.LogicalSchema.LogicalType.IsInstanceOfLogicalType(value))
-                        return candidate.Branch;
-                }
-                if (fallback.Schema is not null)
-                    return fallback;
-                throw NoMatch(value);
-            }
 
-            if (value is not null && _assignableConditionalCandidates is not null)
-            {
-                var fallback = ResolveStructuralBranch(value);
-                var matched = false;
-                for (var i = 0; i < _assignableConditionalCandidates.Length; i++)
-                {
-                    var candidate = _assignableConditionalCandidates[i];
-                    if (!candidate.DeclaredType.IsInstanceOfType(value))
-                        continue;
+                    if (conditional.LogicalSchema.LogicalType.IsInstanceOfLogicalType(value))
+                        return conditional.Primary;
 
-                    matched = true;
-                    if (candidate.Fallback.Schema is not null
-                        && (fallback.Schema is null || candidate.Fallback.Index < fallback.Index))
-                    {
-                        fallback = candidate.Fallback;
-                    }
-
-                    if (fallback.Schema is not null && fallback.Index < candidate.Branch.Index)
-                        return fallback;
-                    if (candidate.LogicalSchema.LogicalType.IsInstanceOfLogicalType(value))
-                        return candidate.Branch;
-                }
-
-                if (matched)
-                {
                     if (fallback.Schema is not null)
                         return fallback;
                     throw NoMatch(value);
                 }
+
+                if (_multipleConditionalBranches?.TryGetValue(runtimeType, out var multiple) == true)
+                {
+                    if (_assignableConditionalCandidates is not null &&
+                        HasAssignableConditionalCandidate(value, runtimeType))
+                        return ResolveCombinedConditional(value, runtimeType);
+
+                    var candidates = multiple.Candidates;
+                    var fallback = GetConditionalFallback(value, multiple.Fallback);
+                    for (var i = 0; i < candidates.Length; i++)
+                    {
+                        var candidate = candidates[i];
+                        if (fallback.Schema is not null && fallback.Index < candidate.Branch.Index)
+                            return fallback;
+                        if (candidate.LogicalSchema.LogicalType.IsInstanceOfLogicalType(value))
+                            return candidate.Branch;
+                    }
+                    if (fallback.Schema is not null)
+                        return fallback;
+                    throw NoMatch(value);
+                }
+
+                if (_assignableConditionalCandidates is not null)
+                    return ResolveAssignableConditional(value, runtimeType);
             }
 
             return Resolve(value);
         }
+
+        private bool HasAssignableConditionalCandidate(object value, Type runtimeType)
+        {
+            var candidates = _assignableConditionalCandidates!;
+            for (var i = 0; i < candidates.Length; i++)
+            {
+                var candidate = candidates[i];
+                if (candidate.DeclaredType != runtimeType && candidate.DeclaredType.IsInstanceOfType(value))
+                    return true;
+            }
+
+            return false;
+        }
+
+        private UnionBranch ResolveAssignableConditional(object value, Type runtimeType)
+        {
+            var fallback = ResolveStructuralBranch(value);
+            if (fallback.Schema is null)
+                fallback = ResolveCompatibleNonStructuralBranch(value, runtimeType);
+
+            var matched = false;
+            var candidates = _assignableConditionalCandidates!;
+            for (var i = 0; i < candidates.Length; i++)
+            {
+                var candidate = candidates[i];
+                if (!candidate.DeclaredType.IsInstanceOfType(value))
+                    continue;
+
+                matched = true;
+                fallback = Earlier(fallback, candidate.Fallback);
+                if (fallback.Schema is not null && fallback.Index < candidate.Branch.Index)
+                    return fallback;
+                if (candidate.LogicalSchema.LogicalType.IsInstanceOfLogicalType(value))
+                    return candidate.Branch;
+            }
+
+            if (fallback.Schema is not null)
+                return fallback;
+            if (matched)
+                throw NoMatch(value);
+            return Resolve(value);
+        }
+
+        private UnionBranch ResolveCombinedConditional(object value, Type runtimeType)
+        {
+            var fallback = Earlier(
+                ResolveCompatibleNonStructuralBranch(value, runtimeType),
+                ResolveStructuralBranch(value));
+            if (_conditionalBranches!.TryGetValue(runtimeType, out var conditional))
+                fallback = Earlier(fallback, conditional.Fallback);
+            if (_multipleConditionalBranches?.TryGetValue(runtimeType, out var multiple) == true)
+                fallback = Earlier(fallback, multiple.Fallback);
+
+            var matched = false;
+            var candidates = _conditionalCandidates!;
+            for (var i = 0; i < candidates.Length; i++)
+            {
+                var candidate = candidates[i];
+                if (!candidate.DeclaredType.IsInstanceOfType(value))
+                    continue;
+
+                matched = true;
+                fallback = Earlier(fallback, candidate.Fallback);
+                if (fallback.Schema is not null && fallback.Index < candidate.Branch.Index)
+                    return fallback;
+                if (candidate.LogicalSchema.LogicalType.IsInstanceOfLogicalType(value))
+                    return candidate.Branch;
+            }
+
+            if (fallback.Schema is not null)
+                return fallback;
+            if (matched)
+                throw NoMatch(value);
+            return Resolve(value);
+        }
+
+        private UnionBranch ResolveCompatibleNonStructuralBranch(object value, Type runtimeType)
+        {
+            if (HasConditionalValueBranch(runtimeType))
+                return default;
+
+            return value switch
+            {
+                bool => _booleanBranch,
+                int => _intBranch,
+                long => _longBranch,
+                float => _floatBranch,
+                double => _doubleBranch,
+                byte[] => _bytesBranch,
+                string => _stringBranch,
+                DateTime => _dateTimeBranch,
+                TimeSpan => _timeSpanBranch,
+                Guid => _guidBranch,
+                global::Avro.AvroDecimal => _decimalBranch,
+                _ => _typedBranches.TryGetValue(runtimeType, out var branch) ? branch : default
+            };
+        }
+
+        private static UnionBranch Earlier(UnionBranch left, UnionBranch right) =>
+            right.Schema is not null && (left.Schema is null || right.Index < left.Index) ? right : left;
 
         private UnionBranch FirstCompatibleTypedBranch(Type type, UnionBranch schemaBranch) =>
             _typedBranches.TryGetValue(type, out var typedBranch) && typedBranch.Index < schemaBranch.Index
@@ -1400,35 +1496,47 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
             return branches;
         }
 
-        private static AssignableConditionalUnionCandidate[]? BuildAssignableConditionalCandidates(
-            Dictionary<Type, ConditionalUnionBranchBuilder>? builders)
+        private static ConditionalUnionCandidateByType[]? BuildConditionalCandidates(
+            Dictionary<Type, ConditionalUnionBranchBuilder>? builders,
+            out ConditionalUnionCandidateByType[]? assignableCandidates)
         {
+            assignableCandidates = null;
             if (builders is null)
                 return null;
 
-            List<AssignableConditionalUnionCandidate>? assignable = null;
+            List<ConditionalUnionCandidateByType>? candidates = null;
+            List<ConditionalUnionCandidateByType>? assignable = null;
             foreach (var (type, builder) in builders)
             {
-                if (type.IsSealed)
-                    continue;
+                candidates ??= [];
+                var isAssignableType = !type.IsSealed;
+                if (isAssignableType)
+                    assignable ??= [];
 
-                assignable ??= [];
                 for (var i = 0; i < builder.Candidates.Count; i++)
                 {
                     var candidate = builder.Candidates[i];
-                    assignable.Add(new AssignableConditionalUnionCandidate(
+                    var candidateByType = new ConditionalUnionCandidateByType(
                         type,
                         candidate.Branch,
                         candidate.LogicalSchema,
-                        builder.Fallback));
+                        builder.Fallback);
+                    candidates.Add(candidateByType);
+                    if (isAssignableType)
+                        assignable!.Add(candidateByType);
                 }
             }
 
-            if (assignable is null)
+            if (candidates is null)
                 return null;
 
-            assignable.Sort(static (left, right) => left.Branch.Index.CompareTo(right.Branch.Index));
-            return assignable.ToArray();
+            candidates.Sort(static (left, right) => left.Branch.Index.CompareTo(right.Branch.Index));
+            if (assignable is not null)
+            {
+                assignable.Sort(static (left, right) => left.Branch.Index.CompareTo(right.Branch.Index));
+                assignableCandidates = assignable.ToArray();
+            }
+            return candidates.ToArray();
         }
 
         private void ThrowIfConditionalValueBranch(Type type)
@@ -1469,7 +1577,7 @@ internal sealed class AllocationFreeGenericRecordWriter(global::Avro.RecordSchem
         ConditionalUnionCandidate[] Candidates,
         UnionBranch Fallback);
 
-    private readonly record struct AssignableConditionalUnionCandidate(
+    private readonly record struct ConditionalUnionCandidateByType(
         Type DeclaredType,
         UnionBranch Branch,
         global::Avro.LogicalSchema LogicalSchema,
