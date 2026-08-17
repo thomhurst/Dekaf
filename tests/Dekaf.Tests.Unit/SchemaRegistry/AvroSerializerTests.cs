@@ -119,6 +119,24 @@ public sealed class AvroSerializerTests
         }
         """;
 
+    private const string NestedRecordListSchema = """
+        {
+            "type": "record",
+            "name": "NestedRecordList",
+            "fields": [{
+                "name": "values",
+                "type": {
+                    "type": "array",
+                    "items": {
+                        "type": "record",
+                        "name": "NestedListValue",
+                        "fields": [{ "name": "id", "type": "int" }]
+                    }
+                }
+            }]
+        }
+        """;
+
     private const string NullableNonIntArraySchema = """
         {
           "type": "record",
@@ -625,6 +643,25 @@ public sealed class AvroSerializerTests
             new Collection<int?>([int.MinValue, null, 0, int.MaxValue]));
         var expectedRecord = new GenericRecord(schema);
         expectedRecord.Add("values", new int?[] { int.MinValue, null, 0, int.MaxValue });
+
+        await AssertSerializedPayloadMatches(serializer, schema, record, expectedRecord);
+    }
+
+    [Test]
+    public async Task Serializer_GenericRecord_NestedRecordList_MatchesApacheAvroBytes()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry);
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(NestedRecordListSchema);
+        var itemSchema = (Avro.RecordSchema)((Avro.ArraySchema)schema.Fields[0].Schema).ItemSchema;
+        var first = new GenericRecord(itemSchema);
+        first.Add("id", 1);
+        var second = new GenericRecord(itemSchema);
+        second.Add("id", 2);
+        var record = new GenericRecord(schema);
+        record.Add("values", new List<GenericRecord> { first, second });
+        var expectedRecord = new GenericRecord(schema);
+        expectedRecord.Add("values", new[] { first, second });
 
         await AssertSerializedPayloadMatches(serializer, schema, record, expectedRecord);
     }
