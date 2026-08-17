@@ -30,6 +30,24 @@ public class ProtobufSchemaRegistryDeserializerTests
         }
     }
 
+    private sealed class CapturingRuleHandler : ISchemaRegistryRuleHandler
+    {
+        public string Type => "CAPTURE";
+        public bool WasCalled { get; private set; }
+
+        public ReadOnlyMemory<byte> TransformSerializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleHandlerContext context) => payload;
+
+        public ReadOnlyMemory<byte> TransformDeserializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleHandlerContext context)
+        {
+            WasCalled = true;
+            return payload;
+        }
+    }
+
     private static byte[] CreateWireBytes(int schemaId, TestMessage message)
     {
         var protoBytes = message.ToByteArray();
@@ -241,6 +259,48 @@ public class ProtobufSchemaRegistryDeserializerTests
         await Assert.That(executor.Context!.SchemaId).IsEqualTo(123);
         await Assert.That(executor.Context.Subject).IsEqualTo("test-topic-value");
         await Assert.That(executor.Context.Schema).IsNull();
+    }
+
+    [Test]
+    public async Task Deserialize_BuiltInRuleExecutor_SkipSchemaValidation_LoadsRuleMetadata()
+    {
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Protobuf,
+            SchemaString = "syntax = \"proto3\";",
+            RuleSet = new SchemaRuleSet
+            {
+                DomainRules =
+                [
+                    new SchemaRule
+                    {
+                        Name = "capture",
+                        Kind = SchemaRuleKind.Transform,
+                        Mode = SchemaRuleMode.Read,
+                        Type = "CAPTURE"
+                    }
+                ]
+            }
+        };
+        var schemaRegistry = Substitute.For<ISchemaRegistryClient>();
+        schemaRegistry.GetSchemaAsync(123, Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(schema));
+        var handler = new CapturingRuleHandler();
+        var config = new ProtobufDeserializerConfig
+        {
+            SkipSchemaValidation = true,
+            RuleExecutor = new SchemaRegistryRuleExecutor([handler])
+        };
+        await using var deserializer = new ProtobufSchemaRegistryDeserializer<TestMessage>(
+            schemaRegistry,
+            config);
+        var wireBytes = CreateWireBytes(123, new TestMessage { Id = 42 });
+
+        var result = deserializer.Deserialize(wireBytes, CreateContext());
+
+        await schemaRegistry.Received(1).GetSchemaAsync(123, Arg.Any<CancellationToken>());
+        await Assert.That(handler.WasCalled).IsTrue();
+        await Assert.That(result.Id).IsEqualTo(42);
     }
 
     [Test]

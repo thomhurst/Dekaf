@@ -69,10 +69,10 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IA
 
         // Optionally validate the schema exists (with timeout to prevent indefinite hang)
         Schema? schema = null;
-        if (!_config.SkipSchemaValidation)
+        if (!_config.SkipSchemaValidation || _config.RuleExecutor is SchemaRegistryRuleExecutor)
         {
             schema = _schemaRegistry.GetSchemaSync(schemaId, SchemaRegistryTimeout);
-            if (schema.SchemaType != SchemaType.Protobuf)
+            if (!_config.SkipSchemaValidation && schema.SchemaType != SchemaType.Protobuf)
                 throw new InvalidOperationException($"Schema {schemaId} is not a Protobuf schema (type: {schema.SchemaType})");
         }
 
