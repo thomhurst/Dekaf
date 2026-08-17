@@ -167,6 +167,30 @@ public sealed class ConsumerSnapshotIntegrationTests(KafkaTestContainer kafka)
     }
 
     [Test]
+    public async Task ConsumeSnapshotAsync_PauseDuringSynchronousDeserializationDoesNotAdvance()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
+        await ProduceRangeAsync(topic, partition: 0, count: 1).ConfigureAwait(false);
+        var deserializer = new CallbackDeserializer();
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithQueuedMinMessages(1)
+            .WithValueDeserializer(deserializer)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync().ConfigureAwait(false);
+        var partition = new TopicPartition(topic, 0);
+        consumer.Partitions.Assign(partition);
+        deserializer.SetCallback(() => consumer.Partitions.Pause(partition));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await using var snapshot = consumer.ConsumeSnapshotAsync(timeout.Token).GetAsyncEnumerator();
+
+        await Assert.That(async () => await snapshot.MoveNextAsync().AsTask().ConfigureAwait(false))
+            .Throws<InvalidOperationException>();
+        await Assert.That(consumer.Positions.GetPosition(partition)).IsEqualTo(0L);
+    }
+
+    [Test]
     public async Task ConsumeSnapshotAsync_StateChangeAfterFinalYieldThrows()
     {
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
@@ -441,5 +465,18 @@ public sealed class ConsumerSnapshotIntegrationTests(KafkaTestContainer kafka)
             _blocked.Task.WaitAsync(cancellationToken);
 
         public void Release() => _release.TrySetResult();
+    }
+
+    private sealed class CallbackDeserializer : IDeserializer<string>
+    {
+        private Action? _callback;
+
+        internal void SetCallback(Action callback) => _callback = callback;
+
+        public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
+        {
+            Interlocked.Exchange(ref _callback, null)?.Invoke();
+            return Encoding.UTF8.GetString(data.Span);
+        }
     }
 }

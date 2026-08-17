@@ -899,6 +899,7 @@ internal sealed class SnapshotConsumeState
     private readonly HashSet<TopicPartition> _completed = [];
     private readonly HashSet<TopicPartition> _queuedEndMarkers = [];
     private int _remaining;
+    private int _assignmentInvalidated;
 
     public SnapshotConsumeState(
         Dictionary<TopicPartition, long> endOffsets,
@@ -956,18 +957,25 @@ internal sealed class SnapshotConsumeState
             _queuedEndMarkers.Remove(partition);
     }
 
+    public void InvalidateAssignment() => Volatile.Write(ref _assignmentInvalidated, 1);
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void ThrowIfConsumerStateChanged(
         TopicPartitionSet assignment,
         TopicPartitionSet paused)
     {
-        if (!ReferenceEquals(_assignment, assignment) || !ReferenceEquals(_paused, paused))
+        if (Volatile.Read(ref _assignmentInvalidated) != 0
+            || !ReferenceEquals(_assignment, assignment)
+            || !ReferenceEquals(_paused, paused))
         {
-            throw new InvalidOperationException(
-                "The consumer assignment or pause state changed while a snapshot enumeration was active.");
+            throw new SnapshotStateChangedException();
         }
     }
 }
+
+internal sealed class SnapshotStateChangedException()
+    : InvalidOperationException(
+        "The consumer assignment or pause state changed while a snapshot enumeration was active.");
 
 internal static class ConsumerFetchPools
 {
@@ -2542,7 +2550,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 recordIterationEpochSeed |= 1;
             _recordIterationEpochSeed = recordIterationEpochSeed;
 
-            if (Volatile.Read(ref _activeSnapshot) is { } activeSnapshot)
+            var activeSnapshot = Volatile.Read(ref _activeSnapshot);
+            if (activeSnapshot is not null)
                 activeSnapshot.ThrowIfConsumerStateChanged(_assignmentSnapshot, _pausedSnapshot);
 
             if (_assignmentSnapshot.Count == 0)
@@ -2795,12 +2804,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                 }
                             }
 
-                            if (hasAsyncDeserializers &&
-                                Volatile.Read(ref _activeSnapshot) is { } deserializedSnapshot)
+                            if (activeSnapshot is not null)
                             {
                                 lock (_snapshotStateGate)
                                 {
-                                    deserializedSnapshot.ThrowIfConsumerStateChanged(
+                                    activeSnapshot.ThrowIfConsumerStateChanged(
                                         _assignmentSnapshot,
                                         _pausedSnapshot);
                                     TrackConsumedPosition(pending, offset, messageBytes);
@@ -2834,6 +2842,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             previousActivity = null;
                             LogRecordParsingError(ex, pending.Topic, pending.PartitionIndex);
                             break;
+                        }
+                        catch (SnapshotStateChangedException)
+                        {
+                            throw;
                         }
                         catch (Exception ex) when (!readingProtocolData)
                         {
@@ -6412,6 +6424,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private void QueueCoordinatorRevokedPartitionsForFetchClear(IReadOnlyList<TopicPartition> partitions)
     {
+        Volatile.Read(ref _activeSnapshot)?.InvalidateAssignment();
+
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
         {
             foreach (var partition in partitions)
@@ -7966,13 +7980,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// </summary>
     private void PublishPausedSnapshot()
     {
-        var pausedSnapshot = _paused.Keys.ToHashSet();
         lock (_snapshotStateGate)
         {
             _batchIterationEpoch.BeginPublication();
             try
             {
-                _pausedSnapshot = pausedSnapshot;
+                _pausedSnapshot = _paused.Keys.ToHashSet();
                 Interlocked.Increment(ref _pausedSnapshotVersion);
             }
             finally
