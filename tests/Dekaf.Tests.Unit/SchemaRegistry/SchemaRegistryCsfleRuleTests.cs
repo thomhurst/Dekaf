@@ -226,6 +226,24 @@ public sealed class SchemaRegistryCsfleRuleTests
     }
 
     [Test]
+    public async Task TransformSerializedPayload_CallerOwnedRule_ObservesParameterMutations()
+    {
+        var parameters = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["encrypt.kek.name"] = "payments-kek"
+        };
+        var handler = CreateHandler(CreateDekClient());
+        var context = CreateHandlerContext(CreateRule(parameters: parameters));
+
+        _ = handler.TransformSerializedPayload("payload"u8.ToArray(), context);
+        parameters["encrypt.dek.algorithm"] = "unsupported";
+
+        await Assert.That(() => handler.TransformSerializedPayload("payload"u8.ToArray(), context))
+            .Throws<SchemaRegistryRuleException>()
+            .WithMessageContaining("unsupported");
+    }
+
+    [Test]
     public async Task TransformSerializedPayload_ConcurrentFirstUse_RegistersDekOnce()
     {
         var client = CreateDekClient();

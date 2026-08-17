@@ -621,6 +621,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
     {
         var rule = context.Rule;
         var subject = ResolveSubject(context, rule);
+        if (context.PayloadContext.Schema?.RuleSet?.HasFixedRuleCollections != true)
+            return ResolveSettings(rule, subject);
+
         return _settings.GetValue(rule, static value => new RuleSettingsCache(value)).Get(subject);
     }
 
