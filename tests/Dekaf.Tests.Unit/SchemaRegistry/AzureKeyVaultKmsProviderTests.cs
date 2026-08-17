@@ -489,6 +489,7 @@ public class AzureKeyVaultKmsProviderTests
         _ = await provider.WrapKeyAsync(new byte[] { 1 }, CreateKeyReference(keyUri));
 
         await Assert.That(factory.CreateCount).IsEqualTo(1);
+        await Assert.That(factory.CreatedKeyIds).Contains(new Uri(keyUri));
     }
 
     private static CryptographyClient CreateClient(string keyUri)
