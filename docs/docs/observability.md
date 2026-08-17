@@ -46,7 +46,7 @@ Dekaf emits spans following the [OpenTelemetry messaging semantic conventions](h
 
 | Span | Kind | When |
 |------|------|------|
-| `send {topic}` | `Producer` | Each `ProduceAsync` / `Send` |
+| `send {topic}` | `Producer` | Each `ProduceAsync` / `FireAsync` |
 | `process {topic}` | `Consumer` | Each message from streaming `ConsumeAsync` |
 | `poll {topic}` | `Client` | Each message from `ConsumeOne` / `ConsumeOneAsync` |
 

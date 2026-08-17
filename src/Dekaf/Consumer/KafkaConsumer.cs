@@ -5737,7 +5737,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// record the way an explicit <see cref="CommitAsync(CancellationToken)"/> does — the
     /// consumer may be closing precisely because that record's processing failed.
     /// The background auto-commit loop uses a third, narrower scope: already-staged
-    /// offsets only, via <see cref="CommitStoredOffsetsAsync"/> directly.
+    /// offsets only, via <see cref="CommitStoredOffsetsAsync(CancellationToken)"/> directly.
     /// </summary>
     private async ValueTask<bool> CommitProvenOffsetsAsync(CancellationToken cancellationToken)
     {
@@ -9601,12 +9601,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     }
 
     /// <summary>
-    /// Builds a fresh <see cref="FetchRequestTopic"/> list from a partition template dictionary.
-    /// Works for both the shared cache and freshly-built dictionaries (cache-miss path) —
-    /// in both cases, each call creates new <see cref="FetchRequestPartition"/> objects with
-    /// snapshot offsets from <paramref name="fetchPositions"/>, so concurrent callers
-    /// cannot observe each other's offset values.
-    /// Allocation is per fetch cycle (per-batch), not per-message.
+    /// Resolves the topic name for a fetch response topic. Topic-ID-keyed responses are mapped
+    /// through the request metadata snapshot, then the fetch session's ID-to-name cache; an
+    /// unresolvable ID falls back to the name carried on the response.
     /// </summary>
     private string ResolveTopicName(
         FetchResponseTopic topicResponse,
@@ -9632,6 +9629,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         return topicResponse.Topic ?? string.Empty;
     }
 
+    /// <summary>
+    /// Builds a fresh <see cref="FetchRequestTopic"/> list from a partition template dictionary.
+    /// Works for both the shared cache and freshly-built dictionaries (cache-miss path) —
+    /// in both cases, each call creates new <see cref="FetchRequestPartition"/> objects with
+    /// snapshot offsets from <paramref name="fetchPositions"/>, so concurrent callers
+    /// cannot observe each other's offset values.
+    /// Allocation is per fetch cycle (per-batch), not per-message.
+    /// </summary>
     internal static List<FetchRequestTopic> BuildFetchResult(
         Dictionary<string, List<(FetchRequestPartition Partition, TopicPartition TopicPartition)>> templateDict,
         ConcurrentDictionary<TopicPartition, long> fetchPositions,
@@ -10007,7 +10012,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     /// <summary>
     /// Background auto-commit timer loop. Offset-safety contract: this loop commits only
-    /// stored offsets (<see cref="CommitStoredOffsetsAsync"/>), which are populated at
+    /// stored offsets (<see cref="CommitStoredOffsetsAsync(CancellationToken)"/>), which are populated at
     /// fetch-boundary position flushes — i.e. only for records the caller has already
     /// iterated past. It never reads the active consumed snapshot, so a record that has
     /// been yielded but not yet processed (or prefetched but not yet yielded) can never be
@@ -10096,7 +10101,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     }
 
     /// <summary>
-    /// Core teardown logic shared by <see cref="CloseAsync"/> and <see cref="DisposeAsync"/>.
+    /// Core teardown logic shared by <see cref="CloseAsync(CancellationToken)"/> and <see cref="DisposeAsync"/>.
     /// Callers must ensure this is invoked at most once via an atomic CAS on <c>_closed</c>.
     /// </summary>
     private async ValueTask CloseAsyncCore(

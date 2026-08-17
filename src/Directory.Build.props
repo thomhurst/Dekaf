@@ -10,15 +10,10 @@
     <!-- Ships IntelliSense docs in the NuGet package alongside each lib asset. -->
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <!--
-      Doc-comment diagnostics only surface once the documentation file is generated, and
-      TreatWarningsAsErrors would turn every pre-existing gap into a build error.
-      CS1591: public member has no doc comment (~2400 sites, mostly Protocol/Admin).
+      CS1591: public member has no doc comment
       CS1573: member documents some parameters but not all.
-      CS0419: cref names an overload group; the compiler still emits a valid link to one overload.
-      CS1574/CS1584/CS1658/CS1587/CS1734/CS1572: stale or malformed crefs and tags (61 sites).
-      Each is a documentation-quality gap to close, not a code defect.
     -->
-    <NoWarn>$(NoWarn);CS1591;CS1573;CS0419;CS1574;CS1584;CS1658;CS1587;CS1734;CS1572</NoWarn>
+    <NoWarn>$(NoWarn);CS1591;CS1573</NoWarn>
   </PropertyGroup>
 
   <PropertyGroup>

@@ -26,7 +26,7 @@ public sealed class GssapiConfig
     /// The client principal name (e.g., "user@REALM.COM").
     /// </summary>
     /// <remarks>
-    /// When set, Dekaf passes this value to <see cref="NegotiateAuthenticationClientOptions.Credential"/>
+    /// When set, Dekaf passes this value to <c>NegotiateAuthenticationClientOptions.Credential</c>
     /// as the client identity. The underlying platform must still be able to satisfy that
     /// identity from its credential cache or configured client keytab; Dekaf does not store a
     /// Kerberos password.
@@ -40,7 +40,7 @@ public sealed class GssapiConfig
     /// On Unix-like platforms, Dekaf sets <c>KRB5_CLIENT_KTNAME</c> before the first
     /// authentication attempt. MIT/Heimdal Kerberos treat this as a process-wide setting, so
     /// different keytabs in the same process are rejected. Windows keytab selection is not
-    /// supported by <see cref="NegotiateAuthentication"/> and fails during build/initialization.
+    /// supported by <c>NegotiateAuthentication</c> and fails during build/initialization.
     /// </remarks>
     public string? KeytabPath { get; init; }
 

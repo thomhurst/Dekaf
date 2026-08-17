@@ -34,11 +34,11 @@ public interface IKafkaRequest<TResponse> : IKafkaMessage
     /// </summary>
     void Write(ref KafkaProtocolWriter writer, short version);
 
+#if !NETSTANDARD2_0
     /// <summary>
     /// Returns true if this API version uses flexible encoding.
     /// With Kafka 4.0+ all supported versions are flexible.
     /// </summary>
-#if !NETSTANDARD2_0
     static virtual bool IsFlexibleVersion(short version) => true;
 
     /// <summary>

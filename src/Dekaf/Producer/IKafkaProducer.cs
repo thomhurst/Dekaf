@@ -207,7 +207,7 @@ public interface IKafkaProducer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// <remarks>
     /// Transactional produce continuations run inline on a broker sender thread shared by
     /// other partitions using that broker connection. Code after each transactional
-    /// <see cref="ITransaction{TKey, TValue}.ProduceAsync"/> call must remain non-blocking
+    /// <see cref="ITransaction{TKey, TValue}.ProduceAsync(ProducerMessage{TKey, TValue}, CancellationToken)"/> call must remain non-blocking
     /// and avoid long-running synchronous work. Configure
     /// <see cref="ProducerBuilder{TKey,TValue}.WithInlineTransactionCompletions"/> with
     /// <see langword="false"/> when continuation code cannot meet this constraint.

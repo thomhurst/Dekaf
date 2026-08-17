@@ -162,9 +162,9 @@ public sealed class ProducerOptions
 
     /// <summary>
     /// Total memory buffer size in bytes for pending messages.
-    /// When the buffer is full, <see cref="KafkaProducer{TKey,TValue}.Send"/> and
-    /// <see cref="KafkaProducer{TKey,TValue}.ProduceAsync"/> block until space is available
-    /// (controlled by <see cref="MaxBlockMs"/>).
+    /// When the buffer is full, <see cref="KafkaProducer{TKey,TValue}.FireAsync(ProducerMessage{TKey,TValue})"/> and
+    /// <see cref="KafkaProducer{TKey,TValue}.ProduceAsync(ProducerMessage{TKey,TValue}, CancellationToken)"/>
+    /// block until space is available (controlled by <see cref="MaxBlockMs"/>).
     /// <para>
     /// <b>Default (auto-tuned):</b> When not set explicitly, this value is derived from the
     /// process-global <c>DekafMemoryBudget</c>, which claims 40% of available system memory
@@ -410,9 +410,9 @@ public sealed class ProducerOptions
     public int CloseTimeoutMs { get; init; } = 30000;
 
     /// <summary>
-    /// Maximum time in milliseconds that <see cref="KafkaProducer{TKey,TValue}.ProduceAsync"/>
-    /// and <see cref="KafkaProducer{TKey,TValue}.Send"/> will block when the producer's buffer
-    /// is full or metadata is unavailable.
+    /// Maximum time in milliseconds that <see cref="KafkaProducer{TKey,TValue}.ProduceAsync(ProducerMessage{TKey,TValue}, CancellationToken)"/>
+    /// and <see cref="KafkaProducer{TKey,TValue}.FireAsync(ProducerMessage{TKey,TValue})"/> will block
+    /// when the producer's buffer is full or metadata is unavailable.
     /// <para>
     /// This controls how long the producer waits for buffer space (backpressure), initial
     /// metadata when producing to a new topic for the first time, and transaction coordinator
@@ -656,7 +656,7 @@ public sealed class ProducerOptions
     internal ClientDnsEndpointResolver DnsResolver { get; init; } = ClientDnsEndpointResolver.Default;
 
     /// <summary>
-    /// Application-level retry policy for <see cref="KafkaProducer{TKey,TValue}.ProduceAsync"/>.
+    /// Application-level retry policy for <see cref="KafkaProducer{TKey,TValue}.ProduceAsync(ProducerMessage{TKey,TValue}, CancellationToken)"/>.
     /// When set, retriable exceptions that escape the internal protocol-level retries will be
     /// retried according to this policy. When <c>null</c>, no application-level retries occur.
     /// </summary>
