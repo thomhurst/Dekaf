@@ -358,7 +358,8 @@ public sealed class SchemaRegistryCsfleRuleTests
             CreateRule(parameters: new Dictionary<string, string>(StringComparer.Ordinal)
             {
                 ["encrypt.kek.name"] = "payments-kek",
-                ["encrypt.dek.algorithm"] = "AES256_SIV"
+                ["encrypt.dek.algorithm"] = "AES256_SIV",
+                ["encrypt.dek.expiry.days"] = "1"
             }));
         var payload = "deterministic payload"u8.ToArray();
 
@@ -508,7 +509,7 @@ public sealed class SchemaRegistryCsfleRuleTests
 
         await Assert.That(GetCachedDekCount(handler, "_writeDeks")).IsEqualTo(256);
         await Assert.That(GetCachedDekCount(handler, "_readDeks")).IsEqualTo(256);
-        await Assert.That(GetWorkspaceCipherCount(handler, "_gcmCiphers")).IsEqualTo(256);
+        await Assert.That(GetWorkspaceCipherCount(handler, "_gcmCiphers")).IsEqualTo(64);
         GC.Collect();
         GC.WaitForPendingFinalizers();
         await Assert.That(firstWriteKey).IsNotNull();
@@ -834,7 +835,7 @@ public sealed class SchemaRegistryCsfleRuleTests
         private readonly Dictionary<int, Schema> _schemasById = new();
         private readonly Dictionary<string, List<(int Version, int Id, Schema Schema)>> _schemasBySubject = new(StringComparer.Ordinal);
         private readonly Dictionary<string, Kek> _keks = new(StringComparer.Ordinal);
-        private readonly Dictionary<(string KekName, string Subject, int Version), Dek> _deksByVersion = new();
+        private readonly Dictionary<(string KekName, string Subject, int Version, DekAlgorithm Algorithm), Dek> _deksByVersion = new();
         private readonly Dictionary<(string KekName, string Subject, DekAlgorithm Algorithm), Dek> _latestDeks = new();
         private int _nextSchemaId = 1;
         private int _nextDekVersion = 1;
@@ -905,7 +906,7 @@ public sealed class SchemaRegistryCsfleRuleTests
 
         private void AddDekCore(Dek dek)
         {
-            _deksByVersion[(dek.KekName, dek.Subject, dek.Version)] = dek;
+            _deksByVersion[(dek.KekName, dek.Subject, dek.Version, dek.Algorithm)] = dek;
             _latestDeks[(dek.KekName, dek.Subject, dek.Algorithm)] = dek;
             _nextDekVersion = Math.Max(_nextDekVersion, dek.Version + 1);
         }
@@ -978,11 +979,32 @@ public sealed class SchemaRegistryCsfleRuleTests
             lock (_gate)
             {
                 _getDekCallCount++;
-                if (_deksByVersion.TryGetValue((kekName, subject, version), out var dek))
+                if (_deksByVersion.TryGetValue((kekName, subject, version, DekAlgorithm.Aes256Gcm), out var dek))
                     return Task.FromResult(dek);
             }
 
             throw new SchemaRegistryException(40471, $"DEK version '{version}' not found");
+        }
+
+        public Task<Dek> GetDekAsync(
+            string kekName,
+            string subject,
+            int version,
+            DekAlgorithm algorithm,
+            bool deleted = false,
+            CancellationToken cancellationToken = default)
+        {
+            if (GetDekDelay > TimeSpan.Zero)
+                Thread.Sleep(GetDekDelay);
+
+            lock (_gate)
+            {
+                _getDekCallCount++;
+                if (_deksByVersion.TryGetValue((kekName, subject, version, algorithm), out var dek))
+                    return Task.FromResult(dek);
+            }
+
+            throw new SchemaRegistryException(40471, $"DEK version '{version}' not found for algorithm '{algorithm}'");
         }
 
         public Task<Dek> RegisterDekAsync(

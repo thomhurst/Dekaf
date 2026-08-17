@@ -350,6 +350,31 @@ public sealed class JsonSchemaValidationTests
     }
 
     [Test]
+    public async Task Serializer_AutoRegistrationWithCustomRules_UsesLocalSchema()
+    {
+        const string schemaText = """{ "type": "object", "required": ["id"] }""";
+        using var registry = Substitute.For<ISchemaRegistryClient>();
+        registry.GetOrRegisterSchemaAsync(
+                "validation-value",
+                Arg.Any<Schema>(),
+                Arg.Any<CancellationToken>())
+            .Returns(42);
+        await using var serializer = new JsonSchemaRegistrySerializer<ValidationPayload>(
+            registry,
+            schemaText,
+            jsonOptions: null,
+            ruleExecutor: new PassThroughRuleExecutor());
+        var buffer = new ArrayBufferWriter<byte>();
+
+        serializer.Serialize(new ValidationPayload(7), ref buffer, Context);
+
+        await registry.DidNotReceive().GetSchemaAsync(
+            42,
+            "validation-value",
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
     public async Task Serializer_ValidatesAfterDomainRulesBeforeEncodingRules()
     {
         const string schemaText = """{ "type": "string" }""";
@@ -625,6 +650,17 @@ public sealed class JsonSchemaValidationTests
     private sealed record ValidationPayload(int Id);
     private sealed record ReferencedPayload(AddressPayload Address);
     private sealed record AddressPayload(string Postcode);
+
+    private sealed class PassThroughRuleExecutor : ISchemaRegistryRuleExecutor
+    {
+        public ReadOnlyMemory<byte> TransformSerializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleContext context) => payload;
+
+        public ReadOnlyMemory<byte> TransformDeserializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleContext context) => payload;
+    }
 
     private sealed class ReplacingRuleHandler(
         string type,

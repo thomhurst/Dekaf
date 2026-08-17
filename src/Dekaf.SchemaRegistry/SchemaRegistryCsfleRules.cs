@@ -696,7 +696,11 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
     {
         var kek = ResolveKek(settings);
         var dek = version is { } dekVersion
-            ? WaitFor(_schemaRegistryClient.GetDekAsync(settings.KekName, settings.Subject, dekVersion))
+            ? WaitFor(_schemaRegistryClient.GetDekAsync(
+                settings.KekName,
+                settings.Subject,
+                dekVersion,
+                settings.Algorithm))
             : WaitFor(_schemaRegistryClient.GetDekAsync(settings.KekName, settings.Subject, settings.Algorithm));
 
         return ResolveDekMaterial(dek, kek, settings.Subject, settings.RuleName, settings.Algorithm);
@@ -1898,6 +1902,7 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
         private const int NibbleCount = 32;
         private const int NibbleValues = 16;
         private readonly UInt128[] _multiplicationTable = new UInt128[NibbleCount * NibbleValues];
+        private int _disposed;
 
         public GcmCipher(byte[] key)
         {
@@ -1918,6 +1923,8 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
 
         public BlockCipher Cipher { get; }
 
+        ~GcmCipher() => Dispose();
+
         public UInt128 Multiply(UInt128 value)
         {
             UInt128 result = 0;
@@ -1931,7 +1938,12 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
             return result;
         }
 
-        public void Dispose() => Cipher.Dispose();
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+                Cipher.Dispose();
+            GC.SuppressFinalize(this);
+        }
 
         private static UInt128 MultiplySlow(UInt128 value, UInt128 hash)
         {
@@ -1983,13 +1995,13 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
     {
         private const int MaxRetainedBufferSize = 1024 * 1024;
         private const int OutputBufferCount = 4;
-        private const int CryptoCacheCapacity = DekCacheCapacity;
+        private const int CryptoFastCacheCapacity = 64;
         private readonly byte[]?[] _outputs = new byte[OutputBufferCount][];
         private readonly byte[]?[] _temporaries = new byte[2][];
         private readonly Dictionary<byte[], GcmCipher> _gcmCiphers = new(ReferenceEqualityComparer.Instance);
         private readonly Dictionary<byte[], SivCiphers> _sivCiphers = new(ReferenceEqualityComparer.Instance);
-        private readonly Queue<byte[]> _gcmCipherOrder = new(CryptoCacheCapacity);
-        private readonly Queue<byte[]> _sivCipherOrder = new(CryptoCacheCapacity);
+        private readonly ConditionalWeakTable<byte[], GcmCipher> _overflowGcmCiphers = new();
+        private readonly ConditionalWeakTable<byte[], SivCiphers> _overflowSivCiphers = new();
         private readonly JsonPathNode?[] _jsonNodes = new JsonPathNode?[65];
         private readonly int[] _jsonArrayIndices = new int[65];
         private int _nextOutput;
@@ -2035,31 +2047,28 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
             if (_gcmCiphers.TryGetValue(key, out var cipher))
                 return cipher;
 
-            if (_gcmCiphers.Count >= CryptoCacheCapacity)
+            if (_gcmCiphers.Count < CryptoFastCacheCapacity)
             {
-                var evictedKey = _gcmCipherOrder.Dequeue();
-                if (_gcmCiphers.Remove(evictedKey, out var evictedCipher))
-                    evictedCipher.Dispose();
+                cipher = new GcmCipher(key);
+                _gcmCiphers.Add(key, cipher);
+                return cipher;
             }
-            cipher = new GcmCipher(key);
-            _gcmCiphers.Add(key, cipher);
-            _gcmCipherOrder.Enqueue(key);
-            return cipher;
+
+            return _overflowGcmCiphers.GetValue(key, static value => new GcmCipher(value));
         }
 
         public BlockCipher GetBlockCipher(byte[] key, int offset)
         {
             if (!_sivCiphers.TryGetValue(key, out var ciphers))
             {
-                if (_sivCiphers.Count >= CryptoCacheCapacity)
+                if (_sivCiphers.Count < CryptoFastCacheCapacity)
                 {
-                    var evictedKey = _sivCipherOrder.Dequeue();
-                    if (_sivCiphers.Remove(evictedKey, out var evictedCiphers))
-                        evictedCiphers.Dispose();
+                    ciphers = new SivCiphers(key);
+                    _sivCiphers.Add(key, ciphers);
+                    return ciphers.Get(offset);
                 }
-                ciphers = new SivCiphers(key);
-                _sivCiphers.Add(key, ciphers);
-                _sivCipherOrder.Enqueue(key);
+
+                ciphers = _overflowSivCiphers.GetValue(key, static value => new SivCiphers(value));
             }
 
             return ciphers.Get(offset);
@@ -2143,6 +2152,8 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
 
     private sealed class SivCiphers : IDisposable
     {
+        private int _disposed;
+
         public SivCiphers(byte[] key)
         {
             Mac = new BlockCipher(key.AsSpan(0, 32));
@@ -2153,12 +2164,18 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
 
         private BlockCipher Encryption { get; }
 
+        ~SivCiphers() => Dispose();
+
         public BlockCipher Get(int offset) => offset == 0 ? Mac : Encryption;
 
         public void Dispose()
         {
-            Mac.Dispose();
-            Encryption.Dispose();
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+            {
+                Mac.Dispose();
+                Encryption.Dispose();
+            }
+            GC.SuppressFinalize(this);
         }
     }
 }

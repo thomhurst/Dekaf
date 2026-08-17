@@ -32,6 +32,7 @@ public sealed class SchemaRegistryCacheTests
         private readonly ConcurrentDictionary<string, int> _idsBySubject = new();
         private readonly ConcurrentDictionary<int, Schema> _schemasById = new();
         private int _nextId;
+        private int _subjectGetSchemaCallCount;
 
         /// <summary>
         /// Returns the number of times GetOrRegisterSchemaAsync was called for a given subject.
@@ -43,6 +44,8 @@ public sealed class SchemaRegistryCacheTests
         /// Returns the total number of GetOrRegisterSchemaAsync calls across all subjects.
         /// </summary>
         public int TotalCallCount => _callCounts.Values.Sum();
+
+        public int SubjectGetSchemaCallCount => _subjectGetSchemaCallCount;
 
         public int GetSchemaId(string subject) =>
             _idsBySubject[subject];
@@ -70,6 +73,7 @@ public sealed class SchemaRegistryCacheTests
             string subject,
             CancellationToken cancellationToken = default)
         {
+            Interlocked.Increment(ref _subjectGetSchemaCallCount);
             if (_idsBySubject.TryGetValue(subject, out var subjectId) && subjectId == id)
                 return Task.FromResult(_schemasById[id]);
 
@@ -385,6 +389,7 @@ public sealed class SchemaRegistryCacheTests
         await Assert.That(strategy.CallCount).IsEqualTo(1);
         await Assert.That(schemaFactoryCalls).IsEqualTo(1);
         await Assert.That(registry.GetCallCount("topic-value")).IsEqualTo(1);
+        await Assert.That(registry.SubjectGetSchemaCallCount).IsEqualTo(0);
     }
 
     [Test]
@@ -425,6 +430,7 @@ public sealed class SchemaRegistryCacheTests
         await Assert.That(executor.SerializeContext.Schema).IsSameReferenceAs(schema);
         await Assert.That(schemaFactoryCalls).IsEqualTo(1);
         await Assert.That(registry.GetCallCount("topic-value")).IsEqualTo(1);
+        await Assert.That(registry.SubjectGetSchemaCallCount).IsEqualTo(0);
     }
 
     [Test]

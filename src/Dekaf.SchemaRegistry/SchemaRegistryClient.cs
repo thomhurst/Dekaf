@@ -1001,6 +1001,31 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         return ToDek(result);
     }
 
+    public async Task<Dek> GetDekAsync(
+        string kekName,
+        string subject,
+        int version,
+        DekAlgorithm algorithm,
+        bool deleted = false,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await GetWithFailoverAsync(
+            WithQuery(
+                $"dek-registry/v1/keks/{Uri.EscapeDataString(kekName)}/deks/{Uri.EscapeDataString(subject)}/versions/{version.ToString(CultureInfo.InvariantCulture)}",
+                ("algorithm", FormatDekAlgorithm(algorithm)),
+                ("deleted", BoolQuery(deleted))),
+            cancellationToken).ConfigureAwait(false);
+
+        await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
+
+        var result = await response.Content.ReadFromJsonAsync<DekDto>(
+            SchemaRegistryJsonContext.Default.DekDto, cancellationToken).ConfigureAwait(false);
+        if (result is null)
+            throw new SchemaRegistryException((int)response.StatusCode, "Schema Registry returned an empty DEK response");
+
+        return ToDek(result);
+    }
+
     public async Task<IReadOnlyList<int>> GetDekVersionsAsync(
         string kekName,
         string subject,

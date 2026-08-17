@@ -126,6 +126,7 @@ public sealed class AvroSerializerTests
         await Assert.That(executor.SerializeContext.Schema).IsNotNull();
         await Assert.That(executor.SerializeContext.Schema!.SchemaType).IsEqualTo(SchemaType.Avro);
         await Assert.That(executor.SerializeContext.Schema.SchemaString).IsEqualTo(schema!.ToString());
+        await Assert.That(schemaRegistry.GetSchemaCallCount).IsEqualTo(0);
     }
 
     [Test]

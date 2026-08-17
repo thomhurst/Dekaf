@@ -68,19 +68,11 @@ public class ProtobufSchemaRegistrySerializerTests
     public async Task Serialize_RuleExecutor_TransformsMessageBytes_AfterMessageIndexes()
     {
         var schemaRegistry = Substitute.For<ISchemaRegistryClient>();
-        var registeredSchema = new Schema
-        {
-            SchemaType = SchemaType.Protobuf,
-            SchemaString = TestMessage.Descriptor.File.SerializedData.ToBase64(),
-            RuleSet = new SchemaRuleSet()
-        };
         schemaRegistry.GetOrRegisterSchemaAsync(
                 "test-topic-value",
                 Arg.Any<Schema>(),
                 Arg.Any<CancellationToken>())
             .Returns(Task.FromResult(42));
-        schemaRegistry.GetSchemaAsync(42, "test-topic-value", Arg.Any<CancellationToken>())
-            .Returns(Task.FromResult(registeredSchema));
 
         var replacement = new TestMessage { Id = 9, Name = "Encrypted", Value = 1.25 };
         var executor = new ReplacingRuleExecutor(replacement.ToByteArray());
@@ -97,13 +89,13 @@ public class ProtobufSchemaRegistrySerializerTests
         await Assert.That(executor.Context!.PayloadFormat).IsEqualTo(SchemaRegistryPayloadFormat.Protobuf);
         await Assert.That(executor.Context.Subject).IsEqualTo("test-topic-value");
         await Assert.That(executor.Context.SchemaId).IsEqualTo(42);
-        await Assert.That(executor.Context.Schema).IsSameReferenceAs(registeredSchema);
-        await schemaRegistry.Received(1).GetSchemaAsync(
+        await Assert.That(executor.Context.Schema).IsNotNull();
+        await Assert.That(executor.Context.Schema!.SchemaType).IsEqualTo(SchemaType.Protobuf);
+        await schemaRegistry.DidNotReceive().GetSchemaAsync(
             42,
             "test-topic-value",
             Arg.Any<CancellationToken>());
     }
-
 
     [Test]
     public async Task Serialize_CachesSchemaId()
