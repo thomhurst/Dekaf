@@ -1411,6 +1411,28 @@ public sealed class AvroSerializerTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Serializer_SpecificRecord_NonNullableReferenceFieldRejectsNull(bool nullBytes)
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        await using var serializer = new AvroSchemaRegistrySerializer<SpecificScalarRecord>(schemaRegistry);
+        var record = new SpecificScalarRecord
+        {
+            Name = nullBytes ? "specific" : null!,
+            Payload = nullBytes ? null! : []
+        };
+
+        await Assert.That(Serialize).Throws<Avro.AvroTypeException>();
+
+        void Serialize()
+        {
+            var buffer = new ArrayBufferWriter<byte>();
+            serializer.Serialize(record, ref buffer, CreateContext());
+        }
+    }
+
+    [Test]
     public async Task Serializer_InterfaceTypedSpecificRecord_FailsDuringPreparation()
     {
         using var schemaRegistry = new MockSchemaRegistryClient();

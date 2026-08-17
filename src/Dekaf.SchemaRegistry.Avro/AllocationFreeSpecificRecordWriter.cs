@@ -69,11 +69,21 @@ internal sealed unsafe class AllocationFreeSpecificRecordWriter<
                     encoder.WriteDouble(((delegate* managed<T, double>)field.Getter)(value));
                     break;
                 case FieldKind.String:
-                    encoder.WriteString(((delegate* managed<T, string>)field.Getter)(value));
+                {
+                    var fieldValue = ((delegate* managed<T, string>)field.Getter)(value);
+                    if (fieldValue is null)
+                        ThrowNullValue(field.Kind);
+                    encoder.WriteString(fieldValue);
                     break;
+                }
                 case FieldKind.Bytes:
-                    encoder.WriteBytes(((delegate* managed<T, byte[]>)field.Getter)(value));
+                {
+                    var fieldValue = ((delegate* managed<T, byte[]>)field.Getter)(value);
+                    if (fieldValue is null)
+                        ThrowNullValue(field.Kind);
+                    encoder.WriteBytes(fieldValue);
                     break;
+                }
                 default:
                     throw new InvalidOperationException($"Unknown SpecificRecord field kind {field.Kind}.");
             }
@@ -204,6 +214,12 @@ internal sealed unsafe class AllocationFreeSpecificRecordWriter<
         new(
             $"SpecificRecord field '{field.Name}' on {recordType} cannot use allocation-free serialization: " +
             $"{reason}. Use GenericRecord or a supported scalar SpecificRecord shape.");
+
+    [DoesNotReturn]
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void ThrowNullValue(FieldKind kind) =>
+        throw new global::Avro.AvroTypeException(
+            $"SpecificRecord {kind} fields cannot be null when the Avro schema is non-nullable.");
 
     private readonly record struct FieldPlan(FieldKind Kind, nint Getter);
 
