@@ -17,7 +17,10 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleHandler
 {
     private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
     private static readonly ConditionalWeakTable<SchemaRule, ParsedCelExpression> ParsedExpressions = new();
-    private static readonly ConditionalWeakTable<string, byte[]> Utf8Values = new();
+    private static readonly ConditionalWeakTable<string, byte[]> TransformUtf8Values = new();
+
+    [ThreadStatic]
+    private static Utf8TextCache? t_utf8Values;
 
     /// <inheritdoc />
     public string Type => "CEL";
@@ -582,7 +585,7 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleHandler
         if (left.Kind == CelValueKind.String && right.Kind == CelValueKind.String)
             return string.Equals(left.String, right.String, StringComparison.Ordinal);
 
-        return GetUtf8Memory(left).Span.SequenceEqual(GetUtf8Memory(right).Span);
+        return GetUtf8Span(left).SequenceEqual(GetUtf8Span(right));
     }
 
     private static bool Contains(CelValue value, CelValue candidate)
@@ -590,7 +593,7 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleHandler
         if (value.Kind == CelValueKind.String && candidate.Kind == CelValueKind.String)
             return value.String.Contains(candidate.String, StringComparison.Ordinal);
 
-        return GetUtf8Memory(value).Span.IndexOf(GetUtf8Memory(candidate).Span) >= 0;
+        return GetUtf8Span(value).IndexOf(GetUtf8Span(candidate)) >= 0;
     }
 
     private static bool StartsWith(CelValue value, CelValue candidate)
@@ -598,7 +601,7 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleHandler
         if (value.Kind == CelValueKind.String && candidate.Kind == CelValueKind.String)
             return value.String.StartsWith(candidate.String, StringComparison.Ordinal);
 
-        return GetUtf8Memory(value).Span.StartsWith(GetUtf8Memory(candidate).Span);
+        return GetUtf8Span(value).StartsWith(GetUtf8Span(candidate));
     }
 
     private static bool EndsWith(CelValue value, CelValue candidate)
@@ -606,7 +609,7 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleHandler
         if (value.Kind == CelValueKind.String && candidate.Kind == CelValueKind.String)
             return value.String.EndsWith(candidate.String, StringComparison.Ordinal);
 
-        return GetUtf8Memory(value).Span.EndsWith(GetUtf8Memory(candidate).Span);
+        return GetUtf8Span(value).EndsWith(GetUtf8Span(candidate));
     }
 
     private static bool IsString(CelValue value) =>
@@ -615,7 +618,51 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleHandler
     private static ReadOnlyMemory<byte> GetUtf8Memory(CelValue value) =>
         value.Kind == CelValueKind.Utf8String
             ? value.Utf8
-            : Utf8Values.GetValue(value.String, static text => StrictUtf8.GetBytes(text));
+            : TransformUtf8Values.GetValue(value.String, static text => StrictUtf8.GetBytes(text));
+
+    private static ReadOnlySpan<byte> GetUtf8Span(CelValue value)
+    {
+        if (value.Kind == CelValueKind.Utf8String)
+            return value.Utf8.Span;
+
+        return (t_utf8Values ??= new Utf8TextCache()).Get(value.String);
+    }
+
+    private sealed class Utf8TextCache
+    {
+        private const int Capacity = 8;
+        private readonly string?[] _texts = new string?[Capacity];
+        private readonly byte[]?[] _buffers = new byte[Capacity][];
+        private readonly int[] _lengths = new int[Capacity];
+        private int _count;
+        private int _next;
+
+        public ReadOnlySpan<byte> Get(string text)
+        {
+            for (var index = 0; index < _count; index++)
+            {
+                var cached = _texts[index];
+                if (ReferenceEquals(cached, text) || string.Equals(cached, text, StringComparison.Ordinal))
+                {
+                    _texts[index] = text;
+                    return _buffers[index].AsSpan(0, _lengths[index]);
+                }
+            }
+
+            var slot = _count < Capacity ? _count++ : _next++ & (Capacity - 1);
+            var byteCount = StrictUtf8.GetByteCount(text);
+            var buffer = _buffers[slot];
+            if (buffer is null || buffer.Length < byteCount)
+            {
+                buffer = GC.AllocateUninitializedArray<byte>(Math.Max(byteCount, 256));
+                _buffers[slot] = buffer;
+            }
+
+            _lengths[slot] = StrictUtf8.GetBytes(text, buffer);
+            _texts[slot] = text;
+            return buffer.AsSpan(0, _lengths[slot]);
+        }
+    }
 
     private static bool AsBoolean(CelValue value)
     {

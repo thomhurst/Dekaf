@@ -124,6 +124,44 @@ public sealed class SchemaRegistryCsfleRuleTests
     }
 
     [Test]
+    public async Task TransformSerializedPayload_CallerOwnedTaggedRule_ObservesTagMutations()
+    {
+        var ruleTags = new HashSet<string>(StringComparer.Ordinal) { "PII" };
+        var metadataTags = new Dictionary<string, IReadOnlySet<string>>(StringComparer.Ordinal)
+        {
+            ["$.ssn"] = new HashSet<string>(StringComparer.Ordinal) { "PII" }
+        };
+        var rule = CreateRule(tags: ruleTags);
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = "{}",
+            Metadata = new SchemaMetadata { Tags = metadataTags },
+            RuleSet = new SchemaRuleSet { DomainRules = [rule] }
+        };
+        var handler = CreateHandler(CreateDekClient());
+        var context = CreateHandlerContext(rule, schema);
+        var payload = """{"name":"Ada","ssn":"123-45-6789"}"""u8.ToArray();
+
+        _ = handler.TransformSerializedPayload(payload, context);
+        metadataTags["$.ssn"] = new HashSet<string>(StringComparer.Ordinal) { "PUBLIC" };
+
+        await Assert.That(() => handler.TransformSerializedPayload(payload, context))
+            .Throws<SchemaRegistryRuleException>()
+            .WithMessageContaining("did not match");
+
+        ruleTags.Clear();
+        ruleTags.Add("PUBLIC");
+        metadataTags.Remove("$.ssn");
+        metadataTags["$.name"] = new HashSet<string>(StringComparer.Ordinal) { "PUBLIC" };
+
+        var encrypted = handler.TransformSerializedPayload(payload, context).ToArray();
+        using var document = JsonDocument.Parse(encrypted);
+        await Assert.That(document.RootElement.GetProperty("name").GetString()).IsNotEqualTo("Ada");
+        await Assert.That(document.RootElement.GetProperty("ssn").GetString()).IsEqualTo("123-45-6789");
+    }
+
+    [Test]
     public async Task TransformSerializedPayload_TaggedNestedArrayField_PreservesEscapedUtf8()
     {
         var client = CreateDekClient();
@@ -230,7 +268,27 @@ public sealed class SchemaRegistryCsfleRuleTests
     {
         var parameters = new Dictionary<string, string>(StringComparer.Ordinal)
         {
-            ["encrypt.kek.name"] = "payments-kek"
+            ["encrypt.kek.name"] = "payments-kek",
+            ["encrypt.dek.algorithm"] = "AES256_GCM"
+        };
+        var handler = CreateHandler(CreateDekClient());
+        var context = CreateHandlerContext(CreateRule(parameters: parameters));
+
+        _ = handler.TransformSerializedPayload("payload"u8.ToArray(), context);
+        parameters["encrypt.dek.algorithm"] = "unsupported";
+
+        await Assert.That(() => handler.TransformSerializedPayload("payload"u8.ToArray(), context))
+            .Throws<SchemaRegistryRuleException>()
+            .WithMessageContaining("unsupported");
+    }
+
+    [Test]
+    public async Task TransformSerializedPayload_CallerOwnedRule_ObservesWhitespaceParameterBecomingNonBlank()
+    {
+        var parameters = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["encrypt.kek.name"] = "payments-kek",
+            ["encrypt.dek.algorithm"] = " "
         };
         var handler = CreateHandler(CreateDekClient());
         var context = CreateHandlerContext(CreateRule(parameters: parameters));

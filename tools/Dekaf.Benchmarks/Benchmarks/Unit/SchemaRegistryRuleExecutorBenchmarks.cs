@@ -235,3 +235,52 @@ public class SchemaRegistryRuleExecutorBenchmarks
         }
     }
 }
+
+/// <summary>
+/// Guards CEL comparisons against allocating when callers supply a fresh equal context string.
+/// One invocation per iteration keeps the identity-cache miss visible while excluding setup.
+/// </summary>
+[MemoryDiagnoser]
+[SimpleJob(launchCount: 1, warmupCount: 3, iterationCount: 10, invocationCount: 1)]
+public class SchemaRegistryCelFreshContextBenchmarks
+{
+    private static readonly byte[] Payload = "benchmark-payload"u8.ToArray();
+    private readonly SchemaRegistryRuleExecutor _executor = new([new CelSchemaRegistryRuleHandler()]);
+    private readonly Schema _schema = new()
+    {
+        SchemaType = SchemaType.Json,
+        SchemaString = "{}",
+        RuleSet = new SchemaRuleSet
+        {
+            HasFixedRuleCollections = true,
+            DomainRules =
+            [
+                new SchemaRule
+                {
+                    Name = "fresh-topic",
+                    Kind = SchemaRuleKind.Condition,
+                    Mode = SchemaRuleMode.Write,
+                    Type = "CEL",
+                    Expr = "message == topic"
+                }
+            ]
+        }
+    };
+    private SchemaRegistryRuleContext _context = null!;
+
+    [IterationSetup]
+    public void CreateFreshTopicContext() =>
+        _context = new SchemaRegistryRuleContext
+        {
+            Topic = new string("benchmark-payload".AsSpan()),
+            Component = SerializationComponent.Value,
+            SchemaId = 1,
+            Subject = "benchmark-topic-value",
+            Schema = _schema,
+            PayloadFormat = SchemaRegistryPayloadFormat.Json
+        };
+
+    [Benchmark]
+    public ReadOnlyMemory<byte> ActiveCelConditionWithFreshEqualTopic() =>
+        _executor.TransformSerializedPayload(Payload, _context);
+}

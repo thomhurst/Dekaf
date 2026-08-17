@@ -198,10 +198,28 @@ public sealed class SchemaRegistryCelRuleTests
         await Assert.That(result.ToArray()).IsEquivalentTo(payload);
     }
 
-    private static SchemaRegistryRuleContext CreateContext(Schema schema) =>
+    [Test]
+    public async Task Utf8MessageComparisons_AcceptFreshEqualContextStrings()
+    {
+        var executor = new SchemaRegistryRuleExecutor([new CelSchemaRegistryRuleHandler()]);
+        var schema = CreateSchema(CreateCelRule(
+            "fresh-context",
+            SchemaRuleKind.Condition,
+            SchemaRuleMode.Write,
+            "message == topic && contains(message, topic) && startsWith(message, topic) && endsWith(message, topic)"));
+        var payload = "payload"u8.ToArray();
+
+        var result = executor.TransformSerializedPayload(
+            payload,
+            CreateContext(schema, new string("payload".AsSpan())));
+
+        await Assert.That(result.ToArray()).IsEquivalentTo(payload);
+    }
+
+    private static SchemaRegistryRuleContext CreateContext(Schema schema, string topic = "orders") =>
         new()
         {
-            Topic = "orders",
+            Topic = topic,
             Component = SerializationComponent.Value,
             SchemaId = 42,
             Subject = "orders-value",

@@ -133,7 +133,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
 
         var plan = _taggedJsonPlans
             .GetValue(metadata, static value => new TaggedJsonPlanCache(value))
-            .Get(context.Rule);
+            .Get(
+                context.Rule,
+                context.PayloadContext.Schema?.RuleSet?.HasFixedRuleCollections != true);
         return TransformTaggedJson(payload, context, settings, plan, encrypt);
     }
 
@@ -151,6 +153,7 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
         JsonPathNode? pendingNode = null;
         var pendingProperty = false;
         var copiedThrough = 0;
+        var matchedTarget = false;
 
         while (reader.Read())
         {
@@ -176,7 +179,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
                             workspace);
                     }
 
-                    if (valueNode?.IsTarget == true)
+                    var isTarget = plan.IsTarget(valueNode, context.Rule);
+                    matchedTarget |= isTarget;
+                    if (isTarget)
                     {
                         throw new SchemaRegistryRuleException(
                             $"Schema Registry rule '{context.Rule.Name}' can only encrypt JSON string fields; the tagged path is {reader.TokenType}.");
@@ -198,7 +203,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
                     break;
             }
 
-            if (valueNode?.IsTarget != true || reader.TokenType == JsonTokenType.Null)
+            var transformsValue = plan.IsTarget(valueNode, context.Rule);
+            matchedTarget |= transformsValue;
+            if (!transformsValue || reader.TokenType == JsonTokenType.Null)
                 continue;
 
             if (reader.TokenType != JsonTokenType.String)
@@ -211,6 +218,12 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
             output.Append(payload.Span[copiedThrough..tokenStart]);
             WriteTransformedJsonString(ref output, ref reader, context, settings, workspace, encrypt);
             copiedThrough = checked((int)reader.BytesConsumed);
+        }
+
+        if (!matchedTarget && !plan.HasTarget(context.Rule))
+        {
+            throw new SchemaRegistryRuleException(
+                $"Schema Registry rule '{context.Rule.Name}' did not match any schema metadata tag paths.");
         }
 
         output.Append(payload.Span[copiedThrough..]);
@@ -388,9 +401,13 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
         (t_workspaces ??= new ConditionalWeakTable<SchemaRegistryCsfleRuleHandler, CsfleWorkspace>())
         .GetValue(this, static _ => new CsfleWorkspace());
 
-    private static TaggedJsonPlan CreateTaggedJsonPlan(SchemaMetadata metadata, SchemaRule rule)
+    private static TaggedJsonPlan CreateTaggedJsonPlan(
+        SchemaMetadata metadata,
+        SchemaRule rule,
+        bool mutableTags)
     {
         var root = new JsonPathNode();
+        List<JsonPathNode>? mutableTargets = mutableTags ? [] : null;
         var matched = false;
         foreach (var (path, tags) in metadata.Tags!)
         {
@@ -404,11 +421,21 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
                 }
             }
 
-            if (!applies)
+            if (!applies && !mutableTags)
                 continue;
 
-            AddJsonPath(root, path, rule.Name);
-            matched = true;
+            var target = AddJsonPath(root, path, rule.Name);
+            if (mutableTags)
+            {
+                target.IsTarget = applies;
+                target.MutablePath = path;
+                target.MutableTags = tags;
+                target.MutableTagsVersion = GetSetVersion(tags);
+                target.MutableRuleTagsVersion = GetSetVersion(rule.Tags!);
+                mutableTargets!.Add(target);
+            }
+
+            matched |= applies;
         }
 
         if (!matched)
@@ -417,10 +444,13 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
                 $"Schema Registry rule '{rule.Name}' did not match any schema metadata tag paths.");
         }
 
-        return new TaggedJsonPlan(root);
+        return new TaggedJsonPlan(
+            root,
+            mutableTargets?.ToArray(),
+            mutableTags ? metadata.Tags : null);
     }
 
-    private static void AddJsonPath(JsonPathNode root, string path, string ruleName)
+    private static JsonPathNode AddJsonPath(JsonPathNode root, string path, string ruleName)
     {
         if (path.Length == 0 || path[0] != '$')
             throw InvalidJsonPath(ruleName, path);
@@ -460,6 +490,52 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
         }
 
         node.IsTarget = true;
+        return node;
+    }
+
+    private static int GetSetVersion(IReadOnlySet<string> tags) =>
+        tags is HashSet<string> hashSet ? Volatile.Read(ref GetHashSetVersion(hashSet)) : -1;
+
+    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_version")]
+    private static extern ref int GetMetadataVersion(Dictionary<string, IReadOnlySet<string>> dictionary);
+
+    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_version")]
+    private static extern ref int GetRuleParameterVersion(Dictionary<string, string> dictionary);
+
+    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_version")]
+    private static extern ref int GetHashSetVersion(HashSet<string> hashSet);
+
+    private static bool TagsOverlap(IReadOnlySet<string> tags, IReadOnlySet<string> ruleTags)
+    {
+        if (tags is HashSet<string> hashSet)
+        {
+            foreach (var tag in hashSet)
+            {
+                if (ruleTags.Contains(tag))
+                    return true;
+            }
+
+            return false;
+        }
+
+        if (ruleTags is not HashSet<string> ruleHashSet)
+        {
+            foreach (var tag in tags)
+            {
+                if (ruleTags.Contains(tag))
+                    return true;
+            }
+
+            return false;
+        }
+
+        foreach (var tag in ruleHashSet)
+        {
+            if (tags.Contains(tag))
+                return true;
+        }
+
+        return false;
     }
 
     private static SchemaRegistryRuleException InvalidJsonPath(string ruleName, string path) =>
@@ -612,7 +688,9 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
                         Name = settings.KekName,
                         KmsType = settings.KmsType,
                         KmsKeyId = settings.KmsKeyId,
-                        KmsProps = settings.KmsProps
+                        KmsProps = settings.MutableRule is { } mutableRule
+                            ? ResolveKmsProps(mutableRule)
+                            : settings.KmsProps
                     }));
         }
     }
@@ -622,12 +700,19 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
         var rule = context.Rule;
         var subject = ResolveSubject(context, rule);
         if (context.PayloadContext.Schema?.RuleSet?.HasFixedRuleCollections != true)
-            return ResolveSettings(rule, subject);
+        {
+            return _settings
+                .GetValue(rule, static value => new RuleSettingsCache(value))
+                .GetMutable(subject);
+        }
 
         return _settings.GetValue(rule, static value => new RuleSettingsCache(value)).Get(subject);
     }
 
-    private static EncryptionSettings ResolveSettings(SchemaRule rule, string subject)
+    private static EncryptionSettings ResolveSettings(
+        SchemaRule rule,
+        string subject,
+        bool cacheKmsProps = true)
     {
         if (!TryGetParameter(rule, KekNameParameter, out var kekName))
         {
@@ -648,7 +733,8 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
             dekExpiryDays,
             NullIfEmpty(kmsType),
             NullIfEmpty(kmsKeyId),
-            ResolveKmsProps(rule));
+            cacheKmsProps ? ResolveKmsProps(rule) : null,
+            cacheKmsProps ? null : rule);
     }
 
     private static string ResolveSubject(SchemaRegistryRuleHandlerContext context, SchemaRule rule)
@@ -1284,7 +1370,8 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
         int DekExpiryDays,
         string? KmsType,
         string? KmsKeyId,
-        IReadOnlyDictionary<string, string>? KmsProps)
+        IReadOnlyDictionary<string, string>? KmsProps,
+        SchemaRule? MutableRule)
     {
         public bool IsDekRotated => DekExpiryDays > 0;
     }
@@ -1306,15 +1393,39 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
         public ReadOnlySpan<byte> Ciphertext { get; } = ciphertext;
     }
 
-    private sealed class TaggedJsonPlan(JsonPathNode root)
+    private sealed class TaggedJsonPlan(
+        JsonPathNode root,
+        JsonPathNode[]? mutableTargets,
+        IReadOnlyDictionary<string, IReadOnlySet<string>>? mutableMetadata)
     {
         public JsonPathNode Root { get; } = root;
+
+        public bool IsTarget(JsonPathNode? node, SchemaRule rule) =>
+            node is not null
+            && (mutableTargets is null
+                ? node.IsTarget
+                : node.MutableTags is not null && node.RefreshMutableTarget(rule, mutableMetadata!));
+
+        public bool HasTarget(SchemaRule rule)
+        {
+            if (mutableTargets is null)
+                return true;
+
+            for (var i = 0; i < mutableTargets.Length; i++)
+            {
+                if (mutableTargets[i].RefreshMutableTarget(rule, mutableMetadata!))
+                    return true;
+            }
+
+            return false;
+        }
     }
 
     private sealed class RuleSettingsCache
     {
         private readonly SchemaRule _rule;
         private readonly ConcurrentDictionary<string, EncryptionSettings> _settings = new(StringComparer.Ordinal);
+        private readonly ConcurrentDictionary<string, MutableRuleSettings> _mutableSettings = new(StringComparer.Ordinal);
         private readonly Func<string, EncryptionSettings> _createSettings;
 
         public RuleSettingsCache(SchemaRule rule)
@@ -1325,24 +1436,159 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
 
         public EncryptionSettings Get(string subject) => _settings.GetOrAdd(subject, _createSettings);
 
+        public EncryptionSettings GetMutable(string subject)
+        {
+            if (_rule.Parameters is Dictionary<string, string> parameters)
+            {
+                var version = Volatile.Read(ref GetRuleParameterVersion(parameters));
+                if (_mutableSettings.TryGetValue(subject, out var versionedCached)
+                    && versionedCached.Version == version
+                    && versionedCached.Snapshot.Matches(parameters))
+                {
+                    return versionedCached.Settings;
+                }
+
+                var versionedSnapshot = RuleParameterSnapshot.Create(_rule);
+                var versionedSettings = ResolveSettings(_rule, subject, cacheKmsProps: false);
+                _mutableSettings[subject] = new MutableRuleSettings(version, versionedSnapshot, versionedSettings);
+                return versionedSettings;
+            }
+
+            var snapshot = RuleParameterSnapshot.Create(_rule);
+            if (_mutableSettings.TryGetValue(subject, out var cached)
+                && cached.Snapshot == snapshot)
+            {
+                return cached.Settings;
+            }
+
+            var settings = ResolveSettings(_rule, subject, cacheKmsProps: false);
+            _mutableSettings[subject] = new MutableRuleSettings(-1, snapshot, settings);
+            return settings;
+        }
+
         private EncryptionSettings CreateSettings(string subject) => ResolveSettings(_rule, subject);
+    }
+
+    private readonly record struct MutableRuleSettings(
+        int Version,
+        RuleParameterSnapshot Snapshot,
+        EncryptionSettings Settings);
+
+    private readonly record struct RuleParameterSnapshot(
+        string? KekName,
+        string? Algorithm,
+        string? ExpiryDays,
+        string? Deterministic,
+        string? KmsType,
+        string? KmsKeyId)
+    {
+        public static RuleParameterSnapshot Create(SchemaRule rule) => new(
+            GetParameter(rule, KekNameParameter),
+            GetParameter(rule, DekAlgorithmParameter),
+            GetParameter(rule, DekExpiryDaysParameter),
+            GetParameter(rule, DeterministicParameter),
+            GetParameter(rule, KmsTypeParameter),
+            GetParameter(rule, KmsKeyIdParameter));
+
+        public bool Matches(Dictionary<string, string> parameters) =>
+            Matches(parameters, KekNameParameter, KekName)
+            && Matches(parameters, DekAlgorithmParameter, Algorithm)
+            && Matches(parameters, DekExpiryDaysParameter, ExpiryDays)
+            && Matches(parameters, DeterministicParameter, Deterministic)
+            && Matches(parameters, KmsTypeParameter, KmsType)
+            && Matches(parameters, KmsKeyIdParameter, KmsKeyId);
+
+        private static string? GetParameter(SchemaRule rule, string name) =>
+            rule.Parameters is { } parameters && parameters.TryGetValue(name, out var value)
+                ? value
+                : null;
+
+        private static bool Matches(
+            Dictionary<string, string> parameters,
+            string name,
+            string? expected)
+        {
+            if (!parameters.TryGetValue(name, out var current))
+                return expected is null;
+
+            return ReferenceEquals(current, expected);
+        }
     }
 
     private sealed class TaggedJsonPlanCache
     {
         private readonly SchemaMetadata _metadata;
-        private readonly ConditionalWeakTable<SchemaRule, TaggedJsonPlan> _plans = new();
-        private readonly ConditionalWeakTable<SchemaRule, TaggedJsonPlan>.CreateValueCallback _createPlan;
+        private readonly ConditionalWeakTable<SchemaRule, TaggedJsonPlan> _fixedPlans = new();
+        private readonly ConditionalWeakTable<SchemaRule, MutableTaggedJsonPlan> _mutablePlans = new();
+        private readonly ConditionalWeakTable<SchemaRule, TaggedJsonPlan>.CreateValueCallback _createFixedPlan;
+        private readonly ConditionalWeakTable<SchemaRule, MutableTaggedJsonPlan>.CreateValueCallback _createMutablePlan;
 
         public TaggedJsonPlanCache(SchemaMetadata metadata)
         {
             _metadata = metadata;
-            _createPlan = CreatePlan;
+            _createFixedPlan = CreateFixedPlan;
+            _createMutablePlan = CreateMutablePlan;
         }
 
-        public TaggedJsonPlan Get(SchemaRule rule) => _plans.GetValue(rule, _createPlan);
+        public TaggedJsonPlan Get(SchemaRule rule, bool mutableTags) => mutableTags
+            ? _mutablePlans.GetValue(rule, _createMutablePlan).Get()
+            : _fixedPlans.GetValue(rule, _createFixedPlan);
 
-        private TaggedJsonPlan CreatePlan(SchemaRule rule) => CreateTaggedJsonPlan(_metadata, rule);
+        private TaggedJsonPlan CreateFixedPlan(SchemaRule rule) =>
+            CreateTaggedJsonPlan(_metadata, rule, mutableTags: false);
+
+        private MutableTaggedJsonPlan CreateMutablePlan(SchemaRule rule) => new(_metadata, rule);
+    }
+
+    private sealed class MutableTaggedJsonPlan
+    {
+        private readonly object _gate = new();
+        private readonly SchemaMetadata _metadata;
+        private readonly SchemaRule _rule;
+        private TaggedJsonPlan _plan;
+        private int _metadataCount;
+        private int _metadataVersion;
+
+        public MutableTaggedJsonPlan(SchemaMetadata metadata, SchemaRule rule)
+        {
+            _metadata = metadata;
+            _rule = rule;
+            _plan = CreateTaggedJsonPlan(metadata, rule, mutableTags: true);
+            CaptureVersions();
+        }
+
+        public TaggedJsonPlan Get()
+        {
+            if (IsCurrent())
+                return _plan;
+
+            lock (_gate)
+            {
+                if (!IsCurrent())
+                {
+                    _plan = CreateTaggedJsonPlan(_metadata, _rule, mutableTags: true);
+                    CaptureVersions();
+                }
+
+                return _plan;
+            }
+        }
+
+        private bool IsCurrent()
+        {
+            var tags = _metadata.Tags!;
+            return tags.Count == _metadataCount
+                && (tags is not Dictionary<string, IReadOnlySet<string>> metadata
+                    || Volatile.Read(ref GetMetadataVersion(metadata)) == _metadataVersion);
+        }
+
+        private void CaptureVersions()
+        {
+            var tags = _metadata.Tags!;
+            _metadataCount = tags.Count;
+            if (tags is Dictionary<string, IReadOnlySet<string>> metadata)
+                _metadataVersion = Volatile.Read(ref GetMetadataVersion(metadata));
+        }
     }
 
     private sealed class JsonPathNode
@@ -1352,9 +1598,46 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
 
         public bool IsTarget { get; set; }
 
+        public string? MutablePath { get; set; }
+
+        public IReadOnlySet<string>? MutableTags { get; set; }
+
+        public int MutableTagsVersion;
+
+        public int MutableRuleTagsVersion;
+
         public byte[]? PropertyName { get; private init; }
 
         public JsonPathNode? HashCollision { get; private set; }
+
+        public bool RefreshMutableTarget(
+            SchemaRule rule,
+            IReadOnlyDictionary<string, IReadOnlySet<string>> metadata)
+        {
+            if (!metadata.TryGetValue(MutablePath!, out var tags))
+            {
+                IsTarget = false;
+                return false;
+            }
+
+            var tagsChanged = !ReferenceEquals(tags, MutableTags);
+            if (tagsChanged)
+                MutableTags = tags;
+
+            var tagsVersion = GetSetVersion(tags);
+            var ruleTagsVersion = GetSetVersion(rule.Tags!);
+            if (!tagsChanged
+                && (tagsVersion < 0 || tagsVersion == Volatile.Read(ref MutableTagsVersion))
+                && (ruleTagsVersion < 0 || ruleTagsVersion == Volatile.Read(ref MutableRuleTagsVersion)))
+            {
+                return IsTarget;
+            }
+
+            IsTarget = TagsOverlap(tags, rule.Tags!);
+            Volatile.Write(ref MutableTagsVersion, tagsVersion);
+            Volatile.Write(ref MutableRuleTagsVersion, ruleTagsVersion);
+            return IsTarget;
+        }
 
         public JsonPathNode GetOrAddProperty(string property)
         {

@@ -15,11 +15,15 @@ public class SchemaRegistryCsfleRuleBenchmarks
 
     private SchemaRegistryRuleExecutor _executor = null!;
     private SchemaRegistryRuleContext _wholePayloadContext = null!;
+    private SchemaRegistryRuleContext _mutableWholePayloadContext = null!;
     private SchemaRegistryRuleContext _deterministicContext = null!;
     private SchemaRegistryRuleContext _taggedJsonContext = null!;
+    private SchemaRegistryRuleContext _mutableTaggedJsonContext = null!;
     private byte[] _encryptedPayload = null!;
+    private byte[] _mutableEncryptedPayload = null!;
     private byte[] _deterministicEncryptedPayload = null!;
     private byte[] _encryptedJsonPayload = null!;
+    private byte[] _mutableEncryptedJsonPayload = null!;
 
     [GlobalSetup]
     public void Setup()
@@ -27,6 +31,7 @@ public class SchemaRegistryCsfleRuleBenchmarks
         var client = new BenchmarkSchemaRegistryClient();
         _executor = new SchemaRegistryRuleExecutor([new SchemaRegistryCsfleRuleHandler(client, [])]);
         _wholePayloadContext = CreateContext(CreateSchema(CreateRule()));
+        _mutableWholePayloadContext = CreateContext(CreateSchema(CreateRule(), fixedCollections: false));
         _deterministicContext = CreateContext(CreateSchema(CreateRule(algorithm: "AES256_SIV")));
 
         var taggedRule = CreateRule(new HashSet<string>(StringComparer.Ordinal) { "PII" });
@@ -41,10 +46,23 @@ public class SchemaRegistryCsfleRuleBenchmarks
                     }
                 }),
             SchemaRegistryPayloadFormat.Json);
-
+        _mutableTaggedJsonContext = CreateContext(
+            CreateSchema(
+                taggedRule,
+                new SchemaMetadata
+                {
+                    Tags = new Dictionary<string, IReadOnlySet<string>>(StringComparer.Ordinal)
+                    {
+                        ["$.ssn"] = new HashSet<string>(StringComparer.Ordinal) { "PII" }
+                    }
+                },
+                fixedCollections: false),
+            SchemaRegistryPayloadFormat.Json);
         _encryptedPayload = _executor.TransformSerializedPayload(Payload, _wholePayloadContext).ToArray();
+        _mutableEncryptedPayload = _executor.TransformSerializedPayload(Payload, _mutableWholePayloadContext).ToArray();
         _deterministicEncryptedPayload = _executor.TransformSerializedPayload(Payload, _deterministicContext).ToArray();
         _encryptedJsonPayload = _executor.TransformSerializedPayload(JsonPayload, _taggedJsonContext).ToArray();
+        _mutableEncryptedJsonPayload = _executor.TransformSerializedPayload(JsonPayload, _mutableTaggedJsonContext).ToArray();
 
         Warm();
         Warm();
@@ -57,6 +75,14 @@ public class SchemaRegistryCsfleRuleBenchmarks
     [Benchmark]
     public ReadOnlyMemory<byte> DecryptWholePayload() =>
         _executor.TransformDeserializedPayload(_encryptedPayload, _wholePayloadContext);
+
+    [Benchmark]
+    public ReadOnlyMemory<byte> EncryptMutableWholePayload() =>
+        _executor.TransformSerializedPayload(Payload, _mutableWholePayloadContext);
+
+    [Benchmark]
+    public ReadOnlyMemory<byte> DecryptMutableWholePayload() =>
+        _executor.TransformDeserializedPayload(_mutableEncryptedPayload, _mutableWholePayloadContext);
 
     [Benchmark]
     public ReadOnlyMemory<byte> EncryptDeterministicWholePayload() =>
@@ -74,14 +100,26 @@ public class SchemaRegistryCsfleRuleBenchmarks
     public ReadOnlyMemory<byte> DecryptTaggedJsonField() =>
         _executor.TransformDeserializedPayload(_encryptedJsonPayload, _taggedJsonContext);
 
+    [Benchmark]
+    public ReadOnlyMemory<byte> EncryptMutableTaggedJsonField() =>
+        _executor.TransformSerializedPayload(JsonPayload, _mutableTaggedJsonContext);
+
+    [Benchmark]
+    public ReadOnlyMemory<byte> DecryptMutableTaggedJsonField() =>
+        _executor.TransformDeserializedPayload(_mutableEncryptedJsonPayload, _mutableTaggedJsonContext);
+
     private void Warm()
     {
         EncryptWholePayload();
         DecryptWholePayload();
+        EncryptMutableWholePayload();
+        DecryptMutableWholePayload();
         EncryptDeterministicWholePayload();
         DecryptDeterministicWholePayload();
         EncryptTaggedJsonField();
         DecryptTaggedJsonField();
+        EncryptMutableTaggedJsonField();
+        DecryptMutableTaggedJsonField();
     }
 
     private static SchemaRule CreateRule(IReadOnlySet<string>? tags = null, string? algorithm = null) =>
@@ -99,7 +137,10 @@ public class SchemaRegistryCsfleRuleBenchmarks
             }
         };
 
-    private static Schema CreateSchema(SchemaRule rule, SchemaMetadata? metadata = null) =>
+    private static Schema CreateSchema(
+        SchemaRule rule,
+        SchemaMetadata? metadata = null,
+        bool fixedCollections = true) =>
         new()
         {
             SchemaType = metadata is null ? SchemaType.Avro : SchemaType.Json,
@@ -108,7 +149,7 @@ public class SchemaRegistryCsfleRuleBenchmarks
             RuleSet = new SchemaRuleSet
             {
                 DomainRules = [rule],
-                HasFixedRuleCollections = true
+                HasFixedRuleCollections = fixedCollections
             }
         };
 
