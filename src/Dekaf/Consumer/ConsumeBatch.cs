@@ -33,7 +33,21 @@ namespace Dekaf.Consumer
         {
             Monitor.Enter(_publicationLock);
             Volatile.Write(ref ConsumeOneDeliveryChangesPending, 1);
-            Interlocked.Increment(ref Version);
+            // Snapshot delivery can reserve the odd epoch without entering this monitor.
+            // Wait until that tiny position-publication section completes, then claim the
+            // epoch with CAS so publication cannot overlap it.
+            var spin = new SpinWait();
+            while (true)
+            {
+                var version = Volatile.Read(ref Version);
+                if ((version & 1) == 0
+                    && Interlocked.CompareExchange(ref Version, version + 1, version) == version)
+                {
+                    return;
+                }
+
+                spin.SpinOnce();
+            }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -41,6 +55,22 @@ namespace Dekaf.Consumer
         {
             Interlocked.Increment(ref Version);
             Monitor.Exit(_publicationLock);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool TryBeginSnapshotDelivery(int expectedVersion) =>
+            (expectedVersion & 1) == 0
+            && Interlocked.CompareExchange(
+                ref Version,
+                expectedVersion + 1,
+                expectedVersion) == expectedVersion;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public int EndSnapshotDelivery(int deliveryVersion)
+        {
+            var stableVersion = deliveryVersion + 2;
+            Volatile.Write(ref Version, stableVersion);
+            return stableVersion;
         }
 
         public int CaptureStableVersion()
