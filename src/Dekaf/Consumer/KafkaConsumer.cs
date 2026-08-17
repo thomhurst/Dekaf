@@ -2303,7 +2303,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             InvalidatePartitionCache();
             await foreach (var result in ConsumeAsync(cancellationToken).ConfigureAwait(false))
             {
-                snapshot.ThrowIfConsumerStateChanged(_assignmentSnapshot, _pausedSnapshot);
+                ThrowIfSnapshotStateChanged(snapshot);
                 var partition = new TopicPartition(result.Topic, result.Partition);
                 if (!snapshot.TryGetEndOffset(partition, out var endOffset))
                 {
@@ -2423,7 +2423,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         var snapshot = new SnapshotConsumeState(endOffsets, assignment, paused, startOffsets);
-        snapshot.ThrowIfConsumerStateChanged(_assignmentSnapshot, _pausedSnapshot);
+        ThrowIfSnapshotStateChanged(snapshot);
 
         for (var i = 0; i < partitions.Length; i++)
         {
@@ -2498,7 +2498,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         lock (_snapshotStateGate)
         {
-            snapshot.ThrowIfConsumerStateChanged(_assignmentSnapshot, _pausedSnapshot);
+            ThrowIfSnapshotStateChanged(snapshot);
             if (!snapshot.Complete(partition))
                 return;
 
@@ -2513,6 +2513,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
         }
         InvalidatePartitionCache();
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void ThrowIfSnapshotStateChanged(SnapshotConsumeState snapshot)
+    {
+        snapshot.ThrowIfConsumerStateChanged(_assignmentSnapshot, _pausedSnapshot);
+
+        var coordinator = _coordinator;
+        if (coordinator is not null &&
+            coordinator.AssignmentVersion != Volatile.Read(ref _lastCoordinatorAssignmentVersion))
+        {
+            throw new SnapshotStateChangedException();
+        }
     }
 
     public async IAsyncEnumerable<ConsumeResult<TKey, TValue>> ConsumeAsync(
@@ -2552,7 +2565,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
             var activeSnapshot = Volatile.Read(ref _activeSnapshot);
             if (activeSnapshot is not null)
-                activeSnapshot.ThrowIfConsumerStateChanged(_assignmentSnapshot, _pausedSnapshot);
+                ThrowIfSnapshotStateChanged(activeSnapshot);
 
             if (_assignmentSnapshot.Count == 0)
             {
@@ -2808,9 +2821,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             {
                                 lock (_snapshotStateGate)
                                 {
-                                    activeSnapshot.ThrowIfConsumerStateChanged(
-                                        _assignmentSnapshot,
-                                        _pausedSnapshot);
+                                    ThrowIfSnapshotStateChanged(activeSnapshot);
                                     TrackConsumedPosition(pending, offset, messageBytes);
                                 }
                             }
