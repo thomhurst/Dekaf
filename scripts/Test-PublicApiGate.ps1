@@ -8,7 +8,7 @@ $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 
 $projects = Get-ChildItem -LiteralPath $sourceRoot -Recurse -Filter '*.csproj'
 foreach ($project in $projects) {
-    $expectedFiles = if ($project.BaseName -eq 'Dekaf') {
+    $expectedFiles = if ($project.BaseName -in @('Dekaf', 'Dekaf.Abstractions')) {
         @(
             'PublicAPI.Shipped.net10.0.txt',
             'PublicAPI.Unshipped.net10.0.txt',

@@ -148,9 +148,9 @@ public class HeaderRecordStructTests
     {
         var buffer = new ArrayBufferWriter<byte>();
         var writer = new KafkaProtocolWriter(buffer);
-        header.Write(ref writer);
+        HeaderProtocol.Write(in header, ref writer);
 
         var reader = new KafkaProtocolReader(buffer.WrittenMemory);
-        return Header.Read(ref reader);
+        return HeaderProtocol.Read(ref reader);
     }
 }

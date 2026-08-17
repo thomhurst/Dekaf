@@ -59,7 +59,7 @@ public sealed class TraceContextPropagatorTests
         var output = new ArrayBufferWriter<byte>();
         var writer = new KafkaProtocolWriter(output);
 
-        header.Write(ref writer);
+        HeaderProtocol.Write(in header, ref writer);
 
         await Assert.That(output.WrittenSpan[0]).IsEqualTo((byte)22);
         await Assert.That(Encoding.UTF8.GetString(output.WrittenSpan.Slice(1, 11))).IsEqualTo("traceparent");
@@ -94,10 +94,10 @@ public sealed class TraceContextPropagatorTests
         var output = new ArrayBufferWriter<byte>();
         var writer = new KafkaProtocolWriter(output);
 
-        header.Write(ref writer);
-        var encoded = new byte[header.CalculateSize()];
+        HeaderProtocol.Write(in header, ref writer);
+        var encoded = new byte[HeaderProtocol.CalculateSize(in header)];
         var offset = 0;
-        header.Encode(encoded, ref offset);
+        HeaderProtocol.Encode(in header, encoded, ref offset);
         var encodedMatchesWriter = encoded.AsSpan().SequenceEqual(output.WrittenSpan);
 
         await Assert.That(output.WrittenSpan[0]).IsEqualTo((byte)20);

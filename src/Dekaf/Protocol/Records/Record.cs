@@ -112,7 +112,7 @@ public readonly record struct Record
         {
             for (var i = 0; i < effectiveHeaderCount; i++)
             {
-                Headers[i].Write(ref writer);
+                HeaderProtocol.Write(in Headers[i], ref writer);
             }
         }
     }
@@ -182,7 +182,7 @@ public readonly record struct Record
             try
             {
                 for (var i = 0; i < headerCount; i++)
-                    headers[i] = Header.Read(ref reader);
+                    headers[i] = HeaderProtocol.Read(ref reader);
 
                 ValidateBodyLength(length, reader.Consumed - bodyStart);
             }
@@ -282,7 +282,7 @@ public readonly record struct Record
         {
             for (var i = 0; i < headerCount; i++)
             {
-                size += headers[i].CalculateSize();
+                size += HeaderProtocol.CalculateSize(in headers[i]);
             }
         }
 
@@ -342,7 +342,7 @@ public readonly record struct Record
         {
             for (var i = 0; i < headerCount; i++)
             {
-                headers[i].Encode(destination, ref offset);
+                HeaderProtocol.Encode(in headers[i], destination, ref offset);
             }
         }
 

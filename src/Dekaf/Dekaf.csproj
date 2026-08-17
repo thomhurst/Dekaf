@@ -26,10 +26,25 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\Dekaf.Abstractions\Dekaf.Abstractions.csproj" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
     <PackageReference Include="Microsoft.Extensions.Options" />
     <PackageReference Include="Reservoir" />
     <PackageReference Include="System.IO.Hashing" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Remove="Consumer\ConsumerCloseOptions.cs" />
+    <Compile Remove="Consumer\ConsumerGroupMetadata.cs" />
+    <Compile Remove="IInitializableKafkaClient.cs" />
+    <Compile Remove="Producer\ITopicProducer.cs" />
+    <Compile Remove="Producer\TopicProducerMessage.cs" />
+    <Compile Remove="Serialization\Headers.cs" />
+    <Compile Remove="Serialization\IAsyncSerializer.cs" />
+    <Compile Remove="Serialization\IAsyncSerializerPreparer.cs" />
+    <Compile Remove="Serialization\ISerializer.cs" />
+    <Compile Remove="Telemetry\ApplicationTelemetryMetric.cs" />
+    <Compile Remove="TopicPartition.cs" />
   </ItemGroup>
 
   <!-- The core package intentionally exposes TFM-specific collection/ref-struct shapes. -->

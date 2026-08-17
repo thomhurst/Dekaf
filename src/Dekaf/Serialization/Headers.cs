@@ -1,10 +1,6 @@
 using System.Collections;
-using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text;
-using Dekaf.Internal;
-using Dekaf.Protocol;
-using Dekaf.Protocol.Records;
 
 namespace Dekaf.Serialization;
 
@@ -163,7 +159,7 @@ public sealed class Headers : IEnumerable<Header>
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal void AddDeferredTraceContext(Activity activity, string? traceState)
+    internal void AddDeferredTraceContext(object activity, string? traceState)
     {
         if (_deferredTraceparentIndex >= 0 || _deferredTracestateIndex >= 0)
             RemoveDeferredTraceContext();
@@ -311,14 +307,10 @@ public sealed class Headers : IEnumerable<Header>
 /// </summary>
 public readonly record struct Header
 {
-    /// <summary>
-    /// Cache of interned header key strings to avoid per-message allocations.
-    /// Kafka headers typically reuse the same small set of keys across all messages,
-    /// so caching them avoids repeated string allocations. Capped to prevent unbounded growth.
-    /// </summary>
-    private const int MaxCachedKeys = 128;
-    private const int MaxCachedKeyBytes = 256;
-    private static readonly Utf8StringInternCache s_keyCache = new(MaxCachedKeys, MaxCachedKeyBytes);
+    internal delegate void DeferredTraceparentWriter(object value, Span<byte> destination);
+
+    internal const int TraceparentLength = 55;
+    private static DeferredTraceparentWriter? s_deferredTraceparentWriter;
     private readonly ReadOnlyMemory<byte> _value;
     private readonly object? _deferredValue;
 
@@ -352,13 +344,13 @@ public readonly record struct Header
         IsValueNull = false;
     }
 
-    internal static Header CreateDeferredTraceparent(string key, Activity activity) =>
+    internal static Header CreateDeferredTraceparent(string key, object activity) =>
         new(key, activity);
 
     internal static Header CreateDeferredTracestate(string key, string traceState) =>
         new(key, traceState);
 
-    internal bool HasDeferredTraceparent => _deferredValue is Activity;
+    internal bool HasDeferredTraceparent => _deferredValue is not null and not string;
 
     /// <summary>
     /// The header key.
@@ -377,9 +369,8 @@ public readonly record struct Header
             return _deferredValue switch
             {
                 null => _value,
-                Activity activity => EncodeTraceparent(activity),
                 string traceState => Encoding.UTF8.GetBytes(traceState),
-                _ => throw new UnreachableException()
+                { } deferredTraceparent => EncodeTraceparent(deferredTraceparent)
             };
         }
         [CompilerGenerated]
@@ -406,9 +397,8 @@ public readonly record struct Header
         return _deferredValue switch
         {
             null => _value.ToArray(),
-            Activity activity => EncodeTraceparent(activity),
             string traceState => Encoding.UTF8.GetBytes(traceState),
-            _ => throw new UnreachableException()
+            { } deferredTraceparent => EncodeTraceparent(deferredTraceparent)
         };
     }
 
@@ -423,191 +413,47 @@ public readonly record struct Header
         if (_deferredValue is string traceState)
             return traceState;
         if (_deferredValue is null)
+#if NETSTANDARD2_0
+            return Encoding.UTF8.GetString(_value.ToArray());
+#else
             return Encoding.UTF8.GetString(_value.Span);
+#endif
 
-        Span<byte> value = stackalloc byte[Diagnostics.TraceContextPropagator.TraceparentLength];
-        Diagnostics.TraceContextPropagator.WriteTraceparentUnchecked((Activity)_deferredValue, value);
+        Span<byte> value = stackalloc byte[TraceparentLength];
+        WriteTraceparentUnchecked(_deferredValue, value);
+#if NETSTANDARD2_0
+        return Encoding.UTF8.GetString(value.ToArray());
+#else
         return Encoding.UTF8.GetString(value);
+#endif
     }
 
     /// <inheritdoc/>
     public override string ToString() => $"{Key}={GetValueAsString() ?? "(null)"}";
 
-    /// <summary>
-    /// Writes the header to the protocol writer.
-    /// </summary>
-    [SkipLocalsInit]
-    internal void Write(ref KafkaProtocolWriter writer)
+    internal ReadOnlyMemory<byte> RawValue => _value;
+
+    internal object? DeferredValue => _deferredValue;
+
+    internal static void ConfigureDeferredTraceparentWriter(DeferredTraceparentWriter writer) =>
+        s_deferredTraceparentWriter = writer;
+
+    private static byte[] EncodeTraceparent(object activity)
     {
-        WriteKey(ref writer, Key);
-
-        if (IsValueNull)
-        {
-            writer.WriteVarInt(-1);
-        }
-        else
-        {
-            switch (_deferredValue)
-            {
-                case null:
-                    writer.WriteVarInt(_value.Length);
-                    writer.WriteRawBytes(_value.Span);
-                    break;
-                case Activity activity:
-                    writer.WriteVarInt(Diagnostics.TraceContextPropagator.TraceparentLength);
-                    var traceparentDestination = writer.BufferWriter.GetSpan(
-                        Diagnostics.TraceContextPropagator.TraceparentLength);
-                    Diagnostics.TraceContextPropagator.WriteTraceparentUnchecked(
-                        activity,
-                        traceparentDestination);
-                    writer.BufferWriter.Advance(Diagnostics.TraceContextPropagator.TraceparentLength);
-                    writer.AddBytesWritten(Diagnostics.TraceContextPropagator.TraceparentLength);
-                    break;
-                case string traceState:
-                    var traceStateLength = Encoding.UTF8.GetByteCount(traceState);
-                    writer.WriteVarInt(traceStateLength);
-                    var traceStateDestination = writer.BufferWriter.GetSpan(traceStateLength);
-                    Encoding.UTF8.GetBytes(traceState, traceStateDestination);
-                    writer.BufferWriter.Advance(traceStateLength);
-                    writer.AddBytesWritten(traceStateLength);
-                    break;
-            }
-        }
-    }
-
-    private static void WriteKey(ref KafkaProtocolWriter writer, string key)
-    {
-        if (key.Length <= 128)
-        {
-            Span<byte> buffer = stackalloc byte[512];
-            var actualBytes = Encoding.UTF8.GetBytes(key, buffer);
-            writer.WriteVarInt(actualBytes);
-            if (actualBytes > 0)
-            {
-                var outputSpan = writer.BufferWriter.GetSpan(actualBytes);
-                buffer[..actualBytes].CopyTo(outputSpan);
-                writer.BufferWriter.Advance(actualBytes);
-                writer.AddBytesWritten(actualBytes);
-            }
-            return;
-        }
-
-        var keyByteCount = Encoding.UTF8.GetByteCount(key);
-        writer.WriteVarInt(keyByteCount);
-        if (keyByteCount == 0)
-            return;
-
-        var span = writer.BufferWriter.GetSpan(keyByteCount);
-        Encoding.UTF8.GetBytes(key, span);
-        writer.BufferWriter.Advance(keyByteCount);
-        writer.AddBytesWritten(keyByteCount);
-    }
-
-    /// <summary>
-    /// Reads a header from the protocol reader.
-    /// </summary>
-    internal static Header Read(ref KafkaProtocolReader reader)
-    {
-        var keyLength = reader.ReadVarInt();
-        var key = s_keyCache.Intern(reader.ReadMemorySlice(keyLength));
-
-        var valueLength = reader.ReadVarInt();
-        var isValueNull = valueLength < 0;
-        var value = isValueNull ? ReadOnlyMemory<byte>.Empty : reader.ReadMemorySlice(valueLength);
-
-        return new Header(key, value, isNull: isValueNull);
-    }
-
-    /// <summary>
-    /// Encodes the header into a fixed-size destination span at <paramref name="offset"/>,
-    /// advancing it past the bytes written. Must write exactly <see cref="CalculateSize"/>
-    /// bytes — keep the two methods in sync.
-    /// </summary>
-    [SkipLocalsInit]
-    internal void Encode(Span<byte> destination, ref int offset)
-    {
-        var key = Key;
-        if (key.Length <= 128)
-        {
-            // Single-pass encode for short keys (the common case): UTF-8 worst case is
-            // 3 bytes per char, so 128 chars always fit in the 512-byte scratch buffer.
-            Span<byte> buffer = stackalloc byte[512];
-            var keyByteCount = Encoding.UTF8.GetBytes(key, buffer);
-            Record.WriteVarInt(destination, ref offset, keyByteCount);
-            buffer[..keyByteCount].CopyTo(destination[offset..]);
-            offset += keyByteCount;
-        }
-        else
-        {
-            var keyByteCount = Encoding.UTF8.GetByteCount(key);
-            Record.WriteVarInt(destination, ref offset, keyByteCount);
-            Encoding.UTF8.GetBytes(key, destination[offset..]);
-            offset += keyByteCount;
-        }
-
-        if (IsValueNull)
-        {
-            Record.WriteVarInt(destination, ref offset, -1);
-        }
-        else
-        {
-            var valueLength = _deferredValue switch
-            {
-                null => _value.Length,
-                Activity => Diagnostics.TraceContextPropagator.TraceparentLength,
-                string traceState => Encoding.UTF8.GetByteCount(traceState),
-                _ => throw new UnreachableException()
-            };
-            Record.WriteVarInt(destination, ref offset, valueLength);
-            switch (_deferredValue)
-            {
-                case null:
-                    _value.Span.CopyTo(destination[offset..]);
-                    break;
-                case Activity activity:
-                    Diagnostics.TraceContextPropagator.WriteTraceparentUnchecked(
-                        activity,
-                        destination.Slice(offset, valueLength));
-                    break;
-                case string traceState:
-                    Encoding.UTF8.GetBytes(traceState, destination[offset..]);
-                    break;
-            }
-            offset += valueLength;
-        }
-    }
-
-    internal int CalculateSize()
-    {
-        // ASCII keys (99%+ of cases): byte count == char count. Ascii.IsValid is
-        // SIMD-optimized and much cheaper than UTF8.GetByteCount for this case.
-        var keyBytes = Ascii.IsValid(Key) ? Key.Length : Encoding.UTF8.GetByteCount(Key);
-        var size = Record.VarIntSize(keyBytes) + keyBytes;
-
-        if (IsValueNull)
-        {
-            size += Record.VarIntSize(-1);
-        }
-        else
-        {
-            var valueLength = _deferredValue switch
-            {
-                null => _value.Length,
-                Activity => Diagnostics.TraceContextPropagator.TraceparentLength,
-                string traceState => Encoding.UTF8.GetByteCount(traceState),
-                _ => throw new UnreachableException()
-            };
-            size += Record.VarIntSize(valueLength) + valueLength;
-        }
-
-        return size;
-    }
-
-    private static byte[] EncodeTraceparent(Activity activity)
-    {
-        var value = GC.AllocateUninitializedArray<byte>(
-            Diagnostics.TraceContextPropagator.TraceparentLength);
-        Diagnostics.TraceContextPropagator.WriteTraceparentUnchecked(activity, value);
+#if NETSTANDARD2_0
+        var value = new byte[TraceparentLength];
+#else
+        var value = GC.AllocateUninitializedArray<byte>(TraceparentLength);
+#endif
+        WriteTraceparentUnchecked(activity, value);
         return value;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static void WriteTraceparentUnchecked(object activity, Span<byte> destination)
+    {
+        var writer = s_deferredTraceparentWriter
+            ?? throw new InvalidOperationException("Deferred traceparent writer is not configured.");
+        writer(activity, destination);
     }
 }

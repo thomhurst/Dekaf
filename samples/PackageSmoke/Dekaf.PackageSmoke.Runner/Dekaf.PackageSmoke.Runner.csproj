@@ -8,6 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\Dekaf.PackageSmoke.AbstractionsAdapter\Dekaf.PackageSmoke.AbstractionsAdapter.csproj" />
     <ProjectReference Include="..\Dekaf.PackageSmoke.NetStandard20\Dekaf.PackageSmoke.NetStandard20.csproj" />
   </ItemGroup>
 

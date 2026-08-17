@@ -15,6 +15,12 @@ internal static class TraceContextPropagator
     private const string TracestateHeader = "tracestate";
     internal const int TraceparentLength = 55;
 
+    static TraceContextPropagator()
+    {
+        Header.ConfigureDeferredTraceparentWriter(
+            static (value, destination) => WriteTraceparentUnchecked((Activity)value, destination));
+    }
+
     /// <summary>
     /// Injects the current trace context into message headers.
     /// Returns immediately when <paramref name="activity"/> is null (zero cost).
