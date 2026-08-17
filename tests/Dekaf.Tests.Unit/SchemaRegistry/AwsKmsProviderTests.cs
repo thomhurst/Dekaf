@@ -334,6 +334,45 @@ public class AwsKmsProviderTests
     }
 
     [Test]
+    public async Task Dispose_ReturnsPromptlyWhenCancellationCallbackBlocks()
+    {
+        var operationStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var callbackEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var callbackRelease = new ManualResetEventSlim();
+        var operationCompletion = new TaskCompletionSource<EncryptResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var client = Substitute.For<IAmazonKeyManagementService>();
+        client.EncryptAsync(Arg.Any<EncryptRequest>(), Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                _ = call.Arg<CancellationToken>().Register(() =>
+                {
+                    callbackEntered.SetResult();
+                    callbackRelease.Wait();
+                });
+                operationStarted.SetResult();
+                return operationCompletion.Task;
+            });
+        using var provider = new AwsKmsProvider(client, ownsClient: true);
+        var wrapTask = provider.WrapKeyAsync(new byte[] { 1 }, CreateKeyReference()).AsTask();
+        await operationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var disposeTask = Task.Run(provider.Dispose);
+
+        try
+        {
+            await callbackEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await disposeTask.WaitAsync(TimeSpan.FromSeconds(2));
+            client.Received(1).Dispose();
+        }
+        finally
+        {
+            callbackRelease.Set();
+            operationCompletion.TrySetResult(CreateEncryptResponse());
+            await disposeTask.WaitAsync(TimeSpan.FromSeconds(5));
+            await wrapTask.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+    }
+
+    [Test]
     public async Task InvalidReference_IsRejectedBeforeAwsCall()
     {
         var client = Substitute.For<IAmazonKeyManagementService>();

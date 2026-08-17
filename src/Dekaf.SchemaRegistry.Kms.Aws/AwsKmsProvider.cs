@@ -190,25 +190,12 @@ public sealed class AwsKmsProvider : ISchemaRegistryKmsProvider, IDisposable
         if ((previousState & DisposedMask) != 0)
             return;
 
-        try
-        {
-            _disposeCancellation.Cancel();
-        }
-        finally
-        {
-            Volatile.Write(ref _cancellationFinished, 1);
-            try
-            {
-                if ((previousState & ActiveOperationMask) != 0)
-                    WaitForOperationsToDrain();
+        _ = CancelOperationsAsync();
 
-                DisposeOwnedClient();
-            }
-            finally
-            {
-                TryDisposeCancellation();
-            }
-        }
+        if ((previousState & ActiveOperationMask) != 0)
+            WaitForOperationsToDrain();
+
+        DisposeOwnedClient();
     }
 
     private OperationLease EnterOperation()
@@ -237,6 +224,23 @@ public sealed class AwsKmsProvider : ISchemaRegistryKmsProvider, IDisposable
         cancellationToken.CanBeCanceled
             ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _disposeCancellation.Token)
             : null;
+
+    private async Task CancelOperationsAsync()
+    {
+        try
+        {
+            await _disposeCancellation.CancelAsync().ConfigureAwait(false);
+        }
+        catch (AggregateException)
+        {
+            // Client cancellation callbacks are external; disposal remains best-effort and bounded.
+        }
+        finally
+        {
+            Volatile.Write(ref _cancellationFinished, 1);
+            TryDisposeCancellation();
+        }
+    }
 
     private void WaitForOperationsToDrain()
     {
