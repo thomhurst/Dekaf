@@ -1,11 +1,11 @@
 ---
 sidebar_position: 13
-description: "Dekaf versus Confluent.Kafka on throughput, latency, and allocations, measured with BenchmarkDotNet and refreshed on every commit to main."
+description: "Dekaf versus Confluent.Kafka on throughput, latency, and allocations, measured with BenchmarkDotNet in automated runs from main."
 ---
 
 # Benchmark Results
 
-How Dekaf compares to Confluent.Kafka, measured with BenchmarkDotNet on GitHub Actions and refreshed on every commit to main.
+How Dekaf compares to Confluent.Kafka, measured with BenchmarkDotNet in automated GitHub Actions runs from main.
 
 **Last Updated:** 2026-08-16 14:42 UTC
 
@@ -231,4 +231,4 @@ Wire protocol serialization/deserialization. **Allocated = `-` means zero heap a
 
 </details>
 
-*Benchmarks are automatically run on every push to main.*
+*Benchmarks automatically run on pushes to main that include changes outside this page.*
