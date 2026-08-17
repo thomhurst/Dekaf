@@ -2148,7 +2148,7 @@ public sealed class ConnectionPoolTests
     public async Task ConnectionSetupTimeout_CallerCancellationDoesNotAdvanceFailures()
     {
         var attempts = 0;
-        var factoryEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var cancellation = new CancellationTokenSource();
         var observedTimeouts = new List<TimeSpan>();
         await using var pool = CreateConnectionSetupTimeoutPool(
             randomValue: 0.5,
@@ -2157,7 +2157,8 @@ public sealed class ConnectionPoolTests
                 var attempt = Interlocked.Increment(ref attempts);
                 if (attempt == 1)
                 {
-                    factoryEntered.SetResult();
+                    // Cancel while the factory owns execution so the setup timeout cannot win on a stalled runner.
+                    cancellation.Cancel();
                     await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
                 }
                 if (attempt == 2)
@@ -2167,10 +2168,7 @@ public sealed class ConnectionPoolTests
             timeoutObserver: observedTimeouts.Add);
         pool.RegisterBroker(1, "broker-a", 9092);
 
-        using var cancellation = new CancellationTokenSource();
         var canceledAttempt = pool.GetConnectionAsync(1, cancellation.Token).AsTask();
-        await factoryEntered.Task;
-        cancellation.Cancel();
         await Assert.That(async () => await canceledAttempt).Throws<OperationCanceledException>();
         Func<Task> failedAttempt = () => pool.GetConnectionAsync(1).AsTask();
         await Assert.That(failedAttempt).Throws<InvalidOperationException>();
