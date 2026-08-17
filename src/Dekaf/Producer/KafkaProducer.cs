@@ -131,6 +131,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     // the fail-fast produce guard for context. ErrorCode is short-backed, so volatile is valid.
     internal volatile ErrorCode _lastTransactionError = ErrorCode.None;
     private readonly SemaphoreSlim _transactionLock = new(1, 1);
+    private readonly Func<long>? _transactionTimestampProvider;
     private readonly System.Threading.Lock _epochBumpLock = new();
     internal readonly System.Threading.Lock _partitionsInTransactionLock = new();
     internal readonly HashSet<TopicPartition> _partitionsInTransaction = [];
@@ -247,7 +248,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         ILoggerFactory? loggerFactory = null,
         Func<IReadOnlyList<TopicPartition>, CancellationToken, ValueTask>? addPartitionsToTransaction = null,
         IAsyncSerializer<TKey>? asyncKeySerializer = null,
-        IAsyncSerializer<TValue>? asyncValueSerializer = null)
+        IAsyncSerializer<TValue>? asyncValueSerializer = null,
+        Func<long>? transactionTimestampProvider = null)
         : this(
             options,
             keySerializer,
@@ -258,7 +260,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             memoryBudget,
             addPartitionsToTransaction,
             asyncKeySerializer,
-            asyncValueSerializer)
+            asyncValueSerializer,
+            transactionTimestampProvider)
     {
     }
 
@@ -345,11 +348,13 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         IDekafMemoryBudget memoryBudget,
         Func<IReadOnlyList<TopicPartition>, CancellationToken, ValueTask>? addPartitionsToTransaction = null,
         IAsyncSerializer<TKey>? asyncKeySerializer = null,
-        IAsyncSerializer<TValue>? asyncValueSerializer = null)
+        IAsyncSerializer<TValue>? asyncValueSerializer = null,
+        Func<long>? transactionTimestampProvider = null)
     {
         ExponentialRetryBackoff.Validate(options.RetryBackoffMs, options.RetryBackoffMaxMs);
         _options = options;
         _addPartitionsToTransaction = addPartitionsToTransaction ?? AddPartitionsToTransactionAsync;
+        _transactionTimestampProvider = transactionTimestampProvider;
         // When an async serializer is configured for a component, its sync slot is forced to the
         // throwing placeholder here — by construction, not by builder convention — so a direct
         // constructor caller can never pair an async serializer with a live sync one that would
@@ -2542,7 +2547,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
     private TransactionRetryBudget CreateTransactionRetryBudget()
     {
-        var startedAtMs = MonotonicClock.GetMilliseconds();
+        var startedAtMs = GetTransactionTimestampMilliseconds();
         var deadlineMs = long.MaxValue - startedAtMs > _options.MaxBlockMs
             ? startedAtMs + _options.MaxBlockMs
             : long.MaxValue;
@@ -2564,11 +2569,11 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         return true;
     }
 
-    private static bool TryGetTransactionRemainingMilliseconds(
+    private bool TryGetTransactionRemainingMilliseconds(
         TransactionRetryBudget retryBudget,
         out int remainingMs)
     {
-        var remaining = retryBudget.DeadlineMs - MonotonicClock.GetMilliseconds();
+        var remaining = retryBudget.DeadlineMs - GetTransactionTimestampMilliseconds();
         if (remaining <= 0)
         {
             remainingMs = 0;
@@ -2579,13 +2584,13 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         return true;
     }
 
-    private static CancellationTokenSource CreateTransactionRetryCancellationSource(
+    private CancellationTokenSource CreateTransactionRetryCancellationSource(
         TransactionRetryBudget retryBudget,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var remainingMs = Math.Max(0, retryBudget.DeadlineMs - MonotonicClock.GetMilliseconds());
+        var remainingMs = Math.Max(0, retryBudget.DeadlineMs - GetTransactionTimestampMilliseconds());
         timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(remainingMs));
         return timeoutCts;
     }
@@ -2596,7 +2601,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         int attempts,
         Exception? innerException = null)
     {
-        var elapsedMs = Math.Max(0, MonotonicClock.GetMilliseconds() - retryBudget.StartedAtMs);
+        var elapsedMs = Math.Max(0, GetTransactionTimestampMilliseconds() - retryBudget.StartedAtMs);
         var configured = TimeSpan.FromMilliseconds(_options.MaxBlockMs);
         var message =
             $"{operation} did not complete within max.block.ms ({_options.MaxBlockMs}ms) after {attempts} attempts.";
@@ -2613,6 +2618,12 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 message,
                 innerException);
     }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal long GetTransactionTimestampMilliseconds() =>
+        _transactionTimestampProvider is null
+            ? MonotonicClock.GetMilliseconds()
+            : _transactionTimestampProvider();
 
     internal async ValueTask ReinitializeProducerIdAsync(
         CancellationToken cancellationToken,
