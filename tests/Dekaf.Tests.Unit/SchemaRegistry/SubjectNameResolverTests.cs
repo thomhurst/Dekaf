@@ -6,7 +6,7 @@ namespace Dekaf.Tests.Unit.SchemaRegistry;
 public sealed class SubjectNameResolverTests
 {
     [Test]
-    public async Task GetTopicSubjectName_EqualTopicInstancesReuseSubjects()
+    public async Task GetTopicSubjectName_EqualTopicInstancesReturnEqualSubjects()
     {
         var firstTopic = new string("orders".AsSpan());
         var secondTopic = new string("orders".AsSpan());
@@ -17,10 +17,40 @@ public sealed class SubjectNameResolverTests
         var secondValue = SubjectNameResolver.GetTopicSubjectName(secondTopic, isKey: false);
 
         await Assert.That(firstTopic).IsNotSameReferenceAs(secondTopic);
-        await Assert.That(firstKey).IsSameReferenceAs(secondKey);
-        await Assert.That(firstValue).IsSameReferenceAs(secondValue);
+        await Assert.That(firstKey).IsEqualTo(secondKey);
+        await Assert.That(firstValue).IsEqualTo(secondValue);
         await Assert.That(firstKey).IsEqualTo("orders-key");
         await Assert.That(firstValue).IsEqualTo("orders-value");
+    }
+
+    [Test]
+    public async Task GetTopicSubjectName_EqualTopicInstancesRemainEqualAfterConcurrentEviction()
+    {
+        const int churnTopicCount = 2048;
+        var topicValue = $"subject-eviction-{Guid.NewGuid():N}";
+        var firstTopic = new string(topicValue.AsSpan());
+        var secondTopic = new string(topicValue.AsSpan());
+        var startEviction = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var churnTask = Task.Run(async () =>
+        {
+            await startEviction.Task;
+            for (var index = 0; index < churnTopicCount; index++)
+            {
+                SubjectNameResolver.GetTopicSubjectName(
+                    $"{topicValue}-churn-{index}",
+                    isKey: false);
+            }
+        });
+
+        var first = SubjectNameResolver.GetTopicSubjectName(firstTopic, isKey: false);
+        startEviction.SetResult();
+        await churnTask;
+        var second = SubjectNameResolver.GetTopicSubjectName(secondTopic, isKey: false);
+
+        await Assert.That(firstTopic).IsNotSameReferenceAs(secondTopic);
+        await Assert.That(first).IsNotSameReferenceAs(second);
+        await Assert.That(second).IsEqualTo(first);
+        await Assert.That(second).IsEqualTo($"{topicValue}-value");
     }
 
     [Test]
