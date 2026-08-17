@@ -2037,7 +2037,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             LastHeartbeatFailure: null)
         : _coordinator.CaptureGroupLiveness(
             Volatile.Read(ref _closed) != 0 || Volatile.Read(ref _consumerDisposed) != 0,
-            _topicPattern is not null || _subscriptionSnapshot.Count != 0);
+            _topicFilter is not null || _topicPattern is not null || _subscriptionSnapshot.Count != 0);
 
     IDisposable IConsumerRebalanceEventSource.RegisterRuntimeRebalanceListener(IRebalanceListener listener)
     {

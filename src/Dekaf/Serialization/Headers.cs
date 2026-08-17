@@ -383,7 +383,11 @@ public readonly record struct Header
             };
         }
         [CompilerGenerated]
-        init => _value = value;
+        init
+        {
+            _value = value;
+            _deferredValue = null;
+        }
     }
 
     /// <summary>

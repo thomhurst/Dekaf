@@ -69,6 +69,21 @@ public sealed class TraceContextPropagatorTests
     }
 
     [Test]
+    public async Task DeferredHeader_WithValue_UsesReplacementValue()
+    {
+        using var activity = new Activity("trace-replacement")
+            .SetIdFormat(ActivityIdFormat.W3C)
+            .Start();
+        var deferred = Header.CreateDeferredTraceparent("traceparent", activity);
+        var replacement = "replacement"u8.ToArray();
+
+        var replaced = deferred with { Value = replacement };
+
+        await Assert.That(replaced.Value.Span.SequenceEqual(replacement)).IsTrue();
+        await Assert.That(replaced.GetValueAsString()).IsEqualTo("replacement");
+    }
+
+    [Test]
     public async Task InjectTraceContext_DeferredTracestateWritesExpectedWireValue()
     {
         using var activity = new Activity("tracestate-wire")

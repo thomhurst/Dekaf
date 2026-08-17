@@ -29,6 +29,18 @@ public sealed class ConsumerGroupLivenessTests
         await Assert.That(liveness.IsJoined).IsFalse();
     }
 
+    [Test]
+    public async Task TopicFilterSubscriptionWithConfiguredGroup_ReportsGroupParticipation()
+    {
+        await using var consumer = CreateConsumer();
+        consumer.Subscribe(static _ => true);
+
+        var liveness = ((IConsumerGroupLiveness)consumer).GroupLiveness;
+
+        await Assert.That(liveness.HasConsumerGroup).IsTrue();
+        await Assert.That(liveness.IsJoined).IsFalse();
+    }
+
     private static KafkaConsumer<string, string> CreateConsumer() => new(
         new ConsumerOptions
         {

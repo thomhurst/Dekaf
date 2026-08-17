@@ -370,6 +370,51 @@ public sealed class ConnectionPoolTests
     }
 
     [Test]
+    public async Task RuntimeState_ConcurrentFailuresPublishCoherentLatestTuple()
+    {
+        var stateType = typeof(ConnectionPool).GetNestedType(
+            "BrokerConnectionRuntimeState",
+            BindingFlags.NonPublic)!;
+        using var timestamp = new ThreadLocal<long>();
+        Func<long> timestampProvider = () => timestamp.Value;
+        var state = Activator.CreateInstance(
+            stateType,
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            binder: null,
+            args: [timestampProvider, false],
+            culture: null)!;
+        var recordFailure = stateType.GetMethod("RecordFailure")!;
+        var lastFailure = stateType.GetProperty("LastFailure")!;
+        var failureType = typeof(ConnectionPool).GetNestedType("FailureInfo", BindingFlags.NonPublic)!;
+        var sequenceProperty = failureType.GetProperty("Sequence")!;
+        var timestampProperty = failureType.GetProperty("TimestampMs")!;
+        var errorProperty = failureType.GetProperty("Error")!;
+        var mismatches = new ConcurrentQueue<string>();
+
+        Parallel.For(1, 1_001, sequence =>
+        {
+            timestamp.Value = sequence;
+            recordFailure.Invoke(state, [$"failure-{sequence}", (long)sequence]);
+
+            var failure = lastFailure.GetValue(state)!;
+            var publishedSequence = (long)sequenceProperty.GetValue(failure)!;
+            var publishedTimestamp = (long)timestampProperty.GetValue(failure)!;
+            var publishedError = (string)errorProperty.GetValue(failure)!;
+            if (publishedTimestamp != publishedSequence ||
+                publishedError != $"failure-{publishedSequence}")
+            {
+                mismatches.Enqueue(
+                    $"{publishedError}/{publishedTimestamp}/{publishedSequence}");
+            }
+        });
+
+        var finalFailure = lastFailure.GetValue(state)!;
+        var finalSequence = (long)sequenceProperty.GetValue(finalFailure)!;
+        await Assert.That(mismatches).IsEmpty();
+        await Assert.That(finalSequence).IsEqualTo(1_000);
+    }
+
+    [Test]
     public async Task StatusSnapshot_ResolvesControllerEndpointAliasWithDifferentHostnameCasing()
     {
         await using var pool = new ConnectionPool(

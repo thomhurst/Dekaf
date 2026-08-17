@@ -1927,22 +1927,22 @@ public sealed partial class ConnectionPool :
                 AccumulateConnectionStatus(connection, ref connections);
             _endpointConnectionRuntimeStates.TryGetValue(endpointKey, out var runtimeState);
             AccumulateRuntimeState(runtimeState, ref connections);
+            var lastFailure = runtimeState?.LastFailure;
             var aliases = endpoint.ConnectionAliases;
             if (aliases is not null)
             {
                 for (var aliasIndex = 0; aliasIndex < aliases.Count; aliasIndex++)
                 {
                     var alias = aliases[aliasIndex];
-                    var connectionEndpointKey = new EndpointKey(alias.Host, alias.Port);
-                    if (connectionEndpointKey == endpointKey || AliasAlreadyVisited(aliases, aliasIndex, connectionEndpointKey))
+                    var aliasKey = new EndpointKey(alias.Host, alias.Port);
+                    if (aliasKey == endpointKey || AliasAlreadyVisited(aliases, aliasIndex, aliasKey))
                         continue;
 
-                    if (_connectionsByEndpoint.TryGetValue(connectionEndpointKey, out connection))
+                    if (_connectionsByEndpoint.TryGetValue(aliasKey, out connection))
                         AccumulateConnectionStatus(connection, ref connections);
-                    _endpointConnectionRuntimeStates.TryGetValue(connectionEndpointKey, out var connectionRuntimeState);
-                    AccumulateRuntimeState(connectionRuntimeState, ref connections);
-                    if (HasLaterFailure(connectionRuntimeState, runtimeState))
-                        runtimeState = connectionRuntimeState;
+                    _endpointConnectionRuntimeStates.TryGetValue(aliasKey, out var aliasRuntimeState);
+                    AccumulateRuntimeState(aliasRuntimeState, ref connections);
+                    lastFailure = GetLaterFailure(aliasRuntimeState?.LastFailure, lastFailure);
                 }
             }
             result.Add(CreateBrokerConnectionStatus(
@@ -1950,7 +1950,8 @@ public sealed partial class ConnectionPool :
                 ref connections,
                 capturedAtTimestampMs,
                 capturedAtUtc,
-                runtimeState));
+                runtimeState,
+                lastFailure));
         }
 
         result.Sort(static (left, right) => left.BrokerId.CompareTo(right.BrokerId));
@@ -1972,18 +1973,17 @@ public sealed partial class ConnectionPool :
         return false;
     }
 
-    private static bool HasLaterFailure(
-        BrokerConnectionRuntimeState? candidate,
-        BrokerConnectionRuntimeState? current)
+    private static FailureInfo? GetLaterFailure(FailureInfo? candidate, FailureInfo? current)
     {
         if (candidate is null)
-            return false;
+            return current;
+        if (current is null)
+            return candidate;
 
-        var candidateTimestamp = candidate.LastErrorTimestampMs;
-        var currentTimestamp = current?.LastErrorTimestampMs ?? 0;
-        return candidateTimestamp > currentTimestamp ||
-               (candidateTimestamp == currentTimestamp &&
-                candidate.LastErrorSequence > (current?.LastErrorSequence ?? 0));
+        return candidate.TimestampMs > current.TimestampMs ||
+               (candidate.TimestampMs == current.TimestampMs && candidate.Sequence > current.Sequence)
+            ? candidate
+            : current;
     }
 
     void IConnectionPoolStatusSource.UpdateBrokerStatusSnapshot(int[] brokerIds) =>
@@ -2024,12 +2024,13 @@ public sealed partial class ConnectionPool :
         ref ConnectionStatusAccumulator connections,
         long capturedAtTimestampMs,
         DateTimeOffset capturedAtUtc,
-        BrokerConnectionRuntimeState? runtimeState = null)
+        BrokerConnectionRuntimeState? runtimeState = null,
+        FailureInfo? lastFailure = null)
     {
         runtimeState ??= _brokerConnectionRuntimeStates.TryGetValue(broker.BrokerId, out var brokerRuntimeState)
             ? brokerRuntimeState
             : null;
-        var lastErrorTimestampMs = runtimeState?.LastErrorTimestampMs ?? 0;
+        lastFailure ??= runtimeState?.LastFailure;
         AccumulateRuntimeState(runtimeState, ref connections);
 
         return new BrokerConnectionStatus
@@ -2050,8 +2051,8 @@ public sealed partial class ConnectionPool :
             LastConnectionStateChangeAtUtc = ToUtcTimestamp(
                 connections.LastStateChangeTimestampMs, capturedAtTimestampMs, capturedAtUtc),
             LastErrorAtUtc = ToUtcTimestamp(
-                lastErrorTimestampMs, capturedAtTimestampMs, capturedAtUtc),
-            LastError = runtimeState?.LastError
+                lastFailure?.TimestampMs ?? 0, capturedAtTimestampMs, capturedAtUtc),
+            LastError = lastFailure?.Error
         };
     }
 
@@ -2642,15 +2643,11 @@ public sealed partial class ConnectionPool :
         private readonly Func<long> _timestampProvider = timestampProvider;
         private long _lastStateChangeTimestampMs = recordInitialState ? timestampProvider() : 0;
         private long _lastSuccessfulRequestTimestampMs;
-        private long _lastErrorTimestampMs;
-        private long _lastErrorSequence;
-        private string? _lastError;
+        private FailureInfo? _lastFailure;
 
         public long LastStateChangeTimestampMs => Volatile.Read(ref _lastStateChangeTimestampMs);
         public long LastSuccessfulRequestTimestampMs => Volatile.Read(ref _lastSuccessfulRequestTimestampMs);
-        public long LastErrorTimestampMs => Volatile.Read(ref _lastErrorTimestampMs);
-        public long LastErrorSequence => Volatile.Read(ref _lastErrorSequence);
-        public string? LastError => Volatile.Read(ref _lastError);
+        public FailureInfo? LastFailure => Volatile.Read(ref _lastFailure);
 
         public void RecordStateChange() => RecordStateChange(_timestampProvider());
 
@@ -2688,12 +2685,20 @@ public sealed partial class ConnectionPool :
 
         public void RecordFailure(string error, long sequence)
         {
-            var timestampMs = _timestampProvider();
-            Volatile.Write(ref _lastError, error);
-            Volatile.Write(ref _lastErrorTimestampMs, timestampMs);
-            Volatile.Write(ref _lastErrorSequence, sequence);
+            var failure = new FailureInfo(error, _timestampProvider(), sequence);
+            var current = Volatile.Read(ref _lastFailure);
+            while (current is null || sequence > current.Sequence)
+            {
+                var observed = Interlocked.CompareExchange(ref _lastFailure, failure, current);
+                if (ReferenceEquals(observed, current))
+                    return;
+
+                current = observed;
+            }
         }
     }
+
+    private sealed record FailureInfo(string Error, long TimestampMs, long Sequence);
 
     private readonly record struct EndpointKey(string Host, int Port);
     private readonly record struct ConnectionSetupKey(int BrokerId, string Host, int Port);

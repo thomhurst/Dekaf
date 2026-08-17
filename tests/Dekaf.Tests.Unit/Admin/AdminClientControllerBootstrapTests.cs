@@ -91,6 +91,27 @@ public sealed class AdminClientControllerBootstrapTests
     }
 
     [Test]
+    public async Task GetStatus_PreservesLiveDiscoveryAliasAcrossAdvertisedRefreshes()
+    {
+        await using var context = new ControllerAdminContext(
+            CreateDiscoveryResponse(
+                activeControllerId: 1,
+                controllerOneHost: "seed",
+                controllerOnePort: 9093),
+            refreshInterval: TimeSpan.Zero);
+        context.EnqueueDiscovery(CreateDiscoveryResponse(activeControllerId: 1));
+        context.EnqueueDiscovery(CreateDiscoveryResponse(activeControllerId: 1));
+
+        _ = await context.Client.DescribeClusterAsync();
+        _ = await context.Client.DescribeClusterAsync();
+        _ = await context.Client.DescribeClusterAsync();
+        var controller = context.Client.GetStatus().Brokers.Single(static broker => broker.BrokerId == 1);
+
+        await Assert.That(controller.ConnectionCount).IsEqualTo(2);
+        await Assert.That(controller.ConnectedConnectionCount).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task DescribeClusterAsync_RetriesWhileControllerElectionIsPending()
     {
         await using var context = new ControllerAdminContext(
