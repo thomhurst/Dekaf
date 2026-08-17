@@ -362,6 +362,56 @@ public sealed class JsonSchemaValidationTests
     }
 
     [Test]
+    public async Task Serializer_PrepareAsync_CachesCompleteRegisteredSchemaForReferences()
+    {
+        const string rootSchema = """
+            {
+              "$id": "https://example.test/schemas/root.json",
+              "type": "object",
+              "properties": { "address": { "$ref": "address.json" } },
+              "required": ["address"]
+            }
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        await registry.RegisterSchemaAsync(
+            "address-value",
+            CreateSchema("""{"type":"object","required":["postcode"]}"""));
+        await registry.RegisterSchemaAsync(
+            "registered-write-value",
+            CreateSchema(rootSchema, [new SchemaReference
+            {
+                Name = "address.json",
+                Subject = "address-value",
+                Version = 1
+            }]));
+        await using var serializer = new JsonSchemaRegistrySerializer<ReferencedPayload>(
+            registry,
+            rootSchema,
+            jsonOptions: null,
+            validationOptions: new JsonSchemaValidationOptions
+            {
+                ValidatorFactory = new StreamingJsonSchemaValidatorFactory(registry),
+                Mode = JsonSchemaValidationMode.Serialize
+            },
+            autoRegisterSchemas: false);
+        var context = new SerializationContext
+        {
+            Topic = "registered-write",
+            Component = SerializationComponent.Value
+        };
+
+        var resolved = await serializer.PrepareAsync(
+            context.Topic,
+            new ReferencedPayload(new AddressPayload("AB1")));
+        var buffer = new ArrayBufferWriter<byte>();
+        serializer.Serialize(new ReferencedPayload(new AddressPayload("AB1")), ref buffer, context);
+
+        await Assert.That(resolved.Schema.References).IsNotNull();
+        await Assert.That(resolved.Schema.References!.Count).IsEqualTo(1);
+        await Assert.That(buffer.WrittenCount).IsGreaterThan(5);
+    }
+
+    [Test]
     public async Task Serializer_DefaultAutoRegistrationUsesServerSchemaReferences()
     {
         const string rootSchema =
@@ -401,8 +451,13 @@ public sealed class JsonSchemaValidationTests
         };
         var buffer = new ArrayBufferWriter<byte>();
 
+        var resolved = await serializer.PrepareAsync(
+            context.Topic,
+            new ReferencedPayload(new AddressPayload("AB1")));
         serializer.Serialize(new ReferencedPayload(new AddressPayload("AB1")), ref buffer, context);
 
+        await Assert.That(resolved.Schema.References).IsNotNull();
+        await Assert.That(resolved.Schema.References!.Count).IsEqualTo(1);
         await Assert.That(buffer.WrittenCount).IsGreaterThan(5);
         await Assert.That(handler.RequestCount).IsEqualTo(2);
     }

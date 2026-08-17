@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Buffers.Binary;
 using Avro.Generic;
 using Confluent.Kafka;
 using Dekaf.SchemaRegistry;
@@ -27,6 +28,61 @@ public sealed class SchemaRegistrySubjectCompatibilityTests(KafkaWithSchemaRegis
             ]
         }
         """;
+
+    [Test]
+    public async Task Preparation_AllSerializers_ResolvedIdMatchesWireFormat()
+    {
+        var prefix = $"prepare-{Guid.NewGuid():N}";
+        using var registry = CreateDekafClient();
+
+        var genericSchema = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = "{\"type\":\"integer\"}"
+        };
+        await using var generic = new SchemaRegistrySerializer<int>(
+            registry,
+            static (value, writer) =>
+            {
+                var span = writer.GetSpan(sizeof(int));
+                BinaryPrimitives.WriteInt32BigEndian(span, value);
+                writer.Advance(sizeof(int));
+            },
+            () => genericSchema);
+        await AssertPreparedIdMatchesWireFormat(
+            generic,
+            await generic.PrepareAsync($"{prefix}-generic", 42),
+            42,
+            $"{prefix}-generic");
+
+        var avroSchema = (Avro.RecordSchema)AvroSchema.Parse(AvroRecordSchema);
+        var avroValue = new GenericRecord(avroSchema);
+        avroValue.Add("id", 42);
+        await using var avro = new AvroSchemaRegistrySerializer<GenericRecord>(registry);
+        await AssertPreparedIdMatchesWireFormat(
+            avro,
+            await avro.PrepareAsync($"{prefix}-avro", avroValue),
+            avroValue,
+            $"{prefix}-avro");
+
+        var protobufValue = new TestPerson { Id = 42, Name = "Prepared" };
+        await using var protobuf = new ProtobufSchemaRegistrySerializer<TestPerson>(registry);
+        await AssertPreparedIdMatchesWireFormat(
+            protobuf,
+            await protobuf.PrepareAsync($"{prefix}-protobuf", protobufValue),
+            protobufValue,
+            $"{prefix}-protobuf");
+
+        var jsonValue = new CompatibilityJsonRecord { Id = 42 };
+        await using var json = new JsonSchemaRegistrySerializer<CompatibilityJsonRecord>(
+            registry,
+            "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"integer\"}}}");
+        await AssertPreparedIdMatchesWireFormat(
+            json,
+            await json.PrepareAsync($"{prefix}-json", jsonValue),
+            jsonValue,
+            $"{prefix}-json");
+    }
 
     [Test]
     [Arguments(false)]
@@ -219,6 +275,20 @@ public sealed class SchemaRegistrySubjectCompatibilityTests(KafkaWithSchemaRegis
             Topic = topic,
             Component = SerializationComponent.Value
         };
+
+    private static async Task AssertPreparedIdMatchesWireFormat<T>(
+        Dekaf.Serialization.ISerializer<T> serializer,
+        ResolvedSchemaContext resolved,
+        T value,
+        string topic)
+    {
+        var destination = new ArrayBufferWriter<byte>();
+        serializer.Serialize(value, ref destination, CreateDekafContext(topic));
+
+        await Assert.That(resolved.Subject).IsEqualTo($"{topic}-value");
+        await Assert.That(BinaryPrimitives.ReadInt32BigEndian(destination.WrittenSpan.Slice(1, 4)))
+            .IsEqualTo(resolved.SchemaId);
+    }
 
     private sealed class CompatibilityJsonRecord
     {

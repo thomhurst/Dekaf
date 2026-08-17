@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using Dekaf.Serialization;
 
 namespace Dekaf.SchemaRegistry;
@@ -11,7 +12,7 @@ namespace Dekaf.SchemaRegistry;
 /// </summary>
 /// <remarks>
 /// <para>
-/// This serializer caches schema IDs in a <see cref="ConcurrentDictionary{TKey,TValue}"/>.
+/// This serializer caches schema IDs in a bounded concurrent cache.
 /// The first time a schema is needed for a particular subject, a synchronous blocking call to the
 /// Schema Registry is made. After the first fetch, subsequent serialization calls for the same subject
 /// use the cached schema ID without any blocking or allocation. Multiple subjects are cached concurrently.
@@ -22,7 +23,10 @@ namespace Dekaf.SchemaRegistry;
 /// </para>
 /// </remarks>
 /// <typeparam name="T">The type to serialize.</typeparam>
-public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposable
+public sealed class SchemaRegistrySerializer<T> :
+    ISerializer<T>,
+    IAsyncSerializerPreparer<T>,
+    IAsyncDisposable
 {
     private const byte MagicByte = 0x00;
 
@@ -42,8 +46,10 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
     private readonly bool _useLegacySubjectNames;
     private readonly bool _ownsClient;
     private readonly ISchemaRegistryRuleExecutor? _ruleExecutor;
+    private CachedFactorySchema? _subjectIndependentSchema;
 
-    private readonly ConcurrentDictionary<string, int> _schemaIdCache = new();
+    private readonly SchemaResolutionCache<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> _schemaResolutionCache = new();
+    private readonly SubjectSchemaCache? _subjectSchemaCache;
     private readonly SubjectSchemaIdCache _subjectSchemaIdCache = new();
 
     /// <summary>
@@ -97,6 +103,7 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _serialize = serialize ?? throw new ArgumentNullException(nameof(serialize));
         _getSchema = getSchema ?? throw new ArgumentNullException(nameof(getSchema));
+        _subjectSchemaCache = new SubjectSchemaCache();
         _subjectNameStrategy = subjectNameStrategy;
         _autoRegisterSchemas = autoRegisterSchemas;
         _normalizeSchemas = normalizeSchemas;
@@ -181,11 +188,50 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _serialize = serialize ?? throw new ArgumentNullException(nameof(serialize));
         _getSchema = getSchema ?? throw new ArgumentNullException(nameof(getSchema));
+        _subjectSchemaCache = new SubjectSchemaCache();
         _customSubjectNameStrategy = customSubjectNameStrategy ?? throw new ArgumentNullException(nameof(customSubjectNameStrategy));
         _autoRegisterSchemas = autoRegisterSchemas;
         _normalizeSchemas = normalizeSchemas;
         _ownsClient = ownsClient;
         _ruleExecutor = ruleExecutor;
+    }
+
+    /// <summary>
+    /// Resolves and caches the subject, schema ID, and schema for a serialization context.
+    /// </summary>
+    public ValueTask<ResolvedSchemaContext> PrepareAsync(
+        string topic,
+        T value,
+        bool isKey = false,
+        CancellationToken cancellationToken = default)
+    {
+        if (_subjectSchemaIdCache.TryGet(topic, isKey, out var cached))
+            return new ValueTask<ResolvedSchemaContext>(ToResolvedContext(cached));
+
+        return PrepareCoreAsync(topic, isKey, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public ValueTask PrepareAsync(
+        T value,
+        SerializationContext context,
+        CancellationToken cancellationToken = default)
+    {
+        var preparation = PrepareAsync(
+            context.Topic,
+            value,
+            context.Component == SerializationComponent.Key,
+            cancellationToken);
+        if (preparation.IsCompletedSuccessfully)
+        {
+            _ = preparation.Result;
+            return ValueTask.CompletedTask;
+        }
+
+        return AwaitPreparationAsync(preparation);
+
+        static async ValueTask AwaitPreparationAsync(ValueTask<ResolvedSchemaContext> preparation) =>
+            _ = await preparation.ConfigureAwait(false);
     }
 
     public void Serialize<TWriter>(T value, ref TWriter destination, SerializationContext context)
@@ -240,25 +286,72 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
 
     private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry ResolveSchema(string topic, bool isKey)
     {
+        var resolved = ResolveSubjectAndSchema(topic, isKey);
+        var value = ResolveSchemaCached(resolved.Subject, resolved.Schema);
+        return new SubjectSchemaIdCache.SubjectSchemaIdCacheEntry(
+            new SubjectSchemaIdCache.SubjectSchemaIdCacheKey(topic, isKey),
+            resolved.Subject,
+            value.SchemaId,
+            value.Schema);
+    }
+
+    private ValueTask<ResolvedSchemaContext> PrepareCoreAsync(
+        string topic,
+        bool isKey,
+        CancellationToken cancellationToken)
+    {
+        var resolved = ResolveSubjectAndSchema(topic, isKey);
+        var resolution = ResolveSchemaAsync(
+            resolved.Subject,
+            resolved.Schema,
+            cancellationToken);
+        if (resolution.IsCompletedSuccessfully)
+        {
+            var value = resolution.Result;
+            return new ValueTask<ResolvedSchemaContext>(ToResolvedContext(
+                _subjectSchemaIdCache.CacheEntry(
+                    topic,
+                    isKey,
+                    resolved.Subject,
+                    value.SchemaId,
+                    value.Schema!)));
+        }
+
+        return AwaitSchemaAsync(this, topic, isKey, resolved.Subject, resolution);
+
+        static async ValueTask<ResolvedSchemaContext> AwaitSchemaAsync(
+            SchemaRegistrySerializer<T> serializer,
+            string topic,
+            bool isKey,
+            string subject,
+            ValueTask<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> resolution)
+        {
+            var value = await resolution.ConfigureAwait(false);
+            return ToResolvedContext(serializer._subjectSchemaIdCache.CacheEntry(
+                topic,
+                isKey,
+                subject,
+                value.SchemaId,
+                value.Schema!));
+        }
+    }
+
+    private ResolvedSubjectSchema ResolveSubjectAndSchema(string topic, bool isKey)
+    {
         var fallbackRecordName = typeof(T).FullName ?? typeof(T).Name;
         var subject = GetSubjectName(topic, fallbackRecordName, isKey);
 
         for (var attempt = 0; attempt < 4; attempt++)
         {
-            var schema = _getSchema(subject);
-            var recordName = SubjectNameResolver.GetRecordName(schema, fallbackRecordName);
+            var factorySchema = GetSchema(subject, fallbackRecordName);
+            var schema = factorySchema.Schema;
+            var recordName = factorySchema.RecordName;
             var resolvedSubject = string.Equals(recordName, fallbackRecordName, StringComparison.Ordinal)
                 ? subject
                 : GetSubjectName(topic, recordName, isKey);
 
             if (_schemaFactoryIgnoresSubject || string.Equals(resolvedSubject, subject, StringComparison.Ordinal))
-            {
-                return new SubjectSchemaIdCache.SubjectSchemaIdCacheEntry(
-                    new SubjectSchemaIdCache.SubjectSchemaIdCacheKey(topic, isKey),
-                    resolvedSubject,
-                    GetSchemaIdSync(resolvedSubject, schema),
-                    schema);
-            }
+                return new ResolvedSubjectSchema(resolvedSubject, schema);
 
             subject = resolvedSubject;
         }
@@ -266,29 +359,355 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
         throw new InvalidOperationException("The schema callback did not resolve to a stable subject name.");
     }
 
-    private int GetSchemaIdSync(string subject, Schema schema)
+    private FactorySchema GetSchema(string subject, string fallbackRecordName)
     {
-        if (_schemaIdCache.TryGetValue(subject, out var id))
-            return id;
+        if (!_schemaFactoryIgnoresSubject)
+            return _subjectSchemaCache!.GetOrAdd(subject, fallbackRecordName, _getSchema);
 
-        // Cache miss — fetch from registry. May race under contention for a new subject;
-        // this is safe because schema registration is idempotent (same subject always returns same ID).
-        Task<int> task;
+        var cached = Volatile.Read(ref _subjectIndependentSchema);
+        if (cached is not null)
+            return cached.Value;
+
+        var schema = _getSchema(subject);
+        var candidate = new CachedFactorySchema(new FactorySchema(
+            schema,
+            SubjectNameResolver.GetRecordName(schema, fallbackRecordName)));
+        return (Interlocked.CompareExchange(ref _subjectIndependentSchema, candidate, null) ?? candidate).Value;
+    }
+
+    private sealed class SubjectSchemaCache
+    {
+        private const int FixedOverflowCapacity = 9;
+        private const int TurnoverCapacity = 4;
+        private readonly ConcurrentDictionary<string, FactorySchema> _cache = new(StringComparer.Ordinal);
+        private readonly CachedSubjectSchema?[] _overflow = new CachedSubjectSchema?[FixedOverflowCapacity];
+        private int _cacheCount;
+        private int _turnoverCursor = -1;
+        private readonly TurnoverSubjectSchema[] _turnover = CreateTurnoverSlots();
+        private int _turnoverCount;
+
+        internal FactorySchema GetOrAdd(
+            string subject,
+            string fallbackRecordName,
+            Func<string, Schema> schemaFactory)
+        {
+            if (_cache.TryGetValue(subject, out var cached))
+                return cached;
+            if (TryGetOverflow(subject, out cached))
+                return cached;
+
+            var schema = schemaFactory(subject);
+            var factorySchema = new FactorySchema(
+                schema,
+                SubjectNameResolver.GetRecordName(schema, fallbackRecordName));
+            if (!TryReserveSlot())
+                return PublishOverflow(subject, factorySchema);
+
+            if (_cache.TryAdd(subject, factorySchema))
+                return factorySchema;
+
+            Interlocked.Decrement(ref _cacheCount);
+            return _cache.TryGetValue(subject, out cached)
+                ? cached
+                : PublishOverflow(subject, factorySchema);
+        }
+
+        private bool TryGetOverflow(string subject, out FactorySchema factorySchema)
+        {
+            for (var index = 0; index < FixedOverflowCapacity; index++)
+            {
+                var cached = Volatile.Read(ref _overflow[index]);
+                if (cached is not null && string.Equals(cached.Subject, subject, StringComparison.Ordinal))
+                {
+                    factorySchema = cached.Value;
+                    return true;
+                }
+            }
+
+            for (var index = 0; index < TurnoverCapacity; index++)
+            {
+                if (_turnover[index].TryGet(subject, out factorySchema))
+                    return true;
+            }
+
+            return TryGetRetainedOverflow(subject, out factorySchema);
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private bool TryGetRetainedOverflow(string subject, out FactorySchema factorySchema)
+        {
+            for (var index = 0; index < TurnoverCapacity; index++)
+            {
+                if (_turnover[index].TryGetRetained(subject, out factorySchema))
+                    return true;
+            }
+
+            factorySchema = default;
+            return false;
+        }
+
+        private FactorySchema PublishOverflow(string subject, FactorySchema factorySchema)
+        {
+            CachedSubjectSchema? candidate = null;
+            for (var index = 0; index < FixedOverflowCapacity; index++)
+            {
+                var cached = Volatile.Read(ref _overflow[index]);
+                if (cached is null)
+                {
+                    candidate ??= new CachedSubjectSchema(subject, factorySchema);
+                    cached = Interlocked.CompareExchange(ref _overflow[index], candidate, null);
+                    if (cached is null)
+                        return factorySchema;
+                }
+
+                if (string.Equals(cached.Subject, subject, StringComparison.Ordinal))
+                    return cached.Value;
+            }
+
+            if (Volatile.Read(ref _turnoverCount) >= TurnoverCapacity)
+            {
+                for (var index = 0; index < TurnoverCapacity; index++)
+                {
+                    if (_turnover[index].TryGet(subject, out var cached))
+                        return cached;
+                }
+
+                if (TryGetRetainedOverflow(subject, out var retained))
+                    return retained;
+
+                return PublishTurnover(subject, factorySchema);
+            }
+
+            for (var index = 0; index < TurnoverCapacity; index++)
+            {
+                var turnover = _turnover[index];
+                if (turnover.TryGet(subject, out var cached))
+                    return cached;
+
+                if (turnover.TryPublishEmpty(subject, factorySchema))
+                {
+                    Interlocked.Increment(ref _turnoverCount);
+                    return factorySchema;
+                }
+
+                if (turnover.TryGet(subject, out cached))
+                    return cached;
+            }
+
+            return PublishTurnover(subject, factorySchema);
+        }
+
+        private FactorySchema PublishTurnover(string subject, FactorySchema factorySchema)
+        {
+            var startIndex = Interlocked.Increment(ref _turnoverCursor);
+            for (var attempt = 0; attempt < TurnoverCapacity; attempt++)
+            {
+                var index = (startIndex + attempt) & (TurnoverCapacity - 1);
+                if (_turnover[index].TryPublish(subject, factorySchema))
+                    break;
+            }
+
+            return factorySchema;
+        }
+
+        private static TurnoverSubjectSchema[] CreateTurnoverSlots()
+        {
+            var slots = new TurnoverSubjectSchema[TurnoverCapacity];
+            for (var index = 0; index < slots.Length; index++)
+                slots[index] = new TurnoverSubjectSchema();
+
+            return slots;
+        }
+
+        private bool TryReserveSlot()
+        {
+            while (true)
+            {
+                var count = Volatile.Read(ref _cacheCount);
+                if (count >= SubjectSchemaIdCache.MaxCachedEntries)
+                    return false;
+
+                if (Interlocked.CompareExchange(ref _cacheCount, count + 1, count) == count)
+                    return true;
+            }
+        }
+    }
+
+    private readonly record struct FactorySchema(Schema Schema, string RecordName);
+
+    private sealed class CachedFactorySchema(FactorySchema value)
+    {
+        internal FactorySchema Value { get; } = value;
+    }
+
+    private sealed class CachedSubjectSchema(string subject, FactorySchema value)
+    {
+        internal string Subject { get; } = subject;
+        internal FactorySchema Value { get; } = value;
+    }
+
+    private sealed class TurnoverSubjectSchema
+    {
+        private string? _firstSubject;
+        private string? _secondSubject;
+        private FactorySchema _firstValue;
+        private FactorySchema _secondValue;
+        private int _activeIndex;
+        private int _version;
+
+        internal bool TryGet(string subject, out FactorySchema value)
+        {
+            var version = Volatile.Read(ref _version);
+            if (version is 0 or 1)
+            {
+                value = default;
+                return false;
+            }
+
+            var activeIndex = Volatile.Read(ref _activeIndex);
+            var candidateSubject = activeIndex == 0 ? _firstSubject : _secondSubject;
+            var candidateValue = activeIndex == 0 ? _firstValue : _secondValue;
+            if (activeIndex != Volatile.Read(ref _activeIndex)
+                || version != Volatile.Read(ref _version)
+                || !string.Equals(candidateSubject, subject, StringComparison.Ordinal))
+            {
+                value = default;
+                return false;
+            }
+
+            value = candidateValue;
+            return true;
+        }
+
+        internal bool TryGetRetained(string subject, out FactorySchema value)
+        {
+            var version = Volatile.Read(ref _version);
+            if (version == 0 || (version & 1) != 0)
+            {
+                value = default;
+                return false;
+            }
+
+            var activeIndex = Volatile.Read(ref _activeIndex);
+            var retainedIndex = activeIndex ^ 1;
+            var candidateSubject = retainedIndex == 0 ? _firstSubject : _secondSubject;
+            var candidateValue = retainedIndex == 0 ? _firstValue : _secondValue;
+            if (activeIndex != Volatile.Read(ref _activeIndex)
+                || version != Volatile.Read(ref _version)
+                || !string.Equals(candidateSubject, subject, StringComparison.Ordinal))
+            {
+                value = default;
+                return false;
+            }
+
+            value = candidateValue;
+            return true;
+        }
+
+        internal bool TryPublish(string subject, FactorySchema value)
+        {
+            var version = Volatile.Read(ref _version);
+            if ((version & 1) != 0
+                || Interlocked.CompareExchange(ref _version, unchecked(version + 1), version) != version)
+            {
+                return false;
+            }
+
+            // Readers keep using the active buffer while this inactive buffer is populated.
+            var nextIndex = Volatile.Read(ref _activeIndex) ^ 1;
+            if (nextIndex == 0)
+            {
+                _firstSubject = subject;
+                _firstValue = value;
+            }
+            else
+            {
+                _secondSubject = subject;
+                _secondValue = value;
+            }
+
+            Volatile.Write(ref _activeIndex, nextIndex);
+            var publishedVersion = unchecked(version + 2);
+            Volatile.Write(ref _version, publishedVersion == 0 ? 2 : publishedVersion);
+            return true;
+        }
+
+        internal bool TryPublishEmpty(string subject, FactorySchema value)
+        {
+            if (Interlocked.CompareExchange(ref _version, 1, 0) != 0)
+                return false;
+
+            _firstSubject = subject;
+            _firstValue = value;
+            Volatile.Write(ref _activeIndex, 0);
+            Volatile.Write(ref _version, 2);
+            return true;
+        }
+    }
+
+    private SubjectSchemaIdCache.SubjectSchemaIdCacheValue ResolveSchemaCached(string subject, Schema schema)
+        => _schemaResolutionCache.Resolve(
+            subject,
+            schema,
+            this,
+            static (serializer, resolvedSubject, resolvedSchema) =>
+                serializer.FetchSchemaWithTimeoutAsync(resolvedSubject, resolvedSchema),
+            SchemaRegistryTimeout);
+
+    private ValueTask<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> ResolveSchemaAsync(
+        string subject,
+        Schema schema,
+        CancellationToken cancellationToken) =>
+        _schemaResolutionCache.ResolveAsync(
+            subject,
+            schema,
+            this,
+            static (serializer, resolvedSubject, resolvedSchema) =>
+                serializer.FetchSchemaWithTimeoutAsync(resolvedSubject, resolvedSchema),
+            cancellationToken);
+
+    private Task<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> FetchSchemaWithTimeoutAsync(
+        string subject,
+        Schema schema) =>
+        SchemaRegistryOperationTimeout.ExecuteAsync(
+            cancellationToken => FetchSchemaAsync(subject, schema, cancellationToken),
+            SchemaRegistryTimeout,
+            "Schema Registry resolution timed out.");
+
+    private async Task<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> FetchSchemaAsync(
+        string subject,
+        Schema schema,
+        CancellationToken cancellationToken)
+    {
         if (_autoRegisterSchemas)
         {
-            task = _normalizeSchemas
-                ? _schemaRegistry.GetOrRegisterSchemaAsync(subject, schema, normalize: true)
-                : _schemaRegistry.GetOrRegisterSchemaAsync(subject, schema);
-        }
-        else
-        {
-            task = _schemaRegistry.GetSchemaBySubjectAsync(subject).ContinueWith(
-                static t => t.GetAwaiter().GetResult().Id, TaskScheduler.Default);
+            var schemaId = _normalizeSchemas
+                ? await _schemaRegistry.GetOrRegisterSchemaAsync(
+                    subject,
+                    schema,
+                    normalize: true,
+                    cancellationToken).ConfigureAwait(false)
+                : await _schemaRegistry.GetOrRegisterSchemaAsync(
+                    subject,
+                    schema,
+                    cancellationToken).ConfigureAwait(false);
+            return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(schemaId, schema);
         }
 
-        var fetchedId = task.WaitAsync(SchemaRegistryTimeout).ConfigureAwait(false).GetAwaiter().GetResult();
-        return _schemaIdCache.GetOrAdd(subject, fetchedId);
+        var registered = await _schemaRegistry.GetSchemaBySubjectAsync(
+                subject,
+                cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+        return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(
+            registered.Id,
+            registered.Schema);
     }
+
+    private static ResolvedSchemaContext ToResolvedContext(
+        SubjectSchemaIdCache.SubjectSchemaIdCacheEntry entry) =>
+        new(entry.Subject!, entry.SchemaId, entry.Schema!);
+
+    private readonly record struct ResolvedSubjectSchema(string Subject, Schema Schema);
 
     private string GetSubjectName(string topic, string recordName, bool isKey)
     {

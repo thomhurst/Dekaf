@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Diagnostics;
 using System.Reflection;
 using BenchmarkDotNet.Attributes;
@@ -43,6 +44,9 @@ public class ProducerFireHotPathBenchmarks
     [Params(false, true)]
     public bool TracingEnabled { get; set; }
 
+    [Params(false, true)]
+    public bool UsePreparedSerializer { get; set; }
+
     [GlobalSetup]
     public async Task Setup()
     {
@@ -63,7 +67,7 @@ public class ProducerFireHotPathBenchmarks
                 UnackedByteBudgetCapOverride = FixtureCapacityBytes,
             },
             Serializers.String,
-            Serializers.String);
+            UsePreparedSerializer ? PreparedStringSerializer.Instance : Serializers.String);
 
         if (TracingEnabled)
         {
@@ -213,5 +217,22 @@ public class ProducerFireHotPathBenchmarks
     {
         const BindingFlags Flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
         target.GetType().GetField(name, Flags)!.SetValue(target, value);
+    }
+
+    private sealed class PreparedStringSerializer : ISerializer<string>, IAsyncSerializerPreparer<string>
+    {
+        internal static readonly PreparedStringSerializer Instance = new();
+
+        public ValueTask PrepareAsync(
+            string value,
+            SerializationContext context,
+            CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
+
+        public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
+            where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
+            => Serializers.String.Serialize(value, ref destination, context);
     }
 }
