@@ -416,6 +416,57 @@ using var usKms = new AwsKmsProvider(RegionEndpoint.USEast1, type: "aws-kms-us-e
 var multiRegionCsfle = new SchemaRegistryCsfleRuleHandler(schemaRegistry, [euKms, usKms]);
 ```
 
+## Azure Key Vault KMS
+
+Install the opt-in Azure provider when Schema Registry client-side field-level encryption (CSFLE)
+uses an Azure Key Vault key:
+
+```bash
+dotnet add package Dekaf.SchemaRegistry.Kms.Azure
+```
+
+```csharp
+using Azure.Identity;
+using Dekaf.SchemaRegistry;
+using Dekaf.SchemaRegistry.Kms.Azure;
+
+var credential = new DefaultAzureCredential();
+var azureKms = new AzureKeyVaultKmsProvider(credential);
+var confluentAzureKms = new AzureKeyVaultKmsProvider(
+    credential,
+    type: AzureKeyVaultKmsProvider.ConfluentType);
+var csfle = new SchemaRegistryCsfleRuleHandler(
+    schemaRegistry,
+    [azureKms, confluentAzureKms]);
+```
+
+`DefaultAzureCredential` uses the standard Azure credential chain. Production applications can
+instead pass a specific credential such as `ManagedIdentityCredential` or
+`ClientSecretCredential`. The credential and any supplied `CryptographyClientOptions` are
+caller-owned. For complete client-construction control, implement
+`IAzureKeyVaultCryptographyClientFactory`.
+
+Use an absolute HTTPS key identifier with `/keys/<name>` or `/keys/<name>/<version>`, for example
+`https://payments.vault.azure.net/keys/orders-kek`. Azure public, US Government, and China Key Vault
+and Managed HSM DNS authorities are accepted; other authorities are rejected before credential use.
+Each provider instance registers one KMS type;
+register the default instance for `azure-kv`, the `ConfluentType` instance for Confluent-compatible
+`azure-kms`, or both as shown above. Matching `azure-kv://` and `azure-kms://` prefixes on the key
+identifier are optional. The provider uses RSA-OAEP-256. Prefer a versioned key identifier so
+existing data keeps decrypting after rotation. For a versionless key, set the KEK property
+`encrypt.azure.key.version.save=true` to embed the exact Azure key version in newly wrapped key
+material.
+
+For RBAC-enabled vaults, grant the identity the Key Vault Crypto User role. For vaults using legacy
+access policies, grant the `keys/wrapKey` and `keys/unwrapKey` permissions. Managed HSM uses its own
+local RBAC system: grant the identity the
+[Managed HSM Crypto User role](https://learn.microsoft.com/azure/key-vault/managed-hsm/role-management)
+at the `/keys` scope or the specific key's scope. One provider instance is safe for concurrent use.
+It bounds both its configured-key client cache and its ciphertext key-version client cache to 64
+entries.
+Cancellation is forwarded to Azure; provider error messages do not include service response text
+or key material.
+
 ## Consumer
 
 ```csharp

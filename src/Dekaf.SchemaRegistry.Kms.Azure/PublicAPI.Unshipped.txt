@@ -1,0 +1,15 @@
+#nullable enable
+Dekaf.SchemaRegistry.Kms.Azure.AzureKeyVaultKmsProvider
+Dekaf.SchemaRegistry.Kms.Azure.AzureKeyVaultKmsProvider.AzureKeyVaultKmsProvider() -> void
+Dekaf.SchemaRegistry.Kms.Azure.AzureKeyVaultKmsProvider.AzureKeyVaultKmsProvider(Azure.Core.TokenCredential! credential, Azure.Security.KeyVault.Keys.Cryptography.CryptographyClientOptions? clientOptions = null, string! type = "azure-kv") -> void
+Dekaf.SchemaRegistry.Kms.Azure.AzureKeyVaultKmsProvider.AzureKeyVaultKmsProvider(Dekaf.SchemaRegistry.Kms.Azure.IAzureKeyVaultCryptographyClientFactory! clientFactory, string! type = "azure-kv") -> void
+Dekaf.SchemaRegistry.Kms.Azure.AzureKeyVaultKmsProvider.Type.get -> string!
+Dekaf.SchemaRegistry.Kms.Azure.AzureKeyVaultKmsProvider.UnwrapKeyAsync(System.ReadOnlyMemory<byte> encryptedKeyMaterial, Dekaf.SchemaRegistry.SchemaRegistryKmsKeyReference! keyReference, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<byte[]!>
+Dekaf.SchemaRegistry.Kms.Azure.AzureKeyVaultKmsProvider.WrapKeyAsync(System.ReadOnlyMemory<byte> keyMaterial, Dekaf.SchemaRegistry.SchemaRegistryKmsKeyReference! keyReference, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<byte[]!>
+Dekaf.SchemaRegistry.Kms.Azure.IAzureKeyVaultCryptographyClientFactory
+Dekaf.SchemaRegistry.Kms.Azure.IAzureKeyVaultCryptographyClientFactory.CreateClient(System.Uri! keyId) -> Azure.Security.KeyVault.Keys.Cryptography.CryptographyClient!
+const Dekaf.SchemaRegistry.Kms.Azure.AzureKeyVaultKmsProvider.ConfluentKeyUriPrefix = "azure-kms://" -> string!
+const Dekaf.SchemaRegistry.Kms.Azure.AzureKeyVaultKmsProvider.ConfluentType = "azure-kms" -> string!
+const Dekaf.SchemaRegistry.Kms.Azure.AzureKeyVaultKmsProvider.DefaultType = "azure-kv" -> string!
+const Dekaf.SchemaRegistry.Kms.Azure.AzureKeyVaultKmsProvider.KeyUriPrefix = "azure-kv://" -> string!
+const Dekaf.SchemaRegistry.Kms.Azure.AzureKeyVaultKmsProvider.SaveVersionProperty = "encrypt.azure.key.version.save" -> string!

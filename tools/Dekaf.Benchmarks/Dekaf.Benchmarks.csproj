@@ -18,6 +18,7 @@
     <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Protobuf\Dekaf.SchemaRegistry.Protobuf.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Kms.Vault\Dekaf.SchemaRegistry.Kms.Vault.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Kms.Aws\Dekaf.SchemaRegistry.Kms.Aws.csproj" />
+    <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Kms.Azure\Dekaf.SchemaRegistry.Kms.Azure.csproj" />
   </ItemGroup>
 
   <ItemGroup>
