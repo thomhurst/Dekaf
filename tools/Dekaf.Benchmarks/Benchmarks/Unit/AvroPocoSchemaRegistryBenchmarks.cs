@@ -342,6 +342,41 @@ public class AvroPocoLargePayloadSerializationBenchmarks
     }
 }
 
+/// <summary>Measures the generated TimeSpan-to-time-micros validation path.</summary>
+[MemoryDiagnoser(displayGenColumns: false)]
+public class AvroPocoTimeSpanSerializationBenchmarks
+{
+    private readonly SerializationContext _context = new()
+    {
+        Topic = "avro-poco-time-span",
+        Component = SerializationComponent.Value
+    };
+    private AvroPocoSchemaRegistrySerializer<PocoTimeSpanBenchmarkRecord, PocoTimeSpanBenchmarkRecord.AvroCodec>
+        _serializer = null!;
+    private PocoTimeSpanBenchmarkRecord _value;
+    private ArrayBufferWriter<byte> _buffer = null!;
+
+    [GlobalSetup]
+    public void Setup()
+    {
+        _serializer = PocoTimeSpanBenchmarkRecord.CreateAvroSerializer(
+            new AvroSchemaRegistrySerializerBenchmarks.BenchmarkSchemaRegistryClient());
+        _value = new PocoTimeSpanBenchmarkRecord { Value = TimeSpan.FromHours(12) };
+        _buffer = new ArrayBufferWriter<byte>(32);
+        SerializeTimeSpan();
+    }
+
+    [GlobalCleanup]
+    public async ValueTask Cleanup() => await _serializer.DisposeAsync().ConfigureAwait(false);
+
+    [Benchmark]
+    public void SerializeTimeSpan()
+    {
+        _buffer.Clear();
+        _serializer.Serialize(_value, ref _buffer, _context);
+    }
+}
+
 [AvroRecord(Name = "PocoBenchmarkDecimalRecord", Namespace = "Dekaf.Benchmarks.Benchmarks.Unit")]
 public sealed partial class PocoBenchmarkDecimalRecord
 {
@@ -412,6 +447,12 @@ public sealed partial class RepresentativePocoAddress
 public sealed partial class PocoLargeBenchmarkRecord
 {
     public required int[] Values { get; init; }
+}
+
+[AvroRecord(Name = "PocoTimeSpanBenchmarkRecord", Namespace = "Dekaf.Benchmarks")]
+public readonly partial record struct PocoTimeSpanBenchmarkRecord
+{
+    public TimeSpan Value { get; init; }
 }
 
 public enum RepresentativePocoStatus

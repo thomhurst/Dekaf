@@ -117,7 +117,7 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
             return;
         }
 
-        SerializeWithRules(value, ref destination, context, entry);
+        SerializeWithRules(value, ref destination, context, entry, _config.RuleExecutor!);
     }
 
     private static async ValueTask AwaitPreparationAsync(ValueTask<ResolvedSchemaContext> preparation) =>
@@ -164,11 +164,12 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         }
     }
 
-    private void SerializeWithRules<TWriter>(
+    private static void SerializeWithRules<TWriter>(
         T value,
         ref TWriter destination,
         SerializationContext context,
-        SubjectSchemaIdCache.SubjectSchemaIdCacheEntry entry)
+        SubjectSchemaIdCache.SubjectSchemaIdCacheEntry entry,
+        ISchemaRegistryRuleExecutor ruleExecutor)
         where TWriter : IBufferWriter<byte>
 #if NET10_0_OR_GREATER
         , allows ref struct
@@ -202,7 +203,7 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
             SchemaRegistryPayloadFormat.Avro);
         try
         {
-            payload = _config.RuleExecutor!.TransformSerializedPayload(payload, ruleContext);
+            payload = ruleExecutor.TransformSerializedPayload(payload, ruleContext);
         }
         finally
         {

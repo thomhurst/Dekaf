@@ -1087,9 +1087,6 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                             .AppendLine(".UtcTicks - global::System.DateTimeOffset.UnixEpoch.UtcTicks) / 10L);");
                     else
                     {
-                        code.Append(indent).Append("if (").Append(value)
-                            .AppendLine(".Kind == global::System.DateTimeKind.Unspecified)");
-                        code.Append(indent).AppendLine("    throw new global::System.InvalidOperationException(\"Avro timestamp-micros does not support DateTimeKind.Unspecified.\");");
                         code.Append(indent).Append("writer.WriteInt64((").Append(value)
                             .AppendLine(".ToUniversalTime().Ticks - global::System.DateTime.UnixEpoch.Ticks) / 10L);");
                     }

@@ -102,6 +102,7 @@ public sealed partial class Order
 ```
 
 ```csharp
+using Dekaf;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Avro.Poco;
 
@@ -118,11 +119,14 @@ await using var producer = await Kafka.CreateProducer<string, Order>()
 
 Supported generated shapes are primitives, nullable members, enums, arrays, `List<T>`,
 `Dictionary<string,T>`, nested `[AvroRecord]` types, and explicit unions configured with
-`UnionTypes`. Logical mappings are `DateOnly` → `date`, `TimeOnly`/`TimeSpan` → `time-micros`,
-`DateTime`/`DateTimeOffset` → `timestamp-micros`, `Guid` → `uuid`, and `decimal` → `decimal`.
-Decimal members require `Precision` from 1 through 29 and `Scale` from 0 through the smaller of
-28 and `Precision`. `DateTimeKind.Unspecified` is rejected, and `TimeSpan` values must represent a
-time of day from zero through less than 24 hours.
+`UnionTypes`. Only public fields and properties with public getters and setters are included;
+class inheritance is rejected so inherited state cannot be omitted silently. Logical mappings are
+`DateOnly` → `date`, `TimeOnly`/`TimeSpan` → `time-micros`, `DateTime`/`DateTimeOffset` →
+`timestamp-micros`, `Guid` → `uuid`, and `decimal` → `decimal`. `TimeSpan` values must represent a
+time of day from zero through less than 24 hours. `DateTimeKind.Unspecified` values follow
+`DateTime.ToUniversalTime()` and therefore use the producer host's local time zone; use UTC
+`DateTime` or `DateTimeOffset` for host-independent wire values. Decimal members require
+`Precision` from 1 through 29 and `Scale` from 0 through the smaller of 28 and `Precision`.
 
 Use `Name`, `Aliases`, and `DefaultJson` for schema evolution. Defaults must match the first Avro
 union branch; nullable fields therefore use `DefaultJson = "null"`. Current generated defaults

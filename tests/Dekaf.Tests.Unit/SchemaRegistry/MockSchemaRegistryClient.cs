@@ -10,17 +10,41 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
 {
     private readonly Dictionary<int, Schema> _schemasById = new();
     private readonly Dictionary<string, List<(int Version, int Id, Schema Schema)>> _schemasBySubject = new();
+    private TaskCompletionSource? _getSchemaEntered;
+    private TaskCompletionSource? _getSchemaRelease;
     private TaskCompletionSource? _getOrRegisterSchemaEntered;
     private TaskCompletionSource? _getOrRegisterSchemaRelease;
     private int _nextId = 1;
     private bool _disposed;
 
     public int GetSchemaCallCount { get; private set; }
+    public CancellationToken LastGetSchemaCancellationToken { get; private set; }
     public int GetOrRegisterSchemaCallCount { get; private set; }
     public CancellationToken LastGetOrRegisterSchemaCancellationToken { get; private set; }
     public int TryGetCachedSchemaCallCount { get; private set; }
     public int GetSchemaFailuresRemaining { get; set; }
     public int GetOrRegisterSchemaFailuresRemaining { get; set; }
+
+    public void BlockNextGetSchema()
+    {
+        _getSchemaEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _getSchemaRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    public async Task WaitForBlockedGetSchemaAsync(TimeSpan timeout)
+    {
+        var entered = _getSchemaEntered
+            ?? throw new InvalidOperationException("No blocked GetSchemaAsync call was configured.");
+
+        await entered.Task.WaitAsync(timeout).ConfigureAwait(false);
+    }
+
+    public void ReleaseBlockedGetSchema()
+    {
+        _getSchemaRelease?.TrySetResult();
+        _getSchemaEntered = null;
+        _getSchemaRelease = null;
+    }
 
     /// <summary>
     /// Normalizes a JSON schema string by parsing and re-serializing.
@@ -85,10 +109,17 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
         return Task.FromResult(id);
     }
 
-    public Task<Schema> GetSchemaAsync(int id, CancellationToken cancellationToken = default)
+    public async Task<Schema> GetSchemaAsync(int id, CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
         GetSchemaCallCount++;
+        LastGetSchemaCancellationToken = cancellationToken;
+
+        if (_getSchemaRelease is { } release)
+        {
+            _getSchemaEntered!.TrySetResult();
+            await release.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
 
         if (GetSchemaFailuresRemaining > 0)
         {
@@ -97,7 +128,7 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
         }
 
         if (_schemasById.TryGetValue(id, out var schema))
-            return Task.FromResult(schema);
+            return schema;
 
         throw new SchemaRegistryException(40403, $"Schema {id} not found");
     }

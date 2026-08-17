@@ -65,46 +65,56 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec> : IDeserialize
             throw new InvalidOperationException($"Unknown magic byte: {span[0]}. Expected 0x00.");
 
         var schemaId = BinaryPrimitives.ReadInt32BigEndian(span.Slice(1, 4));
-        var planSchemaId = schemaId;
         var payload = data.Slice(WireHeaderSize);
-
-        if (_ruleExecutor is not null)
+        if (_ruleExecutor is null)
         {
-            var subject = GetSubjectName(context.Topic, context.Component == SerializationComponent.Key);
-            var scopedSchema = _schemaRegistry.GetSchemaSync(schemaId, subject, RegistryTimeout);
-            if (_migrationRunner is null)
-            {
-                var ruleContext = SchemaRegistryRuleContext.Rent(
-                    context.Topic,
-                    context.Component,
-                    schemaId,
-                    subject,
-                    scopedSchema,
-                    SchemaRegistryPayloadFormat.Avro);
-                try
-                {
-                    payload = _ruleExecutor.TransformDeserializedPayload(payload, ruleContext);
-                }
-                finally
-                {
-                    ruleContext.Return();
-                }
-            }
-            else
-            {
-                var migration = _migrationRunner.Transform(
-                    payload,
-                    schemaId,
-                    subject,
-                    scopedSchema,
-                    context,
-                    SchemaRegistryPayloadFormat.Avro);
-                payload = migration.Payload;
-                planSchemaId = migration.ReaderSchema.Id;
-            }
+            var directReader = new AvroValueReader(payload.Span);
+            return TCodec.Read(ref directReader, GetPlanCached(schemaId));
         }
 
-        var plan = GetPlanCached(planSchemaId);
+        return DeserializeWithRules(payload, schemaId, context);
+    }
+
+    private T DeserializeWithRules(
+        ReadOnlyMemory<byte> payload,
+        int schemaId,
+        SerializationContext context)
+    {
+        var subject = GetSubjectName(context.Topic, context.Component == SerializationComponent.Key);
+        var scopedSchema = _schemaRegistry.GetSchemaSync(schemaId, subject, RegistryTimeout);
+        AvroPocoReaderPlan plan;
+        if (_migrationRunner is null)
+        {
+            var ruleContext = SchemaRegistryRuleContext.Rent(
+                context.Topic,
+                context.Component,
+                schemaId,
+                subject,
+                scopedSchema,
+                SchemaRegistryPayloadFormat.Avro);
+            try
+            {
+                payload = _ruleExecutor!.TransformDeserializedPayload(payload, ruleContext);
+            }
+            finally
+            {
+                ruleContext.Return();
+            }
+            plan = GetPlanCached(schemaId);
+        }
+        else
+        {
+            var migration = _migrationRunner.Transform(
+                payload,
+                schemaId,
+                subject,
+                scopedSchema,
+                context,
+                SchemaRegistryPayloadFormat.Avro);
+            payload = migration.Payload;
+            plan = GetPlanCached(migration.ReaderSchema.Id);
+        }
+
         var reader = new AvroValueReader(payload.Span);
         return TCodec.Read(ref reader, plan);
     }

@@ -137,10 +137,11 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
-    public async Task GeneratedCodec_RejectsUnspecifiedDateTime()
+    public async Task GeneratedCodec_ConvertsUnspecifiedDateTimeUsingLocalTimeZone()
     {
         using var registry = new MockSchemaRegistryClient();
         await using var serializer = PocoTemporal.CreateAvroSerializer(registry);
+        await using var deserializer = PocoTemporal.CreateAvroDeserializer(registry);
         var context = new SerializationContext
         {
             Topic = "poco-temporal",
@@ -153,9 +154,10 @@ public sealed class AvroPocoSchemaRegistryTests
             Time = TimeSpan.Zero
         };
 
-        await Assert.That(() => serializer.Serialize(value, ref destination, context))
-            .Throws<InvalidOperationException>()
-            .WithMessageContaining("DateTimeKind.Unspecified");
+        serializer.Serialize(value, ref destination, context);
+        var actual = deserializer.Deserialize(destination.WrittenMemory, context);
+
+        await Assert.That(actual.Timestamp).IsEqualTo(value.Timestamp.ToUniversalTime());
     }
 
     [Test]
@@ -413,6 +415,33 @@ public sealed class AvroPocoSchemaRegistryTests
                 AvroPocoReaderPlanBuilder.Build<PocoEvolved, PocoEvolved.AvroCodec>(writerSchemaJson))
             .Throws<InvalidOperationException>()
             .WithMessageContaining("Recursive writer record");
+    }
+
+    [Test]
+    public async Task GeneratedCodec_PassesTimeoutTokenToPlanFetch()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        var schemaId = await registry.RegisterSchemaAsync(
+            "poco-plan-timeout-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = PocoWireRecord.AvroCodec.SchemaJson
+            });
+        registry.BlockNextGetSchema();
+        await using var reader = PocoWireRecord.CreateAvroDeserializer(registry);
+        var warmup = reader.WarmupAsync(schemaId);
+
+        await registry.WaitForBlockedGetSchemaAsync(TimeSpan.FromSeconds(5));
+        try
+        {
+            await Assert.That(registry.LastGetSchemaCancellationToken.CanBeCanceled).IsTrue();
+        }
+        finally
+        {
+            registry.ReleaseBlockedGetSchema();
+        }
+        await warmup;
     }
 
     [Test]
