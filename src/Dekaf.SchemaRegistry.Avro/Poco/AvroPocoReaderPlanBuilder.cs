@@ -95,7 +95,13 @@ internal static class AvroPocoReaderPlanBuilder
             for (var index = 0; index < union.Count; index++)
             {
                 var writerBranch = union[index];
-                var readerBranchIndex = FindCompatibleReaderIndex(writerBranch, readerBranches);
+                var readerBranchIndex = TryFindCompatibleReaderIndex(writerBranch, readerBranches);
+                if (readerBranchIndex < 0)
+                {
+                    branches[index] = new AvroPocoReadNode(AvroPocoTypeKind.Null);
+                    requiresWriterUnionDispatch = true;
+                    continue;
+                }
                 branches[index] = BuildNode(writerBranch, readerBranches[readerBranchIndex]);
                 branches[index].ReaderUnionBranchIndex = readerBranchIndex;
                 requiresWriterUnionDispatch |= branches[index].RequiresWriterUnionDispatch;
@@ -188,14 +194,25 @@ internal static class AvroPocoReaderPlanBuilder
         AvroSchema writer,
         ReadOnlySpan<AvroPocoType> readers)
     {
+        var index = TryFindCompatibleReaderIndex(writer, readers);
+        if (index >= 0)
+            return index;
+
+        throw new InvalidOperationException(
+            $"Writer Avro type '{writer.Tag}' has no compatible generated POCO union branch.");
+    }
+
+    private static int TryFindCompatibleReaderIndex(
+        AvroSchema writer,
+        ReadOnlySpan<AvroPocoType> readers)
+    {
         for (var index = 0; index < readers.Length; index++)
         {
             if (IsCompatible(writer, readers[index]))
                 return index;
         }
 
-        throw new InvalidOperationException(
-            $"Writer Avro type '{writer.Tag}' has no compatible generated POCO union branch.");
+        return -1;
     }
 
     private static bool IsCompatible(AvroSchema writer, AvroPocoType reader)

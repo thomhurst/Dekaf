@@ -739,6 +739,46 @@ public sealed class AvroPocoSchemaRegistryTests
             new Dictionary<string, double> { ["int"] = 3D, ["long"] = 4D });
     }
 
+    [Test]
+    public async Task GeneratedCodec_DefersIncompatibleWriterUnionBranchUntilSelected()
+    {
+        const string writerSchemaJson =
+            """
+            {"type":"record","name":"PocoWriterUnions","namespace":"Dekaf.Tests","fields":[{"name":"scalar","type":["int","string"]},{"name":"items","type":{"type":"array","items":["int","string"]}},{"name":"values","type":{"type":"map","values":["int","string"]}}]}
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        await using var writer = new AvroSchemaRegistrySerializer<GenericRecord>(registry);
+        await using var reader = PocoWriterUnions.CreateAvroDeserializer(registry);
+        var writerSchema = (RecordSchema)Schema.Parse(writerSchemaJson);
+        var compatible = new GenericRecord(writerSchema);
+        compatible.Add("scalar", 42);
+        compatible.Add("items", new object[] { 1, 2 });
+        compatible.Add("values", new Dictionary<string, object> { ["int"] = 3 });
+        var incompatible = new GenericRecord(writerSchema);
+        incompatible.Add("scalar", "not-a-number");
+        incompatible.Add("items", Array.Empty<object>());
+        incompatible.Add("values", new Dictionary<string, object>());
+        var context = new SerializationContext
+        {
+            Topic = "poco-writer-union-compatibility",
+            Component = SerializationComponent.Value
+        };
+        var destination = new ArrayBufferWriter<byte>();
+
+        writer.Serialize(compatible, ref destination, context);
+        var actual = reader.Deserialize(destination.WrittenMemory, context);
+
+        await Assert.That(actual.Scalar).IsEqualTo(42D);
+        await Assert.That(actual.Items).IsEquivalentTo([1D, 2D]);
+        await Assert.That(actual.Values).IsEquivalentTo(new Dictionary<string, double> { ["int"] = 3D });
+
+        destination.Clear();
+        writer.Serialize(incompatible, ref destination, context);
+        await Assert.That(() => reader.Deserialize(destination.WrittenMemory, context))
+            .Throws<InvalidDataException>()
+            .WithMessageContaining("no generated POCO target");
+    }
+
     private sealed class ExactSizeBufferWriter(int capacity) : IBufferWriter<byte>
     {
         private readonly byte[] _buffer = GC.AllocateUninitializedArray<byte>(capacity);

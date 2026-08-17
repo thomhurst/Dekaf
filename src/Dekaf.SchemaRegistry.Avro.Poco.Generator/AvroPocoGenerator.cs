@@ -1134,6 +1134,8 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                     .Append(branch).AppendLine(".Branches.Length);");
                 code.Append(indent).Append("    ").Append(branch).Append(" = ").Append(branch)
                     .Append(".Branches.Span[").Append(branchIndex).AppendLine("];");
+                code.Append(indent).Append("    if (").Append(branch).AppendLine(".ReaderUnionBranchIndex < 0)");
+                code.Append(indent).AppendLine("        throw new global::System.IO.InvalidDataException(\"Writer union branch has no generated POCO target.\");");
                 code.Append(indent).AppendLine("}");
                 code.Append(indent).Append("if (").Append(branch)
                     .AppendLine(".Kind == global::Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.Null)");
@@ -1190,6 +1192,8 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                     .Append(branch).AppendLine(".Branches.Length);");
                 code.Append(indent).Append("    ").Append(branch).Append(" = ").Append(branch)
                     .Append(".Branches.Span[").Append(branchIndex).AppendLine("];");
+                code.Append(indent).Append("    if (").Append(branch).AppendLine(".ReaderUnionBranchIndex < 0)");
+                code.Append(indent).AppendLine("        throw new global::System.IO.InvalidDataException(\"Writer union branch has no generated POCO target.\");");
                 code.Append(indent).AppendLine("}");
                 node = branch;
             }

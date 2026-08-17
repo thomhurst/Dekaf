@@ -164,6 +164,10 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
         """
         {"type":"record","name":"PocoBenchmarkDecimalRecord","namespace":"Dekaf.Benchmarks.Benchmarks.Unit","fields":[{"name":"amount","type":{"type":"bytes","logicalType":"decimal","precision":9,"scale":2}}]}
         """;
+    private const string WriterUnionSchemaJson =
+        """
+        {"type":"record","name":"PocoWriterUnionBenchmarkRecord","namespace":"Dekaf.Benchmarks.Benchmarks.Unit","fields":[{"name":"value","type":["int","long"]}]}
+        """;
     internal const string SchemaJson =
         """
         {"type":"record","name":"PocoBenchmarkSpecificRecord","namespace":"Dekaf.Benchmarks.Benchmarks.Unit","fields":[{"name":"id","type":"int"},{"name":"name","type":"string"}]}
@@ -179,8 +183,11 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
     private AvroSchemaRegistryDeserializer<GenericRecord> _generic = null!;
     private AvroPocoSchemaRegistryDeserializer<PocoBenchmarkDecimalRecord, PocoBenchmarkDecimalRecord.AvroCodec>
         _decimalPoco = null!;
+    private AvroPocoSchemaRegistryDeserializer<PocoWriterUnionBenchmarkRecord, PocoWriterUnionBenchmarkRecord.AvroCodec>
+        _writerUnionPoco = null!;
     private byte[] _wireData = null!;
     private byte[] _decimalWireData = null!;
+    private byte[] _writerUnionWireData = null!;
 
     [GlobalSetup]
     public async Task Setup()
@@ -201,13 +208,21 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
                 SchemaType = global::Dekaf.SchemaRegistry.SchemaType.Avro,
                 SchemaString = DecimalSchemaJson
             }));
+        _writerUnionPoco = PocoWriterUnionBenchmarkRecord.CreateAvroDeserializer(
+            new BenchmarkSchemaRegistryClient(new global::Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = global::Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = WriterUnionSchemaJson
+            }));
         _wireData = CreateWireData();
         _decimalWireData = [0, 0, 0, 0, SchemaId, 0x04, 0x30, 0x39];
+        _writerUnionWireData = [0, 0, 0, 0, SchemaId, 0x00, 0x54];
 
         await _poco.WarmupAsync(SchemaId).ConfigureAwait(false);
         await _specific.WarmupAsync(SchemaId).ConfigureAwait(false);
         await _generic.WarmupAsync(SchemaId).ConfigureAwait(false);
         await _decimalPoco.WarmupAsync(SchemaId).ConfigureAwait(false);
+        await _writerUnionPoco.WarmupAsync(SchemaId).ConfigureAwait(false);
     }
 
     [GlobalCleanup]
@@ -217,6 +232,7 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
         await _specific.DisposeAsync().ConfigureAwait(false);
         await _generic.DisposeAsync().ConfigureAwait(false);
         await _decimalPoco.DisposeAsync().ConfigureAwait(false);
+        await _writerUnionPoco.DisposeAsync().ConfigureAwait(false);
     }
 
     [Benchmark(Baseline = true, Description = "Deserialize generated POCO")]
@@ -231,6 +247,10 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
     [Benchmark(Description = "Deserialize generated decimal POCO")]
     public PocoBenchmarkDecimalRecord DeserializeDecimalPoco() =>
         _decimalPoco.Deserialize(_decimalWireData, _context);
+
+    [Benchmark(Description = "Deserialize generated POCO writer union")]
+    public PocoWriterUnionBenchmarkRecord DeserializeWriterUnionPoco() =>
+        _writerUnionPoco.Deserialize(_writerUnionWireData, _context);
 
     private static byte[] CreateWireData()
     {
@@ -382,6 +402,13 @@ public sealed partial class PocoBenchmarkDecimalRecord
 {
     [AvroField(Name = "amount", Precision = 9, Scale = 2)]
     public decimal Amount { get; init; }
+}
+
+[AvroRecord(Name = "PocoWriterUnionBenchmarkRecord", Namespace = "Dekaf.Benchmarks.Benchmarks.Unit")]
+public readonly partial record struct PocoWriterUnionBenchmarkRecord
+{
+    [AvroField(Name = "value")]
+    public long Value { get; init; }
 }
 
 public sealed class PocoBenchmarkSpecificRecord : ISpecificRecord
