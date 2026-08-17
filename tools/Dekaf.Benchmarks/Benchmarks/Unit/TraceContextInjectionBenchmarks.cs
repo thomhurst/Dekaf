@@ -14,9 +14,13 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 public class TraceContextInjectionBenchmarks
 {
     private readonly Headers _headers = new(1);
+    private readonly Headers _tracestateHeaders = new(2);
+    private readonly Header _leadingHeader = new("leading", "removed"u8.ToArray());
     private readonly Header _serializerHeader = new("serializer", "appended"u8.ToArray());
     private readonly byte[] _destination = new byte[80];
+    private readonly byte[] _tracestateDestination = new byte[128];
     private Activity _activity = null!;
+    private Activity _tracestateActivity = null!;
 
     [GlobalSetup]
     public void Setup()
@@ -24,10 +28,18 @@ public class TraceContextInjectionBenchmarks
         _activity = new Activity("trace-context-injection")
             .SetIdFormat(ActivityIdFormat.W3C)
             .Start();
+        _tracestateActivity = new Activity("tracestate-context-injection")
+            .SetIdFormat(ActivityIdFormat.W3C)
+            .Start();
+        _tracestateActivity.TraceStateString = "vendor=value";
     }
 
     [GlobalCleanup]
-    public void Cleanup() => _activity.Dispose();
+    public void Cleanup()
+    {
+        _activity.Dispose();
+        _tracestateActivity.Dispose();
+    }
 
     [Benchmark]
     public int Inject()
@@ -63,5 +75,29 @@ public class TraceContextInjectionBenchmarks
         _headers.Add(_serializerHeader);
         _headers.RemoveDeferredTraceContext();
         return _headers.Count;
+    }
+
+    [Benchmark]
+    public int InjectRemoveLeadingAndRemove()
+    {
+        _headers.Clear();
+        _headers.Add(_leadingHeader);
+        Diagnostics.TraceContextPropagator.InjectTraceContext(_headers, _activity);
+        _headers.Remove("leading");
+        _headers.RemoveDeferredTraceContext();
+        return _headers.Count;
+    }
+
+    [Benchmark]
+    public int InjectTracestateAndEncode()
+    {
+        _tracestateHeaders.Clear();
+        Diagnostics.TraceContextPropagator.InjectTraceContext(
+            _tracestateHeaders,
+            _tracestateActivity);
+        var offset = 0;
+        _tracestateHeaders[0].Encode(_tracestateDestination, ref offset);
+        _tracestateHeaders[1].Encode(_tracestateDestination, ref offset);
+        return offset;
     }
 }

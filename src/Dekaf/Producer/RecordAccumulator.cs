@@ -3025,8 +3025,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (headers is null)
             return;
 
-        // Trace injection appends traceparent followed only by optional tracestate. Clear the
-        // deferred Activity from that known slot without scanning or clearing the rented array.
+        // Headers keeps deferred tracing headers at the tail so cleanup remains O(1) without
+        // clearing every live element in the rented array.
         var lastHeaderIndex = headerCount - 1;
         if ((uint)lastHeaderIndex < (uint)headers.Length)
         {

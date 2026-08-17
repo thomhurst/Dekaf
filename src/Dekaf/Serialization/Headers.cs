@@ -15,7 +15,7 @@ public sealed class Headers : IEnumerable<Header>
 {
     private readonly List<Header> _headers;
     private int _deferredTraceparentIndex = -1;
-    private bool _hasDeferredTracestate;
+    private int _deferredTracestateIndex = -1;
 
     /// <summary>
     /// Creates an empty headers collection.
@@ -78,7 +78,7 @@ public sealed class Headers : IEnumerable<Header>
     /// </summary>
     public Headers Add(string key, string value)
     {
-        _headers.Add(new Header(key, Encoding.UTF8.GetBytes(value)));
+        AddHeader(new Header(key, Encoding.UTF8.GetBytes(value)));
         return this;
     }
 
@@ -87,7 +87,7 @@ public sealed class Headers : IEnumerable<Header>
     /// </summary>
     public Headers Add(string key, byte[]? value)
     {
-        _headers.Add(new Header(key, value));
+        AddHeader(new Header(key, value));
         return this;
     }
 
@@ -96,7 +96,7 @@ public sealed class Headers : IEnumerable<Header>
     /// </summary>
     public Headers Add(Header header)
     {
-        _headers.Add(header);
+        AddHeader(header);
         return this;
     }
 
@@ -147,7 +147,7 @@ public sealed class Headers : IEnumerable<Header>
         for (var i = _headers.Count - 1; i >= 0; i--)
         {
             if (_headers[i].Key == key)
-                _headers.RemoveAt(i);
+                RemoveAt(i);
         }
         return this;
     }
@@ -158,41 +158,70 @@ public sealed class Headers : IEnumerable<Header>
     public void Clear()
     {
         _headers.Clear();
+        _deferredTraceparentIndex = -1;
+        _deferredTracestateIndex = -1;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void AddDeferredTraceContext(Activity activity, string? traceState)
     {
+        if (_deferredTraceparentIndex >= 0 || _deferredTracestateIndex >= 0)
+            RemoveDeferredTraceContext();
+
         _deferredTraceparentIndex = _headers.Count;
         _headers.Add(Header.CreateDeferredTraceparent("traceparent", activity));
         if (string.IsNullOrEmpty(traceState))
             return;
 
-        _hasDeferredTracestate = true;
-        Add("tracestate", traceState!);
+        _deferredTracestateIndex = _headers.Count;
+        _headers.Add(Header.CreateDeferredTracestate("tracestate", traceState!));
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void RemoveDeferredTraceContext()
     {
         var traceparentIndex = _deferredTraceparentIndex;
-        if (traceparentIndex < 0)
+        var tracestateIndex = _deferredTracestateIndex;
+        if (traceparentIndex < 0 && tracestateIndex < 0)
             return;
 
         _deferredTraceparentIndex = -1;
-        var hasTracestate = _hasDeferredTracestate;
-        if (hasTracestate)
-            _hasDeferredTracestate = false;
+        _deferredTracestateIndex = -1;
 
-        if (hasTracestate
-            && traceparentIndex + 1 < _headers.Count
-            && _headers[traceparentIndex + 1].Key == "tracestate")
-            _headers.RemoveAt(traceparentIndex + 1);
+        if ((uint)tracestateIndex < (uint)_headers.Count)
+            _headers.RemoveAt(tracestateIndex);
 
-        if (traceparentIndex < _headers.Count
+        if ((uint)traceparentIndex < (uint)_headers.Count
             && _headers[traceparentIndex].HasDeferredTraceparent)
             _headers.RemoveAt(traceparentIndex);
     }
+
+    private void RemoveAt(int index)
+    {
+        _headers.RemoveAt(index);
+        _deferredTraceparentIndex = AdjustTrackedIndex(_deferredTraceparentIndex, index);
+        _deferredTracestateIndex = AdjustTrackedIndex(_deferredTracestateIndex, index);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void AddHeader(Header header)
+    {
+        var traceparentIndex = _deferredTraceparentIndex;
+        if (traceparentIndex < 0)
+        {
+            _headers.Add(header);
+            return;
+        }
+
+        _headers.Insert(traceparentIndex, header);
+        _deferredTraceparentIndex = traceparentIndex + 1;
+        if (_deferredTracestateIndex >= 0)
+            _deferredTracestateIndex++;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int AdjustTrackedIndex(int trackedIndex, int removedIndex) =>
+        trackedIndex == removedIndex ? -1 : trackedIndex > removedIndex ? trackedIndex - 1 : trackedIndex;
 
     /// <summary>
     /// Adds multiple headers from a collection of key-value pairs.
@@ -279,7 +308,7 @@ public readonly record struct Header
     private const int MaxCachedKeyBytes = 256;
     private static readonly Utf8StringInternCache s_keyCache = new(MaxCachedKeys, MaxCachedKeyBytes);
     private readonly ReadOnlyMemory<byte> _value;
-    private readonly Activity? _deferredTraceparentActivity;
+    private readonly object? _deferredValue;
 
     /// <summary>
     /// Creates a new header with a byte array value.
@@ -288,7 +317,7 @@ public readonly record struct Header
     {
         Key = key;
         _value = value.AsMemory();
-        _deferredTraceparentActivity = null;
+        _deferredValue = null;
         IsValueNull = value is null;
     }
 
@@ -299,22 +328,25 @@ public readonly record struct Header
     {
         Key = key;
         _value = value;
-        _deferredTraceparentActivity = null;
+        _deferredValue = null;
         IsValueNull = isNull;
     }
 
-    private Header(string key, Activity traceparentActivity)
+    private Header(string key, object deferredValue)
     {
         Key = key;
         _value = default;
-        _deferredTraceparentActivity = traceparentActivity;
+        _deferredValue = deferredValue;
         IsValueNull = false;
     }
 
     internal static Header CreateDeferredTraceparent(string key, Activity activity) =>
         new(key, activity);
 
-    internal bool HasDeferredTraceparent => _deferredTraceparentActivity is not null;
+    internal static Header CreateDeferredTracestate(string key, string traceState) =>
+        new(key, traceState);
+
+    internal bool HasDeferredTraceparent => _deferredValue is Activity;
 
     /// <summary>
     /// The header key.
@@ -330,15 +362,13 @@ public readonly record struct Header
         [CompilerGenerated]
         get
         {
-            if (_deferredTraceparentActivity is null)
-                return _value;
-
-            var value = GC.AllocateUninitializedArray<byte>(
-                Diagnostics.TraceContextPropagator.TraceparentLength);
-            Diagnostics.TraceContextPropagator.WriteTraceparentUnchecked(
-                _deferredTraceparentActivity,
-                value);
-            return value;
+            return _deferredValue switch
+            {
+                null => _value,
+                Activity activity => EncodeTraceparent(activity),
+                string traceState => Encoding.UTF8.GetBytes(traceState),
+                _ => throw new UnreachableException()
+            };
         }
         [CompilerGenerated]
         init => _value = value;
@@ -357,15 +387,13 @@ public readonly record struct Header
         if (IsValueNull)
             return null;
 
-        if (_deferredTraceparentActivity is null)
-            return _value.ToArray();
-
-        var value = GC.AllocateUninitializedArray<byte>(
-            Diagnostics.TraceContextPropagator.TraceparentLength);
-        Diagnostics.TraceContextPropagator.WriteTraceparentUnchecked(
-            _deferredTraceparentActivity,
-            value);
-        return value;
+        return _deferredValue switch
+        {
+            null => _value.ToArray(),
+            Activity activity => EncodeTraceparent(activity),
+            string traceState => Encoding.UTF8.GetBytes(traceState),
+            _ => throw new UnreachableException()
+        };
     }
 
     /// <summary>
@@ -376,11 +404,13 @@ public readonly record struct Header
         if (IsValueNull)
             return null;
 
-        if (_deferredTraceparentActivity is null)
+        if (_deferredValue is string traceState)
+            return traceState;
+        if (_deferredValue is null)
             return Encoding.UTF8.GetString(_value.Span);
 
         Span<byte> value = stackalloc byte[Diagnostics.TraceContextPropagator.TraceparentLength];
-        Diagnostics.TraceContextPropagator.WriteTraceparentUnchecked(_deferredTraceparentActivity, value);
+        Diagnostics.TraceContextPropagator.WriteTraceparentUnchecked((Activity)_deferredValue, value);
         return Encoding.UTF8.GetString(value);
     }
 
@@ -401,21 +431,30 @@ public readonly record struct Header
         }
         else
         {
-            if (_deferredTraceparentActivity is null)
+            switch (_deferredValue)
             {
-                writer.WriteVarInt(_value.Length);
-                writer.WriteRawBytes(_value.Span);
-            }
-            else
-            {
-                writer.WriteVarInt(Diagnostics.TraceContextPropagator.TraceparentLength);
-                var destination = writer.BufferWriter.GetSpan(
-                    Diagnostics.TraceContextPropagator.TraceparentLength);
-                Diagnostics.TraceContextPropagator.WriteTraceparentUnchecked(
-                    _deferredTraceparentActivity,
-                    destination);
-                writer.BufferWriter.Advance(Diagnostics.TraceContextPropagator.TraceparentLength);
-                writer.AddBytesWritten(Diagnostics.TraceContextPropagator.TraceparentLength);
+                case null:
+                    writer.WriteVarInt(_value.Length);
+                    writer.WriteRawBytes(_value.Span);
+                    break;
+                case Activity activity:
+                    writer.WriteVarInt(Diagnostics.TraceContextPropagator.TraceparentLength);
+                    var traceparentDestination = writer.BufferWriter.GetSpan(
+                        Diagnostics.TraceContextPropagator.TraceparentLength);
+                    Diagnostics.TraceContextPropagator.WriteTraceparentUnchecked(
+                        activity,
+                        traceparentDestination);
+                    writer.BufferWriter.Advance(Diagnostics.TraceContextPropagator.TraceparentLength);
+                    writer.AddBytesWritten(Diagnostics.TraceContextPropagator.TraceparentLength);
+                    break;
+                case string traceState:
+                    var traceStateLength = Encoding.UTF8.GetByteCount(traceState);
+                    writer.WriteVarInt(traceStateLength);
+                    var traceStateDestination = writer.BufferWriter.GetSpan(traceStateLength);
+                    Encoding.UTF8.GetBytes(traceState, traceStateDestination);
+                    writer.BufferWriter.Advance(traceStateLength);
+                    writer.AddBytesWritten(traceStateLength);
+                    break;
             }
         }
     }
@@ -496,19 +535,27 @@ public readonly record struct Header
         }
         else
         {
-            var valueLength = _deferredTraceparentActivity is null
-                ? _value.Length
-                : Diagnostics.TraceContextPropagator.TraceparentLength;
+            var valueLength = _deferredValue switch
+            {
+                null => _value.Length,
+                Activity => Diagnostics.TraceContextPropagator.TraceparentLength,
+                string traceState => Encoding.UTF8.GetByteCount(traceState),
+                _ => throw new UnreachableException()
+            };
             Record.WriteVarInt(destination, ref offset, valueLength);
-            if (_deferredTraceparentActivity is null)
+            switch (_deferredValue)
             {
-                _value.Span.CopyTo(destination[offset..]);
-            }
-            else
-            {
-                Diagnostics.TraceContextPropagator.WriteTraceparentUnchecked(
-                    _deferredTraceparentActivity,
-                    destination.Slice(offset, valueLength));
+                case null:
+                    _value.Span.CopyTo(destination[offset..]);
+                    break;
+                case Activity activity:
+                    Diagnostics.TraceContextPropagator.WriteTraceparentUnchecked(
+                        activity,
+                        destination.Slice(offset, valueLength));
+                    break;
+                case string traceState:
+                    Encoding.UTF8.GetBytes(traceState, destination[offset..]);
+                    break;
             }
             offset += valueLength;
         }
@@ -527,12 +574,24 @@ public readonly record struct Header
         }
         else
         {
-            var valueLength = _deferredTraceparentActivity is null
-                ? _value.Length
-                : Diagnostics.TraceContextPropagator.TraceparentLength;
+            var valueLength = _deferredValue switch
+            {
+                null => _value.Length,
+                Activity => Diagnostics.TraceContextPropagator.TraceparentLength,
+                string traceState => Encoding.UTF8.GetByteCount(traceState),
+                _ => throw new UnreachableException()
+            };
             size += Record.VarIntSize(valueLength) + valueLength;
         }
 
         return size;
+    }
+
+    private static byte[] EncodeTraceparent(Activity activity)
+    {
+        var value = GC.AllocateUninitializedArray<byte>(
+            Diagnostics.TraceContextPropagator.TraceparentLength);
+        Diagnostics.TraceContextPropagator.WriteTraceparentUnchecked(activity, value);
+        return value;
     }
 }

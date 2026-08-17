@@ -5217,7 +5217,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     /// Assumes headers is non-null and non-empty; callers must guard before invoking.
     /// </remarks>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void RentAndFillHeaders(Headers headers, out Header[] pooledArray, out int headerCount)
+    internal static void RentAndFillHeaders(Headers headers, out Header[] pooledArray, out int headerCount)
     {
         var count = headers.Count;
         headerCount = count;
