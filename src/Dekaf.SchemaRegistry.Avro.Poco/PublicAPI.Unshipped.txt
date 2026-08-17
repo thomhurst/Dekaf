@@ -29,6 +29,7 @@ Dekaf.SchemaRegistry.Avro.Poco.AvroPocoField.Name.get -> string!
 Dekaf.SchemaRegistry.Avro.Poco.AvroPocoField.Type.get -> Dekaf.SchemaRegistry.Avro.Poco.AvroPocoType!
 Dekaf.SchemaRegistry.Avro.Poco.AvroPocoReaderPlan
 Dekaf.SchemaRegistry.Avro.Poco.AvroPocoReaderPlan.GetOperation(int writerFieldIndex) -> Dekaf.SchemaRegistry.Avro.Poco.AvroPocoReadOperation
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoReaderPlan.RequiresWriterUnionDispatch.get -> bool
 Dekaf.SchemaRegistry.Avro.Poco.AvroPocoReaderPlan.WriterFieldCount.get -> int
 Dekaf.SchemaRegistry.Avro.Poco.AvroPocoReadNode
 Dekaf.SchemaRegistry.Avro.Poco.AvroPocoReadNode.Branches.get -> System.ReadOnlyMemory<Dekaf.SchemaRegistry.Avro.Poco.AvroPocoReadNode!>

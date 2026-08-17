@@ -218,6 +218,29 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    public async Task GeneratedCodec_GrowingPayloadRetryDoesNotAllocate()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        await using var serializer = PocoGrowingPayload.CreateAvroSerializer(registry);
+        var context = new SerializationContext
+        {
+            Topic = "poco-growing-allocation",
+            Component = SerializationComponent.Value
+        };
+        var destination = new ExactSizeBufferWriter(4096);
+
+        serializer.Serialize(new PocoGrowingPayload { Value = "small" }, ref destination, context);
+        destination.Clear();
+        var value = new PocoGrowingPayload { Value = new string('x', 1024) };
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        serializer.Serialize(value, ref destination, context);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        await Assert.That(allocated).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task GeneratedCodec_ResolvesAliasesDefaultsPromotionsAndSkippedFields()
     {
         const string writerSchemaJson =
@@ -294,6 +317,52 @@ public sealed class AvroPocoSchemaRegistryTests
         await Assert.That(actual.Items).IsEquivalentTo([1, 2, 3]);
         await Assert.That(actual.Names).IsEquivalentTo(["a", "b"]);
         await Assert.That(actual.Values).IsEquivalentTo(new Dictionary<string, long> { ["x"] = 1, ["y"] = 2 });
+    }
+
+    [Test]
+    public async Task GeneratedCodec_ResolvesWriterUnionsForNonUnionFieldsAndCollections()
+    {
+        const string writerSchemaJson =
+            """
+            {"type":"record","name":"PocoWriterUnions","namespace":"Dekaf.Tests","fields":[{"name":"scalar","type":["int","long"]},{"name":"items","type":{"type":"array","items":["int","long"]}},{"name":"values","type":{"type":"map","values":["int","long"]}}]}
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        await using var writer = new AvroSchemaRegistrySerializer<GenericRecord>(registry);
+        await using var reader = PocoWriterUnions.CreateAvroDeserializer(registry);
+        var writerSchema = (RecordSchema)Schema.Parse(writerSchemaJson);
+        var generic = new GenericRecord(writerSchema);
+        generic.Add("scalar", 42);
+        generic.Add("items", new object[] { 1, 2L });
+        generic.Add("values", new Dictionary<string, object> { ["int"] = 3, ["long"] = 4L });
+        var context = new SerializationContext
+        {
+            Topic = "poco-writer-unions",
+            Component = SerializationComponent.Value
+        };
+        var destination = new ArrayBufferWriter<byte>();
+
+        writer.Serialize(generic, ref destination, context);
+        var actual = reader.Deserialize(destination.WrittenMemory, context);
+
+        await Assert.That(actual.Scalar).IsEqualTo(42D);
+        await Assert.That(actual.Items).IsEquivalentTo([1D, 2D]);
+        await Assert.That(actual.Values).IsEquivalentTo(
+            new Dictionary<string, double> { ["int"] = 3D, ["long"] = 4D });
+    }
+
+    private sealed class ExactSizeBufferWriter(int capacity) : IBufferWriter<byte>
+    {
+        private readonly byte[] _buffer = GC.AllocateUninitializedArray<byte>(capacity);
+
+        public int WrittenCount { get; private set; }
+
+        public void Advance(int count) => WrittenCount = count;
+
+        public Memory<byte> GetMemory(int sizeHint = 0) => _buffer.AsMemory(0, sizeHint);
+
+        public Span<byte> GetSpan(int sizeHint = 0) => _buffer.AsSpan(0, sizeHint);
+
+        internal void Clear() => WrittenCount = 0;
     }
 }
 
@@ -418,4 +487,23 @@ internal sealed partial class PocoEmptyCollections
 
     [AvroField(Name = "tail", Order = 3)]
     public int Tail { get; init; }
+}
+
+[AvroRecord(Name = "PocoWriterUnions", Namespace = "Dekaf.Tests")]
+internal sealed partial class PocoWriterUnions
+{
+    [AvroField(Name = "scalar", Order = 0)]
+    public double Scalar { get; init; }
+
+    [AvroField(Name = "items", Order = 1)]
+    public required double[] Items { get; init; }
+
+    [AvroField(Name = "values", Order = 2)]
+    public required Dictionary<string, double> Values { get; init; }
+}
+
+[AvroRecord(Name = "PocoGrowingPayload", Namespace = "Dekaf.Tests")]
+internal sealed partial class PocoGrowingPayload
+{
+    public required string Value { get; init; }
 }

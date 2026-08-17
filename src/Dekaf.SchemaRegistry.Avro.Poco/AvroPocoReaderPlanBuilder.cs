@@ -86,19 +86,26 @@ internal static class AvroPocoReaderPlanBuilder
 
         if (writer is UnionSchema union)
         {
-            var readerBranches = reader.Kind == AvroPocoTypeKind.Union
+            var readerIsUnion = reader.Kind == AvroPocoTypeKind.Union;
+            var readerBranches = readerIsUnion
                 ? reader.Branches.Span
                 : new ReadOnlySpan<AvroPocoType>([reader]);
             var branches = new AvroPocoReadNode[union.Count];
+            var requiresWriterUnionDispatch = !readerIsUnion;
             for (var index = 0; index < union.Count; index++)
             {
                 var writerBranch = union[index];
                 var readerBranchIndex = FindCompatibleReaderIndex(writerBranch, readerBranches);
                 branches[index] = BuildNode(writerBranch, readerBranches[readerBranchIndex]);
                 branches[index].ReaderUnionBranchIndex = readerBranchIndex;
+                requiresWriterUnionDispatch |= branches[index].RequiresWriterUnionDispatch;
             }
 
-            return new AvroPocoReadNode(AvroPocoTypeKind.Union) { Branches = branches };
+            return new AvroPocoReadNode(AvroPocoTypeKind.Union)
+            {
+                Branches = branches,
+                RequiresWriterUnionDispatch = requiresWriterUnionDispatch
+            };
         }
 
         if (reader.Kind == AvroPocoTypeKind.Union)
@@ -113,11 +120,7 @@ internal static class AvroPocoReaderPlanBuilder
         {
             RecordSchema record when reader.Kind == AvroPocoTypeKind.Record &&
                                      string.Equals(record.Fullname, reader.FullName, StringComparison.Ordinal) =>
-                new AvroPocoReadNode(AvroPocoTypeKind.Record)
-                {
-                    RecordPlan = BuildRecord(record, reader.Fields.Span),
-                    Fields = BuildSkipFields(record)
-                },
+                BuildRecordNode(record, reader),
             EnumSchema @enum when reader.Kind == AvroPocoTypeKind.Enum &&
                                   string.Equals(@enum.Fullname, reader.FullName, StringComparison.Ordinal) =>
                 new AvroPocoReadNode(AvroPocoTypeKind.Enum)
@@ -125,18 +128,36 @@ internal static class AvroPocoReaderPlanBuilder
                     EnumMap = BuildEnumMap(@enum, reader.Symbols.Span)
                 },
             ArraySchema array when reader.Kind == AvroPocoTypeKind.Array =>
-                new AvroPocoReadNode(AvroPocoTypeKind.Array)
-                {
-                    Item = BuildNode(array.ItemSchema, reader.Item!)
-                },
+                BuildCollectionNode(AvroPocoTypeKind.Array, array.ItemSchema, reader.Item!),
             MapSchema map when reader.Kind == AvroPocoTypeKind.Map =>
-                new AvroPocoReadNode(AvroPocoTypeKind.Map)
-                {
-                    Item = BuildNode(map.ValueSchema, reader.Item!)
-                },
+                BuildCollectionNode(AvroPocoTypeKind.Map, map.ValueSchema, reader.Item!),
             _ when IsPrimitiveCompatible(writer.Tag, reader.Kind) =>
                 new AvroPocoReadNode(ToKind(writer.Tag)),
             _ => throw Incompatible(writer, reader)
+        };
+    }
+
+    private static AvroPocoReadNode BuildRecordNode(RecordSchema writer, AvroPocoType reader)
+    {
+        var plan = BuildRecord(writer, reader.Fields.Span);
+        return new AvroPocoReadNode(AvroPocoTypeKind.Record)
+        {
+            RecordPlan = plan,
+            Fields = BuildSkipFields(writer),
+            RequiresWriterUnionDispatch = plan.RequiresWriterUnionDispatch
+        };
+    }
+
+    private static AvroPocoReadNode BuildCollectionNode(
+        AvroPocoTypeKind kind,
+        AvroSchema writerItem,
+        AvroPocoType readerItem)
+    {
+        var item = BuildNode(writerItem, readerItem);
+        return new AvroPocoReadNode(kind)
+        {
+            Item = item,
+            RequiresWriterUnionDispatch = item.RequiresWriterUnionDispatch
         };
     }
 

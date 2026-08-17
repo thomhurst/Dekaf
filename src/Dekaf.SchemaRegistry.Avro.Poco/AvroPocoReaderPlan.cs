@@ -3,12 +3,27 @@ namespace Dekaf.SchemaRegistry.Avro.Poco;
 /// <summary>Cached mapping from one writer schema to a generated POCO reader schema.</summary>
 public sealed class AvroPocoReaderPlan
 {
-    internal AvroPocoReaderPlan(AvroPocoReadOperation[] operations) => Operations = operations;
+    internal AvroPocoReaderPlan(AvroPocoReadOperation[] operations)
+    {
+        Operations = operations;
+        for (var index = 0; index < operations.Length; index++)
+        {
+            if (operations[index].ReaderFieldIndex >= 0 &&
+                operations[index].WriterType.RequiresWriterUnionDispatch)
+            {
+                RequiresWriterUnionDispatch = true;
+                break;
+            }
+        }
+    }
 
     internal AvroPocoReadOperation[] Operations { get; }
 
     /// <summary>Number of fields encoded by the writer schema.</summary>
     public int WriterFieldCount => Operations.Length;
+
+    /// <summary>Whether this evolution plan contains writer unions requiring runtime branch dispatch.</summary>
+    public bool RequiresWriterUnionDispatch { get; }
 
     /// <summary>Gets the cached operation for a writer field.</summary>
     public AvroPocoReadOperation GetOperation(int writerFieldIndex) => Operations[writerFieldIndex];
@@ -55,4 +70,6 @@ public sealed class AvroPocoReadNode
 
     /// <summary>Generated reader-union branch selected for this writer node.</summary>
     public int ReaderUnionBranchIndex { get; internal set; } = -1;
+
+    internal bool RequiresWriterUnionDispatch { get; init; }
 }

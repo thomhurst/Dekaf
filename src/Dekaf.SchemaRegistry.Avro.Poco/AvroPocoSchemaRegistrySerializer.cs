@@ -146,22 +146,21 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         {
             var memory = destination.GetMemory(WireHeaderSize + payloadSize);
             var writer = new AvroValueWriter(memory.Span.Slice(WireHeaderSize));
-            try
+            TCodec.Write(ref writer, value);
+            if (!writer.IsComplete)
             {
-                TCodec.Write(ref writer, value);
-                var span = memory.Span;
-                span[0] = MagicByte;
-                BinaryPrimitives.WriteInt32BigEndian(span.Slice(1, 4), schemaId);
-                destination.Advance(WireHeaderSize + writer.WrittenCount);
-                t_payloadSizeHint = writer.WrittenCount > MaxRetainedPayloadSize
-                    ? InitialPayloadSize
-                    : Math.Max(payloadSize, writer.WrittenCount);
-                return;
+                payloadSize = Grow(payloadSize);
+                continue;
             }
-            catch (AvroPocoBufferOverflowException exception)
-            {
-                payloadSize = Grow(payloadSize, exception.RequiredCapacity);
-            }
+
+            var span = memory.Span;
+            span[0] = MagicByte;
+            BinaryPrimitives.WriteInt32BigEndian(span.Slice(1, 4), schemaId);
+            destination.Advance(WireHeaderSize + writer.WrittenCount);
+            t_payloadSizeHint = writer.WrittenCount > MaxRetainedPayloadSize
+                ? InitialPayloadSize
+                : Math.Max(payloadSize, writer.WrittenCount);
+            return;
         }
     }
 
@@ -180,19 +179,17 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         while (true)
         {
             var writer = new AvroValueWriter(buffer);
-            try
+            TCodec.Write(ref writer, value);
+            if (writer.IsComplete)
             {
-                TCodec.Write(ref writer, value);
                 length = writer.WrittenCount;
                 break;
             }
-            catch (AvroPocoBufferOverflowException exception)
-            {
-                var nextLength = Grow(buffer.Length, exception.RequiredCapacity);
-                buffer = GC.AllocateUninitializedArray<byte>(nextLength);
-                if (nextLength <= MaxRetainedPayloadSize)
-                    t_ruleBuffer = buffer;
-            }
+
+            var nextLength = Grow(buffer.Length);
+            buffer = GC.AllocateUninitializedArray<byte>(nextLength);
+            if (nextLength <= MaxRetainedPayloadSize)
+                t_ruleBuffer = buffer;
         }
 
         var payload = new ReadOnlyMemory<byte>(buffer, 0, length);
@@ -313,12 +310,12 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
             isKey,
             _config.UseLegacySubjectNames);
 
-    private static int Grow(int current, int required)
+    private static int Grow(int current)
     {
         var maximum = Array.MaxLength - WireHeaderSize;
-        if (required > maximum)
+        if (current >= maximum)
             throw new NotSupportedException($"Avro payloads larger than {maximum} bytes are not supported.");
-        return (int)Math.Min(Math.Max((long)current * 2, required), maximum);
+        return (int)Math.Min((long)current * 2, maximum);
     }
 
     /// <inheritdoc />
