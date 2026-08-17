@@ -55,7 +55,26 @@ internal sealed class ControllerMetadataManager : IDisposable
     private async ValueTask RefreshAsync(bool force, CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
-        await _refreshLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var initializationStartedAt = Stopwatch.GetTimestamp();
+        using var initializationCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        if (_options.InitTimeoutMs <= 0)
+            initializationCts.Cancel();
+        else
+            initializationCts.CancelAfter(_options.InitTimeoutMs);
+        var initializationToken = initializationCts.Token;
+        try
+        {
+            await _refreshLock.WaitAsync(initializationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException ex) when (initializationCts.IsCancellationRequested)
+        {
+            throw CreateInitializationTimeout(initializationStartedAt, ex);
+        }
+
         try
         {
             var snapshot = Snapshot;
@@ -63,16 +82,9 @@ internal sealed class ControllerMetadataManager : IDisposable
                 return;
 
             var endpoints = BuildRefreshEndpoints(snapshot, _bootstrapEndpoints);
-            var electionStartedAt = Stopwatch.GetTimestamp();
             var electionFailureCount = 0;
             var electionPending = false;
             Exception? lastException = null;
-            using var initializationCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            if (_options.InitTimeoutMs <= 0)
-                initializationCts.Cancel();
-            else
-                initializationCts.CancelAfter(_options.InitTimeoutMs);
-            var initializationToken = initializationCts.Token;
             try
             {
                 while (true)
@@ -170,10 +182,10 @@ internal sealed class ControllerMetadataManager : IDisposable
                     if (electionFailureCount >= _options.MaxInitRetries)
                         ExceptionDispatchInfo.Capture(lastException!).Throw();
 
-                    var elapsed = Stopwatch.GetElapsedTime(electionStartedAt);
+                    var elapsed = Stopwatch.GetElapsedTime(initializationStartedAt);
                     var remainingMs = _options.InitTimeoutMs - elapsed.TotalMilliseconds;
                     if (remainingMs <= 0)
-                        throw CreateInitializationTimeout(electionStartedAt, lastException!);
+                        throw CreateInitializationTimeout(initializationStartedAt, lastException!);
 
                     var backoffMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(
                         _options.RetryBackoffMs,
@@ -191,7 +203,7 @@ internal sealed class ControllerMetadataManager : IDisposable
             }
             catch (OperationCanceledException ex) when (initializationCts.IsCancellationRequested)
             {
-                throw CreateInitializationTimeout(electionStartedAt, lastException ?? ex);
+                throw CreateInitializationTimeout(initializationStartedAt, lastException ?? ex);
             }
         }
         finally

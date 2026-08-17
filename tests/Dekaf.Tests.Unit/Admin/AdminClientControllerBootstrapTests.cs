@@ -106,6 +106,38 @@ public sealed class AdminClientControllerBootstrapTests
     }
 
     [Test]
+    public async Task RefreshAsync_InitializationDeadlineIncludesRefreshLockWait()
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        await using var versionManager = new MetadataManager(pool, []);
+        using var manager = new ControllerMetadataManager(
+            pool,
+            versionManager,
+            ["seed:9093"],
+            new MetadataOptions { InitTimeoutMs = 0 });
+        var refreshLock = (SemaphoreSlim)typeof(ControllerMetadataManager)
+            .GetField("_refreshLock", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .GetValue(manager)!;
+        await refreshLock.WaitAsync();
+        var lockHeld = true;
+
+        try
+        {
+            var operation = manager.RefreshAsync(CancellationToken.None);
+
+            await Assert.That(operation.IsCompleted).IsTrue();
+            refreshLock.Release();
+            lockHeld = false;
+            await Assert.That(async () => await operation).Throws<KafkaTimeoutException>();
+        }
+        finally
+        {
+            if (lockHeld)
+                refreshLock.Release();
+        }
+    }
+
+    [Test]
     public async Task DescribeMetadataQuorumAsync_RoutesToAdvertisedActiveController()
     {
         await using var context = new ControllerAdminContext();
