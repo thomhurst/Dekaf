@@ -437,7 +437,9 @@ caller-owned. For complete client-construction control, implement
 `IAzureKeyVaultCryptographyClientFactory`.
 
 Use an absolute HTTPS key identifier with `/keys/<name>` or `/keys/<name>/<version>`, for example
-`https://payments.vault.azure.net/keys/orders-kek`. Each provider instance registers one KMS type;
+`https://payments.vault.azure.net/keys/orders-kek`. Azure public, US Government, and China Key Vault
+DNS authorities are accepted; other authorities are rejected before credential use. Each
+provider instance registers one KMS type;
 register the default instance for `azure-kv`, the `ConfluentType` instance for Confluent-compatible
 `azure-kms`, or both as shown above. Matching `azure-kv://` and `azure-kms://` prefixes on the key
 identifier are optional. The provider uses RSA-OAEP-256. Prefer a versioned key identifier so
@@ -447,7 +449,8 @@ material.
 
 For RBAC-enabled vaults, grant the identity the Key Vault Crypto User role. For vaults using legacy
 access policies, grant the `keys/encrypt` and `keys/decrypt` permissions. One provider instance is
-safe for concurrent use and caches one `CryptographyClient` per resolved key identifier.
+safe for concurrent use and caches one `CryptographyClient` per configured key identifier. Clients
+for key versions read from ciphertext use a bounded cache.
 Cancellation is forwarded to Azure; provider error messages do not include service response text
 or key material.
 

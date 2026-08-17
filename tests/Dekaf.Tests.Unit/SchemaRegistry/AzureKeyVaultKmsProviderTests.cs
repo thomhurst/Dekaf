@@ -213,6 +213,27 @@ public class AzureKeyVaultKmsProviderTests
     }
 
     [Test]
+    public async Task TransientEmbeddedVersionFailures_KeepClientCacheBounded()
+    {
+        var client = CreateClient(VersionedKeyUri);
+        client.DecryptAsync(Arg.Any<EncryptionAlgorithm>(), Arg.Any<byte[]>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromException<DecryptResult>(new RequestFailedException(503, "Unavailable")));
+        var factory = new RecordingFactory(_ => client);
+        var provider = new AzureKeyVaultKmsProvider(factory);
+
+        for (var index = 0; index < 1_024; index++)
+        {
+            var version = index.ToString("x32");
+            var ciphertext = Encoding.ASCII.GetBytes($"azure:v1:{version}:wrapped");
+            await Assert.That(async () => await provider.UnwrapKeyAsync(ciphertext, CreateKeyReference()))
+                .Throws<SchemaRegistryKmsException>();
+        }
+
+        await Assert.That(provider.EmbeddedVersionClientCount)
+            .IsLessThanOrEqualTo(AzureKeyVaultKmsProvider.EmbeddedVersionClientCapacity);
+    }
+
+    [Test]
     public async Task CancelledEmbeddedVersion_RetainsClient()
     {
         var client = CreateClient(VersionedKeyUri);
@@ -274,6 +295,8 @@ public class AzureKeyVaultKmsProviderTests
     [Test]
     [Arguments("https://payments.vault.azure.net/secrets/not-a-key")]
     [Arguments("http://payments.vault.azure.net/keys/kek")]
+    [Arguments("https://attacker.example/keys/kek")]
+    [Arguments("https://payments.vault.azure.net.attacker.example/keys/kek")]
     public async Task InvalidKeyUri_IsRejectedBeforeClientCreation(string keyUri)
     {
         var factory = new RecordingFactory(_ => CreateClient(KeyUri));
@@ -283,6 +306,26 @@ public class AzureKeyVaultKmsProviderTests
         await Assert.That(async () => await provider.WrapKeyAsync(new byte[] { 1 }, reference))
             .Throws<SchemaRegistryKmsException>();
         await Assert.That(factory.CreateCount).IsEqualTo(0);
+    }
+
+    [Test]
+    [Arguments("https://payments.vault.azure.net/keys/kek")]
+    [Arguments("https://payments.vault.azure.cn/keys/kek")]
+    [Arguments("https://payments.vault.usgovcloudapi.net/keys/kek")]
+    public async Task SupportedAzureVaultAuthority_IsAccepted(string keyUri)
+    {
+        var client = CreateClient(KeyUri);
+        client.EncryptAsync(Arg.Any<EncryptionAlgorithm>(), Arg.Any<byte[]>(), Arg.Any<CancellationToken>())
+            .Returns(CryptographyModelFactory.EncryptResult(
+                keyId: VersionedKeyUri,
+                ciphertext: [9],
+                algorithm: EncryptionAlgorithm.RsaOaep256));
+        var factory = new RecordingFactory(_ => client);
+        var provider = new AzureKeyVaultKmsProvider(factory);
+
+        _ = await provider.WrapKeyAsync(new byte[] { 1 }, CreateKeyReference(keyUri));
+
+        await Assert.That(factory.CreateCount).IsEqualTo(1);
     }
 
     private static CryptographyClient CreateClient(string keyUri)

@@ -51,12 +51,16 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
     public const string SaveVersionProperty = "encrypt.azure.key.version.save";
 
     private const int AzureKeyVersionLength = 32;
+    internal const int EmbeddedVersionClientCapacity = 64;
     private const byte HeaderSeparator = (byte)':';
 
     private static ReadOnlySpan<byte> VersionHeaderPrefix => "azure:v1:"u8;
 
     private readonly IAzureKeyVaultCryptographyClientFactory _clientFactory;
     private readonly ConcurrentDictionary<Uri, Lazy<CryptographyClient>> _clients = [];
+    private readonly ConcurrentDictionary<Uri, Lazy<CryptographyClient>> _embeddedVersionClients = [];
+    private readonly VersionClientEntry?[] _embeddedVersionClientSlots =
+        new VersionClientEntry[EmbeddedVersionClientCapacity];
 
     /// <summary>
     /// Creates a provider using <see cref="DefaultAzureCredential" />.
@@ -167,7 +171,9 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
         }
 
         var ciphertext = GetInputArray(wrappedMaterial, out var temporaryCiphertext);
-        var client = GetClientEntry(key.KeyId);
+        var client = hasEmbeddedVersion
+            ? GetEmbeddedVersionClientEntry(key.KeyId, version)
+            : GetClientEntry(key.KeyId);
         var evictClient = false;
         try
         {
@@ -190,7 +196,7 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
         {
             ClearTemporaryBuffer(temporaryCiphertext);
             if (hasEmbeddedVersion && evictClient)
-                _clients.TryRemove(KeyValuePair.Create(key.KeyId, client));
+                RemoveEmbeddedVersionClient(key.KeyId, version, client);
         }
     }
 
@@ -204,6 +210,66 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
             () => factory.CreateClient(uri),
             LazyThreadSafetyMode.ExecutionAndPublication),
         _clientFactory);
+
+    private Lazy<CryptographyClient> GetEmbeddedVersionClientEntry(Uri keyId, string version)
+    {
+        var client = _embeddedVersionClients.GetOrAdd(
+            keyId,
+            static (uri, factory) => new Lazy<CryptographyClient>(
+                () => factory.CreateClient(uri),
+                LazyThreadSafetyMode.ExecutionAndPublication),
+            _clientFactory);
+        TrackEmbeddedVersionClient(keyId, version, client);
+        return client;
+    }
+
+    private void TrackEmbeddedVersionClient(
+        Uri keyId,
+        string version,
+        Lazy<CryptographyClient> client)
+    {
+        var slot = GetEmbeddedVersionClientSlot(version);
+        VersionClientEntry? candidate = null;
+        while (true)
+        {
+            var current = Volatile.Read(ref _embeddedVersionClientSlots[slot]);
+            if (current is not null && ReferenceEquals(current.Client, client))
+                return;
+
+            candidate ??= new VersionClientEntry(keyId, client);
+            var published = Interlocked.CompareExchange(
+                ref _embeddedVersionClientSlots[slot],
+                candidate,
+                current);
+            if (ReferenceEquals(published, current))
+            {
+                if (current is not null)
+                {
+                    _embeddedVersionClients.TryRemove(
+                        KeyValuePair.Create(current.KeyId, current.Client));
+                }
+
+                return;
+            }
+        }
+    }
+
+    private void RemoveEmbeddedVersionClient(
+        Uri keyId,
+        string version,
+        Lazy<CryptographyClient> client)
+    {
+        _embeddedVersionClients.TryRemove(KeyValuePair.Create(keyId, client));
+        var slot = GetEmbeddedVersionClientSlot(version);
+        var current = Volatile.Read(ref _embeddedVersionClientSlots[slot]);
+        if (current is not null && ReferenceEquals(current.Client, client))
+            Interlocked.CompareExchange(ref _embeddedVersionClientSlots[slot], null, current);
+    }
+
+    private static int GetEmbeddedVersionClientSlot(string version) =>
+        (int)((uint)StringComparer.Ordinal.GetHashCode(version) & (EmbeddedVersionClientCapacity - 1));
+
+    internal int EmbeddedVersionClientCount => _embeddedVersionClients.Count;
 
     private KeyReference ResolveKey(SchemaRegistryKmsKeyReference keyReference)
     {
@@ -228,7 +294,8 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
 
     private static KeyReference ParseKeyUri(string? value, string description)
     {
-        if (!Uri.TryCreate(value, UriKind.Absolute, out var keyId)
+        if (!HasTrustedVaultAuthority(value)
+            || !Uri.TryCreate(value, UriKind.Absolute, out var keyId)
             || !string.Equals(keyId.Scheme, Uri.UriSchemeHttps, StringComparison.Ordinal)
             || keyId.UserInfo.Length != 0
             || keyId.Query.Length != 0
@@ -247,6 +314,49 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
         var vaultUri = new Uri(keyId.GetLeftPart(UriPartial.Authority), UriKind.Absolute);
         var versionlessKeyId = new Uri(vaultUri, $"keys/{segments[1]}");
         return new KeyReference(keyId, versionlessKeyId, segments.Length == 3 ? segments[2] : null);
+    }
+
+    private static bool HasTrustedVaultAuthority(string? value)
+    {
+        const string httpsPrefix = "https://";
+        if (value is null || !value.StartsWith(httpsPrefix, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var remainder = value.AsSpan(httpsPrefix.Length);
+        var pathStart = remainder.IndexOf('/');
+        if (pathStart <= 0)
+            return false;
+
+        return IsTrustedVaultHost(remainder[..pathStart]);
+    }
+
+    private static bool IsTrustedVaultHost(ReadOnlySpan<char> host) =>
+        HasVaultSuffix(host, ".vault.azure.net")
+        || HasVaultSuffix(host, ".vault.azure.cn")
+        || HasVaultSuffix(host, ".vault.usgovcloudapi.net");
+
+    private static bool HasVaultSuffix(ReadOnlySpan<char> host, ReadOnlySpan<char> suffix)
+    {
+        if (host.Length <= suffix.Length
+            || !host.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var vaultName = host[..^suffix.Length];
+        for (var index = 0; index < vaultName.Length; index++)
+        {
+            var value = vaultName[index];
+            if (value is not (>= 'a' and <= 'z')
+                and not (>= 'A' and <= 'Z')
+                and not (>= '0' and <= '9')
+                and not '-')
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static byte[] GetInputArray(ReadOnlyMemory<byte> source, out byte[]? temporaryBuffer)
@@ -376,6 +486,8 @@ public sealed class AzureKeyVaultKmsProvider : ISchemaRegistryKmsProvider
             VersionlessKeyId,
             version);
     }
+
+    private sealed record VersionClientEntry(Uri KeyId, Lazy<CryptographyClient> Client);
 
     private sealed class TokenCredentialClientFactory(
         TokenCredential credential,
