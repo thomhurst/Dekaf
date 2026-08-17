@@ -58,8 +58,8 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
         var executor = new SchemaRegistryRuleExecutor([new JsonataSchemaRegistryRuleHandler()]);
         await using var deserializer = new JsonSchemaRegistryDeserializer<System.Text.Json.JsonElement>(
             registryClient,
-            jsonOptions: null,
-            config: new SchemaRegistryDeserializerConfig { UseLatestVersion = true },
+            SchemaRegistryRuleJsonContext.Default.JsonElement,
+            new SchemaRegistryDeserializerConfig { UseLatestVersion = true },
             ruleExecutor: executor);
         var payload = """{"first":"Ada","last":"Lovelace"}"""u8;
         var wire = new byte[5 + payload.Length];
@@ -409,4 +409,5 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
 }
 
 [JsonSerializable(typeof(string))]
+[JsonSerializable(typeof(System.Text.Json.JsonElement))]
 internal sealed partial class SchemaRegistryRuleJsonContext : JsonSerializerContext;
