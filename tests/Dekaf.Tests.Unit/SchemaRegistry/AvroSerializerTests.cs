@@ -471,6 +471,41 @@ public sealed class AvroSerializerTests
     }
 
     [Test]
+    public async Task Serializer_GenericRecord_CustomLogicalUnionNonGenericValueTypeList_IsRejected()
+    {
+        Avro.Util.LogicalTypeFactory.Instance.Register(new IntBytesLogicalType());
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry);
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(
+            $$"""
+            {
+                "type": "record",
+                "name": "CustomLogicalUnionNonGenericValueTypeListRecord",
+                "fields": [{
+                    "name": "values",
+                    "type": {
+                        "type": "array",
+                        "items": [
+                            { "type": "bytes", "logicalType": "{{IntBytesLogicalType.LogicalName}}" },
+                            "string"
+                        ]
+                    }
+                }]
+            }
+            """);
+        var record = new GenericRecord(schema);
+        record.Add("values", new NonGenericIntValues());
+
+        await Assert.That(Serialize).Throws<Avro.AvroTypeException>();
+
+        void Serialize()
+        {
+            var buffer = new ArrayBufferWriter<byte>();
+            serializer.Serialize(record, ref buffer, CreateContext());
+        }
+    }
+
+    [Test]
     [Arguments(0, false)]
     [Arguments(0, true)]
     [Arguments(1, false)]
