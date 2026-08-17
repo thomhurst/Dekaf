@@ -71,7 +71,7 @@ For zero-allocation `GenericRecord` serialization, Avro map values must use
 because their enumeration can allocate per message. Value-type arrays and lists are specialized
 for Avro primitives and built-in logical types; unsupported value-type element representations
 fail instead of silently boxing each element. Custom logical branches in unions must declare one
-sealed CLR type and have at most one value-dependent candidate for that type. Assignable or
+sealed CLR type and exactly one effective value-dependent candidate for that type. Assignable or
 multi-candidate custom logical dispatch is rejected during writer construction because it would
 require a per-message candidate scan.
 
@@ -477,6 +477,11 @@ still gives repeated and alternating overflow schemas a lock-free reference fast
 records share one stateless writer; generic records retain a writer per logical schema. Cache entries
 never retain individual `GenericRecord` values.
 
+Weak exact-identity tracking is also bounded. If more than two live, logically equivalent overflow
+schema objects rotate through one cache entry before eviction, replaying an intermediate object after
+both logical-cache and hot-set eviction can require one cold writer and schema-resolution rebuild.
+Avoiding that rare rebuild would require per-identity association allocations.
+
 ## Subject Naming Strategies
 
 ```csharp
@@ -496,7 +501,7 @@ These formats match Confluent serializers. Avro `GenericRecord` subjects use the
 record's runtime schema, JSON Schema subjects use the schema `title` when present, and Protobuf
 subjects use the message descriptor's full name.
 
-Avro generated `ISpecificRecord` types serialize without per-message allocations when their record
+Avro-generated `ISpecificRecord` types serialize without per-message allocations when their record
 fields are scalar `null`, `boolean`, `int`, `long`, `float`, `double`, `string`, or `bytes` fields
 exposed by matching public properties. Unsupported SpecificRecord shapes fail when the serializer is
 created instead of silently falling back to Apache Avro's allocating `Get(int): object` path. Use
