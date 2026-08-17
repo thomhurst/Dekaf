@@ -46,37 +46,52 @@ public sealed class SchemaRegistryTombstoneDeserializerTests
     }
 
     [Test]
-    public async Task Avro_NonNullEmptyPayload_StillFailsFramingValidation()
+    [Arguments(0)]
+    [Arguments(1)]
+    [Arguments(2)]
+    [Arguments(3)]
+    [Arguments(4)]
+    public async Task Avro_NonNullTruncatedPayload_StillFailsFramingValidation(int payloadLength)
     {
         using var registry = new MockSchemaRegistryClient();
         await using var deserializer = new AvroSchemaRegistryDeserializer<GenericRecord>(registry);
 
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            Task.FromResult(deserializer.Deserialize(ReadOnlyMemory<byte>.Empty, CreateContext())));
+            Task.FromResult(deserializer.Deserialize(new byte[payloadLength], CreateContext())));
 
         await Assert.That(exception!.Message).Contains("too short");
     }
 
     [Test]
-    public async Task Protobuf_NonNullEmptyPayload_StillFailsFramingValidation()
+    [Arguments(0)]
+    [Arguments(1)]
+    [Arguments(2)]
+    [Arguments(3)]
+    [Arguments(4)]
+    public async Task Protobuf_NonNullTruncatedPayload_StillFailsFramingValidation(int payloadLength)
     {
         using var registry = new MockSchemaRegistryClient();
         await using var deserializer = new ProtobufSchemaRegistryDeserializer<TestMessage>(registry);
 
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            Task.FromResult(deserializer.Deserialize(ReadOnlyMemory<byte>.Empty, CreateContext())));
+            Task.FromResult(deserializer.Deserialize(new byte[payloadLength], CreateContext())));
 
         await Assert.That(exception!.Message).Contains("too short");
     }
 
     [Test]
-    public async Task JsonSchema_NonNullEmptyPayload_StillFailsFramingValidation()
+    [Arguments(0)]
+    [Arguments(1)]
+    [Arguments(2)]
+    [Arguments(3)]
+    [Arguments(4)]
+    public async Task JsonSchema_NonNullTruncatedPayload_StillFailsFramingValidation(int payloadLength)
     {
         using var registry = new MockSchemaRegistryClient();
         await using var deserializer = new JsonSchemaRegistryDeserializer<string>(registry);
 
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            Task.FromResult(deserializer.Deserialize(ReadOnlyMemory<byte>.Empty, CreateContext())));
+            Task.FromResult(deserializer.Deserialize(new byte[payloadLength], CreateContext())));
 
         await Assert.That(exception!.Message).Contains("too short");
     }
