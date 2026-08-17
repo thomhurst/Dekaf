@@ -98,8 +98,11 @@ public class ControllerMetadataRefreshBenchmarks
             short apiVersion,
             CancellationToken cancellationToken = default)
             where TRequest : IKafkaRequest<TResponse>
-            where TResponse : IKafkaResponse =>
-            ValueTask.FromResult((TResponse)(IKafkaResponse)Response);
+            where TResponse : IKafkaResponse
+        {
+            IKafkaResponse response = Response;
+            return ValueTask.FromResult((TResponse)response);
+        }
 
         public ValueTask SendFireAndForgetAsync<TRequest, TResponse>(
             TRequest request,
