@@ -2303,7 +2303,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             InvalidatePartitionCache();
             await foreach (var result in ConsumeAsync(cancellationToken).ConfigureAwait(false))
             {
-                ThrowIfSnapshotStateChanged(snapshot);
+                // ConsumeAsync validates snapshot state and advances the delivered position
+                // atomically. Its yield is the delivery linearization point; revalidating here
+                // could reject a record whose position has already advanced.
                 var partition = new TopicPartition(result.Topic, result.Partition);
                 if (!snapshot.TryGetEndOffset(partition, out var endOffset))
                 {
