@@ -635,7 +635,7 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             {
                 var nested = BuildRecord(recordSymbol);
                 if (nested is not null)
-                    model = TypeModel.CreateRecord(display, nested);
+                    model = TypeModel.CreateRecord(display, nested, recordSymbol.IsValueType);
             }
 
             if (model is null)
@@ -1140,8 +1140,11 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                             .AppendLine(".UtcTicks - global::System.DateTimeOffset.UnixEpoch.UtcTicks) / 10L);");
                     else
                     {
+                        code.Append(indent).Append("if (").Append(value)
+                            .AppendLine(".Kind != global::System.DateTimeKind.Utc)");
+                        code.Append(indent).AppendLine("    throw new global::System.InvalidOperationException(\"Avro timestamp-micros requires a UTC DateTime.\");");
                         code.Append(indent).Append("writer.WriteInt64((").Append(value)
-                            .AppendLine(".ToUniversalTime().Ticks - global::System.DateTime.UnixEpoch.Ticks) / 10L);");
+                            .AppendLine(".Ticks - global::System.DateTime.UnixEpoch.Ticks) / 10L);");
                     }
                     break;
                 case TypeKindModel.Uuid:
@@ -1933,7 +1936,9 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
         internal ImmutableArray<string> Symbols { get; private set; }
         internal int Precision { get; private set; }
         internal int Scale { get; private set; }
-        internal bool IsValueType => Kind is not (TypeKindModel.String or TypeKindModel.Bytes or TypeKindModel.Record or TypeKindModel.Array or TypeKindModel.List or TypeKindModel.Map or TypeKindModel.Union);
+        internal bool IsValueType => IsValueTypeOverride ??
+            Kind is not (TypeKindModel.String or TypeKindModel.Bytes or TypeKindModel.Record or TypeKindModel.Array or TypeKindModel.List or TypeKindModel.Map or TypeKindModel.Union);
+        private bool? IsValueTypeOverride { get; set; }
         internal string? LogicalTypeName => Kind switch
         {
             TypeKindModel.Date => "date",
@@ -1958,8 +1963,13 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
         internal static TypeModel Union(string symbolType, ImmutableArray<TypeModel> branches) =>
             new(TypeKindModel.Union, symbolType) { Branches = branches };
 
-        internal static TypeModel CreateRecord(string symbolType, RecordModel record) =>
-            new(TypeKindModel.Record, symbolType) { Record = record, FullName = record.FullName };
+        internal static TypeModel CreateRecord(string symbolType, RecordModel record, bool isValueType) =>
+            new(TypeKindModel.Record, symbolType)
+            {
+                Record = record,
+                FullName = record.FullName,
+                IsValueTypeOverride = isValueType
+            };
 
         internal static TypeModel Enum(string symbolType, string fullName, ImmutableArray<string> symbols) =>
             new(TypeKindModel.Enum, symbolType) { FullName = fullName, Symbols = symbols };

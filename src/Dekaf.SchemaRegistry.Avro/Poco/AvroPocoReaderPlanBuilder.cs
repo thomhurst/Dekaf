@@ -258,13 +258,16 @@ internal static class AvroPocoReaderPlanBuilder
             AvroSchema.Type.Null => reader == AvroPocoTypeKind.Null,
             AvroSchema.Type.Boolean => reader == AvroPocoTypeKind.Boolean,
             AvroSchema.Type.Int => reader is AvroPocoTypeKind.Int or AvroPocoTypeKind.Long or
-                AvroPocoTypeKind.Float or AvroPocoTypeKind.Double,
+                AvroPocoTypeKind.Float or AvroPocoTypeKind.Double or AvroPocoTypeKind.Date or
+                AvroPocoTypeKind.TimeMilliseconds,
             AvroSchema.Type.Long => reader is AvroPocoTypeKind.Long or AvroPocoTypeKind.Float or
-                AvroPocoTypeKind.Double,
+                AvroPocoTypeKind.Double or AvroPocoTypeKind.TimeMicroseconds or
+                AvroPocoTypeKind.TimestampMilliseconds or AvroPocoTypeKind.TimestampMicroseconds,
             AvroSchema.Type.Float => reader is AvroPocoTypeKind.Float or AvroPocoTypeKind.Double,
             AvroSchema.Type.Double => reader == AvroPocoTypeKind.Double,
             AvroSchema.Type.Bytes => reader is AvroPocoTypeKind.Bytes or AvroPocoTypeKind.String,
-            AvroSchema.Type.String => reader is AvroPocoTypeKind.String or AvroPocoTypeKind.Bytes,
+            AvroSchema.Type.String => reader is AvroPocoTypeKind.String or AvroPocoTypeKind.Bytes or
+                AvroPocoTypeKind.Uuid,
             _ => false
         };
 

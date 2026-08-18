@@ -142,17 +142,16 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec> : IDeserialize
         if (_plans.TryGetValue(schemaId, out var cached))
             return cached;
 
-        var entry = GetOrAddInFlightPlan(schemaId);
-        if (_plans.TryGetValue(schemaId, out cached))
+        if (_schemaRegistry is ISchemaRegistryCache cache &&
+            cache.TryGetCachedSchema(schemaId, out var schema))
         {
-            RemoveInFlightPlan(schemaId, entry);
-            return cached;
+            var plan = BuildPlan(schemaId, schema);
+            CacheSuccessfulPlan(schemaId, plan);
+            return _plans.TryGetValue(schemaId, out cached) ? cached : plan;
         }
 
-        var task = entry.Plan.Value;
-        return task.IsCompletedSuccessfully
-            ? task.Result
-            : task.WaitAsync(RegistryTimeout).ConfigureAwait(false).GetAwaiter().GetResult();
+        throw new InvalidOperationException(
+            $"Schema {schemaId} is not cached. Call WarmupAsync before synchronous deserialization.");
     }
 
     private async Task<AvroPocoReaderPlan> GetPlanAsync(int schemaId, CancellationToken cancellationToken)
@@ -189,9 +188,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec> : IDeserialize
                     RegistryTimeout,
                     $"Schema Registry lookup for schema {schemaId} timed out.")
                 .ConfigureAwait(false);
-            if (schema.SchemaType != SchemaType.Avro)
-                throw new InvalidOperationException($"Schema {schemaId} is {schema.SchemaType}, not Avro.");
-            var plan = AvroPocoReaderPlanBuilder.Build<T, TCodec>(schema.SchemaString);
+            var plan = BuildPlan(schemaId, schema);
             CacheSuccessfulPlan(schemaId, plan);
             return plan;
         }
@@ -199,6 +196,13 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec> : IDeserialize
         {
             RemoveInFlightPlan(schemaId, entry);
         }
+    }
+
+    private static AvroPocoReaderPlan BuildPlan(int schemaId, Schema schema)
+    {
+        if (schema.SchemaType != SchemaType.Avro)
+            throw new InvalidOperationException($"Schema {schemaId} is {schema.SchemaType}, not Avro.");
+        return AvroPocoReaderPlanBuilder.Build<T, TCodec>(schema.SchemaString);
     }
 
     private void RemoveInFlightPlan(int schemaId, PlanEntry entry) =>

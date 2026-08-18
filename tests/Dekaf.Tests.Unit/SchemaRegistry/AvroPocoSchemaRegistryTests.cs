@@ -7,6 +7,7 @@ using Avro.Generic;
 using Dekaf.SchemaRegistry.Avro;
 using Dekaf.SchemaRegistry.Avro.Poco;
 using Dekaf.Serialization;
+using NSubstitute;
 using ISchemaRegistryRuleExecutor = Dekaf.SchemaRegistry.ISchemaRegistryRuleExecutor;
 using ISchemaRegistryRuleHandler = Dekaf.SchemaRegistry.ISchemaRegistryRuleHandler;
 using SchemaRegistryRuleContext = Dekaf.SchemaRegistry.SchemaRegistryRuleContext;
@@ -147,11 +148,12 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
-    public async Task GeneratedCodec_ConvertsUnspecifiedDateTimeUsingLocalTimeZone()
+    [Arguments(DateTimeKind.Unspecified)]
+    [Arguments(DateTimeKind.Local)]
+    public async Task GeneratedCodec_RejectsNonUtcDateTime(DateTimeKind kind)
     {
         using var registry = new MockSchemaRegistryClient();
         await using var serializer = PocoTemporal.CreateAvroSerializer(registry);
-        await using var deserializer = PocoTemporal.CreateAvroDeserializer(registry);
         var context = new SerializationContext
         {
             Topic = "poco-temporal",
@@ -160,14 +162,13 @@ public sealed class AvroPocoSchemaRegistryTests
         var destination = new ArrayBufferWriter<byte>();
         var value = new PocoTemporal
         {
-            Timestamp = new DateTime(2026, 8, 17, 12, 0, 0, DateTimeKind.Unspecified),
+            Timestamp = new DateTime(2026, 8, 17, 12, 0, 0, kind),
             Time = TimeSpan.Zero
         };
 
-        serializer.Serialize(value, ref destination, context);
-        var actual = deserializer.Deserialize(destination.WrittenMemory, context);
-
-        await Assert.That(actual.Timestamp).IsEqualTo(value.Timestamp.ToUniversalTime());
+        await Assert.That(() => serializer.Serialize(value, ref destination, context))
+            .Throws<InvalidOperationException>()
+            .WithMessageContaining("timestamp-micros requires a UTC DateTime");
     }
 
     [Test]
@@ -506,6 +507,29 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    public async Task GeneratedCodec_RoundTripsNullableStructRecord()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        await using var serializer = PocoNullableStructRecord.CreateAvroSerializer(registry);
+        await using var deserializer = PocoNullableStructRecord.CreateAvroDeserializer(registry);
+        var context = new SerializationContext
+        {
+            Topic = "poco-nullable-struct-record",
+            Component = SerializationComponent.Value
+        };
+        var destination = new ArrayBufferWriter<byte>();
+        var expected = new PocoNullableStructRecord
+        {
+            Value = new PocoReadonlyRecord { Id = 42 }
+        };
+
+        serializer.Serialize(expected, ref destination, context);
+        var actual = deserializer.Deserialize(destination.WrittenMemory, context);
+
+        await Assert.That(actual.Value).IsEqualTo(expected.Value);
+    }
+
+    [Test]
     public async Task GeneratedCodec_RulesPathLargePayloadAllocatesZeroAfterWarmup()
     {
         using var registry = new MockSchemaRegistryClient();
@@ -817,6 +841,24 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    public async Task GeneratedCodec_SynchronousCacheMissRequiresWarmup()
+    {
+        var registry = Substitute.For<Dekaf.SchemaRegistry.ISchemaRegistryClient>();
+        await using var reader = PocoWireRecord.CreateAvroDeserializer(registry);
+        ReadOnlyMemory<byte> payload = new byte[] { 0, 0, 0, 0, 42 };
+        var context = new SerializationContext
+        {
+            Topic = "poco-sync-cache-miss",
+            Component = SerializationComponent.Value
+        };
+
+        await Assert.That(() => reader.Deserialize(payload, context))
+            .Throws<InvalidOperationException>()
+            .WithMessageContaining("Call WarmupAsync");
+        _ = registry.DidNotReceiveWithAnyArgs().GetSchemaAsync(default);
+    }
+
+    [Test]
     public async Task GeneratedCodec_BoundsCompletedReaderPlans()
     {
         using var registry = new MockSchemaRegistryClient();
@@ -1121,6 +1163,37 @@ public sealed class AvroPocoSchemaRegistryTests
         var actual = reader.Deserialize(payload.AsMemory(0, 5 + writer.WrittenCount), context);
 
         await Assert.That(actual.Value).IsEqualTo(1234L);
+    }
+
+    [Test]
+    public async Task GeneratedCodec_ReadsPrimitiveFieldAsLogicalType()
+    {
+        const string writerSchemaJson =
+            """
+            {"type":"record","name":"PocoTimestampEvolution","namespace":"Dekaf.Tests","fields":[{"name":"Value","type":"long"}]}
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        var schemaId = await registry.RegisterSchemaAsync(
+            "poco-primitive-logical-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = writerSchemaJson
+            });
+        await using var reader = PocoTimestampEvolution.CreateAvroDeserializer(registry);
+        var payload = new byte[15];
+        BinaryPrimitives.WriteInt32BigEndian(payload.AsSpan(1, 4), schemaId);
+        var writer = new AvroValueWriter(payload.AsSpan(5));
+        writer.WriteInt64(1234);
+        var context = new SerializationContext
+        {
+            Topic = "poco-primitive-logical",
+            Component = SerializationComponent.Value
+        };
+
+        var actual = reader.Deserialize(payload.AsMemory(0, 5 + writer.WrittenCount), context);
+
+        await Assert.That(actual.Value).IsEqualTo(DateTime.UnixEpoch.AddTicks(12_340));
     }
 
     [Test]
@@ -1840,6 +1913,18 @@ internal sealed partial class PocoPublicContract
 internal readonly partial record struct PocoReadonlyRecord
 {
     public int Id { get; init; }
+}
+
+[AvroRecord(Name = "PocoNullableStructRecord", Namespace = "Dekaf.Tests")]
+internal sealed partial class PocoNullableStructRecord
+{
+    public PocoReadonlyRecord? Value { get; init; }
+}
+
+[AvroRecord(Name = "PocoTimestampEvolution", Namespace = "Dekaf.Tests")]
+internal sealed partial class PocoTimestampEvolution
+{
+    public DateTime Value { get; init; }
 }
 
 [AvroRecord(Name = "PocoFixedEvolution", Namespace = "Dekaf.Tests")]
