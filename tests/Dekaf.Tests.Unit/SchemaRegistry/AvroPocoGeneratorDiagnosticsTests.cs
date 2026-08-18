@@ -97,21 +97,37 @@ public sealed class AvroPocoGeneratorDiagnosticsTests
             StringSplitOptions.None).Length - 1;
 
         await Assert.That(runResult.Diagnostics).IsEmpty();
-        await Assert.That(overflowChecks).IsEqualTo(2);
+        await Assert.That(overflowChecks).IsEqualTo(3);
+    }
+
+    [Test]
+    public async Task Generator_OrdersImplicitMembersAcrossPartialDeclarations()
+    {
+        var runResult = RunGeneratorResult(
+            ("First.cs", "[AvroRecord] public partial class Value { public int Zeta { get; set; } }"),
+            ("Second.cs", "public partial class Value { public int Alpha { get; set; } }"));
+        var generated = runResult.Results.Single().GeneratedSources.Single().SourceText.ToString();
+
+        await Assert.That(runResult.Diagnostics).IsEmpty();
+        await Assert.That(generated.IndexOf("\\\"Zeta\\\"", StringComparison.Ordinal))
+            .IsLessThan(generated.IndexOf("\\\"Alpha\\\"", StringComparison.Ordinal));
     }
 
     private static ImmutableArray<Diagnostic> RunGenerator(string declaration)
         => RunGeneratorResult(declaration).Diagnostics;
 
     private static GeneratorDriverRunResult RunGeneratorResult(string declaration)
+        => RunGeneratorResult(("Test.cs", declaration));
+
+    private static GeneratorDriverRunResult RunGeneratorResult(params (string Path, string Declaration)[] declarations)
     {
-        var source = "using System; using Dekaf.SchemaRegistry.Avro.Poco; " + declaration;
-        var syntaxTree = CSharpSyntaxTree.ParseText(
-            source,
-            new CSharpParseOptions(LanguageVersion.Preview));
+        var syntaxTrees = declarations.Select(static declaration => CSharpSyntaxTree.ParseText(
+            "using System; using Dekaf.SchemaRegistry.Avro.Poco; " + declaration.Declaration,
+            new CSharpParseOptions(LanguageVersion.Preview),
+            declaration.Path));
         var compilation = CSharpCompilation.Create(
             "GeneratorDiagnostics",
-            [syntaxTree],
+            syntaxTrees,
             PlatformReferences,
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, nullableContextOptions: NullableContextOptions.Enable));
         GeneratorDriver driver = CSharpGeneratorDriver.Create(new AvroPocoGenerator());

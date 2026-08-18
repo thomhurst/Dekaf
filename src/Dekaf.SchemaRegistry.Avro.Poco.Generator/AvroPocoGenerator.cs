@@ -300,7 +300,7 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                 }
 
                 ITypeSymbol? memberType = null;
-                var sourceOrder = int.MaxValue;
+                var sourceOrder = long.MaxValue;
                 switch (member)
                 {
                     case IPropertySymbol property when !property.IsIndexer && !property.IsImplicitlyDeclared:
@@ -735,8 +735,24 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             return false;
         }
 
-        private static int GetSourceOrder(ISymbol symbol) =>
-            symbol.DeclaringSyntaxReferences.FirstOrDefault()?.Span.Start ?? int.MaxValue;
+        private static long GetSourceOrder(ISymbol symbol)
+        {
+            var syntax = symbol.DeclaringSyntaxReferences.FirstOrDefault();
+            if (syntax is null || symbol.ContainingType is null)
+                return long.MaxValue;
+
+            var declarations = symbol.ContainingType.DeclaringSyntaxReferences;
+            var treeOrder = declarations.Length;
+            for (var index = 0; index < declarations.Length; index++)
+            {
+                if (!ReferenceEquals(declarations[index].SyntaxTree, syntax.SyntaxTree))
+                    continue;
+                treeOrder = index;
+                break;
+            }
+
+            return ((long)(uint)treeOrder << 32) | (uint)syntax.Span.Start;
+        }
 
         private static bool IsAvroNamespace(string value)
         {
@@ -917,9 +933,24 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                 code.Append("            var ").Append(local).Append(" = value.")
                     .Append(EscapeIdentifier(member.ClrName)).AppendLine(";");
                 EmitWriteValue(code, member.Type, local, "            ");
+                if (index != _record.Members.Length - 1 && NeedsOverflowShortCircuit(member.Type))
+                {
+                    code.AppendLine("            if (writer.WrittenCount == int.MaxValue)");
+                    code.AppendLine("                return;");
+                }
             }
             code.AppendLine("        }");
             code.AppendLine();
+        }
+
+        private static bool NeedsOverflowShortCircuit(TypeModel type)
+        {
+            if (type.Kind is TypeKindModel.Nullable or TypeKindModel.Union)
+                return type.Branches.Any(NeedsOverflowShortCircuit);
+
+            return type.Kind is TypeKindModel.String or TypeKindModel.Bytes or TypeKindModel.Record or
+                TypeKindModel.Array or TypeKindModel.List or TypeKindModel.Map or TypeKindModel.Uuid or
+                TypeKindModel.Decimal;
         }
 
         private void EmitRead(StringBuilder code)
@@ -1508,7 +1539,18 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                 return maximum;
             }
 
-            if (type.Kind != TypeKindModel.Record || type.IsValueType)
+            if (type.Kind != TypeKindModel.Record)
+            {
+                return type.Kind switch
+                {
+                    TypeKindModel.Array => 24,
+                    TypeKindModel.List => 32,
+                    TypeKindModel.Map => 80,
+                    _ => 0
+                };
+            }
+
+            if (type.IsValueType)
                 return 0;
 
             const int ObjectHeaderSize = 16;
@@ -1520,8 +1562,13 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
 
         private static int GetMinimumFieldStorageSize(TypeModel type)
         {
-            if (type.Kind == TypeKindModel.Nullable)
-                return checked(8 + GetMinimumFieldStorageSize(type.WithoutNullable()));
+            if (type.Kind is TypeKindModel.Nullable or TypeKindModel.Union)
+            {
+                var maximum = 0;
+                foreach (var branch in type.Branches)
+                    maximum = Math.Max(maximum, GetMinimumFieldStorageSize(branch));
+                return maximum;
+            }
 
             if (type.Kind == TypeKindModel.Record && type.IsValueType)
             {
@@ -1530,6 +1577,12 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                     size = checked(size + GetMinimumFieldStorageSize(member.Type));
                 return Math.Max(8, size);
             }
+
+            if (type.Kind == TypeKindModel.Record)
+                return checked(8 + GetMinimumDecodedAllocationSize(type));
+
+            if (type.Kind is TypeKindModel.Array or TypeKindModel.List or TypeKindModel.Map)
+                return checked(8 + GetMinimumDecodedAllocationSize(type));
 
             return type.Kind is TypeKindModel.Decimal or TypeKindModel.Uuid
                 ? 16
@@ -1969,7 +2022,7 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             ImmutableArray<string> aliases,
             string? defaultJson,
             int order,
-            int sourceOrder,
+            long sourceOrder,
             string clrType,
             TypeModel type)
         {
@@ -1988,7 +2041,7 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
         internal ImmutableArray<string> Aliases { get; }
         internal string? DefaultJson { get; }
         internal int Order { get; }
-        internal int SourceOrder { get; }
+        internal long SourceOrder { get; }
         internal string ClrType { get; }
         internal TypeModel Type { get; }
     }

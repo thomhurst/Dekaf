@@ -529,6 +529,7 @@ public sealed class SchemaRegistryMigrationTests
 
         await Assert.That(runner.TryUsePreparedPlan(v1Id, "orders-value", v1)).IsTrue();
         await Assert.That(runner.TryUsePreparedPlan(v2Id, "orders-value", v2)).IsTrue();
+        await Assert.That(runner.TryUsePreparedPlan(v1Id, "orders-value", v1)).IsTrue();
     }
 
     [Test]

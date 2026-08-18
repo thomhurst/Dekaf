@@ -724,6 +724,51 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    public async Task GeneratedCodec_RejectsNestedZeroWidthReferenceRecordAllocationAmplification()
+    {
+        const string writerSchemaJson =
+            """
+            {"type":"record","name":"PocoNestedZeroWidthReferenceCollection","namespace":"Dekaf.Tests","fields":[{"name":"items","type":{"type":"array","items":{"type":"record","name":"PocoNestedZeroWidthReferenceItem","fields":[{"name":"child","type":{"type":"record","name":"PocoNestedZeroWidthReferenceChild","fields":[]}}]}}}]}
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        var schemaId = await registry.RegisterSchemaAsync(
+            "poco-nested-zero-width-reference-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = writerSchemaJson
+            });
+        await using var reader = PocoNestedZeroWidthReferenceCollection.CreateAvroDeserializer(registry);
+        var context = new SerializationContext
+        {
+            Topic = "poco-nested-zero-width-reference",
+            Component = SerializationComponent.Value
+        };
+        var payload = new byte[16];
+        BinaryPrimitives.WriteInt32BigEndian(payload.AsSpan(1, 4), schemaId);
+        var writer = new AvroValueWriter(payload.AsSpan(5));
+        writer.WriteBlockCount(140_000);
+        Array.Resize(ref payload, 5 + writer.WrittenCount);
+
+        await Assert.That(() => reader.Deserialize(payload, context))
+            .Throws<InvalidDataException>()
+            .WithMessageContaining("allocation exceeds");
+    }
+
+    [Test]
+    public async Task GeneratedCodec_StopsReadingLaterMembersAfterWriteOverflow()
+    {
+        var value = new PocoWriteOverflowRecord { First = new string('a', 1024) };
+        Span<byte> destination = stackalloc byte[8];
+        var writer = new AvroValueWriter(destination);
+
+        PocoWriteOverflowRecord.AvroCodec.Write(ref writer, value);
+
+        await Assert.That(writer.IsComplete).IsFalse();
+        await Assert.That(value.LaterMemberReadCount).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task GeneratedCodec_RejectsZeroWidthMapAllocationAmplification()
     {
         const string writerSchemaJson =
@@ -3221,6 +3266,72 @@ internal sealed partial class PocoLargeZeroWidthReferenceItem
 
     [AvroField(DefaultJson = "0", Order = 7)]
     public long Field7 { get; init; }
+}
+
+[AvroRecord(Name = "PocoNestedZeroWidthReferenceCollection", Namespace = "Dekaf.Tests")]
+internal sealed partial class PocoNestedZeroWidthReferenceCollection
+{
+    [AvroField(Name = "items")]
+    public required PocoNestedZeroWidthReferenceItem[] Items { get; init; }
+}
+
+[AvroRecord(Name = "PocoNestedZeroWidthReferenceItem", Namespace = "Dekaf.Tests")]
+internal sealed partial class PocoNestedZeroWidthReferenceItem
+{
+    [AvroField(Name = "child")]
+    public required PocoNestedZeroWidthReferenceChild Child { get; init; }
+}
+
+[AvroRecord(Name = "PocoNestedZeroWidthReferenceChild", Namespace = "Dekaf.Tests")]
+internal sealed partial class PocoNestedZeroWidthReferenceChild
+{
+    [AvroField(DefaultJson = "0", Order = 0)]
+    public long Field0 { get; init; }
+
+    [AvroField(DefaultJson = "0", Order = 1)]
+    public long Field1 { get; init; }
+
+    [AvroField(DefaultJson = "0", Order = 2)]
+    public long Field2 { get; init; }
+
+    [AvroField(DefaultJson = "0", Order = 3)]
+    public long Field3 { get; init; }
+
+    [AvroField(DefaultJson = "0", Order = 4)]
+    public long Field4 { get; init; }
+
+    [AvroField(DefaultJson = "0", Order = 5)]
+    public long Field5 { get; init; }
+
+    [AvroField(DefaultJson = "0", Order = 6)]
+    public long Field6 { get; init; }
+
+    [AvroField(DefaultJson = "0", Order = 7)]
+    public long Field7 { get; init; }
+}
+
+[AvroRecord(Name = "PocoWriteOverflowRecord", Namespace = "Dekaf.Tests")]
+internal sealed partial class PocoWriteOverflowRecord
+{
+    private int _laterMemberReadCount;
+    private int _later;
+
+    [AvroField(Order = 0)]
+    public required string First { get; init; }
+
+    [AvroField(Order = 1)]
+    public int Later
+    {
+        get
+        {
+            _laterMemberReadCount++;
+            return _later;
+        }
+        init => _later = value;
+    }
+
+    [AvroIgnore]
+    public int LaterMemberReadCount => _laterMemberReadCount;
 }
 
 [AvroRecord(Name = "PocoLargeZeroWidthMap", Namespace = "Dekaf.Tests")]

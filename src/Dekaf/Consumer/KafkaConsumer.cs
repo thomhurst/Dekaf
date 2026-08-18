@@ -5592,6 +5592,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
             EagerParsePendingOrRemove(pending);
 
+            // lgtm[cs/missed-using-statement] Activity can be acquired after loop entry and reassigned.
             System.Diagnostics.Activity? activity = preparedKey?.TakePreparationActivity();
             var pendingDisposed = false;
             var pendingRemoved = false;
