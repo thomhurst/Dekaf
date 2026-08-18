@@ -220,6 +220,28 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    [Arguments(-1L)]
+    [Arguments(86_400_000_000L)]
+    public async Task GeneratedCodec_RejectsOutOfRangeTimeMicrosPayload(long microseconds)
+    {
+        using var registry = new MockSchemaRegistryClient();
+        await using var serializer = PocoTemporal.CreateAvroSerializer(registry);
+        await using var deserializer = PocoTemporal.CreateAvroDeserializer(registry);
+        var context = new SerializationContext
+        {
+            Topic = "poco-temporal-read-range",
+            Component = SerializationComponent.Value
+        };
+        var destination = new ArrayBufferWriter<byte>();
+        serializer.Serialize(new PocoTemporal { Timestamp = DateTime.UnixEpoch }, ref destination, context);
+        var malformedPayload = CreateTemporalPayload(destination.WrittenSpan[..5], microseconds);
+
+        await Assert.That(() => deserializer.Deserialize(malformedPayload, context))
+            .Throws<InvalidDataException>()
+            .WithMessageContaining("time-micros");
+    }
+
+    [Test]
     public async Task GeneratedSchema_ExcludesNonPublicContractMembers()
     {
         await Assert.That(PocoPublicContract.AvroCodec.SchemaJson).IsEqualTo(
@@ -1210,6 +1232,18 @@ public sealed class AvroPocoSchemaRegistryTests
         await Assert.That(() => reader.Deserialize(destination.WrittenMemory, context))
             .Throws<InvalidDataException>()
             .WithMessageContaining("no generated POCO target");
+    }
+
+    private static byte[] CreateTemporalPayload(ReadOnlySpan<byte> wireHeader, long microseconds)
+    {
+        const int maximumEncodedLongBytes = 10;
+        var payload = new byte[wireHeader.Length + maximumEncodedLongBytes * 2];
+        wireHeader.CopyTo(payload);
+        var writer = new AvroValueWriter(payload.AsSpan(wireHeader.Length));
+        writer.WriteInt64(0);
+        writer.WriteInt64(microseconds);
+        Array.Resize(ref payload, wireHeader.Length + writer.WrittenCount);
+        return payload;
     }
 
     private sealed class PassThroughMigrationHandler : ISchemaRegistryRuleHandler

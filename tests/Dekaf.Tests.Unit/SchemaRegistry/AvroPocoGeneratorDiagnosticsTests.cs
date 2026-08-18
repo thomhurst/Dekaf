@@ -66,7 +66,25 @@ public sealed class AvroPocoGeneratorDiagnosticsTests
                 $"{string.Join(", ", diagnostics.Select(static diagnostic => diagnostic.Id))}");
     }
 
+    [Test]
+    public async Task Generator_UsesUniqueHintNamesForCollidingSanitizedTypeNames()
+    {
+        const string declaration =
+            "namespace A.B { [AvroRecord] public partial class C_D { public int Id { get; set; } } } " +
+            "namespace A.B_C { [AvroRecord] public partial class D { public int Id { get; set; } } }";
+
+        var runResult = RunGeneratorResult(declaration);
+        var generatedSources = runResult.Results.Single().GeneratedSources;
+
+        await Assert.That(runResult.Diagnostics).IsEmpty();
+        await Assert.That(generatedSources.Count).IsEqualTo(2);
+        await Assert.That(generatedSources.Select(static source => source.HintName).Distinct().Count()).IsEqualTo(2);
+    }
+
     private static ImmutableArray<Diagnostic> RunGenerator(string declaration)
+        => RunGeneratorResult(declaration).Diagnostics;
+
+    private static GeneratorDriverRunResult RunGeneratorResult(string declaration)
     {
         var source = "using System; using Dekaf.SchemaRegistry.Avro.Poco; " + declaration;
         var syntaxTree = CSharpSyntaxTree.ParseText(
@@ -80,6 +98,6 @@ public sealed class AvroPocoGeneratorDiagnosticsTests
         GeneratorDriver driver = CSharpGeneratorDriver.Create(new AvroPocoGenerator());
 
         driver = driver.RunGenerators(compilation);
-        return driver.GetRunResult().Diagnostics;
+        return driver.GetRunResult();
     }
 }

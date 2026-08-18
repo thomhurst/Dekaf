@@ -56,6 +56,16 @@ public ref struct AvroValueReader
         throw new InvalidDataException("Invalid Avro variable-length integer.");
     }
 
+    /// <summary>Reads and validates an Avro time-micros logical value as ticks since midnight.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public long ReadTimeMicrosecondsTicks()
+    {
+        var microseconds = ReadInt64();
+        if ((ulong)microseconds >= TimeSpan.TicksPerDay / 10)
+            throw new InvalidDataException("Avro time-micros value must be from zero through less than 24 hours.");
+        return microseconds * 10;
+    }
+
     /// <summary>Reads an Avro float.</summary>
     public float ReadSingle()
     {

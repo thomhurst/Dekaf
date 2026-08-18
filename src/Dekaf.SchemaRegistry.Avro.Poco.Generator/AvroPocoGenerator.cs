@@ -191,8 +191,32 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
 
         var emitter = new CodecEmitter(model);
         var source = emitter.Emit();
-        var hintName = Sanitize(symbol.ToDisplayString()) + ".AvroPoco.g.cs";
+        var hintName = CreateHintName(symbol);
         context.AddSource(hintName, SourceText.From(source, Encoding.UTF8));
+    }
+
+    private static string CreateHintName(INamedTypeSymbol symbol)
+    {
+        var identity = symbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+        return Sanitize(identity) + '_' + StableHash(identity).ToString("x16", CultureInfo.InvariantCulture) +
+            ".AvroPoco.g.cs";
+    }
+
+    private static ulong StableHash(string value)
+    {
+        const ulong offsetBasis = 14695981039346656037UL;
+        const ulong prime = 1099511628211UL;
+        var hash = offsetBasis;
+        unchecked
+        {
+            foreach (var character in value)
+            {
+                hash ^= character;
+                hash *= prime;
+            }
+        }
+
+        return hash;
     }
 
     private static string Sanitize(string value)
@@ -1256,8 +1280,8 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                     break;
                 case TypeKindModel.TimeMicroseconds:
                     Assign(code, target, type.SymbolType == "global::System.TimeOnly"
-                        ? "new global::System.TimeOnly(checked(reader.ReadInt64() * 10L))"
-                        : "global::System.TimeSpan.FromTicks(checked(reader.ReadInt64() * 10L))", indent);
+                        ? "new global::System.TimeOnly(reader.ReadTimeMicrosecondsTicks())"
+                        : "global::System.TimeSpan.FromTicks(reader.ReadTimeMicrosecondsTicks())", indent);
                     break;
                 case TypeKindModel.TimestampMicroseconds:
                     Assign(code, target, type.SymbolType == "global::System.DateTimeOffset"

@@ -173,6 +173,10 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
         """
         {"type":"record","name":"PocoCollectionBenchmarkRecord","namespace":"Dekaf.Benchmarks.Benchmarks.Unit","fields":[{"name":"Values","type":{"type":"array","items":"int"}}]}
         """;
+    private const string TimeSpanSchemaJson =
+        """
+        {"type":"record","name":"PocoTimeSpanBenchmarkRecord","namespace":"Dekaf.Benchmarks","fields":[{"name":"Value","type":{"type":"long","logicalType":"time-micros"}}]}
+        """;
     internal const string SchemaJson =
         """
         {"type":"record","name":"PocoBenchmarkSpecificRecord","namespace":"Dekaf.Benchmarks.Benchmarks.Unit","fields":[{"name":"id","type":"int"},{"name":"name","type":"string"}]}
@@ -194,10 +198,13 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
         _latestWriterUnionPoco = null!;
     private AvroPocoSchemaRegistryDeserializer<PocoCollectionBenchmarkRecord, PocoCollectionBenchmarkRecord.AvroCodec>
         _collectionPoco = null!;
+    private AvroPocoSchemaRegistryDeserializer<PocoTimeSpanBenchmarkRecord, PocoTimeSpanBenchmarkRecord.AvroCodec>
+        _timeSpanPoco = null!;
     private byte[] _wireData = null!;
     private byte[] _decimalWireData = null!;
     private byte[] _writerUnionWireData = null!;
     private byte[] _collectionWireData = null!;
+    private byte[] _timeSpanWireData = null!;
 
     [GlobalSetup]
     public async Task Setup()
@@ -237,10 +244,17 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
                 SchemaType = global::Dekaf.SchemaRegistry.SchemaType.Avro,
                 SchemaString = CollectionSchemaJson
             }));
+        _timeSpanPoco = PocoTimeSpanBenchmarkRecord.CreateAvroDeserializer(
+            new BenchmarkSchemaRegistryClient(new global::Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = global::Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = TimeSpanSchemaJson
+            }));
         _wireData = CreateWireData();
         _decimalWireData = [0, 0, 0, 0, SchemaId, 0x04, 0x30, 0x39];
         _writerUnionWireData = [0, 0, 0, 0, SchemaId, 0x00, 0x54];
         _collectionWireData = [0, 0, 0, 0, SchemaId, 0x06, 0x02, 0x04, 0x06, 0x00];
+        _timeSpanWireData = CreateTimeSpanWireData();
 
         await _poco.WarmupAsync(SchemaId).ConfigureAwait(false);
         await _specific.WarmupAsync(SchemaId).ConfigureAwait(false);
@@ -248,6 +262,7 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
         await _decimalPoco.WarmupAsync(SchemaId).ConfigureAwait(false);
         await _writerUnionPoco.WarmupAsync(SchemaId).ConfigureAwait(false);
         await _collectionPoco.WarmupAsync(SchemaId).ConfigureAwait(false);
+        await _timeSpanPoco.WarmupAsync(SchemaId).ConfigureAwait(false);
         _ = _latestWriterUnionPoco.Deserialize(_writerUnionWireData, _context);
     }
 
@@ -261,6 +276,7 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
         await _writerUnionPoco.DisposeAsync().ConfigureAwait(false);
         await _latestWriterUnionPoco.DisposeAsync().ConfigureAwait(false);
         await _collectionPoco.DisposeAsync().ConfigureAwait(false);
+        await _timeSpanPoco.DisposeAsync().ConfigureAwait(false);
     }
 
     [Benchmark(Baseline = true, Description = "Deserialize generated POCO")]
@@ -288,6 +304,10 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
     public PocoCollectionBenchmarkRecord DeserializeCollectionPoco() =>
         _collectionPoco.Deserialize(_collectionWireData, _context);
 
+    [Benchmark(Description = "Deserialize generated time-micros TimeSpan POCO")]
+    public PocoTimeSpanBenchmarkRecord DeserializeTimeSpanPoco() =>
+        _timeSpanPoco.Deserialize(_timeSpanWireData, _context);
+
     private static byte[] CreateWireData()
     {
         var schema = (Avro.RecordSchema)AvroSchema.Parse(SchemaJson);
@@ -304,6 +324,23 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
         wireData[0] = 0;
         BinaryPrimitives.WriteInt32BigEndian(wireData.AsSpan(1, 4), SchemaId);
         payload.GetBuffer().AsSpan(0, (int)payload.Length).CopyTo(wireData.AsSpan(5));
+        return wireData;
+    }
+
+    private static byte[] CreateTimeSpanWireData()
+    {
+        const long microseconds = 43_200_000_000L;
+        var encoded = (ulong)(microseconds << 1);
+        var wireData = new byte[15];
+        BinaryPrimitives.WriteInt32BigEndian(wireData.AsSpan(1, 4), SchemaId);
+        var position = 5;
+        while ((encoded & ~0x7FUL) != 0)
+        {
+            wireData[position++] = (byte)((encoded & 0x7F) | 0x80);
+            encoded >>= 7;
+        }
+        wireData[position++] = (byte)encoded;
+        Array.Resize(ref wireData, position);
         return wireData;
     }
 

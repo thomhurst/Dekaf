@@ -115,6 +115,7 @@ Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.ReadInt32() -> int
 Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.ReadInt64() -> long
 Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.ReadSingle() -> float
 Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.ReadString() -> string!
+Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.ReadTimeMicrosecondsTicks() -> long
 Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.ReadUuid() -> System.Guid
 Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.Skip(Dekaf.SchemaRegistry.Avro.Poco.AvroPocoReadNode! node) -> void
 Dekaf.SchemaRegistry.Avro.Poco.AvroValueWriter
