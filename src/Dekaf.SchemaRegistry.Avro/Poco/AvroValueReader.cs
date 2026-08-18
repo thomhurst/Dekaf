@@ -8,7 +8,7 @@ namespace Dekaf.SchemaRegistry.Avro.Poco;
 /// <summary>Allocation-safe Avro binary reader used by generated codecs.</summary>
 public ref struct AvroValueReader
 {
-    private const int MaxCollectionItemCount = 1_048_576;
+    internal const int MaxCollectionItemCount = 1_048_576;
     private const int MaxSkipDepth = 256;
     private readonly ReadOnlySpan<byte> _source;
     private int _position;
@@ -174,7 +174,7 @@ public ref struct AvroValueReader
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static void ThrowCollectionLimit() =>
+    internal static void ThrowCollectionLimit() =>
         throw new InvalidDataException(
             $"Avro collection exceeds the supported limit of {MaxCollectionItemCount} items.");
 

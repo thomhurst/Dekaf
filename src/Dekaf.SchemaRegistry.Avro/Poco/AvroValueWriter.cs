@@ -112,7 +112,12 @@ public ref struct AvroValueWriter
 
     /// <summary>Starts a single-block array or map.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public void WriteBlockCount(int count) => WriteInt64(count);
+    public void WriteBlockCount(int count)
+    {
+        if ((uint)count > AvroValueReader.MaxCollectionItemCount)
+            AvroValueReader.ThrowCollectionLimit();
+        WriteInt64(count);
+    }
 
     /// <summary>Ends an array or map.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

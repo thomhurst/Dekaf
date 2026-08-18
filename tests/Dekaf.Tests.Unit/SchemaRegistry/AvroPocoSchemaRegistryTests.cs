@@ -347,6 +347,29 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    public async Task GeneratedCodec_RejectsOversizedCollectionDuringSerialization()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        await using var serializer = PocoBlocks.CreateAvroSerializer(registry);
+        var context = new SerializationContext
+        {
+            Topic = "poco-oversized-collection-write",
+            Component = SerializationComponent.Value
+        };
+        var value = new PocoBlocks
+        {
+            Items = new int[1_048_577],
+            Names = [],
+            Values = []
+        };
+        var destination = new ArrayBufferWriter<byte>();
+
+        await Assert.That(() => serializer.Serialize(value, ref destination, context))
+            .Throws<InvalidDataException>()
+            .WithMessageContaining("supported limit");
+    }
+
+    [Test]
     public async Task GeneratedCodec_ReadsZeroWidthWriterRecordArrays()
     {
         const string writerSchemaJson =
