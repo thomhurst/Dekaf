@@ -333,7 +333,7 @@ public class MpscFetchBufferTests
                 timeoutEntered.TrySetResult();
                 releaseTimeout.Task.GetAwaiter().GetResult();
             },
-            afterConsumerTimeoutForTesting: timeoutExited.SetResult);
+            afterConsumerTimeoutForTesting: () => timeoutExited.TrySetResult());
         var item = CreateDummy();
         Thread? timeoutThread = null;
 
@@ -353,7 +353,10 @@ public class MpscFetchBufferTests
                 {
                     timeoutThreadFinished.TrySetException(exception);
                 }
-            }) { IsBackground = true };
+            })
+            {
+                IsBackground = true
+            };
             timeoutThread.Start();
 
             await timeoutEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
