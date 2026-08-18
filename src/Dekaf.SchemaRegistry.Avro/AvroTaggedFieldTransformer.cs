@@ -703,7 +703,7 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
                 tagSchema = tagLogical.BaseSchema;
             if (tagSchema is global::Avro.UnionSchema ownerUnion &&
                 schema is not global::Avro.UnionSchema)
-                tagSchema = FindUnionBranch(schema, ownerUnion);
+                tagSchema = FindMatchingTagSchema(schema, ownerUnion);
 
             var visit = new SchemaVisit(schema, tagSchema);
             if (plans.TryGetValue(visit, out var cached))
@@ -795,14 +795,13 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
                     ];
                     break;
                 case global::Avro.UnionSchema union:
-                    var tagUnion = tagSchema as global::Avro.UnionSchema;
                     var branchPlans = new ValuePlan[union.Count];
                     valuePlan.Children = branchPlans;
                     for (var i = 0; i < union.Count; i++)
                     {
                         branchPlans[i] = BuildValuePlan(
                             union[i],
-                            FindUnionBranch(union[i], tagUnion),
+                            FindMatchingTagSchema(union[i], tagSchema),
                             metadata,
                             rule,
                             mutableTags,
@@ -858,30 +857,30 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
             return null;
         }
 
-        private static AvroSchema? FindUnionBranch(
+        private static AvroSchema? FindMatchingTagSchema(
             AvroSchema branch,
-            global::Avro.UnionSchema? tagUnion)
+            AvroSchema? tagSchema)
         {
-            if (tagUnion is null)
-                return null;
-
-            for (var i = 0; i < tagUnion.Count; i++)
+            if (tagSchema is global::Avro.UnionSchema tagUnion)
             {
-                var candidate = tagUnion[i];
-                if (branch.Tag != candidate.Tag)
-                    continue;
-                if (branch is global::Avro.NamedSchema namedBranch &&
-                    candidate is global::Avro.NamedSchema namedCandidate &&
-                    !NamedSchemaMatches(namedBranch, namedCandidate))
+                for (var i = 0; i < tagUnion.Count; i++)
                 {
-                    continue;
+                    var candidate = tagUnion[i];
+                    if (SchemasMatch(branch, candidate))
+                        return candidate;
                 }
 
-                return candidate;
+                return null;
             }
 
-            return null;
+            return tagSchema is not null && SchemasMatch(branch, tagSchema) ? tagSchema : null;
         }
+
+        private static bool SchemasMatch(AvroSchema payload, AvroSchema ruleOwner) =>
+            payload.Tag == ruleOwner.Tag &&
+            (payload is not global::Avro.NamedSchema namedPayload ||
+             ruleOwner is not global::Avro.NamedSchema namedRuleOwner ||
+             NamedSchemaMatches(namedPayload, namedRuleOwner));
 
         private static bool NamedSchemaMatches(
             global::Avro.NamedSchema payloadBranch,
