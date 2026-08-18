@@ -252,6 +252,7 @@ public sealed class AvroSchemaRegistrySerializer<
     {
         var memoryStream = codecState.BufferedStream;
         memoryStream.ResetForWriting(InitialAvroPayloadBufferSize);
+        var taggedWorkspaceOperation = AvroTaggedFieldTransformerProvider.BeginOperation();
 
         try
         {
@@ -292,7 +293,7 @@ public sealed class AvroSchemaRegistrySerializer<
         }
         finally
         {
-            AvroTaggedFieldTransformerProvider.ReleaseOversizedOutputs();
+            taggedWorkspaceOperation.Dispose();
             if (memoryStream.Capacity > MaxRetainedAvroPayloadBufferSize)
                 memoryStream.DetachBuffer();
         }

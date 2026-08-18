@@ -542,6 +542,73 @@ public sealed class SchemaRegistryCsfleRuleTests
     }
 
     [Test]
+    public async Task AvroSerializer_ReentrantSuccessAction_PreservesOuterTaggedOutput()
+    {
+        const string schemaText = """
+            {"type":"record","name":"ReentrantPayment","namespace":"test","fields":[
+                {"name":"secret","type":"bytes","confluent:tags":["PII"]}
+            ]}
+            """;
+        var client = CreateDekClient();
+        var rule = new SchemaRule
+        {
+            Name = "encryptPii",
+            Kind = SchemaRuleKind.Transform,
+            Mode = SchemaRuleMode.WriteRead,
+            Type = SchemaRegistryCsfleRuleHandler.EncryptRuleType,
+            Tags = new HashSet<string>(StringComparer.Ordinal) { "PII" },
+            Parameters = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["encrypt.kek.name"] = "payments-kek"
+            },
+            OnSuccess = ReentrantSerializeAction.ActionType
+        };
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = schemaText,
+            RuleSet = new SchemaRuleSet { DomainRules = [rule] }
+        };
+        _ = await client.RegisterSchemaAsync("outer-reentrant-value", schema);
+        _ = await client.RegisterSchemaAsync("inner-reentrant-value", schema);
+        var action = new ReentrantSerializeAction("outer-reentrant");
+        var executor = new SchemaRegistryRuleExecutor([CreateHandler(client)], [action]);
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(
+            client,
+            new AvroSerializerConfig { AutoRegisterSchemas = false, RuleExecutor = executor });
+        await using var deserializer = new AvroSchemaRegistryDeserializer<GenericRecord>(
+            client,
+            new AvroDeserializerConfig { RuleExecutor = executor });
+        var avroSchema = (Avro.RecordSchema)AvroSchema.Parse(schemaText);
+        var outerSecret = Enumerable.Range(0, 64).Select(static value => (byte)value).ToArray();
+        var outerRecord = new GenericRecord(avroSchema);
+        outerRecord.Add("secret", outerSecret);
+        var innerSecret = new byte[] { 0xA5, 0x5A };
+        var innerRecord = new GenericRecord(avroSchema);
+        innerRecord.Add("secret", innerSecret);
+        var outerContext = new SerializationContext
+        {
+            Topic = "outer-reentrant",
+            Component = SerializationComponent.Value
+        };
+        var innerContext = new SerializationContext
+        {
+            Topic = "inner-reentrant",
+            Component = SerializationComponent.Value
+        };
+        var outerOutput = new ArrayBufferWriter<byte>();
+        var innerOutput = new ArrayBufferWriter<byte>();
+        action.Callback = () => serializer.Serialize(innerRecord, ref innerOutput, innerContext);
+
+        serializer.Serialize(outerRecord, ref outerOutput, outerContext);
+
+        var outerRoundTrip = deserializer.Deserialize(outerOutput.WrittenMemory, outerContext);
+        var innerRoundTrip = deserializer.Deserialize(innerOutput.WrittenMemory, innerContext);
+        await Assert.That((byte[])outerRoundTrip["secret"]!).IsEquivalentTo(outerSecret);
+        await Assert.That((byte[])innerRoundTrip["secret"]!).IsEquivalentTo(innerSecret);
+    }
+
+    [Test]
     [NotInParallel]
     public async Task AvroTaggedEncryption_ReturnsOversizedFieldBufferAfterWalkerCopiesIt()
     {
@@ -1971,6 +2038,27 @@ public sealed class SchemaRegistryCsfleRuleTests
             ReadOnlyMemory<byte> payload,
             SchemaRegistryRuleHandlerContext context) =>
             TransformSerializedPayload(payload, context);
+    }
+
+    private sealed class ReentrantSerializeAction(string outerTopic) : ISchemaRegistryRuleAction
+    {
+        internal const string ActionType = "REENTER";
+
+        internal Action Callback { get; set; } = null!;
+
+        public string Type => ActionType;
+
+        public void Run(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleHandlerContext context,
+            SchemaRegistryRuleException? exception)
+        {
+            if (context.Direction == SchemaRegistryRuleDirection.Write &&
+                string.Equals(context.PayloadContext.Topic, outerTopic, StringComparison.Ordinal))
+            {
+                Callback();
+            }
+        }
     }
 
     private sealed class CapturingTaggedFieldTransformer : ISchemaRegistryTaggedFieldTransformer

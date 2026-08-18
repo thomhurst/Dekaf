@@ -15,6 +15,9 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
     [ThreadStatic]
     private static Workspace? t_workspace;
 
+    [ThreadStatic]
+    private static int t_operationDepth;
+
     private static readonly ConditionalWeakTable<AvroSchema, SchemaTransformers> Transformers = new();
 
     private readonly RegistrySchema _registrySchema;
@@ -72,10 +75,45 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static Workspace GetWorkspace() => t_workspace ??= new Workspace();
+    private static Workspace GetWorkspace()
+    {
+        var workspace = t_workspace ??= new Workspace();
+        for (var depth = 1; depth < t_operationDepth; depth++)
+            workspace = workspace.GetOrCreateNested();
+        return workspace;
+    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal static void ReleaseOversizedOutputs() => t_workspace?.ReleaseOversizedOutputs();
+    internal static WorkspaceOperation BeginOperation()
+    {
+        var depth = t_operationDepth + 1;
+        t_operationDepth = depth;
+        return new WorkspaceOperation(depth);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static void ReleaseOversizedOutputs() => GetCurrentWorkspace()?.ReleaseOversizedOutputs();
+
+    private static Workspace? GetCurrentWorkspace()
+    {
+        var workspace = t_workspace;
+        for (var depth = 1; workspace is not null && depth < t_operationDepth; depth++)
+            workspace = workspace.Nested;
+        return workspace;
+    }
+
+    internal readonly ref struct WorkspaceOperation(int depth)
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void Dispose()
+        {
+            if (t_operationDepth != depth)
+                throw new InvalidOperationException("Avro tagged-field workspace operations must be disposed in stack order.");
+
+            GetCurrentWorkspace()?.ReleaseOversizedOutputs();
+            t_operationDepth = depth - 1;
+        }
+    }
 
     private static void TransformValue<TState>(
         ValuePlan valuePlan,
@@ -1110,6 +1148,8 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
         private int _length;
         private int _temporaryLength;
 
+        internal Workspace? Nested { get; private set; }
+
         public ReadOnlyMemory<byte> WrittenMemory
         {
             get
@@ -1118,6 +1158,9 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
                 return new ReadOnlyMemory<byte>(output, 0, _length);
             }
         }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal Workspace GetOrCreateNested() => Nested ??= new Workspace();
 
         public void Reset(ReadOnlySpan<byte> input, int minimumCapacity)
         {
@@ -1365,6 +1408,10 @@ internal sealed class AvroTaggedFieldTransformerProvider : ISchemaRegistryTagged
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static void ReleaseOversizedOutputs() => AvroTaggedFieldTransformer.ReleaseOversizedOutputs();
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static AvroTaggedFieldTransformer.WorkspaceOperation BeginOperation() =>
+        AvroTaggedFieldTransformer.BeginOperation();
 
     private sealed class SerializerPayloadTransformers
     {

@@ -206,6 +206,20 @@ public class SchemaRegistryCsfleRuleBenchmarks
         _executor.TransformSerializedPayload(AvroPayload, _taggedAvroContext);
 
     [Benchmark]
+    public byte EncryptTaggedAvroFieldInSerializerOperation()
+    {
+        var operation = AvroTaggedFieldTransformerProvider.BeginOperation();
+        try
+        {
+            return _executor.TransformSerializedPayload(AvroPayload, _taggedAvroContext).Span[0];
+        }
+        finally
+        {
+            operation.Dispose();
+        }
+    }
+
+    [Benchmark]
     public ReadOnlyMemory<byte> DecryptTaggedAvroField() =>
         _executor.TransformDeserializedPayload(_encryptedAvroPayload, _taggedAvroContext);
 

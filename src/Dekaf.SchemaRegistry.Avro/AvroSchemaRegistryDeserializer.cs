@@ -164,6 +164,7 @@ public sealed class AvroSchemaRegistryDeserializer<
                 codecState: directCodecState);
         }
 
+        var taggedWorkspaceOperation = AvroTaggedFieldTransformerProvider.BeginOperation();
         try
         {
             string subject;
@@ -217,7 +218,7 @@ public sealed class AvroSchemaRegistryDeserializer<
         }
         finally
         {
-            AvroTaggedFieldTransformerProvider.ReleaseOversizedOutputs();
+            taggedWorkspaceOperation.Dispose();
         }
     }
 
