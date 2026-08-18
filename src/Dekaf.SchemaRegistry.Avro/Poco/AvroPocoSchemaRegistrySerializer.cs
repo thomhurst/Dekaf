@@ -188,15 +188,16 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
                 }
 
                 var nextLength = Grow(buffer.Length);
-                var nextBuffer = nextLength > MaxRetainedPayloadSize
+                var nextBufferIsPooled = bufferIsPooled || nextLength > MaxRetainedPayloadSize;
+                var nextBuffer = nextBufferIsPooled
                     ? ArrayPool<byte>.Shared.Rent(nextLength)
                     : GC.AllocateUninitializedArray<byte>(nextLength);
                 if (bufferIsPooled)
                     ArrayPool<byte>.Shared.Return(buffer);
-                else if (nextLength <= MaxRetainedPayloadSize)
+                else if (!nextBufferIsPooled)
                     RetainRuleBuffer(nextBuffer);
                 buffer = nextBuffer;
-                bufferIsPooled = nextLength > MaxRetainedPayloadSize;
+                bufferIsPooled = nextBufferIsPooled;
             }
 
             var payload = new ReadOnlyMemory<byte>(buffer, 0, length);

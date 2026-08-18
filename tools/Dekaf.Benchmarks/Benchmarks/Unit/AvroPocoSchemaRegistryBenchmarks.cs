@@ -538,6 +538,84 @@ public class AvroPocoRuleSerializationBenchmarks
     }
 }
 
+/// <summary>Guards nested generated POCO rule-buffer growth against per-message allocations.</summary>
+[MemoryDiagnoser(displayGenColumns: false)]
+public class AvroPocoReentrantRuleSerializationBenchmarks
+{
+    private readonly SerializationContext _context = new()
+    {
+        Topic = "avro-poco-reentrant-rules",
+        Component = SerializationComponent.Value
+    };
+    private readonly PocoBenchmarkRecord _outerValue = new() { Id = 42, Name = "small" };
+    private readonly PocoBenchmarkRecord _nestedValue = new() { Id = 7, Name = new string('x', 64 * 1024) };
+    private AvroPocoSchemaRegistrySerializer<PocoBenchmarkRecord, PocoBenchmarkRecord.AvroCodec>
+        _serializer = null!;
+    private ArrayBufferWriter<byte> _outerBuffer = null!;
+    private ArrayBufferWriter<byte> _nestedBuffer = null!;
+
+    [GlobalSetup]
+    public void Setup()
+    {
+        var executor = new ReentrantRuleExecutor();
+        _serializer = PocoBenchmarkRecord.CreateAvroSerializer(
+            new AvroSchemaRegistrySerializerBenchmarks.BenchmarkSchemaRegistryClient(),
+            new AvroSerializerConfig { RuleExecutor = executor });
+        _outerBuffer = new ArrayBufferWriter<byte>(64);
+        _nestedBuffer = new ArrayBufferWriter<byte>(128 * 1024);
+        executor.Reenter = SerializeNested;
+        _serializer.Serialize(_outerValue, ref _outerBuffer, _context);
+        _outerBuffer.Clear();
+    }
+
+    [GlobalCleanup]
+    public async ValueTask Cleanup() => await _serializer.DisposeAsync().ConfigureAwait(false);
+
+    [Benchmark]
+    public void SerializeWithReentrantRules()
+    {
+        _outerBuffer.Clear();
+        _serializer.Serialize(_outerValue, ref _outerBuffer, _context);
+    }
+
+    private void SerializeNested()
+    {
+        _nestedBuffer.Clear();
+        _serializer.Serialize(_nestedValue, ref _nestedBuffer, _context);
+    }
+
+    private sealed class ReentrantRuleExecutor : ISchemaRegistryRuleExecutor
+    {
+        private bool _isReentrant;
+
+        internal Action? Reenter { get; set; }
+
+        public ReadOnlyMemory<byte> TransformSerializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleContext context)
+        {
+            if (_isReentrant)
+                return payload;
+
+            _isReentrant = true;
+            try
+            {
+                Reenter!();
+            }
+            finally
+            {
+                _isReentrant = false;
+            }
+
+            return payload;
+        }
+
+        public ReadOnlyMemory<byte> TransformDeserializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleContext context) => payload;
+    }
+}
+
 /// <summary>Guards stable large generated POCO payloads against repeated sizing traversals.</summary>
 [MemoryDiagnoser(displayGenColumns: false)]
 public class AvroPocoLargePayloadSerializationBenchmarks

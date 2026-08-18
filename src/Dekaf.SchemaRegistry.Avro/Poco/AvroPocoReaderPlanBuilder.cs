@@ -184,7 +184,17 @@ internal static class AvroPocoReaderPlanBuilder
             return BuildNode(writer.BaseSchema, reader);
 
         if (reader.Kind != logicalKind)
+        {
+            if (reader.Kind is AvroPocoTypeKind.Date or
+                AvroPocoTypeKind.TimeMilliseconds or AvroPocoTypeKind.TimeMicroseconds or
+                AvroPocoTypeKind.TimestampMilliseconds or AvroPocoTypeKind.TimestampMicroseconds or
+                AvroPocoTypeKind.Decimal or AvroPocoTypeKind.Uuid)
+            {
+                throw Incompatible(writer, reader);
+            }
+
             return BuildNode(writer.BaseSchema, reader);
+        }
         if (logicalKind == AvroPocoTypeKind.Decimal && !DecimalMatches(writer, reader))
             throw Incompatible(writer, reader);
         return new AvroPocoReadNode(logicalKind)

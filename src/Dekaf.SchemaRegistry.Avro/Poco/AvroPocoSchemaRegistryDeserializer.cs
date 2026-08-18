@@ -130,7 +130,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec> : IDeserialize
                 context,
                 SchemaRegistryPayloadFormat.Avro);
             payload = migration.Payload;
-            plan = GetPlanCached(migration.PayloadSchemaId);
+            plan = GetOrBuildPlanCached(migration.PayloadSchemaId, migration.PayloadSchema);
         }
 
         var reader = new AvroValueReader(payload.Span);
@@ -152,6 +152,16 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec> : IDeserialize
 
         throw new InvalidOperationException(
             $"Schema {schemaId} is not cached. Call WarmupAsync before synchronous deserialization.");
+    }
+
+    private AvroPocoReaderPlan GetOrBuildPlanCached(int schemaId, Schema schema)
+    {
+        if (_plans.TryGetValue(schemaId, out var cached))
+            return cached;
+
+        var plan = BuildPlan(schemaId, schema);
+        CacheSuccessfulPlan(schemaId, plan);
+        return _plans.TryGetValue(schemaId, out cached) ? cached : plan;
     }
 
     private async Task<AvroPocoReaderPlan> GetPlanAsync(int schemaId, CancellationToken cancellationToken)

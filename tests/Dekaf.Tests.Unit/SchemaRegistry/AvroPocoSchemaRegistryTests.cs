@@ -588,6 +588,53 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    public async Task GeneratedCodec_RulesPathReentrantGrowthAllocatesZeroAfterWarmup()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        var executor = new ReentrantRuleExecutor();
+        var config = new AvroSerializerConfig { RuleExecutor = executor };
+        await using var outerSerializer = PocoReadonlyRecord.CreateAvroSerializer(registry, config);
+        await using var nestedSerializer = PocoGrowingPayload.CreateAvroSerializer(registry, config);
+        var outerContext = new SerializationContext
+        {
+            Topic = "poco-reentrant-growth-outer",
+            Component = SerializationComponent.Value
+        };
+        var nestedContext = new SerializationContext
+        {
+            Topic = "poco-reentrant-growth-nested",
+            Component = SerializationComponent.Value
+        };
+        var outerValue = new PocoReadonlyRecord { Id = 42 };
+        var nestedValue = new PocoGrowingPayload { Value = new string('x', 64 * 1024) };
+        var outerDestination = new ExactSizeBufferWriter(128);
+        var nestedDestination = new ExactSizeBufferWriter(128 * 1024);
+        executor.Reenter = () =>
+        {
+            nestedDestination.Clear();
+            nestedSerializer.Serialize(nestedValue, ref nestedDestination, nestedContext);
+        };
+
+        await outerSerializer.WarmupAsync(outerContext.Topic);
+        await nestedSerializer.WarmupAsync(nestedContext.Topic);
+        for (var index = 0; index < 16; index++)
+        {
+            outerDestination.Clear();
+            outerSerializer.Serialize(outerValue, ref outerDestination, outerContext);
+        }
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+        {
+            outerDestination.Clear();
+            outerSerializer.Serialize(outerValue, ref outerDestination, outerContext);
+        }
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        await Assert.That(allocated).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task GeneratedCodec_RulesPathSharesRetainedBufferAcrossCodecTypes()
     {
         using var registry = new MockSchemaRegistryClient();
@@ -1261,6 +1308,38 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    public async Task GeneratedCodec_RejectsDifferentTimestampLogicalUnits()
+    {
+        const string writerSchemaJson =
+            """
+            {"type":"record","name":"PocoTimestampEvolution","namespace":"Dekaf.Tests","fields":[{"name":"Value","type":{"type":"long","logicalType":"timestamp-millis"}}]}
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        var schemaId = await registry.RegisterSchemaAsync(
+            "poco-timestamp-unit-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = writerSchemaJson
+            });
+        await using var reader = PocoTimestampEvolution.CreateAvroDeserializer(registry);
+        var payload = new byte[15];
+        BinaryPrimitives.WriteInt32BigEndian(payload.AsSpan(1, 4), schemaId);
+        var writer = new AvroValueWriter(payload.AsSpan(5));
+        writer.WriteInt64(1000);
+        var context = new SerializationContext
+        {
+            Topic = "poco-timestamp-unit",
+            Component = SerializationComponent.Value
+        };
+        var payloadLength = 5 + writer.WrittenCount;
+
+        await Assert.That(() => reader.Deserialize(payload.AsMemory(0, payloadLength), context))
+            .Throws<InvalidOperationException>()
+            .WithMessageContaining("incompatible");
+    }
+
+    [Test]
     public async Task GeneratedCodec_UsesIncomingWriterPlanWhenMigrationHasOnlyConditions()
     {
         const string writerSchemaJson =
@@ -1331,7 +1410,7 @@ public sealed class AvroPocoSchemaRegistryTests
             Type = FixedPayloadMigrationHandler.RuleType
         };
         using var registry = new MockSchemaRegistryClient();
-        _ = await registry.RegisterSchemaAsync(
+        var writerSchemaId = await registry.RegisterSchemaAsync(
             "poco-active-migration-value",
             new Dekaf.SchemaRegistry.Schema
             {
@@ -1354,8 +1433,9 @@ public sealed class AvroPocoSchemaRegistryTests
             new PocoEvolved { Id = 42, Note = "migrated-layout" });
         var executor = new SchemaRegistryRuleExecutor(
             [new FixedPayloadMigrationHandler(migratedPayload.AsMemory(0, migratedWriter.WrittenCount))]);
+        var nonCachingRegistry = CreateNonCachingRegistry(registry);
         await using var deserializer = PocoEvolved.CreateAvroDeserializer(
-            registry,
+            nonCachingRegistry,
             new AvroDeserializerConfig
             {
                 UseLatestVersion = true,
@@ -1371,6 +1451,7 @@ public sealed class AvroPocoSchemaRegistryTests
         };
         var destination = new ArrayBufferWriter<byte>();
         serializer.Serialize(generic, ref destination, context);
+        await deserializer.WarmupAsync(writerSchemaId);
 
         var actual = deserializer.Deserialize(destination.WrittenMemory, context);
 
@@ -1675,6 +1756,53 @@ public sealed class AvroPocoSchemaRegistryTests
         public ReadOnlyMemory<byte> TransformDeserializedPayload(
             ReadOnlyMemory<byte> source,
             SchemaRegistryRuleHandlerContext context) => source;
+    }
+
+    private static Dekaf.SchemaRegistry.ISchemaRegistryClient CreateNonCachingRegistry(
+        MockSchemaRegistryClient registry)
+    {
+        var client = Substitute.For<Dekaf.SchemaRegistry.ISchemaRegistryClient>();
+        client.LatestCacheTtlSecs.Returns(-1);
+        client.GetSchemaAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(call => registry.GetSchemaAsync(
+                call.ArgAt<int>(0),
+                call.ArgAt<CancellationToken>(1)));
+        client.GetSchemaAsync(Arg.Any<int>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(call => registry.GetSchemaAsync(
+                call.ArgAt<int>(0),
+                call.ArgAt<string>(1),
+                call.ArgAt<CancellationToken>(2)));
+        client.GetSchemaBySubjectAsync(
+                Arg.Any<string>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call => registry.GetSchemaBySubjectAsync(
+                call.ArgAt<string>(0),
+                call.ArgAt<string>(1),
+                call.ArgAt<CancellationToken>(2)));
+        client.GetSchemaBySubjectAsync(
+                Arg.Any<string>(),
+                Arg.Any<string>(),
+                Arg.Any<bool>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call => registry.GetSchemaBySubjectAsync(
+                call.ArgAt<string>(0),
+                call.ArgAt<string>(1),
+                call.ArgAt<bool>(2),
+                call.ArgAt<CancellationToken>(3)));
+        client.LookupSchemaAsync(
+                Arg.Any<string>(),
+                Arg.Any<Dekaf.SchemaRegistry.Schema>(),
+                Arg.Any<bool>(),
+                Arg.Any<bool>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call => registry.LookupSchemaAsync(
+                call.ArgAt<string>(0),
+                call.ArgAt<Dekaf.SchemaRegistry.Schema>(1),
+                call.ArgAt<bool>(2),
+                call.ArgAt<bool>(3),
+                call.ArgAt<CancellationToken>(4)));
+        return client;
     }
 
     private sealed class PassThroughRuleExecutor : ISchemaRegistryRuleExecutor

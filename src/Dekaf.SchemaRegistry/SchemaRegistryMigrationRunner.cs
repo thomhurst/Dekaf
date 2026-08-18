@@ -89,7 +89,7 @@ internal sealed class SchemaRegistryMigrationRunner
             }
 
             if (_ruleExecutor is null)
-                return new MigrationResult(payload, plan.ReaderSchema, schemaId);
+                return new MigrationResult(payload, plan.ReaderSchema, schemaId, writerSchema);
 
             var readerContext = RentContext(
                 serializationContext,
@@ -108,7 +108,7 @@ internal sealed class SchemaRegistryMigrationRunner
                 readerContext.Return();
             }
 
-            return new MigrationResult(payload, plan.ReaderSchema, schemaId);
+            return new MigrationResult(payload, plan.ReaderSchema, schemaId, writerSchema);
         }
 
         var context = RentContext(
@@ -130,6 +130,7 @@ internal sealed class SchemaRegistryMigrationRunner
         var encodedSchema = writerSchema;
         var steps = plan.Steps;
         var payloadSchemaId = schemaId;
+        var payloadSchema = writerSchema;
         for (var i = 0; i < steps.Length; i++)
         {
             ref readonly var step = ref steps[i];
@@ -148,7 +149,10 @@ internal sealed class SchemaRegistryMigrationRunner
             try
             {
                 if (_schemaRuleExecutor.TransformMigrationPayload(ref payload, context, step.Mode))
+                {
                     payloadSchemaId = step.Target.Id;
+                    payloadSchema = step.Target.Schema;
+                }
             }
             finally
             {
@@ -173,7 +177,7 @@ internal sealed class SchemaRegistryMigrationRunner
             context.Return();
         }
 
-        return new MigrationResult(payload, plan.ReaderSchema, payloadSchemaId);
+        return new MigrationResult(payload, plan.ReaderSchema, payloadSchemaId, payloadSchema);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -287,7 +291,8 @@ internal sealed class SchemaRegistryMigrationRunner
     internal readonly record struct MigrationResult(
         ReadOnlyMemory<byte> Payload,
         RegisteredSchema ReaderSchema,
-        int PayloadSchemaId);
+        int PayloadSchemaId,
+        Schema PayloadSchema);
 
     private sealed class MigrationPlan(
         int writerSchemaId,
