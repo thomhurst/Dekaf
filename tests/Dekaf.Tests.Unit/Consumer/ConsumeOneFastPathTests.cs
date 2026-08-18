@@ -154,6 +154,33 @@ public sealed class ConsumeOneFastPathTests
     }
 
     [Test]
+    public async Task ConsumeAsync_ColdKeyPreparation_RetriesKeyDeserialization()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20, CreateRecord(0, "a", "one"))
+        ]);
+        var keyDeserializer = new GatedPreparedStringDeserializer();
+        var valueDeserializer = new GatedPreparedStringDeserializer(initiallyPrepared: true);
+        await using var consumer = CreateInitializedConsumerWithDeserializers(
+            fetch,
+            keyDeserializer,
+            valueDeserializer);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await using var records = consumer.ConsumeAsync(timeout.Token).GetAsyncEnumerator();
+
+        var moveNext = records.MoveNextAsync();
+        await keyDeserializer.PreparationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        keyDeserializer.ReleasePreparation();
+
+        await Assert.That(await moveNext).IsTrue();
+        await Assert.That(records.Current.Key).IsEqualTo("a");
+        await Assert.That(keyDeserializer.PrepareCount).IsEqualTo(1);
+        await Assert.That(keyDeserializer.DeserializeCount).IsEqualTo(1);
+        await Assert.That(valueDeserializer.DeserializeCount).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task ConsumeOneAsync_CurrentBufferedAssignment_DoesNotRentTimeoutCts()
     {
         var fetch = PendingFetchData.Create(Topic, Partition,

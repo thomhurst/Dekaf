@@ -2902,7 +2902,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                             timestampType,
                                             cancellationToken)
                                         .ConfigureAwait(false);
-                                    if (!TryCreateResultWithPreparedDeserialization<RetainedKeyMode>(
+                                    if (!TryCreateResultAfterPreparation(
                                             pending,
                                             offset,
                                             keyData,
@@ -5633,8 +5633,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         }
                         else
                         {
-                            var resultCreated = preparedKey?.Matches(pending, offset) == true
-                                ? TryCreateResultWithPreparedDeserialization<RetainedKeyMode>(
+                            if (!TryCreateResultAfterPreparation(
                                     pending,
                                     offset,
                                     keyData,
@@ -5647,22 +5646,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                     timestampType,
                                     leaderEpoch,
                                     ref preparedKey,
-                                    out result)
-                                : TryCreateResultWithPreparedDeserialization<DeserializeKeyMode>(
-                                    pending,
-                                    offset,
-                                    keyData,
-                                    isKeyNull,
-                                    valueData,
-                                    isValueNull,
-                                    pooledHeaders,
-                                    pooledHeaderCount,
-                                    timestampMs,
-                                    timestampType,
-                                    leaderEpoch,
-                                    ref preparedKey,
-                                    out result);
-                            if (!resultCreated)
+                                    out result))
                             {
                                 throw new InvalidOperationException(
                                     "Deserializer remained unprepared after PrepareAsync completed.");
@@ -5808,6 +5792,55 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         ExceptionDispatchInfo.Capture(exception).Throw();
+    }
+
+    private bool TryCreateResultAfterPreparation(
+        PendingFetchData pending,
+        long offset,
+        ReadOnlyMemory<byte> keyData,
+        bool isKeyNull,
+        ReadOnlyMemory<byte> valueData,
+        bool isValueNull,
+        Header[]? pooledHeaders,
+        int pooledHeaderCount,
+        long timestampMs,
+        TimestampType timestampType,
+        int? leaderEpoch,
+        ref PreparedDeserializerKey? preparedKey,
+        out ConsumeResult<TKey, TValue> result)
+    {
+        if (preparedKey?.Matches(pending, offset) == true)
+        {
+            return TryCreateResultWithPreparedDeserialization<RetainedKeyMode>(
+                pending,
+                offset,
+                keyData,
+                isKeyNull,
+                valueData,
+                isValueNull,
+                pooledHeaders,
+                pooledHeaderCount,
+                timestampMs,
+                timestampType,
+                leaderEpoch,
+                ref preparedKey,
+                out result);
+        }
+
+        return TryCreateResultWithPreparedDeserialization<DeserializeKeyMode>(
+            pending,
+            offset,
+            keyData,
+            isKeyNull,
+            valueData,
+            isValueNull,
+            pooledHeaders,
+            pooledHeaderCount,
+            timestampMs,
+            timestampType,
+            leaderEpoch,
+            ref preparedKey,
+            out result);
     }
 
     private bool TryCreateResultWithPreparedDeserialization<TPreparedKeyMode>(

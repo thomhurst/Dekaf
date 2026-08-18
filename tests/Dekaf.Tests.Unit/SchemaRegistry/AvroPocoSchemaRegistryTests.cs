@@ -756,11 +756,13 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
-    public async Task GeneratedCodec_RulesPathSharesRetainedBufferAcrossCodecTypes()
+    public async Task GeneratedCodec_RulesPathIsolatesSizingStateAcrossCodecTypes()
     {
         using var registry = new MockSchemaRegistryClient();
         var config = new AvroSerializerConfig { RuleExecutor = PassThroughRuleExecutor.Instance };
-        await using var first = PocoGrowingPayload.CreateAvroSerializer(registry, config);
+        await using var first = new AvroPocoSchemaRegistrySerializer<
+            CountingPocoPayload,
+            CountingPocoPayloadCodec>(registry, config);
         await using var second = PocoSecondGrowingPayload.CreateAvroSerializer(registry, config);
         var firstContext = new SerializationContext
         {
@@ -772,23 +774,32 @@ public sealed class AvroPocoSchemaRegistryTests
             Topic = "poco-shared-rule-buffer-second",
             Component = SerializationComponent.Value
         };
-        var value = new string('x', 512 * 1024);
-        var firstValue = new PocoGrowingPayload { Value = value };
-        var secondWarmupValue = new PocoSecondGrowingPayload { Value = "small" };
-        var secondValue = new PocoSecondGrowingPayload { Value = value };
-        var firstDestination = new ExactSizeBufferWriter(1024 * 1024 + 16);
-        var secondDestination = new ExactSizeBufferWriter(1024 * 1024 + 16);
+        var value = new string('x', 1024 * 1024 + 1);
+        var firstLarge = new CountingPocoPayload { Value = value };
+        var firstSmall = new CountingPocoPayload { Value = "small" };
+        var secondLarge = new PocoSecondGrowingPayload { Value = value };
+        var secondSmall = new PocoSecondGrowingPayload { Value = "small" };
+        var firstDestination = new ExactSizeBufferWriter(2 * 1024 * 1024 + 16);
+        var secondDestination = new ExactSizeBufferWriter(2 * 1024 * 1024 + 16);
 
         await first.WarmupAsync(firstContext.Topic);
         await second.WarmupAsync(secondContext.Topic);
-        second.Serialize(secondWarmupValue, ref secondDestination, secondContext);
+        first.Serialize(firstLarge, ref firstDestination, firstContext);
+        firstDestination.Clear();
+        first.Serialize(firstSmall, ref firstDestination, firstContext);
+        firstDestination.Clear();
+        second.Serialize(secondLarge, ref secondDestination, secondContext);
         secondDestination.Clear();
-        first.Serialize(firstValue, ref firstDestination, firstContext);
+        second.Serialize(secondSmall, ref secondDestination, secondContext);
+        secondDestination.Clear();
+        CountingPocoPayloadCodec.ResetWriteCount();
 
         var before = GC.GetAllocatedBytesForCurrentThread();
-        second.Serialize(secondValue, ref secondDestination, secondContext);
+        second.Serialize(secondLarge, ref secondDestination, secondContext);
+        first.Serialize(firstLarge, ref firstDestination, firstContext);
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
+        await Assert.That(CountingPocoPayloadCodec.WriteCount).IsEqualTo(1);
         await Assert.That(allocated).IsEqualTo(0);
     }
 
@@ -893,6 +904,45 @@ public sealed class AvroPocoSchemaRegistryTests
         Array.Resize(ref payload, 5 + writer.WrittenCount);
 
         await Assert.That(() => reader.Deserialize(payload, context))
+            .Throws<InvalidDataException>()
+            .WithMessageContaining("Int32 range");
+    }
+
+    [Test]
+    [Arguments("int")]
+    [Arguments("date")]
+    [Arguments("time-millis")]
+    public async Task GeneratedCodec_RejectsOutOfRangeSkippedWriterInt(string writerType)
+    {
+        var removedFieldType = writerType == "int"
+            ? "\"int\""
+            : $"{{\"type\":\"int\",\"logicalType\":\"{writerType}\"}}";
+        var writerSchemaJson =
+            $$"""
+            {"type":"record","name":"PocoEvolved","namespace":"Dekaf.Tests","fields":[{"name":"legacy_id","type":"int"},{"name":"removed","type":{{removedFieldType}}}]}
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        var schemaId = await registry.RegisterSchemaAsync(
+            "poco-skipped-int-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = writerSchemaJson
+            });
+        await using var reader = PocoEvolved.CreateAvroDeserializer(registry);
+        var payload = new byte[32];
+        BinaryPrimitives.WriteInt32BigEndian(payload.AsSpan(1, 4), schemaId);
+        var writer = new AvroValueWriter(payload.AsSpan(5));
+        writer.WriteInt32(42);
+        writer.WriteInt64((long)int.MaxValue + 1);
+        var context = new SerializationContext
+        {
+            Topic = "poco-skipped-int",
+            Component = SerializationComponent.Value
+        };
+        var payloadLength = 5 + writer.WrittenCount;
+
+        await Assert.That(() => reader.Deserialize(payload.AsMemory(0, payloadLength), context))
             .Throws<InvalidDataException>()
             .WithMessageContaining("Int32 range");
     }
@@ -1190,6 +1240,61 @@ public sealed class AvroPocoSchemaRegistryTests
         await Assert.That(actual.Id).IsEqualTo(42);
         await Assert.That(actual.Name).IsEqualTo("Ada");
         _ = registry.Received(1).GetSchemaAsync(42, Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task GeneratedCodec_AsyncPreparationWarmsScopedSchemaAndMigrationPlan()
+    {
+        const string writerSchemaJson =
+            """
+            {"type":"record","name":"PocoEvolved","namespace":"Dekaf.Tests","fields":[{"name":"legacy_id","type":"int"}]}
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        var writerSchemaId = await registry.RegisterSchemaAsync(
+            "poco-async-migration-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = writerSchemaJson
+            });
+        _ = await registry.RegisterSchemaAsync(
+            "poco-async-migration-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = PocoEvolved.AvroCodec.SchemaJson
+            });
+        var nonCachingRegistry = CreateNonCachingRegistry(registry);
+        await using var reader = PocoEvolved.CreateAvroDeserializer(
+            nonCachingRegistry,
+            new AvroDeserializerConfig { UseLatestVersion = true });
+        var payload = new byte[32];
+        BinaryPrimitives.WriteInt32BigEndian(payload.AsSpan(1, 4), writerSchemaId);
+        var writer = new AvroValueWriter(payload.AsSpan(5));
+        writer.WriteInt32(42);
+        var context = new SerializationContext
+        {
+            Topic = "poco-async-migration",
+            Component = SerializationComponent.Value
+        };
+        var preparer = (IAsyncDeserializerPreparer<PocoEvolved>)reader;
+        var data = payload.AsMemory(0, 5 + writer.WrittenCount);
+
+        await preparer.PrepareAsync(data, context);
+        nonCachingRegistry.ClearReceivedCalls();
+        var prepared = preparer.TryDeserialize(data, context, out var actual);
+
+        await Assert.That(prepared).IsTrue();
+        await Assert.That(actual.Id).IsEqualTo(42L);
+        await Assert.That(actual.Note).IsEqualTo("added-by-reader");
+        _ = nonCachingRegistry.DidNotReceiveWithAnyArgs()
+            .GetSchemaAsync(default, default(CancellationToken));
+        _ = nonCachingRegistry.DidNotReceiveWithAnyArgs()
+            .GetSchemaAsync(default, default!, default(CancellationToken));
+        _ = nonCachingRegistry.DidNotReceiveWithAnyArgs()
+            .GetSchemaBySubjectAsync(default!, default!, default(CancellationToken));
+        _ = nonCachingRegistry.DidNotReceiveWithAnyArgs()
+            .LookupSchemaAsync(default!, default!, default, default, default(CancellationToken));
     }
 
     [Test]

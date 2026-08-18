@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Buffers.Binary;
 using System.Numerics;
 using Avro.Generic;
 using Confluent.Kafka;
@@ -62,6 +63,8 @@ public sealed class AvroPocoInteropIntegrationTests(KafkaWithSchemaRegistryConta
         generic.Add("amount", new Avro.AvroDecimal(new BigInteger(7890), 2));
         var confluentBytes = await confluentSerializer.SerializeAsync(generic, confluentContext);
 
+        var confluentSchemaId = BinaryPrimitives.ReadInt32BigEndian(confluentBytes.AsSpan(1, 4));
+        await dekafDeserializer.WarmupAsync(confluentSchemaId);
         var dekafValue = dekafDeserializer.Deserialize(confluentBytes, dekafContext);
         await Assert.That(dekafValue.Id).IsEqualTo(84);
         await Assert.That(dekafValue.Name).IsEqualTo("Confluent");

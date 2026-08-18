@@ -243,7 +243,7 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         finally
         {
             if (ownsBufferLease)
-                AvroPocoSerializerBuffers.RuleBufferInUse = false;
+                AvroPocoSerializerBuffers<T, TCodec>.RuleBufferInUse = false;
             if (bufferIsPooled)
                 ArrayPool<byte>.Shared.Return(buffer);
         }
@@ -306,7 +306,7 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         finally
         {
             if (ownsBufferLease)
-                AvroPocoSerializerBuffers.RuleBufferInUse = false;
+                AvroPocoSerializerBuffers<T, TCodec>.RuleBufferInUse = false;
             if (bufferIsPooled)
                 ArrayPool<byte>.Shared.Return(buffer);
         }
@@ -471,7 +471,7 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
     private static byte[] GetRuleBuffer(out bool bufferIsPooled, out bool ownsBufferLease)
     {
         var sizeHint = GetPredictedRulePayloadSize();
-        if (AvroPocoSerializerBuffers.RuleBufferInUse)
+        if (AvroPocoSerializerBuffers<T, TCodec>.RuleBufferInUse)
         {
             bufferIsPooled = true;
             ownsBufferLease = false;
@@ -487,32 +487,32 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         else
         {
             bufferIsPooled = false;
-            buffer = AvroPocoSerializerBuffers.RuleBuffer ??= GC.AllocateUninitializedArray<byte>(1024);
+            buffer = AvroPocoSerializerBuffers<T, TCodec>.RuleBuffer ??= GC.AllocateUninitializedArray<byte>(1024);
         }
 
-        AvroPocoSerializerBuffers.RuleBufferInUse = true;
+        AvroPocoSerializerBuffers<T, TCodec>.RuleBufferInUse = true;
         ownsBufferLease = true;
         return buffer;
     }
 
     private static int GetPredictedRulePayloadSize()
     {
-        var pattern = AvroPocoSerializerBuffers.RulePayloadPattern;
+        var pattern = AvroPocoSerializerBuffers<T, TCodec>.RulePayloadPattern;
         return pattern is StableOversizedPayloadPattern or OversizedThenRetainedPayloadPattern
-            ? AvroPocoSerializerBuffers.OversizedRulePayloadSizeHint
-            : AvroPocoSerializerBuffers.RetainedRulePayloadSizeHint;
+            ? AvroPocoSerializerBuffers<T, TCodec>.OversizedRulePayloadSizeHint
+            : AvroPocoSerializerBuffers<T, TCodec>.RetainedRulePayloadSizeHint;
     }
 
     private static void RecordRulePayloadLength(int length)
     {
-        var pattern = AvroPocoSerializerBuffers.RulePayloadPattern;
+        var pattern = AvroPocoSerializerBuffers<T, TCodec>.RulePayloadPattern;
         var oversized = length > MaxRetainedPayloadSize;
         if (oversized)
         {
-            AvroPocoSerializerBuffers.OversizedRulePayloadSizeHint = length;
+            AvroPocoSerializerBuffers<T, TCodec>.OversizedRulePayloadSizeHint = length;
             if (pattern != StableOversizedPayloadPattern)
             {
-                AvroPocoSerializerBuffers.RulePayloadPattern =
+                AvroPocoSerializerBuffers<T, TCodec>.RulePayloadPattern =
                     pattern is OversizedThenRetainedPayloadPattern or StableRetainedPayloadPattern
                         ? RetainedThenOversizedPayloadPattern
                         : StableOversizedPayloadPattern;
@@ -520,17 +520,18 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
             return;
         }
 
-        AvroPocoSerializerBuffers.RetainedRulePayloadSizeHint = Math.Max(InitialPayloadSize, length);
+        AvroPocoSerializerBuffers<T, TCodec>.RetainedRulePayloadSizeHint = Math.Max(InitialPayloadSize, length);
         if (pattern != StableRetainedPayloadPattern)
         {
-            AvroPocoSerializerBuffers.RulePayloadPattern =
+            AvroPocoSerializerBuffers<T, TCodec>.RulePayloadPattern =
                 pattern is StableOversizedPayloadPattern or RetainedThenOversizedPayloadPattern
                     ? OversizedThenRetainedPayloadPattern
                     : StableRetainedPayloadPattern;
         }
     }
 
-    private static void RetainRuleBuffer(byte[] buffer) => AvroPocoSerializerBuffers.RuleBuffer = buffer;
+    private static void RetainRuleBuffer(byte[] buffer) =>
+        AvroPocoSerializerBuffers<T, TCodec>.RuleBuffer = buffer;
 
     /// <inheritdoc />
     public ValueTask DisposeAsync()
@@ -541,8 +542,9 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
     }
 }
 
-/// <summary>Non-generic holder so POCO codec types share one retained rules buffer per thread.</summary>
-internal static class AvroPocoSerializerBuffers
+/// <summary>Per-codec rules buffers retained independently on each thread.</summary>
+internal static class AvroPocoSerializerBuffers<T, TCodec>
+    where TCodec : struct, IAvroPocoCodec<T>
 {
     [ThreadStatic]
     internal static byte[]? RuleBuffer;

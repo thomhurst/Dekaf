@@ -211,9 +211,11 @@ public ref struct AvroValueReader
                 _ = ReadBoolean();
                 return;
             case AvroPocoTypeKind.Int:
-            case AvroPocoTypeKind.Long:
             case AvroPocoTypeKind.Date:
             case AvroPocoTypeKind.TimeMilliseconds:
+                _ = ReadInt32();
+                return;
+            case AvroPocoTypeKind.Long:
             case AvroPocoTypeKind.TimeMicroseconds:
             case AvroPocoTypeKind.TimestampMilliseconds:
             case AvroPocoTypeKind.TimestampMicroseconds:

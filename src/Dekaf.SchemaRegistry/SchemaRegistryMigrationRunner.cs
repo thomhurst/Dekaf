@@ -47,6 +47,51 @@ internal sealed class SchemaRegistryMigrationRunner
         (new SchemaRegistryMigrationRunner(schemaRegistry, ruleExecutor, timeout),
          ruleExecutor ?? MarkerRuleExecutor);
 
+    internal ValueTask PrepareAsync(
+        int schemaId,
+        string subject,
+        Schema writerSchema,
+        CancellationToken cancellationToken)
+    {
+        var plan = Volatile.Read(ref _lastPlan);
+        if (plan is not null &&
+            plan.WriterSchemaId == schemaId &&
+            string.Equals(plan.Subject, subject, StringComparison.Ordinal))
+        {
+            return default;
+        }
+
+        if (_plans.TryGet(subject, writerSchema, out plan))
+        {
+            Volatile.Write(ref _lastPlan, plan);
+            return default;
+        }
+
+        return AwaitPreparedPlanAsync(schemaId, subject, writerSchema, cancellationToken);
+    }
+
+    private async ValueTask AwaitPreparedPlanAsync(
+        int schemaId,
+        string subject,
+        Schema writerSchema,
+        CancellationToken cancellationToken)
+    {
+        var plan = await _plans.ResolveAsync(
+                subject,
+                writerSchema,
+                this,
+                s_createPlan,
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (plan.WriterSchemaId != schemaId)
+        {
+            throw new InvalidOperationException(
+                $"Schema Registry returned writer schema ID {plan.WriterSchemaId} for payload schema ID {schemaId}.");
+        }
+
+        Volatile.Write(ref _lastPlan, plan);
+    }
+
     internal MigrationResult Transform(
         ReadOnlyMemory<byte> payload,
         int schemaId,
