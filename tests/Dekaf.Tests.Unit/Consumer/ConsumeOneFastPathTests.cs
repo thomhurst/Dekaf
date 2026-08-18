@@ -79,10 +79,11 @@ public sealed class ConsumeOneFastPathTests
     [NotInParallel("ActivityListener")]
     public async Task ConsumeOneAsync_ColdDeserializerPreparation_CreatesOneConsumeActivity()
     {
+        const string activityTopic = "cold-preparation-activity-topic";
         var started = new ConcurrentQueue<Activity>();
         var stopped = new ConcurrentQueue<Activity>();
-        using var listener = CreateConsumeActivityListener(started, stopped);
-        var fetch = PendingFetchData.Create(Topic, Partition,
+        using var listener = CreateConsumeActivityListener(activityTopic, started, stopped);
+        var fetch = PendingFetchData.Create(activityTopic, Partition,
         [
             CreateBatch(20, CreateRecord(0, "a", "one"))
         ]);
@@ -108,10 +109,11 @@ public sealed class ConsumeOneFastPathTests
     [NotInParallel("ActivityListener")]
     public async Task ConsumeOneAsync_CanceledColdPreparation_StopsConsumeActivity()
     {
+        const string activityTopic = "canceled-cold-preparation-activity-topic";
         var started = new ConcurrentQueue<Activity>();
         var stopped = new ConcurrentQueue<Activity>();
-        using var listener = CreateConsumeActivityListener(started, stopped);
-        var fetch = PendingFetchData.Create(Topic, Partition,
+        using var listener = CreateConsumeActivityListener(activityTopic, started, stopped);
+        var fetch = PendingFetchData.Create(activityTopic, Partition,
         [
             CreateBatch(20, CreateRecord(0, "a", "one"))
         ]);
@@ -1214,16 +1216,26 @@ public sealed class ConsumeOneFastPathTests
     }
 
     private static ActivityListener CreateConsumeActivityListener(
+        string topic,
         ConcurrentQueue<Activity> started,
         ConcurrentQueue<Activity> stopped)
     {
+        var operationName = DekafDiagnostics.PollSpanName(topic);
         var listener = new ActivityListener
         {
             ShouldListenTo = static source => source.Name == DekafDiagnostics.ActivitySourceName,
             Sample = static (ref ActivityCreationOptions<ActivityContext> _) =>
                 ActivitySamplingResult.AllData,
-            ActivityStarted = started.Enqueue,
-            ActivityStopped = stopped.Enqueue
+            ActivityStarted = activity =>
+            {
+                if (activity.OperationName == operationName)
+                    started.Enqueue(activity);
+            },
+            ActivityStopped = activity =>
+            {
+                if (activity.OperationName == operationName)
+                    stopped.Enqueue(activity);
+            }
         };
         ActivitySource.AddActivityListener(listener);
         return listener;
