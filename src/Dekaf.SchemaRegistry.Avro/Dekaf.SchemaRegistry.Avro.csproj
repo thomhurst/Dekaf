@@ -21,14 +21,20 @@
     <ProjectReference Include="..\Dekaf.SchemaRegistry.Avro.Poco.Generator\Dekaf.SchemaRegistry.Avro.Poco.Generator.csproj"
                       OutputItemType="Analyzer"
                       ReferenceOutputAssembly="false" />
-    <None Include="..\Dekaf.SchemaRegistry.Avro.Poco.Generator\bin\$(Configuration)\netstandard2.0\*.dll"
-          Exclude="..\Dekaf.SchemaRegistry.Avro.Poco.Generator\bin\$(Configuration)\netstandard2.0\Microsoft.CodeAnalysis*.dll;
-                   ..\Dekaf.SchemaRegistry.Avro.Poco.Generator\bin\$(Configuration)\netstandard2.0\System.Collections.Immutable.dll;
-                   ..\Dekaf.SchemaRegistry.Avro.Poco.Generator\bin\$(Configuration)\netstandard2.0\System.Reflection.Metadata.dll;
-                   ..\Dekaf.SchemaRegistry.Avro.Poco.Generator\bin\$(Configuration)\netstandard2.0\System.Text.Encoding.CodePages.dll"
-          Pack="true"
-          PackagePath="analyzers/dotnet/cs"
-          Visible="false" />
   </ItemGroup>
+
+  <Target Name="IncludeAvroPocoGeneratorInPackage"
+          BeforeTargets="_GetPackageFiles">
+    <ItemGroup>
+      <None Include="..\Dekaf.SchemaRegistry.Avro.Poco.Generator\bin\$(Configuration)\netstandard2.0\*.dll"
+            Exclude="..\Dekaf.SchemaRegistry.Avro.Poco.Generator\bin\$(Configuration)\netstandard2.0\Microsoft.CodeAnalysis*.dll;
+                     ..\Dekaf.SchemaRegistry.Avro.Poco.Generator\bin\$(Configuration)\netstandard2.0\System.Collections.Immutable.dll;
+                     ..\Dekaf.SchemaRegistry.Avro.Poco.Generator\bin\$(Configuration)\netstandard2.0\System.Reflection.Metadata.dll;
+                     ..\Dekaf.SchemaRegistry.Avro.Poco.Generator\bin\$(Configuration)\netstandard2.0\System.Text.Encoding.CodePages.dll"
+            Pack="true"
+            PackagePath="analyzers/dotnet/cs"
+            Visible="false" />
+    </ItemGroup>
+  </Target>
 
 </Project>

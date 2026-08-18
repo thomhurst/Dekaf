@@ -769,6 +769,40 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    public async Task GeneratedCodec_RejectsInvalidOrdinalInSkippedWriterEnum()
+    {
+        const string writerSchemaJson =
+            """
+            {"type":"record","name":"PocoEvolved","namespace":"Dekaf.Tests","fields":[{"name":"legacy_id","type":"int"},{"name":"removed","type":{"type":"enum","name":"RemovedStatus","symbols":["A","B"]}}]}
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        var schemaId = await registry.RegisterSchemaAsync(
+            "poco-skipped-enum-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = writerSchemaJson
+            });
+        await using var reader = PocoEvolved.CreateAvroDeserializer(registry);
+        var context = new SerializationContext
+        {
+            Topic = "poco-skipped-enum",
+            Component = SerializationComponent.Value
+        };
+        var payload = new byte[16];
+        payload[0] = 0;
+        BinaryPrimitives.WriteInt32BigEndian(payload.AsSpan(1, 4), schemaId);
+        var writer = new AvroValueWriter(payload.AsSpan(5));
+        writer.WriteInt32(42);
+        writer.WriteIndex(2);
+        Array.Resize(ref payload, 5 + writer.WrittenCount);
+
+        await Assert.That(() => reader.Deserialize(payload, context))
+            .Throws<InvalidDataException>()
+            .WithMessageContaining("index is out of range");
+    }
+
+    [Test]
     public async Task GeneratedCodec_RejectsExcessiveRecursiveSkipDepth()
     {
         const string writerSchemaJson =

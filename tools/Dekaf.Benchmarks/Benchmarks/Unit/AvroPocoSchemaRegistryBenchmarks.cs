@@ -181,6 +181,10 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
         """
         {"type":"record","name":"PocoSkipBenchmarkRecord","namespace":"Dekaf.Benchmarks.Benchmarks.Unit","fields":[{"name":"Id","type":"int"},{"name":"ignored","type":{"type":"array","items":"int"}}]}
         """;
+    private const string SkipEnumSchemaJson =
+        """
+        {"type":"record","name":"PocoSkipBenchmarkRecord","namespace":"Dekaf.Benchmarks.Benchmarks.Unit","fields":[{"name":"Id","type":"int"},{"name":"ignored","type":{"type":"enum","name":"PocoSkippedStatus","symbols":["A","B"]}}]}
+        """;
     private const string TimeSpanSchemaJson =
         """
         {"type":"record","name":"PocoTimeSpanBenchmarkRecord","namespace":"Dekaf.Benchmarks","fields":[{"name":"Value","type":{"type":"long","logicalType":"time-micros"}}]}
@@ -210,6 +214,8 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
         _skipPoco = null!;
     private AvroPocoSchemaRegistryDeserializer<PocoSkipBenchmarkRecord, PocoSkipBenchmarkRecord.AvroCodec>
         _skipCollectionPoco = null!;
+    private AvroPocoSchemaRegistryDeserializer<PocoSkipBenchmarkRecord, PocoSkipBenchmarkRecord.AvroCodec>
+        _skipEnumPoco = null!;
     private AvroPocoSchemaRegistryDeserializer<PocoTimeSpanBenchmarkRecord, PocoTimeSpanBenchmarkRecord.AvroCodec>
         _timeSpanPoco = null!;
     private byte[] _wireData = null!;
@@ -218,6 +224,7 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
     private byte[] _collectionWireData = null!;
     private byte[] _skipWireData = null!;
     private byte[] _skipCollectionWireData = null!;
+    private byte[] _skipEnumWireData = null!;
     private byte[] _timeSpanWireData = null!;
 
     [GlobalSetup]
@@ -270,6 +277,12 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
                 SchemaType = global::Dekaf.SchemaRegistry.SchemaType.Avro,
                 SchemaString = SkipCollectionSchemaJson
             }));
+        _skipEnumPoco = PocoSkipBenchmarkRecord.CreateAvroDeserializer(
+            new BenchmarkSchemaRegistryClient(new global::Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = global::Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = SkipEnumSchemaJson
+            }));
         _timeSpanPoco = PocoTimeSpanBenchmarkRecord.CreateAvroDeserializer(
             new BenchmarkSchemaRegistryClient(new global::Dekaf.SchemaRegistry.Schema
             {
@@ -282,6 +295,7 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
         _collectionWireData = [0, 0, 0, 0, SchemaId, 0x06, 0x02, 0x04, 0x06, 0x00];
         _skipWireData = [0, 0, 0, 0, SchemaId, 0x54, 0x0E];
         _skipCollectionWireData = [0, 0, 0, 0, SchemaId, 0x54, 0x06, 0x02, 0x04, 0x06, 0x00];
+        _skipEnumWireData = [0, 0, 0, 0, SchemaId, 0x54, 0x02];
         _timeSpanWireData = CreateTimeSpanWireData();
 
         await _poco.WarmupAsync(SchemaId).ConfigureAwait(false);
@@ -292,6 +306,7 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
         await _collectionPoco.WarmupAsync(SchemaId).ConfigureAwait(false);
         await _skipPoco.WarmupAsync(SchemaId).ConfigureAwait(false);
         await _skipCollectionPoco.WarmupAsync(SchemaId).ConfigureAwait(false);
+        await _skipEnumPoco.WarmupAsync(SchemaId).ConfigureAwait(false);
         await _timeSpanPoco.WarmupAsync(SchemaId).ConfigureAwait(false);
         _ = _latestWriterUnionPoco.Deserialize(_writerUnionWireData, _context);
     }
@@ -308,6 +323,7 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
         await _collectionPoco.DisposeAsync().ConfigureAwait(false);
         await _skipPoco.DisposeAsync().ConfigureAwait(false);
         await _skipCollectionPoco.DisposeAsync().ConfigureAwait(false);
+        await _skipEnumPoco.DisposeAsync().ConfigureAwait(false);
         await _timeSpanPoco.DisposeAsync().ConfigureAwait(false);
     }
 
@@ -343,6 +359,10 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
     [Benchmark(Description = "Deserialize generated POCO with skipped collection")]
     public PocoSkipBenchmarkRecord DeserializeSkippedCollectionPoco() =>
         _skipCollectionPoco.Deserialize(_skipCollectionWireData, _context);
+
+    [Benchmark(Description = "Deserialize generated POCO with skipped enum")]
+    public PocoSkipBenchmarkRecord DeserializeSkippedEnumPoco() =>
+        _skipEnumPoco.Deserialize(_skipEnumWireData, _context);
 
     [Benchmark(Description = "Deserialize generated time-micros TimeSpan POCO")]
     public PocoTimeSpanBenchmarkRecord DeserializeTimeSpanPoco() =>

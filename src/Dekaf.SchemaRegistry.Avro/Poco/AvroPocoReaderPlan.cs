@@ -70,6 +70,8 @@ public sealed class AvroPocoReadNode
     /// <summary>Writer enum index to generated reader enum index.</summary>
     public ReadOnlyMemory<int> EnumMap { get; internal init; }
 
+    internal int EnumSymbolCount { get; init; }
+
     /// <summary>Generated reader-union branch selected for this writer node.</summary>
     public int ReaderUnionBranchIndex { get; internal set; } = -1;
 

@@ -131,7 +131,8 @@ internal static class AvroPocoReaderPlanBuilder
                                   string.Equals(@enum.Fullname, reader.FullName, StringComparison.Ordinal) =>
                 new AvroPocoReadNode(AvroPocoTypeKind.Enum)
                 {
-                    EnumMap = BuildEnumMap(@enum, reader.Symbols.Span)
+                    EnumMap = BuildEnumMap(@enum, reader.Symbols.Span),
+                    EnumSymbolCount = @enum.Count
                 },
             ArraySchema array when reader.Kind == AvroPocoTypeKind.Array =>
                 BuildCollectionNode(AvroPocoTypeKind.Array, array.ItemSchema, reader.Item!),
@@ -307,7 +308,10 @@ internal static class AvroPocoReaderPlanBuilder
             {
                 Branches = BuildSkipBranches(union, records)
             },
-            EnumSchema => new AvroPocoReadNode(AvroPocoTypeKind.Enum),
+            EnumSchema @enum => new AvroPocoReadNode(AvroPocoTypeKind.Enum)
+            {
+                EnumSymbolCount = @enum.Count
+            },
             FixedSchema fixedSchema => new AvroPocoReadNode(AvroPocoTypeKind.Bytes)
             {
                 FixedSize = fixedSchema.Size

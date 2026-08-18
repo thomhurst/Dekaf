@@ -195,8 +195,10 @@ public ref struct AvroValueReader
             case AvroPocoTypeKind.TimeMicroseconds:
             case AvroPocoTypeKind.TimestampMilliseconds:
             case AvroPocoTypeKind.TimestampMicroseconds:
-            case AvroPocoTypeKind.Enum:
                 _ = ReadInt64();
+                return;
+            case AvroPocoTypeKind.Enum:
+                _ = ReadIndex(node.EnumSymbolCount);
                 return;
             case AvroPocoTypeKind.Float:
                 Ensure(sizeof(float));
