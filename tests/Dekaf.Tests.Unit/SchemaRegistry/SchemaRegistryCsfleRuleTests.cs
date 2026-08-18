@@ -838,6 +838,67 @@ public sealed class SchemaRegistryCsfleRuleTests
     }
 
     [Test]
+    public async Task AvroTaggedTransformer_IgnoredFailurePreservesOversizedPriorPayload()
+    {
+        const int maxRetainedBufferSize = 1024 * 1024;
+        const string schemaText = """
+            {"type":"record","name":"RollbackPayload","fields":[
+                {"name":"secret","type":"bytes","confluent:tags":["PII"]}
+            ]}
+            """;
+        var avroSchema = (Avro.RecordSchema)AvroSchema.Parse(schemaText);
+        var tags = new HashSet<string>(StringComparer.Ordinal) { "PII" };
+        var expandRule = new SchemaRule
+        {
+            Name = "expand",
+            Kind = SchemaRuleKind.Transform,
+            Mode = SchemaRuleMode.Write,
+            Type = "EXPAND",
+            Tags = tags
+        };
+        var failingRule = new SchemaRule
+        {
+            Name = "fail",
+            Kind = SchemaRuleKind.Transform,
+            Mode = SchemaRuleMode.Write,
+            Type = "FAIL",
+            Tags = tags,
+            OnFailure = "NONE"
+        };
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = schemaText,
+            RuleSet = new SchemaRuleSet
+            {
+                DomainRules = [expandRule, failingRule],
+                HasFixedRuleCollections = true
+            }
+        };
+        var transformer = AvroTaggedFieldTransformer.Get(avroSchema, schema);
+        var replacement = new byte[maxRetainedBufferSize + 1];
+        replacement.AsSpan().Fill(0xA5);
+        var executor = new SchemaRegistryRuleExecutor(
+        [
+            new TestAvroTaggedRuleHandler("EXPAND", transformer, replacement),
+            new TestAvroTaggedRuleHandler("FAIL", transformer, replacement: null)
+        ]);
+
+        try
+        {
+            var transformed = executor.TransformSerializedPayload(
+                WriteAvroRecord(avroSchema, [1]),
+                CreateRuleContext(schema));
+
+            await Assert.That(ReadAvroBytes(avroSchema, transformed).AsSpan().SequenceEqual(replacement)).IsTrue();
+        }
+        finally
+        {
+            AvroTaggedFieldTransformerProvider.ReleaseOversizedOutputs();
+        }
+    }
+
+    [Test]
     public async Task AvroTaggedTransformer_OversizedTemporaryBuffer_IsNotRetained()
     {
         const int maxRetainedBufferSize = 1024 * 1024;
@@ -1853,6 +1914,28 @@ public sealed class SchemaRegistryCsfleRuleTests
         {
             ["local://payments"] = KekMaterial
         })]);
+
+    private sealed class TestAvroTaggedRuleHandler(
+        string type,
+        AvroTaggedFieldTransformer transformer,
+        byte[]? replacement) : ISchemaRegistryRuleHandler
+    {
+        public string Type => type;
+
+        public ReadOnlyMemory<byte> TransformSerializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleHandlerContext context) =>
+            transformer.Transform(
+                payload,
+                context,
+                replacement,
+                static (_, _, value) => value ?? throw new SchemaRegistryRuleException("Expected failure."));
+
+        public ReadOnlyMemory<byte> TransformDeserializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleHandlerContext context) =>
+            TransformSerializedPayload(payload, context);
+    }
 
     private static FakeDekRegistryClient CreateDekClient()
     {

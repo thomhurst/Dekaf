@@ -67,7 +67,6 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
         }
         finally
         {
-            workspace.ReleaseConsumedOversizedOutput(payload.Span);
             workspace.ReleaseOversizedTemporary();
         }
     }
@@ -1214,13 +1213,6 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void ReleaseConsumedOversizedOutput(ReadOnlySpan<byte> input)
-        {
-            if (_oversizedOutputMask != 0)
-                ReleaseConsumedOversizedOutputSlow(input);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void ReleaseOversizedOutputs()
         {
             if (_oversizedOutputMask != 0)
@@ -1243,25 +1235,6 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
             }
 
             _oversizedOutputMask = 0;
-        }
-
-        [MethodImpl(MethodImplOptions.NoInlining)]
-        private void ReleaseConsumedOversizedOutputSlow(ReadOnlySpan<byte> input)
-        {
-            for (var i = 0; i < _outputs.Length; i++)
-            {
-                var slotMask = 1 << i;
-                if ((_oversizedOutputMask & slotMask) == 0)
-                    continue;
-                var output = _outputs[i];
-                if (!input.Overlaps(output))
-                    continue;
-
-                _outputs[i] = null;
-                _outputLengths[i] = 0;
-                _oversizedOutputMask &= ~slotMask;
-                ArrayPool<byte>.Shared.Return(output!, clearArray: true);
-            }
         }
 
         private Span<byte> GetTemporary(int minimumLength)
