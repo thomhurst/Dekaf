@@ -898,6 +898,24 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    public async Task GeneratedCodec_RejectsInvalidUtf16String()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        await using var serializer = PocoGrowingPayload.CreateAvroSerializer(registry);
+        var context = new SerializationContext
+        {
+            Topic = "poco-invalid-utf16",
+            Component = SerializationComponent.Value
+        };
+        await serializer.WarmupAsync(context.Topic);
+        var destination = new ArrayBufferWriter<byte>();
+        var value = new PocoGrowingPayload { Value = "\uD800" };
+
+        await Assert.That(() => serializer.Serialize(value, ref destination, context))
+            .Throws<EncoderFallbackException>();
+    }
+
+    [Test]
     public async Task GeneratedCodec_RejectsInvalidUtf8String()
     {
         using var registry = new MockSchemaRegistryClient();

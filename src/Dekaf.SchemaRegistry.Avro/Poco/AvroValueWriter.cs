@@ -7,6 +7,8 @@ namespace Dekaf.SchemaRegistry.Avro.Poco;
 /// <summary>Allocation-free Avro binary writer used by generated codecs.</summary>
 public ref struct AvroValueWriter
 {
+    private static readonly UTF8Encoding StrictUtf8 = new(false, true);
+
     private Span<byte> _destination;
     private int _position;
 
@@ -83,11 +85,11 @@ public ref struct AvroValueWriter
     public void WriteString(string value)
     {
         ArgumentNullException.ThrowIfNull(value);
-        var byteCount = Encoding.UTF8.GetByteCount(value);
+        var byteCount = StrictUtf8.GetByteCount(value);
         WriteInt64(byteCount);
         if (!Ensure(byteCount))
             return;
-        _position += Encoding.UTF8.GetBytes(value, _destination.Slice(_position, byteCount));
+        _position += StrictUtf8.GetBytes(value, _destination.Slice(_position, byteCount));
     }
 
     /// <summary>Writes an Avro UUID logical value without allocating a string.</summary>
