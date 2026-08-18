@@ -756,6 +756,39 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    public async Task GeneratedCodec_RejectsByteArrayDefaultAllocationAmplification()
+    {
+        const string writerSchemaJson =
+            """
+            {"type":"record","name":"PocoByteArrayDefaultCollection","namespace":"Dekaf.Tests","fields":[{"name":"values","type":{"type":"array","items":{"type":"record","name":"PocoByteArrayDefaultItem","fields":[]}}}]}
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        var schemaId = await registry.RegisterSchemaAsync(
+            "poco-byte-array-default-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = writerSchemaJson
+            });
+        await using var reader = PocoByteArrayDefaultCollection.CreateAvroDeserializer(registry);
+        var context = new SerializationContext
+        {
+            Topic = "poco-byte-array-default",
+            Component = SerializationComponent.Value
+        };
+        var payload = new byte[16];
+        BinaryPrimitives.WriteInt32BigEndian(payload.AsSpan(1, 4), schemaId);
+        var writer = new AvroValueWriter(payload.AsSpan(5));
+        writer.WriteBlockCount(60_000);
+        writer.WriteBlockEnd();
+        Array.Resize(ref payload, 5 + writer.WrittenCount);
+
+        await Assert.That(() => reader.Deserialize(payload, context))
+            .Throws<InvalidDataException>()
+            .WithMessageContaining("allocation exceeds");
+    }
+
+    [Test]
     public async Task GeneratedCodec_StopsReadingLaterMembersAfterWriteOverflow()
     {
         var value = new PocoWriteOverflowRecord { First = new string('a', 1024) };
@@ -3379,6 +3412,20 @@ internal sealed partial class PocoNestedZeroWidthReferenceChild
 
     [AvroField(DefaultJson = "0", Order = 7)]
     public long Field7 { get; init; }
+}
+
+[AvroRecord(Name = "PocoByteArrayDefaultCollection", Namespace = "Dekaf.Tests")]
+internal sealed partial class PocoByteArrayDefaultCollection
+{
+    [AvroField(Name = "values")]
+    public required PocoByteArrayDefaultItem[] Values { get; init; }
+}
+
+[AvroRecord(Name = "PocoByteArrayDefaultItem", Namespace = "Dekaf.Tests")]
+internal sealed partial class PocoByteArrayDefaultItem
+{
+    [AvroField(DefaultJson = "\"abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz\"")]
+    public byte[] Data { get; init; } = [];
 }
 
 [AvroRecord(Name = "PocoWriteOverflowRecord", Namespace = "Dekaf.Tests")]

@@ -1595,12 +1595,21 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                 };
             }
 
-            if (type.IsValueType)
-                return 0;
+            var allocation = type.IsValueType ? 0 : GetMinimumRecordObjectSize(type.Record!);
+            foreach (var member in type.Record!.Members)
+            {
+                allocation = checked(allocation + Math.Max(
+                    GetMinimumDecodedAllocationSize(member.Type),
+                    GetMinimumDefaultAllocationSize(member)));
+            }
+            return allocation;
+        }
 
+        private static int GetMinimumRecordObjectSize(RecordModel record)
+        {
             const int ObjectHeaderSize = 16;
             var size = ObjectHeaderSize;
-            foreach (var member in type.Record!.Members)
+            foreach (var member in record.Members)
                 size = checked(size + GetMinimumFieldStorageSize(member.Type));
             return (size + 7) & ~7;
         }
@@ -1623,15 +1632,31 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                 return Math.Max(8, size);
             }
 
-            if (type.Kind == TypeKindModel.Record)
-                return checked(8 + GetMinimumDecodedAllocationSize(type));
-
-            if (type.Kind is TypeKindModel.Array or TypeKindModel.List or TypeKindModel.Map)
-                return checked(8 + GetMinimumDecodedAllocationSize(type));
-
             return type.Kind is TypeKindModel.Decimal or TypeKindModel.Uuid
                 ? 16
                 : 8;
+        }
+
+        private static int GetMinimumDefaultAllocationSize(MemberModel member)
+        {
+            if (member.DefaultJson is null)
+                return 0;
+
+            using var document = JsonDocument.Parse(member.DefaultJson);
+            return GetMinimumDefaultAllocationSize(member.Type, document.RootElement);
+        }
+
+        private static int GetMinimumDefaultAllocationSize(TypeModel type, JsonElement value)
+        {
+            if (value.ValueKind == JsonValueKind.Null)
+                return 0;
+            if (type.Kind is TypeKindModel.Nullable or TypeKindModel.Union)
+                return GetMinimumDefaultAllocationSize(type.Branches[0], value);
+            if (type.Kind != TypeKindModel.Bytes)
+                return 0;
+
+            const int ArrayHeaderSize = 24;
+            return checked(ArrayHeaderSize + ((value.GetString()!.Length + 7) & ~7));
         }
 
         private static void Assign(StringBuilder code, string target, string expression, string indent) =>
