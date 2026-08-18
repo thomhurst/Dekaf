@@ -63,8 +63,8 @@
     <PackageVersion Include="Testcontainers.Kafka" Version="4.14.0" />
     <PackageVersion Include="Testcontainers.Toxiproxy" Version="4.14.0" />
     <PackageVersion Include="ToxiproxyNetCore" Version="1.0.50" />
-    <PackageVersion Include="TUnit" Version="1.65.0" />
-    <PackageVersion Include="TUnit.Logging.Microsoft" Version="1.65.0" />
+    <PackageVersion Include="TUnit" Version="1.65.31" />
+    <PackageVersion Include="TUnit.Logging.Microsoft" Version="1.65.31" />
     <PackageVersion Include="Verify.TUnit" Version="31.28.0" />
     <PackageVersion Include="ZstdSharp.Port" Version="0.8.8" />
   </ItemGroup>
