@@ -943,7 +943,12 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
                 else
                 {
                     for (var valueIndex = 1; valueIndex < rowLength; valueIndex++)
-                        current[valueIndex] = previous[valueIndex - 1] && token == value[valueIndex - 1];
+                    {
+                        current[valueIndex] = previous[valueIndex - 1]
+                            && (token == '?'
+                                ? value[valueIndex - 1] != '.'
+                                : token == value[valueIndex - 1]);
+                    }
                 }
 
                 var swap = previous;
