@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
 using Dekaf.Admin;
+using Dekaf.Errors;
 using Dekaf.Networking;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
@@ -107,12 +108,26 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
             .Build();
     }
 
+    private static async Task CreateUniqueTopicAsync(IAdminClient admin, NewTopic topic)
+    {
+        try
+        {
+            await admin.CreateTopicsAsync([topic]).ConfigureAwait(false);
+        }
+        catch (KafkaException exception) when (exception.ErrorCode == ErrorCode.TopicAlreadyExists)
+        {
+            // Every helper topic has a fresh GUID. TopicAlreadyExists therefore means an
+            // ambiguous create was applied before the first observable response.
+        }
+    }
+
     public async Task<string> CreateTopicWithRemoteLeaderAndLocalFollowerAsync()
     {
         var topic = $"rack-aware-{Guid.NewGuid():N}";
         await using var admin = CreateAdminClient();
 
-        await admin.CreateTopicsAsync([
+        await CreateUniqueTopicAsync(
+            admin,
             new NewTopic
             {
                 Name = topic,
@@ -126,8 +141,7 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
                 {
                     ["min.insync.replicas"] = "1"
                 }
-            }
-        ]).ConfigureAwait(false);
+            }).ConfigureAwait(false);
 
         await WaitForTopicAssignmentAsync(admin, topic).ConfigureAwait(false);
         return topic;
@@ -138,7 +152,8 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
         var topic = $"replicated-{Guid.NewGuid():N}";
         await using var admin = CreateAdminClient();
 
-        await admin.CreateTopicsAsync([
+        await CreateUniqueTopicAsync(
+            admin,
             new NewTopic
             {
                 Name = topic,
@@ -152,8 +167,7 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
                 {
                     ["min.insync.replicas"] = minInSyncReplicas.ToString()
                 }
-            }
-        ]).ConfigureAwait(false);
+            }).ConfigureAwait(false);
 
         await WaitForTopicAssignmentAsync(admin, topic, [1, 2, 3]).ConfigureAwait(false);
         return topic;
@@ -182,7 +196,8 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
                 });
         await using var admin = CreateAdminClient();
 
-        await admin.CreateTopicsAsync([
+        await CreateUniqueTopicAsync(
+            admin,
             new NewTopic
             {
                 Name = topic,
@@ -193,8 +208,7 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
                 {
                     ["min.insync.replicas"] = minInSyncReplicas.ToString()
                 }
-            }
-        ]).ConfigureAwait(false);
+            }).ConfigureAwait(false);
 
         await WaitForTopicAssignmentAsync(admin, topic, assignments).ConfigureAwait(false);
         return topic;
@@ -285,7 +299,8 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
         var topic = $"unclean-election-{Guid.NewGuid():N}";
         await using var admin = CreateAdminClient();
 
-        await admin.CreateTopicsAsync([
+        await CreateUniqueTopicAsync(
+            admin,
             new NewTopic
             {
                 Name = topic,
@@ -300,8 +315,7 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
                     ["min.insync.replicas"] = "1",
                     ["unclean.leader.election.enable"] = "true"
                 }
-            }
-        ]).ConfigureAwait(false);
+            }).ConfigureAwait(false);
 
         await WaitForTopicAssignmentAsync(admin, topic).ConfigureAwait(false);
         return topic;
