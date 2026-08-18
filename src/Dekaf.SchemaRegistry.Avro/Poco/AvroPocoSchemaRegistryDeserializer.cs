@@ -1,6 +1,5 @@
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
-using System.Globalization;
 using Dekaf.SchemaRegistry.Avro;
 using Dekaf.Serialization;
 using AvroRecordSchema = global::Avro.RecordSchema;
@@ -18,7 +17,6 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
     private const int WireHeaderSize = 5;
     private const int GeneratedSubjectCacheSchemaId = 0;
     private const int MaxCachedPreparedRuleStates = 1024;
-    private const int MaxReferenceDepth = 128;
     internal const int MaxCachedPlans = 256;
     private static readonly TimeSpan RegistryTimeout = TimeSpan.FromSeconds(30);
 
@@ -620,15 +618,9 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
             return BuildPlan(schemaId, schema);
 
         ValidateAvroSchema(schemaId, schema);
-        var names = new AvroSchemaNames();
-        var resolved = new HashSet<AvroSchemaReferenceKey>();
-        var visiting = new HashSet<AvroSchemaReferenceKey>();
-        await ResolveReferencesAsync(
+        var names = await AvroSchemaReferenceResolver.ResolveAsync(
+                _schemaRegistry,
                 schema,
-                names,
-                resolved,
-                visiting,
-                depth: 0,
                 cancellationToken)
             .ConfigureAwait(false);
         var parsed = AvroSchema.Parse(schema.SchemaString, names) as AvroRecordSchema
@@ -636,48 +628,6 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         var plan = AvroPocoReaderPlanBuilder.Build<T, TCodec>(parsed);
         _resolvedSchemas[schemaId] = new ResolvedAvroSchema(plan, parsed);
         return plan;
-    }
-
-    private async Task ResolveReferencesAsync(
-        Schema schema,
-        AvroSchemaNames names,
-        HashSet<AvroSchemaReferenceKey> resolved,
-        HashSet<AvroSchemaReferenceKey> visiting,
-        int depth,
-        CancellationToken cancellationToken)
-    {
-        if (schema.References is not { Count: > 0 } references)
-            return;
-        if (depth >= MaxReferenceDepth)
-            throw new InvalidOperationException($"Avro schema reference depth exceeds {MaxReferenceDepth}.");
-
-        for (var index = 0; index < references.Count; index++)
-        {
-            var reference = references[index];
-            var key = new AvroSchemaReferenceKey(reference.Subject, reference.Version);
-            if (resolved.Contains(key))
-                continue;
-            if (!visiting.Add(key))
-                throw new InvalidOperationException("Cyclic Avro schema references are not supported.");
-
-            var registered = await _schemaRegistry.GetSchemaBySubjectAsync(
-                    reference.Subject,
-                    reference.Version.ToString(CultureInfo.InvariantCulture),
-                    cancellationToken)
-                .ConfigureAwait(false);
-            ValidateAvroSchema(registered.Id, registered.Schema);
-            await ResolveReferencesAsync(
-                    registered.Schema,
-                    names,
-                    resolved,
-                    visiting,
-                    depth + 1,
-                    cancellationToken)
-                .ConfigureAwait(false);
-            _ = AvroSchema.Parse(registered.Schema.SchemaString, names);
-            visiting.Remove(key);
-            resolved.Add(key);
-        }
     }
 
     private static AvroPocoReaderPlan BuildPlan(
@@ -787,8 +737,6 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
     }
 
     private readonly record struct PreparedRuleKey(int SchemaId, string Topic, bool IsKey);
-
-    private readonly record struct AvroSchemaReferenceKey(string Subject, int Version);
 
     private sealed record ResolvedAvroSchema(AvroPocoReaderPlan Plan, AvroSchema Schema);
 

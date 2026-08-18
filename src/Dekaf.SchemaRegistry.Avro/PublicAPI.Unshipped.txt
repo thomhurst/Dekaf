@@ -125,6 +125,13 @@ Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.ReadUuid() -> System.Guid
 Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.Skip(Dekaf.SchemaRegistry.Avro.Poco.AvroPocoReadNode! node) -> void
 Dekaf.SchemaRegistry.Avro.Poco.AvroValueWriter
 Dekaf.SchemaRegistry.Avro.Poco.AvroValueWriter.AvroValueWriter() -> void
+Dekaf.SchemaRegistry.Avro.Poco.AvroValueWriter.TryWriteBlockCount(int count) -> bool
+Dekaf.SchemaRegistry.Avro.Poco.AvroValueWriter.TryWriteBoolean(bool value) -> bool
+Dekaf.SchemaRegistry.Avro.Poco.AvroValueWriter.TryWriteDouble(double value) -> bool
+Dekaf.SchemaRegistry.Avro.Poco.AvroValueWriter.TryWriteIndex(int value) -> bool
+Dekaf.SchemaRegistry.Avro.Poco.AvroValueWriter.TryWriteInt32(int value) -> bool
+Dekaf.SchemaRegistry.Avro.Poco.AvroValueWriter.TryWriteInt64(long value) -> bool
+Dekaf.SchemaRegistry.Avro.Poco.AvroValueWriter.TryWriteSingle(float value) -> bool
 Dekaf.SchemaRegistry.Avro.Poco.AvroValueWriter.WriteBlockCount(int count) -> void
 Dekaf.SchemaRegistry.Avro.Poco.AvroValueWriter.WriteBlockEnd() -> void
 Dekaf.SchemaRegistry.Avro.Poco.AvroValueWriter.WriteBoolean(bool value) -> void

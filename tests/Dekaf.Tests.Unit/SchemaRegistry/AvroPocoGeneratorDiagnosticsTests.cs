@@ -97,7 +97,7 @@ public sealed class AvroPocoGeneratorDiagnosticsTests
             StringSplitOptions.None).Length - 1;
 
         await Assert.That(runResult.Diagnostics).IsEmpty();
-        await Assert.That(overflowChecks).IsEqualTo(3);
+        await Assert.That(overflowChecks).IsEqualTo(4);
     }
 
     [Test]

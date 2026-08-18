@@ -769,6 +769,35 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    public async Task GeneratedCodec_StopsBeforeComplexMemberAfterFixedWriteOverflow()
+    {
+        var value = new PocoFixedWriteOverflowRecord { First = 1, Later = "unread" };
+        Span<byte> destination = [];
+        var writer = new AvroValueWriter(destination);
+
+        PocoFixedWriteOverflowRecord.AvroCodec.Write(ref writer, value);
+
+        await Assert.That(writer.IsComplete).IsFalse();
+        await Assert.That(value.LaterMemberReadCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task GeneratedCodec_StopsCollectionAfterExpensiveItemOverflow()
+    {
+        var first = new PocoCollectionOverflowItem { Value = new string('a', 1024) };
+        var second = new PocoCollectionOverflowItem { Value = "unread" };
+        var value = new PocoCollectionOverflowRecord { Items = [first, second] };
+        Span<byte> destination = stackalloc byte[8];
+        var writer = new AvroValueWriter(destination);
+
+        PocoCollectionOverflowRecord.AvroCodec.Write(ref writer, value);
+
+        await Assert.That(writer.IsComplete).IsFalse();
+        await Assert.That(first.ValueReadCount).IsEqualTo(1);
+        await Assert.That(second.ValueReadCount).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task GeneratedCodec_RejectsZeroWidthMapAllocationAmplification()
     {
         const string writerSchemaJson =
@@ -2154,6 +2183,48 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    public async Task GeneratedCodec_ValidatesLatestSchemaWithReferences()
+    {
+        const string addressSchemaJson =
+            """
+            {"type":"record","name":"PocoAddress","namespace":"Dekaf.Tests","fields":[{"name":"City","type":"string"},{"name":"PostCode","type":"string"}]}
+            """;
+        const string rootSchemaJson =
+            """
+            {"type":"record","name":"PocoReferencedRoot","namespace":"Dekaf.Tests","fields":[{"name":"Address","type":"Dekaf.Tests.PocoAddress"}]}
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        _ = await registry.RegisterSchemaAsync(
+            "poco-referenced-latest-address-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = addressSchemaJson
+            });
+        _ = await registry.RegisterSchemaAsync(
+            "poco-referenced-latest-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = rootSchemaJson,
+                References =
+                [
+                    new Dekaf.SchemaRegistry.SchemaReference
+                    {
+                        Name = "Dekaf.Tests.PocoAddress",
+                        Subject = "poco-referenced-latest-address-value",
+                        Version = 1
+                    }
+                ]
+            });
+        await using var serializer = PocoReferencedRoot.CreateAvroSerializer(
+            registry,
+            new AvroSerializerConfig { UseLatestVersion = true });
+
+        await serializer.WarmupAsync("poco-referenced-latest");
+    }
+
+    [Test]
     public async Task GeneratedCodec_RejectsDifferentLatestWriterSchema()
     {
         const string latestSchemaJson =
@@ -3332,6 +3403,56 @@ internal sealed partial class PocoWriteOverflowRecord
 
     [AvroIgnore]
     public int LaterMemberReadCount => _laterMemberReadCount;
+}
+
+[AvroRecord(Name = "PocoFixedWriteOverflowRecord", Namespace = "Dekaf.Tests")]
+internal sealed partial class PocoFixedWriteOverflowRecord
+{
+    private int _laterMemberReadCount;
+    private string _later = string.Empty;
+
+    [AvroField(Order = 0)]
+    public int First { get; init; }
+
+    [AvroField(Order = 1)]
+    public string Later
+    {
+        get
+        {
+            _laterMemberReadCount++;
+            return _later;
+        }
+        init => _later = value;
+    }
+
+    [AvroIgnore]
+    public int LaterMemberReadCount => _laterMemberReadCount;
+}
+
+[AvroRecord(Name = "PocoCollectionOverflowRecord", Namespace = "Dekaf.Tests")]
+internal sealed partial class PocoCollectionOverflowRecord
+{
+    public required PocoCollectionOverflowItem[] Items { get; init; }
+}
+
+[AvroRecord(Name = "PocoCollectionOverflowItem", Namespace = "Dekaf.Tests")]
+internal sealed partial class PocoCollectionOverflowItem
+{
+    private int _valueReadCount;
+    private string _value = string.Empty;
+
+    public string Value
+    {
+        get
+        {
+            _valueReadCount++;
+            return _value;
+        }
+        init => _value = value;
+    }
+
+    [AvroIgnore]
+    public int ValueReadCount => _valueReadCount;
 }
 
 [AvroRecord(Name = "PocoLargeZeroWidthMap", Namespace = "Dekaf.Tests")]

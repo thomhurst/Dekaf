@@ -32,9 +32,23 @@ public ref struct AvroValueWriter
         _destination[_position++] = value ? (byte)1 : (byte)0;
     }
 
+    /// <summary>Tries to write an Avro boolean.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool TryWriteBoolean(bool value)
+    {
+        if (!Ensure(1))
+            return false;
+        _destination[_position++] = value ? (byte)1 : (byte)0;
+        return true;
+    }
+
     /// <summary>Writes an Avro int.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void WriteInt32(int value) => WriteInt64(value);
+
+    /// <summary>Tries to write an Avro int.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool TryWriteInt32(int value) => TryWriteInt64(value);
 
     /// <summary>Writes an Avro long.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -52,6 +66,20 @@ public ref struct AvroValueWriter
         _destination[_position++] = (byte)encoded;
     }
 
+    /// <summary>Tries to write an Avro long.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool TryWriteInt64(long value)
+    {
+        var encoded = (ulong)((value << 1) ^ (value >> 63));
+        if ((encoded & ~0x7FUL) != 0)
+            return TryWriteInt64Slow(encoded);
+
+        if (!Ensure(1))
+            return false;
+        _destination[_position++] = (byte)encoded;
+        return true;
+    }
+
     /// <summary>Writes an Avro float.</summary>
     public void WriteSingle(float value)
     {
@@ -61,6 +89,17 @@ public ref struct AvroValueWriter
         _position += sizeof(float);
     }
 
+    /// <summary>Tries to write an Avro float.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool TryWriteSingle(float value)
+    {
+        if (!Ensure(sizeof(float)))
+            return false;
+        BinaryPrimitives.WriteSingleLittleEndian(_destination.Slice(_position, sizeof(float)), value);
+        _position += sizeof(float);
+        return true;
+    }
+
     /// <summary>Writes an Avro double.</summary>
     public void WriteDouble(double value)
     {
@@ -68,6 +107,17 @@ public ref struct AvroValueWriter
             return;
         BinaryPrimitives.WriteDoubleLittleEndian(_destination.Slice(_position, sizeof(double)), value);
         _position += sizeof(double);
+    }
+
+    /// <summary>Tries to write an Avro double.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool TryWriteDouble(double value)
+    {
+        if (!Ensure(sizeof(double)))
+            return false;
+        BinaryPrimitives.WriteDoubleLittleEndian(_destination.Slice(_position, sizeof(double)), value);
+        _position += sizeof(double);
+        return true;
     }
 
     /// <summary>Writes Avro bytes.</summary>
@@ -112,6 +162,10 @@ public ref struct AvroValueWriter
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void WriteIndex(int value) => WriteInt32(value);
 
+    /// <summary>Tries to write an enum or union branch index.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool TryWriteIndex(int value) => TryWriteInt32(value);
+
     /// <summary>Starts a single-block array or map.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void WriteBlockCount(int count)
@@ -119,6 +173,15 @@ public ref struct AvroValueWriter
         if ((uint)count > AvroValueReader.MaxCollectionItemCount)
             AvroValueReader.ThrowCollectionLimit();
         WriteInt64(count);
+    }
+
+    /// <summary>Tries to start a single-block array or map.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool TryWriteBlockCount(int count)
+    {
+        if ((uint)count > AvroValueReader.MaxCollectionItemCount)
+            AvroValueReader.ThrowCollectionLimit();
+        return TryWriteInt64(count);
     }
 
     /// <summary>Ends an array or map.</summary>
@@ -148,6 +211,23 @@ public ref struct AvroValueWriter
         if (!Ensure(1))
             return;
         _destination[_position++] = (byte)encoded;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private bool TryWriteInt64Slow(ulong encoded)
+    {
+        while ((encoded & ~0x7FUL) != 0)
+        {
+            if (!Ensure(1))
+                return false;
+            _destination[_position++] = (byte)((encoded & 0x7F) | 0x80);
+            encoded >>= 7;
+        }
+
+        if (!Ensure(1))
+            return false;
+        _destination[_position++] = (byte)encoded;
+        return true;
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

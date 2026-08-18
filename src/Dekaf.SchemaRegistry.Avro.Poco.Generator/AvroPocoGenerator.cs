@@ -932,7 +932,8 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                 var local = "__value" + index.ToString(CultureInfo.InvariantCulture);
                 code.Append("            var ").Append(local).Append(" = value.")
                     .Append(EscapeIdentifier(member.ClrName)).AppendLine(";");
-                EmitWriteValue(code, member.Type, local, "            ");
+                EmitWriteValue(code, member.Type, local, "            ",
+                    stopOnOverflow: index != _record.Members.Length - 1);
                 if (index != _record.Members.Length - 1 && NeedsOverflowShortCircuit(member.Type))
                 {
                     code.AppendLine("            if (writer.WrittenCount == int.MaxValue)");
@@ -1064,7 +1065,12 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             code.AppendLine("}");
         }
 
-        private void EmitWriteValue(StringBuilder code, TypeModel type, string value, string indent)
+        private void EmitWriteValue(
+            StringBuilder code,
+            TypeModel type,
+            string value,
+            string indent,
+            bool stopOnOverflow = false)
         {
             if (type.Kind == TypeKindModel.Nullable || type.Kind == TypeKindModel.Union)
             {
@@ -1073,7 +1079,8 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                 code.Append(indent).Append("if (").Append(value).AppendLine(" is null)");
                 code.Append(indent).AppendLine("{");
                 if (nullIndex >= 0)
-                    code.Append(indent).Append("    writer.WriteIndex(").Append(nullIndex).AppendLine(");");
+                    code.Append(indent).Append(stopOnOverflow ? "    if (!writer.TryWriteIndex(" : "    writer.WriteIndex(")
+                        .Append(nullIndex).AppendLine(stopOnOverflow ? ")) return;" : ");");
                 else
                     code.Append(indent).AppendLine("    throw new global::System.InvalidOperationException(\"Non-nullable POCO union value cannot be null.\");");
                 code.Append(indent).AppendLine("}");
@@ -1082,12 +1089,13 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                 if (type.Kind == TypeKindModel.Nullable)
                 {
                     var nonNullIndex = nullIndex == 0 ? 1 : 0;
-                    code.Append(indent).Append("    writer.WriteIndex(").Append(nonNullIndex).AppendLine(");");
+                    code.Append(indent).Append(stopOnOverflow ? "    if (!writer.TryWriteIndex(" : "    writer.WriteIndex(")
+                        .Append(nonNullIndex).AppendLine(stopOnOverflow ? ")) return;" : ");");
                     var innerValue = type.SymbolType.EndsWith("?", StringComparison.Ordinal) &&
                                      type.Branches[nonNullIndex].IsValueType
                         ? value + ".Value"
                         : value;
-                    EmitWriteValue(code, type.Branches[nonNullIndex], innerValue, indent + "    ");
+                    EmitWriteValue(code, type.Branches[nonNullIndex], innerValue, indent + "    ", stopOnOverflow);
                 }
                 else
                 {
@@ -1099,8 +1107,9 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                             .Append(" (").Append(value).Append(" is ").Append(branches[index].SymbolType)
                             .Append(" __union").Append(_localId).AppendLine(")");
                         code.Append(indent).AppendLine("    {");
-                        code.Append(indent).Append("        writer.WriteIndex(").Append(index).AppendLine(");");
-                        EmitWriteValue(code, branches[index], "__union" + _localId, indent + "        ");
+                        code.Append(indent).Append(stopOnOverflow ? "        if (!writer.TryWriteIndex(" : "        writer.WriteIndex(")
+                            .Append(index).AppendLine(stopOnOverflow ? ")) return;" : ");");
+                        EmitWriteValue(code, branches[index], "__union" + _localId, indent + "        ", stopOnOverflow);
                         code.Append(indent).AppendLine("    }");
                         _localId++;
                     }
@@ -1119,19 +1128,19 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                     code.Append(indent).AppendLine("global::Dekaf.SchemaRegistry.Avro.Poco.AvroValueWriter.WriteNull();");
                     break;
                 case TypeKindModel.Boolean:
-                    code.Append(indent).Append("writer.WriteBoolean(").Append(value).AppendLine(");");
+                    EmitFixedWrite(code, "Boolean", value, indent, stopOnOverflow);
                     break;
                 case TypeKindModel.Int:
-                    code.Append(indent).Append("writer.WriteInt32(").Append(value).AppendLine(");");
+                    EmitFixedWrite(code, "Int32", value, indent, stopOnOverflow);
                     break;
                 case TypeKindModel.Long:
-                    code.Append(indent).Append("writer.WriteInt64(").Append(value).AppendLine(");");
+                    EmitFixedWrite(code, "Int64", value, indent, stopOnOverflow);
                     break;
                 case TypeKindModel.Float:
-                    code.Append(indent).Append("writer.WriteSingle(").Append(value).AppendLine(");");
+                    EmitFixedWrite(code, "Single", value, indent, stopOnOverflow);
                     break;
                 case TypeKindModel.Double:
-                    code.Append(indent).Append("writer.WriteDouble(").Append(value).AppendLine(");");
+                    EmitFixedWrite(code, "Double", value, indent, stopOnOverflow);
                     break;
                 case TypeKindModel.Bytes:
                     code.Append(indent).Append("global::System.ArgumentNullException.ThrowIfNull(")
@@ -1142,7 +1151,7 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                     code.Append(indent).Append("writer.WriteString(").Append(value).AppendLine(");");
                     break;
                 case TypeKindModel.Enum:
-                    EmitWriteEnum(code, type, value, indent);
+                    EmitWriteEnum(code, type, value, indent, stopOnOverflow);
                     break;
                 case TypeKindModel.Record:
                     code.Append(indent).Append(type.SymbolType).Append(".AvroCodec.Write(ref writer, ")
@@ -1156,8 +1165,9 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                     EmitWriteMap(code, type, value, indent);
                     break;
                 case TypeKindModel.Date:
-                    code.Append(indent).Append("writer.WriteInt32(").Append(value)
-                        .AppendLine(".DayNumber - global::System.DateOnly.FromDateTime(global::System.DateTime.UnixEpoch).DayNumber);");
+                    EmitFixedWrite(code, "Int32", value +
+                        ".DayNumber - global::System.DateOnly.FromDateTime(global::System.DateTime.UnixEpoch).DayNumber",
+                        indent, stopOnOverflow);
                     break;
                 case TypeKindModel.TimeMicroseconds:
                     if (type.SymbolType == "global::System.TimeSpan")
@@ -1167,19 +1177,19 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                             .AppendLine(".Ticks >= global::System.TimeSpan.TicksPerDay)");
                         code.Append(indent).AppendLine("    throw new global::System.InvalidOperationException(\"Avro time-micros requires a TimeSpan from zero through less than 24 hours.\");");
                     }
-                    code.Append(indent).Append("writer.WriteInt64(").Append(value).AppendLine(".Ticks / 10L);");
+                    EmitFixedWrite(code, "Int64", value + ".Ticks / 10L", indent, stopOnOverflow);
                     break;
                 case TypeKindModel.TimestampMicroseconds:
                     if (type.SymbolType == "global::System.DateTimeOffset")
-                        code.Append(indent).Append("writer.WriteInt64((").Append(value)
-                            .AppendLine(".UtcTicks - global::System.DateTimeOffset.UnixEpoch.UtcTicks) / 10L);");
+                        EmitFixedWrite(code, "Int64", "(" + value +
+                            ".UtcTicks - global::System.DateTimeOffset.UnixEpoch.UtcTicks) / 10L", indent, stopOnOverflow);
                     else
                     {
                         code.Append(indent).Append("if (").Append(value)
                             .AppendLine(".Kind != global::System.DateTimeKind.Utc)");
                         code.Append(indent).AppendLine("    throw new global::System.InvalidOperationException(\"Avro timestamp-micros requires a UTC DateTime.\");");
-                        code.Append(indent).Append("writer.WriteInt64((").Append(value)
-                            .AppendLine(".Ticks - global::System.DateTime.UnixEpoch.Ticks) / 10L);");
+                        EmitFixedWrite(code, "Int64", "(" + value +
+                            ".Ticks - global::System.DateTime.UnixEpoch.Ticks) / 10L", indent, stopOnOverflow);
                     }
                     break;
                 case TypeKindModel.Uuid:
@@ -1337,9 +1347,34 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             }
         }
 
-        private static void EmitWriteEnum(StringBuilder code, TypeModel type, string value, string indent)
+        private static void EmitFixedWrite(
+            StringBuilder code,
+            string method,
+            string value,
+            string indent,
+            bool stopOnOverflow)
         {
-            code.Append(indent).AppendLine("writer.WriteIndex(" + value + " switch");
+            code.Append(indent);
+            if (stopOnOverflow)
+                code.Append("if (!writer.TryWrite").Append(method).Append('(').Append(value).AppendLine(")) return;");
+            else
+                code.Append("writer.Write").Append(method).Append('(').Append(value).AppendLine(");");
+        }
+
+        private void EmitWriteEnum(
+            StringBuilder code,
+            TypeModel type,
+            string value,
+            string indent,
+            bool stopOnOverflow)
+        {
+            var enumIndex = stopOnOverflow ? "__enumIndex" + _localId++ : null;
+            code.Append(indent);
+            if (enumIndex is not null)
+                code.Append("var ").Append(enumIndex).Append(" = ");
+            else
+                code.Append("writer.WriteIndex(");
+            code.AppendLine(value + " switch");
             code.Append(indent).AppendLine("{");
             for (var index = 0; index < type.Symbols.Length; index++)
             {
@@ -1347,7 +1382,9 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                     .Append(EscapeIdentifier(type.Symbols[index])).Append(" => ").Append(index).AppendLine(",");
             }
             code.Append(indent).AppendLine("    _ => throw new global::System.InvalidOperationException(\"Enum value is not declared in the generated Avro schema.\")");
-            code.Append(indent).AppendLine("});");
+            code.Append(indent).AppendLine(enumIndex is not null ? "};" : "});");
+            if (enumIndex is not null)
+                code.Append(indent).Append("if (!writer.TryWriteIndex(").Append(enumIndex).AppendLine(")) return;");
         }
 
         private void EmitReadEnum(StringBuilder code, TypeModel type, string node, string target, string indent)
@@ -1376,7 +1413,8 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             var count = type.Kind == TypeKindModel.Array ? ".Length" : ".Count";
             code.Append(indent).Append("if (").Append(value).Append(count).AppendLine(" != 0)");
             code.Append(indent).AppendLine("{");
-            code.Append(indent).Append("    writer.WriteBlockCount(").Append(value).Append(count).AppendLine(");");
+            code.Append(indent).Append("    if (!writer.TryWriteBlockCount(").Append(value).Append(count)
+                .AppendLine(")) return;");
             code.Append(indent).Append("    var ").Append(index).AppendLine(" = 0;");
             code.Append(indent).Append("    while (").Append(index).Append(" < ").Append(value).Append(count)
                 .AppendLine(")");
@@ -1387,6 +1425,11 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             code.Append(indent).AppendLine("        do");
             code.Append(indent).AppendLine("        {");
             EmitWriteValue(code, type.Item!, value + "[" + index + "]", indent + "            ");
+            if (NeedsOverflowShortCircuit(type.Item!))
+            {
+                code.Append(indent).AppendLine("            if (writer.WrittenCount == int.MaxValue)");
+                code.Append(indent).AppendLine("                return;");
+            }
             code.Append(indent).Append("            ").Append(index).AppendLine("++;");
             code.Append(indent).Append("        } while (").Append(index).Append(" < ").Append(end).AppendLine(");");
             code.Append(indent).AppendLine("        if (writer.WrittenCount == int.MaxValue)");
@@ -1401,10 +1444,12 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             var pair = "__pair" + _localId++;
             code.Append(indent).Append("if (").Append(value).AppendLine(".Count != 0)");
             code.Append(indent).AppendLine("{");
-            code.Append(indent).Append("    writer.WriteBlockCount(").Append(value).AppendLine(".Count);");
+            code.Append(indent).Append("    if (!writer.TryWriteBlockCount(").Append(value).AppendLine(".Count)) return;");
             code.Append(indent).Append("    foreach (var ").Append(pair).Append(" in ").Append(value).AppendLine(")");
             code.Append(indent).AppendLine("    {");
             code.Append(indent).Append("        writer.WriteString(").Append(pair).AppendLine(".Key);");
+            code.Append(indent).AppendLine("        if (writer.WrittenCount == int.MaxValue)");
+            code.Append(indent).AppendLine("            return;");
             EmitWriteValue(code, type.Item!, pair + ".Value", indent + "        ");
             code.Append(indent).AppendLine("        if (writer.WrittenCount == int.MaxValue)");
             code.Append(indent).AppendLine("            break;");

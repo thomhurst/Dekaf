@@ -447,7 +447,7 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
                     "latest",
                     cancellationToken)
                 .ConfigureAwait(false);
-            return ValidateLatestSchema(registered);
+            return await ValidateLatestSchemaAsync(registered, cancellationToken).ConfigureAwait(false);
         }
 
         if (_config.AutoRegisterSchemas)
@@ -478,11 +478,26 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(existing.Id, existing.Schema);
     }
 
-    private static SubjectSchemaIdCache.SubjectSchemaIdCacheValue ValidateLatestSchema(
-        RegisteredSchema registered)
+    private async Task<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> ValidateLatestSchemaAsync(
+        RegisteredSchema registered,
+        CancellationToken cancellationToken)
     {
-        if (registered.Schema.SchemaType != SchemaType.Avro ||
-            !GeneratedSchema.Value.Equals(AvroSchema.Parse(registered.Schema.SchemaString)))
+        AvroSchema? latestSchema = null;
+        if (registered.Schema.SchemaType == SchemaType.Avro)
+        {
+            var names = registered.Schema.References is { Count: > 0 }
+                ? await AvroSchemaReferenceResolver.ResolveAsync(
+                        _schemaRegistry,
+                        registered.Schema,
+                        cancellationToken)
+                    .ConfigureAwait(false)
+                : null;
+            latestSchema = names is null
+                ? AvroSchema.Parse(registered.Schema.SchemaString)
+                : AvroSchema.Parse(registered.Schema.SchemaString, names);
+        }
+
+        if (!GeneratedSchema.Value.Equals(latestSchema))
         {
             throw new InvalidOperationException(
                 $"Latest schema version {registered.Version} for subject '{registered.Subject}' does not match " +
