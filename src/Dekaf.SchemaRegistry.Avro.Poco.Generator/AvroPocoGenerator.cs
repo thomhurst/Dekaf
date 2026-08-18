@@ -454,6 +454,15 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                 var branches = ImmutableArray.CreateBuilder<TypeModel>();
                 if (symbol.NullableAnnotation == NullableAnnotation.Annotated)
                     branches.Add(TypeModel.Primitive(TypeKindModel.Null));
+                foreach (var unionType in unionTypes)
+                {
+                    if (unionType is null)
+                    {
+                        Error(UnsupportedType, member.Locations.FirstOrDefault(), member.Name,
+                            "<null>", "union branch types cannot be null");
+                        return null;
+                    }
+                }
                 for (var left = 0; left < unionTypes.Length; left++)
                 {
                     for (var right = left + 1; right < unionTypes.Length; right++)
@@ -475,12 +484,6 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                 }
                 foreach (var unionType in unionTypes)
                 {
-                    if (unionType is null)
-                    {
-                        Error(UnsupportedType, member.Locations.FirstOrDefault(), member.Name,
-                            "<null>", "union branch types cannot be null");
-                        return null;
-                    }
                     if (symbol.TypeKind == TypeKind.Interface && !IsAssignableTo(unionType, symbol))
                     {
                         Error(UnsupportedType, member.Locations.FirstOrDefault(), member.Name,
