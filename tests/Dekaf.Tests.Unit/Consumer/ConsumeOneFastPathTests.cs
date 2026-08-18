@@ -76,6 +76,62 @@ public sealed class ConsumeOneFastPathTests
     }
 
     [Test]
+    [NotInParallel("ActivityListener")]
+    public async Task ConsumeOneAsync_ColdDeserializerPreparation_CreatesOneConsumeActivity()
+    {
+        var started = new ConcurrentQueue<Activity>();
+        var stopped = new ConcurrentQueue<Activity>();
+        using var listener = CreateConsumeActivityListener(started, stopped);
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20, CreateRecord(0, "a", "one"))
+        ]);
+        var deserializer = new GatedPreparedStringDeserializer();
+        await using var consumer = CreateInitializedConsumerWithDeserializers(
+            fetch,
+            valueDeserializer: deserializer);
+        MarkManualAssignmentCurrent(consumer);
+
+        var consume = consumer.ConsumeOneAsync(TimeSpan.FromSeconds(10), CancellationToken.None);
+        await deserializer.PreparationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        deserializer.ReleasePreparation();
+
+        var result = await consume;
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(started).Count().IsEqualTo(1);
+        await Assert.That(stopped).Count().IsEqualTo(1);
+        await Assert.That(stopped.Single().GetTagItem("messaging.kafka.offset")).IsEqualTo(20L);
+    }
+
+    [Test]
+    [NotInParallel("ActivityListener")]
+    public async Task ConsumeOneAsync_CanceledColdPreparation_StopsConsumeActivity()
+    {
+        var started = new ConcurrentQueue<Activity>();
+        var stopped = new ConcurrentQueue<Activity>();
+        using var listener = CreateConsumeActivityListener(started, stopped);
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20, CreateRecord(0, "a", "one"))
+        ]);
+        var deserializer = new GatedPreparedStringDeserializer();
+        await using var consumer = CreateInitializedConsumerWithDeserializers(
+            fetch,
+            valueDeserializer: deserializer);
+        MarkManualAssignmentCurrent(consumer);
+        using var cancellation = new CancellationTokenSource();
+
+        var consume = consumer.ConsumeOneAsync(TimeSpan.FromSeconds(10), cancellation.Token);
+        await deserializer.PreparationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        cancellation.Cancel();
+
+        await Assert.That(async () => await consume).Throws<OperationCanceledException>();
+        await Assert.That(started).Count().IsEqualTo(1);
+        await Assert.That(stopped).Count().IsEqualTo(1);
+    }
+
+    [Test]
     public async Task ConsumeAsync_ColdDeserializerPreparation_AwaitsThenUsesSynchronousDecoder()
     {
         var fetch = PendingFetchData.Create(Topic, Partition,
@@ -1155,6 +1211,22 @@ public sealed class ConsumeOneFastPathTests
         }
 
         public void ReleasePreparation() => _release.TrySetResult();
+    }
+
+    private static ActivityListener CreateConsumeActivityListener(
+        ConcurrentQueue<Activity> started,
+        ConcurrentQueue<Activity> stopped)
+    {
+        var listener = new ActivityListener
+        {
+            ShouldListenTo = static source => source.Name == DekafDiagnostics.ActivitySourceName,
+            Sample = static (ref ActivityCreationOptions<ActivityContext> _) =>
+                ActivitySamplingResult.AllData,
+            ActivityStarted = started.Enqueue,
+            ActivityStopped = stopped.Enqueue
+        };
+        ActivitySource.AddActivityListener(listener);
+        return listener;
     }
 
     private sealed class PreparedOnlyStringDeserializer

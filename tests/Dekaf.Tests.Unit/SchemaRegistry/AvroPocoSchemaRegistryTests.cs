@@ -845,6 +845,41 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    [NotInParallel]
+    public async Task GeneratedCodec_DirectPathAlternatingOversizedPayloadUsesBoundedSmallHint()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        await using var serializer = new AvroPocoSchemaRegistrySerializer<
+            CountingPocoPayload,
+            CountingPocoPayloadCodec>(registry);
+        var context = new SerializationContext
+        {
+            Topic = "poco-alternating-large-direct",
+            Component = SerializationComponent.Value
+        };
+        var small = new CountingPocoPayload { Value = "small" };
+        var large = new CountingPocoPayload { Value = new string('x', 1024 * 1024 + 1) };
+        var destination = new ExactSizeBufferWriter(2 * 1024 * 1024 + 16);
+
+        serializer.Serialize(large, ref destination, context);
+        destination.Clear();
+        serializer.Serialize(small, ref destination, context);
+        destination.Clear();
+        CountingPocoPayloadCodec.ResetWriteCount();
+
+        for (var index = 0; index < 100; index++)
+        {
+            serializer.Serialize(large, ref destination, context);
+            destination.Clear();
+            serializer.Serialize(small, ref destination, context);
+            await Assert.That(destination.LastMemorySizeHint).IsLessThanOrEqualTo(1024 * 1024);
+            destination.Clear();
+        }
+
+        await Assert.That(CountingPocoPayloadCodec.WriteCount).IsEqualTo(200);
+    }
+
+    [Test]
     public async Task GeneratedCodec_RetainsLargePayloadSizeHint()
     {
         using var registry = new MockSchemaRegistryClient();
@@ -857,6 +892,8 @@ public sealed class AvroPocoSchemaRegistryTests
         var value = new PocoLargeGrowingPayload { Value = new string('x', 1024 * 1024 + 1) };
         var destination = new ExactSizeBufferWriter(2 * 1024 * 1024 + 16);
 
+        serializer.Serialize(value, ref destination, context);
+        destination.Clear();
         serializer.Serialize(value, ref destination, context);
         destination.Clear();
         serializer.Serialize(value, ref destination, context);
@@ -2936,6 +2973,7 @@ public sealed class AvroPocoSchemaRegistryTests
 
         public int WrittenCount { get; private set; }
         public int GetMemoryCallCount { get; private set; }
+        public int LastMemorySizeHint { get; private set; }
 
         public void Advance(int count)
         {
@@ -2947,6 +2985,7 @@ public sealed class AvroPocoSchemaRegistryTests
         public Memory<byte> GetMemory(int sizeHint = 0)
         {
             GetMemoryCallCount++;
+            LastMemorySizeHint = sizeHint;
             return _buffer.AsMemory(WrittenCount, GetLength(sizeHint));
         }
 
@@ -2957,6 +2996,7 @@ public sealed class AvroPocoSchemaRegistryTests
         {
             WrittenCount = 0;
             GetMemoryCallCount = 0;
+            LastMemorySizeHint = 0;
         }
 
         private int GetLength(int sizeHint)

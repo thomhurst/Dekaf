@@ -4955,7 +4955,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                 if (requiresAsyncPreparation)
                 {
-                    return ConsumeOneWithTimeoutAsync(
+                    return ConsumeOneWithTimeoutAfterPreparationMissAsync(
                         timeout,
                         bufferedDrainStarted,
                         pollRecorded,
@@ -5017,6 +5017,29 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         return null;
+    }
+
+    private async ValueTask<ConsumeResult<TKey, TValue>?> ConsumeOneWithTimeoutAfterPreparationMissAsync(
+        TimeSpan timeout,
+        long? bufferedDrainStarted,
+        bool pollRecorded,
+        PreparedDeserializerKey? preparedKey,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await ConsumeOneWithTimeoutAsync(
+                    timeout,
+                    bufferedDrainStarted,
+                    pollRecorded,
+                    preparedKey,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            preparedKey?.DisposePreparationActivity();
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -5265,6 +5288,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         private readonly PendingFetchData? _pending;
         private readonly long _offset;
+        private System.Diagnostics.Activity? _preparationActivity;
+
+        internal PreparedDeserializerKey(System.Diagnostics.Activity preparationActivity) =>
+            _preparationActivity = preparationActivity;
 
         internal PreparedDeserializerKey(PendingFetchData pending, long offset, TKey? value)
         {
@@ -5277,6 +5304,22 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         internal bool Matches(PendingFetchData pending, long offset) =>
             ReferenceEquals(_pending, pending) && _offset == offset;
+
+        internal void RetainPreparationActivity(System.Diagnostics.Activity activity) =>
+            _preparationActivity = activity;
+
+        internal System.Diagnostics.Activity? TakePreparationActivity()
+        {
+            var activity = _preparationActivity;
+            _preparationActivity = null;
+            return activity;
+        }
+
+        internal void DisposePreparationActivity()
+        {
+            _preparationActivity?.Dispose();
+            _preparationActivity = null;
+        }
     }
 
     private bool TryConsumeOneFromPendingFetches(out ConsumeResult<TKey, TValue> result) =>
@@ -5398,6 +5441,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                                 pending.BufferCurrentForRedelivery();
                                 requiresAsyncPreparation = true;
+                                if (activity is not null)
+                                {
+                                    if (preparedKey is null)
+                                        preparedKey = new PreparedDeserializerKey(activity);
+                                    else
+                                        preparedKey.RetainPreparationActivity(activity);
+                                    activity = null;
+                                }
                                 return false;
                             }
                         }
@@ -5541,7 +5592,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
             EagerParsePendingOrRemove(pending);
 
-            System.Diagnostics.Activity? activity = null;
+            System.Diagnostics.Activity? activity = preparedKey?.TakePreparationActivity();
             var pendingDisposed = false;
             var pendingRemoved = false;
             try
@@ -5571,7 +5622,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         var messageBytes = (isKeyNull ? 0 : keyData.Length) +
                                            (isValueNull ? 0 : valueData.Length);
 
-                        if (hasTraceListeners)
+                        if (hasTraceListeners && activity is null)
                         {
                             activity = StartProtectedConsumeOneActivity(
                                 pending,

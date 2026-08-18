@@ -9,6 +9,7 @@ using BenchmarkDotNet.Engines;
 using BenchmarkDotNet.Jobs;
 using Dekaf.Benchmarks.Infrastructure;
 using Dekaf.Consumer;
+using Dekaf.Producer;
 using Dekaf.Protocol.Records;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Avro;
@@ -937,7 +938,7 @@ public class AvroPocoLargePayloadSerializationBenchmarks
     }
 }
 
-/// <summary>Guards mixed small and oversized generated POCO rule payloads against repeated sizing traversals.</summary>
+/// <summary>Guards mixed small and oversized generated POCO payload sizing.</summary>
 [MemoryDiagnoser(displayGenColumns: false)]
 public class AvroPocoMixedPayloadSerializationBenchmarks
 {
@@ -951,7 +952,10 @@ public class AvroPocoMixedPayloadSerializationBenchmarks
     private PocoBenchmarkRecord _largeValue = null!;
     private AvroPocoSchemaRegistrySerializer<PocoBenchmarkRecord, PocoBenchmarkRecord.AvroCodec>
         _serializer = null!;
+    private AvroPocoSchemaRegistrySerializer<PocoBenchmarkRecord, PocoBenchmarkRecord.AvroCodec>
+        _directSerializer = null!;
     private ArrayBufferWriter<byte> _buffer = null!;
+    private byte[]? _directBuffer;
 
     [GlobalSetup]
     public void Setup()
@@ -959,14 +963,32 @@ public class AvroPocoMixedPayloadSerializationBenchmarks
         _serializer = PocoBenchmarkRecord.CreateAvroSerializer(
             new AvroSchemaRegistrySerializerBenchmarks.BenchmarkSchemaRegistryClient(),
             new AvroSerializerConfig { RuleExecutor = PassThroughRuleExecutor.Instance });
+        _directSerializer = PocoBenchmarkRecord.CreateAvroSerializer(
+            new AvroSchemaRegistrySerializerBenchmarks.BenchmarkSchemaRegistryClient());
         _largeValue = new PocoBenchmarkRecord { Id = 42, Name = new string('x', LargePayloadLength) };
         _buffer = new ArrayBufferWriter<byte>(2 * LargePayloadLength);
         Serialize(_largeValue);
         Serialize(_smallValue);
+        SerializeDirect(_largeValue);
+        SerializeDirect(_smallValue);
     }
 
     [GlobalCleanup]
-    public async ValueTask Cleanup() => await _serializer.DisposeAsync().ConfigureAwait(false);
+    public async ValueTask Cleanup()
+    {
+        await _serializer.DisposeAsync().ConfigureAwait(false);
+        await _directSerializer.DisposeAsync().ConfigureAwait(false);
+    }
+
+    [Benchmark(OperationsPerInvoke = 2)]
+    public void SerializeAlternatingPayloadsDirect()
+    {
+        SerializeDirect(_largeValue);
+        SerializeDirect(_smallValue);
+    }
+
+    [Benchmark]
+    public void SerializeSmallPayloadDirect() => SerializeDirect(_smallValue);
 
     [Benchmark(OperationsPerInvoke = 2)]
     public void SerializeAlternatingPayloadsWithRules()
@@ -985,6 +1007,13 @@ public class AvroPocoMixedPayloadSerializationBenchmarks
     {
         _buffer.Clear();
         _serializer.Serialize(value, ref _buffer, _context);
+    }
+
+    private void SerializeDirect(PocoBenchmarkRecord value)
+    {
+        var writer = new ReusableBufferWriter(ref _directBuffer, 256);
+        _directSerializer.Serialize(value, ref writer, _context);
+        writer.UpdateBufferRef(ref _directBuffer);
     }
 
     private sealed class PassThroughRuleExecutor : ISchemaRegistryRuleExecutor

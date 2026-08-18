@@ -25,7 +25,13 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
     private static readonly TimeSpan RegistryTimeout = TimeSpan.FromSeconds(30);
 
     [ThreadStatic]
-    private static int t_payloadSizeHint;
+    private static int t_retainedPayloadSizeHint;
+
+    [ThreadStatic]
+    private static int t_oversizedPayloadSizeHint;
+
+    [ThreadStatic]
+    private static byte t_payloadPattern;
 
     private readonly ISchemaRegistryClient _schemaRegistry;
     private readonly AvroSerializerConfig _config;
@@ -160,7 +166,7 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         , allows ref struct
 #endif
     {
-        var payloadSize = t_payloadSizeHint is > 0 ? t_payloadSizeHint : InitialPayloadSize;
+        var payloadSize = GetPredictedDirectPayloadSize();
         while (true)
         {
             var memory = destination.GetMemory(WireHeaderSize + payloadSize);
@@ -176,8 +182,43 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
             span[0] = MagicByte;
             BinaryPrimitives.WriteInt32BigEndian(span.Slice(1, 4), schemaId);
             destination.Advance(WireHeaderSize + writer.WrittenCount);
-            t_payloadSizeHint = Math.Max(InitialPayloadSize, writer.WrittenCount);
+            RecordDirectPayloadLength(writer.WrittenCount);
             return;
+        }
+    }
+
+    private static int GetPredictedDirectPayloadSize()
+    {
+        var pattern = t_payloadPattern;
+        var sizeHint = pattern is StableOversizedPayloadPattern or OversizedThenRetainedPayloadPattern
+            ? t_oversizedPayloadSizeHint
+            : t_retainedPayloadSizeHint;
+        return sizeHint is > 0 ? sizeHint : InitialPayloadSize;
+    }
+
+    private static void RecordDirectPayloadLength(int length)
+    {
+        var pattern = t_payloadPattern;
+        if (length > MaxRetainedPayloadSize)
+        {
+            t_oversizedPayloadSizeHint = length;
+            if (pattern != StableOversizedPayloadPattern)
+            {
+                t_payloadPattern =
+                    pattern is OversizedThenRetainedPayloadPattern or StableRetainedPayloadPattern
+                        ? RetainedThenOversizedPayloadPattern
+                        : StableOversizedPayloadPattern;
+            }
+            return;
+        }
+
+        t_retainedPayloadSizeHint = Math.Max(InitialPayloadSize, length);
+        if (pattern != StableRetainedPayloadPattern)
+        {
+            t_payloadPattern =
+                pattern is StableOversizedPayloadPattern or RetainedThenOversizedPayloadPattern
+                    ? OversizedThenRetainedPayloadPattern
+                    : StableRetainedPayloadPattern;
         }
     }
 
