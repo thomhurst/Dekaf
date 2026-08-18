@@ -111,6 +111,14 @@ internal sealed class SchemaRegistryMigrationRunner
             return new MigrationResult(payload, plan.ReaderSchema, schemaId, writerSchema);
         }
 
+        var steps = plan.Steps;
+        if (steps.Length == 0 &&
+            writerSchema.RuleSet?.HasDomainOrEncodingRules != true &&
+            plan.ReaderSchema.Schema.RuleSet?.HasDomainOrEncodingRules != true)
+        {
+            return new MigrationResult(payload, plan.ReaderSchema, schemaId, writerSchema);
+        }
+
         var context = RentContext(
             serializationContext,
             schemaId,
@@ -127,12 +135,11 @@ internal sealed class SchemaRegistryMigrationRunner
             context.Return();
         }
 
-        var steps = plan.Steps;
         var payloadSchemaId = schemaId;
         var payloadSchema = writerSchema;
         if (steps.Length != 0)
         {
-            TransformMigrationSteps(
+            if (!TransformMigrationSteps(
                 ref payload,
                 ref payloadSchemaId,
                 ref payloadSchema,
@@ -141,7 +148,10 @@ internal sealed class SchemaRegistryMigrationRunner
                 serializationContext,
                 payloadFormat,
                 taggedFieldTransformers,
-                steps);
+                steps))
+            {
+                return new MigrationResult(payload, plan.ReaderSchema, payloadSchemaId, payloadSchema);
+            }
         }
 
         context = RentContext(
@@ -164,7 +174,7 @@ internal sealed class SchemaRegistryMigrationRunner
         return new MigrationResult(payload, plan.ReaderSchema, payloadSchemaId, payloadSchema);
     }
 
-    private void TransformMigrationSteps(
+    private bool TransformMigrationSteps(
         ref ReadOnlyMemory<byte> payload,
         ref int payloadSchemaId,
         ref Schema payloadSchema,
@@ -198,7 +208,7 @@ internal sealed class SchemaRegistryMigrationRunner
                     context,
                     step.Mode);
                 if (transformResult == SchemaRegistryMigrationTransformResult.Failed)
-                    break;
+                    return false;
 
                 if (transformResult == SchemaRegistryMigrationTransformResult.Transformed)
                 {
@@ -211,6 +221,8 @@ internal sealed class SchemaRegistryMigrationRunner
                 context.Return();
             }
         }
+
+        return true;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

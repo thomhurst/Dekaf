@@ -239,6 +239,49 @@ public sealed class SchemaRegistryMigrationTests
     }
 
     [Test]
+    public async Task Transform_SuppressedFailedStep_SkipsTargetDomainRules()
+    {
+        var registry = new MigrationRegistryClient();
+        var v1 = CreateSchema("v1");
+        var v2 = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = "v2",
+            RuleSet = new SchemaRuleSet
+            {
+                MigrationRules =
+                [
+                    CreateRule("v2-up", SchemaRuleMode.Upgrade, "MISSING", onFailure: "NONE")
+                ],
+                DomainRules =
+                [
+                    CreateRule("domain", SchemaRuleMode.Read, ReplacingRuleHandler.RuleType)
+                ]
+            }
+        };
+        var v1Id = registry.Register("orders-value", v1);
+        var v2Id = registry.Register("orders-value", v2);
+        var calls = new List<string>();
+        var runner = new SchemaRegistryMigrationRunner(
+            registry,
+            new SchemaRegistryRuleExecutor([new ReplacingRuleHandler(calls)]),
+            TimeSpan.FromSeconds(1));
+
+        var result = runner.Transform(
+            "payload"u8.ToArray(),
+            v1Id,
+            "orders-value",
+            v1,
+            SerializationContext,
+            SchemaRegistryPayloadFormat.Json);
+
+        await Assert.That(result.ReaderSchema.Id).IsEqualTo(v2Id);
+        await Assert.That(result.PayloadSchemaId).IsEqualTo(v1Id);
+        await Assert.That(Encoding.UTF8.GetString(result.Payload.Span)).IsEqualTo("payload");
+        await Assert.That(calls).IsEmpty();
+    }
+
+    [Test]
     public async Task Transform_PartiallySuccessfulStepWithSuppressedFailure_FailsClosed()
     {
         var registry = new MigrationRegistryClient();
