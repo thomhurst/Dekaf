@@ -169,6 +169,10 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
         """
         {"type":"record","name":"PocoWriterUnionBenchmarkRecord","namespace":"Dekaf.Benchmarks.Benchmarks.Unit","fields":[{"name":"value","type":["int","long"]}]}
         """;
+    private const string CollectionSchemaJson =
+        """
+        {"type":"record","name":"PocoCollectionBenchmarkRecord","namespace":"Dekaf.Benchmarks.Benchmarks.Unit","fields":[{"name":"Values","type":{"type":"array","items":"int"}}]}
+        """;
     internal const string SchemaJson =
         """
         {"type":"record","name":"PocoBenchmarkSpecificRecord","namespace":"Dekaf.Benchmarks.Benchmarks.Unit","fields":[{"name":"id","type":"int"},{"name":"name","type":"string"}]}
@@ -188,9 +192,12 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
         _writerUnionPoco = null!;
     private AvroPocoSchemaRegistryDeserializer<PocoWriterUnionBenchmarkRecord, PocoWriterUnionBenchmarkRecord.AvroCodec>
         _latestWriterUnionPoco = null!;
+    private AvroPocoSchemaRegistryDeserializer<PocoCollectionBenchmarkRecord, PocoCollectionBenchmarkRecord.AvroCodec>
+        _collectionPoco = null!;
     private byte[] _wireData = null!;
     private byte[] _decimalWireData = null!;
     private byte[] _writerUnionWireData = null!;
+    private byte[] _collectionWireData = null!;
 
     [GlobalSetup]
     public async Task Setup()
@@ -224,15 +231,23 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
                 SchemaString = WriterUnionSchemaJson
             }),
             new AvroDeserializerConfig { UseLatestVersion = true });
+        _collectionPoco = PocoCollectionBenchmarkRecord.CreateAvroDeserializer(
+            new BenchmarkSchemaRegistryClient(new global::Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = global::Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = CollectionSchemaJson
+            }));
         _wireData = CreateWireData();
         _decimalWireData = [0, 0, 0, 0, SchemaId, 0x04, 0x30, 0x39];
         _writerUnionWireData = [0, 0, 0, 0, SchemaId, 0x00, 0x54];
+        _collectionWireData = [0, 0, 0, 0, SchemaId, 0x06, 0x02, 0x04, 0x06, 0x00];
 
         await _poco.WarmupAsync(SchemaId).ConfigureAwait(false);
         await _specific.WarmupAsync(SchemaId).ConfigureAwait(false);
         await _generic.WarmupAsync(SchemaId).ConfigureAwait(false);
         await _decimalPoco.WarmupAsync(SchemaId).ConfigureAwait(false);
         await _writerUnionPoco.WarmupAsync(SchemaId).ConfigureAwait(false);
+        await _collectionPoco.WarmupAsync(SchemaId).ConfigureAwait(false);
         _ = _latestWriterUnionPoco.Deserialize(_writerUnionWireData, _context);
     }
 
@@ -245,6 +260,7 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
         await _decimalPoco.DisposeAsync().ConfigureAwait(false);
         await _writerUnionPoco.DisposeAsync().ConfigureAwait(false);
         await _latestWriterUnionPoco.DisposeAsync().ConfigureAwait(false);
+        await _collectionPoco.DisposeAsync().ConfigureAwait(false);
     }
 
     [Benchmark(Baseline = true, Description = "Deserialize generated POCO")]
@@ -267,6 +283,10 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
     [Benchmark(Description = "Deserialize generated value-type POCO with latest schema")]
     public PocoWriterUnionBenchmarkRecord DeserializeWriterUnionPocoUseLatest() =>
         _latestWriterUnionPoco.Deserialize(_writerUnionWireData, _context);
+
+    [Benchmark(Description = "Deserialize generated collection POCO")]
+    public PocoCollectionBenchmarkRecord DeserializeCollectionPoco() =>
+        _collectionPoco.Deserialize(_collectionWireData, _context);
 
     private static byte[] CreateWireData()
     {
@@ -489,6 +509,12 @@ public readonly partial record struct PocoWriterUnionBenchmarkRecord
 {
     [AvroField(Name = "value")]
     public long Value { get; init; }
+}
+
+[AvroRecord(Name = "PocoCollectionBenchmarkRecord", Namespace = "Dekaf.Benchmarks.Benchmarks.Unit")]
+public sealed partial class PocoCollectionBenchmarkRecord
+{
+    public required int[] Values { get; init; }
 }
 
 public sealed class PocoBenchmarkSpecificRecord : ISpecificRecord

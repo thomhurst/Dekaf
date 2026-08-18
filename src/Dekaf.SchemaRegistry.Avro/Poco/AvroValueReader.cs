@@ -135,6 +135,10 @@ public ref struct AvroValueReader
         return CheckedLength(-count);
     }
 
+    /// <summary>Gets a collection capacity bounded by the remaining encoded payload.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public readonly int GetCollectionCapacity(int count) => Math.Min(count, _source.Length - _position);
+
     /// <summary>Skips a value described by a cached writer-schema node.</summary>
     public void Skip(AvroPocoReadNode node)
     {

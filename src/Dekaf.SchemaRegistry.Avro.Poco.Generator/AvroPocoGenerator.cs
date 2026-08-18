@@ -1352,7 +1352,8 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             var block = "__block" + _localId++;
             var index = "__index" + _localId++;
             code.Append(indent).Append("var ").Append(block).AppendLine(" = reader.ReadBlockCount();");
-            code.Append(indent).Append("var ").Append(count).Append(" = ").Append(block).AppendLine(";");
+            code.Append(indent).Append("var ").Append(count).Append(" = reader.GetCollectionCapacity(")
+                .Append(block).AppendLine(");");
             code.Append(indent).Append("var ").Append(result).Append(" = ")
                 .Append(type.Kind == TypeKindModel.Array
                     ? "new " + type.Item!.SymbolType + "[" + count + "]"
@@ -1364,10 +1365,10 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             code.Append(indent).AppendLine("{");
             if (type.Kind == TypeKindModel.Array)
             {
-                code.Append(indent).Append("    if (").Append(block).Append(" > ").Append(result)
+                code.Append(indent).Append("    if (").Append(count).Append(" > ").Append(result)
                     .Append(".Length - ").Append(offset).AppendLine(")");
                 code.Append(indent).Append("        global::System.Array.Resize(ref ").Append(result)
-                    .Append(", checked(").Append(offset).Append(" + ").Append(block).AppendLine("));");
+                    .Append(", checked(").Append(offset).Append(" + ").Append(count).AppendLine("));");
             }
             code.Append(indent).Append("    for (var ").Append(index).Append(" = 0; ").Append(index)
                 .Append(" < ").Append(block).Append("; ").Append(index).AppendLine("++)");
@@ -1381,6 +1382,12 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                 code.Append(indent).Append("        ").Append(result).Append(".Add(").Append(item).AppendLine(");");
             code.Append(indent).AppendLine("    }");
             code.Append(indent).Append("    ").Append(block).AppendLine(" = reader.ReadBlockCount();");
+            if (type.Kind == TypeKindModel.Array)
+            {
+                code.Append(indent).Append("    if (").Append(block).AppendLine(" != 0)");
+                code.Append(indent).Append("        ").Append(count).Append(" = reader.GetCollectionCapacity(")
+                    .Append(block).AppendLine(");");
+            }
             code.Append(indent).AppendLine("}");
             code.Append(indent).Append(target).Append(" = ").Append(result).AppendLine(";");
         }
@@ -1398,7 +1405,8 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             var block = "__block" + _localId++;
             var index = "__index" + _localId++;
             code.Append(indent).Append("var ").Append(block).AppendLine(" = reader.ReadBlockCount();");
-            code.Append(indent).Append("var ").Append(count).Append(" = ").Append(block).AppendLine(";");
+            code.Append(indent).Append("var ").Append(count).Append(" = reader.GetCollectionCapacity(")
+                .Append(block).AppendLine(");");
             code.Append(indent).Append("var ").Append(result).Append(" = new ").Append(type.SymbolType)
                 .Append('(').Append(count).AppendLine(");");
             code.Append(indent).Append("while (").Append(block).AppendLine(" != 0)");

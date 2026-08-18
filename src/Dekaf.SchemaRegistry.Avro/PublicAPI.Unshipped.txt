@@ -103,6 +103,7 @@ Dekaf.SchemaRegistry.Avro.Poco.AvroRecordAttribute.Namespace.get -> string?
 Dekaf.SchemaRegistry.Avro.Poco.AvroRecordAttribute.Namespace.init -> void
 Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader
 Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.AvroValueReader() -> void
+Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.GetCollectionCapacity(int count) -> int
 Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.ReadBlockCount() -> int
 Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.ReadBoolean() -> bool
 Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.ReadBytes() -> byte[]!

@@ -299,6 +299,32 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    [Arguments(0)]
+    [Arguments(1)]
+    [Arguments(2)]
+    public async Task GeneratedCodec_RejectsCollectionCountExceedingRemainingPayload(int collectionIndex)
+    {
+        using var registry = new MockSchemaRegistryClient();
+        await using var serializer = PocoBlocks.CreateAvroSerializer(registry);
+        await using var deserializer = PocoBlocks.CreateAvroDeserializer(registry);
+        var context = new SerializationContext
+        {
+            Topic = "poco-malformed-collection-count",
+            Component = SerializationComponent.Value
+        };
+        var destination = new ArrayBufferWriter<byte>();
+        serializer.Serialize(new PocoBlocks { Items = [], Names = [], Values = [] }, ref destination, context);
+        var payload = new byte[10 + collectionIndex];
+        destination.WrittenSpan[..5].CopyTo(payload);
+        ReadOnlySpan<byte> maximumCount = [0xFE, 0xFF, 0xFF, 0xFF, 0x0F];
+        maximumCount.CopyTo(payload.AsSpan(5 + collectionIndex));
+
+        await Assert.That(() => deserializer.Deserialize(payload, context))
+            .Throws<EndOfStreamException>()
+            .WithMessageContaining("payload ended before the value was complete");
+    }
+
+    [Test]
     public async Task GeneratedCodec_SerializationAllocatesZeroAfterWarmup()
     {
         using var registry = new MockSchemaRegistryClient();
