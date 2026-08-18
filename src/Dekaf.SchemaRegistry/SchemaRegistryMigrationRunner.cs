@@ -228,6 +228,9 @@ internal sealed class SchemaRegistryMigrationRunner
             }
         }
 
+        if (!plan.IsMigrationChainComplete)
+            return new MigrationResult(payload, plan.ReaderSchema, payloadSchemaId, payloadSchema);
+
         context = RentContext(
             serializationContext,
             plan.ReaderSchema.Id,
@@ -362,9 +365,12 @@ internal sealed class SchemaRegistryMigrationRunner
                 subject,
                 reader,
                 [],
+                isMigrationChainComplete: true,
                 Environment.TickCount64);
 
         var steps = new List<MigrationStep>();
+        var hasGap = false;
+        var isMigrationChainComplete = true;
         if (writer.Version < reader.Version)
         {
             var previous = writer;
@@ -373,12 +379,23 @@ internal sealed class SchemaRegistryMigrationRunner
                 var current = version == reader.Version
                     ? reader
                     : await GetVersionAsync(subject, version, cancellationToken).ConfigureAwait(false);
-                if (SchemaRegistryRuleExecutor.HasActiveMigrationRule(
-                        current.Schema.RuleSet,
-                        SchemaRuleMode.Upgrade))
+                var hasActiveRule = SchemaRegistryRuleExecutor.HasActiveMigrationRule(
+                    current.Schema.RuleSet,
+                    SchemaRuleMode.Upgrade);
+                if (!hasActiveRule)
                 {
-                    steps.Add(new MigrationStep(SchemaRuleMode.Upgrade, previous, current));
+                    hasGap = true;
+                    previous = current;
+                    continue;
                 }
+
+                if (hasGap)
+                {
+                    isMigrationChainComplete = false;
+                    break;
+                }
+
+                steps.Add(new MigrationStep(SchemaRuleMode.Upgrade, previous, current));
 
                 previous = current;
             }
@@ -391,12 +408,23 @@ internal sealed class SchemaRegistryMigrationRunner
                 var previous = version == reader.Version
                     ? reader
                     : await GetVersionAsync(subject, version, cancellationToken).ConfigureAwait(false);
-                if (SchemaRegistryRuleExecutor.HasActiveMigrationRule(
-                        current.Schema.RuleSet,
-                        SchemaRuleMode.Downgrade))
+                var hasActiveRule = SchemaRegistryRuleExecutor.HasActiveMigrationRule(
+                    current.Schema.RuleSet,
+                    SchemaRuleMode.Downgrade);
+                if (!hasActiveRule)
                 {
-                    steps.Add(new MigrationStep(SchemaRuleMode.Downgrade, current, previous));
+                    hasGap = true;
+                    current = previous;
+                    continue;
                 }
+
+                if (hasGap)
+                {
+                    isMigrationChainComplete = false;
+                    break;
+                }
+
+                steps.Add(new MigrationStep(SchemaRuleMode.Downgrade, current, previous));
 
                 current = previous;
             }
@@ -407,6 +435,7 @@ internal sealed class SchemaRegistryMigrationRunner
             subject,
             reader,
             [.. steps],
+            isMigrationChainComplete,
             Environment.TickCount64);
     }
 
@@ -432,12 +461,14 @@ internal sealed class SchemaRegistryMigrationRunner
         string subject,
         RegisteredSchema readerSchema,
         MigrationStep[] steps,
+        bool isMigrationChainComplete,
         long createdAtMilliseconds)
     {
         internal int WriterSchemaId { get; } = writerSchemaId;
         internal string Subject { get; } = subject;
         internal RegisteredSchema ReaderSchema { get; } = readerSchema;
         internal MigrationStep[] Steps { get; } = steps;
+        internal bool IsMigrationChainComplete { get; } = isMigrationChainComplete;
         internal long CreatedAtMilliseconds { get; } = createdAtMilliseconds;
     }
 

@@ -6,10 +6,15 @@ namespace Dekaf.SchemaRegistry.Avro.Poco;
 
 internal static class AvroPocoReaderPlanBuilder
 {
-    internal static AvroPocoReaderPlan Build<T, TCodec>(string writerSchemaJson)
+    internal static AvroPocoReaderPlan Build<T, TCodec>(
+        string writerSchemaJson,
+        SchemaNames? names = null)
         where TCodec : struct, IAvroPocoCodec<T>
     {
-        var writerSchema = AvroSchema.Parse(writerSchemaJson) as RecordSchema
+        var parsed = names is null
+            ? AvroSchema.Parse(writerSchemaJson)
+            : AvroSchema.Parse(writerSchemaJson, names);
+        var writerSchema = parsed as RecordSchema
             ?? throw new InvalidOperationException("POCO Avro writer schema must be a record.");
         if (!string.Equals(writerSchema.Fullname, TCodec.FullName, StringComparison.Ordinal))
         {

@@ -1,7 +1,10 @@
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
+using System.Globalization;
 using Dekaf.SchemaRegistry.Avro;
 using Dekaf.Serialization;
+using AvroSchema = global::Avro.Schema;
+using AvroSchemaNames = global::Avro.SchemaNames;
 
 namespace Dekaf.SchemaRegistry.Avro.Poco;
 
@@ -14,6 +17,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
     private const int WireHeaderSize = 5;
     private const int GeneratedSubjectCacheSchemaId = 0;
     private const int MaxCachedPreparedRuleStates = 1024;
+    private const int MaxReferenceDepth = 128;
     internal const int MaxCachedPlans = 256;
     private static readonly TimeSpan RegistryTimeout = TimeSpan.FromSeconds(30);
 
@@ -195,7 +199,8 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
             return true;
 
         if (_schemaRegistry is ISchemaRegistryCache cache &&
-            cache.TryGetCachedSchema(schemaId, out var schema))
+            cache.TryGetCachedSchema(schemaId, out var schema) &&
+            schema.References is not { Count: > 0 })
         {
             plan = BuildPlan(schemaId, schema);
             CacheSuccessfulPlan(schemaId, plan);
@@ -512,12 +517,11 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
     {
         try
         {
-            var schema = await SchemaRegistryOperationTimeout.ExecuteAsync(
-                    cancellationToken => _schemaRegistry.GetSchemaAsync(schemaId, cancellationToken),
+            var plan = await SchemaRegistryOperationTimeout.ExecuteAsync(
+                    cancellationToken => FetchAndBuildPlanAsync(schemaId, cancellationToken),
                     RegistryTimeout,
-                    $"Schema Registry lookup for schema {schemaId} timed out.")
+                    $"Schema Registry plan resolution for schema {schemaId} timed out.")
                 .ConfigureAwait(false);
-            var plan = BuildPlan(schemaId, schema);
             CacheSuccessfulPlan(schemaId, plan);
             return plan;
         }
@@ -527,11 +531,85 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         }
     }
 
-    private static AvroPocoReaderPlan BuildPlan(int schemaId, Schema schema)
+    private async Task<AvroPocoReaderPlan> FetchAndBuildPlanAsync(
+        int schemaId,
+        CancellationToken cancellationToken)
+    {
+        var schema = await _schemaRegistry.GetSchemaAsync(schemaId, cancellationToken)
+            .ConfigureAwait(false);
+        if (schema.References is not { Count: > 0 })
+            return BuildPlan(schemaId, schema);
+
+        ValidateAvroSchema(schemaId, schema);
+        var names = new AvroSchemaNames();
+        var resolved = new HashSet<AvroSchemaReferenceKey>();
+        var visiting = new HashSet<AvroSchemaReferenceKey>();
+        await ResolveReferencesAsync(
+                schema,
+                names,
+                resolved,
+                visiting,
+                depth: 0,
+                cancellationToken)
+            .ConfigureAwait(false);
+        return BuildPlan(schemaId, schema, names);
+    }
+
+    private async Task ResolveReferencesAsync(
+        Schema schema,
+        AvroSchemaNames names,
+        HashSet<AvroSchemaReferenceKey> resolved,
+        HashSet<AvroSchemaReferenceKey> visiting,
+        int depth,
+        CancellationToken cancellationToken)
+    {
+        if (schema.References is not { Count: > 0 } references)
+            return;
+        if (depth >= MaxReferenceDepth)
+            throw new InvalidOperationException($"Avro schema reference depth exceeds {MaxReferenceDepth}.");
+
+        for (var index = 0; index < references.Count; index++)
+        {
+            var reference = references[index];
+            var key = new AvroSchemaReferenceKey(reference.Subject, reference.Version);
+            if (resolved.Contains(key))
+                continue;
+            if (!visiting.Add(key))
+                throw new InvalidOperationException("Cyclic Avro schema references are not supported.");
+
+            var registered = await _schemaRegistry.GetSchemaBySubjectAsync(
+                    reference.Subject,
+                    reference.Version.ToString(CultureInfo.InvariantCulture),
+                    cancellationToken)
+                .ConfigureAwait(false);
+            ValidateAvroSchema(registered.Id, registered.Schema);
+            await ResolveReferencesAsync(
+                    registered.Schema,
+                    names,
+                    resolved,
+                    visiting,
+                    depth + 1,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            _ = AvroSchema.Parse(registered.Schema.SchemaString, names);
+            visiting.Remove(key);
+            resolved.Add(key);
+        }
+    }
+
+    private static AvroPocoReaderPlan BuildPlan(
+        int schemaId,
+        Schema schema,
+        AvroSchemaNames? names = null)
+    {
+        ValidateAvroSchema(schemaId, schema);
+        return AvroPocoReaderPlanBuilder.Build<T, TCodec>(schema.SchemaString, names);
+    }
+
+    private static void ValidateAvroSchema(int schemaId, Schema schema)
     {
         if (schema.SchemaType != SchemaType.Avro)
             throw new InvalidOperationException($"Schema {schemaId} is {schema.SchemaType}, not Avro.");
-        return AvroPocoReaderPlanBuilder.Build<T, TCodec>(schema.SchemaString);
     }
 
     private void RemoveInFlightPlan(int schemaId, PlanEntry entry) =>
@@ -619,6 +697,8 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
     }
 
     private readonly record struct PreparedRuleKey(int SchemaId, string Topic, bool IsKey);
+
+    private readonly record struct AvroSchemaReferenceKey(string Subject, int Version);
 
     private sealed class PreparedRuleState(PreparedRuleKey key, string subject, Schema schema)
     {

@@ -281,6 +281,99 @@ public sealed class SchemaRegistryMigrationTests
     }
 
     [Test]
+    public async Task Transform_UpgradeGap_StopsBeforeLaterMigrationStep()
+    {
+        var registry = new MigrationRegistryClient();
+        var v1 = CreateSchema("v1");
+        var v2 = CreateSchema("v2");
+        var v3 = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = "v3",
+            RuleSet = new SchemaRuleSet
+            {
+                MigrationRules = [CreateRule("v3-up", SchemaRuleMode.Upgrade)],
+                DomainRules =
+                [
+                    CreateRule(
+                        "domain",
+                        SchemaRuleMode.Read,
+                        PassThroughConditionHandler.RuleType)
+                ]
+            }
+        };
+        var v1Id = registry.Register("orders-value", v1);
+        registry.Register("orders-value", v2);
+        var v3Id = registry.Register("orders-value", v3);
+        var calls = new List<string>();
+        var domainHandler = new PassThroughConditionHandler();
+        var runner = new SchemaRegistryMigrationRunner(
+            registry,
+            new SchemaRegistryRuleExecutor([new CapturingMigrationHandler(calls), domainHandler]),
+            TimeSpan.FromSeconds(1));
+
+        var result = runner.Transform(
+            "payload"u8.ToArray(),
+            v1Id,
+            "orders-value",
+            v1,
+            SerializationContext,
+            SchemaRegistryPayloadFormat.Json);
+
+        await Assert.That(result.ReaderSchema.Id).IsEqualTo(v3Id);
+        await Assert.That(result.PayloadSchemaId).IsEqualTo(v1Id);
+        await Assert.That(result.PayloadSchema).IsSameReferenceAs(v1);
+        await Assert.That(calls).IsEmpty();
+        await Assert.That(domainHandler.CallCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Transform_DowngradeGap_StopsBeforeLaterMigrationStep()
+    {
+        var registry = new MigrationRegistryClient { LatestVersion = 1 };
+        var v1 = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = "v1",
+            RuleSet = new SchemaRuleSet
+            {
+                DomainRules =
+                [
+                    CreateRule(
+                        "domain",
+                        SchemaRuleMode.Read,
+                        PassThroughConditionHandler.RuleType)
+                ]
+            }
+        };
+        var v2 = CreateSchema("v2", CreateRule("v2-down", SchemaRuleMode.Downgrade));
+        var v3 = CreateSchema("v3");
+        var v1Id = registry.Register("orders-value", v1);
+        registry.Register("orders-value", v2);
+        var v3Id = registry.Register("orders-value", v3);
+        var calls = new List<string>();
+        var domainHandler = new PassThroughConditionHandler();
+        var runner = new SchemaRegistryMigrationRunner(
+            registry,
+            new SchemaRegistryRuleExecutor([new CapturingMigrationHandler(calls), domainHandler]),
+            TimeSpan.FromSeconds(1));
+
+        var result = runner.Transform(
+            "payload"u8.ToArray(),
+            v3Id,
+            "orders-value",
+            v3,
+            SerializationContext,
+            SchemaRegistryPayloadFormat.Json);
+
+        await Assert.That(result.ReaderSchema.Id).IsEqualTo(v1Id);
+        await Assert.That(result.PayloadSchemaId).IsEqualTo(v3Id);
+        await Assert.That(result.PayloadSchema).IsSameReferenceAs(v3);
+        await Assert.That(calls).IsEmpty();
+        await Assert.That(domainHandler.CallCount).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task Transform_SuppressedFailedStep_SkipsTargetDomainRules()
     {
         var registry = new MigrationRegistryClient();

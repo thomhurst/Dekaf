@@ -81,6 +81,62 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    public async Task GeneratedCodec_ResolvesReferencedWriterRecordDuringWarmup()
+    {
+        const string addressSchemaJson =
+            """
+            {"type":"record","name":"PocoAddress","namespace":"Dekaf.Tests","fields":[{"name":"City","type":"string"},{"name":"PostCode","type":"string"}]}
+            """;
+        const string rootSchemaJson =
+            """
+            {"type":"record","name":"PocoReferencedRoot","namespace":"Dekaf.Tests","fields":[{"name":"Address","type":"Dekaf.Tests.PocoAddress"}]}
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        _ = await registry.RegisterSchemaAsync(
+            "poco-address-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = addressSchemaJson
+            });
+        var rootSchemaId = await registry.RegisterSchemaAsync(
+            "poco-referenced-root-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = rootSchemaJson,
+                References =
+                [
+                    new Dekaf.SchemaRegistry.SchemaReference
+                    {
+                        Name = "Dekaf.Tests.PocoAddress",
+                        Subject = "poco-address-value",
+                        Version = 1
+                    }
+                ]
+            });
+        await using var deserializer = PocoReferencedRoot.CreateAvroDeserializer(registry);
+        var wire = new byte[64];
+        BinaryPrimitives.WriteInt32BigEndian(wire.AsSpan(1, 4), rootSchemaId);
+        var writer = new AvroValueWriter(wire.AsSpan(5));
+        writer.WriteString("London");
+        writer.WriteString("SW1");
+        var wireLength = 5 + writer.WrittenCount;
+
+        await deserializer.WarmupAsync(rootSchemaId);
+        var actual = deserializer.Deserialize(
+            wire.AsMemory(0, wireLength),
+            new SerializationContext
+            {
+                Topic = "poco-referenced-root",
+                Component = SerializationComponent.Value
+            });
+
+        await Assert.That(actual.Address.City).IsEqualTo("London");
+        await Assert.That(actual.Address.PostCode).IsEqualTo("SW1");
+    }
+
+    [Test]
     public async Task GeneratedCodec_DistinguishesRecordUnionBranches()
     {
         using var registry = new MockSchemaRegistryClient();
@@ -2716,6 +2772,12 @@ internal sealed partial record PocoAddress
 {
     public required string City { get; init; }
     public required string PostCode { get; init; }
+}
+
+[AvroRecord(Name = "PocoReferencedRoot", Namespace = "Dekaf.Tests")]
+internal sealed partial class PocoReferencedRoot
+{
+    public required PocoAddress Address { get; init; }
 }
 
 internal enum PocoStatus
