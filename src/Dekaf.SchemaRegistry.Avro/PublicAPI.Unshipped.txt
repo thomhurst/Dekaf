@@ -143,5 +143,6 @@ Dekaf.SchemaRegistry.Avro.Poco.IAvroPocoCodec<T>.Write(ref Dekaf.SchemaRegistry.
 static Dekaf.SchemaRegistry.Avro.Poco.AvroDecimalCodec.Read(ref Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader reader, int precision, int scale) -> decimal
 static Dekaf.SchemaRegistry.Avro.Poco.AvroDecimalCodec.Read(ref Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader reader, int precision, int scale, Dekaf.SchemaRegistry.Avro.Poco.AvroPocoReadNode! writerType) -> decimal
 static Dekaf.SchemaRegistry.Avro.Poco.AvroDecimalCodec.Write(ref Dekaf.SchemaRegistry.Avro.Poco.AvroValueWriter writer, decimal value, int precision, int scale) -> void
+static Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.AddCollectionCount(int currentCount, int blockCount) -> int
 static Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.ReadNull() -> void
 static Dekaf.SchemaRegistry.Avro.Poco.AvroValueWriter.WriteNull() -> void

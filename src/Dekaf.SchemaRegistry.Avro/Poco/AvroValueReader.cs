@@ -8,8 +8,11 @@ namespace Dekaf.SchemaRegistry.Avro.Poco;
 /// <summary>Allocation-safe Avro binary reader used by generated codecs.</summary>
 public ref struct AvroValueReader
 {
+    private const int MaxCollectionItemCount = 1_048_576;
+    private const int MaxSkipDepth = 256;
     private readonly ReadOnlySpan<byte> _source;
     private int _position;
+    private int _skipDepth;
 
     internal AvroValueReader(ReadOnlySpan<byte> source) => _source = source;
 
@@ -133,21 +136,47 @@ public ref struct AvroValueReader
     }
 
     /// <summary>Reads the next array or map block count.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public int ReadBlockCount()
     {
         var count = ReadInt64();
+        int result;
         if (count >= 0)
-            return CheckedLength(count);
+        {
+            result = CheckedLength(count);
+        }
+        else
+        {
+            var blockSize = ReadInt64();
+            if (blockSize < 0)
+                throw new InvalidDataException("Avro collection block byte size cannot be negative.");
+            result = CheckedLength(-count);
+        }
 
-        var blockSize = ReadInt64();
-        if (blockSize < 0)
-            throw new InvalidDataException("Avro collection block byte size cannot be negative.");
-        return CheckedLength(-count);
+        if (result > MaxCollectionItemCount)
+            ThrowCollectionLimit();
+        return result;
     }
 
     /// <summary>Gets a collection capacity bounded by the remaining encoded payload.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public readonly int GetCollectionCapacity(int count) => Math.Min(count, _source.Length - _position);
+
+    /// <summary>Validates and accumulates collection block counts.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static int AddCollectionCount(int currentCount, int blockCount)
+    {
+        var total = (long)currentCount + blockCount;
+        if ((ulong)total > MaxCollectionItemCount)
+            ThrowCollectionLimit();
+
+        return (int)total;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void ThrowCollectionLimit() =>
+        throw new InvalidDataException(
+            $"Avro collection exceeds the supported limit of {MaxCollectionItemCount} items.");
 
     /// <summary>Skips a value described by a cached writer-schema node.</summary>
     public void Skip(AvroPocoReadNode node)
@@ -187,6 +216,11 @@ public ref struct AvroValueReader
                     SkipBytes();
                 return;
             case AvroPocoTypeKind.Record:
+                if (node.RequiresDepthGuard)
+                {
+                    SkipRecursiveRecord(node);
+                    return;
+                }
                 foreach (var field in node.Fields.Span)
                     Skip(field);
                 return;
@@ -204,6 +238,28 @@ public ref struct AvroValueReader
             default:
                 throw new InvalidDataException($"Unsupported Avro writer type {node.Kind}.");
         }
+    }
+
+    private void SkipRecursiveRecord(AvroPocoReadNode node)
+    {
+        EnterSkipNode();
+        try
+        {
+            foreach (var field in node.Fields.Span)
+                Skip(field);
+        }
+        finally
+        {
+            _skipDepth--;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void EnterSkipNode()
+    {
+        if (_skipDepth >= MaxSkipDepth)
+            throw new InvalidDataException($"Avro value nesting exceeds the supported limit of {MaxSkipDepth}.");
+        _skipDepth++;
     }
 
     private void SkipBytes()

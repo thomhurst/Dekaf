@@ -169,7 +169,7 @@ internal static class AvroPocoReaderPlanBuilder
 
     private static AvroPocoReadNode BuildLogicalNode(LogicalSchema writer, AvroPocoType reader)
     {
-        var kind = writer.LogicalTypeName switch
+        AvroPocoTypeKind? kind = writer.LogicalTypeName switch
         {
             "date" => AvroPocoTypeKind.Date,
             "time-millis" => AvroPocoTypeKind.TimeMilliseconds,
@@ -178,13 +178,16 @@ internal static class AvroPocoReaderPlanBuilder
             "timestamp-micros" => AvroPocoTypeKind.TimestampMicroseconds,
             "uuid" => AvroPocoTypeKind.Uuid,
             "decimal" => AvroPocoTypeKind.Decimal,
-            _ => throw new InvalidOperationException(
-                $"Writer schema uses unsupported logical type '{writer.LogicalTypeName}'.")
+            _ => null
         };
 
-        if (reader.Kind != kind || kind == AvroPocoTypeKind.Decimal && !DecimalMatches(writer, reader))
+        if (kind is not { } logicalKind)
+            return BuildNode(writer.BaseSchema, reader);
+
+        if (reader.Kind != logicalKind ||
+            logicalKind == AvroPocoTypeKind.Decimal && !DecimalMatches(writer, reader))
             throw Incompatible(writer, reader);
-        return new AvroPocoReadNode(kind)
+        return new AvroPocoReadNode(logicalKind)
         {
             FixedSize = writer.BaseSchema is FixedSchema fixedSchema ? fixedSchema.Size : 0
         };
@@ -228,9 +231,10 @@ internal static class AvroPocoReaderPlanBuilder
                 "timestamp-micros" => reader.Kind == AvroPocoTypeKind.TimestampMicroseconds,
                 "uuid" => reader.Kind == AvroPocoTypeKind.Uuid,
                 "decimal" => reader.Kind == AvroPocoTypeKind.Decimal,
-                _ => false
+                _ => IsCompatible(logical.BaseSchema, reader)
             };
-            return compatible && (logical.LogicalTypeName != "decimal" || DecimalMatches(logical, reader));
+            return compatible &&
+                   (logical.LogicalTypeName != "decimal" || DecimalMatches(logical, reader));
         }
 
         if (reader.Kind == AvroPocoTypeKind.Union)
@@ -334,7 +338,10 @@ internal static class AvroPocoReaderPlanBuilder
         Dictionary<RecordSchema, AvroPocoReadNode> records)
     {
         if (records.TryGetValue(record, out var existing))
+        {
+            existing.RequiresDepthGuard = true;
             return existing;
+        }
 
         var node = new AvroPocoReadNode(AvroPocoTypeKind.Record);
         records.Add(record, node);

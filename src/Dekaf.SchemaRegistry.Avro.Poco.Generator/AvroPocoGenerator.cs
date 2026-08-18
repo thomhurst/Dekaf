@@ -1374,8 +1374,10 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             var result = "__collection" + _localId++;
             var offset = "__offset" + _localId++;
             var block = "__block" + _localId++;
+            var total = "__total" + _localId++;
             var index = "__index" + _localId++;
             code.Append(indent).Append("var ").Append(block).AppendLine(" = reader.ReadBlockCount();");
+            code.Append(indent).Append("var ").Append(total).Append(" = ").Append(block).AppendLine(";");
             code.Append(indent).Append("var ").Append(count).Append(" = reader.GetCollectionCapacity(")
                 .Append(block).AppendLine(");");
             code.Append(indent).Append("var ").Append(result).Append(" = ")
@@ -1389,10 +1391,10 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             code.Append(indent).AppendLine("{");
             if (type.Kind == TypeKindModel.Array)
             {
-                code.Append(indent).Append("    if (").Append(count).Append(" > ").Append(result)
+                code.Append(indent).Append("    if (").Append(block).Append(" > ").Append(result)
                     .Append(".Length - ").Append(offset).AppendLine(")");
                 code.Append(indent).Append("        global::System.Array.Resize(ref ").Append(result)
-                    .Append(", checked(").Append(offset).Append(" + ").Append(count).AppendLine("));");
+                    .Append(", ").Append(total).AppendLine(");");
             }
             code.Append(indent).Append("    for (var ").Append(index).Append(" = 0; ").Append(index)
                 .Append(" < ").Append(block).Append("; ").Append(index).AppendLine("++)");
@@ -1401,17 +1403,17 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             code.Append(indent).Append("        ").Append(type.Item!.SymbolType).Append(' ').Append(item).AppendLine(" = default!;");
             EmitReadValue(code, type.Item, node + ".Item!", item, indent + "        ", resolveWriterUnions);
             if (type.Kind == TypeKindModel.Array)
+            {
                 code.Append(indent).Append("        ").Append(result).Append('[').Append(offset).Append("++] = ").Append(item).AppendLine(";");
+            }
             else
                 code.Append(indent).Append("        ").Append(result).Append(".Add(").Append(item).AppendLine(");");
             code.Append(indent).AppendLine("    }");
             code.Append(indent).Append("    ").Append(block).AppendLine(" = reader.ReadBlockCount();");
-            if (type.Kind == TypeKindModel.Array)
-            {
-                code.Append(indent).Append("    if (").Append(block).AppendLine(" != 0)");
-                code.Append(indent).Append("        ").Append(count).Append(" = reader.GetCollectionCapacity(")
-                    .Append(block).AppendLine(");");
-            }
+            code.Append(indent).Append("    if (").Append(block).AppendLine(" != 0)");
+            code.Append(indent).Append("        ").Append(total)
+                .Append(" = global::Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.AddCollectionCount(")
+                .Append(total).Append(", ").Append(block).AppendLine(");");
             code.Append(indent).AppendLine("}");
             code.Append(indent).Append(target).Append(" = ").Append(result).AppendLine(";");
         }
@@ -1427,8 +1429,10 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             var count = "__count" + _localId++;
             var result = "__map" + _localId++;
             var block = "__block" + _localId++;
+            var total = "__total" + _localId++;
             var index = "__index" + _localId++;
             code.Append(indent).Append("var ").Append(block).AppendLine(" = reader.ReadBlockCount();");
+            code.Append(indent).Append("var ").Append(total).Append(" = ").Append(block).AppendLine(";");
             code.Append(indent).Append("var ").Append(count).Append(" = reader.GetCollectionCapacity(")
                 .Append(block).AppendLine(");");
             code.Append(indent).Append("var ").Append(result).Append(" = new ").Append(type.SymbolType)
@@ -1447,6 +1451,10 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                 .Append(item).AppendLine(");");
             code.Append(indent).AppendLine("    }");
             code.Append(indent).Append("    ").Append(block).AppendLine(" = reader.ReadBlockCount();");
+            code.Append(indent).Append("    if (").Append(block).AppendLine(" != 0)");
+            code.Append(indent).Append("        ").Append(total)
+                .Append(" = global::Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.AddCollectionCount(")
+                .Append(total).Append(", ").Append(block).AppendLine(");");
             code.Append(indent).AppendLine("}");
             code.Append(indent).Append(target).Append(" = ").Append(result).AppendLine(";");
         }

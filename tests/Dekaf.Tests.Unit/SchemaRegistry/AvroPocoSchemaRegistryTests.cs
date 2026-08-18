@@ -342,8 +342,37 @@ public sealed class AvroPocoSchemaRegistryTests
         maximumCount.CopyTo(payload.AsSpan(5 + collectionIndex));
 
         await Assert.That(() => deserializer.Deserialize(payload, context))
-            .Throws<EndOfStreamException>()
-            .WithMessageContaining("payload ended before the value was complete");
+            .Throws<InvalidDataException>()
+            .WithMessageContaining("supported limit");
+    }
+
+    [Test]
+    public async Task GeneratedCodec_ReadsZeroWidthWriterRecordArrays()
+    {
+        const string writerSchemaJson =
+            """
+            {"type":"record","name":"PocoZeroWidthCollection","namespace":"Dekaf.Tests","fields":[{"name":"items","type":{"type":"array","items":{"type":"record","name":"PocoZeroWidthItem","fields":[]}}}]}
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        await using var writer = new AvroSchemaRegistrySerializer<GenericRecord>(registry);
+        await using var reader = PocoZeroWidthCollection.CreateAvroDeserializer(registry);
+        var writerSchema = (RecordSchema)Schema.Parse(writerSchemaJson);
+        var itemSchema = (RecordSchema)((ArraySchema)writerSchema["items"].Schema).ItemSchema;
+        var root = new GenericRecord(writerSchema);
+        root.Add("items", new object[] { new GenericRecord(itemSchema), new GenericRecord(itemSchema) });
+        var context = new SerializationContext
+        {
+            Topic = "poco-zero-width-array",
+            Component = SerializationComponent.Value
+        };
+        var destination = new ArrayBufferWriter<byte>();
+
+        writer.Serialize(root, ref destination, context);
+        var actual = reader.Deserialize(destination.WrittenMemory, context);
+
+        await Assert.That(actual.Items.Length).IsEqualTo(2);
+        await Assert.That(actual.Items[0].Value).IsEqualTo("reader-default");
+        await Assert.That(actual.Items[1].Value).IsEqualTo("reader-default");
     }
 
     [Test]
@@ -663,6 +692,46 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    public async Task GeneratedCodec_RejectsExcessiveRecursiveSkipDepth()
+    {
+        const string writerSchemaJson =
+            """
+            {"type":"record","name":"PocoEvolved","namespace":"Dekaf.Tests","fields":[{"name":"legacy_id","type":"int"},{"name":"recursive","type":["null","Dekaf.Tests.PocoEvolved"]}]}
+            """;
+        const int nestedRecordCount = 300;
+        using var registry = new MockSchemaRegistryClient();
+        var schemaId = await registry.RegisterSchemaAsync(
+            "poco-recursive-depth-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = writerSchemaJson
+            });
+        await using var reader = PocoEvolved.CreateAvroDeserializer(registry);
+        var payload = new byte[5 + (nestedRecordCount + 1) * 2];
+        payload[0] = 0;
+        BinaryPrimitives.WriteInt32BigEndian(payload.AsSpan(1, 4), schemaId);
+        var writer = new AvroValueWriter(payload.AsSpan(5));
+        for (var index = 0; index < nestedRecordCount; index++)
+        {
+            writer.WriteInt32(0);
+            writer.WriteIndex(1);
+        }
+        writer.WriteInt32(0);
+        writer.WriteIndex(0);
+        var context = new SerializationContext
+        {
+            Topic = "poco-recursive-depth",
+            Component = SerializationComponent.Value
+        };
+        var payloadLength = 5 + writer.WrittenCount;
+
+        await Assert.That(() => reader.Deserialize(payload.AsMemory(0, payloadLength), context))
+            .Throws<InvalidDataException>()
+            .WithMessageContaining("nesting exceeds");
+    }
+
+    [Test]
     public async Task GeneratedCodec_PassesTimeoutTokenToPlanFetch()
     {
         using var registry = new MockSchemaRegistryClient();
@@ -886,6 +955,39 @@ public sealed class AvroPocoSchemaRegistryTests
 
         writer.Serialize(generic, ref destination, context);
         var actual = reader.Deserialize(destination.WrittenMemory, context);
+
+        await Assert.That(actual.Id).IsEqualTo(42L);
+        await Assert.That(actual.Note).IsEqualTo("added-by-reader");
+    }
+
+    [Test]
+    public async Task GeneratedCodec_ReadsUnsupportedLogicalFieldByBaseType()
+    {
+        const string writerSchemaJson =
+            """
+            {"type":"record","name":"PocoEvolved","namespace":"Dekaf.Tests","fields":[{"name":"legacy_id","type":{"type":"long","logicalType":"local-timestamp-micros"}}]}
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        var schemaId = await registry.RegisterSchemaAsync(
+            "poco-read-logical-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = writerSchemaJson
+            });
+        await using var reader = PocoEvolved.CreateAvroDeserializer(registry);
+        var payload = new byte[15];
+        payload[0] = 0;
+        BinaryPrimitives.WriteInt32BigEndian(payload.AsSpan(1, 4), schemaId);
+        var writer = new AvroValueWriter(payload.AsSpan(5));
+        writer.WriteInt64(42);
+        var context = new SerializationContext
+        {
+            Topic = "poco-read-logical",
+            Component = SerializationComponent.Value
+        };
+
+        var actual = reader.Deserialize(payload.AsMemory(0, 5 + writer.WrittenCount), context);
 
         await Assert.That(actual.Id).IsEqualTo(42L);
         await Assert.That(actual.Note).IsEqualTo("added-by-reader");
@@ -1493,6 +1595,20 @@ internal sealed partial class PocoBlocks
 
     [AvroField(Name = "values", Order = 2)]
     public required Dictionary<string, long> Values { get; init; }
+}
+
+[AvroRecord(Name = "PocoZeroWidthCollection", Namespace = "Dekaf.Tests")]
+internal sealed partial class PocoZeroWidthCollection
+{
+    [AvroField(Name = "items", Order = 0)]
+    public required PocoZeroWidthItem[] Items { get; init; }
+}
+
+[AvroRecord(Name = "PocoZeroWidthItem", Namespace = "Dekaf.Tests")]
+internal sealed partial class PocoZeroWidthItem
+{
+    [AvroField(DefaultJson = "\"reader-default\"")]
+    public required string Value { get; init; }
 }
 
 [AvroRecord(Name = "PocoEmptyCollections", Namespace = "Dekaf.Tests")]
