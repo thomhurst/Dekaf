@@ -433,6 +433,38 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    public async Task GeneratedCodec_RejectsZeroWidthMapAllocationAmplification()
+    {
+        const string writerSchemaJson =
+            """
+            {"type":"record","name":"PocoLargeZeroWidthMap","namespace":"Dekaf.Tests","fields":[{"name":"values","type":{"type":"map","values":{"type":"record","name":"PocoLargeZeroWidthItem","fields":[]}}}]}
+            """;
+        const int declaredCount = 140_000;
+        using var registry = new MockSchemaRegistryClient();
+        var schemaId = await registry.RegisterSchemaAsync(
+            "poco-large-zero-width-map-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = writerSchemaJson
+            });
+        await using var reader = PocoLargeZeroWidthMap.CreateAvroDeserializer(registry);
+        var context = new SerializationContext
+        {
+            Topic = "poco-large-zero-width-map",
+            Component = SerializationComponent.Value
+        };
+        var payload = new byte[5 + declaredCount + 8];
+        BinaryPrimitives.WriteInt32BigEndian(payload.AsSpan(1, 4), schemaId);
+        var writer = new AvroValueWriter(payload.AsSpan(5));
+        writer.WriteBlockCount(declaredCount);
+
+        await Assert.That(() => reader.Deserialize(payload, context))
+            .Throws<InvalidDataException>()
+            .WithMessageContaining("allocation exceeds");
+    }
+
+    [Test]
     public async Task GeneratedCodec_SerializationAllocatesZeroAfterWarmup()
     {
         using var registry = new MockSchemaRegistryClient();
@@ -2746,6 +2778,13 @@ internal sealed partial class PocoLargeZeroWidthCollection
 {
     [AvroField(Name = "items")]
     public required PocoLargeZeroWidthItem[] Items { get; init; }
+}
+
+[AvroRecord(Name = "PocoLargeZeroWidthMap", Namespace = "Dekaf.Tests")]
+internal sealed partial class PocoLargeZeroWidthMap
+{
+    [AvroField(Name = "values")]
+    public required Dictionary<string, PocoLargeZeroWidthItem> Values { get; init; }
 }
 
 [AvroRecord(Name = "PocoLargeZeroWidthItem", Namespace = "Dekaf.Tests")]

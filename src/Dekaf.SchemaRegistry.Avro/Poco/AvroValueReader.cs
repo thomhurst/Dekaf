@@ -198,6 +198,16 @@ public ref struct AvroValueReader
             ThrowCollectionAllocationLimit();
     }
 
+    /// <summary>Validates that a generated map's backing storage stays within its byte limit.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void ValidateMapAllocation<T>(int count)
+    {
+        const int DictionaryEntryAndBucketMetadataSize = sizeof(int) * 3;
+        var entrySize = DictionaryEntryAndBucketMetadataSize + IntPtr.Size + Unsafe.SizeOf<T>();
+        if ((ulong)(uint)count * (uint)entrySize > MaxCollectionAllocationBytes)
+            ThrowCollectionAllocationLimit();
+    }
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     internal static void ThrowCollectionLimit() =>
         throw new InvalidDataException(

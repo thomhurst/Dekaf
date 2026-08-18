@@ -1447,6 +1447,8 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             code.Append(indent).Append("var ").Append(total).Append(" = ").Append(block).AppendLine(";");
             code.Append(indent).Append("var ").Append(count).Append(" = reader.GetCollectionCapacity(")
                 .Append(block).AppendLine(");");
+            code.Append(indent).Append("global::Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.ValidateMapAllocation<")
+                .Append(type.Item!.SymbolType).Append('>').Append('(').Append(count).AppendLine(");");
             code.Append(indent).Append("var ").Append(result).Append(" = new ").Append(type.SymbolType)
                 .Append('(').Append(count).AppendLine(");");
             code.Append(indent).Append("while (").Append(block).AppendLine(" != 0)");

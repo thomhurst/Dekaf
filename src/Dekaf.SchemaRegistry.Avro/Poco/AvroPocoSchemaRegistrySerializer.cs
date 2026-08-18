@@ -1,6 +1,6 @@
 using System.Buffers;
 using System.Buffers.Binary;
-using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using Avro;
 using Dekaf.SchemaRegistry.Avro;
 using Dekaf.Serialization;
@@ -35,7 +35,7 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
     private readonly SchemaResolutionCache<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> _resolutionCache = new();
     private readonly AvroTaggedFieldTransformerProvider _taggedFieldTransformers = new();
     private AvroPocoSerializerBufferState? _primaryRuleBuffer;
-    private ConcurrentDictionary<int, AvroPocoSerializerBufferState>? _additionalRuleBuffers;
+    private ConditionalWeakTable<Thread, AvroPocoSerializerBufferState>? _additionalRuleBuffers;
 
     /// <summary>Creates a generated POCO Avro serializer.</summary>
     public AvroPocoSchemaRegistrySerializer(
@@ -500,13 +500,13 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         var additional = Volatile.Read(ref _additionalRuleBuffers);
         if (additional is null)
         {
-            var created = new ConcurrentDictionary<int, AvroPocoSerializerBufferState>();
+            var created = new ConditionalWeakTable<Thread, AvroPocoSerializerBufferState>();
             additional = Interlocked.CompareExchange(ref _additionalRuleBuffers, created, null) ?? created;
         }
 
-        return additional.GetOrAdd(
-            threadId,
-            static currentThreadId => new AvroPocoSerializerBufferState(currentThreadId));
+        return additional.GetValue(
+            Thread.CurrentThread,
+            static currentThread => new AvroPocoSerializerBufferState(currentThread.ManagedThreadId));
     }
 
     private static byte[] GetRuleBuffer(

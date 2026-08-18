@@ -6086,9 +6086,26 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             };
             try
             {
-                key = _asyncKeyDeserializer is not null
-                    ? await _asyncKeyDeserializer.DeserializeAsync(keyData, keyContext, cancellationToken).ConfigureAwait(false)
-                    : _keyDeserializer.Deserialize(keyData, keyContext);
+                if (_asyncKeyDeserializer is not null)
+                {
+                    key = await _asyncKeyDeserializer.DeserializeAsync(
+                            keyData,
+                            keyContext,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                else if (_keyDeserializerPreparer is { } keyPreparer)
+                {
+                    if (!keyPreparer.TryDeserialize(keyData, keyContext, out key))
+                    {
+                        throw new InvalidOperationException(
+                            "Deserializer remained unprepared after PrepareAsync completed.");
+                    }
+                }
+                else
+                {
+                    key = _keyDeserializer.Deserialize(keyData, keyContext);
+                }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -6119,9 +6136,26 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         TValue value;
         try
         {
-            value = _asyncValueDeserializer is not null
-                ? await _asyncValueDeserializer.DeserializeAsync(valueBytes, valueContext, cancellationToken).ConfigureAwait(false)
-                : _valueDeserializer.Deserialize(valueBytes, valueContext);
+            if (_asyncValueDeserializer is not null)
+            {
+                value = await _asyncValueDeserializer.DeserializeAsync(
+                        valueBytes,
+                        valueContext,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            else if (_valueDeserializerPreparer is { } valuePreparer)
+            {
+                if (!valuePreparer.TryDeserialize(valueBytes, valueContext, out value))
+                {
+                    throw new InvalidOperationException(
+                        "Deserializer remained unprepared after PrepareAsync completed.");
+                }
+            }
+            else
+            {
+                value = _valueDeserializer.Deserialize(valueBytes, valueContext);
+            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
