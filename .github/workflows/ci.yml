@@ -370,7 +370,7 @@ jobs:
     name: NativeAOT Smoke
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
 
     steps:
@@ -390,8 +390,10 @@ jobs:
           key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/Directory.Packages.props', '**/Directory.Build.props', '**/Directory.Build.targets') }}
           restore-keys: nuget-${{ runner.os }}-
 
-      - name: Install NativeAOT prerequisites
-        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+      - name: Verify NativeAOT prerequisites
+        run: |
+          clang-18 --version
+          test -f /usr/include/zlib.h
 
       - name: Publish and run core smoke test
         run: |
@@ -402,6 +404,7 @@ jobs:
             --self-contained true \
             --output artifacts/aot/core \
             -p:PublishAot=true \
+            -p:CppCompilerAndLinker=clang-18 \
             -p:ContinuousIntegrationBuild=true \
             -p:TreatWarningsAsErrors=true
           ./artifacts/aot/core/Dekaf.Tests.Aot
@@ -415,6 +418,7 @@ jobs:
             --self-contained true \
             --output artifacts/aot/dependency-injection \
             -p:PublishAot=true \
+            -p:CppCompilerAndLinker=clang-18 \
             -p:ContinuousIntegrationBuild=true \
             -p:TreatWarningsAsErrors=true
           ./artifacts/aot/dependency-injection/Dekaf.Tests.Aot.DependencyInjection
@@ -423,7 +427,7 @@ jobs:
     name: NativeAOT Integration Publish
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
 
     steps:
@@ -443,8 +447,10 @@ jobs:
           key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/Directory.Packages.props', '**/Directory.Build.props', '**/Directory.Build.targets') }}
           restore-keys: nuget-${{ runner.os }}-
 
-      - name: Install NativeAOT prerequisites
-        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+      - name: Verify NativeAOT prerequisites
+        run: |
+          clang-18 --version
+          test -f /usr/include/zlib.h
 
       - name: Publish NativeAOT integration executable
         run: |
@@ -455,6 +461,7 @@ jobs:
             --self-contained true \
             --output artifacts/aot/integration \
             -p:PublishAot=true \
+            -p:CppCompilerAndLinker=clang-18 \
             -p:ContinuousIntegrationBuild=true \
             -p:TreatWarningsAsErrors=true
 

@@ -8440,8 +8440,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
             if (changedTopics is not null)
             {
-                _coordinator?.RequestRejoin();
-
                 var recreatedPartitions = new HashSet<TopicPartition>();
                 foreach (var partition in assignment)
                 {
@@ -8514,6 +8512,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                 foreach (var (topic, identities) in changedTopics)
                     _observedTopicIds[topic] = identities.Current;
+
+                // Publish recreated-topic state before allowing a background poll to rejoin.
+                // Rejoining first can stage a temporary revocation; the reset's stale-fetch
+                // guard then skips the reset and leaves the old topic's committed position.
+                _coordinator?.RequestRejoin();
             }
 
             // Publish only if no assignment snapshot replaced the marker while resets awaited.
