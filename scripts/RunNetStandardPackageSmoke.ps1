@@ -87,9 +87,50 @@ try {
     $entries = [string[]]$zip.Entries.FullName
     Assert-PackageEntry -Entries $entries -Entry 'lib/net10.0/Dekaf.dll' -PackagePath $corePackage.FullName
     Assert-PackageEntry -Entries $entries -Entry 'lib/netstandard2.0/Dekaf.dll' -PackagePath $corePackage.FullName
+
+    $nuspecEntry = $zip.Entries | Where-Object { $_.Name -eq 'Dekaf.nuspec' } | Select-Object -First 1
+    if (-not $nuspecEntry) {
+        throw "Dekaf package is missing Dekaf.nuspec: $($corePackage.FullName)"
+    }
+
+    $nuspecReader = [System.IO.StreamReader]::new($nuspecEntry.Open())
+    try {
+        [xml]$nuspec = $nuspecReader.ReadToEnd()
+    }
+    finally {
+        $nuspecReader.Dispose()
+    }
+
+    $abstractionsDependencies = @(
+        $nuspec.package.metadata.dependencies.group.dependency |
+            Where-Object { $_.id -eq 'Dekaf.Abstractions' })
+    $expectedDependencyVersion = "[$PackageVersion]"
+    $unexpectedAbstractionsDependencies = @(
+        $abstractionsDependencies |
+            Where-Object { $_.version -ne $expectedDependencyVersion })
+    if ($abstractionsDependencies.Count -ne 2 -or
+        $unexpectedAbstractionsDependencies.Count -ne 0) {
+        throw "Dekaf must depend on Dekaf.Abstractions $expectedDependencyVersion for both target frameworks."
+    }
 }
 finally {
     $zip.Dispose()
+}
+
+$abstractionsPackage = Get-ChildItem -Path $packageSearchRoot -Recurse -Filter "Dekaf.Abstractions.$PackageVersion.nupkg" |
+    Select-Object -First 1
+if (-not $abstractionsPackage) {
+    throw "Dekaf.Abstractions package version $PackageVersion was not found under $packageSearchRoot"
+}
+
+$abstractionsZip = [System.IO.Compression.ZipFile]::OpenRead($abstractionsPackage.FullName)
+try {
+    $abstractionsEntries = [string[]]$abstractionsZip.Entries.FullName
+    Assert-PackageEntry -Entries $abstractionsEntries -Entry 'lib/net10.0/Dekaf.Abstractions.dll' -PackagePath $abstractionsPackage.FullName
+    Assert-PackageEntry -Entries $abstractionsEntries -Entry 'lib/netstandard2.0/Dekaf.Abstractions.dll' -PackagePath $abstractionsPackage.FullName
+}
+finally {
+    $abstractionsZip.Dispose()
 }
 
 $otherPackages = Get-ChildItem -Path $packageSearchRoot -Recurse -Filter 'Dekaf*.nupkg' |
@@ -98,8 +139,8 @@ $otherPackages = Get-ChildItem -Path $packageSearchRoot -Recurse -Filter 'Dekaf*
 foreach ($package in $otherPackages) {
     $otherZip = [System.IO.Compression.ZipFile]::OpenRead($package.FullName)
     try {
-        if ($otherZip.Entries.FullName -like 'lib/netstandard2.0/*') {
-            throw "Only the Dekaf core package should contain a netstandard2.0 asset for this validation pass: $($package.FullName)"
+        if ($package.FullName -ne $abstractionsPackage.FullName -and $otherZip.Entries.FullName -like 'lib/netstandard2.0/*') {
+            throw "Only the Dekaf and Dekaf.Abstractions packages should contain netstandard2.0 assets: $($package.FullName)"
         }
     }
     finally {
@@ -108,9 +149,11 @@ foreach ($package in $otherPackages) {
 }
 
 $smokeProject = Join-Path $repoRoot 'samples/PackageSmoke/Dekaf.PackageSmoke.Runner/Dekaf.PackageSmoke.Runner.csproj'
+$abstractionsAdapterProject = Join-Path $repoRoot 'samples/PackageSmoke/Dekaf.PackageSmoke.AbstractionsAdapter/Dekaf.PackageSmoke.AbstractionsAdapter.csproj'
 if (-not (Test-Path -LiteralPath $smokeProject)) {
     throw "Package smoke project not found: $smokeProject"
 }
+$packageRestoreSources = "$packageSource%3B$($abstractionsPackage.DirectoryName)"
 
 $artifactsDir = Join-Path $repoRoot 'artifacts/package-smoke'
 $nugetPackages = Join-Path $artifactsDir 'nuget-cache'
@@ -124,7 +167,8 @@ try {
         'restore',
         $smokeProject,
         "-p:DekafPackageVersion=$PackageVersion",
-        "-p:RestoreAdditionalProjectSources=$packageSource"
+        '-p:UseDekafPackages=true',
+        "-p:RestoreAdditionalProjectSources=$packageRestoreSources"
     )
 
     Invoke-DotNet -Step 'package smoke build' -Arguments @(
@@ -136,6 +180,21 @@ try {
         $RunnerFramework,
         '--no-restore',
         "-p:DekafPackageVersion=$PackageVersion",
+        '-p:UseDekafPackages=true',
+        '-p:TreatWarningsAsErrors=true',
+        '-p:EnforceCodeStyleInBuild=false'
+    )
+
+    Invoke-DotNet -Step 'netstandard2.0 abstractions adapter build' -Arguments @(
+        'build',
+        $abstractionsAdapterProject,
+        '--configuration',
+        $Configuration,
+        '--framework',
+        'netstandard2.0',
+        '--no-restore',
+        "-p:DekafPackageVersion=$PackageVersion",
+        '-p:UseDekafPackages=true',
         '-p:TreatWarningsAsErrors=true',
         '-p:EnforceCodeStyleInBuild=false'
     )

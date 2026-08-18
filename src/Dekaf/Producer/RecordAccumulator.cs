@@ -8812,7 +8812,7 @@ internal sealed class PartitionBatch
     /// - 36 bytes base overhead (worst-case varints for record length, timestamp delta,
     ///   offset delta, key/value lengths, and header count, plus 1 byte attributes)
     /// - Key and value payload lengths
-    /// - Exact header sizes via <see cref="Header.CalculateSize"/>
+    /// - Exact header sizes via <see cref="HeaderProtocol.CalculateSize"/>
     /// This must be internal so KafkaProducer can calculate size before reserving memory.
     /// </summary>
     /// <param name="keyLength">Length of the serialized key in bytes (0 if null)</param>
@@ -8836,7 +8836,7 @@ internal sealed class PartitionBatch
         {
             for (var i = 0; i < headerCount; i++)
             {
-                size += headers[i].CalculateSize();
+                size += HeaderProtocol.CalculateSize(in headers[i]);
             }
         }
 

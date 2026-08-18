@@ -54,7 +54,8 @@ public class TraceContextInjectionBenchmarks
         _headers.Clear();
         Diagnostics.TraceContextPropagator.InjectTraceContext(_headers, _activity);
         var offset = 0;
-        _headers[0].Encode(_destination, ref offset);
+        var traceparent = _headers[0];
+        HeaderProtocol.Encode(in traceparent, _destination, ref offset);
         return offset;
     }
 
@@ -96,8 +97,10 @@ public class TraceContextInjectionBenchmarks
             _tracestateHeaders,
             _tracestateActivity);
         var offset = 0;
-        _tracestateHeaders[0].Encode(_tracestateDestination, ref offset);
-        _tracestateHeaders[1].Encode(_tracestateDestination, ref offset);
+        var traceparent = _tracestateHeaders[0];
+        var tracestate = _tracestateHeaders[1];
+        HeaderProtocol.Encode(in traceparent, _tracestateDestination, ref offset);
+        HeaderProtocol.Encode(in tracestate, _tracestateDestination, ref offset);
         return offset;
     }
 }

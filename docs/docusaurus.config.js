@@ -1,6 +1,15 @@
 // @ts-check
 import {themes as prismThemes} from 'prism-react-renderer';
 
+const dekafPrismTheme = {
+  ...prismThemes.dracula,
+  plain: {
+    ...prismThemes.dracula.plain,
+    color: '#d3daf0',
+    backgroundColor: '#090e1a',
+  },
+};
+
 /**
  * Docusaurus renders a "Direct link to ..." anchor inside every heading. Converting the
  * built HTML back to Markdown would carry those into each emitted .md file and into
@@ -43,6 +52,13 @@ const config = {
   projectName: 'Dekaf',
 
   headTags: [
+    {
+      tagName: 'link',
+      attributes: {
+        rel: 'apple-touch-icon',
+        href: '/Dekaf/img/apple-touch-icon.png',
+      },
+    },
     {
       tagName: 'meta',
       attributes: {
@@ -141,7 +157,8 @@ const config = {
         title: 'Dekaf',
         logo: {
           alt: 'Dekaf Logo',
-          src: 'img/logo.svg',
+          src: 'img/logo-light.png',
+          srcDark: 'img/logo-dark.png',
         },
         items: [
           {
@@ -204,8 +221,8 @@ const config = {
         copyright: `Copyright © ${new Date().getFullYear()} Dekaf. Built with Docusaurus.`,
       },
       prism: {
-        theme: prismThemes.github,
-        darkTheme: prismThemes.dracula,
+        theme: dekafPrismTheme,
+        darkTheme: dekafPrismTheme,
         additionalLanguages: ['csharp', 'bash', 'json'],
       },
     }),

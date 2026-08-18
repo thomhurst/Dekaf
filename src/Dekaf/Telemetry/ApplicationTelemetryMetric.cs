@@ -39,8 +39,16 @@ public sealed class ApplicationTelemetryMetric
         Func<double> observe,
         IReadOnlyDictionary<string, string>? attributes = null)
     {
+#if NETSTANDARD2_0
+        if (string.IsNullOrWhiteSpace(name))
+            throw new ArgumentException("Value cannot be null or whitespace.", nameof(name));
+
+        if (observe is null)
+            throw new ArgumentNullException(nameof(observe));
+#else
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentNullException.ThrowIfNull(observe);
+#endif
 
         Name = name;
         Kind = kind;
@@ -77,8 +85,10 @@ public sealed class ApplicationTelemetryMetric
         }
 
         var copy = new Dictionary<string, string>(attributes.Count, StringComparer.Ordinal);
-        foreach (var (name, value) in attributes)
+        foreach (var attribute in attributes)
         {
+            var name = attribute.Key;
+            var value = attribute.Value;
             if (string.IsNullOrWhiteSpace(name))
             {
                 throw new ArgumentException("Attribute names must not be null or whitespace.", nameof(attributes));
