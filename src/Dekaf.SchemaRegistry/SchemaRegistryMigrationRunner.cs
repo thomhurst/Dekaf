@@ -127,10 +127,55 @@ internal sealed class SchemaRegistryMigrationRunner
             context.Return();
         }
 
-        var encodedSchema = writerSchema;
         var steps = plan.Steps;
         var payloadSchemaId = schemaId;
         var payloadSchema = writerSchema;
+        if (steps.Length != 0)
+        {
+            TransformMigrationSteps(
+                ref payload,
+                ref payloadSchemaId,
+                ref payloadSchema,
+                schemaId,
+                subject,
+                serializationContext,
+                payloadFormat,
+                taggedFieldTransformers,
+                steps);
+        }
+
+        context = RentContext(
+            serializationContext,
+            plan.ReaderSchema.Id,
+            subject,
+            plan.ReaderSchema.Schema,
+            payloadFormat,
+            taggedFieldTransformers,
+            taggedFieldSchema: payloadSchema);
+        try
+        {
+            payload = _schemaRuleExecutor.TransformDeserializedDomainPayload(payload, context);
+        }
+        finally
+        {
+            context.Return();
+        }
+
+        return new MigrationResult(payload, plan.ReaderSchema, payloadSchemaId, payloadSchema);
+    }
+
+    private void TransformMigrationSteps(
+        ref ReadOnlyMemory<byte> payload,
+        ref int payloadSchemaId,
+        ref Schema payloadSchema,
+        int schemaId,
+        string subject,
+        SerializationContext serializationContext,
+        SchemaRegistryPayloadFormat payloadFormat,
+        ISchemaRegistryTaggedFieldTransformerProvider? taggedFieldTransformers,
+        MigrationStep[] steps)
+    {
+        SchemaRegistryRuleContext context;
         for (var i = 0; i < steps.Length; i++)
         {
             ref readonly var step = ref steps[i];
@@ -142,13 +187,20 @@ internal sealed class SchemaRegistryMigrationRunner
                 owner,
                 payloadFormat,
                 taggedFieldTransformers,
-                encodedSchema,
+                payloadSchema,
                 step.Source.Schema,
                 step.Target.Schema,
                 step.Mode);
             try
             {
-                if (_schemaRuleExecutor.TransformMigrationPayload(ref payload, context, step.Mode))
+                var transformResult = _schemaRuleExecutor!.TransformMigrationPayload(
+                    ref payload,
+                    context,
+                    step.Mode);
+                if (transformResult == SchemaRegistryMigrationTransformResult.Failed)
+                    break;
+
+                if (transformResult == SchemaRegistryMigrationTransformResult.Transformed)
                 {
                     payloadSchemaId = step.Target.Id;
                     payloadSchema = step.Target.Schema;
@@ -159,25 +211,6 @@ internal sealed class SchemaRegistryMigrationRunner
                 context.Return();
             }
         }
-
-        context = RentContext(
-            serializationContext,
-            plan.ReaderSchema.Id,
-            subject,
-            plan.ReaderSchema.Schema,
-            payloadFormat,
-            taggedFieldTransformers,
-            taggedFieldSchema: encodedSchema);
-        try
-        {
-            payload = _schemaRuleExecutor.TransformDeserializedDomainPayload(payload, context);
-        }
-        finally
-        {
-            context.Return();
-        }
-
-        return new MigrationResult(payload, plan.ReaderSchema, payloadSchemaId, payloadSchema);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -323,4 +356,11 @@ internal sealed class SchemaRegistryMigrationRunner
             ReadOnlyMemory<byte> payload,
             SchemaRegistryRuleContext context) => payload;
     }
+}
+
+internal enum SchemaRegistryMigrationTransformResult : byte
+{
+    None,
+    Transformed,
+    Failed
 }

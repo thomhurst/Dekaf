@@ -77,9 +77,9 @@ public sealed class SchemaRegistryMigrationTests
         await Assert.That(provider.Calls[0].PayloadSchema).IsSameReferenceAs(writer);
         await Assert.That(provider.Calls[1].PayloadSchema).IsSameReferenceAs(writer);
         await Assert.That(provider.Calls[1].RuleOwnerSchema).IsSameReferenceAs(intermediate);
-        await Assert.That(provider.Calls[2].PayloadSchema).IsSameReferenceAs(writer);
+        await Assert.That(provider.Calls[2].PayloadSchema).IsSameReferenceAs(intermediate);
         await Assert.That(provider.Calls[2].RuleOwnerSchema).IsSameReferenceAs(target);
-        await Assert.That(provider.Calls[3].PayloadSchema).IsSameReferenceAs(writer);
+        await Assert.That(provider.Calls[3].PayloadSchema).IsSameReferenceAs(target);
         await Assert.That(provider.Calls[3].RuleOwnerSchema).IsSameReferenceAs(target);
     }
 
@@ -204,6 +204,38 @@ public sealed class SchemaRegistryMigrationTests
         await Assert.That(result.ReaderSchema.Id).IsEqualTo(v2Id);
         await Assert.That(result.PayloadSchemaId).IsEqualTo(v1Id);
         await Assert.That(Encoding.UTF8.GetString(result.Payload.Span)).IsEqualTo("payload");
+    }
+
+    [Test]
+    public async Task Transform_SuppressedFailedStep_StopsDependentMigrationChain()
+    {
+        var registry = new MigrationRegistryClient();
+        var v1 = CreateSchema("v1");
+        var v2 = CreateSchema(
+            "v2",
+            CreateRule("v2-up", SchemaRuleMode.Upgrade, "MISSING", onFailure: "NONE"));
+        var v3 = CreateSchema("v3", CreateRule("v3-up", SchemaRuleMode.Upgrade));
+        var v1Id = registry.Register("orders-value", v1);
+        registry.Register("orders-value", v2);
+        var v3Id = registry.Register("orders-value", v3);
+        var calls = new List<string>();
+        var runner = new SchemaRegistryMigrationRunner(
+            registry,
+            new SchemaRegistryRuleExecutor([new CapturingMigrationHandler(calls)]),
+            TimeSpan.FromSeconds(1));
+
+        var result = runner.Transform(
+            "payload"u8.ToArray(),
+            v1Id,
+            "orders-value",
+            v1,
+            SerializationContext,
+            SchemaRegistryPayloadFormat.Json);
+
+        await Assert.That(result.ReaderSchema.Id).IsEqualTo(v3Id);
+        await Assert.That(result.PayloadSchemaId).IsEqualTo(v1Id);
+        await Assert.That(Encoding.UTF8.GetString(result.Payload.Span)).IsEqualTo("payload");
+        await Assert.That(calls).IsEmpty();
     }
 
     [Test]
