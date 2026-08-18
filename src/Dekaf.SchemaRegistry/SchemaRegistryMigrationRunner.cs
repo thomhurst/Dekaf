@@ -88,7 +88,7 @@ internal sealed class SchemaRegistryMigrationRunner
             }
 
             if (_ruleExecutor is null)
-                return new MigrationResult(payload, plan.ReaderSchema, plan.PayloadSchemaId);
+                return new MigrationResult(payload, plan.ReaderSchema, schemaId);
 
             var readerContext = SchemaRegistryRuleContext.Rent(
                 serializationContext.Topic,
@@ -106,7 +106,7 @@ internal sealed class SchemaRegistryMigrationRunner
                 readerContext.Return();
             }
 
-            return new MigrationResult(payload, plan.ReaderSchema, plan.PayloadSchemaId);
+            return new MigrationResult(payload, plan.ReaderSchema, schemaId);
         }
 
         var context = SchemaRegistryRuleContext.Rent(
@@ -126,6 +126,7 @@ internal sealed class SchemaRegistryMigrationRunner
         }
 
         var steps = plan.Steps;
+        var payloadSchemaId = schemaId;
         for (var i = 0; i < steps.Length; i++)
         {
             ref readonly var step = ref steps[i];
@@ -142,7 +143,8 @@ internal sealed class SchemaRegistryMigrationRunner
                 step.Mode);
             try
             {
-                payload = _schemaRuleExecutor.TransformMigrationPayload(payload, context, step.Mode);
+                if (_schemaRuleExecutor.TransformMigrationPayload(ref payload, context, step.Mode))
+                    payloadSchemaId = step.Target.Id;
             }
             finally
             {
@@ -166,7 +168,7 @@ internal sealed class SchemaRegistryMigrationRunner
             context.Return();
         }
 
-        return new MigrationResult(payload, plan.ReaderSchema, plan.PayloadSchemaId);
+        return new MigrationResult(payload, plan.ReaderSchema, payloadSchemaId);
     }
 
     private async Task<MigrationPlan> CreatePlanAsync(string subject, Schema writerSchema)
@@ -187,11 +189,9 @@ internal sealed class SchemaRegistryMigrationRunner
                 subject,
                 reader,
                 [],
-                payloadSchemaId: writer.Id,
                 Environment.TickCount64);
 
         var steps = new List<MigrationStep>();
-        var payloadSchemaId = writer.Id;
         if (writer.Version < reader.Version)
         {
             var previous = writer;
@@ -205,12 +205,6 @@ internal sealed class SchemaRegistryMigrationRunner
                         SchemaRuleMode.Upgrade))
                 {
                     steps.Add(new MigrationStep(SchemaRuleMode.Upgrade, previous, current));
-                    if (SchemaRegistryRuleExecutor.HasActiveTransformMigrationRule(
-                            current.Schema.RuleSet,
-                            SchemaRuleMode.Upgrade))
-                    {
-                        payloadSchemaId = current.Id;
-                    }
                 }
 
                 previous = current;
@@ -229,12 +223,6 @@ internal sealed class SchemaRegistryMigrationRunner
                         SchemaRuleMode.Downgrade))
                 {
                     steps.Add(new MigrationStep(SchemaRuleMode.Downgrade, current, previous));
-                    if (SchemaRegistryRuleExecutor.HasActiveTransformMigrationRule(
-                            current.Schema.RuleSet,
-                            SchemaRuleMode.Downgrade))
-                    {
-                        payloadSchemaId = previous.Id;
-                    }
                 }
 
                 current = previous;
@@ -246,7 +234,6 @@ internal sealed class SchemaRegistryMigrationRunner
             subject,
             reader,
             [.. steps],
-            payloadSchemaId,
             Environment.TickCount64);
     }
 
@@ -268,14 +255,12 @@ internal sealed class SchemaRegistryMigrationRunner
         string subject,
         RegisteredSchema readerSchema,
         MigrationStep[] steps,
-        int payloadSchemaId,
         long createdAtMilliseconds)
     {
         internal int WriterSchemaId { get; } = writerSchemaId;
         internal string Subject { get; } = subject;
         internal RegisteredSchema ReaderSchema { get; } = readerSchema;
         internal MigrationStep[] Steps { get; } = steps;
-        internal int PayloadSchemaId { get; } = payloadSchemaId;
         internal long CreatedAtMilliseconds { get; } = createdAtMilliseconds;
     }
 

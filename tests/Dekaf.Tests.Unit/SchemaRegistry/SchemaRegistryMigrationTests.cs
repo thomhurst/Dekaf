@@ -112,6 +112,66 @@ public sealed class SchemaRegistryMigrationTests
     }
 
     [Test]
+    public async Task Transform_MissingHandlerWithSuppressedFailure_KeepsSourcePayloadSchema()
+    {
+        var registry = new MigrationRegistryClient();
+        var v1 = CreateSchema("v1");
+        var v2 = CreateSchema(
+            "v2",
+            CreateRule("v2-up", SchemaRuleMode.Upgrade, "MISSING", onFailure: "NONE"));
+        var v1Id = registry.Register("orders-value", v1);
+        var v2Id = registry.Register("orders-value", v2);
+        var runner = new SchemaRegistryMigrationRunner(
+            registry,
+            new SchemaRegistryRuleExecutor([]),
+            TimeSpan.FromSeconds(1));
+
+        var result = runner.Transform(
+            "payload"u8.ToArray(),
+            v1Id,
+            "orders-value",
+            v1,
+            SerializationContext,
+            SchemaRegistryPayloadFormat.Json);
+
+        await Assert.That(result.ReaderSchema.Id).IsEqualTo(v2Id);
+        await Assert.That(result.PayloadSchemaId).IsEqualTo(v1Id);
+        await Assert.That(Encoding.UTF8.GetString(result.Payload.Span)).IsEqualTo("payload");
+    }
+
+    [Test]
+    public async Task Transform_ThrowingHandlerWithSuppressedFailure_KeepsSourcePayloadSchema()
+    {
+        var registry = new MigrationRegistryClient();
+        var v1 = CreateSchema("v1");
+        var v2 = CreateSchema(
+            "v2",
+            CreateRule(
+                "v2-up",
+                SchemaRuleMode.Upgrade,
+                ThrowingMigrationHandler.RuleType,
+                onFailure: "NONE"));
+        var v1Id = registry.Register("orders-value", v1);
+        var v2Id = registry.Register("orders-value", v2);
+        var runner = new SchemaRegistryMigrationRunner(
+            registry,
+            new SchemaRegistryRuleExecutor([new ThrowingMigrationHandler()]),
+            TimeSpan.FromSeconds(1));
+
+        var result = runner.Transform(
+            "payload"u8.ToArray(),
+            v1Id,
+            "orders-value",
+            v1,
+            SerializationContext,
+            SchemaRegistryPayloadFormat.Json);
+
+        await Assert.That(result.ReaderSchema.Id).IsEqualTo(v2Id);
+        await Assert.That(result.PayloadSchemaId).IsEqualTo(v1Id);
+        await Assert.That(Encoding.UTF8.GetString(result.Payload.Span)).IsEqualTo("payload");
+    }
+
+    [Test]
     public async Task Transform_MissingIntermediateVersion_ThrowsAndDoesNotCacheFailure()
     {
         var registry = new MigrationRegistryClient();
@@ -377,7 +437,8 @@ public sealed class SchemaRegistryMigrationTests
         SchemaRuleMode mode,
         string type,
         bool disabled = false,
-        string? onSuccess = null) =>
+        string? onSuccess = null,
+        string? onFailure = null) =>
         new()
         {
             Name = name,
@@ -385,7 +446,8 @@ public sealed class SchemaRegistryMigrationTests
             Mode = mode,
             Type = type,
             Disabled = disabled,
-            OnSuccess = onSuccess
+            OnSuccess = onSuccess,
+            OnFailure = onFailure
         };
 
     private sealed class CapturingMigrationHandler(List<string> calls) : ISchemaRegistryRuleHandler
@@ -426,6 +488,21 @@ public sealed class SchemaRegistryMigrationTests
             SchemaRegistryRuleHandlerContext context,
             SchemaRegistryRuleException? exception) =>
             calls.Add($"action:{context.Rule.Name}:{context.PayloadContext.RuleMode}");
+    }
+
+    private sealed class ThrowingMigrationHandler : ISchemaRegistryRuleHandler
+    {
+        internal const string RuleType = "THROW";
+
+        public string Type => RuleType;
+
+        public ReadOnlyMemory<byte> TransformSerializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleHandlerContext context) => throw new InvalidOperationException("failure");
+
+        public ReadOnlyMemory<byte> TransformDeserializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleHandlerContext context) => throw new InvalidOperationException("failure");
     }
 
     private sealed class ReplacingRuleHandler(List<string> calls) : ISchemaRegistryRuleHandler

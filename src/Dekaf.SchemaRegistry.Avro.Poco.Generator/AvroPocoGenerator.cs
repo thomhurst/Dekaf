@@ -131,6 +131,14 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
         DiagnosticSeverity.Error,
         isEnabledByDefault: true);
 
+    private static readonly DiagnosticDescriptor EmptyEnum = new(
+        "DKAVRO015",
+        "Empty Avro enum",
+        "Enum '{0}' has no symbols; Avro enums require at least one symbol",
+        "Dekaf.Avro",
+        DiagnosticSeverity.Error,
+        isEnabledByDefault: true);
+
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
         var records = context.SyntaxProvider.ForAttributeWithMetadataName(
@@ -558,6 +566,15 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                     .Where(static field => field.HasConstantValue)
                     .OrderBy(GetSourceOrder)
                     .ToImmutableArray();
+                if (enumFields.IsEmpty)
+                {
+                    Error(
+                        EmptyEnum,
+                        member.Locations.FirstOrDefault(),
+                        enumSymbol.ToDisplayString());
+                    return null;
+                }
+
                 for (var left = 0; left < enumFields.Length; left++)
                 {
                     for (var right = left + 1; right < enumFields.Length; right++)

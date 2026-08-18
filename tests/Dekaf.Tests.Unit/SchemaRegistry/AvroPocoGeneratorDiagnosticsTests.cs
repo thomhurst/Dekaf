@@ -36,6 +36,7 @@ public sealed class AvroPocoGeneratorDiagnosticsTests
             ("DKAVRO012", "[AvroRecord] public partial class Value { public Other.Status A { get; set; } public Collision B { get; set; } = new(); } [AvroRecord(Name=\"Status\", Namespace=\"Other\")] public partial class Collision { public int Id { get; set; } } namespace Other { public enum Status { Ready } }"),
             ("DKAVRO010", "[AvroRecord] public partial class Value { public Status State { get; set; } } public enum Status { Café }"),
             ("DKAVRO014", "[AvroRecord] public partial class Value { public Status State { get; set; } } public enum Status { First = 1, Second = 1 }"),
+            ("DKAVRO015", "[AvroRecord] public partial class Value { public Status State { get; set; } } public enum Status { }"),
             ("DKAVRO009", "[AvroRecord] public partial class Value { [AvroField(UnionTypes=new[] { typeof(Base), typeof(Derived) })] public object Data { get; set; } = null!; } [AvroRecord] public partial class Base { public int Id { get; set; } } [AvroRecord] public partial class Derived : Base { public string Name { get; set; } = string.Empty; }"),
             ("DKAVRO002", "[AvroRecord] public partial class Value { [AvroField(UnionTypes=new[] { typeof(int), typeof(string) })] public object Data { get; set; } = null!; }"),
             ("DKAVRO013", "public class Base { public int Id { get; set; } } [AvroRecord] public partial class Value : Base { public string Name { get; set; } = string.Empty; }")
