@@ -558,6 +558,36 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    public async Task GeneratedCodec_RulesPathReentrantSerializationPreservesOuterPayload()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        var executor = new ReentrantRuleExecutor();
+        await using var serializer = PocoReadonlyRecord.CreateAvroSerializer(
+            registry,
+            new AvroSerializerConfig { RuleExecutor = executor });
+        await using var deserializer = PocoReadonlyRecord.CreateAvroDeserializer(registry);
+        var context = new SerializationContext
+        {
+            Topic = "poco-reentrant-rules",
+            Component = SerializationComponent.Value
+        };
+        var outerDestination = new ArrayBufferWriter<byte>();
+        var nestedDestination = new ArrayBufferWriter<byte>();
+        executor.Reenter = () =>
+        {
+            nestedDestination.Clear();
+            serializer.Serialize(new PocoReadonlyRecord { Id = 7 }, ref nestedDestination, context);
+        };
+
+        serializer.Serialize(new PocoReadonlyRecord { Id = 42 }, ref outerDestination, context);
+
+        var outer = deserializer.Deserialize(outerDestination.WrittenMemory, context);
+        var nested = deserializer.Deserialize(nestedDestination.WrittenMemory, context);
+        await Assert.That(outer.Id).IsEqualTo(42);
+        await Assert.That(nested.Id).IsEqualTo(7);
+    }
+
+    [Test]
     public async Task GeneratedCodec_RulesPathSharesRetainedBufferAcrossCodecTypes()
     {
         using var registry = new MockSchemaRegistryClient();
@@ -1620,6 +1650,37 @@ public sealed class AvroPocoSchemaRegistryTests
         public ReadOnlyMemory<byte> TransformSerializedPayload(
             ReadOnlyMemory<byte> payload,
             SchemaRegistryRuleContext context) => payload;
+
+        public ReadOnlyMemory<byte> TransformDeserializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleContext context) => payload;
+    }
+
+    private sealed class ReentrantRuleExecutor : ISchemaRegistryRuleExecutor
+    {
+        private bool _isReentrant;
+
+        internal Action? Reenter { get; set; }
+
+        public ReadOnlyMemory<byte> TransformSerializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleContext context)
+        {
+            if (_isReentrant)
+                return payload;
+
+            _isReentrant = true;
+            try
+            {
+                Reenter!();
+            }
+            finally
+            {
+                _isReentrant = false;
+            }
+
+            return payload;
+        }
 
         public ReadOnlyMemory<byte> TransformDeserializedPayload(
             ReadOnlyMemory<byte> payload,

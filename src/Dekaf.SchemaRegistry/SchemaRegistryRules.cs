@@ -678,6 +678,7 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         var step = isUpgrade ? 1 : -1;
         var direction = isUpgrade ? SchemaRegistryRuleDirection.Write : SchemaRegistryRuleDirection.Read;
         var payloadWasTransformed = false;
+        var payloadTransformFailed = false;
         for (; index != end; index += step)
         {
             var rule = rules[index];
@@ -686,7 +687,17 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
 
             _handlers.TryGetValue(rule.Type, out var handler);
             var ruleSucceeded = ApplyRule(ref payload, context, rule, handler, direction);
-            payloadWasTransformed |= ruleSucceeded && rule.Kind == SchemaRuleKind.Transform;
+            if (rule.Kind == SchemaRuleKind.Transform)
+            {
+                payloadWasTransformed |= ruleSucceeded;
+                payloadTransformFailed |= !ruleSucceeded;
+            }
+        }
+
+        if (payloadWasTransformed && payloadTransformFailed)
+        {
+            throw new SchemaRegistryRuleException(
+                "A migration step was only partially transformed and cannot be decoded safely.");
         }
 
         return payloadWasTransformed;

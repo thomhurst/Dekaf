@@ -172,7 +172,7 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         , allows ref struct
 #endif
     {
-        var buffer = GetRuleBuffer(out var bufferIsPooled);
+        var buffer = GetRuleBuffer(out var bufferIsPooled, out var ownsBufferLease);
         try
         {
             int length;
@@ -224,6 +224,8 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         }
         finally
         {
+            if (ownsBufferLease)
+                AvroPocoSerializerBuffers.RuleBufferInUse = false;
             if (bufferIsPooled)
                 ArrayPool<byte>.Shared.Return(buffer);
         }
@@ -352,17 +354,31 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         return (int)Math.Min((long)current * 2, maximum);
     }
 
-    private static byte[] GetRuleBuffer(out bool bufferIsPooled)
+    private static byte[] GetRuleBuffer(out bool bufferIsPooled, out bool ownsBufferLease)
     {
         var sizeHint = AvroPocoSerializerBuffers.RulePayloadSizeHint;
+        if (AvroPocoSerializerBuffers.RuleBufferInUse)
+        {
+            bufferIsPooled = true;
+            ownsBufferLease = false;
+            return ArrayPool<byte>.Shared.Rent(Math.Max(1024, sizeHint));
+        }
+
+        byte[] buffer;
         if (sizeHint > MaxRetainedPayloadSize)
         {
             bufferIsPooled = true;
-            return ArrayPool<byte>.Shared.Rent(sizeHint);
+            buffer = ArrayPool<byte>.Shared.Rent(sizeHint);
+        }
+        else
+        {
+            bufferIsPooled = false;
+            buffer = AvroPocoSerializerBuffers.RuleBuffer ??= GC.AllocateUninitializedArray<byte>(1024);
         }
 
-        bufferIsPooled = false;
-        return AvroPocoSerializerBuffers.RuleBuffer ??= GC.AllocateUninitializedArray<byte>(1024);
+        AvroPocoSerializerBuffers.RuleBufferInUse = true;
+        ownsBufferLease = true;
+        return buffer;
     }
 
     private static void RetainRuleBuffer(byte[] buffer) => AvroPocoSerializerBuffers.RuleBuffer = buffer;
@@ -384,4 +400,7 @@ internal static class AvroPocoSerializerBuffers
 
     [ThreadStatic]
     internal static int RulePayloadSizeHint;
+
+    [ThreadStatic]
+    internal static bool RuleBufferInUse;
 }

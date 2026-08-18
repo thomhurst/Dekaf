@@ -125,9 +125,9 @@ an `object` or interface carrier accept reference-type branches only; value-type
 rejected because assignment to the carrier would box on every read. Logical mappings are
 `DateOnly` → `date`, `TimeOnly`/`TimeSpan` → `time-micros`, `DateTime`/`DateTimeOffset` →
 `timestamp-micros`, `Guid` → `uuid`, and `decimal` → `decimal`. `TimeSpan` values must represent a
-time of day from zero through less than 24 hours. `DateTimeKind.Unspecified` values follow
-`DateTime.ToUniversalTime()` and therefore use the producer host's local time zone; use UTC
-`DateTime` or `DateTimeOffset` for host-independent wire values. Decimal members require
+time of day from zero through less than 24 hours. Generated `DateTime` fields must have
+`Kind == DateTimeKind.Utc`; local and unspecified values are rejected. Use `DateTimeOffset` when
+the source value carries an offset. Decimal members require
 `Precision` from 1 through 29 and `Scale` from 0 through the smaller of 28 and `Precision`.
 
 Use `Name`, `Aliases`, and `DefaultJson` for schema evolution. Defaults must match the first Avro

@@ -207,6 +207,38 @@ public sealed class SchemaRegistryMigrationTests
     }
 
     [Test]
+    public async Task Transform_PartiallySuccessfulStepWithSuppressedFailure_FailsClosed()
+    {
+        var registry = new MigrationRegistryClient();
+        var v1 = CreateSchema("v1");
+        var v2 = CreateSchema(
+            "v2",
+            CreateRule("successful", SchemaRuleMode.Upgrade),
+            CreateRule(
+                "failing",
+                SchemaRuleMode.Upgrade,
+                ThrowingMigrationHandler.RuleType,
+                onFailure: "NONE"));
+        var v1Id = registry.Register("orders-value", v1);
+        registry.Register("orders-value", v2);
+        var runner = new SchemaRegistryMigrationRunner(
+            registry,
+            new SchemaRegistryRuleExecutor(
+                [new CapturingMigrationHandler([]), new ThrowingMigrationHandler()]),
+            TimeSpan.FromSeconds(1));
+
+        await Assert.That(() => runner.Transform(
+                "payload"u8.ToArray(),
+                v1Id,
+                "orders-value",
+                v1,
+                SerializationContext,
+                SchemaRegistryPayloadFormat.Json))
+            .Throws<SchemaRegistryRuleException>()
+            .WithMessageContaining("partially transformed");
+    }
+
+    [Test]
     public async Task Transform_MissingIntermediateVersion_ThrowsAndDoesNotCacheFailure()
     {
         var registry = new MigrationRegistryClient();

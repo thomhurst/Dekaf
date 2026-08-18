@@ -469,6 +469,55 @@ public sealed partial class PocoBenchmarkRecord
     public required string Name { get; init; }
 }
 
+/// <summary>Guards generated POCO rule serialization against per-message overhead and allocations.</summary>
+[MemoryDiagnoser(displayGenColumns: false)]
+public class AvroPocoRuleSerializationBenchmarks
+{
+    private readonly SerializationContext _context = new()
+    {
+        Topic = "avro-poco-rules",
+        Component = SerializationComponent.Value
+    };
+    private readonly PocoBenchmarkRecord _value = new() { Id = 42, Name = "benchmark" };
+    private AvroPocoSchemaRegistrySerializer<PocoBenchmarkRecord, PocoBenchmarkRecord.AvroCodec>
+        _serializer = null!;
+    private ArrayBufferWriter<byte> _buffer = null!;
+
+    [GlobalSetup]
+    public void Setup()
+    {
+        _serializer = PocoBenchmarkRecord.CreateAvroSerializer(
+            new AvroSchemaRegistrySerializerBenchmarks.BenchmarkSchemaRegistryClient(),
+            new AvroSerializerConfig { RuleExecutor = PassThroughRuleExecutor.Instance });
+        _buffer = new ArrayBufferWriter<byte>(64);
+        _serializer.Serialize(_value, ref _buffer, _context);
+        _buffer.Clear();
+    }
+
+    [GlobalCleanup]
+    public async ValueTask Cleanup() => await _serializer.DisposeAsync().ConfigureAwait(false);
+
+    [Benchmark]
+    public void SerializeWithRules()
+    {
+        _buffer.Clear();
+        _serializer.Serialize(_value, ref _buffer, _context);
+    }
+
+    private sealed class PassThroughRuleExecutor : ISchemaRegistryRuleExecutor
+    {
+        internal static PassThroughRuleExecutor Instance { get; } = new();
+
+        public ReadOnlyMemory<byte> TransformSerializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleContext context) => payload;
+
+        public ReadOnlyMemory<byte> TransformDeserializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleContext context) => payload;
+    }
+}
+
 /// <summary>Guards stable large generated POCO payloads against repeated sizing traversals.</summary>
 [MemoryDiagnoser(displayGenColumns: false)]
 public class AvroPocoLargePayloadSerializationBenchmarks
