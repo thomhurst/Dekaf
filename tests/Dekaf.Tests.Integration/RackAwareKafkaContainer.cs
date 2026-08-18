@@ -401,22 +401,16 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
     {
         var brokerIndex = nodeId - 1;
         var broker = GetBroker(nodeId);
-        Exception? disposalError = null;
         try
         {
             await broker.DisposeAsync().ConfigureAwait(false);
         }
-        catch (Exception exception)
+        finally
         {
-            disposalError = exception;
+            var externalPort = GetFreeTcpPorts(1)[0];
+            _hostPorts[brokerIndex] = externalPort;
+            _brokers[brokerIndex] = CreateBroker(nodeId, GetRack(nodeId), externalPort);
         }
-
-        var externalPort = GetFreeTcpPorts(1)[0];
-        _hostPorts[brokerIndex] = externalPort;
-        _brokers[brokerIndex] = CreateBroker(nodeId, GetRack(nodeId), externalPort);
-
-        if (disposalError is not null)
-            throw disposalError;
     }
 
     private static IReadOnlyDictionary<string, string> CreateBrokerEnvironment(int nodeId, string rack, int externalPort)

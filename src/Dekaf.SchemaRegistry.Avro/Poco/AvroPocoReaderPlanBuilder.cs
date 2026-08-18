@@ -283,7 +283,7 @@ internal static class AvroPocoReaderPlanBuilder
     {
         if (writer is LogicalSchema logical)
         {
-            var kind = logical.LogicalTypeName switch
+            AvroPocoTypeKind? kind = logical.LogicalTypeName switch
             {
                 "date" => AvroPocoTypeKind.Date,
                 "time-millis" => AvroPocoTypeKind.TimeMilliseconds,
@@ -292,7 +292,7 @@ internal static class AvroPocoReaderPlanBuilder
                 "timestamp-micros" => AvroPocoTypeKind.TimestampMicroseconds,
                 "uuid" => AvroPocoTypeKind.Uuid,
                 "decimal" => AvroPocoTypeKind.Decimal,
-                _ => (AvroPocoTypeKind?)null
+                _ => null
             };
             if (kind is not { } logicalKind)
                 return BuildSkipNode(logical.BaseSchema, activeRecords);
