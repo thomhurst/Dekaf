@@ -76,4 +76,6 @@ public sealed class AvroPocoReadNode
     internal int FixedSize { get; init; }
 
     internal bool RequiresWriterUnionDispatch { get; init; }
+
+    internal bool IsZeroWidth { get; set; }
 }

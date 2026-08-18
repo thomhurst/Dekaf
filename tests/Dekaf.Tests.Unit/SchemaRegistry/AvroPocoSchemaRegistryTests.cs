@@ -1710,6 +1710,42 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    [Arguments("null", "\"null\"")]
+    [Arguments("empty-record", "{\"type\":\"record\",\"name\":\"RemovedEmptyRecord\",\"fields\":[]}")]
+    public async Task GeneratedCodec_SkipsLargeZeroWidthRemovedArray(string caseName, string itemSchema)
+    {
+        var writerSchemaJson = string.Concat(
+            """{"type":"record","name":"PocoEvolved","namespace":"Dekaf.Tests","fields":[{"name":"legacy_id","type":"int"},{"name":"removed","type":{"type":"array","items":""",
+            itemSchema,
+            """}}]}""");
+        using var registry = new MockSchemaRegistryClient();
+        var schemaId = await registry.RegisterSchemaAsync(
+            $"poco-zero-width-{caseName}-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = writerSchemaJson
+            });
+        await using var reader = PocoEvolved.CreateAvroDeserializer(registry);
+        var payload = new byte[16];
+        BinaryPrimitives.WriteInt32BigEndian(payload.AsSpan(1, 4), schemaId);
+        var writer = new AvroValueWriter(payload.AsSpan(5));
+        writer.WriteInt32(42);
+        writer.WriteBlockCount(1_048_576);
+        writer.WriteBlockEnd();
+        var context = new SerializationContext
+        {
+            Topic = $"poco-zero-width-{caseName}",
+            Component = SerializationComponent.Value
+        };
+
+        var actual = reader.Deserialize(payload.AsMemory(0, 5 + writer.WrittenCount), context);
+
+        await Assert.That(actual.Id).IsEqualTo(42L);
+        await Assert.That(actual.Note).IsEqualTo("added-by-reader");
+    }
+
+    [Test]
     public async Task GeneratedCodec_PassesTimeoutTokenToPlanFetch()
     {
         using var registry = new MockSchemaRegistryClient();

@@ -1195,6 +1195,83 @@ public sealed partial class PocoOverflowMapRecord
     public required Dictionary<string, int> Values { get; init; }
 }
 
+/// <summary>Guards skipped zero-width Avro collections against per-item scans.</summary>
+[MemoryDiagnoser(displayGenColumns: false)]
+public class AvroPocoZeroWidthSkipBenchmarks
+{
+    private const string ZeroWidthSchemaJson =
+        """
+        {"type":"record","name":"PocoZeroWidthSkipBenchmarkRecord","namespace":"Dekaf.Benchmarks.Benchmarks.Unit","fields":[{"name":"Id","type":"int"},{"name":"ignored","type":{"type":"array","items":"null"}}]}
+        """;
+    private const string IntSchemaJson =
+        """
+        {"type":"record","name":"PocoZeroWidthSkipBenchmarkRecord","namespace":"Dekaf.Benchmarks.Benchmarks.Unit","fields":[{"name":"Id","type":"int"},{"name":"ignored","type":{"type":"array","items":"int"}}]}
+        """;
+
+    private readonly byte[] _zeroWidthPayload = CreateZeroWidthPayload();
+    private readonly byte[] _intPayload = CreateIntPayload();
+    private AvroPocoReadNode _zeroWidthNode = null!;
+    private AvroPocoReadNode _intNode = null!;
+
+    [GlobalSetup]
+    public void Setup()
+    {
+        _zeroWidthNode = AvroPocoReaderPlanBuilder
+            .Build<PocoZeroWidthSkipBenchmarkRecord, PocoZeroWidthSkipBenchmarkRecord.AvroCodec>(ZeroWidthSchemaJson)
+            .GetOperation(1)
+            .WriterType;
+        _intNode = AvroPocoReaderPlanBuilder
+            .Build<PocoZeroWidthSkipBenchmarkRecord, PocoZeroWidthSkipBenchmarkRecord.AvroCodec>(IntSchemaJson)
+            .GetOperation(1)
+            .WriterType;
+    }
+
+    [Benchmark]
+    public int SkipMillionZeroWidthItems()
+    {
+        var reader = new AvroValueReader(_zeroWidthPayload);
+        reader.Skip(_zeroWidthNode);
+        return reader.ReadInt32();
+    }
+
+    [Benchmark]
+    public int SkipIntItems()
+    {
+        var reader = new AvroValueReader(_intPayload);
+        reader.Skip(_intNode);
+        return reader.ReadInt32();
+    }
+
+    private static byte[] CreateZeroWidthPayload()
+    {
+        var payload = new byte[16];
+        var writer = new AvroValueWriter(payload);
+        writer.WriteBlockCount(1_048_576);
+        writer.WriteBlockEnd();
+        writer.WriteInt32(42);
+        return payload.AsSpan(0, writer.WrittenCount).ToArray();
+    }
+
+    private static byte[] CreateIntPayload()
+    {
+        var payload = new byte[16];
+        var writer = new AvroValueWriter(payload);
+        writer.WriteBlockCount(3);
+        writer.WriteInt32(1);
+        writer.WriteInt32(2);
+        writer.WriteInt32(3);
+        writer.WriteBlockEnd();
+        writer.WriteInt32(42);
+        return payload.AsSpan(0, writer.WrittenCount).ToArray();
+    }
+}
+
+[AvroRecord(Name = "PocoZeroWidthSkipBenchmarkRecord", Namespace = "Dekaf.Benchmarks.Benchmarks.Unit")]
+public readonly partial record struct PocoZeroWidthSkipBenchmarkRecord
+{
+    public int Id { get; init; }
+}
+
 public enum RepresentativePocoStatus
 {
     Pending,

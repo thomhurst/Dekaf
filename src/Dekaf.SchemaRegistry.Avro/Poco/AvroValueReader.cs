@@ -267,6 +267,9 @@ public ref struct AvroValueReader
             case AvroPocoTypeKind.Array:
                 SkipNestedCollection(node.Item!);
                 return;
+            case AvroPocoTypeKind.ZeroWidthArray:
+                SkipNestedZeroWidthCollection();
+                return;
             case AvroPocoTypeKind.Map:
                 SkipNestedMap(node.Item!);
                 return;
@@ -298,6 +301,19 @@ public ref struct AvroValueReader
         try
         {
             SkipCollection(item);
+        }
+        finally
+        {
+            _skipDepth--;
+        }
+    }
+
+    private void SkipNestedZeroWidthCollection()
+    {
+        EnterSkipNode();
+        try
+        {
+            SkipZeroWidthCollection();
         }
         finally
         {
@@ -403,6 +419,18 @@ public ref struct AvroValueReader
         catch (DecoderFallbackException exception)
         {
             throw new InvalidDataException("Invalid Avro UTF-8 string.", exception);
+        }
+    }
+
+    private void SkipZeroWidthCollection()
+    {
+        var count = ReadBlockCount();
+        var total = count;
+        while (count != 0)
+        {
+            count = ReadBlockCount();
+            if (count != 0)
+                total = AddCollectionCount(total, count);
         }
     }
 

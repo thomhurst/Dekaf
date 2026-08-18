@@ -98,6 +98,7 @@ Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.TimestampMicroseconds = 17 -> De
 Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.TimestampMilliseconds = 16 -> Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind
 Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.Union = 12 -> Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind
 Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.Uuid = 18 -> Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.ZeroWidthArray = 20 -> Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind
 Dekaf.SchemaRegistry.Avro.Poco.AvroRecordAttribute
 Dekaf.SchemaRegistry.Avro.Poco.AvroRecordAttribute.AvroRecordAttribute() -> void
 Dekaf.SchemaRegistry.Avro.Poco.AvroRecordAttribute.Name.get -> string?

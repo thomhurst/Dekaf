@@ -126,5 +126,9 @@ public enum AvroPocoTypeKind : byte
     TimestampMilliseconds,
     TimestampMicroseconds,
     Uuid,
-    Decimal
+    Decimal,
+
+    /// <summary>Internal optimized skip node for an array whose items encode no bytes.</summary>
+    [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
+    ZeroWidthArray
 }

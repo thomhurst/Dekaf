@@ -314,10 +314,7 @@ internal static class AvroPocoReaderPlanBuilder
         return writer switch
         {
             RecordSchema record => BuildSkipRecord(record, records),
-            ArraySchema array => new AvroPocoReadNode(AvroPocoTypeKind.Array)
-            {
-                Item = BuildSkipNode(array.ItemSchema, records)
-            },
+            ArraySchema array => BuildSkipCollection(array, records),
             MapSchema map => new AvroPocoReadNode(AvroPocoTypeKind.Map)
             {
                 Item = BuildSkipNode(map.ValueSchema, records)
@@ -335,6 +332,9 @@ internal static class AvroPocoReaderPlanBuilder
                 FixedSize = fixedSchema.Size
             },
             _ => new AvroPocoReadNode(ToKind(writer.Tag))
+            {
+                IsZeroWidth = writer.Tag == AvroSchema.Type.Null
+            }
         };
     }
 
@@ -348,7 +348,32 @@ internal static class AvroPocoReaderPlanBuilder
         var node = new AvroPocoReadNode(AvroPocoTypeKind.Record);
         records.Add(record, node);
         node.Fields = BuildSkipFields(record, records);
+        node.IsZeroWidth = AreZeroWidth(node.Fields.Span);
         return node;
+    }
+
+    private static AvroPocoReadNode BuildSkipCollection(
+        ArraySchema array,
+        Dictionary<RecordSchema, AvroPocoReadNode> records)
+    {
+        var item = BuildSkipNode(array.ItemSchema, records);
+        return new AvroPocoReadNode(item.IsZeroWidth
+            ? AvroPocoTypeKind.ZeroWidthArray
+            : AvroPocoTypeKind.Array)
+        {
+            Item = item
+        };
+    }
+
+    private static bool AreZeroWidth(ReadOnlySpan<AvroPocoReadNode> nodes)
+    {
+        for (var index = 0; index < nodes.Length; index++)
+        {
+            if (!nodes[index].IsZeroWidth)
+                return false;
+        }
+
+        return true;
     }
 
     private static AvroPocoReadNode[] BuildSkipFields(
