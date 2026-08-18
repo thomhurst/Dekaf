@@ -461,7 +461,7 @@ internal sealed class SchemaRegistryMigrationRunner
 
     internal struct PreparedTargetEnumerator
     {
-        private MigrationStep[]? _steps;
+        private readonly MigrationStep[]? _steps;
         private int _index;
 
         private PreparedTargetEnumerator(MigrationStep[] steps)
