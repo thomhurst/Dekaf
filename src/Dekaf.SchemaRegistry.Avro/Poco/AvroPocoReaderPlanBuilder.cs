@@ -374,8 +374,6 @@ internal static class AvroPocoReaderPlanBuilder
         {
             var symbol = writer[writerIndex];
             var readerIndex = readerSymbols.IndexOf(symbol);
-            if (readerIndex < 0)
-                throw new InvalidOperationException($"Writer enum symbol '{symbol}' is absent from the POCO enum.");
             map[writerIndex] = readerIndex;
         }
         return map;

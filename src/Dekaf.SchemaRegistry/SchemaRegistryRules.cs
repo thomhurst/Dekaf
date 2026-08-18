@@ -636,6 +636,15 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
     }
 
     internal static bool HasActiveMigrationRule(SchemaRuleSet? ruleSet, SchemaRuleMode mode)
+        => HasActiveMigrationRule(ruleSet, mode, transformOnly: false);
+
+    internal static bool HasActiveTransformMigrationRule(SchemaRuleSet? ruleSet, SchemaRuleMode mode)
+        => HasActiveMigrationRule(ruleSet, mode, transformOnly: true);
+
+    private static bool HasActiveMigrationRule(
+        SchemaRuleSet? ruleSet,
+        SchemaRuleMode mode,
+        bool transformOnly)
     {
         if (ruleSet is null || !ShouldExecute(ruleSet))
             return false;
@@ -646,7 +655,9 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
 
         for (var i = 0; i < rules.Count; i++)
         {
-            if (IsActiveMigrationRule(rules[i], mode))
+            var rule = rules[i];
+            if (IsActiveMigrationRule(rule, mode) &&
+                (!transformOnly || rule.Kind == SchemaRuleKind.Transform))
                 return true;
         }
 

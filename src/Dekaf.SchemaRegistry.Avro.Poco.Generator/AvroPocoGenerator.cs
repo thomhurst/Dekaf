@@ -1286,7 +1286,7 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                 code.Append(indent).Append("    ").Append(index).Append(" => ").Append(type.SymbolType)
                     .Append('.').Append(EscapeIdentifier(type.Symbols[index])).AppendLine(",");
             }
-            code.Append(indent).AppendLine("    _ => throw new global::System.IO.InvalidDataException(\"Enum index is out of range.\")");
+            code.Append(indent).AppendLine("    _ => throw new global::System.IO.InvalidDataException(\"Writer enum symbol has no generated POCO target.\")");
             code.Append(indent).AppendLine("};");
         }
 

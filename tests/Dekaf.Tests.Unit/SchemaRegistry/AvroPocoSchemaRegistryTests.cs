@@ -660,6 +660,62 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    public async Task GeneratedCodec_UsesIncomingWriterPlanWhenMigrationHasOnlyConditions()
+    {
+        const string writerSchemaJson =
+            """
+            {"type":"record","name":"PocoEvolved","namespace":"Dekaf.Tests","fields":[{"name":"legacy_id","type":"int"}]}
+            """;
+        var migrationRule = new SchemaRule
+        {
+            Name = "validate-layout",
+            Kind = SchemaRuleKind.Condition,
+            Mode = SchemaRuleMode.Upgrade,
+            Type = PassThroughMigrationHandler.RuleType
+        };
+        using var registry = new MockSchemaRegistryClient();
+        _ = await registry.RegisterSchemaAsync(
+            "poco-condition-migration-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = writerSchemaJson
+            });
+        _ = await registry.RegisterSchemaAsync(
+            "poco-condition-migration-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = PocoEvolved.AvroCodec.SchemaJson,
+                RuleSet = new SchemaRuleSet { MigrationRules = [migrationRule] }
+            });
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(registry);
+        var executor = new SchemaRegistryRuleExecutor([new PassThroughMigrationHandler()]);
+        await using var deserializer = PocoEvolved.CreateAvroDeserializer(
+            registry,
+            new AvroDeserializerConfig
+            {
+                UseLatestVersion = true,
+                RuleExecutor = executor
+            });
+        var writerSchema = (RecordSchema)Schema.Parse(writerSchemaJson);
+        var generic = new GenericRecord(writerSchema);
+        generic.Add("legacy_id", 42);
+        var context = new SerializationContext
+        {
+            Topic = "poco-condition-migration",
+            Component = SerializationComponent.Value
+        };
+        var destination = new ArrayBufferWriter<byte>();
+        serializer.Serialize(generic, ref destination, context);
+
+        var actual = deserializer.Deserialize(destination.WrittenMemory, context);
+
+        await Assert.That(actual.Id).IsEqualTo(42L);
+        await Assert.That(actual.Note).IsEqualTo("added-by-reader");
+    }
+
+    [Test]
     public async Task GeneratedCodec_UsesTargetWriterPlanAfterActiveMigration()
     {
         const string writerSchemaJson =
@@ -868,6 +924,56 @@ public sealed class AvroPocoSchemaRegistryTests
             .WithMessageContaining("no generated POCO target");
     }
 
+    [Test]
+    public async Task GeneratedCodec_DefersMissingWriterEnumSymbolUntilSelected()
+    {
+        const string writerSchemaJson =
+            """
+            {"type":"record","name":"PocoEnumEvolution","namespace":"Dekaf.Tests","fields":[{"name":"status","type":{"type":"enum","name":"PocoNarrowStatus","namespace":"Dekaf.Tests.Unit.SchemaRegistry","symbols":["Current","Removed"]}}]}
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        await using var writer = new AvroSchemaRegistrySerializer<GenericRecord>(registry);
+        await using var reader = PocoEnumEvolution.CreateAvroDeserializer(registry);
+        var writerSchema = (RecordSchema)Schema.Parse(writerSchemaJson);
+        var enumSchema = (EnumSchema)writerSchema["status"].Schema;
+        var compatible = new GenericRecord(writerSchema);
+        compatible.Add("status", new GenericEnum(enumSchema, "Current"));
+        var incompatible = new GenericRecord(writerSchema);
+        incompatible.Add("status", new GenericEnum(enumSchema, "Removed"));
+        var context = new SerializationContext
+        {
+            Topic = "poco-enum-evolution",
+            Component = SerializationComponent.Value
+        };
+        var destination = new ArrayBufferWriter<byte>();
+
+        writer.Serialize(compatible, ref destination, context);
+        var actual = reader.Deserialize(destination.WrittenMemory, context);
+
+        await Assert.That(actual.Status).IsEqualTo(PocoNarrowStatus.Current);
+
+        destination.Clear();
+        writer.Serialize(incompatible, ref destination, context);
+        await Assert.That(() => reader.Deserialize(destination.WrittenMemory, context))
+            .Throws<InvalidDataException>()
+            .WithMessageContaining("no generated POCO target");
+    }
+
+    private sealed class PassThroughMigrationHandler : ISchemaRegistryRuleHandler
+    {
+        internal const string RuleType = "PASS_THROUGH_MIGRATION";
+
+        public string Type => RuleType;
+
+        public ReadOnlyMemory<byte> TransformSerializedPayload(
+            ReadOnlyMemory<byte> source,
+            SchemaRegistryRuleHandlerContext context) => source;
+
+        public ReadOnlyMemory<byte> TransformDeserializedPayload(
+            ReadOnlyMemory<byte> source,
+            SchemaRegistryRuleHandlerContext context) => source;
+    }
+
     private sealed class FixedPayloadMigrationHandler(ReadOnlyMemory<byte> payload) : ISchemaRegistryRuleHandler
     {
         internal const string RuleType = "FIXED_AVRO_PAYLOAD";
@@ -972,6 +1078,18 @@ internal enum PocoStatus
     Pending,
     Ready,
     Complete
+}
+
+internal enum PocoNarrowStatus
+{
+    Current
+}
+
+[AvroRecord(Name = "PocoEnumEvolution", Namespace = "Dekaf.Tests")]
+internal sealed partial class PocoEnumEvolution
+{
+    [AvroField(Name = "status", Order = 0)]
+    public PocoNarrowStatus Status { get; init; }
 }
 
 [AvroRecord(Name = "PocoEnvelope", Namespace = "Dekaf.Tests")]

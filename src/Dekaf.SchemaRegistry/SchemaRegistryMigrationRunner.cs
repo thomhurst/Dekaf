@@ -166,7 +166,7 @@ internal sealed class SchemaRegistryMigrationRunner
             context.Return();
         }
 
-        return new MigrationResult(payload, plan.ReaderSchema, PayloadWasMigrated: steps.Length != 0);
+        return new MigrationResult(payload, plan.ReaderSchema, plan.PayloadWasMigrated);
     }
 
     private async Task<MigrationPlan> CreatePlanAsync(string subject, Schema writerSchema)
@@ -182,9 +182,16 @@ internal sealed class SchemaRegistryMigrationRunner
             .ConfigureAwait(false);
 
         if (writer.Version == reader.Version)
-            return new MigrationPlan(writer.Id, subject, reader, [], Environment.TickCount64);
+            return new MigrationPlan(
+                writer.Id,
+                subject,
+                reader,
+                [],
+                payloadWasMigrated: false,
+                Environment.TickCount64);
 
         var steps = new List<MigrationStep>();
+        var payloadWasMigrated = false;
         if (writer.Version < reader.Version)
         {
             var previous = writer;
@@ -198,6 +205,9 @@ internal sealed class SchemaRegistryMigrationRunner
                         SchemaRuleMode.Upgrade))
                 {
                     steps.Add(new MigrationStep(SchemaRuleMode.Upgrade, previous, current));
+                    payloadWasMigrated |= SchemaRegistryRuleExecutor.HasActiveTransformMigrationRule(
+                        current.Schema.RuleSet,
+                        SchemaRuleMode.Upgrade);
                 }
 
                 previous = current;
@@ -216,13 +226,22 @@ internal sealed class SchemaRegistryMigrationRunner
                         SchemaRuleMode.Downgrade))
                 {
                     steps.Add(new MigrationStep(SchemaRuleMode.Downgrade, current, previous));
+                    payloadWasMigrated |= SchemaRegistryRuleExecutor.HasActiveTransformMigrationRule(
+                        current.Schema.RuleSet,
+                        SchemaRuleMode.Downgrade);
                 }
 
                 current = previous;
             }
         }
 
-        return new MigrationPlan(writer.Id, subject, reader, [.. steps], Environment.TickCount64);
+        return new MigrationPlan(
+            writer.Id,
+            subject,
+            reader,
+            [.. steps],
+            payloadWasMigrated,
+            Environment.TickCount64);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -243,12 +262,14 @@ internal sealed class SchemaRegistryMigrationRunner
         string subject,
         RegisteredSchema readerSchema,
         MigrationStep[] steps,
+        bool payloadWasMigrated,
         long createdAtMilliseconds)
     {
         internal int WriterSchemaId { get; } = writerSchemaId;
         internal string Subject { get; } = subject;
         internal RegisteredSchema ReaderSchema { get; } = readerSchema;
         internal MigrationStep[] Steps { get; } = steps;
+        internal bool PayloadWasMigrated { get; } = payloadWasMigrated;
         internal long CreatedAtMilliseconds { get; } = createdAtMilliseconds;
     }
 
