@@ -19,6 +19,7 @@ public class SchemaRegistryCsfleRuleBenchmarks
     private static readonly byte[] Payload = "benchmark-payload"u8.ToArray();
     private static readonly byte[] JsonPayload = "{\"name\":\"Ada\",\"ssn\":\"123-45-6789\"}"u8.ToArray();
     private static readonly byte[] AvroPayload = CreateAvroPayload();
+    private static readonly byte[] LargeAvroPayload = CreateAvroPayload(new string('x', 1024 * 1024 + 1));
     private const string TaggedAvroSchema = """
         {
             "type": "record",
@@ -217,6 +218,19 @@ public class SchemaRegistryCsfleRuleBenchmarks
         _executor.TransformDeserializedPayload(_mutableEncryptedAvroPayload, _mutableTaggedAvroContext);
 
     [Benchmark]
+    public byte EncryptLargeTaggedAvroField()
+    {
+        try
+        {
+            return _executor.TransformSerializedPayload(LargeAvroPayload, _taggedAvroContext).Span[0];
+        }
+        finally
+        {
+            AvroTaggedFieldTransformerProvider.ReleaseOversizedOutputs();
+        }
+    }
+
+    [Benchmark]
     public ReadOnlyMemory<byte> EncryptRotatingGcmDeks() => EncryptRotating(_rotatingGcmContexts);
 
     [Benchmark]
@@ -244,13 +258,13 @@ public class SchemaRegistryCsfleRuleBenchmarks
         EncryptRotating(_rotatingSivContexts);
     }
 
-    private static byte[] CreateAvroPayload()
+    private static byte[] CreateAvroPayload(string ssn = "123-45-6789")
     {
         var schema = (Avro.RecordSchema)AvroSchema.Parse(TaggedAvroSchema);
         var record = new GenericRecord(schema);
         record.Add("id", 42);
         record.Add("name", "Ada");
-        record.Add("ssn", "123-45-6789");
+        record.Add("ssn", ssn);
         record.Add("aliases", new object[] { "x" });
         record.Add("attributes", new Dictionary<string, object> { ["k"] = "v"u8.ToArray() });
         using var stream = new MemoryStream();

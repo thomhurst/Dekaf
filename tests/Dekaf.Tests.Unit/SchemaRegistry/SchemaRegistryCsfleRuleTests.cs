@@ -542,6 +542,42 @@ public sealed class SchemaRegistryCsfleRuleTests
     }
 
     [Test]
+    [NotInParallel]
+    public async Task AvroTaggedEncryption_ReturnsOversizedFieldBufferAfterWalkerCopiesIt()
+    {
+        const int maxRetainedBufferSize = 1024 * 1024;
+        var client = CreateDekClient();
+        var handler = CreateHandler(client);
+        var rule = CreateRule(tags: new HashSet<string>(StringComparer.Ordinal) { "PII" });
+        var transformer = new CapturingTaggedFieldTransformer();
+        var schema = CreateRuleSchema(rule);
+        var payloadContext = new SchemaRegistryRuleContext
+        {
+            Topic = "orders",
+            Component = SerializationComponent.Value,
+            SchemaId = 12,
+            Subject = "orders-value",
+            Schema = schema,
+            PayloadFormat = SchemaRegistryPayloadFormat.Avro,
+            TaggedFieldTransformer = transformer
+        };
+        var context = new SchemaRegistryRuleHandlerContext
+        {
+            PayloadContext = payloadContext,
+            Rule = rule,
+            Direction = SchemaRegistryRuleDirection.Write
+        };
+        var payload = new byte[maxRetainedBufferSize + 1];
+        payload.AsSpan().Fill(0xA5);
+
+        var transformed = handler.TransformSerializedPayload(payload, context);
+
+        await Assert.That(transformer.CapturedOutput).IsNotNull();
+        await Assert.That(transformer.CapturedOutput!.AsSpan().IndexOfAnyExcept((byte)0)).IsEqualTo(-1);
+        await Assert.That(transformed.Span.IndexOfAnyExcept((byte)0)).IsNotEqualTo(-1);
+    }
+
+    [Test]
     public async Task AvroTaggedTransformer_ConcurrentTagGain_NeverWritesPlaintext()
     {
         const string schemaText = """
@@ -1935,6 +1971,24 @@ public sealed class SchemaRegistryCsfleRuleTests
             ReadOnlyMemory<byte> payload,
             SchemaRegistryRuleHandlerContext context) =>
             TransformSerializedPayload(payload, context);
+    }
+
+    private sealed class CapturingTaggedFieldTransformer : ISchemaRegistryTaggedFieldTransformer
+    {
+        internal byte[]? CapturedOutput { get; private set; }
+
+        public ReadOnlyMemory<byte> Transform<TState>(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleHandlerContext context,
+            TState state,
+            SchemaRegistryFieldTransform<TState> transform)
+        {
+            var transformed = transform(payload, context, state);
+            if (!System.Runtime.InteropServices.MemoryMarshal.TryGetArray(transformed, out var segment))
+                throw new InvalidOperationException("Expected an array-backed CSFLE field output.");
+            CapturedOutput = segment.Array;
+            return transformed.ToArray();
+        }
     }
 
     private static FakeDekRegistryClient CreateDekClient()
