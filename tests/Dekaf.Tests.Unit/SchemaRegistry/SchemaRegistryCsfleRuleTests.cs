@@ -1212,6 +1212,50 @@ public sealed class SchemaRegistryCsfleRuleTests
     }
 
     [Test]
+    public async Task AvroTaggedTransformerProvider_UsesOwnerNullableUnionForDirectPayloadRecord()
+    {
+        const string payloadSchemaText = """
+            {"type":"record","name":"NullableOwnerEnvelope","namespace":"test","fields":[
+                {"name":"profile","type":{
+                    "type":"record","name":"NullableOwnerProfile","fields":[
+                        {"name":"secret","type":"bytes"}
+                    ]
+                }}
+            ]}
+            """;
+        const string ownerSchemaText = """
+            {"type":"record","name":"NullableOwnerEnvelope","namespace":"test","fields":[
+                {"name":"profile","type":["null",{
+                    "type":"record","name":"NullableOwnerProfile","fields":[
+                        {"name":"secret","type":"bytes","confluent:tags":["PII"]}
+                    ]
+                }]}
+            ]}
+            """;
+        var rule = CreateRule(tags: new HashSet<string>(StringComparer.Ordinal) { "PII" });
+        var payloadSchema = new Schema { SchemaType = SchemaType.Avro, SchemaString = payloadSchemaText };
+        var ownerSchema = new Schema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = ownerSchemaText,
+            RuleSet = new SchemaRuleSet
+            {
+                MigrationRules = [rule],
+                HasFixedRuleCollections = true
+            }
+        };
+        var transformer = new AvroTaggedFieldTransformerProvider().Get(payloadSchema, ownerSchema);
+
+        var transformed = transformer.Transform(
+            new byte[] { 2, 1 },
+            CreateHandlerContext(rule, ownerSchema),
+            new byte[] { 2 },
+            static (_, _, replacement) => replacement);
+
+        await Assert.That(transformed.ToArray()).IsEquivalentTo(new byte[] { 2, 2 });
+    }
+
+    [Test]
     public async Task AvroTaggedTransformerProvider_SkipsReusedRecordAbsentFromOwnerSchema()
     {
         const string payloadSchemaText = """

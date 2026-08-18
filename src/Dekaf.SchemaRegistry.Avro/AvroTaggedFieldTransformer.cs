@@ -701,6 +701,9 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
                 schema = logical.BaseSchema;
             if (tagSchema is global::Avro.LogicalSchema tagLogical)
                 tagSchema = tagLogical.BaseSchema;
+            if (tagSchema is global::Avro.UnionSchema ownerUnion &&
+                schema is not global::Avro.UnionSchema)
+                tagSchema = FindUnionBranch(schema, ownerUnion);
 
             var visit = new SchemaVisit(schema, tagSchema);
             if (plans.TryGetValue(visit, out var cached))
