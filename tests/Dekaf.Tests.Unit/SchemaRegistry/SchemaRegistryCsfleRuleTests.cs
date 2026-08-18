@@ -996,7 +996,7 @@ public sealed class SchemaRegistryCsfleRuleTests
     }
 
     [Test]
-    public async Task AvroTaggedTransformerProvider_RevisitsReusedRecordWithOwnerSchema()
+    public async Task AvroTaggedTransformerProvider_SkipsReusedRecordAbsentFromOwnerSchema()
     {
         const string payloadSchemaText = """
             {"type":"record","name":"SharedEnvelope","namespace":"test","fields":[
@@ -1051,8 +1051,71 @@ public sealed class SchemaRegistryCsfleRuleTests
         var transformedRemoved = (GenericRecord)result["removed"]!;
         var transformedKept = (GenericRecord)result["kept"]!;
 
-        await Assert.That((byte[])transformedRemoved["secret"]!).IsEquivalentTo(new byte[] { 9 });
+        await Assert.That((byte[])transformedRemoved["secret"]!).IsEquivalentTo(new byte[] { 1 });
         await Assert.That((byte[])transformedKept["secret"]!).IsEquivalentTo(new byte[] { 9 });
+    }
+
+    [Test]
+    public async Task AvroTaggedTransformerProvider_PreservesDistinctOwnersForReusedRecord()
+    {
+        const string payloadSchemaText = """
+            {"type":"record","name":"PairEnvelope","namespace":"test","fields":[
+                {"name":"first","type":{"type":"record","name":"SharedSecret","fields":[
+                    {"name":"secret","type":"bytes"}
+                ]}},
+                {"name":"second","type":"SharedSecret"}
+            ]}
+            """;
+        const string ownerSchemaText = """
+            {"type":"record","name":"PairEnvelope","namespace":"test","fields":[
+                {"name":"first","type":{"type":"record","name":"FirstSecret","aliases":["SharedSecret"],"fields":[
+                    {"name":"secret","type":"bytes"}
+                ]}},
+                {"name":"second","type":{"type":"record","name":"SecondSecret","aliases":["SharedSecret"],"fields":[
+                    {"name":"secret","type":"bytes","confluent:tags":["PII"]}
+                ]}}
+            ]}
+            """;
+        var rule = CreateRule(tags: new HashSet<string>(StringComparer.Ordinal) { "PII" });
+        var payloadSchema = new Schema { SchemaType = SchemaType.Avro, SchemaString = payloadSchemaText };
+        var ownerSchema = new Schema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = ownerSchemaText,
+            RuleSet = new SchemaRuleSet
+            {
+                MigrationRules = [rule],
+                HasFixedRuleCollections = true
+            }
+        };
+        var transformer = new AvroTaggedFieldTransformerProvider().Get(payloadSchema, ownerSchema);
+        var avroPayloadSchema = (Avro.RecordSchema)AvroSchema.Parse(payloadSchemaText);
+        var sharedSchema = (Avro.RecordSchema)avroPayloadSchema["first"].Schema;
+        var first = new GenericRecord(sharedSchema);
+        first.Add("secret", new byte[] { 1 });
+        var second = new GenericRecord(sharedSchema);
+        second.Add("secret", new byte[] { 2 });
+        var payload = new GenericRecord(avroPayloadSchema);
+        payload.Add("first", first);
+        payload.Add("second", second);
+        using var encoded = new MemoryStream();
+        var encoder = new BinaryEncoder(encoded);
+        new GenericDatumWriter<GenericRecord>(avroPayloadSchema).Write(payload, encoder);
+        encoder.Flush();
+
+        var transformed = transformer.Transform(
+            encoded.ToArray(),
+            CreateHandlerContext(rule, ownerSchema),
+            new byte[] { 9 },
+            static (_, _, replacement) => replacement);
+        using var decoded = new MemoryStream(transformed.ToArray());
+        var result = new GenericDatumReader<GenericRecord>(avroPayloadSchema, avroPayloadSchema)
+            .Read(new GenericRecord(avroPayloadSchema), new BinaryDecoder(decoded));
+        var transformedFirst = (GenericRecord)result["first"]!;
+        var transformedSecond = (GenericRecord)result["second"]!;
+
+        await Assert.That((byte[])transformedFirst["secret"]!).IsEquivalentTo(new byte[] { 1 });
+        await Assert.That((byte[])transformedSecond["secret"]!).IsEquivalentTo(new byte[] { 9 });
     }
 
     [Test]

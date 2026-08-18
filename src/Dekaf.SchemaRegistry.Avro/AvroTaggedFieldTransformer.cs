@@ -17,7 +17,6 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
 
     private static readonly ConditionalWeakTable<AvroSchema, SchemaTransformers> Transformers = new();
 
-    private readonly AvroSchema _schema;
     private readonly RegistrySchema _registrySchema;
     private readonly RulePlanCache _plans;
 
@@ -26,7 +25,6 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
         AvroSchema tagSchema,
         RegistrySchema registrySchema)
     {
-        _schema = schema;
         _registrySchema = registrySchema;
         _plans = new RulePlanCache(schema, tagSchema, registrySchema);
     }
@@ -53,7 +51,7 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
         {
             workspace.Reset(payload.Span, payload.Length + 128);
             var reader = new AvroReader(payload);
-            TransformValue(_schema, target: false, plan, ref reader, workspace, context, state, transform);
+            TransformValue(plan.Root, target: false, plan, ref reader, workspace, context, state, transform);
             if (!plan.HasTargets)
             {
                 throw new SchemaRegistryRuleException(
@@ -81,7 +79,7 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
     internal static void ReleaseOversizedOutputs() => t_workspace?.ReleaseOversizedOutputs();
 
     private static void TransformValue<TState>(
-        AvroSchema schema,
+        ValuePlan valuePlan,
         bool target,
         RulePlan plan,
         ref AvroReader reader,
@@ -90,11 +88,7 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
         TState state,
         SchemaRegistryFieldTransform<TState> transform)
     {
-        if (schema is global::Avro.LogicalSchema logicalSchema)
-        {
-            TransformValue(logicalSchema.BaseSchema, target, plan, ref reader, output, context, state, transform);
-            return;
-        }
+        var schema = valuePlan.Schema;
 
         switch (schema.Tag)
         {
@@ -137,16 +131,16 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
             case AvroSchema.Type.Error:
                 if (target)
                     ThrowUnsupported(context, schema.Tag);
-                TransformRecord((global::Avro.RecordSchema)schema, plan, ref reader, output, context, state, transform);
+                TransformRecord(valuePlan, plan, ref reader, output, context, state, transform);
                 return;
             case AvroSchema.Type.Array:
-                TransformArray((global::Avro.ArraySchema)schema, target, plan, ref reader, output, context, state, transform);
+                TransformArray(valuePlan, target, plan, ref reader, output, context, state, transform);
                 return;
             case AvroSchema.Type.Map:
-                TransformMap((global::Avro.MapSchema)schema, target, plan, ref reader, output, context, state, transform);
+                TransformMap(valuePlan, target, plan, ref reader, output, context, state, transform);
                 return;
             case AvroSchema.Type.Union:
-                TransformUnion((global::Avro.UnionSchema)schema, target, plan, ref reader, output, context, state, transform);
+                TransformUnion(valuePlan, target, plan, ref reader, output, context, state, transform);
                 return;
             default:
                 throw new SchemaRegistryRuleException(
@@ -155,7 +149,7 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
     }
 
     private static void TransformRecord<TState>(
-        global::Avro.RecordSchema schema,
+        ValuePlan valuePlan,
         RulePlan plan,
         ref AvroReader reader,
         Workspace output,
@@ -163,13 +157,15 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
         TState state,
         SchemaRegistryFieldTransform<TState> transform)
     {
+        var schema = (global::Avro.RecordSchema)valuePlan.Schema;
         var fields = schema.Fields;
-        var targets = plan.GetTargets(schema);
+        var targets = valuePlan.RecordTargets!;
+        var children = valuePlan.Children!;
         for (var i = 0; i < fields.Count; i++)
         {
             var field = fields[i];
             TransformValue(
-                field.Schema,
+                children[field.Pos],
                 targets.IsTarget(field.Pos),
                 plan,
                 ref reader,
@@ -181,7 +177,7 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
     }
 
     private static void TransformUnion<TState>(
-        global::Avro.UnionSchema schema,
+        ValuePlan valuePlan,
         bool target,
         RulePlan plan,
         ref AvroReader reader,
@@ -190,6 +186,7 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
         TState state,
         SchemaRegistryFieldTransform<TState> transform)
     {
+        var schema = (global::Avro.UnionSchema)valuePlan.Schema;
         var start = reader.Position;
         var branch = reader.ReadLong();
         output.Append(reader.Slice(start).Span);
@@ -199,11 +196,11 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
                 $"Schema Registry rule '{context.Rule.Name}' encountered invalid Avro union index {branch}.");
         }
 
-        TransformValue(schema[(int)branch], target, plan, ref reader, output, context, state, transform);
+        TransformValue(valuePlan.Children![(int)branch], target, plan, ref reader, output, context, state, transform);
     }
 
     private static void TransformArray<TState>(
-        global::Avro.ArraySchema schema,
+        ValuePlan valuePlan,
         bool target,
         RulePlan plan,
         ref AvroReader reader,
@@ -212,6 +209,7 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
         TState state,
         SchemaRegistryFieldTransform<TState> transform)
     {
+        var itemPlan = valuePlan.Children![0];
         while (true)
         {
             var countStart = reader.Position;
@@ -241,19 +239,19 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
                 // Null and all-zero-width records can legitimately outnumber the bytes left.
                 // One item proves the fixed schema consumes nothing; the rest are identical no-ops.
                 var itemStart = reader.Position;
-                TransformValue(schema.ItemSchema, target, plan, ref reader, output, context, state, transform);
+                TransformValue(itemPlan, target, plan, ref reader, output, context, state, transform);
                 if (reader.Position != itemStart)
                     ThrowInvalidBlock(context);
                 continue;
             }
 
             for (long i = 0; i < count; i++)
-                TransformValue(schema.ItemSchema, target, plan, ref reader, output, context, state, transform);
+                TransformValue(itemPlan, target, plan, ref reader, output, context, state, transform);
         }
     }
 
     private static void TransformMap<TState>(
-        global::Avro.MapSchema schema,
+        ValuePlan valuePlan,
         bool target,
         RulePlan plan,
         ref AvroReader reader,
@@ -262,6 +260,7 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
         TState state,
         SchemaRegistryFieldTransform<TState> transform)
     {
+        var valueChildPlan = valuePlan.Children![0];
         while (true)
         {
             var countStart = reader.Position;
@@ -299,7 +298,7 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
                     context,
                     state,
                     transform);
-                TransformValue(schema.ValueSchema, target, plan, ref reader, output, context, state, transform);
+                TransformValue(valueChildPlan, target, plan, ref reader, output, context, state, transform);
             }
         }
     }
@@ -563,8 +562,15 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
         Immutable
     }
 
+    private sealed class ValuePlan(AvroSchema schema)
+    {
+        public AvroSchema Schema { get; } = schema;
+        public RecordTargets? RecordTargets { get; set; }
+        public ValuePlan[]? Children { get; set; }
+    }
+
     private sealed class RulePlan(
-        Dictionary<global::Avro.RecordSchema, RecordTargets> records,
+        ValuePlan root,
         MutableFieldTarget[]? mutableTargets,
         bool hasFixedTargets,
         SchemaRule rule)
@@ -575,7 +581,7 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
 
         public bool HasTargets => _targetCounter?.HasTargets ?? hasFixedTargets;
 
-        public RecordTargets GetTargets(global::Avro.RecordSchema schema) => records[schema];
+        public ValuePlan Root { get; } = root;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void RefreshRuleTargets(SchemaRule rule)
@@ -625,133 +631,141 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
             SchemaRule rule,
             bool mutableTags)
         {
-            var recordOwners = new Dictionary<global::Avro.RecordSchema, global::Avro.RecordSchema?>(
-                ReferenceEqualityComparer.Instance);
-            CollectRecordOwners(
-                schema,
-                tagSchema,
-                recordOwners,
-                new HashSet<SchemaVisit>(SchemaVisitReferenceComparer.Instance));
-            var records = new Dictionary<global::Avro.RecordSchema, RecordTargets>(ReferenceEqualityComparer.Instance);
+            var plans = new Dictionary<SchemaVisit, ValuePlan>(SchemaVisitReferenceComparer.Instance);
             List<MutableFieldTarget>? mutableTargets = mutableTags ? [] : null;
             var hasTargets = false;
-            foreach (var (record, tagRecord) in recordOwners)
-            {
-                BuildRecordTargets(
-                    record,
-                    tagRecord,
-                    registrySchema.Metadata?.Tags,
-                    rule,
-                    mutableTags,
-                    records,
-                    mutableTargets,
-                    ref hasTargets);
-            }
-            return new RulePlan(records, mutableTargets?.ToArray(), hasTargets, rule);
+            var root = BuildValuePlan(
+                schema,
+                tagSchema,
+                registrySchema.Metadata?.Tags,
+                rule,
+                mutableTags,
+                plans,
+                mutableTargets,
+                ref hasTargets);
+            return new RulePlan(root, mutableTargets?.ToArray(), hasTargets, rule);
         }
 
-        private static void CollectRecordOwners(
+        private static ValuePlan BuildValuePlan(
             AvroSchema schema,
             AvroSchema? tagSchema,
-            Dictionary<global::Avro.RecordSchema, global::Avro.RecordSchema?> recordOwners,
-            HashSet<SchemaVisit> visited)
+            IReadOnlyDictionary<string, IReadOnlySet<string>>? metadata,
+            SchemaRule rule,
+            bool mutableTags,
+            Dictionary<SchemaVisit, ValuePlan> plans,
+            List<MutableFieldTarget>? mutableTargets,
+            ref bool hasTargets)
         {
             if (schema is global::Avro.LogicalSchema logical)
                 schema = logical.BaseSchema;
             if (tagSchema is global::Avro.LogicalSchema tagLogical)
                 tagSchema = tagLogical.BaseSchema;
 
-            if (!visited.Add(new SchemaVisit(schema, tagSchema)))
-                return;
+            var visit = new SchemaVisit(schema, tagSchema);
+            if (plans.TryGetValue(visit, out var cached))
+                return cached;
+
+            var valuePlan = new ValuePlan(schema);
+            plans.Add(visit, valuePlan);
 
             switch (schema)
             {
                 case global::Avro.RecordSchema record:
                     var tagRecord = tagSchema as global::Avro.RecordSchema;
-                    if (!recordOwners.TryGetValue(record, out var owner) ||
-                        (owner is null && tagRecord is not null))
-                        recordOwners[record] = tagRecord;
                     var fields = record.Fields;
+                    var targets = new bool[fields.Count];
+                    MutableFieldTarget?[]? mutableRecordTargets = mutableTags
+                        ? new MutableFieldTarget?[fields.Count]
+                        : null;
+                    valuePlan.RecordTargets = new RecordTargets(targets, mutableRecordTargets);
+                    var fieldPlans = new ValuePlan[fields.Count];
+                    valuePlan.Children = fieldPlans;
                     for (var i = 0; i < fields.Count; i++)
                     {
                         var field = fields[i];
                         var tagField = FindTagField(tagRecord, field.Name);
-                        CollectRecordOwners(
+                        if (tagField is not null)
+                        {
+                            var fullName = tagRecord!.Fullname + "." + tagField.Name;
+                            if (mutableTags)
+                            {
+                                var target = MutableFieldTarget.Create(tagField, metadata, fullName, rule);
+                                if (target is not null)
+                                {
+                                    mutableRecordTargets![field.Pos] = target;
+                                    mutableTargets!.Add(target);
+                                    targets[field.Pos] = target.IsTarget;
+                                    hasTargets |= target.IsTarget;
+                                }
+                            }
+                            else
+                            {
+                                var target = InlineTagsOverlap(tagField, rule.Tags!)
+                                    || MetadataTagsOverlap(metadata, fullName, rule.Tags!);
+                                targets[field.Pos] = target;
+                                hasTargets |= target;
+                            }
+                        }
+
+                        fieldPlans[field.Pos] = BuildValuePlan(
                             field.Schema,
                             tagField?.Schema,
-                            recordOwners,
-                            visited);
+                            metadata,
+                            rule,
+                            mutableTags,
+                            plans,
+                            mutableTargets,
+                            ref hasTargets);
                     }
                     break;
                 case global::Avro.ArraySchema array:
-                    CollectRecordOwners(
-                        array.ItemSchema,
-                        (tagSchema as global::Avro.ArraySchema)?.ItemSchema,
-                        recordOwners,
-                        visited);
+                    valuePlan.Children =
+                    [
+                        BuildValuePlan(
+                            array.ItemSchema,
+                            (tagSchema as global::Avro.ArraySchema)?.ItemSchema,
+                            metadata,
+                            rule,
+                            mutableTags,
+                            plans,
+                            mutableTargets,
+                            ref hasTargets)
+                    ];
                     break;
                 case global::Avro.MapSchema map:
-                    CollectRecordOwners(
-                        map.ValueSchema,
-                        (tagSchema as global::Avro.MapSchema)?.ValueSchema,
-                        recordOwners,
-                        visited);
+                    valuePlan.Children =
+                    [
+                        BuildValuePlan(
+                            map.ValueSchema,
+                            (tagSchema as global::Avro.MapSchema)?.ValueSchema,
+                            metadata,
+                            rule,
+                            mutableTags,
+                            plans,
+                            mutableTargets,
+                            ref hasTargets)
+                    ];
                     break;
                 case global::Avro.UnionSchema union:
                     var tagUnion = tagSchema as global::Avro.UnionSchema;
+                    var branchPlans = new ValuePlan[union.Count];
+                    valuePlan.Children = branchPlans;
                     for (var i = 0; i < union.Count; i++)
                     {
-                        CollectRecordOwners(
+                        branchPlans[i] = BuildValuePlan(
                             union[i],
                             FindUnionBranch(union[i], tagUnion),
-                            recordOwners,
-                            visited);
+                            metadata,
+                            rule,
+                            mutableTags,
+                            plans,
+                            mutableTargets,
+                            ref hasTargets);
                     }
                     break;
             }
-        }
 
-        private static void BuildRecordTargets(
-            global::Avro.RecordSchema record,
-            global::Avro.RecordSchema? tagRecord,
-            IReadOnlyDictionary<string, IReadOnlySet<string>>? metadata,
-            SchemaRule rule,
-            bool mutableTags,
-            Dictionary<global::Avro.RecordSchema, RecordTargets> records,
-            List<MutableFieldTarget>? mutableTargets,
-            ref bool hasTargets)
-        {
-            var fields = record.Fields;
-            var targets = new bool[fields.Count];
-            MutableFieldTarget?[]? mutableRecordTargets = mutableTags
-                ? new MutableFieldTarget?[fields.Count]
-                : null;
-            records.Add(record, new RecordTargets(targets, mutableRecordTargets));
-            for (var i = 0; i < fields.Count; i++)
-            {
-                var field = fields[i];
-                var tagField = FindTagField(tagRecord, field.Name);
-                var fullName = tagField is null
-                    ? record.Fullname + "." + field.Name
-                    : tagRecord!.Fullname + "." + tagField.Name;
-                if (mutableTags)
-                {
-                    var target = MutableFieldTarget.Create(tagField, metadata, fullName, rule);
-                    if (target is null)
-                        continue;
-                    mutableRecordTargets![field.Pos] = target;
-                    mutableTargets!.Add(target);
-                    targets[field.Pos] = target.IsTarget;
-                    hasTargets |= target.IsTarget;
-                }
-                else
-                {
-                    var target = InlineTagsOverlap(tagField, rule.Tags!)
-                        || MetadataTagsOverlap(metadata, fullName, rule.Tags!);
-                    targets[field.Pos] = target;
-                    hasTargets |= target;
-                }
-            }
+            return valuePlan;
         }
 
         private readonly record struct SchemaVisit(AvroSchema Schema, AvroSchema? TagSchema);
