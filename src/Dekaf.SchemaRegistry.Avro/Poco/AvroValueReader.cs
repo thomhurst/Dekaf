@@ -9,6 +9,7 @@ namespace Dekaf.SchemaRegistry.Avro.Poco;
 public ref struct AvroValueReader
 {
     internal const int MaxCollectionItemCount = 1_048_576;
+    private const int MaxCollectionAllocationBytes = 8 * 1024 * 1024;
     private const int MaxSkipDepth = 256;
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
     private readonly ReadOnlySpan<byte> _source;
@@ -181,10 +182,23 @@ public ref struct AvroValueReader
         return (int)total;
     }
 
+    /// <summary>Validates that a generated collection's backing storage stays within its byte limit.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void ValidateCollectionAllocation<T>(int count)
+    {
+        if ((ulong)(uint)count * (uint)Unsafe.SizeOf<T>() > MaxCollectionAllocationBytes)
+            ThrowCollectionAllocationLimit();
+    }
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     internal static void ThrowCollectionLimit() =>
         throw new InvalidDataException(
             $"Avro collection exceeds the supported limit of {MaxCollectionItemCount} items.");
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void ThrowCollectionAllocationLimit() =>
+        throw new InvalidDataException(
+            $"Avro collection allocation exceeds the supported limit of {MaxCollectionAllocationBytes} bytes.");
 
     /// <summary>Skips a value described by a cached writer-schema node.</summary>
     public void Skip(AvroPocoReadNode node)

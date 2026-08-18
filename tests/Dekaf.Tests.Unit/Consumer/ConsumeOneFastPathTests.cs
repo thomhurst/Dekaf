@@ -102,6 +102,58 @@ public sealed class ConsumeOneFastPathTests
     }
 
     [Test]
+    public async Task ConsumeOneAsync_ColdValuePreparation_DoesNotDeserializeKeyTwice()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20, CreateRecord(0, "a", "one"))
+        ]);
+        var keyDeserializer = new GatedPreparedStringDeserializer(initiallyPrepared: true);
+        var valueDeserializer = new GatedPreparedStringDeserializer();
+        await using var consumer = CreateInitializedConsumerWithDeserializers(
+            fetch,
+            keyDeserializer,
+            valueDeserializer);
+        MarkManualAssignmentCurrent(consumer);
+
+        var consume = consumer.ConsumeOneAsync(TimeSpan.FromSeconds(10), CancellationToken.None);
+        await valueDeserializer.PreparationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        valueDeserializer.ReleasePreparation();
+
+        var result = await consume;
+        await Assert.That(result).IsNotNull();
+        await Assert.That(result!.Value.Key).IsEqualTo("a");
+        await Assert.That(keyDeserializer.DeserializeCount).IsEqualTo(1);
+        await Assert.That(valueDeserializer.DeserializeCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task ConsumeAsync_ColdValuePreparation_DoesNotDeserializeKeyTwice()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20, CreateRecord(0, "a", "one"))
+        ]);
+        var keyDeserializer = new GatedPreparedStringDeserializer(initiallyPrepared: true);
+        var valueDeserializer = new GatedPreparedStringDeserializer();
+        await using var consumer = CreateInitializedConsumerWithDeserializers(
+            fetch,
+            keyDeserializer,
+            valueDeserializer);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await using var records = consumer.ConsumeAsync(timeout.Token).GetAsyncEnumerator();
+
+        var moveNext = records.MoveNextAsync();
+        await valueDeserializer.PreparationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        valueDeserializer.ReleasePreparation();
+
+        await Assert.That(await moveNext).IsTrue();
+        await Assert.That(records.Current.Key).IsEqualTo("a");
+        await Assert.That(keyDeserializer.DeserializeCount).IsEqualTo(1);
+        await Assert.That(valueDeserializer.DeserializeCount).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task ConsumeOneAsync_CurrentBufferedAssignment_DoesNotRentTimeoutCts()
     {
         var fetch = PendingFetchData.Create(Topic, Partition,
@@ -896,6 +948,15 @@ public sealed class ConsumeOneFastPathTests
         private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private int _prepared;
 
+        public GatedPreparedStringDeserializer(bool initiallyPrepared = false)
+        {
+            if (!initiallyPrepared)
+                return;
+
+            _prepared = 1;
+            _release.TrySetResult();
+        }
+
         public TaskCompletionSource PreparationStarted { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -922,6 +983,9 @@ public sealed class ConsumeOneFastPathTests
             SerializationContext context,
             CancellationToken cancellationToken = default)
         {
+            if (Volatile.Read(ref _prepared) != 0)
+                return;
+
             PrepareCount++;
             PreparationStarted.TrySetResult();
             await _release.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -1095,7 +1159,7 @@ public sealed class ConsumeOneFastPathTests
 
         return (ValueTask<ConsumeResult<string, string>?>)method.Invoke(
             consumer,
-            [CancellationToken.None])!;
+            [null, CancellationToken.None])!;
     }
 
     private static MpscFetchBuffer GetPrefetchBuffer(KafkaConsumer<string, string> consumer)

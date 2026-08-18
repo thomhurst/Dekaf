@@ -1254,13 +1254,13 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                     Assign(code, target, "reader.ReadInt32()", indent);
                     break;
                 case TypeKindModel.Long:
-                    Assign(code, target, "reader.ReadInt64()", indent);
+                    Assign(code, target, node + ".Kind == global::Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.Int ? reader.ReadInt32() : reader.ReadInt64()", indent);
                     break;
                 case TypeKindModel.Float:
-                    Assign(code, target, node + ".Kind == global::Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.Float ? reader.ReadSingle() : (float)reader.ReadInt64()", indent);
+                    Assign(code, target, node + ".Kind switch { global::Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.Float => reader.ReadSingle(), global::Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.Int => reader.ReadInt32(), _ => (float)reader.ReadInt64() }", indent);
                     break;
                 case TypeKindModel.Double:
-                    Assign(code, target, node + ".Kind switch { global::Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.Double => reader.ReadDouble(), global::Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.Float => reader.ReadSingle(), _ => reader.ReadInt64() }", indent);
+                    Assign(code, target, node + ".Kind switch { global::Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.Double => reader.ReadDouble(), global::Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.Float => reader.ReadSingle(), global::Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.Int => reader.ReadInt32(), _ => reader.ReadInt64() }", indent);
                     break;
                 case TypeKindModel.Bytes:
                     Assign(code, target, "reader.ReadBytes()", indent);
@@ -1386,6 +1386,8 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             code.Append(indent).Append("var ").Append(total).Append(" = ").Append(block).AppendLine(";");
             code.Append(indent).Append("var ").Append(count).Append(" = reader.GetCollectionCapacity(")
                 .Append(block).AppendLine(");");
+            code.Append(indent).Append("global::Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.ValidateCollectionAllocation<")
+                .Append(type.Item!.SymbolType).Append(">(").Append(block).AppendLine(");");
             code.Append(indent).Append("var ").Append(result).Append(" = ")
                 .Append(type.Kind == TypeKindModel.Array
                     ? "new " + type.Item!.SymbolType + "[" + count + "]"
@@ -1417,9 +1419,13 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             code.Append(indent).AppendLine("    }");
             code.Append(indent).Append("    ").Append(block).AppendLine(" = reader.ReadBlockCount();");
             code.Append(indent).Append("    if (").Append(block).AppendLine(" != 0)");
+            code.Append(indent).AppendLine("    {");
             code.Append(indent).Append("        ").Append(total)
                 .Append(" = global::Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.AddCollectionCount(")
                 .Append(total).Append(", ").Append(block).AppendLine(");");
+            code.Append(indent).Append("        global::Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.ValidateCollectionAllocation<")
+                .Append(type.Item.SymbolType).Append(">(").Append(total).AppendLine(");");
+            code.Append(indent).AppendLine("    }");
             code.Append(indent).AppendLine("}");
             code.Append(indent).Append(target).Append(" = ").Append(result).AppendLine(";");
         }

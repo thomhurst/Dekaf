@@ -2873,7 +2873,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                 var leaderEpoch = pending.CurrentPartitionLeaderEpoch >= 0
                                     ? (int?)pending.CurrentPartitionLeaderEpoch
                                     : null;
-                                if (!TryCreateResultWithPreparedDeserialization(
+                                PreparedDeserializerKey? preparedKey = null;
+                                if (!TryCreateResultWithPreparedDeserialization<DeserializeKeyMode>(
                                         pending,
                                         offset,
                                         keyData,
@@ -2885,6 +2886,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                         timestampMs,
                                         timestampType,
                                         leaderEpoch,
+                                        ref preparedKey,
                                         out nextResult))
                                 {
                                     await PrepareRecordDeserializersAsync(
@@ -2900,7 +2902,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                             timestampType,
                                             cancellationToken)
                                         .ConfigureAwait(false);
-                                    if (!TryCreateResultWithPreparedDeserialization(
+                                    if (!TryCreateResultWithPreparedDeserialization<RetainedKeyMode>(
                                             pending,
                                             offset,
                                             keyData,
@@ -2912,6 +2914,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                             timestampMs,
                                             timestampType,
                                             leaderEpoch,
+                                            ref preparedKey,
                                             out nextResult))
                                     {
                                         throw new InvalidOperationException(
@@ -4944,10 +4947,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 // Reuse the coordinator's timestamp read when it took one this poll.
                 bufferedDrainStarted = pollTimestamp != 0 ? pollTimestamp : Stopwatch.GetTimestamp();
                 var requiresAsyncPreparation = false;
+                PreparedDeserializerKey? preparedKey = null;
                 var consumedBufferedRecord = _hasDeserializerPreparers
                     ? TryConsumeOneFromPendingFetchesWithPreparation(
                         out var bufferedResult,
-                        out requiresAsyncPreparation)
+                        out requiresAsyncPreparation,
+                        out preparedKey)
                     : TryConsumeOneFromPendingFetches(out bufferedResult);
                 if (consumedBufferedRecord)
                     return new ValueTask<ConsumeResult<TKey, TValue>?>(bufferedResult);
@@ -4958,6 +4963,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         timeout,
                         bufferedDrainStarted,
                         pollRecorded,
+                        preparedKey,
                         cancellationToken);
                 }
 
@@ -4966,7 +4972,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
         }
 
-        return ConsumeOneWithTimeoutAsync(timeout, bufferedDrainStarted, pollRecorded, cancellationToken);
+        return ConsumeOneWithTimeoutAsync(
+            timeout,
+            bufferedDrainStarted,
+            pollRecorded,
+            default,
+            cancellationToken);
     }
 
 #if NET
@@ -4976,6 +4987,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         TimeSpan timeout,
         long? bufferedDrainStarted,
         bool pollRecorded,
+        PreparedDeserializerKey? preparedKey,
         CancellationToken cancellationToken)
     {
         using var timeoutCts = _ctsPool.Rent();
@@ -4986,7 +4998,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             try
             {
-                return await ConsumeOneCoreAsync(pollRecorded, timeoutCts.Token).ConfigureAwait(false);
+                return await ConsumeOneCoreAsync(pollRecorded, preparedKey, timeoutCts.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
             {
@@ -5000,7 +5012,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         try
         {
-            return await ConsumeOneCoreAsync(pollRecorded, linkedCts.Token).ConfigureAwait(false);
+            return await ConsumeOneCoreAsync(pollRecorded, preparedKey, linkedCts.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
         {
@@ -5105,6 +5117,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private async ValueTask<ConsumeResult<TKey, TValue>?> ConsumeOneCoreAsync(
         bool pollRecorded,
+        PreparedDeserializerKey? preparedKey,
         CancellationToken cancellationToken)
     {
         if (Volatile.Read(ref _consumerDisposed) != 0)
@@ -5155,7 +5168,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
             if (_hasAsyncDeserializers || _hasDeserializerPreparers)
             {
-                var asyncResult = await ConsumeOneFromPendingFetchesAsync(cancellationToken).ConfigureAwait(false);
+                var asyncResult = await ConsumeOneFromPendingFetchesAsync(preparedKey, cancellationToken)
+                    .ConfigureAwait(false);
                 if (asyncResult is not null)
                     return asyncResult;
             }
@@ -5248,24 +5262,48 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private readonly struct SynchronousDeserializerMode;
     private readonly struct PreparedDeserializerMode;
+    private readonly struct DeserializeKeyMode;
+    private readonly struct RetainedKeyMode;
+
+    private sealed class PreparedDeserializerKey
+    {
+        private readonly PendingFetchData? _pending;
+        private readonly long _offset;
+
+        internal PreparedDeserializerKey(PendingFetchData pending, long offset, TKey? value)
+        {
+            _pending = pending;
+            _offset = offset;
+            Value = value;
+        }
+
+        internal TKey? Value { get; }
+
+        internal bool Matches(PendingFetchData pending, long offset) =>
+            ReferenceEquals(_pending, pending) && _offset == offset;
+    }
 
     private bool TryConsumeOneFromPendingFetches(out ConsumeResult<TKey, TValue> result) =>
-        TryConsumeOneFromPendingFetchesCore<SynchronousDeserializerMode>(out result, out _);
+        TryConsumeOneFromPendingFetchesCore<SynchronousDeserializerMode>(out result, out _, out _);
 
     private bool TryConsumeOneFromPendingFetchesWithPreparation(
         out ConsumeResult<TKey, TValue> result,
-        out bool requiresAsyncPreparation) =>
+        out bool requiresAsyncPreparation,
+        out PreparedDeserializerKey? preparedKey) =>
         TryConsumeOneFromPendingFetchesCore<PreparedDeserializerMode>(
             out result,
-            out requiresAsyncPreparation);
+            out requiresAsyncPreparation,
+            out preparedKey);
 
     private bool TryConsumeOneFromPendingFetchesCore<TDeserializerMode>(
         out ConsumeResult<TKey, TValue> result,
-        out bool requiresAsyncPreparation)
+        out bool requiresAsyncPreparation,
+        out PreparedDeserializerKey? preparedKey)
         where TDeserializerMode : struct
     {
         result = default!;
         requiresAsyncPreparation = false;
+        preparedKey = null;
 
         var metricsEnabled = Diagnostics.DekafMetrics.MessagesReceived.Enabled
                              || Diagnostics.DekafMetrics.BytesReceived.Enabled;
@@ -5341,7 +5379,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         BeginConsumeOneFetchUse(pending);
                         if (typeof(TDeserializerMode) == typeof(PreparedDeserializerMode))
                         {
-                            if (!TryCreateResultWithPreparedDeserialization(
+                            if (!TryCreateResultWithPreparedDeserialization<DeserializeKeyMode>(
                                     pending,
                                     offset,
                                     keyData,
@@ -5355,6 +5393,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                     pending.CurrentPartitionLeaderEpoch >= 0
                                         ? pending.CurrentPartitionLeaderEpoch
                                         : null,
+                                    ref preparedKey,
                                     out result))
                             {
                                 pendingDisposed |= EndConsumeOneFetchUse(pending);
@@ -5481,6 +5520,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// Returns null when no record is buffered.
     /// </summary>
     private async ValueTask<ConsumeResult<TKey, TValue>?> ConsumeOneFromPendingFetchesAsync(
+        PreparedDeserializerKey? preparedKey,
         CancellationToken cancellationToken)
     {
         var metricsEnabled = Diagnostics.DekafMetrics.MessagesReceived.Enabled
@@ -5591,22 +5631,42 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                     cancellationToken)
                                 .ConfigureAwait(false);
                         }
-                        else if (!TryCreateResultWithPreparedDeserialization(
-                                     pending,
-                                     offset,
-                                     keyData,
-                                     isKeyNull,
-                                     valueData,
-                                     isValueNull,
-                                     pooledHeaders,
-                                     pooledHeaderCount,
-                                     timestampMs,
-                                     timestampType,
-                                     leaderEpoch,
-                                     out result))
+                        else
                         {
-                            throw new InvalidOperationException(
-                                "Deserializer remained unprepared after PrepareAsync completed.");
+                            var resultCreated = preparedKey?.Matches(pending, offset) == true
+                                ? TryCreateResultWithPreparedDeserialization<RetainedKeyMode>(
+                                    pending,
+                                    offset,
+                                    keyData,
+                                    isKeyNull,
+                                    valueData,
+                                    isValueNull,
+                                    pooledHeaders,
+                                    pooledHeaderCount,
+                                    timestampMs,
+                                    timestampType,
+                                    leaderEpoch,
+                                    ref preparedKey,
+                                    out result)
+                                : TryCreateResultWithPreparedDeserialization<DeserializeKeyMode>(
+                                    pending,
+                                    offset,
+                                    keyData,
+                                    isKeyNull,
+                                    valueData,
+                                    isValueNull,
+                                    pooledHeaders,
+                                    pooledHeaderCount,
+                                    timestampMs,
+                                    timestampType,
+                                    leaderEpoch,
+                                    ref preparedKey,
+                                    out result);
+                            if (!resultCreated)
+                            {
+                                throw new InvalidOperationException(
+                                    "Deserializer remained unprepared after PrepareAsync completed.");
+                            }
                         }
                         pendingDisposed |= EndConsumeOneFetchUse(pending);
 
@@ -5750,7 +5810,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         ExceptionDispatchInfo.Capture(exception).Throw();
     }
 
-    private bool TryCreateResultWithPreparedDeserialization(
+    private bool TryCreateResultWithPreparedDeserialization<TPreparedKeyMode>(
         PendingFetchData pending,
         long offset,
         ReadOnlyMemory<byte> keyData,
@@ -5762,51 +5822,60 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         long timestampMs,
         TimestampType timestampType,
         int? leaderEpoch,
+        ref PreparedDeserializerKey? preparedKey,
         out ConsumeResult<TKey, TValue> result)
+        where TPreparedKeyMode : struct
     {
         var topic = pending.Topic;
         TKey? key = default;
         if (!isKeyNull)
         {
-            var keyContext = new SerializationContext
+            if (typeof(TPreparedKeyMode) == typeof(RetainedKeyMode))
             {
-                Topic = topic,
-                Component = SerializationComponent.Key,
-                KeyData = ReadOnlyMemory<byte>.Empty,
-                IsNull = false
-            };
-            try
+                key = preparedKey!.Value;
+            }
+            else
             {
-                if (_keyDeserializerPreparer is { } keyPreparer)
+                var keyContext = new SerializationContext
                 {
-                    if (!keyPreparer.TryDeserialize(keyData, keyContext, out key))
+                    Topic = topic,
+                    Component = SerializationComponent.Key,
+                    KeyData = ReadOnlyMemory<byte>.Empty,
+                    IsNull = false
+                };
+                try
+                {
+                    if (_keyDeserializerPreparer is { } keyPreparer)
                     {
-                        result = default!;
-                        return false;
+                        if (!keyPreparer.TryDeserialize(keyData, keyContext, out key))
+                        {
+                            result = default!;
+                            return false;
+                        }
+                    }
+                    else
+                    {
+                        key = _keyDeserializer.Deserialize(keyData, keyContext);
                     }
                 }
-                else
+                catch (Exception ex) when (ex is not OperationCanceledException)
                 {
-                    key = _keyDeserializer.Deserialize(keyData, keyContext);
+                    throw ConsumeResult<TKey, TValue>.CreateDeserializationException(
+                        DeserializationExceptionOrigin.Key,
+                        topic,
+                        pending.PartitionIndex,
+                        offset,
+                        timestampMs,
+                        timestampType,
+                        keyData,
+                        isKeyNull,
+                        valueData,
+                        isValueNull,
+                        headers: null,
+                        pooledHeaders,
+                        pooledHeaderCount,
+                        ex);
                 }
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                throw ConsumeResult<TKey, TValue>.CreateDeserializationException(
-                    DeserializationExceptionOrigin.Key,
-                    topic,
-                    pending.PartitionIndex,
-                    offset,
-                    timestampMs,
-                    timestampType,
-                    keyData,
-                    isKeyNull,
-                    valueData,
-                    isValueNull,
-                    headers: null,
-                    pooledHeaders,
-                    pooledHeaderCount,
-                    ex);
             }
         }
 
@@ -5825,6 +5894,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 if (!valuePreparer.TryDeserialize(valueBytes, valueContext, out value))
                 {
+                    if (!isKeyNull && typeof(TPreparedKeyMode) == typeof(DeserializeKeyMode))
+                        preparedKey = new PreparedDeserializerKey(pending, offset, key);
+
                     result = default!;
                     return false;
                 }
