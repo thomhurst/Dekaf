@@ -732,6 +732,41 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    public async Task GeneratedCodec_RejectsCumulativeRemovedArrayCount()
+    {
+        const string writerSchemaJson =
+            """
+            {"type":"record","name":"PocoEvolved","namespace":"Dekaf.Tests","fields":[{"name":"legacy_id","type":"int"},{"name":"removed","type":{"type":"array","items":"null"}}]}
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        var schemaId = await registry.RegisterSchemaAsync(
+            "poco-removed-array-count-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = writerSchemaJson
+            });
+        await using var reader = PocoEvolved.CreateAvroDeserializer(registry);
+        var payload = new byte[16];
+        BinaryPrimitives.WriteInt32BigEndian(payload.AsSpan(1, 4), schemaId);
+        var writer = new AvroValueWriter(payload.AsSpan(5));
+        writer.WriteInt32(0);
+        writer.WriteBlockCount(1_048_576);
+        writer.WriteBlockCount(1);
+        writer.WriteBlockEnd();
+        var context = new SerializationContext
+        {
+            Topic = "poco-removed-array-count",
+            Component = SerializationComponent.Value
+        };
+        var payloadLength = 5 + writer.WrittenCount;
+
+        await Assert.That(() => reader.Deserialize(payload.AsMemory(0, payloadLength), context))
+            .Throws<InvalidDataException>()
+            .WithMessageContaining("supported limit");
+    }
+
+    [Test]
     public async Task GeneratedCodec_PassesTimeoutTokenToPlanFetch()
     {
         using var registry = new MockSchemaRegistryClient();

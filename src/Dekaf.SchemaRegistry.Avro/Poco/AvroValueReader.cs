@@ -277,28 +277,34 @@ public ref struct AvroValueReader
 
     private void SkipCollection(AvroPocoReadNode item)
     {
-        while (true)
+        var count = ReadBlockCount();
+        var total = count;
+        while (count != 0)
         {
-            var count = ReadBlockCount();
-            if (count == 0)
-                return;
             for (var index = 0; index < count; index++)
                 Skip(item);
+
+            count = ReadBlockCount();
+            if (count != 0)
+                total = AddCollectionCount(total, count);
         }
     }
 
     private void SkipMap(AvroPocoReadNode item)
     {
-        while (true)
+        var count = ReadBlockCount();
+        var total = count;
+        while (count != 0)
         {
-            var count = ReadBlockCount();
-            if (count == 0)
-                return;
             for (var index = 0; index < count; index++)
             {
                 SkipBytes();
                 Skip(item);
             }
+
+            count = ReadBlockCount();
+            if (count != 0)
+                total = AddCollectionCount(total, count);
         }
     }
 
