@@ -1390,6 +1390,27 @@ internal sealed class AvroTaggedFieldTransformerProvider : ISchemaRegistryTagged
         return payloadTransformers.Get(ruleOwnerSchema ?? payloadSchema);
     }
 
+    internal ISchemaRegistryTaggedFieldTransformer GetResolved(
+        RegistrySchema payloadSchema,
+        AvroSchema avroSchema,
+        RegistrySchema? ruleOwnerSchema = null)
+    {
+        var payloadTransformers = Volatile.Read(ref _lastPayloadSchema);
+        if (payloadTransformers is null ||
+            !ReferenceEquals(payloadTransformers.PayloadSchema, payloadSchema))
+        {
+            if (!_payloadSchemas.TryGetValue(payloadSchema, out payloadTransformers))
+            {
+                payloadTransformers = new PayloadSchemaTransformers(payloadSchema, avroSchema);
+                _payloadSchemas.AddOrUpdate(payloadSchema, payloadTransformers);
+            }
+
+            Volatile.Write(ref _lastPayloadSchema, payloadTransformers);
+        }
+
+        return payloadTransformers.Get(ruleOwnerSchema ?? payloadSchema);
+    }
+
     internal AvroTaggedFieldTransformer Get(RegistrySchema schema, AvroSchema avroSchema)
     {
         var entry = Volatile.Read(ref _lastSerializerTransformer);
@@ -1457,9 +1478,14 @@ internal sealed class AvroTaggedFieldTransformerProvider : ISchemaRegistryTagged
         private TransformerEntry? _lastOwner;
 
         public PayloadSchemaTransformers(RegistrySchema payloadSchema)
+            : this(payloadSchema, AvroSchema.Parse(payloadSchema.SchemaString))
+        {
+        }
+
+        public PayloadSchemaTransformers(RegistrySchema payloadSchema, AvroSchema avroSchema)
         {
             PayloadSchema = payloadSchema;
-            _payloadSchema = AvroSchema.Parse(payloadSchema.SchemaString);
+            _payloadSchema = avroSchema;
             _create = Create;
         }
 
@@ -1482,7 +1508,9 @@ internal sealed class AvroTaggedFieldTransformerProvider : ISchemaRegistryTagged
             AvroTaggedFieldTransformer.Get(
                 _payloadSchema,
                 owner,
-                AvroSchema.Parse(owner.SchemaString)));
+                ReferenceEquals(owner, PayloadSchema)
+                    ? _payloadSchema
+                    : AvroSchema.Parse(owner.SchemaString)));
     }
 
     private sealed class TransformerEntry(

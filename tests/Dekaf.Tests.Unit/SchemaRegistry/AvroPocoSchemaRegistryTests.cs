@@ -137,6 +137,112 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    public async Task GeneratedCodec_ContextWarmupResolvesReferencesForTaggedRules()
+    {
+        const string addressSchemaJson =
+            """
+            {"type":"record","name":"PocoAddress","namespace":"Dekaf.Tests","fields":[{"name":"City","type":"string"},{"name":"PostCode","type":"string"}]}
+            """;
+        const string rootSchemaJson =
+            """
+            {"type":"record","name":"PocoReferencedRoot","namespace":"Dekaf.Tests","fields":[{"name":"Address","type":"Dekaf.Tests.PocoAddress"}]}
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        _ = await registry.RegisterSchemaAsync(
+            "poco-tagged-address-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = addressSchemaJson
+            });
+        var rootSchemaId = await registry.RegisterSchemaAsync(
+            "poco-tagged-referenced-root-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = rootSchemaJson,
+                References =
+                [
+                    new Dekaf.SchemaRegistry.SchemaReference
+                    {
+                        Name = "Dekaf.Tests.PocoAddress",
+                        Subject = "poco-tagged-address-value",
+                        Version = 1
+                    }
+                ],
+                RuleSet = new SchemaRuleSet { DomainRules = [] }
+            });
+        var ruleExecutor = new CapturingTaggedFieldRuleExecutor();
+        var nonCachingRegistry = CreateNonCachingRegistry(registry);
+        await using var deserializer = PocoReferencedRoot.CreateAvroDeserializer(
+            nonCachingRegistry,
+            new AvroDeserializerConfig { RuleExecutor = ruleExecutor });
+        var context = new SerializationContext
+        {
+            Topic = "poco-tagged-referenced-root",
+            Component = SerializationComponent.Value
+        };
+        var wire = new byte[64];
+        BinaryPrimitives.WriteInt32BigEndian(wire.AsSpan(1, 4), rootSchemaId);
+        var writer = new AvroValueWriter(wire.AsSpan(5));
+        writer.WriteString("London");
+        writer.WriteString("SW1");
+        var wireLength = 5 + writer.WrittenCount;
+
+        await deserializer.WarmupAsync(rootSchemaId, context);
+        nonCachingRegistry.ClearReceivedCalls();
+        var actual = deserializer.Deserialize(wire.AsMemory(0, wireLength), context);
+
+        await Assert.That(actual.Address.City).IsEqualTo("London");
+        await Assert.That(actual.Address.PostCode).IsEqualTo("SW1");
+        await Assert.That(ruleExecutor.DeserializedContextHadTransformer).IsTrue();
+        _ = nonCachingRegistry.DidNotReceiveWithAnyArgs()
+            .GetSchemaAsync(default, default(CancellationToken));
+        _ = nonCachingRegistry.DidNotReceiveWithAnyArgs()
+            .GetSchemaAsync(default, default!, default(CancellationToken));
+        _ = nonCachingRegistry.DidNotReceiveWithAnyArgs()
+            .GetSchemaBySubjectAsync(default!, default!, default(CancellationToken));
+    }
+
+    [Test]
+    public async Task GeneratedCodec_ContextWarmupPreparesPublicRulesPath()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        var schemaId = await registry.RegisterSchemaAsync(
+            "poco-context-warmup-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = PocoWireRecord.AvroCodec.SchemaJson
+            });
+        var nonCachingRegistry = CreateNonCachingRegistry(registry);
+        await using var deserializer = PocoWireRecord.CreateAvroDeserializer(
+            nonCachingRegistry,
+            new AvroDeserializerConfig { RuleExecutor = PassThroughRuleExecutor.Instance });
+        var context = new SerializationContext
+        {
+            Topic = "poco-context-warmup",
+            Component = SerializationComponent.Value
+        };
+        var wire = new byte[64];
+        BinaryPrimitives.WriteInt32BigEndian(wire.AsSpan(1, 4), schemaId);
+        var writer = new AvroValueWriter(wire.AsSpan(5));
+        PocoWireRecord.AvroCodec.Write(ref writer, new PocoWireRecord { Id = 42, Name = "Ada" });
+        var wireLength = 5 + writer.WrittenCount;
+
+        await deserializer.WarmupAsync(schemaId, context);
+        nonCachingRegistry.ClearReceivedCalls();
+        var actual = deserializer.Deserialize(wire.AsMemory(0, wireLength), context);
+
+        await Assert.That(actual.Id).IsEqualTo(42);
+        await Assert.That(actual.Name).IsEqualTo("Ada");
+        _ = nonCachingRegistry.DidNotReceiveWithAnyArgs()
+            .GetSchemaAsync(default, default(CancellationToken));
+        _ = nonCachingRegistry.DidNotReceiveWithAnyArgs()
+            .GetSchemaAsync(default, default!, default(CancellationToken));
+    }
+
+    [Test]
     public async Task GeneratedCodec_DistinguishesRecordUnionBranches()
     {
         using var registry = new MockSchemaRegistryClient();
@@ -713,6 +819,7 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    [NotInParallel]
     public async Task GeneratedCodec_RulesPathAlternatingOversizedPayloadUsesSingleTraversal()
     {
         using var registry = new MockSchemaRegistryClient();
@@ -998,6 +1105,8 @@ public sealed class AvroPocoSchemaRegistryTests
         };
         var destination = new ArrayBufferWriter<byte>(16);
         serializer.Serialize(new PocoReadonlyRecord { Id = 42 }, ref destination, context);
+        var schemaId = BinaryPrimitives.ReadInt32BigEndian(destination.WrittenSpan.Slice(1, 4));
+        await deserializer.WarmupAsync(schemaId, context);
 
         for (var index = 0; index < 16; index++)
             _ = deserializer.Deserialize(destination.WrittenMemory, context);
@@ -1567,7 +1676,7 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
-    public async Task GeneratedCodec_AsyncPreparationWarmsScopedSchemaAndMigrationPlan()
+    public async Task GeneratedCodec_ContextWarmupWarmsScopedSchemaAndMigrationPlan()
     {
         const string writerSchemaJson =
             """
@@ -1601,14 +1710,12 @@ public sealed class AvroPocoSchemaRegistryTests
             Topic = "poco-async-migration",
             Component = SerializationComponent.Value
         };
-        var preparer = (IAsyncDeserializerPreparer<PocoEvolved>)reader;
         var data = payload.AsMemory(0, 5 + writer.WrittenCount);
 
-        await preparer.PrepareAsync(data, context);
+        await reader.WarmupAsync(writerSchemaId, context);
         nonCachingRegistry.ClearReceivedCalls();
-        var prepared = preparer.TryDeserialize(data, context, out var actual);
+        var actual = reader.Deserialize(data, context);
 
-        await Assert.That(prepared).IsTrue();
         await Assert.That(actual.Id).IsEqualTo(42L);
         await Assert.That(actual.Note).IsEqualTo("added-by-reader");
         _ = nonCachingRegistry.DidNotReceiveWithAnyArgs()

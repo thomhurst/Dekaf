@@ -16,6 +16,12 @@ internal static class AvroPocoReaderPlanBuilder
             : AvroSchema.Parse(writerSchemaJson, names);
         var writerSchema = parsed as RecordSchema
             ?? throw new InvalidOperationException("POCO Avro writer schema must be a record.");
+        return Build<T, TCodec>(writerSchema);
+    }
+
+    internal static AvroPocoReaderPlan Build<T, TCodec>(RecordSchema writerSchema)
+        where TCodec : struct, IAvroPocoCodec<T>
+    {
         if (!string.Equals(writerSchema.Fullname, TCodec.FullName, StringComparison.Ordinal))
         {
             throw new InvalidOperationException(

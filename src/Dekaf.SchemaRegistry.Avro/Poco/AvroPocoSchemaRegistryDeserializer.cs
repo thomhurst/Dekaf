@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Globalization;
 using Dekaf.SchemaRegistry.Avro;
 using Dekaf.Serialization;
+using AvroRecordSchema = global::Avro.RecordSchema;
 using AvroSchema = global::Avro.Schema;
 using AvroSchemaNames = global::Avro.SchemaNames;
 
@@ -25,6 +26,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
     private readonly AvroDeserializerConfig _config;
     private readonly bool _ownsClient;
     private readonly ConcurrentDictionary<int, AvroPocoReaderPlan> _plans = new();
+    private readonly ConcurrentDictionary<int, ResolvedAvroSchema> _resolvedSchemas = new();
     private readonly ConcurrentDictionary<int, PlanEntry> _inFlightPlans = new();
     private readonly ConcurrentQueue<KeyValuePair<int, AvroPocoReaderPlan>> _planEvictionQueue = new();
     private readonly ConcurrentDictionary<PreparedRuleKey, PreparedRuleState> _preparedRuleStates = new();
@@ -34,6 +36,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
     private readonly SchemaRegistryMigrationRunner? _migrationRunner;
     private readonly ISchemaRegistryRuleExecutor? _ruleExecutor;
     private readonly DeserializerSubjectNameCache? _subjectNames;
+    private readonly bool _canUseSynchronousRuleCache;
     private PreparedRuleState? _lastPreparedRuleState;
     private int _cachedPlanCount;
     private int _cachedPreparedRuleStateCount;
@@ -72,11 +75,35 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
                 _config.CustomSubjectNameStrategy,
                 _config.UseLegacySubjectNames);
         }
+
+        _canUseSynchronousRuleCache = _migrationRunner is null && schemaRegistry is ISchemaRegistryCache;
     }
 
     /// <summary>Prepares a writer schema ID and its evolution plan.</summary>
     public async Task WarmupAsync(int schemaId, CancellationToken cancellationToken = default) =>
         _ = await GetPlanAsync(schemaId, cancellationToken).ConfigureAwait(false);
+
+    /// <summary>Prepares a writer schema ID and subject-scoped rule state.</summary>
+    public async Task WarmupAsync(
+        int schemaId,
+        SerializationContext context,
+        CancellationToken cancellationToken = default)
+    {
+        if (_ruleExecutor is null)
+        {
+            await WarmupAsync(schemaId, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        var isKey = context.Component == SerializationComponent.Key;
+        var subject = GetSubjectName(context.Topic, isKey);
+        await PrepareRulesAsync(
+                schemaId,
+                subject,
+                new PreparedRuleKey(schemaId, context.Topic, isKey),
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
 
     ValueTask IAsyncDeserializerPreparer<T>.PrepareAsync(
         ReadOnlyMemory<byte> data,
@@ -231,6 +258,32 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         {
             var directReader = new AvroValueReader(payload.Span);
             return TCodec.Read(ref directReader, GetPlanCached(schemaId));
+        }
+
+        if (_canUseSynchronousRuleCache)
+            return DeserializeWithRules(payload, schemaId, context);
+
+        return DeserializeWithPreparedRulesOrFallback(payload, schemaId, context);
+    }
+
+    private T DeserializeWithPreparedRulesOrFallback(
+        ReadOnlyMemory<byte> payload,
+        int schemaId,
+        SerializationContext context)
+    {
+        var isKey = context.Component == SerializationComponent.Key;
+        if (TryGetPreparedRuleState(
+                new PreparedRuleKey(schemaId, context.Topic, isKey),
+                out var preparedState) &&
+            (_migrationRunner is null ||
+             _migrationRunner.TryUsePreparedPlan(schemaId, preparedState.Subject)))
+        {
+            return DeserializePreparedWithRules(
+                payload,
+                schemaId,
+                context,
+                preparedState.Subject,
+                preparedState.Schema);
         }
 
         return DeserializeWithRules(payload, schemaId, context);
@@ -405,11 +458,16 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         PreparedRuleKey preparedKey,
         CancellationToken cancellationToken)
     {
-        _ = await GetPlanAsync(schemaId, cancellationToken).ConfigureAwait(false);
+        var plan = await GetPlanAsync(schemaId, cancellationToken).ConfigureAwait(false);
         var scopedSchema = await _schemaRegistry.GetSchemaAsync(schemaId, subject, cancellationToken)
             .ConfigureAwait(false);
         if (scopedSchema.RuleSet is not null)
-            _ = _taggedFieldTransformers.Get(scopedSchema);
+        {
+            _ = _resolvedSchemas.TryGetValue(schemaId, out var resolved) &&
+                ReferenceEquals(resolved.Plan, plan)
+                ? _taggedFieldTransformers.GetResolved(scopedSchema, resolved.Schema)
+                : _taggedFieldTransformers.Get(scopedSchema);
+        }
 
         if (_migrationRunner is not null)
         {
@@ -552,7 +610,11 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
                 depth: 0,
                 cancellationToken)
             .ConfigureAwait(false);
-        return BuildPlan(schemaId, schema, names);
+        var parsed = AvroSchema.Parse(schema.SchemaString, names) as AvroRecordSchema
+            ?? throw new InvalidOperationException("POCO Avro writer schema must be a record.");
+        var plan = AvroPocoReaderPlanBuilder.Build<T, TCodec>(parsed);
+        _resolvedSchemas[schemaId] = new ResolvedAvroSchema(plan, parsed);
+        return plan;
     }
 
     private async Task ResolveReferencesAsync(
@@ -642,6 +704,13 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
             {
                 if (((ICollection<KeyValuePair<int, AvroPocoReaderPlan>>)_plans).Remove(oldest))
                 {
+                    if (_resolvedSchemas.TryGetValue(oldest.Key, out var resolved) &&
+                        ReferenceEquals(resolved.Plan, oldest.Value))
+                    {
+                        _ = ((ICollection<KeyValuePair<int, ResolvedAvroSchema>>)_resolvedSchemas)
+                            .Remove(new KeyValuePair<int, ResolvedAvroSchema>(oldest.Key, resolved));
+                    }
+
                     removed = true;
                     break;
                 }
@@ -699,6 +768,8 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
     private readonly record struct PreparedRuleKey(int SchemaId, string Topic, bool IsKey);
 
     private readonly record struct AvroSchemaReferenceKey(string Subject, int Version);
+
+    private sealed record ResolvedAvroSchema(AvroPocoReaderPlan Plan, AvroSchema Schema);
 
     private sealed class PreparedRuleState(PreparedRuleKey key, string subject, Schema schema)
     {
