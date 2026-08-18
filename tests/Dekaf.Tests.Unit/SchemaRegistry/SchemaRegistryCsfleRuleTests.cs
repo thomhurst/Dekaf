@@ -626,6 +626,41 @@ public sealed class SchemaRegistryCsfleRuleTests
 
     [Test]
     [Timeout(5_000)]
+    public async Task AvroTaggedTransformer_ZeroWidthArrayBeforeLargeField_SkipsEveryRemainingItem(
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        const string schemaText = """
+            {"type":"record","name":"TrailingArrayPayload","fields":[
+                {"name":"items","type":{"type":"array","items":"null"}},
+                {"name":"secret","type":"bytes","confluent:tags":["PII"]}
+            ]}
+            """;
+        const int itemCount = 1_000_000;
+        var avroSchema = (Avro.RecordSchema)AvroSchema.Parse(schemaText);
+        var rule = CreateRule(tags: new HashSet<string>(StringComparer.Ordinal) { "PII" });
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = schemaText,
+            RuleSet = new SchemaRuleSet { DomainRules = [rule], HasFixedRuleCollections = true }
+        };
+        var transformer = AvroTaggedFieldTransformer.Get(avroSchema, schema);
+        var trailingSecret = new byte[itemCount + 1];
+        var payload = WriteZeroWidthArrayThenSecret(itemCount, trailingSecret);
+        var expected = WriteZeroWidthArrayThenSecret(itemCount, [2]);
+
+        var transformed = transformer.Transform(
+            payload,
+            CreateHandlerContext(rule, schema),
+            new byte[] { 2 },
+            static (_, _, replacement) => replacement);
+
+        await Assert.That(transformed.Span.SequenceEqual(expected)).IsTrue();
+    }
+
+    [Test]
+    [Timeout(5_000)]
     public async Task AvroTaggedTransformer_ImpossibleMapCount_FailsBeforeScanningEntries(
         CancellationToken cancellationToken)
     {
@@ -667,6 +702,9 @@ public sealed class SchemaRegistryCsfleRuleTests
             ("test.*", "test.Profile.secret", false),
             ("test.**", "test.Profile.secret", true),
             ("**.secret", "test.Profile.secret", true),
+            ("**.*", "test.Profile.secret", true),
+            ("**.*.secret", "test.Profile.secret", true),
+            ("**.*", "secret", false),
             ("other.**", "test.Profile.secret", false)
         };
 
@@ -675,6 +713,17 @@ public sealed class SchemaRegistryCsfleRuleTests
             await Assert.That(AvroTaggedFieldTransformer.GlobMatches(pattern, value))
                 .IsEqualTo(expected);
         }
+    }
+
+    [Test]
+    [Timeout(1_000)]
+    public async Task AvroMetadataGlobMatcher_ManyWildcards_HasBoundedWork(
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var pattern = string.Concat(Enumerable.Repeat("*a", 20)) + "b";
+
+        await Assert.That(AvroTaggedFieldTransformer.GlobMatches(pattern, new string('a', 64))).IsFalse();
     }
 
     [Test]
@@ -1904,6 +1953,17 @@ public sealed class SchemaRegistryCsfleRuleTests
         encoder.WriteBytes(secret);
         encoder.WriteLong(count);
         encoder.WriteLong(0);
+        encoder.Flush();
+        return stream.ToArray();
+    }
+
+    private static byte[] WriteZeroWidthArrayThenSecret(long count, byte[] secret)
+    {
+        using var stream = new MemoryStream();
+        var encoder = new BinaryEncoder(stream);
+        encoder.WriteLong(count);
+        encoder.WriteLong(0);
+        encoder.WriteBytes(secret);
         encoder.Flush();
         return stream.ToArray();
     }

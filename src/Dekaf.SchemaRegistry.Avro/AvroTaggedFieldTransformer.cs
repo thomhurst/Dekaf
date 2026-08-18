@@ -234,16 +234,19 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
                 output.Append(reader.Slice(countStart).Span);
             }
 
-            if (count > reader.Remaining)
+            if (itemPlan.IsZeroWidth)
             {
-                // Null and all-zero-width records can legitimately outnumber the bytes left.
-                // One item proves the fixed schema consumes nothing; the rest are identical no-ops.
+                // Visit one item so targeted zero-width fields still fail closed and mutable targets refresh.
+                // The remaining identical items cannot consume input or produce output.
                 var itemStart = reader.Position;
                 TransformValue(itemPlan, target, plan, ref reader, output, context, state, transform);
                 if (reader.Position != itemStart)
                     ThrowInvalidBlock(context);
                 continue;
             }
+
+            if (count > reader.Remaining)
+                ThrowInvalidBlock(context);
 
             for (long i = 0; i < count; i++)
                 TransformValue(itemPlan, target, plan, ref reader, output, context, state, transform);
@@ -565,6 +568,7 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
     private sealed class ValuePlan(AvroSchema schema)
     {
         public AvroSchema Schema { get; } = schema;
+        public bool IsZeroWidth { get; set; } = schema.Tag == AvroSchema.Type.Null;
         public RecordTargets? RecordTargets { get; set; }
         public ValuePlan[]? Children { get; set; }
     }
@@ -717,6 +721,10 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
                             mutableTargets,
                             ref hasTargets);
                     }
+                    var isZeroWidth = true;
+                    for (var i = 0; i < fieldPlans.Length; i++)
+                        isZeroWidth &= fieldPlans[i].IsZeroWidth;
+                    valuePlan.IsZeroWidth = isZeroWidth;
                     break;
                 case global::Avro.ArraySchema array:
                     valuePlan.Children =
@@ -905,43 +913,45 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
 
         internal static bool GlobMatches(string pattern, string value)
         {
-            var patternIndex = 0;
-            var valueIndex = 0;
-            var starIndex = -1;
-            var starValueIndex = -1;
-            var starCrossesSegments = false;
-            while (valueIndex < value.Length)
+            var rowLength = value.Length + 1;
+            Span<bool> rows = rowLength <= 256
+                ? stackalloc bool[rowLength * 2]
+                : new bool[rowLength * 2];
+            rows.Clear();
+            var previous = rows[..rowLength];
+            var current = rows[rowLength..];
+            previous[0] = true;
+
+            for (var patternIndex = 0; patternIndex < pattern.Length; patternIndex++)
             {
-                if (patternIndex < pattern.Length && pattern[patternIndex] == value[valueIndex])
-                {
-                    patternIndex++;
-                    valueIndex++;
-                    continue;
-                }
+                current.Clear();
+                var token = pattern[patternIndex];
 
-                if (patternIndex < pattern.Length && pattern[patternIndex] == '*')
+                if (token == '*')
                 {
-                    starIndex = patternIndex++;
-                    starCrossesSegments = patternIndex < pattern.Length && pattern[patternIndex] == '*';
-                    if (starCrossesSegments)
+                    var crossesSegments = patternIndex + 1 < pattern.Length && pattern[patternIndex + 1] == '*';
+                    if (crossesSegments)
                         patternIndex++;
-                    starValueIndex = valueIndex;
-                    continue;
+                    current[0] = previous[0];
+                    for (var valueIndex = 1; valueIndex < rowLength; valueIndex++)
+                    {
+                        current[valueIndex] = previous[valueIndex]
+                            || (current[valueIndex - 1]
+                                && (crossesSegments || value[valueIndex - 1] != '.'));
+                    }
                 }
-
-                if (starIndex >= 0 && (starCrossesSegments || value[starValueIndex] != '.'))
+                else
                 {
-                    valueIndex = ++starValueIndex;
-                    patternIndex = starIndex + (starCrossesSegments ? 2 : 1);
-                    continue;
+                    for (var valueIndex = 1; valueIndex < rowLength; valueIndex++)
+                        current[valueIndex] = previous[valueIndex - 1] && token == value[valueIndex - 1];
                 }
 
-                return false;
+                var swap = previous;
+                previous = current;
+                current = swap;
             }
 
-            while (patternIndex < pattern.Length && pattern[patternIndex] == '*')
-                patternIndex++;
-            return patternIndex == pattern.Length;
+            return previous[value.Length];
         }
     }
 
