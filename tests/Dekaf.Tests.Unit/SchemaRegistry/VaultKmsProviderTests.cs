@@ -268,31 +268,39 @@ public class VaultKmsProviderTests
     public async Task ResponseStream_AsyncDisposalDoesNotCaptureCallerContext()
     {
         var synchronizationContext = new QueueingSynchronizationContext();
-        var operation = Task.Run(() =>
-        {
-            var previousContext = SynchronizationContext.Current;
-            try
+        var stream = new AsynchronousDisposeStream();
+        var operation = Task.Factory.StartNew(
+            () =>
             {
-                SynchronizationContext.SetSynchronizationContext(synchronizationContext);
-                using var content = new StreamContent(new AsynchronousDisposeStream());
-                return VaultTransitHttpClient
-                    .ReadResponseBytesAsync(content, CancellationToken.None)
-                    .AsTask()
-                    .GetAwaiter()
-                    .GetResult();
-            }
-            finally
-            {
-                SynchronizationContext.SetSynchronizationContext(previousContext);
-            }
-        });
+                var previousContext = SynchronizationContext.Current;
+                try
+                {
+                    SynchronizationContext.SetSynchronizationContext(synchronizationContext);
+                    using var content = new StreamContent(stream);
+                    return VaultTransitHttpClient
+                        .ReadResponseBytesAsync(content, CancellationToken.None)
+                        .AsTask()
+                        .GetAwaiter()
+                        .GetResult();
+                }
+                finally
+                {
+                    SynchronizationContext.SetSynchronizationContext(previousContext);
+                }
+            },
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default);
 
         try
         {
-            await Assert.That(await operation.WaitAsync(TimeSpan.FromSeconds(1))).IsEmpty();
+            await stream.DisposeStarted.WaitAsync(TimeSpan.FromSeconds(10));
+            stream.CompleteDispose();
+            await Assert.That(await operation.WaitAsync(TimeSpan.FromSeconds(10))).IsEmpty();
         }
         finally
         {
+            stream.CompleteDispose();
             synchronizationContext.Drain();
         }
     }
@@ -410,9 +418,19 @@ public class VaultKmsProviderTests
 
     private sealed class AsynchronousDisposeStream : MemoryStream
     {
+        private readonly TaskCompletionSource _disposeStarted = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _disposeCompletion = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal Task DisposeStarted => _disposeStarted.Task;
+
+        internal void CompleteDispose() => _disposeCompletion.TrySetResult();
+
         public override async ValueTask DisposeAsync()
         {
-            await Task.Delay(10).ConfigureAwait(false);
+            _disposeStarted.TrySetResult();
+            await _disposeCompletion.Task.ConfigureAwait(false);
             await base.DisposeAsync().ConfigureAwait(false);
         }
     }

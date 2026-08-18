@@ -1907,10 +1907,12 @@ public sealed class AvroSerializerTests
 
         await Assert.That(async () => await serializer.WarmupAsync("retry-topic", record))
             .Throws<SchemaRegistryException>();
+        await Assert.That(serializer.CachedSchemaIdCount).IsEqualTo(0);
 
         var schemaId = await serializer.WarmupAsync("retry-topic", record);
 
         await Assert.That(schemaId).IsGreaterThan(0);
+        await Assert.That(serializer.CachedSchemaIdCount).IsEqualTo(1);
         await Assert.That(schemaRegistry.GetOrRegisterSchemaCallCount).IsEqualTo(2);
     }
 

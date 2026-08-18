@@ -1,4 +1,6 @@
 #nullable enable
+Dekaf.SchemaRegistry.Avro.AvroSerializerConfig.MaxCachedSchemas.get -> int
+Dekaf.SchemaRegistry.Avro.AvroSerializerConfig.MaxCachedSchemas.init -> void
 Dekaf.SchemaRegistry.Avro.AvroSchemaRegistrySerializer<T>.PrepareAsync(string! topic, T value, bool isKey = false, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.SchemaRegistry.ResolvedSchemaContext>
 Dekaf.SchemaRegistry.Avro.AvroDeserializerConfig.CustomSubjectNameStrategy.get -> Dekaf.SchemaRegistry.ISubjectNameStrategy?
 Dekaf.SchemaRegistry.Avro.AvroDeserializerConfig.CustomSubjectNameStrategy.init -> void
