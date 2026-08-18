@@ -21,6 +21,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec> : IDeserialize
     private readonly ConcurrentDictionary<int, AvroPocoReaderPlan> _plans = new();
     private readonly ConcurrentDictionary<int, PlanEntry> _inFlightPlans = new();
     private readonly ConcurrentQueue<KeyValuePair<int, AvroPocoReaderPlan>> _planEvictionQueue = new();
+    private readonly AvroTaggedFieldTransformerProvider _taggedFieldTransformers = new();
     private readonly SchemaRegistryMigrationRunner? _migrationRunner;
     private readonly ISchemaRegistryRuleExecutor? _ruleExecutor;
     private readonly DeserializerSubjectNameCache? _subjectNames;
@@ -100,16 +101,57 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec> : IDeserialize
             context.Topic,
             context.Component == SerializationComponent.Key);
         var scopedSchema = _schemaRegistry.GetSchemaSync(schemaId, subject, RegistryTimeout);
-        AvroPocoReaderPlan plan;
-        if (_migrationRunner is null)
+        if (_migrationRunner is not null)
         {
-            var ruleContext = SchemaRegistryRuleContext.Rent(
+            return DeserializeWithMigration(
+                payload,
+                schemaId,
+                subject,
+                scopedSchema,
+                context);
+        }
+
+        if (scopedSchema.RuleSet is not null)
+            return DeserializeWithTaggedRules(payload, schemaId, subject, scopedSchema, context);
+
+        var ruleContext = SchemaRegistryRuleContext.Rent(
+            context.Topic,
+            context.Component,
+            schemaId,
+            subject,
+            scopedSchema,
+            SchemaRegistryPayloadFormat.Avro);
+        try
+        {
+            payload = _ruleExecutor!.TransformDeserializedPayload(payload, ruleContext);
+        }
+        finally
+        {
+            ruleContext.Return();
+        }
+
+        var reader = new AvroValueReader(payload.Span);
+        return TCodec.Read(ref reader, GetOrBuildPlanCached(schemaId, scopedSchema));
+    }
+
+    private T DeserializeWithTaggedRules(
+        ReadOnlyMemory<byte> payload,
+        int schemaId,
+        string subject,
+        Schema scopedSchema,
+        SerializationContext context)
+    {
+        var taggedWorkspaceOperation = AvroTaggedFieldTransformerProvider.BeginOperation();
+        try
+        {
+            var ruleContext = SchemaRegistryRuleContext.RentWithTaggedFieldTransformer(
                 context.Topic,
                 context.Component,
                 schemaId,
                 subject,
                 scopedSchema,
-                SchemaRegistryPayloadFormat.Avro);
+                SchemaRegistryPayloadFormat.Avro,
+                _taggedFieldTransformers.Get(scopedSchema));
             try
             {
                 payload = _ruleExecutor!.TransformDeserializedPayload(payload, ruleContext);
@@ -118,23 +160,43 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec> : IDeserialize
             {
                 ruleContext.Return();
             }
-            plan = GetPlanCached(schemaId);
+
+            var reader = new AvroValueReader(payload.Span);
+            return TCodec.Read(ref reader, GetOrBuildPlanCached(schemaId, scopedSchema));
         }
-        else
+        finally
         {
-            var migration = _migrationRunner.Transform(
+            taggedWorkspaceOperation.Dispose();
+        }
+    }
+
+    private T DeserializeWithMigration(
+        ReadOnlyMemory<byte> payload,
+        int schemaId,
+        string subject,
+        Schema scopedSchema,
+        SerializationContext context)
+    {
+        var taggedWorkspaceOperation = AvroTaggedFieldTransformerProvider.BeginOperation();
+        try
+        {
+            var migration = _migrationRunner!.Transform(
                 payload,
                 schemaId,
                 subject,
                 scopedSchema,
                 context,
-                SchemaRegistryPayloadFormat.Avro);
-            payload = migration.Payload;
-            plan = GetOrBuildPlanCached(migration.PayloadSchemaId, migration.PayloadSchema);
+                SchemaRegistryPayloadFormat.Avro,
+                _taggedFieldTransformers);
+            var reader = new AvroValueReader(migration.Payload.Span);
+            return TCodec.Read(
+                ref reader,
+                GetOrBuildPlanCached(migration.PayloadSchemaId, migration.PayloadSchema));
         }
-
-        var reader = new AvroValueReader(payload.Span);
-        return TCodec.Read(ref reader, plan);
+        finally
+        {
+            taggedWorkspaceOperation.Dispose();
+        }
     }
 
     private AvroPocoReaderPlan GetPlanCached(int schemaId)

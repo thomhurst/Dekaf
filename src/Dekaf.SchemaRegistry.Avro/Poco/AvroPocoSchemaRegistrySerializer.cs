@@ -28,6 +28,7 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
     private readonly RegistrySchema _schema;
     private readonly SubjectSchemaIdCache _subjectCache = new();
     private readonly SchemaResolutionCache<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> _resolutionCache = new();
+    private readonly AvroTaggedFieldTransformerProvider _taggedFieldTransformers = new();
 
     /// <summary>Creates a generated POCO Avro serializer.</summary>
     public AvroPocoSchemaRegistrySerializer(
@@ -114,7 +115,19 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
             return;
         }
 
-        SerializeWithRules(value, ref destination, context, entry, _config.RuleExecutor!);
+        if (entry.Schema!.RuleSet is null)
+        {
+            SerializeWithRules(value, ref destination, context, entry, _config.RuleExecutor!);
+            return;
+        }
+
+        SerializeWithTaggedRules(
+            value,
+            ref destination,
+            context,
+            entry,
+            _config.RuleExecutor!,
+            _taggedFieldTransformers);
     }
 
     private static async ValueTask AwaitPreparationAsync(ValueTask<ResolvedSchemaContext> preparation) =>
@@ -229,6 +242,102 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
                 AvroPocoSerializerBuffers.RuleBufferInUse = false;
             if (bufferIsPooled)
                 ArrayPool<byte>.Shared.Return(buffer);
+        }
+    }
+
+    private static void SerializeWithTaggedRules<TWriter>(
+        T value,
+        ref TWriter destination,
+        SerializationContext context,
+        SubjectSchemaIdCache.SubjectSchemaIdCacheEntry entry,
+        ISchemaRegistryRuleExecutor ruleExecutor,
+        AvroTaggedFieldTransformerProvider taggedFieldTransformers)
+        where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+        , allows ref struct
+#endif
+    {
+        var buffer = GetRuleBuffer(out var bufferIsPooled, out var ownsBufferLease);
+        try
+        {
+            int length;
+            while (true)
+            {
+                var writer = new AvroValueWriter(buffer);
+                TCodec.Write(ref writer, value);
+                if (writer.IsComplete)
+                {
+                    length = writer.WrittenCount;
+                    AvroPocoSerializerBuffers.RulePayloadSizeHint = Math.Max(InitialPayloadSize, length);
+                    break;
+                }
+
+                var nextLength = Grow(buffer.Length);
+                var nextBufferIsPooled = bufferIsPooled || nextLength > MaxRetainedPayloadSize;
+                var nextBuffer = nextBufferIsPooled
+                    ? ArrayPool<byte>.Shared.Rent(nextLength)
+                    : GC.AllocateUninitializedArray<byte>(nextLength);
+                if (bufferIsPooled)
+                    ArrayPool<byte>.Shared.Return(buffer);
+                else if (!nextBufferIsPooled)
+                    RetainRuleBuffer(nextBuffer);
+                buffer = nextBuffer;
+                bufferIsPooled = nextBufferIsPooled;
+            }
+
+            var payload = new ReadOnlyMemory<byte>(buffer, 0, length);
+            payload = TransformWithTaggedFields(
+                payload,
+                context,
+                entry,
+                ruleExecutor,
+                taggedFieldTransformers);
+
+            var output = destination.GetSpan(WireHeaderSize + payload.Length);
+            output[0] = MagicByte;
+            BinaryPrimitives.WriteInt32BigEndian(output.Slice(1, 4), entry.SchemaId);
+            payload.Span.CopyTo(output.Slice(WireHeaderSize));
+            destination.Advance(WireHeaderSize + payload.Length);
+        }
+        finally
+        {
+            if (ownsBufferLease)
+                AvroPocoSerializerBuffers.RuleBufferInUse = false;
+            if (bufferIsPooled)
+                ArrayPool<byte>.Shared.Return(buffer);
+        }
+    }
+
+    private static ReadOnlyMemory<byte> TransformWithTaggedFields(
+        ReadOnlyMemory<byte> payload,
+        SerializationContext context,
+        SubjectSchemaIdCache.SubjectSchemaIdCacheEntry entry,
+        ISchemaRegistryRuleExecutor ruleExecutor,
+        AvroTaggedFieldTransformerProvider taggedFieldTransformers)
+    {
+        var taggedWorkspaceOperation = AvroTaggedFieldTransformerProvider.BeginOperation();
+        try
+        {
+            var ruleContext = SchemaRegistryRuleContext.RentWithTaggedFieldTransformer(
+                context.Topic,
+                context.Component,
+                entry.SchemaId,
+                entry.Subject!,
+                entry.Schema!,
+                SchemaRegistryPayloadFormat.Avro,
+                taggedFieldTransformers.Get(entry.Schema!, GeneratedSchema.Value));
+            try
+            {
+                return ruleExecutor.TransformSerializedPayload(payload, ruleContext);
+            }
+            finally
+            {
+                ruleContext.Return();
+            }
+        }
+        finally
+        {
+            taggedWorkspaceOperation.Dispose();
         }
     }
 

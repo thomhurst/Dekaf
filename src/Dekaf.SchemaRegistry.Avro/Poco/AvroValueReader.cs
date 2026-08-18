@@ -10,6 +10,7 @@ public ref struct AvroValueReader
 {
     internal const int MaxCollectionItemCount = 1_048_576;
     private const int MaxSkipDepth = 256;
+    private static readonly UTF8Encoding StrictUtf8 = new(false, true);
     private readonly ReadOnlySpan<byte> _source;
     private int _position;
     private int _skipDepth;
@@ -108,9 +109,16 @@ public ref struct AvroValueReader
     {
         var length = ReadLength();
         Ensure(length);
-        var value = Encoding.UTF8.GetString(_source.Slice(_position, length));
-        _position += length;
-        return value;
+        try
+        {
+            var value = StrictUtf8.GetString(_source.Slice(_position, length));
+            _position += length;
+            return value;
+        }
+        catch (DecoderFallbackException exception)
+        {
+            throw new InvalidDataException("Invalid Avro UTF-8 string.", exception);
+        }
     }
 
     /// <summary>Reads an Avro UUID logical value directly from UTF-8.</summary>

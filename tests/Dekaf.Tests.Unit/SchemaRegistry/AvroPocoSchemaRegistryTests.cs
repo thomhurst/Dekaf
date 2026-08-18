@@ -588,6 +588,54 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    public async Task GeneratedCodec_RuleContextsProvideTaggedFieldTransformer()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        _ = await registry.RegisterSchemaAsync(
+            "poco-tagged-rule-context-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = PocoWireRecord.AvroCodec.SchemaJson,
+                RuleSet = new SchemaRuleSet
+                {
+                    DomainRules =
+                    [
+                        new SchemaRule
+                        {
+                            Name = "tagged-fields",
+                            Kind = SchemaRuleKind.Transform,
+                            Mode = SchemaRuleMode.WriteRead,
+                            Type = "CAPTURE",
+                            Tags = new HashSet<string>(StringComparer.Ordinal) { "PII" }
+                        }
+                    ]
+                }
+            });
+        var executor = new CapturingTaggedFieldRuleExecutor();
+        var serializerConfig = new AvroSerializerConfig
+        {
+            UseLatestVersion = true,
+            RuleExecutor = executor
+        };
+        var deserializerConfig = new AvroDeserializerConfig { RuleExecutor = executor };
+        await using var serializer = PocoWireRecord.CreateAvroSerializer(registry, serializerConfig);
+        await using var deserializer = PocoWireRecord.CreateAvroDeserializer(registry, deserializerConfig);
+        var context = new SerializationContext
+        {
+            Topic = "poco-tagged-rule-context",
+            Component = SerializationComponent.Value
+        };
+        var destination = new ArrayBufferWriter<byte>();
+
+        serializer.Serialize(new PocoWireRecord { Id = 42, Name = "secret" }, ref destination, context);
+        _ = deserializer.Deserialize(destination.WrittenMemory, context);
+
+        await Assert.That(executor.SerializedContextHadTransformer).IsTrue();
+        await Assert.That(executor.DeserializedContextHadTransformer).IsTrue();
+    }
+
+    [Test]
     public async Task GeneratedCodec_RulesPathReentrantGrowthAllocatesZeroAfterWarmup()
     {
         using var registry = new MockSchemaRegistryClient();
@@ -850,6 +898,36 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    public async Task GeneratedCodec_RejectsInvalidUtf8String()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        var schemaId = await registry.RegisterSchemaAsync(
+            "poco-invalid-utf8-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = PocoWireRecord.AvroCodec.SchemaJson
+            });
+        await using var reader = PocoWireRecord.CreateAvroDeserializer(registry);
+        var payload = new byte[16];
+        BinaryPrimitives.WriteInt32BigEndian(payload.AsSpan(1, 4), schemaId);
+        var writer = new AvroValueWriter(payload.AsSpan(5));
+        writer.WriteInt32(42);
+        writer.WriteInt32(1);
+        var invalidByteIndex = 5 + writer.WrittenCount;
+        payload[invalidByteIndex] = 0xFF;
+        var context = new SerializationContext
+        {
+            Topic = "poco-invalid-utf8",
+            Component = SerializationComponent.Value
+        };
+
+        await Assert.That(() => reader.Deserialize(payload.AsMemory(0, invalidByteIndex + 1), context))
+            .Throws<InvalidDataException>()
+            .WithMessageContaining("UTF-8");
+    }
+
+    [Test]
     public async Task GeneratedCodec_RejectsExcessiveRecursiveSkipDepth()
     {
         const string writerSchemaJson =
@@ -997,6 +1075,44 @@ public sealed class AvroPocoSchemaRegistryTests
         await Assert.That(registry.GetSchemaCallCount).IsEqualTo(fetchCount + 1);
         await Assert.That(reader.CachedPlanCount)
             .IsEqualTo(AvroPocoSchemaRegistryDeserializer<PocoWireRecord, PocoWireRecord.AvroCodec>.MaxCachedPlans);
+    }
+
+    [Test]
+    public async Task GeneratedCodec_RulesPathRebuildsEvictedPlanWithoutRegistryCache()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        var schema = new Dekaf.SchemaRegistry.Schema
+        {
+            SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+            SchemaString = PocoWireRecord.AvroCodec.SchemaJson
+        };
+        var schemaIds = new int[
+            AvroPocoSchemaRegistryDeserializer<PocoWireRecord, PocoWireRecord.AvroCodec>.MaxCachedPlans + 1];
+        for (var index = 0; index < schemaIds.Length; index++)
+            schemaIds[index] = await registry.RegisterSchemaAsync("poco-plan-eviction-value", schema);
+
+        var nonCachingRegistry = CreateNonCachingRegistry(registry);
+        await using var reader = PocoWireRecord.CreateAvroDeserializer(
+            nonCachingRegistry,
+            new AvroDeserializerConfig { RuleExecutor = PassThroughRuleExecutor.Instance });
+        for (var index = 0; index < schemaIds.Length; index++)
+            await reader.WarmupAsync(schemaIds[index]);
+
+        var payload = new byte[64];
+        BinaryPrimitives.WriteInt32BigEndian(payload.AsSpan(1, 4), schemaIds[0]);
+        var writer = new AvroValueWriter(payload.AsSpan(5));
+        PocoWireRecord.AvroCodec.Write(ref writer, new PocoWireRecord { Id = 42, Name = "revisited" });
+        var context = new SerializationContext
+        {
+            Topic = "poco-plan-eviction",
+            Component = SerializationComponent.Value
+        };
+        var payloadLength = 5 + writer.WrittenCount;
+
+        var actual = reader.Deserialize(payload.AsMemory(0, payloadLength), context);
+
+        await Assert.That(actual.Id).IsEqualTo(42);
+        await Assert.That(actual.Name).IsEqualTo("revisited");
     }
 
     [Test]
@@ -1431,8 +1547,9 @@ public sealed class AvroPocoSchemaRegistryTests
         PocoEvolved.AvroCodec.Write(
             ref migratedWriter,
             new PocoEvolved { Id = 42, Note = "migrated-layout" });
-        var executor = new SchemaRegistryRuleExecutor(
-            [new FixedPayloadMigrationHandler(migratedPayload.AsMemory(0, migratedWriter.WrittenCount))]);
+        var migrationHandler = new FixedPayloadMigrationHandler(
+            migratedPayload.AsMemory(0, migratedWriter.WrittenCount));
+        var executor = new SchemaRegistryRuleExecutor([migrationHandler]);
         var nonCachingRegistry = CreateNonCachingRegistry(registry);
         await using var deserializer = PocoEvolved.CreateAvroDeserializer(
             nonCachingRegistry,
@@ -1457,6 +1574,7 @@ public sealed class AvroPocoSchemaRegistryTests
 
         await Assert.That(actual.Id).IsEqualTo(42L);
         await Assert.That(actual.Note).IsEqualTo("migrated-layout");
+        await Assert.That(migrationHandler.ContextHadTaggedFieldTransformer).IsTrue();
     }
 
     [Test]
@@ -1805,6 +1923,28 @@ public sealed class AvroPocoSchemaRegistryTests
         return client;
     }
 
+    private sealed class CapturingTaggedFieldRuleExecutor : ISchemaRegistryRuleExecutor
+    {
+        internal bool SerializedContextHadTransformer { get; private set; }
+        internal bool DeserializedContextHadTransformer { get; private set; }
+
+        public ReadOnlyMemory<byte> TransformSerializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleContext context)
+        {
+            SerializedContextHadTransformer = context.TaggedFieldTransformer is not null;
+            return payload;
+        }
+
+        public ReadOnlyMemory<byte> TransformDeserializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleContext context)
+        {
+            DeserializedContextHadTransformer = context.TaggedFieldTransformer is not null;
+            return payload;
+        }
+    }
+
     private sealed class PassThroughRuleExecutor : ISchemaRegistryRuleExecutor
     {
         internal static PassThroughRuleExecutor Instance { get; } = new();
@@ -1854,14 +1994,23 @@ public sealed class AvroPocoSchemaRegistryTests
         internal const string RuleType = "FIXED_AVRO_PAYLOAD";
 
         public string Type => RuleType;
+        internal bool ContextHadTaggedFieldTransformer { get; private set; }
 
         public ReadOnlyMemory<byte> TransformSerializedPayload(
             ReadOnlyMemory<byte> source,
-            SchemaRegistryRuleHandlerContext context) => payload;
+            SchemaRegistryRuleHandlerContext context)
+        {
+            ContextHadTaggedFieldTransformer |= context.PayloadContext.TaggedFieldTransformer is not null;
+            return payload;
+        }
 
         public ReadOnlyMemory<byte> TransformDeserializedPayload(
             ReadOnlyMemory<byte> source,
-            SchemaRegistryRuleHandlerContext context) => payload;
+            SchemaRegistryRuleHandlerContext context)
+        {
+            ContextHadTaggedFieldTransformer |= context.PayloadContext.TaggedFieldTransformer is not null;
+            return payload;
+        }
     }
 
     private sealed class ExactSizeBufferWriter(int capacity) : IBufferWriter<byte>
