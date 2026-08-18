@@ -1401,7 +1401,8 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             code.Append(indent).Append("var ").Append(count).Append(" = reader.GetCollectionCapacity(")
                 .Append(block).AppendLine(");");
             code.Append(indent).Append("global::Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.ValidateCollectionAllocation<")
-                .Append(type.Item!.SymbolType).Append(">(").Append(block).AppendLine(");");
+                .Append(type.Item!.SymbolType).Append(">(").Append(block).Append(", ")
+                .Append(GetMinimumDecodedAllocationSize(type.Item)).AppendLine(");");
             code.Append(indent).Append("var ").Append(result).Append(" = ")
                 .Append(type.Kind == TypeKindModel.Array
                     ? "new " + type.Item!.SymbolType + "[" + count + "]"
@@ -1438,7 +1439,8 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                 .Append(" = global::Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.AddCollectionCount(")
                 .Append(total).Append(", ").Append(block).AppendLine(");");
             code.Append(indent).Append("        global::Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.ValidateCollectionAllocation<")
-                .Append(type.Item.SymbolType).Append(">(").Append(total).AppendLine(");");
+                .Append(type.Item.SymbolType).Append(">(").Append(total).Append(", ")
+                .Append(GetMinimumDecodedAllocationSize(type.Item)).AppendLine(");");
             code.Append(indent).AppendLine("    }");
             code.Append(indent).AppendLine("}");
             code.Append(indent).Append(target).Append(" = ").Append(result).AppendLine(";");
@@ -1462,7 +1464,8 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             code.Append(indent).Append("var ").Append(count).Append(" = reader.GetCollectionCapacity(")
                 .Append(block).AppendLine(");");
             code.Append(indent).Append("global::Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.ValidateMapAllocation<")
-                .Append(type.Item!.SymbolType).Append('>').Append('(').Append(count).AppendLine(");");
+                .Append(type.Item!.SymbolType).Append('>').Append('(').Append(count).Append(", ")
+                .Append(GetMinimumDecodedAllocationSize(type.Item)).AppendLine(");");
             code.Append(indent).Append("var ").Append(result).Append(" = new ").Append(type.SymbolType)
                 .Append('(').Append(count).AppendLine(");");
             code.Append(indent).Append("while (").Append(block).AppendLine(" != 0)");
@@ -1485,10 +1488,52 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                 .Append(" = global::Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.AddCollectionCount(")
                 .Append(total).Append(", ").Append(block).AppendLine(");");
             code.Append(indent).Append("        global::Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.ValidateMapAllocation<")
-                .Append(type.Item.SymbolType).Append('>').Append('(').Append(total).AppendLine(");");
+                .Append(type.Item.SymbolType).Append('>').Append('(').Append(total).Append(", ")
+                .Append(GetMinimumDecodedAllocationSize(type.Item)).AppendLine(");");
             code.Append(indent).AppendLine("    }");
             code.Append(indent).AppendLine("}");
             code.Append(indent).Append(target).Append(" = ").Append(result).AppendLine(";");
+        }
+
+        private static int GetMinimumDecodedAllocationSize(TypeModel type)
+        {
+            if (type.Kind == TypeKindModel.Nullable)
+                return GetMinimumDecodedAllocationSize(type.WithoutNullable());
+
+            if (type.Kind == TypeKindModel.Union)
+            {
+                var maximum = 0;
+                foreach (var branch in type.Branches)
+                    maximum = Math.Max(maximum, GetMinimumDecodedAllocationSize(branch));
+                return maximum;
+            }
+
+            if (type.Kind != TypeKindModel.Record || type.IsValueType)
+                return 0;
+
+            const int ObjectHeaderSize = 16;
+            var size = ObjectHeaderSize;
+            foreach (var member in type.Record!.Members)
+                size = checked(size + GetMinimumFieldStorageSize(member.Type));
+            return (size + 7) & ~7;
+        }
+
+        private static int GetMinimumFieldStorageSize(TypeModel type)
+        {
+            if (type.Kind == TypeKindModel.Nullable)
+                return checked(8 + GetMinimumFieldStorageSize(type.WithoutNullable()));
+
+            if (type.Kind == TypeKindModel.Record && type.IsValueType)
+            {
+                var size = 0;
+                foreach (var member in type.Record!.Members)
+                    size = checked(size + GetMinimumFieldStorageSize(member.Type));
+                return Math.Max(8, size);
+            }
+
+            return type.Kind is TypeKindModel.Decimal or TypeKindModel.Uuid
+                ? 16
+                : 8;
         }
 
         private static void Assign(StringBuilder code, string target, string expression, string indent) =>

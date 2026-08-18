@@ -192,18 +192,30 @@ public ref struct AvroValueReader
 
     /// <summary>Validates that a generated collection's backing storage stays within its byte limit.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void ValidateCollectionAllocation<T>(int count)
+    public static void ValidateCollectionAllocation<T>(int count) =>
+        ValidateCollectionAllocation<T>(count, 0);
+
+    /// <summary>Validates that a generated collection's backing storage and decoded items stay within their byte limit.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void ValidateCollectionAllocation<T>(int count, int decodedItemAllocationSize)
     {
-        if ((ulong)(uint)count * (uint)Unsafe.SizeOf<T>() > MaxCollectionAllocationBytes)
+        var itemSize = Math.Max(Unsafe.SizeOf<T>(), decodedItemAllocationSize);
+        if ((ulong)(uint)count * (uint)itemSize > MaxCollectionAllocationBytes)
             ThrowCollectionAllocationLimit();
     }
 
     /// <summary>Validates that a generated map's backing storage stays within its byte limit.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void ValidateMapAllocation<T>(int count)
+    public static void ValidateMapAllocation<T>(int count) =>
+        ValidateMapAllocation<T>(count, 0);
+
+    /// <summary>Validates that a generated map's backing storage and decoded values stay within their byte limit.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void ValidateMapAllocation<T>(int count, int decodedItemAllocationSize)
     {
         const int DictionaryEntryAndBucketMetadataSize = sizeof(int) * 3;
-        var entrySize = DictionaryEntryAndBucketMetadataSize + IntPtr.Size + Unsafe.SizeOf<T>();
+        var entrySize = DictionaryEntryAndBucketMetadataSize + IntPtr.Size +
+                        Math.Max(Unsafe.SizeOf<T>(), decodedItemAllocationSize);
         if ((ulong)(uint)count * (uint)entrySize > MaxCollectionAllocationBytes)
             ThrowCollectionAllocationLimit();
     }

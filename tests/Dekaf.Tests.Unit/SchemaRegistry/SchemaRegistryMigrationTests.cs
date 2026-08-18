@@ -511,7 +511,24 @@ public sealed class SchemaRegistryMigrationTests
         await runner.PrepareAsync(schemaId, "orders-value", schema, CancellationToken.None);
 
         await Assert.That(registry.LookupCount).IsEqualTo(2);
-        await Assert.That(runner.TryUsePreparedPlan(schemaId, "orders-value")).IsTrue();
+        await Assert.That(runner.TryUsePreparedPlan(schemaId, "orders-value", schema)).IsTrue();
+    }
+
+    [Test]
+    public async Task TryUsePreparedPlan_InterleavedSchemas_UsesKeyedPlanCache()
+    {
+        var registry = new MigrationRegistryClient();
+        var v1 = CreateSchema("v1");
+        var v2 = CreateSchema("v2");
+        var v1Id = registry.Register("orders-value", v1);
+        var v2Id = registry.Register("orders-value", v2);
+        var runner = new SchemaRegistryMigrationRunner(registry, ruleExecutor: null, TimeSpan.FromSeconds(1));
+
+        await runner.PrepareAsync(v1Id, "orders-value", v1, CancellationToken.None);
+        await runner.PrepareAsync(v2Id, "orders-value", v2, CancellationToken.None);
+
+        await Assert.That(runner.TryUsePreparedPlan(v1Id, "orders-value", v1)).IsTrue();
+        await Assert.That(runner.TryUsePreparedPlan(v2Id, "orders-value", v2)).IsTrue();
     }
 
     [Test]

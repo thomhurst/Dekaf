@@ -16,7 +16,6 @@ internal sealed class SchemaRegistryMigrationRunner
     private readonly SchemaResolutionCache<MigrationPlan> _plans = new();
     private readonly TimeSpan _timeout;
     private MigrationPlan? _lastPlan;
-    private MigrationPlan? _preparedPlan;
     private readonly long _latestCacheTtlMilliseconds;
 
     internal SchemaRegistryMigrationRunner(
@@ -102,27 +101,30 @@ internal sealed class SchemaRegistryMigrationRunner
         }
 
         Volatile.Write(ref _lastPlan, plan);
-        Volatile.Write(ref _preparedPlan, plan);
+        plan.MarkPrepared();
         return PreparedTargetEnumerator.Create(plan.Steps);
     }
 
-    internal bool TryUsePreparedPlan(int schemaId, string subject)
+    internal bool TryUsePreparedPlan(int schemaId, string subject, Schema writerSchema)
     {
         var plan = Volatile.Read(ref _lastPlan);
         if (plan is null ||
             plan.WriterSchemaId != schemaId ||
             !string.Equals(plan.Subject, subject, StringComparison.Ordinal))
         {
-            return false;
+            if (!_plans.TryGet(subject, writerSchema, out plan) || plan.WriterSchemaId != schemaId)
+                return false;
+
+            Volatile.Write(ref _lastPlan, plan);
         }
 
         if (!IsExpired(plan))
         {
-            _ = Interlocked.CompareExchange(ref _preparedPlan, null, plan);
+            plan.TryConsumePreparation();
             return true;
         }
 
-        return ReferenceEquals(Interlocked.CompareExchange(ref _preparedPlan, null, plan), plan);
+        return plan.TryConsumePreparation();
     }
 
     internal MigrationResult Transform(
@@ -493,12 +495,28 @@ internal sealed class SchemaRegistryMigrationRunner
         bool isMigrationChainComplete,
         long createdAtMilliseconds)
     {
+        private int _preparationCount;
+
         internal int WriterSchemaId { get; } = writerSchemaId;
         internal string Subject { get; } = subject;
         internal RegisteredSchema ReaderSchema { get; } = readerSchema;
         internal MigrationStep[] Steps { get; } = steps;
         internal bool IsMigrationChainComplete { get; } = isMigrationChainComplete;
         internal long CreatedAtMilliseconds { get; } = createdAtMilliseconds;
+
+        internal void MarkPrepared() => Interlocked.Increment(ref _preparationCount);
+
+        internal bool TryConsumePreparation()
+        {
+            while (true)
+            {
+                var count = Volatile.Read(ref _preparationCount);
+                if (count == 0)
+                    return false;
+                if (Interlocked.CompareExchange(ref _preparationCount, count - 1, count) == count)
+                    return true;
+            }
+        }
     }
 
     internal readonly record struct MigrationStep(

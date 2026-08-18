@@ -185,7 +185,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
             }
 
             if (_migrationRunner is not null &&
-                !_migrationRunner.TryUsePreparedPlan(schemaId, preparedState.Subject))
+                !_migrationRunner.TryUsePreparedPlan(schemaId, preparedState.Subject, preparedState.Schema))
             {
                 value = default!;
                 return false;
@@ -278,7 +278,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
                 new PreparedRuleKey(schemaId, context.Topic, isKey),
                 out var preparedState) &&
             (_migrationRunner is null ||
-             _migrationRunner.TryUsePreparedPlan(schemaId, preparedState.Subject)))
+             _migrationRunner.TryUsePreparedPlan(schemaId, preparedState.Subject, preparedState.Schema)))
         {
             return DeserializePreparedWithRules(
                 payload,

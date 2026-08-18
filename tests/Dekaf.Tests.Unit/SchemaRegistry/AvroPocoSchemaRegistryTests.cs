@@ -692,6 +692,38 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    public async Task GeneratedCodec_RejectsZeroWidthReferenceRecordAllocationAmplification()
+    {
+        const string writerSchemaJson =
+            """
+            {"type":"record","name":"PocoLargeZeroWidthReferenceCollection","namespace":"Dekaf.Tests","fields":[{"name":"items","type":{"type":"array","items":{"type":"record","name":"PocoLargeZeroWidthReferenceItem","fields":[]}}}]}
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        var schemaId = await registry.RegisterSchemaAsync(
+            "poco-large-zero-width-reference-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = writerSchemaJson
+            });
+        await using var reader = PocoLargeZeroWidthReferenceCollection.CreateAvroDeserializer(registry);
+        var context = new SerializationContext
+        {
+            Topic = "poco-large-zero-width-reference",
+            Component = SerializationComponent.Value
+        };
+        var payload = new byte[16];
+        BinaryPrimitives.WriteInt32BigEndian(payload.AsSpan(1, 4), schemaId);
+        var writer = new AvroValueWriter(payload.AsSpan(5));
+        writer.WriteBlockCount(140_000);
+        Array.Resize(ref payload, 5 + writer.WrittenCount);
+
+        await Assert.That(() => reader.Deserialize(payload, context))
+            .Throws<InvalidDataException>()
+            .WithMessageContaining("allocation exceeds");
+    }
+
+    [Test]
     public async Task GeneratedCodec_RejectsZeroWidthMapAllocationAmplification()
     {
         const string writerSchemaJson =
@@ -3154,6 +3186,41 @@ internal sealed partial class PocoLargeZeroWidthCollection
 {
     [AvroField(Name = "items")]
     public required PocoLargeZeroWidthItem[] Items { get; init; }
+}
+
+[AvroRecord(Name = "PocoLargeZeroWidthReferenceCollection", Namespace = "Dekaf.Tests")]
+internal sealed partial class PocoLargeZeroWidthReferenceCollection
+{
+    [AvroField(Name = "items")]
+    public required PocoLargeZeroWidthReferenceItem[] Items { get; init; }
+}
+
+[AvroRecord(Name = "PocoLargeZeroWidthReferenceItem", Namespace = "Dekaf.Tests")]
+internal sealed partial class PocoLargeZeroWidthReferenceItem
+{
+    [AvroField(DefaultJson = "0", Order = 0)]
+    public long Field0 { get; init; }
+
+    [AvroField(DefaultJson = "0", Order = 1)]
+    public long Field1 { get; init; }
+
+    [AvroField(DefaultJson = "0", Order = 2)]
+    public long Field2 { get; init; }
+
+    [AvroField(DefaultJson = "0", Order = 3)]
+    public long Field3 { get; init; }
+
+    [AvroField(DefaultJson = "0", Order = 4)]
+    public long Field4 { get; init; }
+
+    [AvroField(DefaultJson = "0", Order = 5)]
+    public long Field5 { get; init; }
+
+    [AvroField(DefaultJson = "0", Order = 6)]
+    public long Field6 { get; init; }
+
+    [AvroField(DefaultJson = "0", Order = 7)]
+    public long Field7 { get; init; }
 }
 
 [AvroRecord(Name = "PocoLargeZeroWidthMap", Namespace = "Dekaf.Tests")]
