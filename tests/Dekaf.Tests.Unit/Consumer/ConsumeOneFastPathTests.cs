@@ -50,6 +50,58 @@ public sealed class ConsumeOneFastPathTests
     }
 
     [Test]
+    public async Task ConsumeOneAsync_ColdDeserializerPreparation_AwaitsThenUsesSynchronousDecoder()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20, CreateRecord(0, "a", "one"))
+        ]);
+        var deserializer = new GatedPreparedStringDeserializer();
+        await using var consumer = CreateInitializedConsumerWithDeserializers(
+            fetch,
+            valueDeserializer: deserializer);
+        MarkManualAssignmentCurrent(consumer);
+
+        var consume = consumer.ConsumeOneAsync(TimeSpan.FromSeconds(10), CancellationToken.None);
+        await deserializer.PreparationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await Assert.That(consume.IsCompleted).IsFalse();
+        deserializer.ReleasePreparation();
+
+        var result = await consume;
+        await Assert.That(result).IsNotNull();
+        await Assert.That(result!.Value.Value).IsEqualTo("one");
+        await Assert.That(deserializer.PrepareCount).IsEqualTo(1);
+        await Assert.That(deserializer.DeserializeCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task ConsumeAsync_ColdDeserializerPreparation_AwaitsThenUsesSynchronousDecoder()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20, CreateRecord(0, "a", "one"))
+        ]);
+        var deserializer = new GatedPreparedStringDeserializer();
+        await using var consumer = CreateInitializedConsumerWithDeserializers(
+            fetch,
+            valueDeserializer: deserializer);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await using var records = consumer.ConsumeAsync(timeout.Token).GetAsyncEnumerator();
+
+        var moveNext = records.MoveNextAsync();
+        await deserializer.PreparationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await Assert.That(moveNext.IsCompleted).IsFalse();
+        deserializer.ReleasePreparation();
+
+        await Assert.That(await moveNext).IsTrue();
+        await Assert.That(records.Current.Value).IsEqualTo("one");
+        await Assert.That(deserializer.PrepareCount).IsEqualTo(1);
+        await Assert.That(deserializer.DeserializeCount).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task ConsumeOneAsync_CurrentBufferedAssignment_DoesNotRentTimeoutCts()
     {
         var fetch = PendingFetchData.Create(Topic, Partition,
@@ -836,6 +888,56 @@ public sealed class ConsumeOneFastPathTests
             callback();
             return Encoding.UTF8.GetString(data.Span);
         }
+    }
+
+    private sealed class GatedPreparedStringDeserializer
+        : IDeserializer<string>, IAsyncDeserializerPreparer<string>
+    {
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _prepared;
+
+        public TaskCompletionSource PreparationStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public int PrepareCount { get; private set; }
+        public int DeserializeCount { get; private set; }
+
+        public bool TryDeserialize(
+            ReadOnlyMemory<byte> data,
+            SerializationContext context,
+            out string value)
+        {
+            if (Volatile.Read(ref _prepared) == 0)
+            {
+                value = default!;
+                return false;
+            }
+
+            value = Deserialize(data, context);
+            return true;
+        }
+
+        public async ValueTask PrepareAsync(
+            ReadOnlyMemory<byte> data,
+            SerializationContext context,
+            CancellationToken cancellationToken = default)
+        {
+            PrepareCount++;
+            PreparationStarted.TrySetResult();
+            await _release.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            Volatile.Write(ref _prepared, 1);
+        }
+
+        public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
+        {
+            if (Volatile.Read(ref _prepared) == 0)
+                throw new InvalidOperationException("Deserializer was used before preparation.");
+
+            DeserializeCount++;
+            return Encoding.UTF8.GetString(data.Span);
+        }
+
+        public void ReleasePreparation() => _release.TrySetResult();
     }
 
     private sealed class CallbackAsyncStringDeserializer(

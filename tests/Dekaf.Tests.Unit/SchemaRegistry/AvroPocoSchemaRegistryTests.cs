@@ -1089,14 +1089,17 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
-    public async Task GeneratedCodec_SynchronousCacheMissFetchesPlan()
+    public async Task GeneratedCodec_AsyncPreparationFetchesPlanWithoutBlockingDeserialize()
     {
         var registry = Substitute.For<Dekaf.SchemaRegistry.ISchemaRegistryClient>();
-        registry.GetSchemaAsync(42, Arg.Any<CancellationToken>()).Returns(new Dekaf.SchemaRegistry.Schema
+        var schema = new Dekaf.SchemaRegistry.Schema
         {
             SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
             SchemaString = PocoWireRecord.AvroCodec.SchemaJson
-        });
+        };
+        var schemaFetch = new TaskCompletionSource<Dekaf.SchemaRegistry.Schema>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        registry.GetSchemaAsync(42, Arg.Any<CancellationToken>()).Returns(schemaFetch.Task);
         await using var reader = PocoWireRecord.CreateAvroDeserializer(registry);
         ReadOnlyMemory<byte> payload = new byte[] { 0, 0, 0, 0, 42, 84, 6, (byte)'A', (byte)'d', (byte)'a' };
         var context = new SerializationContext
@@ -1105,6 +1108,15 @@ public sealed class AvroPocoSchemaRegistryTests
             Component = SerializationComponent.Value
         };
 
+        await Assert.That(() => reader.Deserialize(payload, context))
+            .Throws<InvalidOperationException>()
+            .WithMessageContaining("not cached");
+
+        var preparation = ((IAsyncDeserializerPreparer<PocoWireRecord>)reader).PrepareAsync(payload, context);
+        await Assert.That(preparation.IsCompleted).IsFalse();
+
+        schemaFetch.SetResult(schema);
+        await preparation;
         var actual = reader.Deserialize(payload, context);
 
         await Assert.That(actual.Id).IsEqualTo(42);

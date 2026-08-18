@@ -145,10 +145,12 @@ are also accepted and may grow their returned backing storage as later blocks ar
 
 A generated POCO deserializer needs the writer schema ID from each record before it can prepare a
 reader plan. Call its `WarmupAsync(schemaId)` when schema IDs are known in advance. Otherwise, the
-first record for each unseen schema ID resolves and builds the plan synchronously and can block the
-calling consumer thread for up to the 30-second Schema Registry timeout. Later records use the
-cached synchronous plan. The generated consumer convenience extension cannot pre-warm unknown
-writer schema IDs before the first record arrives.
+first record for each unseen schema ID is prepared asynchronously by `ConsumeAsync` or
+`ConsumeOneAsync`; no consumer thread blocks on the Schema Registry request. Later records use the
+cached synchronous plan. Direct `Deserialize` calls and synchronous batch iteration cannot await a
+cold plan and fail fast, so call `WarmupAsync(schemaId)` before using `ConsumeBatchAsync`. The
+generated consumer convenience extension cannot pre-warm unknown writer schema IDs before the
+first record arrives.
 
 ## Protobuf Serialization
 

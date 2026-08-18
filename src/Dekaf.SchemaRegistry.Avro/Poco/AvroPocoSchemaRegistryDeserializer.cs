@@ -6,7 +6,8 @@ using Dekaf.Serialization;
 namespace Dekaf.SchemaRegistry.Avro.Poco;
 
 /// <summary>Schema Registry deserializer backed by a generated POCO Avro codec.</summary>
-public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec> : IDeserializer<T>, IAsyncDisposable
+public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
+    : IDeserializer<T>, IAsyncDeserializerPreparer<T>, IAsyncDisposable
     where TCodec : struct, IAvroPocoCodec<T>
 {
     private const byte MagicByte = 0;
@@ -66,6 +67,89 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec> : IDeserialize
     /// <summary>Prepares a writer schema ID and its evolution plan.</summary>
     public async Task WarmupAsync(int schemaId, CancellationToken cancellationToken = default) =>
         _ = await GetPlanAsync(schemaId, cancellationToken).ConfigureAwait(false);
+
+    ValueTask IAsyncDeserializerPreparer<T>.PrepareAsync(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        CancellationToken cancellationToken)
+    {
+        if (TryGetCachedPlan(data, out var schemaId, out _))
+            return default;
+
+        return PreparePlanAsync(schemaId, cancellationToken);
+    }
+
+    bool IAsyncDeserializerPreparer<T>.TryDeserialize(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        out T value)
+    {
+        var span = data.Span;
+        if (span.Length < WireHeaderSize)
+        {
+            if (context is { IsNull: true, Component: SerializationComponent.Value })
+            {
+                value = default!;
+                return true;
+            }
+
+            throw new InvalidOperationException("Message too short to contain Schema Registry wire format.");
+        }
+
+        if (span[0] != MagicByte)
+            throw new InvalidOperationException($"Unknown magic byte: {span[0]}. Expected 0x00.");
+
+        var schemaId = BinaryPrimitives.ReadInt32BigEndian(span.Slice(1, 4));
+        if (!TryGetCachedPlan(schemaId, out var plan))
+        {
+            value = default!;
+            return false;
+        }
+
+        if (_ruleExecutor is not null)
+        {
+            value = DeserializeWithRules(data.Slice(WireHeaderSize), schemaId, context);
+            return true;
+        }
+
+        var reader = new AvroValueReader(data.Span.Slice(WireHeaderSize));
+        value = TCodec.Read(ref reader, plan);
+        return true;
+    }
+
+    private bool TryGetCachedPlan(
+        ReadOnlyMemory<byte> data,
+        out int schemaId,
+        out AvroPocoReaderPlan plan)
+    {
+        var span = data.Span;
+        if (span.Length < WireHeaderSize || span[0] != MagicByte)
+        {
+            schemaId = default;
+            plan = null!;
+            return true;
+        }
+
+        schemaId = BinaryPrimitives.ReadInt32BigEndian(span.Slice(1, 4));
+        return TryGetCachedPlan(schemaId, out plan);
+    }
+
+    private bool TryGetCachedPlan(int schemaId, out AvroPocoReaderPlan plan)
+    {
+        if (_plans.TryGetValue(schemaId, out plan!))
+            return true;
+
+        if (_schemaRegistry is ISchemaRegistryCache cache &&
+            cache.TryGetCachedSchema(schemaId, out var schema))
+        {
+            plan = BuildPlan(schemaId, schema);
+            CacheSuccessfulPlan(schemaId, plan);
+            return true;
+        }
+
+        plan = null!;
+        return false;
+    }
 
     /// <inheritdoc />
     public T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
@@ -201,23 +285,15 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec> : IDeserialize
 
     private AvroPocoReaderPlan GetPlanCached(int schemaId)
     {
-        if (_plans.TryGetValue(schemaId, out var cached))
-            return cached;
+        if (TryGetCachedPlan(schemaId, out var plan))
+            return plan;
 
-        if (_schemaRegistry is ISchemaRegistryCache cache &&
-            cache.TryGetCachedSchema(schemaId, out var schema))
-        {
-            var plan = BuildPlan(schemaId, schema);
-            CacheSuccessfulPlan(schemaId, plan);
-            return _plans.TryGetValue(schemaId, out cached) ? cached : plan;
-        }
-
-        // Preserve the synchronous consumer contract while resolving each schema only on its cold miss.
-        return GetPlanAsync(schemaId, CancellationToken.None)
-            .ConfigureAwait(false)
-            .GetAwaiter()
-            .GetResult();
+        throw new InvalidOperationException(
+            $"Schema {schemaId} is not cached. Consume through an asynchronous consumer API or call WarmupAsync first.");
     }
+
+    private async ValueTask PreparePlanAsync(int schemaId, CancellationToken cancellationToken) =>
+        _ = await GetPlanAsync(schemaId, cancellationToken).ConfigureAwait(false);
 
     private AvroPocoReaderPlan GetOrBuildPlanCached(int schemaId, Schema schema)
     {

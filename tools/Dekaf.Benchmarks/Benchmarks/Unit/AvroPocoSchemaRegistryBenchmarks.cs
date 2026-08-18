@@ -4,6 +4,12 @@ using Avro.Generic;
 using Avro.IO;
 using Avro.Specific;
 using BenchmarkDotNet.Attributes;
+using BenchmarkDotNet.Configs;
+using BenchmarkDotNet.Engines;
+using BenchmarkDotNet.Jobs;
+using Dekaf.Benchmarks.Infrastructure;
+using Dekaf.Consumer;
+using Dekaf.Protocol.Records;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Avro;
 using Dekaf.SchemaRegistry.Avro.Poco;
@@ -200,6 +206,7 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
         Component = SerializationComponent.Value
     };
     private AvroPocoSchemaRegistryDeserializer<PocoBenchmarkRecord, PocoBenchmarkRecord.AvroCodec> _poco = null!;
+    private IAsyncDeserializerPreparer<PocoBenchmarkRecord> _pocoPreparer = null!;
     private AvroSchemaRegistryDeserializer<PocoBenchmarkSpecificRecord> _specific = null!;
     private AvroSchemaRegistryDeserializer<GenericRecord> _generic = null!;
     private AvroPocoSchemaRegistryDeserializer<PocoBenchmarkDecimalRecord, PocoBenchmarkDecimalRecord.AvroCodec>
@@ -236,6 +243,7 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
             SchemaString = SchemaJson
         };
         _poco = PocoBenchmarkRecord.CreateAvroDeserializer(new BenchmarkSchemaRegistryClient(registrySchema));
+        _pocoPreparer = _poco;
         _specific = new AvroSchemaRegistryDeserializer<PocoBenchmarkSpecificRecord>(
             new BenchmarkSchemaRegistryClient(registrySchema));
         _generic = new AvroSchemaRegistryDeserializer<GenericRecord>(
@@ -330,6 +338,15 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
     [Benchmark(Baseline = true, Description = "Deserialize generated POCO")]
     public PocoBenchmarkRecord DeserializePoco() => _poco.Deserialize(_wireData, _context);
 
+    [Benchmark(Description = "Check prepared then deserialize generated POCO")]
+    public PocoBenchmarkRecord PrepareThenDeserializePoco()
+    {
+        if (!_pocoPreparer.TryDeserialize(_wireData, _context, out var value))
+            throw new InvalidOperationException("Benchmark deserializer was not prepared.");
+
+        return value;
+    }
+
     [Benchmark(Description = "Deserialize SpecificRecord")]
     public PocoBenchmarkSpecificRecord DeserializeSpecificRecord() => _specific.Deserialize(_wireData, _context);
 
@@ -404,7 +421,7 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
         return wireData;
     }
 
-    private sealed class BenchmarkSchemaRegistryClient(global::Dekaf.SchemaRegistry.Schema schema)
+    internal sealed class BenchmarkSchemaRegistryClient(global::Dekaf.SchemaRegistry.Schema schema)
         : global::Dekaf.SchemaRegistry.ISchemaRegistryClient, global::Dekaf.SchemaRegistry.ISchemaRegistryCache
     {
         public Task<global::Dekaf.SchemaRegistry.Schema> GetSchemaAsync(
@@ -476,6 +493,136 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
             Version = 1,
             Schema = schema
         };
+    }
+}
+
+/// <summary>Measures the warmed hybrid Avro decoder through the buffered consumer path.</summary>
+[MemoryDiagnoser(displayGenColumns: false)]
+[Config(typeof(AvroPocoPreparedConsumerConfig))]
+public class AvroPocoPreparedConsumerBenchmarks
+{
+    private const int RecordsPerBatch = 1_000;
+    private const int BatchCount = 800;
+    private const int PollsPerIteration = RecordsPerBatch * BatchCount;
+    private const string Topic = "avro-poco-prepared-consumer";
+    private static readonly TimeSpan PollTimeout = TimeSpan.FromSeconds(10);
+
+    private sealed class AvroPocoPreparedConsumerConfig : ManualConfig
+    {
+        public AvroPocoPreparedConsumerConfig()
+        {
+            AddJob(Job.Default
+                .WithStrategy(RunStrategy.Throughput)
+                .WithLaunchCount(1)
+                .WithWarmupCount(10)
+                .WithIterationCount(10)
+                .WithInvocationCount(PollsPerIteration)
+                .WithUnrollFactor(1));
+        }
+    }
+
+    private Record[][] _recordArrays = null!;
+    private KafkaConsumer<ReadOnlyMemory<byte>, PocoBenchmarkRecord> _plainConsumer = null!;
+    private KafkaConsumer<ReadOnlyMemory<byte>, PocoBenchmarkRecord> _preparedConsumer = null!;
+    private AvroPocoSchemaRegistryDeserializer<PocoBenchmarkRecord, PocoBenchmarkRecord.AvroCodec>
+        _plainDeserializer = null!;
+    private AvroPocoSchemaRegistryDeserializer<PocoBenchmarkRecord, PocoBenchmarkRecord.AvroCodec>
+        _preparedDeserializer = null!;
+
+    [GlobalSetup]
+    public async Task Setup()
+    {
+        var schema = new global::Dekaf.SchemaRegistry.Schema
+        {
+            SchemaType = global::Dekaf.SchemaRegistry.SchemaType.Avro,
+            SchemaString = AvroPocoSchemaRegistryDeserializationBenchmarks.SchemaJson
+        };
+        _plainDeserializer = PocoBenchmarkRecord.CreateAvroDeserializer(
+            new AvroPocoSchemaRegistryDeserializationBenchmarks.BenchmarkSchemaRegistryClient(schema));
+        _preparedDeserializer = PocoBenchmarkRecord.CreateAvroDeserializer(
+            new AvroPocoSchemaRegistryDeserializationBenchmarks.BenchmarkSchemaRegistryClient(schema));
+        await _plainDeserializer.WarmupAsync(1).ConfigureAwait(false);
+        await _preparedDeserializer.WarmupAsync(1).ConfigureAwait(false);
+
+        _plainConsumer = CreateConsumer(new PlainDeserializer(_plainDeserializer));
+        _preparedConsumer = CreateConsumer(_preparedDeserializer);
+
+        var wireData = new byte[] { 0, 0, 0, 0, 1, 84, 6, (byte)'A', (byte)'d', (byte)'a' };
+        _recordArrays = new Record[10][];
+        for (var batchIndex = 0; batchIndex < _recordArrays.Length; batchIndex++)
+        {
+            var records = new Record[RecordsPerBatch];
+            for (var recordIndex = 0; recordIndex < records.Length; recordIndex++)
+            {
+                records[recordIndex] = new Record
+                {
+                    OffsetDelta = recordIndex,
+                    TimestampDelta = recordIndex,
+                    Key = ReadOnlyMemory<byte>.Empty,
+                    Value = wireData
+                };
+            }
+
+            _recordArrays[batchIndex] = records;
+        }
+    }
+
+    [IterationSetup(Target = nameof(PlainSynchronous))]
+    public void PlainSetup() => Reseed(_plainConsumer);
+
+    [IterationSetup(Target = nameof(PreparedSynchronous))]
+    public void PreparedSetup() => Reseed(_preparedConsumer);
+
+    [Benchmark(Baseline = true)]
+    public ValueTask<ConsumeResult<ReadOnlyMemory<byte>, PocoBenchmarkRecord>?> PlainSynchronous() =>
+        _plainConsumer.ConsumeOneAsync(PollTimeout);
+
+    [Benchmark]
+    public ValueTask<ConsumeResult<ReadOnlyMemory<byte>, PocoBenchmarkRecord>?> PreparedSynchronous() =>
+        _preparedConsumer.ConsumeOneAsync(PollTimeout);
+
+    [GlobalCleanup]
+    public void Cleanup()
+    {
+        BufferedConsumerHarness.DrainPendingFetches(_plainConsumer);
+        BufferedConsumerHarness.DrainPendingFetches(_preparedConsumer);
+        _plainConsumer.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        _preparedConsumer.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        _plainDeserializer.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        _preparedDeserializer.DisposeAsync().AsTask().GetAwaiter().GetResult();
+    }
+
+    private static KafkaConsumer<ReadOnlyMemory<byte>, PocoBenchmarkRecord> CreateConsumer(
+        IDeserializer<PocoBenchmarkRecord> valueDeserializer)
+    {
+        var consumer = new KafkaConsumer<ReadOnlyMemory<byte>, PocoBenchmarkRecord>(
+            new ConsumerOptions
+            {
+                BootstrapServers = ["localhost:9092"],
+                OffsetCommitMode = OffsetCommitMode.Manual,
+                QueuedMinMessages = 1
+            },
+            Serializers.RawBytes,
+            valueDeserializer);
+        BufferedConsumerHarness.InitializeForBufferedFastPath(consumer, Topic, partition: 0);
+        return consumer;
+    }
+
+    private void Reseed(KafkaConsumer<ReadOnlyMemory<byte>, PocoBenchmarkRecord> consumer) =>
+        BufferedConsumerHarness.ReseedPendingFetches(
+            consumer,
+            Topic,
+            partition: 0,
+            _recordArrays,
+            BatchCount,
+            RecordsPerBatch);
+
+    private sealed class PlainDeserializer(
+        AvroPocoSchemaRegistryDeserializer<PocoBenchmarkRecord, PocoBenchmarkRecord.AvroCodec> inner)
+        : IDeserializer<PocoBenchmarkRecord>
+    {
+        public PocoBenchmarkRecord Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
+            inner.Deserialize(data, context);
     }
 }
 

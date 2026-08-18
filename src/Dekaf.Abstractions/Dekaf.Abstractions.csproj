@@ -35,6 +35,7 @@
     <Compile Include="..\Dekaf\Serialization\Headers.cs" Link="Serialization\Headers.cs" />
     <Compile Include="..\Dekaf\Serialization\IAsyncSerializer.cs" Link="Serialization\IAsyncSerializer.cs" />
     <Compile Include="..\Dekaf\Serialization\IAsyncSerializerPreparer.cs" Link="Serialization\IAsyncSerializerPreparer.cs" />
+    <Compile Include="..\Dekaf\Serialization\IAsyncDeserializerPreparer.cs" Link="Serialization\IAsyncDeserializerPreparer.cs" />
     <Compile Include="..\Dekaf\Serialization\ISerializer.cs" Link="Serialization\ISerializer.cs" />
     <Compile Include="..\Dekaf\Telemetry\ApplicationTelemetryMetric.cs" Link="Telemetry\ApplicationTelemetryMetric.cs" />
   </ItemGroup>
