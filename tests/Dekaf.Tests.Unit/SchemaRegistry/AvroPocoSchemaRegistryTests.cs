@@ -434,6 +434,43 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    public async Task GeneratedCodec_RulesPathSharesRetainedBufferAcrossCodecTypes()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        var config = new AvroSerializerConfig { RuleExecutor = PassThroughRuleExecutor.Instance };
+        await using var first = PocoGrowingPayload.CreateAvroSerializer(registry, config);
+        await using var second = PocoSecondGrowingPayload.CreateAvroSerializer(registry, config);
+        var firstContext = new SerializationContext
+        {
+            Topic = "poco-shared-rule-buffer-first",
+            Component = SerializationComponent.Value
+        };
+        var secondContext = new SerializationContext
+        {
+            Topic = "poco-shared-rule-buffer-second",
+            Component = SerializationComponent.Value
+        };
+        var value = new string('x', 512 * 1024);
+        var firstValue = new PocoGrowingPayload { Value = value };
+        var secondWarmupValue = new PocoSecondGrowingPayload { Value = "small" };
+        var secondValue = new PocoSecondGrowingPayload { Value = value };
+        var firstDestination = new ExactSizeBufferWriter(1024 * 1024 + 16);
+        var secondDestination = new ExactSizeBufferWriter(1024 * 1024 + 16);
+
+        await first.WarmupAsync(firstContext.Topic);
+        await second.WarmupAsync(secondContext.Topic);
+        second.Serialize(secondWarmupValue, ref secondDestination, secondContext);
+        secondDestination.Clear();
+        first.Serialize(firstValue, ref firstDestination, firstContext);
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        second.Serialize(secondValue, ref secondDestination, secondContext);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        await Assert.That(allocated).IsEqualTo(0);
+    }
+
+    [Test]
     [Arguments(SubjectNameStrategy.TopicRecordName, false)]
     [Arguments(SubjectNameStrategy.TopicRecordName, true)]
     [Arguments(SubjectNameStrategy.RecordName, true)]
@@ -878,6 +915,96 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    public async Task GeneratedCodec_UsesLastTransformedWriterPlanBeforeUntransformedTail()
+    {
+        const string v1SchemaJson =
+            """
+            {"type":"record","name":"PocoEvolved","namespace":"Dekaf.Tests","fields":[{"name":"legacy_id","type":"int"}]}
+            """;
+        const string v2SchemaJson =
+            """
+            {"type":"record","name":"PocoEvolved","namespace":"Dekaf.Tests","fields":[{"name":"id","type":"long"},{"name":"note","type":"string"}]}
+            """;
+        const string v3SchemaJson =
+            """
+            {"type":"record","name":"PocoEvolved","namespace":"Dekaf.Tests","fields":[{"name":"id","type":"long"},{"name":"note","type":"string"},{"name":"tail","type":"int","default":0}]}
+            """;
+        var migrationRule = new SchemaRule
+        {
+            Name = "rewrite-v2-layout",
+            Kind = SchemaRuleKind.Transform,
+            Mode = SchemaRuleMode.Upgrade,
+            Type = FixedPayloadMigrationHandler.RuleType
+        };
+        using var registry = new MockSchemaRegistryClient { SupportsDeletedVersionLookup = true };
+        _ = await registry.RegisterSchemaAsync(
+            "poco-migration-tail-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = v1SchemaJson
+            });
+        _ = await registry.RegisterSchemaAsync(
+            "poco-migration-tail-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = v2SchemaJson,
+                RuleSet = new SchemaRuleSet { MigrationRules = [migrationRule] }
+            });
+        _ = await registry.RegisterSchemaAsync(
+            "poco-migration-tail-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = v3SchemaJson
+            });
+        var migratedPayload = new byte[64];
+        var migratedWriter = new AvroValueWriter(migratedPayload);
+        PocoEvolved.AvroCodec.Write(
+            ref migratedWriter,
+            new PocoEvolved { Id = 42, Note = "v2-layout" });
+        var executor = new SchemaRegistryRuleExecutor(
+            [new FixedPayloadMigrationHandler(migratedPayload.AsMemory(0, migratedWriter.WrittenCount))]);
+        await using var writer = new AvroSchemaRegistrySerializer<GenericRecord>(registry);
+        await using var reader = PocoEvolved.CreateAvroDeserializer(
+            registry,
+            new AvroDeserializerConfig
+            {
+                UseLatestVersion = true,
+                RuleExecutor = executor
+            });
+        var writerSchema = (RecordSchema)Schema.Parse(v1SchemaJson);
+        var generic = new GenericRecord(writerSchema);
+        generic.Add("legacy_id", 42);
+        var context = new SerializationContext
+        {
+            Topic = "poco-migration-tail",
+            Component = SerializationComponent.Value
+        };
+        var destination = new ArrayBufferWriter<byte>();
+        writer.Serialize(generic, ref destination, context);
+
+        var actual = reader.Deserialize(destination.WrittenMemory, context);
+
+        await Assert.That(actual.Id).IsEqualTo(42L);
+        await Assert.That(actual.Note).IsEqualTo("v2-layout");
+
+        await using var genericReader = new AvroSchemaRegistryDeserializer<GenericRecord>(
+            registry,
+            new AvroDeserializerConfig
+            {
+                UseLatestVersion = true,
+                RuleExecutor = executor
+            });
+        var genericActual = genericReader.Deserialize(destination.WrittenMemory, context);
+
+        await Assert.That((long)genericActual["id"]!).IsEqualTo(42L);
+        await Assert.That((string)genericActual["note"]!).IsEqualTo("v2-layout");
+        await Assert.That((int)genericActual["tail"]!).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task GeneratedCodec_WithoutAutoRegistrationLooksUpGeneratedSchema()
     {
         const string differentSchemaJson =
@@ -1292,6 +1419,12 @@ internal sealed partial class PocoWriterUnions
 
 [AvroRecord(Name = "PocoGrowingPayload", Namespace = "Dekaf.Tests")]
 internal sealed partial class PocoGrowingPayload
+{
+    public required string Value { get; init; }
+}
+
+[AvroRecord(Name = "PocoSecondGrowingPayload", Namespace = "Dekaf.Tests")]
+internal sealed partial class PocoSecondGrowingPayload
 {
     public required string Value { get; init; }
 }

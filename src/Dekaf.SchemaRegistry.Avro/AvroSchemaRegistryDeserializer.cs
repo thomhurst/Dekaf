@@ -197,6 +197,7 @@ public sealed class AvroSchemaRegistryDeserializer<
                     context,
                     SchemaRegistryPayloadFormat.Avro);
                 payloadMemory = migration.Payload;
+                writerSchema = GetWriterSchemaCached(migration.PayloadSchemaId);
                 migrationReaderSchema = GetWriterSchemaCached(migration.ReaderSchema.Id);
             }
         }

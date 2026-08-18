@@ -22,12 +22,6 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
     [ThreadStatic]
     private static int t_payloadSizeHint;
 
-    [ThreadStatic]
-    private static byte[]? t_ruleBuffer;
-
-    [ThreadStatic]
-    private static int t_rulePayloadSizeHint;
-
     private readonly ISchemaRegistryClient _schemaRegistry;
     private readonly AvroSerializerConfig _config;
     private readonly bool _ownsClient;
@@ -189,7 +183,7 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
                 if (writer.IsComplete)
                 {
                     length = writer.WrittenCount;
-                    t_rulePayloadSizeHint = Math.Max(InitialPayloadSize, length);
+                    AvroPocoSerializerBuffers.RulePayloadSizeHint = Math.Max(InitialPayloadSize, length);
                     break;
                 }
 
@@ -360,7 +354,7 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
 
     private static byte[] GetRuleBuffer(out bool bufferIsPooled)
     {
-        var sizeHint = t_rulePayloadSizeHint;
+        var sizeHint = AvroPocoSerializerBuffers.RulePayloadSizeHint;
         if (sizeHint > MaxRetainedPayloadSize)
         {
             bufferIsPooled = true;
@@ -368,10 +362,10 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         }
 
         bufferIsPooled = false;
-        return t_ruleBuffer ??= GC.AllocateUninitializedArray<byte>(1024);
+        return AvroPocoSerializerBuffers.RuleBuffer ??= GC.AllocateUninitializedArray<byte>(1024);
     }
 
-    private static void RetainRuleBuffer(byte[] buffer) => t_ruleBuffer = buffer;
+    private static void RetainRuleBuffer(byte[] buffer) => AvroPocoSerializerBuffers.RuleBuffer = buffer;
 
     /// <inheritdoc />
     public ValueTask DisposeAsync()
@@ -380,4 +374,14 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
             _schemaRegistry.Dispose();
         return ValueTask.CompletedTask;
     }
+}
+
+/// <summary>Non-generic holder so POCO codec types share one retained rules buffer per thread.</summary>
+internal static class AvroPocoSerializerBuffers
+{
+    [ThreadStatic]
+    internal static byte[]? RuleBuffer;
+
+    [ThreadStatic]
+    internal static int RulePayloadSizeHint;
 }

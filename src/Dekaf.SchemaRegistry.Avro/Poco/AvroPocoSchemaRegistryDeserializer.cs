@@ -124,7 +124,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec> : IDeserialize
                 context,
                 SchemaRegistryPayloadFormat.Avro);
             payload = migration.Payload;
-            plan = GetPlanCached(migration.PayloadWasMigrated ? migration.ReaderSchema.Id : schemaId);
+            plan = GetPlanCached(migration.PayloadSchemaId);
         }
 
         var reader = new AvroValueReader(payload.Span);

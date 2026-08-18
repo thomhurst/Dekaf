@@ -24,6 +24,7 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
     public int TryGetCachedSchemaCallCount { get; private set; }
     public int GetSchemaFailuresRemaining { get; set; }
     public int GetOrRegisterSchemaFailuresRemaining { get; set; }
+    public bool SupportsDeletedVersionLookup { get; init; }
 
     public void BlockNextGetSchema()
     {
@@ -201,6 +202,21 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
             Version = entry.Version,
             Schema = entry.Schema
         });
+    }
+
+    public Task<RegisteredSchema> GetSchemaBySubjectAsync(
+        string subject,
+        string version,
+        bool ignoreDeletedSchemas,
+        CancellationToken cancellationToken = default)
+    {
+        if (!ignoreDeletedSchemas && !SupportsDeletedVersionLookup)
+        {
+            throw new NotSupportedException(
+                $"This {nameof(ISchemaRegistryClient)} implementation does not support looking up deleted schema versions.");
+        }
+
+        return GetSchemaBySubjectAsync(subject, version, cancellationToken);
     }
 
     public Task<RegisteredSchema> LookupSchemaAsync(

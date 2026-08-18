@@ -43,6 +43,7 @@ public sealed class SchemaRegistryMigrationTests
         await Assert.That(Encoding.UTF8.GetString(result.Payload.Span))
             .IsEqualTo("payload|v2-up|v2-both|v3-up");
         await Assert.That(result.ReaderSchema.Id).IsEqualTo(v3Id);
+        await Assert.That(result.PayloadSchemaId).IsEqualTo(v3Id);
         await Assert.That(string.Join('|', calls)).IsEqualTo(
             "v2-up:Upgrade:Write:v1->v2|v2-both:Upgrade:Write:v1->v2|v3-up:Upgrade:Write:v2->v3");
     }
@@ -77,9 +78,37 @@ public sealed class SchemaRegistryMigrationTests
         await Assert.That(Encoding.UTF8.GetString(result.Payload.Span))
             .IsEqualTo("payload|v3-both|v3-down|v2-down");
         await Assert.That(result.ReaderSchema.Id).IsEqualTo(v1Id);
+        await Assert.That(result.PayloadSchemaId).IsEqualTo(v1Id);
         await Assert.That(string.Join('|', calls)).IsEqualTo(
             "v3-both:Downgrade:Read:v3->v2|action:v3-both:Downgrade|" +
             "v3-down:Downgrade:Read:v3->v2|v2-down:Downgrade:Read:v2->v1");
+    }
+
+    [Test]
+    public async Task Transform_UpgradeWithUntransformedTail_ReturnsLastTransformedSchema()
+    {
+        var registry = new MigrationRegistryClient();
+        var v1 = CreateSchema("v1");
+        var v2 = CreateSchema("v2", CreateRule("v2-up", SchemaRuleMode.Upgrade));
+        var v3 = CreateSchema("v3");
+        var v1Id = registry.Register("orders-value", v1);
+        var v2Id = registry.Register("orders-value", v2);
+        var v3Id = registry.Register("orders-value", v3);
+        var runner = new SchemaRegistryMigrationRunner(
+            registry,
+            new SchemaRegistryRuleExecutor([new CapturingMigrationHandler([])]),
+            TimeSpan.FromSeconds(1));
+
+        var result = runner.Transform(
+            "payload"u8.ToArray(),
+            v1Id,
+            "orders-value",
+            v1,
+            SerializationContext,
+            SchemaRegistryPayloadFormat.Json);
+
+        await Assert.That(result.ReaderSchema.Id).IsEqualTo(v3Id);
+        await Assert.That(result.PayloadSchemaId).IsEqualTo(v2Id);
     }
 
     [Test]
@@ -148,6 +177,8 @@ public sealed class SchemaRegistryMigrationTests
 
         await Assert.That(first.Payload.ToArray()).IsEquivalentTo(payload);
         await Assert.That(second.Payload.ToArray()).IsEquivalentTo(payload);
+        await Assert.That(first.PayloadSchemaId).IsEqualTo(schemaId);
+        await Assert.That(second.PayloadSchemaId).IsEqualTo(schemaId);
         await Assert.That(calls).IsEmpty();
         await Assert.That(registry.LookupCount).IsEqualTo(1);
         await Assert.That(registry.LatestCount).IsEqualTo(1);
