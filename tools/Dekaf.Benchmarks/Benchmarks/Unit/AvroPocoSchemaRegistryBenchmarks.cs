@@ -686,6 +686,70 @@ public class AvroPocoLargePayloadSerializationBenchmarks
     }
 }
 
+/// <summary>Guards mixed small and oversized generated POCO rule payloads against repeated sizing traversals.</summary>
+[MemoryDiagnoser(displayGenColumns: false)]
+public class AvroPocoMixedPayloadSerializationBenchmarks
+{
+    private const int LargePayloadLength = 1024 * 1024 + 1;
+    private readonly SerializationContext _context = new()
+    {
+        Topic = "avro-poco-mixed-payload",
+        Component = SerializationComponent.Value
+    };
+    private readonly PocoBenchmarkRecord _smallValue = new() { Id = 42, Name = "small" };
+    private PocoBenchmarkRecord _largeValue = null!;
+    private AvroPocoSchemaRegistrySerializer<PocoBenchmarkRecord, PocoBenchmarkRecord.AvroCodec>
+        _serializer = null!;
+    private ArrayBufferWriter<byte> _buffer = null!;
+
+    [GlobalSetup]
+    public void Setup()
+    {
+        _serializer = PocoBenchmarkRecord.CreateAvroSerializer(
+            new AvroSchemaRegistrySerializerBenchmarks.BenchmarkSchemaRegistryClient(),
+            new AvroSerializerConfig { RuleExecutor = PassThroughRuleExecutor.Instance });
+        _largeValue = new PocoBenchmarkRecord { Id = 42, Name = new string('x', LargePayloadLength) };
+        _buffer = new ArrayBufferWriter<byte>(2 * LargePayloadLength);
+        Serialize(_largeValue);
+        Serialize(_smallValue);
+    }
+
+    [GlobalCleanup]
+    public async ValueTask Cleanup() => await _serializer.DisposeAsync().ConfigureAwait(false);
+
+    [Benchmark(OperationsPerInvoke = 2)]
+    public void SerializeAlternatingPayloadsWithRules()
+    {
+        Serialize(_largeValue);
+        Serialize(_smallValue);
+    }
+
+    [Benchmark]
+    public void SerializeSmallPayloadWithRules() => Serialize(_smallValue);
+
+    [Benchmark]
+    public void SerializeLargePayloadWithRules() => Serialize(_largeValue);
+
+    private void Serialize(PocoBenchmarkRecord value)
+    {
+        _buffer.Clear();
+        _serializer.Serialize(value, ref _buffer, _context);
+    }
+
+    private sealed class PassThroughRuleExecutor : ISchemaRegistryRuleExecutor
+    {
+        internal static PassThroughRuleExecutor Instance { get; } = new();
+
+        public ReadOnlyMemory<byte> TransformSerializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleContext context) => payload;
+
+        public ReadOnlyMemory<byte> TransformDeserializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleContext context) => payload;
+    }
+}
+
 /// <summary>Measures the generated TimeSpan-to-time-micros validation path.</summary>
 [MemoryDiagnoser(displayGenColumns: false)]
 public class AvroPocoTimeSpanSerializationBenchmarks

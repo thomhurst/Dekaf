@@ -17,6 +17,10 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
     private const int WireHeaderSize = 5;
     private const int InitialPayloadSize = 256;
     private const int MaxRetainedPayloadSize = 1024 * 1024;
+    private const byte StableRetainedPayloadPattern = 0;
+    private const byte StableOversizedPayloadPattern = 2;
+    private const byte OversizedThenRetainedPayloadPattern = 3;
+    private const byte RetainedThenOversizedPayloadPattern = 4;
     private static readonly TimeSpan RegistryTimeout = TimeSpan.FromSeconds(30);
 
     [ThreadStatic]
@@ -196,7 +200,7 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
                 if (writer.IsComplete)
                 {
                     length = writer.WrittenCount;
-                    AvroPocoSerializerBuffers.RulePayloadSizeHint = Math.Max(InitialPayloadSize, length);
+                    RecordRulePayloadLength(length);
                     break;
                 }
 
@@ -268,7 +272,7 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
                 if (writer.IsComplete)
                 {
                     length = writer.WrittenCount;
-                    AvroPocoSerializerBuffers.RulePayloadSizeHint = Math.Max(InitialPayloadSize, length);
+                    RecordRulePayloadLength(length);
                     break;
                 }
 
@@ -466,7 +470,7 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
 
     private static byte[] GetRuleBuffer(out bool bufferIsPooled, out bool ownsBufferLease)
     {
-        var sizeHint = AvroPocoSerializerBuffers.RulePayloadSizeHint;
+        var sizeHint = GetPredictedRulePayloadSize();
         if (AvroPocoSerializerBuffers.RuleBufferInUse)
         {
             bufferIsPooled = true;
@@ -491,6 +495,41 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         return buffer;
     }
 
+    private static int GetPredictedRulePayloadSize()
+    {
+        var pattern = AvroPocoSerializerBuffers.RulePayloadPattern;
+        return pattern is StableOversizedPayloadPattern or OversizedThenRetainedPayloadPattern
+            ? AvroPocoSerializerBuffers.OversizedRulePayloadSizeHint
+            : AvroPocoSerializerBuffers.RetainedRulePayloadSizeHint;
+    }
+
+    private static void RecordRulePayloadLength(int length)
+    {
+        var pattern = AvroPocoSerializerBuffers.RulePayloadPattern;
+        var oversized = length > MaxRetainedPayloadSize;
+        if (oversized)
+        {
+            AvroPocoSerializerBuffers.OversizedRulePayloadSizeHint = length;
+            if (pattern != StableOversizedPayloadPattern)
+            {
+                AvroPocoSerializerBuffers.RulePayloadPattern =
+                    pattern is OversizedThenRetainedPayloadPattern or StableRetainedPayloadPattern
+                        ? RetainedThenOversizedPayloadPattern
+                        : StableOversizedPayloadPattern;
+            }
+            return;
+        }
+
+        AvroPocoSerializerBuffers.RetainedRulePayloadSizeHint = Math.Max(InitialPayloadSize, length);
+        if (pattern != StableRetainedPayloadPattern)
+        {
+            AvroPocoSerializerBuffers.RulePayloadPattern =
+                pattern is StableOversizedPayloadPattern or RetainedThenOversizedPayloadPattern
+                    ? OversizedThenRetainedPayloadPattern
+                    : StableRetainedPayloadPattern;
+        }
+    }
+
     private static void RetainRuleBuffer(byte[] buffer) => AvroPocoSerializerBuffers.RuleBuffer = buffer;
 
     /// <inheritdoc />
@@ -509,7 +548,14 @@ internal static class AvroPocoSerializerBuffers
     internal static byte[]? RuleBuffer;
 
     [ThreadStatic]
-    internal static int RulePayloadSizeHint;
+    internal static int RetainedRulePayloadSizeHint;
+
+    [ThreadStatic]
+    internal static int OversizedRulePayloadSizeHint;
+
+    // Predicts from the prior two retained/oversized outcomes, covering stable and alternating traffic.
+    [ThreadStatic]
+    internal static byte RulePayloadPattern;
 
     [ThreadStatic]
     internal static bool RuleBufferInUse;

@@ -143,6 +143,13 @@ allocate according to the configured rule executor. Generated and standard colle
 one Avro block, allowing exact returned collection capacity. Valid external multi-block collections
 are also accepted and may grow their returned backing storage as later blocks arrive.
 
+A generated POCO deserializer needs the writer schema ID from each record before it can prepare a
+reader plan. Call its `WarmupAsync(schemaId)` when schema IDs are known in advance. Otherwise, the
+first record for each unseen schema ID resolves and builds the plan synchronously and can block the
+calling consumer thread for up to the 30-second Schema Registry timeout. Later records use the
+cached synchronous plan. The generated consumer convenience extension cannot pre-warm unknown
+writer schema IDs before the first record arrives.
+
 ## Protobuf Serialization
 
 ```csharp

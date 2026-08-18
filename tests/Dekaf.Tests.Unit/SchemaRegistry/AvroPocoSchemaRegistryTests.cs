@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Numerics;
+using System.Runtime.InteropServices;
 using System.Text;
 using Avro;
 using Avro.Generic;
@@ -555,6 +556,46 @@ public sealed class AvroPocoSchemaRegistryTests
 
         await Assert.That(allocated).IsEqualTo(0);
         await Assert.That(destination.WrittenCount).IsGreaterThan(1024 * 1024);
+    }
+
+    [Test]
+    public async Task GeneratedCodec_RulesPathAlternatingOversizedPayloadUsesSingleTraversal()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        var ruleExecutor = new CapturingPayloadCapacityRuleExecutor();
+        await using var serializer = new AvroPocoSchemaRegistrySerializer<
+            CountingPocoPayload,
+            CountingPocoPayloadCodec>(
+            registry,
+            new AvroSerializerConfig { RuleExecutor = ruleExecutor });
+        var context = new SerializationContext
+        {
+            Topic = "poco-alternating-large-rules",
+            Component = SerializationComponent.Value
+        };
+        var small = new CountingPocoPayload { Value = "small" };
+        var large = new CountingPocoPayload { Value = new string('x', 1024 * 1024 + 1) };
+        var destination = new ExactSizeBufferWriter(2 * 1024 * 1024 + 16);
+
+        serializer.Serialize(large, ref destination, context);
+        destination.Clear();
+        serializer.Serialize(small, ref destination, context);
+        destination.Clear();
+        CountingPocoPayloadCodec.ResetWriteCount();
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+        {
+            serializer.Serialize(large, ref destination, context);
+            destination.Clear();
+            serializer.Serialize(small, ref destination, context);
+            destination.Clear();
+        }
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        await Assert.That(CountingPocoPayloadCodec.WriteCount).IsEqualTo(200);
+        await Assert.That(allocated).IsEqualTo(0);
+        await Assert.That(ruleExecutor.LastPayloadBufferCapacity).IsLessThanOrEqualTo(1024 * 1024);
     }
 
     [Test]
@@ -2010,6 +2051,25 @@ public sealed class AvroPocoSchemaRegistryTests
             SchemaRegistryRuleContext context) => payload;
     }
 
+    private sealed class CapturingPayloadCapacityRuleExecutor : ISchemaRegistryRuleExecutor
+    {
+        internal int LastPayloadBufferCapacity { get; private set; }
+
+        public ReadOnlyMemory<byte> TransformSerializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleContext context)
+        {
+            LastPayloadBufferCapacity = MemoryMarshal.TryGetArray(payload, out var segment)
+                ? segment.Array!.Length
+                : payload.Length;
+            return payload;
+        }
+
+        public ReadOnlyMemory<byte> TransformDeserializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleContext context) => payload;
+    }
+
     private sealed class ReentrantRuleExecutor : ISchemaRegistryRuleExecutor
     {
         private bool _isReentrant;
@@ -2271,6 +2331,53 @@ internal sealed partial class PocoWriterUnions
 internal sealed partial class PocoGrowingPayload
 {
     public required string Value { get; init; }
+}
+
+internal sealed class CountingPocoPayload
+{
+    public required string Value { get; init; }
+}
+
+internal readonly struct CountingPocoPayloadCodec : IAvroPocoCodec<CountingPocoPayload>
+{
+    private static readonly AvroPocoField[] s_fields =
+    [
+        new(
+            "Value",
+            ReadOnlyMemory<string>.Empty,
+            defaultJson: null,
+            new AvroPocoType(AvroPocoTypeKind.String))
+    ];
+
+    [ThreadStatic]
+    private static int t_writeCount;
+
+    public static string SchemaJson =>
+        """
+        {"type":"record","name":"CountingPocoPayload","namespace":"Dekaf.Tests","fields":[{"name":"Value","type":"string"}]}
+        """;
+
+    public static ReadOnlySpan<byte> SchemaUtf8 =>
+        """{"type":"record","name":"CountingPocoPayload","namespace":"Dekaf.Tests","fields":[{"name":"Value","type":"string"}]}"""u8;
+
+    public static long ParsingFingerprint64 => 0;
+
+    public static string FullName => "Dekaf.Tests.CountingPocoPayload";
+
+    public static ReadOnlyMemory<AvroPocoField> Fields => s_fields;
+
+    internal static int WriteCount => t_writeCount;
+
+    internal static void ResetWriteCount() => t_writeCount = 0;
+
+    public static void Write(ref AvroValueWriter writer, CountingPocoPayload value)
+    {
+        t_writeCount++;
+        writer.WriteString(value.Value);
+    }
+
+    public static CountingPocoPayload Read(ref AvroValueReader reader, AvroPocoReaderPlan plan) =>
+        throw new NotSupportedException();
 }
 
 [AvroRecord(Name = "PocoLogicalBaseUnion", Namespace = "Dekaf.Tests")]
