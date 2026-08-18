@@ -8,7 +8,7 @@ internal sealed class SchemaRegistryMigrationRunner
     internal static ISchemaRegistryRuleExecutor MarkerRuleExecutor { get; } = new MigrationMarkerRuleExecutor();
 
     private static readonly Func<SchemaRegistryMigrationRunner, string, Schema, Task<MigrationPlan>> s_createPlan =
-        static (runner, subject, writerSchema) => runner.CreatePlanAsync(subject, writerSchema);
+        static (runner, subject, writerSchema) => runner.CreatePlanWithTimeoutAsync(subject, writerSchema);
 
     private readonly ISchemaRegistryClient _schemaRegistry;
     private readonly ISchemaRegistryRuleExecutor? _ruleExecutor;
@@ -286,14 +286,11 @@ internal sealed class SchemaRegistryMigrationRunner
                     ref payload,
                     context,
                     step.Mode);
-                if (transformResult == SchemaRegistryMigrationTransformResult.Failed)
+                if (transformResult != SchemaRegistryMigrationTransformResult.Transformed)
                     return false;
 
-                if (transformResult == SchemaRegistryMigrationTransformResult.Transformed)
-                {
-                    payloadSchemaId = step.Target.Id;
-                    payloadSchema = step.Target.Schema;
-                }
+                payloadSchemaId = step.Target.Id;
+                payloadSchema = step.Target.Schema;
             }
             finally
             {
@@ -338,16 +335,25 @@ internal sealed class SchemaRegistryMigrationRunner
             targetSchema,
             ruleMode);
 
-    private async Task<MigrationPlan> CreatePlanAsync(string subject, Schema writerSchema)
+    private Task<MigrationPlan> CreatePlanWithTimeoutAsync(string subject, Schema writerSchema) =>
+        SchemaRegistryOperationTimeout.ExecuteAsync(
+            cancellationToken => CreatePlanAsync(subject, writerSchema, cancellationToken),
+            _timeout,
+            "Schema Registry migration plan resolution timed out.");
+
+    private async Task<MigrationPlan> CreatePlanAsync(
+        string subject,
+        Schema writerSchema,
+        CancellationToken cancellationToken)
     {
         var writer = await _schemaRegistry.LookupSchemaAsync(
                 subject,
                 writerSchema,
                 ignoreDeletedSchemas: false,
                 normalize: false,
-                CancellationToken.None)
+                cancellationToken)
             .ConfigureAwait(false);
-        var reader = await _schemaRegistry.GetSchemaBySubjectAsync(subject, "latest", CancellationToken.None)
+        var reader = await _schemaRegistry.GetSchemaBySubjectAsync(subject, "latest", cancellationToken)
             .ConfigureAwait(false);
 
         if (writer.Version == reader.Version)
@@ -366,7 +372,7 @@ internal sealed class SchemaRegistryMigrationRunner
             {
                 var current = version == reader.Version
                     ? reader
-                    : await GetVersionAsync(subject, version).ConfigureAwait(false);
+                    : await GetVersionAsync(subject, version, cancellationToken).ConfigureAwait(false);
                 if (SchemaRegistryRuleExecutor.HasActiveMigrationRule(
                         current.Schema.RuleSet,
                         SchemaRuleMode.Upgrade))
@@ -384,7 +390,7 @@ internal sealed class SchemaRegistryMigrationRunner
             {
                 var previous = version == reader.Version
                     ? reader
-                    : await GetVersionAsync(subject, version).ConfigureAwait(false);
+                    : await GetVersionAsync(subject, version, cancellationToken).ConfigureAwait(false);
                 if (SchemaRegistryRuleExecutor.HasActiveMigrationRule(
                         current.Schema.RuleSet,
                         SchemaRuleMode.Downgrade))
@@ -405,12 +411,15 @@ internal sealed class SchemaRegistryMigrationRunner
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private Task<RegisteredSchema> GetVersionAsync(string subject, int version) =>
+    private Task<RegisteredSchema> GetVersionAsync(
+        string subject,
+        int version,
+        CancellationToken cancellationToken) =>
         _schemaRegistry.GetSchemaBySubjectAsync(
             subject,
             version.ToString(System.Globalization.CultureInfo.InvariantCulture),
             ignoreDeletedSchemas: false,
-            CancellationToken.None);
+            cancellationToken);
 
     internal readonly record struct MigrationResult(
         ReadOnlyMemory<byte> Payload,

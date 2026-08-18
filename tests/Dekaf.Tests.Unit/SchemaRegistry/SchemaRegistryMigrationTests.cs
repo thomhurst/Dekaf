@@ -239,6 +239,48 @@ public sealed class SchemaRegistryMigrationTests
     }
 
     [Test]
+    public async Task Transform_ConditionOnlyStep_StopsDependentMigrationChain()
+    {
+        var registry = new MigrationRegistryClient();
+        var v1 = CreateSchema("v1");
+        var conditionHandler = new PassThroughConditionHandler();
+        var v2 = CreateSchema(
+            "v2",
+            new SchemaRule
+            {
+                Name = "v2-condition",
+                Kind = SchemaRuleKind.Condition,
+                Mode = SchemaRuleMode.Upgrade,
+                Type = PassThroughConditionHandler.RuleType
+            });
+        var v3 = CreateSchema("v3", CreateRule("v3-up", SchemaRuleMode.Upgrade));
+        var v1Id = registry.Register("orders-value", v1);
+        registry.Register("orders-value", v2);
+        var v3Id = registry.Register("orders-value", v3);
+        var migrationCalls = new List<string>();
+        var runner = new SchemaRegistryMigrationRunner(
+            registry,
+            new SchemaRegistryRuleExecutor(
+                [conditionHandler, new CapturingMigrationHandler(migrationCalls)]),
+            TimeSpan.FromSeconds(1));
+
+        var result = runner.Transform(
+            "payload"u8.ToArray(),
+            v1Id,
+            "orders-value",
+            v1,
+            SerializationContext,
+            SchemaRegistryPayloadFormat.Json);
+
+        await Assert.That(result.ReaderSchema.Id).IsEqualTo(v3Id);
+        await Assert.That(result.PayloadSchemaId).IsEqualTo(v1Id);
+        await Assert.That(result.PayloadSchema).IsSameReferenceAs(v1);
+        await Assert.That(Encoding.UTF8.GetString(result.Payload.Span)).IsEqualTo("payload");
+        await Assert.That(conditionHandler.CallCount).IsEqualTo(1);
+        await Assert.That(migrationCalls).IsEmpty();
+    }
+
+    [Test]
     public async Task Transform_SuppressedFailedStep_SkipsTargetDomainRules()
     {
         var registry = new MigrationRegistryClient();
@@ -347,6 +389,36 @@ public sealed class SchemaRegistryMigrationTests
                 SchemaRegistryPayloadFormat.Json))
             .Throws<SchemaRegistryException>();
         await Assert.That(registry.LookupCount).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task PrepareAsync_RegistryTimeoutCancelsResolutionAndAllowsRetry()
+    {
+        var registry = new MigrationRegistryClient();
+        var schema = CreateSchema("v1");
+        var schemaId = registry.Register("orders-value", schema);
+        registry.BlockNextLookup();
+        var runner = new SchemaRegistryMigrationRunner(
+            registry,
+            ruleExecutor: null,
+            TimeSpan.FromMilliseconds(100));
+
+        var preparation = runner.PrepareAsync(
+            schemaId,
+            "orders-value",
+            schema,
+            CancellationToken.None).AsTask();
+        await registry.WaitForBlockedLookupAsync(TimeSpan.FromSeconds(2));
+
+        await Assert.That(registry.LastLookupCancellationToken.CanBeCanceled).IsTrue();
+        await Assert.That(async () => await preparation.WaitAsync(TimeSpan.FromSeconds(2)))
+            .Throws<TimeoutException>()
+            .WithMessageContaining("migration plan resolution timed out");
+
+        await runner.PrepareAsync(schemaId, "orders-value", schema, CancellationToken.None);
+
+        await Assert.That(registry.LookupCount).IsEqualTo(2);
+        await Assert.That(runner.TryUsePreparedPlan(schemaId, "orders-value")).IsTrue();
     }
 
     [Test]
@@ -621,6 +693,31 @@ public sealed class SchemaRegistryMigrationTests
         }
     }
 
+    private sealed class PassThroughConditionHandler : ISchemaRegistryRuleHandler
+    {
+        internal const string RuleType = "CONDITION";
+
+        internal int CallCount { get; private set; }
+
+        public string Type => RuleType;
+
+        public ReadOnlyMemory<byte> TransformSerializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleHandlerContext context)
+        {
+            CallCount++;
+            return payload;
+        }
+
+        public ReadOnlyMemory<byte> TransformDeserializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleHandlerContext context)
+        {
+            CallCount++;
+            return payload;
+        }
+    }
+
     private sealed class CapturingTaggedFieldTransformerProvider : ISchemaRegistryTaggedFieldTransformerProvider
     {
         internal List<(Schema PayloadSchema, Schema? RuleOwnerSchema)> Calls { get; } = [];
@@ -711,12 +808,28 @@ public sealed class SchemaRegistryMigrationTests
     {
         private readonly Dictionary<int, RegisteredSchema> _byId = [];
         private readonly Dictionary<int, RegisteredSchema> _byVersion = [];
+        private TaskCompletionSource? _lookupEntered;
+        private TaskCompletionSource? _lookupRelease;
         private int _nextId = 1;
 
         public int LatestCacheTtlSecs { get; init; } = -1;
         internal int LatestVersion { get; init; }
         internal int LookupCount { get; private set; }
         internal int LatestCount { get; private set; }
+        internal CancellationToken LastLookupCancellationToken { get; private set; }
+
+        internal void BlockNextLookup()
+        {
+            _lookupEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _lookupRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+
+        internal async Task WaitForBlockedLookupAsync(TimeSpan timeout)
+        {
+            var entered = _lookupEntered
+                ?? throw new InvalidOperationException("No blocked schema lookup was configured.");
+            await entered.Task.WaitAsync(timeout).ConfigureAwait(false);
+        }
 
         internal int Register(string subject, Schema schema)
         {
@@ -768,7 +881,7 @@ public sealed class SchemaRegistryMigrationTests
             CancellationToken cancellationToken = default) =>
             GetSchemaBySubjectAsync(subject, version, cancellationToken);
 
-        public Task<RegisteredSchema> LookupSchemaAsync(
+        public async Task<RegisteredSchema> LookupSchemaAsync(
             string subject,
             Schema schema,
             bool ignoreDeletedSchemas = true,
@@ -776,9 +889,17 @@ public sealed class SchemaRegistryMigrationTests
             CancellationToken cancellationToken = default)
         {
             LookupCount++;
+            LastLookupCancellationToken = cancellationToken;
+            var release = Interlocked.Exchange(ref _lookupRelease, null);
+            if (release is not null)
+            {
+                _lookupEntered!.TrySetResult();
+                await release.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+
             var registered = _byId.Values.SingleOrDefault(candidate => ReferenceEquals(candidate.Schema, schema))
                 ?? throw new SchemaRegistryException(40403, "Schema not found.");
-            return Task.FromResult(registered);
+            return registered;
         }
 
         public Task<int> RegisterSchemaAsync(
