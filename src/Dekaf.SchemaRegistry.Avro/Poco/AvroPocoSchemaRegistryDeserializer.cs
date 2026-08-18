@@ -95,9 +95,13 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         var subject = GetSubjectName(context.Topic, isKey);
         var preparedKey = new PreparedRuleKey(schemaId, context.Topic, isKey);
         if (TryGetCachedPlan(schemaId, out _) &&
-            TryGetPreparedRuleState(preparedKey, out _))
+            TryGetPreparedRuleState(preparedKey, out var preparedState))
         {
-            return default;
+            return _migrationRunner?.PrepareAsync(
+                schemaId,
+                preparedState.Subject,
+                preparedState.Schema,
+                cancellationToken) ?? default;
         }
 
         return PrepareRulesAsync(schemaId, subject, preparedKey, cancellationToken);
@@ -145,6 +149,13 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
                 }
 
                 Volatile.Write(ref _lastPreparedRuleState, preparedState);
+            }
+
+            if (_migrationRunner is not null &&
+                !_migrationRunner.TryUsePreparedPlan(schemaId, preparedState.Subject))
+            {
+                value = default!;
+                return false;
             }
 
             value = DeserializePreparedWithRules(
@@ -277,7 +288,8 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
                 schemaId,
                 subject,
                 scopedSchema,
-                context);
+                context,
+                skipLatestRefresh: true);
         }
 
         if (scopedSchema.RuleSet is not null)
@@ -344,7 +356,8 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         int schemaId,
         string subject,
         Schema scopedSchema,
-        SerializationContext context)
+        SerializationContext context,
+        bool skipLatestRefresh = false)
     {
         var taggedWorkspaceOperation = AvroTaggedFieldTransformerProvider.BeginOperation();
         try
@@ -356,7 +369,8 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
                 scopedSchema,
                 context,
                 SchemaRegistryPayloadFormat.Avro,
-                _taggedFieldTransformers);
+                _taggedFieldTransformers,
+                skipLatestRefresh);
             var reader = new AvroValueReader(migration.Payload.Span);
             return TCodec.Read(
                 ref reader,

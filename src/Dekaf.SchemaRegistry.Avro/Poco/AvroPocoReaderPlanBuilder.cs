@@ -332,10 +332,7 @@ internal static class AvroPocoReaderPlanBuilder
         Dictionary<RecordSchema, AvroPocoReadNode> records)
     {
         if (records.TryGetValue(record, out var existing))
-        {
-            existing.RequiresDepthGuard = true;
             return existing;
-        }
 
         var node = new AvroPocoReadNode(AvroPocoTypeKind.Record);
         records.Add(record, node);

@@ -62,8 +62,6 @@ public sealed class AvroPocoReadNode
     /// <summary>Writer record fields in encoded order.</summary>
     public ReadOnlyMemory<AvroPocoReadNode> Fields { get; internal set; }
 
-    internal bool RequiresDepthGuard { get; set; }
-
     /// <summary>Nested writer-to-reader record plan.</summary>
     public AvroPocoReaderPlan? RecordPlan { get; internal init; }
 

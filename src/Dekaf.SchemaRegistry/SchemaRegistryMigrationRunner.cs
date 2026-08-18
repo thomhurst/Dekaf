@@ -16,6 +16,7 @@ internal sealed class SchemaRegistryMigrationRunner
     private readonly SchemaResolutionCache<MigrationPlan> _plans = new();
     private readonly TimeSpan _timeout;
     private MigrationPlan? _lastPlan;
+    private MigrationPlan? _preparedPlan;
     private readonly long _latestCacheTtlMilliseconds;
 
     internal SchemaRegistryMigrationRunner(
@@ -58,13 +59,22 @@ internal sealed class SchemaRegistryMigrationRunner
             plan.WriterSchemaId == schemaId &&
             string.Equals(plan.Subject, subject, StringComparison.Ordinal))
         {
-            return default;
+            if (!IsExpired(plan))
+                return default;
+
+            _plans.TryRemove(subject, writerSchema, plan);
+            return AwaitPreparedPlanAsync(schemaId, subject, writerSchema, cancellationToken);
         }
 
         if (_plans.TryGet(subject, writerSchema, out plan))
         {
-            Volatile.Write(ref _lastPlan, plan);
-            return default;
+            if (!IsExpired(plan))
+            {
+                Volatile.Write(ref _lastPlan, plan);
+                return default;
+            }
+
+            _plans.TryRemove(subject, writerSchema, plan);
         }
 
         return AwaitPreparedPlanAsync(schemaId, subject, writerSchema, cancellationToken);
@@ -90,6 +100,26 @@ internal sealed class SchemaRegistryMigrationRunner
         }
 
         Volatile.Write(ref _lastPlan, plan);
+        Volatile.Write(ref _preparedPlan, plan);
+    }
+
+    internal bool TryUsePreparedPlan(int schemaId, string subject)
+    {
+        var plan = Volatile.Read(ref _lastPlan);
+        if (plan is null ||
+            plan.WriterSchemaId != schemaId ||
+            !string.Equals(plan.Subject, subject, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (!IsExpired(plan))
+        {
+            _ = Interlocked.CompareExchange(ref _preparedPlan, null, plan);
+            return true;
+        }
+
+        return ReferenceEquals(Interlocked.CompareExchange(ref _preparedPlan, null, plan), plan);
     }
 
     internal MigrationResult Transform(
@@ -99,7 +129,8 @@ internal sealed class SchemaRegistryMigrationRunner
         Schema writerSchema,
         SerializationContext serializationContext,
         SchemaRegistryPayloadFormat payloadFormat,
-        ISchemaRegistryTaggedFieldTransformerProvider? taggedFieldTransformers = null)
+        ISchemaRegistryTaggedFieldTransformerProvider? taggedFieldTransformers = null,
+        bool skipLatestRefresh = false)
     {
         var isNewPlan = false;
         var plan = Volatile.Read(ref _lastPlan);
@@ -116,9 +147,7 @@ internal sealed class SchemaRegistryMigrationRunner
             Volatile.Write(ref _lastPlan, plan);
         }
 
-        if (!isNewPlan &&
-            _latestCacheTtlMilliseconds >= 0 &&
-            Environment.TickCount64 - plan.CreatedAtMilliseconds >= _latestCacheTtlMilliseconds)
+        if (!isNewPlan && !skipLatestRefresh && IsExpired(plan))
         {
             _plans.TryRemove(subject, writerSchema, plan);
             plan = _plans.Resolve(subject, writerSchema, this, s_createPlan, _timeout);
@@ -218,6 +247,11 @@ internal sealed class SchemaRegistryMigrationRunner
 
         return new MigrationResult(payload, plan.ReaderSchema, payloadSchemaId, payloadSchema);
     }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool IsExpired(MigrationPlan plan) =>
+        _latestCacheTtlMilliseconds >= 0 &&
+        Environment.TickCount64 - plan.CreatedAtMilliseconds >= _latestCacheTtlMilliseconds;
 
     private bool TransformMigrationSteps(
         ref ReadOnlyMemory<byte> payload,

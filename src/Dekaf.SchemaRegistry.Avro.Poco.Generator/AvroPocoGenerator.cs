@@ -1263,7 +1263,7 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                     Assign(code, target, node + ".Kind switch { global::Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.Double => reader.ReadDouble(), global::Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.Float => reader.ReadSingle(), global::Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.Int => reader.ReadInt32(), _ => reader.ReadInt64() }", indent);
                     break;
                 case TypeKindModel.Bytes:
-                    Assign(code, target, "reader.ReadBytes()", indent);
+                    Assign(code, target, node + ".Kind is global::Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.String or global::Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.Uuid ? reader.ReadStringBytes() : reader.ReadBytes()", indent);
                     break;
                 case TypeKindModel.String:
                     Assign(code, target, "reader.ReadString()", indent);

@@ -95,6 +95,14 @@ public ref struct AvroValueReader
         return ReadBytesSpan().ToArray();
     }
 
+    /// <summary>Reads validated Avro string bytes into the returned object graph.</summary>
+    public byte[] ReadStringBytes()
+    {
+        var value = ReadBytesSpan();
+        ValidateUtf8(value);
+        return value.ToArray();
+    }
+
     /// <summary>Reads Avro bytes as a view over the input payload.</summary>
     public ReadOnlySpan<byte> ReadBytesSpan()
     {
@@ -233,46 +241,80 @@ public ref struct AvroValueReader
                 _position += sizeof(double);
                 return;
             case AvroPocoTypeKind.Bytes:
-            case AvroPocoTypeKind.String:
             case AvroPocoTypeKind.Decimal:
-            case AvroPocoTypeKind.Uuid:
                 if (node.FixedSize > 0)
                     SkipFixed(node.FixedSize);
                 else
                     SkipBytes();
                 return;
+            case AvroPocoTypeKind.String:
+            case AvroPocoTypeKind.Uuid:
+                SkipString();
+                return;
             case AvroPocoTypeKind.Record:
-                if (node.RequiresDepthGuard)
-                {
-                    SkipRecursiveRecord(node);
-                    return;
-                }
-                foreach (var field in node.Fields.Span)
-                    Skip(field);
+                SkipNestedRecord(node);
                 return;
             case AvroPocoTypeKind.Array:
-                SkipCollection(node.Item!);
+                SkipNestedCollection(node.Item!);
                 return;
             case AvroPocoTypeKind.Map:
-                SkipMap(node.Item!);
+                SkipNestedMap(node.Item!);
                 return;
             case AvroPocoTypeKind.Union:
-                var branches = node.Branches.Span;
-                var branch = ReadIndex(branches.Length);
-                Skip(branches[branch]);
+                SkipNestedUnion(node.Branches.Span);
                 return;
             default:
                 throw new InvalidDataException($"Unsupported Avro writer type {node.Kind}.");
         }
     }
 
-    private void SkipRecursiveRecord(AvroPocoReadNode node)
+    private void SkipNestedRecord(AvroPocoReadNode node)
     {
         EnterSkipNode();
         try
         {
             foreach (var field in node.Fields.Span)
                 Skip(field);
+        }
+        finally
+        {
+            _skipDepth--;
+        }
+    }
+
+    private void SkipNestedCollection(AvroPocoReadNode item)
+    {
+        EnterSkipNode();
+        try
+        {
+            SkipCollection(item);
+        }
+        finally
+        {
+            _skipDepth--;
+        }
+    }
+
+    private void SkipNestedMap(AvroPocoReadNode item)
+    {
+        EnterSkipNode();
+        try
+        {
+            SkipMap(item);
+        }
+        finally
+        {
+            _skipDepth--;
+        }
+    }
+
+    private void SkipNestedUnion(ReadOnlySpan<AvroPocoReadNode> branches)
+    {
+        EnterSkipNode();
+        try
+        {
+            var branch = ReadIndex(branches.Length);
+            Skip(branches[branch]);
         }
         finally
         {
@@ -292,6 +334,14 @@ public ref struct AvroValueReader
     {
         var length = ReadLength();
         Ensure(length);
+        _position += length;
+    }
+
+    private void SkipString()
+    {
+        var length = ReadLength();
+        Ensure(length);
+        ValidateUtf8(_source.Slice(_position, length));
         _position += length;
     }
 
@@ -324,13 +374,25 @@ public ref struct AvroValueReader
         {
             for (var index = 0; index < count; index++)
             {
-                SkipBytes();
+                SkipString();
                 Skip(item);
             }
 
             count = ReadBlockCount();
             if (count != 0)
                 total = AddCollectionCount(total, count);
+        }
+    }
+
+    private static void ValidateUtf8(ReadOnlySpan<byte> value)
+    {
+        try
+        {
+            _ = StrictUtf8.GetCharCount(value);
+        }
+        catch (DecoderFallbackException exception)
+        {
+            throw new InvalidDataException("Invalid Avro UTF-8 string.", exception);
         }
     }
 
