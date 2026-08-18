@@ -88,7 +88,7 @@ internal sealed class SchemaRegistryMigrationRunner
             }
 
             if (_ruleExecutor is null)
-                return new MigrationResult(payload, plan.ReaderSchema);
+                return new MigrationResult(payload, plan.ReaderSchema, PayloadWasMigrated: false);
 
             var readerContext = SchemaRegistryRuleContext.Rent(
                 serializationContext.Topic,
@@ -106,7 +106,7 @@ internal sealed class SchemaRegistryMigrationRunner
                 readerContext.Return();
             }
 
-            return new MigrationResult(payload, plan.ReaderSchema);
+            return new MigrationResult(payload, plan.ReaderSchema, PayloadWasMigrated: false);
         }
 
         var context = SchemaRegistryRuleContext.Rent(
@@ -166,7 +166,7 @@ internal sealed class SchemaRegistryMigrationRunner
             context.Return();
         }
 
-        return new MigrationResult(payload, plan.ReaderSchema);
+        return new MigrationResult(payload, plan.ReaderSchema, PayloadWasMigrated: steps.Length != 0);
     }
 
     private async Task<MigrationPlan> CreatePlanAsync(string subject, Schema writerSchema)
@@ -235,7 +235,8 @@ internal sealed class SchemaRegistryMigrationRunner
 
     internal readonly record struct MigrationResult(
         ReadOnlyMemory<byte> Payload,
-        RegisteredSchema ReaderSchema);
+        RegisteredSchema ReaderSchema,
+        bool PayloadWasMigrated);
 
     private sealed class MigrationPlan(
         int writerSchemaId,

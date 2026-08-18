@@ -185,6 +185,8 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
         _decimalPoco = null!;
     private AvroPocoSchemaRegistryDeserializer<PocoWriterUnionBenchmarkRecord, PocoWriterUnionBenchmarkRecord.AvroCodec>
         _writerUnionPoco = null!;
+    private AvroPocoSchemaRegistryDeserializer<PocoWriterUnionBenchmarkRecord, PocoWriterUnionBenchmarkRecord.AvroCodec>
+        _latestWriterUnionPoco = null!;
     private byte[] _wireData = null!;
     private byte[] _decimalWireData = null!;
     private byte[] _writerUnionWireData = null!;
@@ -214,6 +216,13 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
                 SchemaType = global::Dekaf.SchemaRegistry.SchemaType.Avro,
                 SchemaString = WriterUnionSchemaJson
             }));
+        _latestWriterUnionPoco = PocoWriterUnionBenchmarkRecord.CreateAvroDeserializer(
+            new BenchmarkSchemaRegistryClient(new global::Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = global::Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = WriterUnionSchemaJson
+            }),
+            new AvroDeserializerConfig { UseLatestVersion = true });
         _wireData = CreateWireData();
         _decimalWireData = [0, 0, 0, 0, SchemaId, 0x04, 0x30, 0x39];
         _writerUnionWireData = [0, 0, 0, 0, SchemaId, 0x00, 0x54];
@@ -223,6 +232,7 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
         await _generic.WarmupAsync(SchemaId).ConfigureAwait(false);
         await _decimalPoco.WarmupAsync(SchemaId).ConfigureAwait(false);
         await _writerUnionPoco.WarmupAsync(SchemaId).ConfigureAwait(false);
+        _ = _latestWriterUnionPoco.Deserialize(_writerUnionWireData, _context);
     }
 
     [GlobalCleanup]
@@ -233,6 +243,7 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
         await _generic.DisposeAsync().ConfigureAwait(false);
         await _decimalPoco.DisposeAsync().ConfigureAwait(false);
         await _writerUnionPoco.DisposeAsync().ConfigureAwait(false);
+        await _latestWriterUnionPoco.DisposeAsync().ConfigureAwait(false);
     }
 
     [Benchmark(Baseline = true, Description = "Deserialize generated POCO")]
@@ -251,6 +262,10 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
     [Benchmark(Description = "Deserialize generated POCO writer union")]
     public PocoWriterUnionBenchmarkRecord DeserializeWriterUnionPoco() =>
         _writerUnionPoco.Deserialize(_writerUnionWireData, _context);
+
+    [Benchmark(Description = "Deserialize generated value-type POCO with latest schema")]
+    public PocoWriterUnionBenchmarkRecord DeserializeWriterUnionPocoUseLatest() =>
+        _latestWriterUnionPoco.Deserialize(_writerUnionWireData, _context);
 
     private static byte[] CreateWireData()
     {
@@ -272,11 +287,27 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
     }
 
     private sealed class BenchmarkSchemaRegistryClient(global::Dekaf.SchemaRegistry.Schema schema)
-        : global::Dekaf.SchemaRegistry.ISchemaRegistryClient
+        : global::Dekaf.SchemaRegistry.ISchemaRegistryClient, global::Dekaf.SchemaRegistry.ISchemaRegistryCache
     {
         public Task<global::Dekaf.SchemaRegistry.Schema> GetSchemaAsync(
             int id,
             CancellationToken cancellationToken = default) => Task.FromResult(schema);
+
+        public Task<global::Dekaf.SchemaRegistry.Schema> GetSchemaAsync(
+            int id,
+            string subject,
+            CancellationToken cancellationToken = default) => Task.FromResult(schema);
+
+        public bool TryGetCachedSchema(int id, out global::Dekaf.SchemaRegistry.Schema cachedSchema)
+        {
+            cachedSchema = schema;
+            return true;
+        }
+
+        public bool TryGetCachedSchema(
+            int id,
+            string subject,
+            out global::Dekaf.SchemaRegistry.Schema cachedSchema) => TryGetCachedSchema(id, out cachedSchema);
 
         public Task<int> RegisterSchemaAsync(
             string subject,
@@ -286,7 +317,14 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
         public Task<global::Dekaf.SchemaRegistry.RegisteredSchema> GetSchemaBySubjectAsync(
             string subject,
             string version = "latest",
-            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+            CancellationToken cancellationToken = default) => Task.FromResult(CreateRegisteredSchema(subject));
+
+        public Task<global::Dekaf.SchemaRegistry.RegisteredSchema> LookupSchemaAsync(
+            string subject,
+            global::Dekaf.SchemaRegistry.Schema candidate,
+            bool ignoreDeletedSchemas = true,
+            bool normalize = false,
+            CancellationToken cancellationToken = default) => Task.FromResult(CreateRegisteredSchema(subject));
 
         public Task<int> GetOrRegisterSchemaAsync(
             string subject,
@@ -312,6 +350,14 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
             CancellationToken cancellationToken = default) => throw new NotSupportedException();
 
         public void Dispose() { }
+
+        private global::Dekaf.SchemaRegistry.RegisteredSchema CreateRegisteredSchema(string subject) => new()
+        {
+            Id = SchemaId,
+            Subject = subject,
+            Version = 1,
+            Schema = schema
+        };
     }
 }
 

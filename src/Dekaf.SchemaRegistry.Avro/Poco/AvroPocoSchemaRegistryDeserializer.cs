@@ -112,7 +112,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec> : IDeserialize
                 context,
                 SchemaRegistryPayloadFormat.Avro);
             payload = migration.Payload;
-            plan = GetPlanCached(schemaId);
+            plan = GetPlanCached(migration.PayloadWasMigrated ? migration.ReaderSchema.Id : schemaId);
         }
 
         var reader = new AvroValueReader(payload.Span);
@@ -160,14 +160,20 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec> : IDeserialize
         }
     }
 
-    private string GetSubjectName(string topic, bool isKey) =>
-        _config.CustomSubjectNameStrategy?.GetSubjectName(topic, TCodec.FullName, isKey)
-        ?? SubjectNameResolver.GetSubjectName(
-            _config.SubjectNameStrategy,
-            topic,
-            TCodec.FullName,
-            isKey,
-            _config.UseLegacySubjectNames);
+    private string GetSubjectName(string topic, bool isKey)
+    {
+        if (_config.CustomSubjectNameStrategy is { } customStrategy)
+            return customStrategy.GetSubjectName(topic, TCodec.FullName, isKey);
+
+        return _config.SubjectNameStrategy == SubjectNameStrategy.TopicName
+            ? SubjectNameResolver.GetTopicSubjectName(topic, isKey)
+            : SubjectNameResolver.GetSubjectName(
+                _config.SubjectNameStrategy,
+                topic,
+                TCodec.FullName,
+                isKey,
+                _config.UseLegacySubjectNames);
+    }
 
     /// <inheritdoc />
     public ValueTask DisposeAsync()
