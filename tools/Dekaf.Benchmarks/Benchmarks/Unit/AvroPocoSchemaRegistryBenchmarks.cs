@@ -4,6 +4,7 @@ using Avro.Generic;
 using Avro.IO;
 using Avro.Specific;
 using BenchmarkDotNet.Attributes;
+using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Avro;
 using Dekaf.SchemaRegistry.Avro.Poco;
 using Dekaf.Serialization;
@@ -383,28 +384,61 @@ public class AvroPocoLargePayloadSerializationBenchmarks
     };
     private AvroPocoSchemaRegistrySerializer<PocoLargeBenchmarkRecord, PocoLargeBenchmarkRecord.AvroCodec>
         _serializer = null!;
+    private AvroPocoSchemaRegistrySerializer<PocoLargeBenchmarkRecord, PocoLargeBenchmarkRecord.AvroCodec>
+        _rulesSerializer = null!;
     private PocoLargeBenchmarkRecord _value = null!;
     private ArrayBufferWriter<byte> _buffer = null!;
+    private ArrayBufferWriter<byte> _rulesBuffer = null!;
 
     [GlobalSetup]
     public void Setup()
     {
         _serializer = PocoLargeBenchmarkRecord.CreateAvroSerializer(
             new AvroSchemaRegistrySerializerBenchmarks.BenchmarkSchemaRegistryClient());
+        _rulesSerializer = PocoLargeBenchmarkRecord.CreateAvroSerializer(
+            new AvroSchemaRegistrySerializerBenchmarks.BenchmarkSchemaRegistryClient(),
+            new AvroSerializerConfig { RuleExecutor = PassThroughRuleExecutor.Instance });
         _value = new PocoLargeBenchmarkRecord { Values = new int[PayloadLength] };
         _buffer = new ArrayBufferWriter<byte>(PayloadLength + 16);
+        _rulesBuffer = new ArrayBufferWriter<byte>(PayloadLength + 16);
         _serializer.Serialize(_value, ref _buffer, _context);
         _buffer.Clear();
+        _rulesSerializer.Serialize(_value, ref _rulesBuffer, _context);
+        _rulesBuffer.Clear();
     }
 
     [GlobalCleanup]
-    public async ValueTask Cleanup() => await _serializer.DisposeAsync().ConfigureAwait(false);
+    public async ValueTask Cleanup()
+    {
+        await _serializer.DisposeAsync().ConfigureAwait(false);
+        await _rulesSerializer.DisposeAsync().ConfigureAwait(false);
+    }
 
     [Benchmark]
     public void SerializeLargePayload()
     {
         _buffer.Clear();
         _serializer.Serialize(_value, ref _buffer, _context);
+    }
+
+    [Benchmark]
+    public void SerializeLargePayloadWithRules()
+    {
+        _rulesBuffer.Clear();
+        _rulesSerializer.Serialize(_value, ref _rulesBuffer, _context);
+    }
+
+    private sealed class PassThroughRuleExecutor : ISchemaRegistryRuleExecutor
+    {
+        internal static PassThroughRuleExecutor Instance { get; } = new();
+
+        public ReadOnlyMemory<byte> TransformSerializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleContext context) => payload;
+
+        public ReadOnlyMemory<byte> TransformDeserializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleContext context) => payload;
     }
 }
 

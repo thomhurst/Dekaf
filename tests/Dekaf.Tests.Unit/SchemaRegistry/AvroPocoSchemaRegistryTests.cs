@@ -7,13 +7,16 @@ using Avro.Generic;
 using Dekaf.SchemaRegistry.Avro;
 using Dekaf.SchemaRegistry.Avro.Poco;
 using Dekaf.Serialization;
+using ISchemaRegistryRuleExecutor = Dekaf.SchemaRegistry.ISchemaRegistryRuleExecutor;
 using ISchemaRegistryRuleHandler = Dekaf.SchemaRegistry.ISchemaRegistryRuleHandler;
+using SchemaRegistryRuleContext = Dekaf.SchemaRegistry.SchemaRegistryRuleContext;
 using SchemaRegistryRuleExecutor = Dekaf.SchemaRegistry.SchemaRegistryRuleExecutor;
 using SchemaRegistryRuleHandlerContext = Dekaf.SchemaRegistry.SchemaRegistryRuleHandlerContext;
 using SchemaRule = Dekaf.SchemaRegistry.SchemaRule;
 using SchemaRuleKind = Dekaf.SchemaRegistry.SchemaRuleKind;
 using SchemaRuleMode = Dekaf.SchemaRegistry.SchemaRuleMode;
 using SchemaRuleSet = Dekaf.SchemaRegistry.SchemaRuleSet;
+using SubjectNameStrategy = Dekaf.SchemaRegistry.SubjectNameStrategy;
 
 namespace Dekaf.Tests.Unit.SchemaRegistry;
 
@@ -400,6 +403,75 @@ public sealed class AvroPocoSchemaRegistryTests
         serializer.Serialize(value, ref destination, context);
 
         await Assert.That(destination.GetMemoryCallCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task GeneratedCodec_RulesPathLargePayloadAllocatesZeroAfterWarmup()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        await using var serializer = PocoLargeGrowingPayload.CreateAvroSerializer(
+            registry,
+            new AvroSerializerConfig { RuleExecutor = PassThroughRuleExecutor.Instance });
+        var context = new SerializationContext
+        {
+            Topic = "poco-large-rules-allocation",
+            Component = SerializationComponent.Value
+        };
+        var value = new PocoLargeGrowingPayload { Value = new string('x', 1024 * 1024 + 1) };
+        var destination = new ExactSizeBufferWriter(2 * 1024 * 1024 + 16);
+
+        serializer.Serialize(value, ref destination, context);
+        destination.Clear();
+        serializer.Serialize(value, ref destination, context);
+        destination.Clear();
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        serializer.Serialize(value, ref destination, context);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        await Assert.That(allocated).IsEqualTo(0);
+        await Assert.That(destination.WrittenCount).IsGreaterThan(1024 * 1024);
+    }
+
+    [Test]
+    [Arguments(SubjectNameStrategy.TopicRecordName, false)]
+    [Arguments(SubjectNameStrategy.TopicRecordName, true)]
+    [Arguments(SubjectNameStrategy.RecordName, true)]
+    public async Task GeneratedCodec_RulesPathSubjectResolutionAllocatesZeroAfterWarmup(
+        SubjectNameStrategy strategy,
+        bool useLegacySubjectNames)
+    {
+        using var registry = new MockSchemaRegistryClient();
+        var serializerConfig = new AvroSerializerConfig
+        {
+            SubjectNameStrategy = strategy,
+            UseLegacySubjectNames = useLegacySubjectNames
+        };
+        var deserializerConfig = new AvroDeserializerConfig
+        {
+            SubjectNameStrategy = strategy,
+            UseLegacySubjectNames = useLegacySubjectNames,
+            RuleExecutor = PassThroughRuleExecutor.Instance
+        };
+        await using var serializer = PocoReadonlyRecord.CreateAvroSerializer(registry, serializerConfig);
+        await using var deserializer = PocoReadonlyRecord.CreateAvroDeserializer(registry, deserializerConfig);
+        var context = new SerializationContext
+        {
+            Topic = $"poco-subject-allocation-{strategy}-{useLegacySubjectNames}",
+            Component = SerializationComponent.Value
+        };
+        var destination = new ArrayBufferWriter<byte>(16);
+        serializer.Serialize(new PocoReadonlyRecord { Id = 42 }, ref destination, context);
+
+        for (var index = 0; index < 16; index++)
+            _ = deserializer.Deserialize(destination.WrittenMemory, context);
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 1_000; index++)
+            _ = deserializer.Deserialize(destination.WrittenMemory, context);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        await Assert.That(allocated).IsEqualTo(0);
     }
 
     [Test]
@@ -972,6 +1044,19 @@ public sealed class AvroPocoSchemaRegistryTests
         public ReadOnlyMemory<byte> TransformDeserializedPayload(
             ReadOnlyMemory<byte> source,
             SchemaRegistryRuleHandlerContext context) => source;
+    }
+
+    private sealed class PassThroughRuleExecutor : ISchemaRegistryRuleExecutor
+    {
+        internal static PassThroughRuleExecutor Instance { get; } = new();
+
+        public ReadOnlyMemory<byte> TransformSerializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleContext context) => payload;
+
+        public ReadOnlyMemory<byte> TransformDeserializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleContext context) => payload;
     }
 
     private sealed class FixedPayloadMigrationHandler(ReadOnlyMemory<byte> payload) : ISchemaRegistryRuleHandler

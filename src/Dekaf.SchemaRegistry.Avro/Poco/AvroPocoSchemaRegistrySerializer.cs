@@ -25,6 +25,9 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
     [ThreadStatic]
     private static byte[]? t_ruleBuffer;
 
+    [ThreadStatic]
+    private static int t_rulePayloadSizeHint;
+
     private readonly ISchemaRegistryClient _schemaRegistry;
     private readonly AvroSerializerConfig _config;
     private readonly bool _ownsClient;
@@ -175,46 +178,61 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         , allows ref struct
 #endif
     {
-        var buffer = GetOrCreateRuleBuffer();
-        int length;
-        while (true)
-        {
-            var writer = new AvroValueWriter(buffer);
-            TCodec.Write(ref writer, value);
-            if (writer.IsComplete)
-            {
-                length = writer.WrittenCount;
-                break;
-            }
-
-            var nextLength = Grow(buffer.Length);
-            buffer = GC.AllocateUninitializedArray<byte>(nextLength);
-            if (nextLength <= MaxRetainedPayloadSize)
-                RetainRuleBuffer(buffer);
-        }
-
-        var payload = new ReadOnlyMemory<byte>(buffer, 0, length);
-        var ruleContext = SchemaRegistryRuleContext.Rent(
-            context.Topic,
-            context.Component,
-            entry.SchemaId,
-            entry.Subject!,
-            entry.Schema!,
-            SchemaRegistryPayloadFormat.Avro);
+        var buffer = GetRuleBuffer(out var bufferIsPooled);
         try
         {
-            payload = ruleExecutor.TransformSerializedPayload(payload, ruleContext);
+            int length;
+            while (true)
+            {
+                var writer = new AvroValueWriter(buffer);
+                TCodec.Write(ref writer, value);
+                if (writer.IsComplete)
+                {
+                    length = writer.WrittenCount;
+                    t_rulePayloadSizeHint = Math.Max(InitialPayloadSize, length);
+                    break;
+                }
+
+                var nextLength = Grow(buffer.Length);
+                var nextBuffer = nextLength > MaxRetainedPayloadSize
+                    ? ArrayPool<byte>.Shared.Rent(nextLength)
+                    : GC.AllocateUninitializedArray<byte>(nextLength);
+                if (bufferIsPooled)
+                    ArrayPool<byte>.Shared.Return(buffer);
+                else if (nextLength <= MaxRetainedPayloadSize)
+                    RetainRuleBuffer(nextBuffer);
+                buffer = nextBuffer;
+                bufferIsPooled = nextLength > MaxRetainedPayloadSize;
+            }
+
+            var payload = new ReadOnlyMemory<byte>(buffer, 0, length);
+            var ruleContext = SchemaRegistryRuleContext.Rent(
+                context.Topic,
+                context.Component,
+                entry.SchemaId,
+                entry.Subject!,
+                entry.Schema!,
+                SchemaRegistryPayloadFormat.Avro);
+            try
+            {
+                payload = ruleExecutor.TransformSerializedPayload(payload, ruleContext);
+            }
+            finally
+            {
+                ruleContext.Return();
+            }
+
+            var output = destination.GetSpan(WireHeaderSize + payload.Length);
+            output[0] = MagicByte;
+            BinaryPrimitives.WriteInt32BigEndian(output.Slice(1, 4), entry.SchemaId);
+            payload.Span.CopyTo(output.Slice(WireHeaderSize));
+            destination.Advance(WireHeaderSize + payload.Length);
         }
         finally
         {
-            ruleContext.Return();
+            if (bufferIsPooled)
+                ArrayPool<byte>.Shared.Return(buffer);
         }
-
-        var output = destination.GetSpan(WireHeaderSize + payload.Length);
-        output[0] = MagicByte;
-        BinaryPrimitives.WriteInt32BigEndian(output.Slice(1, 4), entry.SchemaId);
-        payload.Span.CopyTo(output.Slice(WireHeaderSize));
-        destination.Advance(WireHeaderSize + payload.Length);
     }
 
     private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry GetSchemaForContext(string topic, bool isKey) =>
@@ -340,8 +358,18 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         return (int)Math.Min((long)current * 2, maximum);
     }
 
-    private static byte[] GetOrCreateRuleBuffer() =>
-        t_ruleBuffer ??= GC.AllocateUninitializedArray<byte>(1024);
+    private static byte[] GetRuleBuffer(out bool bufferIsPooled)
+    {
+        var sizeHint = t_rulePayloadSizeHint;
+        if (sizeHint > MaxRetainedPayloadSize)
+        {
+            bufferIsPooled = true;
+            return ArrayPool<byte>.Shared.Rent(sizeHint);
+        }
+
+        bufferIsPooled = false;
+        return t_ruleBuffer ??= GC.AllocateUninitializedArray<byte>(1024);
+    }
 
     private static void RetainRuleBuffer(byte[] buffer) => t_ruleBuffer = buffer;
 

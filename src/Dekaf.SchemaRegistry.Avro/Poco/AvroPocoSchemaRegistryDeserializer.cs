@@ -11,6 +11,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec> : IDeserialize
 {
     private const byte MagicByte = 0;
     private const int WireHeaderSize = 5;
+    private const int GeneratedSubjectCacheSchemaId = 0;
     private static readonly TimeSpan RegistryTimeout = TimeSpan.FromSeconds(30);
 
     private readonly ISchemaRegistryClient _schemaRegistry;
@@ -19,6 +20,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec> : IDeserialize
     private readonly ConcurrentDictionary<int, Lazy<Task<AvroPocoReaderPlan>>> _plans = new();
     private readonly SchemaRegistryMigrationRunner? _migrationRunner;
     private readonly ISchemaRegistryRuleExecutor? _ruleExecutor;
+    private readonly DeserializerSubjectNameCache? _subjectNames;
 
     /// <summary>Creates a generated POCO Avro deserializer.</summary>
     public AvroPocoSchemaRegistryDeserializer(
@@ -43,6 +45,14 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec> : IDeserialize
                 schemaRegistry,
                 _config.RuleExecutor,
                 RegistryTimeout);
+        }
+
+        if (_ruleExecutor is not null)
+        {
+            _subjectNames = DeserializerSubjectNameCache.Create(
+                _config.SubjectNameStrategy,
+                _config.CustomSubjectNameStrategy,
+                _config.UseLegacySubjectNames);
         }
     }
 
@@ -80,7 +90,9 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec> : IDeserialize
         int schemaId,
         SerializationContext context)
     {
-        var subject = GetSubjectName(context.Topic, context.Component == SerializationComponent.Key);
+        var subject = GetSubjectName(
+            context.Topic,
+            context.Component == SerializationComponent.Key);
         var scopedSchema = _schemaRegistry.GetSchemaSync(schemaId, subject, RegistryTimeout);
         AvroPocoReaderPlan plan;
         if (_migrationRunner is null)
@@ -160,20 +172,9 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec> : IDeserialize
         }
     }
 
-    private string GetSubjectName(string topic, bool isKey)
-    {
-        if (_config.CustomSubjectNameStrategy is { } customStrategy)
-            return customStrategy.GetSubjectName(topic, TCodec.FullName, isKey);
-
-        return _config.SubjectNameStrategy == SubjectNameStrategy.TopicName
-            ? SubjectNameResolver.GetTopicSubjectName(topic, isKey)
-            : SubjectNameResolver.GetSubjectName(
-                _config.SubjectNameStrategy,
-                topic,
-                TCodec.FullName,
-                isKey,
-                _config.UseLegacySubjectNames);
-    }
+    private string GetSubjectName(string topic, bool isKey) =>
+        _subjectNames?.GetSubjectName(GeneratedSubjectCacheSchemaId, null, topic, isKey, TCodec.FullName)
+        ?? SubjectNameResolver.GetTopicSubjectName(topic, isKey);
 
     /// <inheritdoc />
     public ValueTask DisposeAsync()
