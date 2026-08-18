@@ -732,6 +732,34 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    public async Task GeneratedCodec_SkipsUnsupportedLogicalFieldByBaseType()
+    {
+        const string writerSchemaJson =
+            """
+            {"type":"record","name":"PocoEvolved","namespace":"Dekaf.Tests","fields":[{"name":"legacy_id","type":"int"},{"name":"removed_local_timestamp","type":{"type":"long","logicalType":"local-timestamp-micros"}}]}
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        await using var writer = new AvroSchemaRegistrySerializer<GenericRecord>(registry);
+        await using var reader = PocoEvolved.CreateAvroDeserializer(registry);
+        var writerSchema = (RecordSchema)Schema.Parse(writerSchemaJson);
+        var generic = new GenericRecord(writerSchema);
+        generic.Add("legacy_id", 42);
+        generic.Add("removed_local_timestamp", new DateTime(2026, 8, 18, 1, 0, 0));
+        var context = new SerializationContext
+        {
+            Topic = "poco-skip-logical",
+            Component = SerializationComponent.Value
+        };
+        var destination = new ArrayBufferWriter<byte>();
+
+        writer.Serialize(generic, ref destination, context);
+        var actual = reader.Deserialize(destination.WrittenMemory, context);
+
+        await Assert.That(actual.Id).IsEqualTo(42L);
+        await Assert.That(actual.Note).IsEqualTo("added-by-reader");
+    }
+
+    [Test]
     public async Task GeneratedCodec_UsesIncomingWriterPlanWhenMigrationHasOnlyConditions()
     {
         const string writerSchemaJson =

@@ -283,7 +283,7 @@ internal static class AvroPocoReaderPlanBuilder
     {
         if (writer is LogicalSchema logical)
         {
-            return new AvroPocoReadNode(logical.LogicalTypeName switch
+            var kind = logical.LogicalTypeName switch
             {
                 "date" => AvroPocoTypeKind.Date,
                 "time-millis" => AvroPocoTypeKind.TimeMilliseconds,
@@ -292,9 +292,12 @@ internal static class AvroPocoReaderPlanBuilder
                 "timestamp-micros" => AvroPocoTypeKind.TimestampMicroseconds,
                 "uuid" => AvroPocoTypeKind.Uuid,
                 "decimal" => AvroPocoTypeKind.Decimal,
-                _ => throw new InvalidOperationException(
-                    $"Writer schema uses unsupported logical type '{logical.LogicalTypeName}'.")
-            })
+                _ => (AvroPocoTypeKind?)null
+            };
+            if (kind is not { } logicalKind)
+                return BuildSkipNode(logical.BaseSchema, activeRecords);
+
+            return new AvroPocoReadNode(logicalKind)
             {
                 FixedSize = logical.BaseSchema is FixedSchema fixedSchema ? fixedSchema.Size : 0
             };
