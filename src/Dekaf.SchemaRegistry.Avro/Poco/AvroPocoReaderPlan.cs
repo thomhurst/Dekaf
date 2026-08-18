@@ -60,7 +60,7 @@ public sealed class AvroPocoReadNode
     public ReadOnlyMemory<AvroPocoReadNode> Branches { get; internal init; }
 
     /// <summary>Writer record fields in encoded order.</summary>
-    public ReadOnlyMemory<AvroPocoReadNode> Fields { get; internal init; }
+    public ReadOnlyMemory<AvroPocoReadNode> Fields { get; internal set; }
 
     /// <summary>Nested writer-to-reader record plan.</summary>
     public AvroPocoReaderPlan? RecordPlan { get; internal init; }

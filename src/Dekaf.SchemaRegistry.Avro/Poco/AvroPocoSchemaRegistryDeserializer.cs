@@ -12,15 +12,21 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec> : IDeserialize
     private const byte MagicByte = 0;
     private const int WireHeaderSize = 5;
     private const int GeneratedSubjectCacheSchemaId = 0;
+    internal const int MaxCachedPlans = 256;
     private static readonly TimeSpan RegistryTimeout = TimeSpan.FromSeconds(30);
 
     private readonly ISchemaRegistryClient _schemaRegistry;
     private readonly AvroDeserializerConfig _config;
     private readonly bool _ownsClient;
-    private readonly ConcurrentDictionary<int, Lazy<Task<AvroPocoReaderPlan>>> _plans = new();
+    private readonly ConcurrentDictionary<int, AvroPocoReaderPlan> _plans = new();
+    private readonly ConcurrentDictionary<int, PlanEntry> _inFlightPlans = new();
+    private readonly ConcurrentQueue<KeyValuePair<int, AvroPocoReaderPlan>> _planEvictionQueue = new();
     private readonly SchemaRegistryMigrationRunner? _migrationRunner;
     private readonly ISchemaRegistryRuleExecutor? _ruleExecutor;
     private readonly DeserializerSubjectNameCache? _subjectNames;
+    private int _cachedPlanCount;
+
+    internal int CachedPlanCount => Volatile.Read(ref _cachedPlanCount);
 
     /// <summary>Creates a generated POCO Avro deserializer.</summary>
     public AvroPocoSchemaRegistryDeserializer(
@@ -133,26 +139,48 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec> : IDeserialize
 
     private AvroPocoReaderPlan GetPlanCached(int schemaId)
     {
-        var task = GetOrAddPlan(schemaId).Value;
+        if (_plans.TryGetValue(schemaId, out var cached))
+            return cached;
+
+        var entry = GetOrAddInFlightPlan(schemaId);
+        if (_plans.TryGetValue(schemaId, out cached))
+        {
+            RemoveInFlightPlan(schemaId, entry);
+            return cached;
+        }
+
+        var task = entry.Plan.Value;
         return task.IsCompletedSuccessfully
             ? task.Result
             : task.WaitAsync(RegistryTimeout).ConfigureAwait(false).GetAwaiter().GetResult();
     }
 
-    private async Task<AvroPocoReaderPlan> GetPlanAsync(int schemaId, CancellationToken cancellationToken) =>
-        await GetOrAddPlan(schemaId).Value.WaitAsync(cancellationToken).ConfigureAwait(false);
-
-    private Lazy<Task<AvroPocoReaderPlan>> GetOrAddPlan(int schemaId)
+    private async Task<AvroPocoReaderPlan> GetPlanAsync(int schemaId, CancellationToken cancellationToken)
     {
         if (_plans.TryGetValue(schemaId, out var cached))
             return cached;
-        return _plans.GetOrAdd(
-            schemaId,
-            static (id, owner) => new Lazy<Task<AvroPocoReaderPlan>>(() => owner.FetchPlanAsync(id)),
-            this);
+
+        cancellationToken.ThrowIfCancellationRequested();
+        var entry = GetOrAddInFlightPlan(schemaId);
+        if (_plans.TryGetValue(schemaId, out cached))
+        {
+            RemoveInFlightPlan(schemaId, entry);
+            return cached;
+        }
+
+        var task = entry.Plan.Value;
+        return task.IsCompletedSuccessfully
+            ? task.Result
+            : await task.WaitAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task<AvroPocoReaderPlan> FetchPlanAsync(int schemaId)
+    private PlanEntry GetOrAddInFlightPlan(int schemaId) =>
+        _inFlightPlans.GetOrAdd(
+            schemaId,
+            static (id, owner) => PlanEntry.Create(owner, id),
+            this);
+
+    private async Task<AvroPocoReaderPlan> FetchPlanAsync(int schemaId, PlanEntry entry)
     {
         try
         {
@@ -163,12 +191,56 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec> : IDeserialize
                 .ConfigureAwait(false);
             if (schema.SchemaType != SchemaType.Avro)
                 throw new InvalidOperationException($"Schema {schemaId} is {schema.SchemaType}, not Avro.");
-            return AvroPocoReaderPlanBuilder.Build<T, TCodec>(schema.SchemaString);
+            var plan = AvroPocoReaderPlanBuilder.Build<T, TCodec>(schema.SchemaString);
+            CacheSuccessfulPlan(schemaId, plan);
+            return plan;
         }
-        catch
+        finally
         {
-            _plans.TryRemove(schemaId, out _);
-            throw;
+            RemoveInFlightPlan(schemaId, entry);
+        }
+    }
+
+    private void RemoveInFlightPlan(int schemaId, PlanEntry entry) =>
+        ((ICollection<KeyValuePair<int, PlanEntry>>)_inFlightPlans)
+        .Remove(new KeyValuePair<int, PlanEntry>(schemaId, entry));
+
+    private void CacheSuccessfulPlan(int schemaId, AvroPocoReaderPlan plan)
+    {
+        if (!_plans.TryAdd(schemaId, plan))
+            return;
+
+        Interlocked.Increment(ref _cachedPlanCount);
+        _planEvictionQueue.Enqueue(new KeyValuePair<int, AvroPocoReaderPlan>(schemaId, plan));
+        TrimPlanCache();
+    }
+
+    private void TrimPlanCache()
+    {
+        while (true)
+        {
+            var count = Volatile.Read(ref _cachedPlanCount);
+            if (count <= MaxCachedPlans)
+                return;
+
+            if (Interlocked.CompareExchange(ref _cachedPlanCount, count - 1, count) != count)
+                continue;
+
+            var removed = false;
+            while (_planEvictionQueue.TryDequeue(out var oldest))
+            {
+                if (((ICollection<KeyValuePair<int, AvroPocoReaderPlan>>)_plans).Remove(oldest))
+                {
+                    removed = true;
+                    break;
+                }
+            }
+
+            if (!removed)
+            {
+                Interlocked.Increment(ref _cachedPlanCount);
+                return;
+            }
         }
     }
 
@@ -182,5 +254,34 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec> : IDeserialize
         if (_ownsClient)
             _schemaRegistry.Dispose();
         return ValueTask.CompletedTask;
+    }
+
+    private sealed class PlanEntry
+    {
+        private PlanEntry()
+        {
+        }
+
+        internal Lazy<Task<AvroPocoReaderPlan>> Plan { get; private set; } = null!;
+
+        internal static PlanEntry Create(
+            AvroPocoSchemaRegistryDeserializer<T, TCodec> owner,
+            int schemaId)
+        {
+            var entry = new PlanEntry();
+            entry.Plan = new Lazy<Task<AvroPocoReaderPlan>>(
+                () => ObserveFault(owner.FetchPlanAsync(schemaId, entry)));
+            return entry;
+        }
+
+        private static Task<AvroPocoReaderPlan> ObserveFault(Task<AvroPocoReaderPlan> task)
+        {
+            _ = task.ContinueWith(
+                static completed => _ = completed.Exception,
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously | TaskContinuationOptions.OnlyOnFaulted,
+                TaskScheduler.Default);
+            return task;
+        }
     }
 }

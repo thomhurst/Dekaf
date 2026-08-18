@@ -275,11 +275,13 @@ internal static class AvroPocoReaderPlanBuilder
         };
 
     private static AvroPocoReadNode BuildSkipNode(AvroSchema writer) =>
-        BuildSkipNode(writer, new HashSet<RecordSchema>(ReferenceEqualityComparer.Instance));
+        BuildSkipNode(
+            writer,
+            new Dictionary<RecordSchema, AvroPocoReadNode>(ReferenceEqualityComparer.Instance));
 
     private static AvroPocoReadNode BuildSkipNode(
         AvroSchema writer,
-        HashSet<RecordSchema> activeRecords)
+        Dictionary<RecordSchema, AvroPocoReadNode> records)
     {
         if (writer is LogicalSchema logical)
         {
@@ -295,7 +297,7 @@ internal static class AvroPocoReaderPlanBuilder
                 _ => null
             };
             if (kind is not { } logicalKind)
-                return BuildSkipNode(logical.BaseSchema, activeRecords);
+                return BuildSkipNode(logical.BaseSchema, records);
 
             return new AvroPocoReadNode(logicalKind)
             {
@@ -305,18 +307,18 @@ internal static class AvroPocoReaderPlanBuilder
 
         return writer switch
         {
-            RecordSchema record => BuildSkipRecord(record, activeRecords),
+            RecordSchema record => BuildSkipRecord(record, records),
             ArraySchema array => new AvroPocoReadNode(AvroPocoTypeKind.Array)
             {
-                Item = BuildSkipNode(array.ItemSchema, activeRecords)
+                Item = BuildSkipNode(array.ItemSchema, records)
             },
             MapSchema map => new AvroPocoReadNode(AvroPocoTypeKind.Map)
             {
-                Item = BuildSkipNode(map.ValueSchema, activeRecords)
+                Item = BuildSkipNode(map.ValueSchema, records)
             },
             UnionSchema union => new AvroPocoReadNode(AvroPocoTypeKind.Union)
             {
-                Branches = BuildSkipBranches(union, activeRecords)
+                Branches = BuildSkipBranches(union, records)
             },
             EnumSchema => new AvroPocoReadNode(AvroPocoTypeKind.Enum),
             FixedSchema fixedSchema => new AvroPocoReadNode(AvroPocoTypeKind.Bytes)
@@ -329,44 +331,34 @@ internal static class AvroPocoReaderPlanBuilder
 
     private static AvroPocoReadNode BuildSkipRecord(
         RecordSchema record,
-        HashSet<RecordSchema> activeRecords)
+        Dictionary<RecordSchema, AvroPocoReadNode> records)
     {
-        if (!activeRecords.Add(record))
-        {
-            throw new InvalidOperationException(
-                $"Recursive writer record '{record.Fullname}' cannot be skipped by a generated POCO reader.");
-        }
+        if (records.TryGetValue(record, out var existing))
+            return existing;
 
-        try
-        {
-            return new AvroPocoReadNode(AvroPocoTypeKind.Record)
-            {
-                Fields = BuildSkipFields(record, activeRecords)
-            };
-        }
-        finally
-        {
-            activeRecords.Remove(record);
-        }
+        var node = new AvroPocoReadNode(AvroPocoTypeKind.Record);
+        records.Add(record, node);
+        node.Fields = BuildSkipFields(record, records);
+        return node;
     }
 
     private static AvroPocoReadNode[] BuildSkipFields(
         RecordSchema record,
-        HashSet<RecordSchema> activeRecords)
+        Dictionary<RecordSchema, AvroPocoReadNode> records)
     {
         var nodes = new AvroPocoReadNode[record.Count];
         for (var index = 0; index < nodes.Length; index++)
-            nodes[index] = BuildSkipNode(record.Fields[index].Schema, activeRecords);
+            nodes[index] = BuildSkipNode(record.Fields[index].Schema, records);
         return nodes;
     }
 
     private static AvroPocoReadNode[] BuildSkipBranches(
         UnionSchema union,
-        HashSet<RecordSchema> activeRecords)
+        Dictionary<RecordSchema, AvroPocoReadNode> records)
     {
         var nodes = new AvroPocoReadNode[union.Count];
         for (var index = 0; index < nodes.Length; index++)
-            nodes[index] = BuildSkipNode(union[index], activeRecords);
+            nodes[index] = BuildSkipNode(union[index], records);
         return nodes;
     }
 

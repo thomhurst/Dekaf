@@ -632,17 +632,34 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
-    public async Task GeneratedCodec_RejectsRecursiveSkippedWriterRecordWithoutStackOverflow()
+    public async Task GeneratedCodec_SkipsFiniteRecursiveWriterRecord()
     {
         const string writerSchemaJson =
             """
             {"type":"record","name":"PocoEvolved","namespace":"Dekaf.Tests","fields":[{"name":"legacy_id","type":"int"},{"name":"recursive","type":["null","Dekaf.Tests.PocoEvolved"]}]}
             """;
+        using var registry = new MockSchemaRegistryClient();
+        await using var writer = new AvroSchemaRegistrySerializer<GenericRecord>(registry);
+        await using var reader = PocoEvolved.CreateAvroDeserializer(registry);
+        var writerSchema = (RecordSchema)Schema.Parse(writerSchemaJson);
+        var nested = new GenericRecord(writerSchema);
+        nested.Add("legacy_id", 7);
+        nested.Add("recursive", null);
+        var root = new GenericRecord(writerSchema);
+        root.Add("legacy_id", 42);
+        root.Add("recursive", nested);
+        var context = new SerializationContext
+        {
+            Topic = "poco-recursive-evolution",
+            Component = SerializationComponent.Value
+        };
+        var destination = new ArrayBufferWriter<byte>();
 
-        await Assert.That(() =>
-                AvroPocoReaderPlanBuilder.Build<PocoEvolved, PocoEvolved.AvroCodec>(writerSchemaJson))
-            .Throws<InvalidOperationException>()
-            .WithMessageContaining("Recursive writer record");
+        writer.Serialize(root, ref destination, context);
+        var actual = reader.Deserialize(destination.WrittenMemory, context);
+
+        await Assert.That(actual.Id).IsEqualTo(42L);
+        await Assert.That(actual.Note).IsEqualTo("added-by-reader");
     }
 
     [Test]
@@ -670,6 +687,36 @@ public sealed class AvroPocoSchemaRegistryTests
             registry.ReleaseBlockedGetSchema();
         }
         await warmup;
+    }
+
+    [Test]
+    public async Task GeneratedCodec_BoundsCompletedReaderPlans()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        await using var reader = PocoWireRecord.CreateAvroDeserializer(registry);
+        var schema = new Dekaf.SchemaRegistry.Schema
+        {
+            SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+            SchemaString = PocoWireRecord.AvroCodec.SchemaJson
+        };
+        var schemaIds = new int[AvroPocoSchemaRegistryDeserializer<PocoWireRecord, PocoWireRecord.AvroCodec>
+            .MaxCachedPlans + 1];
+
+        for (var index = 0; index < schemaIds.Length; index++)
+        {
+            schemaIds[index] = await registry.RegisterSchemaAsync("poco-plan-cache-value", schema);
+            await reader.WarmupAsync(schemaIds[index]);
+        }
+
+        await Assert.That(reader.CachedPlanCount)
+            .IsEqualTo(AvroPocoSchemaRegistryDeserializer<PocoWireRecord, PocoWireRecord.AvroCodec>.MaxCachedPlans);
+        var fetchCount = registry.GetSchemaCallCount;
+
+        await reader.WarmupAsync(schemaIds[0]);
+
+        await Assert.That(registry.GetSchemaCallCount).IsEqualTo(fetchCount + 1);
+        await Assert.That(reader.CachedPlanCount)
+            .IsEqualTo(AvroPocoSchemaRegistryDeserializer<PocoWireRecord, PocoWireRecord.AvroCodec>.MaxCachedPlans);
     }
 
     [Test]
