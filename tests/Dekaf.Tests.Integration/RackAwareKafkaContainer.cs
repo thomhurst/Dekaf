@@ -47,9 +47,9 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
 
         await _network.CreateAsync().ConfigureAwait(false);
 
-        _brokers[0] = CreateBroker(nodeId: 1, rack: "rack-b", externalPort: _hostPorts[0]);
-        _brokers[1] = CreateBroker(nodeId: 2, rack: "rack-a", externalPort: _hostPorts[1]);
-        _brokers[2] = CreateBroker(nodeId: 3, rack: "rack-a", externalPort: _hostPorts[2]);
+        _brokers[0] = CreateBroker(nodeId: 1, rack: GetRack(1), externalPort: _hostPorts[0]);
+        _brokers[1] = CreateBroker(nodeId: 2, rack: GetRack(2), externalPort: _hostPorts[1]);
+        _brokers[2] = CreateBroker(nodeId: 3, rack: GetRack(3), externalPort: _hostPorts[2]);
 
         var initiallyStartedBrokerIds = InitiallyStartedBrokerIds;
         await Task.WhenAll(initiallyStartedBrokerIds.Select(nodeId => GetBroker(nodeId).StartAsync()))
@@ -331,8 +331,13 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
         CancellationToken cancellationToken = default)
     {
         var broker = GetBroker(nodeId);
-        if (broker.State != TestcontainersStates.Running)
-            await broker.StartAsync(cancellationToken).ConfigureAwait(false);
+        if (broker.State == TestcontainersStates.Running)
+            return;
+
+        await ContainerStartupRetry.RunAsync(
+            () => GetBroker(nodeId).StartAsync(cancellationToken),
+            () => RecreateBrokerAsync(nodeId),
+            ContainerStartupRetry.IsKnownTransient).ConfigureAwait(false);
     }
 
     public async Task StartBrokersAsync(
@@ -390,6 +395,28 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
             .WithEnvironment(CreateBrokerEnvironment(nodeId, rack, externalPort))
             .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(ExternalBrokerPort))
             .Build();
+    }
+
+    private async ValueTask RecreateBrokerAsync(int nodeId)
+    {
+        var brokerIndex = nodeId - 1;
+        var broker = GetBroker(nodeId);
+        Exception? disposalError = null;
+        try
+        {
+            await broker.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            disposalError = exception;
+        }
+
+        var externalPort = GetFreeTcpPorts(1)[0];
+        _hostPorts[brokerIndex] = externalPort;
+        _brokers[brokerIndex] = CreateBroker(nodeId, GetRack(nodeId), externalPort);
+
+        if (disposalError is not null)
+            throw disposalError;
     }
 
     private static IReadOnlyDictionary<string, string> CreateBrokerEnvironment(int nodeId, string rack, int externalPort)
@@ -560,4 +587,6 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
     }
 
     private static string BrokerAlias(int nodeId) => $"broker-{nodeId}";
+
+    private static string GetRack(int nodeId) => nodeId == 1 ? "rack-b" : "rack-a";
 }

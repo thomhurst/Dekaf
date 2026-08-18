@@ -449,6 +449,7 @@ public class KafkaProducerFastPathTests
             await TestWait.UntilAsync(
                 () => accumulator.PendingAppendCountForTest == 0,
                 TimeSpan.FromSeconds(5));
+            await AccumulatorTestHelpers.SealAllAsync(accumulator);
 
             var readyBatch = CompleteCurrentBatch(accumulator, new TopicPartition(Topic, 0));
             await Assert.That(readyBatch.RecordBatch.Records.Count).IsEqualTo(1);
