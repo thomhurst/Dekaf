@@ -794,6 +794,86 @@ public sealed class SchemaRegistryCsfleRuleTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task AvroTaggedTransformer_NegativeCollectionBlock_TransformsValues(bool map)
+    {
+        const string arraySchemaText = """
+            {"type":"record","name":"NegativeArrayPayload","fields":[
+                {"name":"items","type":{"type":"array","items":"bytes"},"confluent:tags":["PII"]}
+            ]}
+            """;
+        const string mapSchemaText = """
+            {"type":"record","name":"NegativeMapPayload","fields":[
+                {"name":"items","type":{"type":"map","values":"bytes"},"confluent:tags":["PII"]}
+            ]}
+            """;
+        var schemaText = map ? mapSchemaText : arraySchemaText;
+        var avroSchema = (Avro.RecordSchema)AvroSchema.Parse(schemaText);
+        var rule = CreateRule(tags: new HashSet<string>(StringComparer.Ordinal) { "PII" });
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = schemaText,
+            RuleSet = new SchemaRuleSet { DomainRules = [rule], HasFixedRuleCollections = true }
+        };
+        var transformer = AvroTaggedFieldTransformer.Get(avroSchema, schema);
+        var payload = WriteBytesCollectionPayload(map, negativeCount: true, [1], [2]);
+        var expected = WriteBytesCollectionPayload(map, negativeCount: false, [3], [3]);
+
+        var transformed = transformer.Transform(
+            payload,
+            CreateHandlerContext(rule, schema),
+            new byte[] { 3 },
+            static (_, _, replacement) => replacement);
+
+        await Assert.That(transformed.Span.SequenceEqual(expected)).IsTrue();
+    }
+
+    [Test]
+    [Arguments(false, false)]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task AvroTaggedTransformer_InvalidNegativeCollectionBlock_Fails(
+        bool map,
+        bool truncatedSize)
+    {
+        const string arraySchemaText = """
+            {"type":"record","name":"InvalidNegativeArrayPayload","fields":[
+                {"name":"items","type":{"type":"array","items":"bytes"},"confluent:tags":["PII"]}
+            ]}
+            """;
+        const string mapSchemaText = """
+            {"type":"record","name":"InvalidNegativeMapPayload","fields":[
+                {"name":"items","type":{"type":"map","values":"bytes"},"confluent:tags":["PII"]}
+            ]}
+            """;
+        var schemaText = map ? mapSchemaText : arraySchemaText;
+        var avroSchema = (Avro.RecordSchema)AvroSchema.Parse(schemaText);
+        var rule = CreateRule(tags: new HashSet<string>(StringComparer.Ordinal) { "PII" });
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = schemaText,
+            RuleSet = new SchemaRuleSet { DomainRules = [rule], HasFixedRuleCollections = true }
+        };
+        var transformer = AvroTaggedFieldTransformer.Get(avroSchema, schema);
+        var payload = WriteInvalidNegativeCollectionBlock(truncatedSize);
+        var expectedMessage = truncatedSize
+            ? "ended inside a variable-length integer"
+            : "invalid Avro collection block";
+
+        await Assert.That(() => transformer.Transform(
+                payload,
+                CreateHandlerContext(rule, schema),
+                new byte[] { 3 },
+                static (_, _, replacement) => replacement))
+            .Throws<SchemaRegistryRuleException>()
+            .WithMessageContaining(expectedMessage);
+    }
+
+    [Test]
     public async Task AvroMetadataGlobMatcher_RespectsSegmentBoundaries()
     {
         var cases = new (string Pattern, string Value, bool Expected)[]
@@ -2269,6 +2349,46 @@ public sealed class SchemaRegistryCsfleRuleTests
         encoder.WriteBytes(secret);
         encoder.WriteLong(count);
         encoder.WriteLong(0);
+        encoder.Flush();
+        return stream.ToArray();
+    }
+
+    private static byte[] WriteBytesCollectionPayload(
+        bool map,
+        bool negativeCount,
+        byte[] first,
+        byte[] second)
+    {
+        using var blockStream = new MemoryStream();
+        var blockEncoder = new BinaryEncoder(blockStream);
+        if (map)
+            blockEncoder.WriteString("first");
+        blockEncoder.WriteBytes(first);
+        if (map)
+            blockEncoder.WriteString("second");
+        blockEncoder.WriteBytes(second);
+        blockEncoder.Flush();
+        var block = blockStream.ToArray();
+
+        using var stream = new MemoryStream();
+        var encoder = new BinaryEncoder(stream);
+        encoder.WriteLong(negativeCount ? -2 : 2);
+        if (negativeCount)
+            encoder.WriteLong(block.Length);
+        encoder.Flush();
+        stream.Write(block);
+        encoder.WriteLong(0);
+        encoder.Flush();
+        return stream.ToArray();
+    }
+
+    private static byte[] WriteInvalidNegativeCollectionBlock(bool truncatedSize)
+    {
+        using var stream = new MemoryStream();
+        var encoder = new BinaryEncoder(stream);
+        encoder.WriteLong(-1);
+        if (!truncatedSize)
+            encoder.WriteLong(10);
         encoder.Flush();
         return stream.ToArray();
     }
