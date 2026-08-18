@@ -212,8 +212,11 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec> : IDeserialize
             return _plans.TryGetValue(schemaId, out cached) ? cached : plan;
         }
 
-        throw new InvalidOperationException(
-            $"Schema {schemaId} is not cached. Call WarmupAsync before synchronous deserialization.");
+        // Preserve the synchronous consumer contract while resolving each schema only on its cold miss.
+        return GetPlanAsync(schemaId, CancellationToken.None)
+            .ConfigureAwait(false)
+            .GetAwaiter()
+            .GetResult();
     }
 
     private AvroPocoReaderPlan GetOrBuildPlanCached(int schemaId, Schema schema)

@@ -23,10 +23,12 @@ public sealed class AvroPocoInteropIntegrationTests(KafkaWithSchemaRegistryConta
     {
         var topic = $"avro-poco-interop-{Guid.NewGuid():N}";
         using var dekafRegistry = new DekafRegistryClient(new DekafRegistryConfig { Url = testInfra.RegistryUrl });
+        using var dekafConsumerRegistry = new DekafRegistryClient(
+            new DekafRegistryConfig { Url = testInfra.RegistryUrl });
         using var confluentRegistry = new CachedSchemaRegistryClient(
             new Confluent.SchemaRegistry.SchemaRegistryConfig { Url = testInfra.RegistryUrl });
         await using var dekafSerializer = PocoInteropRecord.CreateAvroSerializer(dekafRegistry);
-        await using var dekafDeserializer = PocoInteropRecord.CreateAvroDeserializer(dekafRegistry);
+        await using var dekafDeserializer = PocoInteropRecord.CreateAvroDeserializer(dekafConsumerRegistry);
         var confluentSerializer = new AvroSerializer<GenericRecord>(confluentRegistry);
         var confluentDeserializer = new AvroDeserializer<GenericRecord>(confluentRegistry);
         var dekafContext = new DekafSerializationContext

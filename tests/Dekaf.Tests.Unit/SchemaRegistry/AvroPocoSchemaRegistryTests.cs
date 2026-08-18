@@ -1030,21 +1030,27 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
-    public async Task GeneratedCodec_SynchronousCacheMissRequiresWarmup()
+    public async Task GeneratedCodec_SynchronousCacheMissFetchesPlan()
     {
         var registry = Substitute.For<Dekaf.SchemaRegistry.ISchemaRegistryClient>();
+        registry.GetSchemaAsync(42, Arg.Any<CancellationToken>()).Returns(new Dekaf.SchemaRegistry.Schema
+        {
+            SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+            SchemaString = PocoWireRecord.AvroCodec.SchemaJson
+        });
         await using var reader = PocoWireRecord.CreateAvroDeserializer(registry);
-        ReadOnlyMemory<byte> payload = new byte[] { 0, 0, 0, 0, 42 };
+        ReadOnlyMemory<byte> payload = new byte[] { 0, 0, 0, 0, 42, 84, 6, (byte)'A', (byte)'d', (byte)'a' };
         var context = new SerializationContext
         {
             Topic = "poco-sync-cache-miss",
             Component = SerializationComponent.Value
         };
 
-        await Assert.That(() => reader.Deserialize(payload, context))
-            .Throws<InvalidOperationException>()
-            .WithMessageContaining("Call WarmupAsync");
-        _ = registry.DidNotReceiveWithAnyArgs().GetSchemaAsync(default);
+        var actual = reader.Deserialize(payload, context);
+
+        await Assert.That(actual.Id).IsEqualTo(42);
+        await Assert.That(actual.Name).IsEqualTo("Ada");
+        _ = registry.Received(1).GetSchemaAsync(42, Arg.Any<CancellationToken>());
     }
 
     [Test]
@@ -1453,6 +1459,34 @@ public sealed class AvroPocoSchemaRegistryTests
         await Assert.That(() => reader.Deserialize(payload.AsMemory(0, payloadLength), context))
             .Throws<InvalidOperationException>()
             .WithMessageContaining("incompatible");
+    }
+
+    [Test]
+    public async Task GeneratedCodec_DefersMismatchedLogicalWriterUnionBranchUntilSelected()
+    {
+        const string writerSchemaJson =
+            """
+            {"type":"record","name":"PocoLogicalUnion","namespace":"Dekaf.Tests","fields":[{"name":"Value","type":[{"type":"long","logicalType":"timestamp-millis"},"string"]}]}
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        await using var writer = new AvroSchemaRegistrySerializer<GenericRecord>(registry);
+        await using var reader = new AvroPocoSchemaRegistryDeserializer<
+            PocoLogicalUnionValue,
+            PocoLogicalUnionCodec>(registry);
+        var writerSchema = (RecordSchema)Schema.Parse(writerSchemaJson);
+        var expected = new GenericRecord(writerSchema);
+        expected.Add("Value", "compatible");
+        var context = new SerializationContext
+        {
+            Topic = "poco-logical-union",
+            Component = SerializationComponent.Value
+        };
+        var destination = new ArrayBufferWriter<byte>();
+
+        writer.Serialize(expected, ref destination, context);
+        var actual = reader.Deserialize(destination.WrittenMemory, context);
+
+        await Assert.That(actual.Value).IsEqualTo("compatible");
     }
 
     [Test]
@@ -2225,6 +2259,61 @@ internal sealed partial class PocoGrowingPayload
 internal sealed partial class PocoLogicalBaseUnion
 {
     public long? Value { get; init; }
+}
+
+internal sealed class PocoLogicalUnionValue
+{
+    public required object Value { get; init; }
+}
+
+internal readonly struct PocoLogicalUnionCodec : IAvroPocoCodec<PocoLogicalUnionValue>
+{
+    private const string ReaderSchemaJson =
+        """
+        {"type":"record","name":"PocoLogicalUnion","namespace":"Dekaf.Tests","fields":[{"name":"Value","type":[{"type":"long","logicalType":"timestamp-micros"},"string"]}]}
+        """;
+
+    private static readonly AvroPocoType[] s_branches =
+    [
+        new(AvroPocoTypeKind.TimestampMicroseconds),
+        new(AvroPocoTypeKind.String)
+    ];
+
+    private static readonly AvroPocoField[] s_fields =
+    [
+        new(
+            "Value",
+            ReadOnlyMemory<string>.Empty,
+            defaultJson: null,
+            new AvroPocoType(AvroPocoTypeKind.Union, branches: s_branches))
+    ];
+
+    public static string SchemaJson => ReaderSchemaJson;
+
+    public static ReadOnlySpan<byte> SchemaUtf8 =>
+        """{"type":"record","name":"PocoLogicalUnion","namespace":"Dekaf.Tests","fields":[{"name":"Value","type":[{"type":"long","logicalType":"timestamp-micros"},"string"]}]}"""u8;
+
+    public static long ParsingFingerprint64 => 0;
+
+    public static string FullName => "Dekaf.Tests.PocoLogicalUnion";
+
+    public static ReadOnlyMemory<AvroPocoField> Fields => s_fields;
+
+    public static void Write(ref AvroValueWriter writer, PocoLogicalUnionValue value) =>
+        throw new NotSupportedException();
+
+    public static PocoLogicalUnionValue Read(ref AvroValueReader reader, AvroPocoReaderPlan plan)
+    {
+        var branches = plan.GetOperation(0).WriterType.Branches.Span;
+        var branch = branches[reader.ReadIndex(branches.Length)];
+        object value = branch.ReaderUnionBranchIndex switch
+        {
+            0 => DateTime.UnixEpoch.AddTicks(checked(reader.ReadInt64() * 10L)),
+            1 => reader.ReadString(),
+            _ => throw new InvalidDataException("Writer union branch has no generated POCO target.")
+        };
+        return new PocoLogicalUnionValue { Value = value };
+    }
 }
 
 [AvroRecord(Name = "PocoSecondGrowingPayload", Namespace = "Dekaf.Tests")]
