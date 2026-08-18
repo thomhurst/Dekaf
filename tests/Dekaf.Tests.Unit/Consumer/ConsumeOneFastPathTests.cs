@@ -123,6 +123,7 @@ public sealed class ConsumeOneFastPathTests
         var result = await consume;
         await Assert.That(result).IsNotNull();
         await Assert.That(result!.Value.Key).IsEqualTo("a");
+        await Assert.That(keyDeserializer.PrepareCallCount).IsEqualTo(0);
         await Assert.That(keyDeserializer.DeserializeCount).IsEqualTo(1);
         await Assert.That(valueDeserializer.DeserializeCount).IsEqualTo(1);
     }
@@ -149,6 +150,7 @@ public sealed class ConsumeOneFastPathTests
 
         await Assert.That(await moveNext).IsTrue();
         await Assert.That(records.Current.Key).IsEqualTo("a");
+        await Assert.That(keyDeserializer.PrepareCallCount).IsEqualTo(0);
         await Assert.That(keyDeserializer.DeserializeCount).IsEqualTo(1);
         await Assert.That(valueDeserializer.DeserializeCount).IsEqualTo(1);
     }
@@ -176,6 +178,68 @@ public sealed class ConsumeOneFastPathTests
         await Assert.That(await moveNext).IsTrue();
         await Assert.That(records.Current.Key).IsEqualTo("a");
         await Assert.That(keyDeserializer.PrepareCount).IsEqualTo(1);
+        await Assert.That(keyDeserializer.DeserializeCount).IsEqualTo(1);
+        await Assert.That(valueDeserializer.DeserializeCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task ConsumeOneAsync_ColdKeyAndValue_PreparesEachOnce()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20, CreateRecord(0, "a", "one"))
+        ]);
+        var keyDeserializer = new GatedPreparedStringDeserializer();
+        var valueDeserializer = new GatedPreparedStringDeserializer();
+        await using var consumer = CreateInitializedConsumerWithDeserializers(
+            fetch,
+            keyDeserializer,
+            valueDeserializer);
+        MarkManualAssignmentCurrent(consumer);
+
+        var consume = consumer.ConsumeOneAsync(TimeSpan.FromSeconds(10), CancellationToken.None);
+        await keyDeserializer.PreparationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        keyDeserializer.ReleasePreparation();
+        await valueDeserializer.PreparationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        valueDeserializer.ReleasePreparation();
+
+        var result = await consume;
+        await Assert.That(result).IsNotNull();
+        await Assert.That(result!.Value.Key).IsEqualTo("a");
+        await Assert.That(result.Value.Value).IsEqualTo("one");
+        await Assert.That(keyDeserializer.PrepareCallCount).IsEqualTo(1);
+        await Assert.That(valueDeserializer.PrepareCallCount).IsEqualTo(1);
+        await Assert.That(keyDeserializer.DeserializeCount).IsEqualTo(1);
+        await Assert.That(valueDeserializer.DeserializeCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task ConsumeAsync_ColdKeyAndValue_PreparesEachOnce()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20, CreateRecord(0, "a", "one"))
+        ]);
+        var keyDeserializer = new GatedPreparedStringDeserializer();
+        var valueDeserializer = new GatedPreparedStringDeserializer();
+        await using var consumer = CreateInitializedConsumerWithDeserializers(
+            fetch,
+            keyDeserializer,
+            valueDeserializer);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await using var records = consumer.ConsumeAsync(timeout.Token).GetAsyncEnumerator();
+
+        var moveNext = records.MoveNextAsync();
+        await keyDeserializer.PreparationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        keyDeserializer.ReleasePreparation();
+        await valueDeserializer.PreparationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        valueDeserializer.ReleasePreparation();
+
+        await Assert.That(await moveNext).IsTrue();
+        await Assert.That(records.Current.Key).IsEqualTo("a");
+        await Assert.That(records.Current.Value).IsEqualTo("one");
+        await Assert.That(keyDeserializer.PrepareCallCount).IsEqualTo(1);
+        await Assert.That(valueDeserializer.PrepareCallCount).IsEqualTo(1);
         await Assert.That(keyDeserializer.DeserializeCount).IsEqualTo(1);
         await Assert.That(valueDeserializer.DeserializeCount).IsEqualTo(1);
     }
@@ -1048,6 +1112,7 @@ public sealed class ConsumeOneFastPathTests
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public int PrepareCount { get; private set; }
+        public int PrepareCallCount { get; private set; }
         public int DeserializeCount { get; private set; }
 
         public bool TryDeserialize(
@@ -1070,6 +1135,7 @@ public sealed class ConsumeOneFastPathTests
             SerializationContext context,
             CancellationToken cancellationToken = default)
         {
+            PrepareCallCount++;
             if (Volatile.Read(ref _prepared) != 0)
                 return;
 
