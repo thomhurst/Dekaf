@@ -169,23 +169,22 @@ internal static class AvroPocoReaderPlanBuilder
 
     private static AvroPocoReadNode BuildLogicalNode(LogicalSchema writer, AvroPocoType reader)
     {
-        AvroPocoTypeKind? kind = writer.LogicalTypeName switch
+        if (reader.Kind == AvroPocoTypeKind.Union)
         {
-            "date" => AvroPocoTypeKind.Date,
-            "time-millis" => AvroPocoTypeKind.TimeMilliseconds,
-            "time-micros" => AvroPocoTypeKind.TimeMicroseconds,
-            "timestamp-millis" => AvroPocoTypeKind.TimestampMilliseconds,
-            "timestamp-micros" => AvroPocoTypeKind.TimestampMicroseconds,
-            "uuid" => AvroPocoTypeKind.Uuid,
-            "decimal" => AvroPocoTypeKind.Decimal,
-            _ => null
-        };
+            var readerBranchIndex = FindCompatibleReaderIndex(writer, reader.Branches.Span);
+            var node = BuildLogicalNode(writer, reader.Branches.Span[readerBranchIndex]);
+            node.ReaderUnionBranchIndex = readerBranchIndex;
+            return node;
+        }
+
+        var kind = GetLogicalKind(writer.LogicalTypeName);
 
         if (kind is not { } logicalKind)
             return BuildNode(writer.BaseSchema, reader);
 
-        if (reader.Kind != logicalKind ||
-            logicalKind == AvroPocoTypeKind.Decimal && !DecimalMatches(writer, reader))
+        if (reader.Kind != logicalKind)
+            return BuildNode(writer.BaseSchema, reader);
+        if (logicalKind == AvroPocoTypeKind.Decimal && !DecimalMatches(writer, reader))
             throw Incompatible(writer, reader);
         return new AvroPocoReadNode(logicalKind)
         {
@@ -220,23 +219,6 @@ internal static class AvroPocoReaderPlanBuilder
 
     private static bool IsCompatible(AvroSchema writer, AvroPocoType reader)
     {
-        if (writer is LogicalSchema logical)
-        {
-            var compatible = logical.LogicalTypeName switch
-            {
-                "date" => reader.Kind == AvroPocoTypeKind.Date,
-                "time-millis" => reader.Kind == AvroPocoTypeKind.TimeMilliseconds,
-                "time-micros" => reader.Kind == AvroPocoTypeKind.TimeMicroseconds,
-                "timestamp-millis" => reader.Kind == AvroPocoTypeKind.TimestampMilliseconds,
-                "timestamp-micros" => reader.Kind == AvroPocoTypeKind.TimestampMicroseconds,
-                "uuid" => reader.Kind == AvroPocoTypeKind.Uuid,
-                "decimal" => reader.Kind == AvroPocoTypeKind.Decimal,
-                _ => IsCompatible(logical.BaseSchema, reader)
-            };
-            return compatible &&
-                   (logical.LogicalTypeName != "decimal" || DecimalMatches(logical, reader));
-        }
-
         if (reader.Kind == AvroPocoTypeKind.Union)
         {
             var branches = reader.Branches.Span;
@@ -246,6 +228,14 @@ internal static class AvroPocoReaderPlanBuilder
                     return true;
             }
             return false;
+        }
+
+        if (writer is LogicalSchema logical)
+        {
+            var logicalKind = GetLogicalKind(logical.LogicalTypeName);
+            if (reader.Kind != logicalKind)
+                return IsCompatible(logical.BaseSchema, reader);
+            return logicalKind != AvroPocoTypeKind.Decimal || DecimalMatches(logical, reader);
         }
 
         return writer switch
@@ -289,17 +279,7 @@ internal static class AvroPocoReaderPlanBuilder
     {
         if (writer is LogicalSchema logical)
         {
-            AvroPocoTypeKind? kind = logical.LogicalTypeName switch
-            {
-                "date" => AvroPocoTypeKind.Date,
-                "time-millis" => AvroPocoTypeKind.TimeMilliseconds,
-                "time-micros" => AvroPocoTypeKind.TimeMicroseconds,
-                "timestamp-millis" => AvroPocoTypeKind.TimestampMilliseconds,
-                "timestamp-micros" => AvroPocoTypeKind.TimestampMicroseconds,
-                "uuid" => AvroPocoTypeKind.Uuid,
-                "decimal" => AvroPocoTypeKind.Decimal,
-                _ => null
-            };
+            var kind = GetLogicalKind(logical.LogicalTypeName);
             if (kind is not { } logicalKind)
                 return BuildSkipNode(logical.BaseSchema, records);
 
@@ -396,6 +376,18 @@ internal static class AvroPocoReaderPlanBuilder
 
     private static InvalidOperationException Incompatible(AvroSchema writer, AvroPocoType reader) =>
         new($"Writer Avro type '{writer.Tag}' is incompatible with generated POCO type '{reader.Kind}'.");
+
+    private static AvroPocoTypeKind? GetLogicalKind(string logicalTypeName) => logicalTypeName switch
+    {
+        "date" => AvroPocoTypeKind.Date,
+        "time-millis" => AvroPocoTypeKind.TimeMilliseconds,
+        "time-micros" => AvroPocoTypeKind.TimeMicroseconds,
+        "timestamp-millis" => AvroPocoTypeKind.TimestampMilliseconds,
+        "timestamp-micros" => AvroPocoTypeKind.TimestampMicroseconds,
+        "uuid" => AvroPocoTypeKind.Uuid,
+        "decimal" => AvroPocoTypeKind.Decimal,
+        _ => null
+    };
 
     private static bool DecimalMatches(LogicalSchema writer, AvroPocoType reader) =>
         int.TryParse(writer.GetProperty("precision"), NumberStyles.None, CultureInfo.InvariantCulture, out var precision) &&

@@ -1052,6 +1052,78 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task GeneratedCodec_ReadsRecognizedLogicalFieldByBaseType(bool writerUnion)
+    {
+        const string directWriterSchemaJson =
+            """
+            {"type":"record","name":"PocoEvolved","namespace":"Dekaf.Tests","fields":[{"name":"legacy_id","type":{"type":"long","logicalType":"timestamp-micros"}}]}
+            """;
+        const string unionWriterSchemaJson =
+            """
+            {"type":"record","name":"PocoEvolved","namespace":"Dekaf.Tests","fields":[{"name":"legacy_id","type":["null",{"type":"long","logicalType":"timestamp-micros"}]}]}
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        var schemaId = await registry.RegisterSchemaAsync(
+            "poco-read-recognized-logical-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = writerUnion ? unionWriterSchemaJson : directWriterSchemaJson
+            });
+        await using var reader = PocoEvolved.CreateAvroDeserializer(registry);
+        var payload = new byte[16];
+        BinaryPrimitives.WriteInt32BigEndian(payload.AsSpan(1, 4), schemaId);
+        var writer = new AvroValueWriter(payload.AsSpan(5));
+        if (writerUnion)
+            writer.WriteIndex(1);
+        writer.WriteInt64(1234);
+        var context = new SerializationContext
+        {
+            Topic = "poco-read-recognized-logical",
+            Component = SerializationComponent.Value
+        };
+        var payloadLength = 5 + writer.WrittenCount;
+
+        var actual = reader.Deserialize(payload.AsMemory(0, payloadLength), context);
+
+        await Assert.That(actual.Id).IsEqualTo(1234L);
+        await Assert.That(actual.Note).IsEqualTo("added-by-reader");
+    }
+
+    [Test]
+    public async Task GeneratedCodec_ReadsRecognizedLogicalFieldIntoUnderlyingUnion()
+    {
+        const string writerSchemaJson =
+            """
+            {"type":"record","name":"PocoLogicalBaseUnion","namespace":"Dekaf.Tests","fields":[{"name":"Value","type":{"type":"long","logicalType":"timestamp-micros"}}]}
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        var schemaId = await registry.RegisterSchemaAsync(
+            "poco-logical-base-union-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = writerSchemaJson
+            });
+        await using var reader = PocoLogicalBaseUnion.CreateAvroDeserializer(registry);
+        var payload = new byte[15];
+        BinaryPrimitives.WriteInt32BigEndian(payload.AsSpan(1, 4), schemaId);
+        var writer = new AvroValueWriter(payload.AsSpan(5));
+        writer.WriteInt64(1234);
+        var context = new SerializationContext
+        {
+            Topic = "poco-logical-base-union",
+            Component = SerializationComponent.Value
+        };
+
+        var actual = reader.Deserialize(payload.AsMemory(0, 5 + writer.WrittenCount), context);
+
+        await Assert.That(actual.Value).IsEqualTo(1234L);
+    }
+
+    [Test]
     public async Task GeneratedCodec_UsesIncomingWriterPlanWhenMigrationHasOnlyConditions()
     {
         const string writerSchemaJson =
@@ -1702,6 +1774,12 @@ internal sealed partial class PocoWriterUnions
 internal sealed partial class PocoGrowingPayload
 {
     public required string Value { get; init; }
+}
+
+[AvroRecord(Name = "PocoLogicalBaseUnion", Namespace = "Dekaf.Tests")]
+internal sealed partial class PocoLogicalBaseUnion
+{
+    public long? Value { get; init; }
 }
 
 [AvroRecord(Name = "PocoSecondGrowingPayload", Namespace = "Dekaf.Tests")]
