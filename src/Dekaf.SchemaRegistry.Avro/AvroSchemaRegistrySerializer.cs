@@ -65,6 +65,7 @@ public sealed class AvroSchemaRegistrySerializer<
     private readonly int _maxOverflowLogicalSchemas;
     private readonly AllocationFreeSpecificRecordWriter<T>? _specificWriter;
     private readonly AvroSchema? _writerSchema;
+    private readonly AvroTaggedFieldTransformerProvider _taggedFieldTransformers = new();
     private int _dynamicSchemaCacheCount;
     private int _overflowDynamicSchemaCacheCount;
     private int _hasEvictedOverflowLogicalSchemas;
@@ -189,7 +190,11 @@ public sealed class AvroSchemaRegistrySerializer<
     {
         ArgumentNullException.ThrowIfNull(value);
 
-        var schemaEntry = GetSchemaForContext(context.Topic, context.Component == SerializationComponent.Key, value);
+        var avroSchema = GetSchemaForValue(value);
+        var schemaEntry = GetSchemaForContext(
+            context.Topic,
+            context.Component == SerializationComponent.Key,
+            avroSchema);
         var schemaId = schemaEntry.SchemaId;
 
         var codecState = AvroCodecThreadStateCache.Serialization ??= new AvroSerializationThreadState();
@@ -199,7 +204,7 @@ public sealed class AvroSchemaRegistrySerializer<
             return;
         }
 
-        SerializeWithRuleExecutor(value, ref destination, context, schemaEntry, schemaId, codecState);
+        SerializeWithRuleExecutor(value, ref destination, context, schemaEntry, schemaId, avroSchema, codecState);
     }
 
     private void SerializeDirect<TWriter>(
@@ -256,6 +261,7 @@ public sealed class AvroSchemaRegistrySerializer<
         SerializationContext context,
         SubjectSchemaIdCache.SubjectSchemaIdCacheEntry schemaEntry,
         int schemaId,
+        AvroSchema avroSchema,
         AvroSerializationThreadState codecState)
         where TWriter : IBufferWriter<byte>
 #if NET10_0_OR_GREATER
@@ -264,6 +270,7 @@ public sealed class AvroSchemaRegistrySerializer<
     {
         var memoryStream = codecState.BufferedStream;
         memoryStream.ResetForWriting(InitialAvroPayloadBufferSize);
+        var taggedWorkspaceOperation = AvroTaggedFieldTransformerProvider.BeginOperation();
 
         try
         {
@@ -274,13 +281,15 @@ public sealed class AvroSchemaRegistrySerializer<
 
             var avroPayloadLength = (int)memoryStream.Position;
             var payload = new ReadOnlyMemory<byte>(memoryStream.GetBuffer(), 0, avroPayloadLength);
-            var ruleContext = SchemaRegistryRuleContext.Rent(
+            var taggedFieldTransformer = _taggedFieldTransformers.Get(schemaEntry.Schema!, avroSchema);
+            var ruleContext = SchemaRegistryRuleContext.RentWithTaggedFieldTransformer(
                 context.Topic,
                 context.Component,
                 schemaId,
                 schemaEntry.Subject,
                 schemaEntry.Schema,
-                SchemaRegistryPayloadFormat.Avro);
+                SchemaRegistryPayloadFormat.Avro,
+                taggedFieldTransformer);
             try
             {
                 payload = _config.RuleExecutor!.TransformSerializedPayload(payload, ruleContext);
@@ -302,6 +311,7 @@ public sealed class AvroSchemaRegistrySerializer<
         }
         finally
         {
+            taggedWorkspaceOperation.Dispose();
             if (memoryStream.Capacity > MaxRetainedAvroPayloadBufferSize)
                 memoryStream.DetachBuffer();
         }
@@ -317,9 +327,11 @@ public sealed class AvroSchemaRegistrySerializer<
         return (int)Math.Min(nextHint, maxPayloadSize);
     }
 
-    private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry GetSchemaForContext(string topic, bool isKey, T value)
+    private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry GetSchemaForContext(
+        string topic,
+        bool isKey,
+        AvroSchema avroSchema)
     {
-        var avroSchema = GetSchemaForValue(value);
         var state = new SubjectSchemaIdState(this, avroSchema);
         return GetSubjectSchemaIdCache(avroSchema).GetOrAdd(
             topic,

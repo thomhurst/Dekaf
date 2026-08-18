@@ -252,6 +252,28 @@ Binary Avro and Protobuf codec payloads are not currently supported by the JSONa
 are rejected explicitly. Their object-level transforms require codec-specific conversion before
 binary encoding.
 
+## Avro tagged-field encryption
+
+Avro domain rules with type `ENCRYPT` transform only fields whose `confluent:tags` overlap the
+rule's tags. Tags may be declared directly on an Avro field or supplied through Schema Registry
+metadata using the field's fully qualified name. Tagged `string` fields store Base64 ciphertext;
+tagged `bytes` fields store raw ciphertext. Arrays, maps, nullable unions, nested records, and
+bytes-backed decimal logical types preserve their Avro shape while their tagged string or bytes
+values are transformed.
+
+Fixed-width fields cannot hold variable-length ciphertext. Dekaf therefore rejects tagged Avro
+`fixed` fields, including fixed-backed decimal logical types, instead of rewriting the schema or
+silently encrypting the whole payload. Untagged fields remain byte-for-byte unchanged. After the
+schema and rule plan are cached, the field walker is allocation-free; the KMS provider still owns
+any algorithm- or key-management-specific costs.
+
+For caller-owned mutable schemas, Avro metadata tag values must use `FrozenSet<string>` or
+`IImmutableSet<string>`. To update them, remove and re-add the containing metadata dictionary entry;
+Dekaf observes the dictionary's structural version and rebuilds the cached plan. Mutable
+`HashSet<string>` and `SortedSet<string>` metadata values are rejected because detecting their
+in-place changes would require an O(n) scan on every message. Rule tag sets may remain mutable;
+their version is checked once per transform.
+
 ## Schema Registry Configuration
 
 ```csharp

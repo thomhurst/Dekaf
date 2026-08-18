@@ -17,8 +17,7 @@ namespace Dekaf.SchemaRegistry;
 /// </summary>
 /// <remarks>
 /// The handler supports whole-payload encryption for every payload format and
-/// tagged string-field encryption for JSON payloads when schema metadata tags
-/// are present.
+/// tagged field encryption for schema-aware payload formats.
 /// </remarks>
 public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
 {
@@ -102,7 +101,7 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
     {
         ArgumentNullException.ThrowIfNull(context);
         var settings = GetSettings(context);
-        return TransformJsonFields(payload, context, settings, encrypt: true) ??
+        return TransformTaggedFields(payload, context, settings, encrypt: true) ??
             EncryptPayload(payload, context, settings);
     }
 
@@ -113,9 +112,45 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
     {
         ArgumentNullException.ThrowIfNull(context);
         var settings = GetSettings(context);
-        return TransformJsonFields(payload, context, settings, encrypt: false) ??
+        return TransformTaggedFields(payload, context, settings, encrypt: false) ??
             DecryptPayload(payload, context, settings);
     }
+
+    private ReadOnlyMemory<byte>? TransformTaggedFields(
+        ReadOnlyMemory<byte> payload,
+        SchemaRegistryRuleHandlerContext context,
+        EncryptionSettings settings,
+        bool encrypt)
+    {
+        if (context.Rule.Tags is not { Count: > 0 })
+            return null;
+
+        if (context.PayloadContext.PayloadFormat == SchemaRegistryPayloadFormat.Avro)
+        {
+            var transformer = context.PayloadContext.TaggedFieldTransformer ??
+                throw new SchemaRegistryRuleException(
+                    $"Schema Registry rule '{context.Rule.Name}' cannot apply tagged Avro encryption without an Avro field transformer.");
+            var operation = new FieldEncryptionOperation(this, settings, encrypt);
+            var workspace = GetWorkspace();
+            try
+            {
+                return transformer.Transform(payload, context, operation, TransformField);
+            }
+            finally
+            {
+                workspace.ReleaseOversizedOutputs();
+            }
+        }
+
+        return TransformJsonFields(payload, context, settings, encrypt);
+    }
+
+    private static ReadOnlyMemory<byte> TransformField(
+        ReadOnlyMemory<byte> value,
+        SchemaRegistryRuleHandlerContext context,
+        FieldEncryptionOperation operation) => operation.Encrypt
+            ? operation.Handler.EncryptPayload(value, context, operation.Settings, retainOversizedOutput: true)
+            : operation.Handler.DecryptPayload(value, context, operation.Settings, retainOversizedOutput: true);
 
     private ReadOnlyMemory<byte>? TransformJsonFields(
         ReadOnlyMemory<byte> payload,
@@ -123,9 +158,7 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
         EncryptionSettings settings,
         bool encrypt)
     {
-        if (context.PayloadContext.PayloadFormat != SchemaRegistryPayloadFormat.Json ||
-            context.Rule.Tags is null ||
-            context.Rule.Tags.Count == 0)
+        if (context.PayloadContext.PayloadFormat != SchemaRegistryPayloadFormat.Json)
         {
             return null;
         }
@@ -145,6 +178,11 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
                 context.PayloadContext.Schema?.RuleSet?.HasFixedRuleCollections != true);
         return TransformTaggedJson(payload, context, settings, plan, encrypt);
     }
+
+    private readonly record struct FieldEncryptionOperation(
+        SchemaRegistryCsfleRuleHandler Handler,
+        EncryptionSettings Settings,
+        bool Encrypt);
 
     private ReadOnlyMemory<byte> TransformTaggedJson(
         ReadOnlyMemory<byte> payload,
@@ -241,13 +279,14 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
     private ReadOnlyMemory<byte> EncryptPayload(
         ReadOnlyMemory<byte> payload,
         SchemaRegistryRuleHandlerContext context,
-        EncryptionSettings settings)
+        EncryptionSettings settings,
+        bool retainOversizedOutput = false)
     {
         var dek = GetWriteDek(settings);
         ValidateKeyMaterial(dek.KeyMaterial, settings.Algorithm, context.Rule.Name);
         var workspace = GetWorkspace();
         var length = GetEncryptedPayloadLength(payload.Length, settings.Algorithm, settings.IsDekRotated);
-        var output = workspace.CreateOutput(payload.Span, length);
+        var output = workspace.CreateOutput(payload.Span, length, retainOversizedOutput);
         EncryptPayload(payload.Span, dek, settings, workspace, output.GetSpan(length)[..length]);
         GC.KeepAlive(dek);
         output.Advance(length);
@@ -257,7 +296,8 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
     private ReadOnlyMemory<byte> DecryptPayload(
         ReadOnlyMemory<byte> payload,
         SchemaRegistryRuleHandlerContext context,
-        EncryptionSettings settings)
+        EncryptionSettings settings,
+        bool retainOversizedOutput = false)
     {
         var ciphertext = payload.Span;
         int? dekVersion = null;
@@ -273,7 +313,7 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
         ValidateKeyMaterial(dek.KeyMaterial, dek.Algorithm, context.Rule.Name);
         var plaintextLength = GetPlaintextLength(ciphertext, dek.Algorithm, context.Rule.Name);
         var workspace = GetWorkspace();
-        var output = workspace.CreateOutput(payload.Span, plaintextLength);
+        var output = workspace.CreateOutput(payload.Span, plaintextLength, retainOversizedOutput);
         DecryptPayload(
             ciphertext,
             dek,
@@ -2005,12 +2045,16 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
         private readonly JsonPathNode?[] _jsonNodes = new JsonPathNode?[65];
         private readonly int[] _jsonArrayIndices = new int[65];
         private int _nextOutput;
+        private int _oversizedOutputMask;
 
         public JsonPathNode?[] JsonNodes => _jsonNodes;
 
         public int[] JsonArrayIndices => _jsonArrayIndices;
 
-        public PooledBufferBuilder CreateOutput(ReadOnlySpan<byte> input, int capacity)
+        public PooledBufferBuilder CreateOutput(
+            ReadOnlySpan<byte> input,
+            int capacity,
+            bool retainOversizedOutput = false)
         {
             for (var attempt = 0; attempt < OutputBufferCount; attempt++)
             {
@@ -2021,7 +2065,7 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
 
                 EnsureOutputCapacity(slot, capacity, written: 0);
                 _nextOutput = (slot + 1) % OutputBufferCount;
-                return new PooledBufferBuilder(this, slot);
+                return new PooledBufferBuilder(this, slot, retainOversizedOutput);
             }
 
             throw new InvalidOperationException("No CSFLE output buffer is available.");
@@ -2080,13 +2124,51 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
             return _outputs[slot]!.AsSpan(written);
         }
 
-        public ReadOnlyMemory<byte> GetOutputMemory(int slot, int written)
+        public ReadOnlyMemory<byte> GetOutputMemory(int slot, int written, bool retainOversizedOutput)
         {
             var buffer = _outputs[slot]!;
             var memory = buffer.AsMemory(0, written);
+            var slotMask = 1 << slot;
             if (buffer.Length > MaxRetainedBufferSize)
-                _outputs[slot] = null;
+            {
+                if (retainOversizedOutput)
+                {
+                    _oversizedOutputMask |= slotMask;
+                }
+                else
+                {
+                    _outputs[slot] = null;
+                    _oversizedOutputMask &= ~slotMask;
+                }
+            }
+            else
+            {
+                _oversizedOutputMask &= ~slotMask;
+            }
             return memory;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void ReleaseOversizedOutputs()
+        {
+            if (_oversizedOutputMask != 0)
+                ReleaseOversizedOutputsSlow();
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private void ReleaseOversizedOutputsSlow()
+        {
+            for (var slot = 0; slot < _outputs.Length; slot++)
+            {
+                if ((_oversizedOutputMask & (1 << slot)) == 0)
+                    continue;
+
+                var buffer = _outputs[slot]!;
+                _outputs[slot] = null;
+                ArrayPool<byte>.Shared.Return(buffer, clearArray: true);
+            }
+
+            _oversizedOutputMask = 0;
         }
 
         public void ReleaseOversizedTemporaries()
@@ -2127,11 +2209,15 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
         public void Dispose() => workspace.ReleaseOversizedTemporaries();
     }
 
-    private ref struct PooledBufferBuilder(CsfleWorkspace workspace, int slot)
+    private ref struct PooledBufferBuilder(
+        CsfleWorkspace workspace,
+        int slot,
+        bool retainOversizedOutput)
     {
         private int _written;
 
-        public readonly ReadOnlyMemory<byte> WrittenMemory => workspace.GetOutputMemory(slot, _written);
+        public readonly ReadOnlyMemory<byte> WrittenMemory =>
+            workspace.GetOutputMemory(slot, _written, retainOversizedOutput);
 
         public readonly Span<byte> GetSpan(int sizeHint) => workspace.GetOutputSpan(slot, _written, sizeHint);
 
