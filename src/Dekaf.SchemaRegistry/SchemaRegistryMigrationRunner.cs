@@ -48,7 +48,7 @@ internal sealed class SchemaRegistryMigrationRunner
         (new SchemaRegistryMigrationRunner(schemaRegistry, ruleExecutor, timeout),
          ruleExecutor ?? MarkerRuleExecutor);
 
-    internal ValueTask PrepareAsync(
+    internal ValueTask<PreparedTargetEnumerator> PrepareAsync(
         int schemaId,
         string subject,
         Schema writerSchema,
@@ -60,7 +60,8 @@ internal sealed class SchemaRegistryMigrationRunner
             string.Equals(plan.Subject, subject, StringComparison.Ordinal))
         {
             if (!IsExpired(plan))
-                return default;
+                return new ValueTask<PreparedTargetEnumerator>(
+                    PreparedTargetEnumerator.Create(plan.Steps));
 
             _plans.TryRemove(subject, writerSchema, plan);
             return AwaitPreparedPlanAsync(schemaId, subject, writerSchema, cancellationToken);
@@ -71,7 +72,8 @@ internal sealed class SchemaRegistryMigrationRunner
             if (!IsExpired(plan))
             {
                 Volatile.Write(ref _lastPlan, plan);
-                return default;
+                return new ValueTask<PreparedTargetEnumerator>(
+                    PreparedTargetEnumerator.Create(plan.Steps));
             }
 
             _plans.TryRemove(subject, writerSchema, plan);
@@ -80,7 +82,7 @@ internal sealed class SchemaRegistryMigrationRunner
         return AwaitPreparedPlanAsync(schemaId, subject, writerSchema, cancellationToken);
     }
 
-    private async ValueTask AwaitPreparedPlanAsync(
+    private async ValueTask<PreparedTargetEnumerator> AwaitPreparedPlanAsync(
         int schemaId,
         string subject,
         Schema writerSchema,
@@ -101,6 +103,7 @@ internal sealed class SchemaRegistryMigrationRunner
 
         Volatile.Write(ref _lastPlan, plan);
         Volatile.Write(ref _preparedPlan, plan);
+        return PreparedTargetEnumerator.Create(plan.Steps);
     }
 
     internal bool TryUsePreparedPlan(int schemaId, string subject)
@@ -456,6 +459,32 @@ internal sealed class SchemaRegistryMigrationRunner
         int PayloadSchemaId,
         Schema PayloadSchema);
 
+    internal struct PreparedTargetEnumerator
+    {
+        private MigrationStep[]? _steps;
+        private int _index;
+
+        private PreparedTargetEnumerator(MigrationStep[] steps)
+        {
+            _steps = steps;
+            _index = 0;
+        }
+
+        internal static PreparedTargetEnumerator Create(MigrationStep[] steps) => new(steps);
+
+        internal bool MoveNext(out RegisteredSchema target)
+        {
+            if (_steps is not null && _index < _steps.Length)
+            {
+                target = _steps[_index++].Target;
+                return true;
+            }
+
+            target = null!;
+            return false;
+        }
+    }
+
     private sealed class MigrationPlan(
         int writerSchemaId,
         string subject,
@@ -472,7 +501,7 @@ internal sealed class SchemaRegistryMigrationRunner
         internal long CreatedAtMilliseconds { get; } = createdAtMilliseconds;
     }
 
-    private readonly record struct MigrationStep(
+    internal readonly record struct MigrationStep(
         SchemaRuleMode Mode,
         RegisteredSchema Source,
         RegisteredSchema Target);

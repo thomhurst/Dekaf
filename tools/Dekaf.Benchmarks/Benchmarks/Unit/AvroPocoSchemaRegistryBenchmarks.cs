@@ -1133,6 +1133,68 @@ public readonly partial record struct PocoTimeSpanBenchmarkRecord
     public TimeSpan Value { get; init; }
 }
 
+/// <summary>Guards generated collection writers against traversing after buffer overflow.</summary>
+[MemoryDiagnoser(displayGenColumns: false)]
+public class AvroPocoCollectionOverflowBenchmarks
+{
+    private const int ItemCount = 100_000;
+    private readonly byte[] _buffer = new byte[256];
+    private readonly byte[] _largeBuffer = new byte[2 * 1024 * 1024];
+    private readonly PocoOverflowArrayRecord _array = new()
+    {
+        Values = Enumerable.Range(0, ItemCount).ToArray()
+    };
+    private readonly PocoOverflowMapRecord _map = new()
+    {
+        Values = Enumerable.Range(0, ItemCount)
+            .ToDictionary(static value => value.ToString(), static value => value)
+    };
+
+    [Benchmark]
+    public int WriteUndersizedArray()
+    {
+        var writer = new AvroValueWriter(_buffer);
+        PocoOverflowArrayRecord.AvroCodec.Write(ref writer, _array);
+        return writer.WrittenCount;
+    }
+
+    [Benchmark]
+    public int WriteUndersizedMap()
+    {
+        var writer = new AvroValueWriter(_buffer);
+        PocoOverflowMapRecord.AvroCodec.Write(ref writer, _map);
+        return writer.WrittenCount;
+    }
+
+    [Benchmark]
+    public int WriteSizedArray()
+    {
+        var writer = new AvroValueWriter(_largeBuffer);
+        PocoOverflowArrayRecord.AvroCodec.Write(ref writer, _array);
+        return writer.WrittenCount;
+    }
+
+    [Benchmark]
+    public int WriteSizedMap()
+    {
+        var writer = new AvroValueWriter(_largeBuffer);
+        PocoOverflowMapRecord.AvroCodec.Write(ref writer, _map);
+        return writer.WrittenCount;
+    }
+}
+
+[AvroRecord(Name = "PocoOverflowArrayRecord", Namespace = "Dekaf.Benchmarks.Benchmarks.Unit")]
+public sealed partial class PocoOverflowArrayRecord
+{
+    public required int[] Values { get; init; }
+}
+
+[AvroRecord(Name = "PocoOverflowMapRecord", Namespace = "Dekaf.Benchmarks.Benchmarks.Unit")]
+public sealed partial class PocoOverflowMapRecord
+{
+    public required Dictionary<string, int> Values { get; init; }
+}
+
 public enum RepresentativePocoStatus
 {
     Pending,

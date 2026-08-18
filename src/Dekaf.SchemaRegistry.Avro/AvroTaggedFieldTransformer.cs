@@ -1370,8 +1370,14 @@ internal sealed class AvroTaggedFieldTransformerProvider : ISchemaRegistryTagged
 {
     private readonly ConditionalWeakTable<AvroSchema, SerializerPayloadTransformers> _serializerPayloads = new();
     private readonly ConditionalWeakTable<RegistrySchema, PayloadSchemaTransformers> _payloadSchemas = new();
+    private readonly ConditionalWeakTable<RegistrySchema, AvroSchema> _resolvedSchemas = new();
+    private readonly ConditionalWeakTable<RegistrySchema, PayloadSchemaTransformers>.CreateValueCallback
+        _createPayloadTransformers;
     private SerializerTransformerEntry? _lastSerializerTransformer;
     private PayloadSchemaTransformers? _lastPayloadSchema;
+
+    internal AvroTaggedFieldTransformerProvider() =>
+        _createPayloadTransformers = CreatePayloadTransformers;
 
     public ISchemaRegistryTaggedFieldTransformer Get(
         RegistrySchema payloadSchema,
@@ -1383,25 +1389,32 @@ internal sealed class AvroTaggedFieldTransformerProvider : ISchemaRegistryTagged
         {
             payloadTransformers = _payloadSchemas.GetValue(
                 payloadSchema,
-                static value => new PayloadSchemaTransformers(value));
+                _createPayloadTransformers);
             Volatile.Write(ref _lastPayloadSchema, payloadTransformers);
         }
 
         return payloadTransformers.Get(ruleOwnerSchema ?? payloadSchema);
     }
 
+    private PayloadSchemaTransformers CreatePayloadTransformers(RegistrySchema payloadSchema) =>
+        new(payloadSchema, _resolvedSchemas);
+
     internal ISchemaRegistryTaggedFieldTransformer GetResolved(
         RegistrySchema payloadSchema,
         AvroSchema avroSchema,
         RegistrySchema? ruleOwnerSchema = null)
     {
+        _resolvedSchemas.AddOrUpdate(payloadSchema, avroSchema);
         var payloadTransformers = Volatile.Read(ref _lastPayloadSchema);
         if (payloadTransformers is null ||
             !ReferenceEquals(payloadTransformers.PayloadSchema, payloadSchema))
         {
             if (!_payloadSchemas.TryGetValue(payloadSchema, out payloadTransformers))
             {
-                payloadTransformers = new PayloadSchemaTransformers(payloadSchema, avroSchema);
+                payloadTransformers = new PayloadSchemaTransformers(
+                    payloadSchema,
+                    avroSchema,
+                    _resolvedSchemas);
                 _payloadSchemas.AddOrUpdate(payloadSchema, payloadTransformers);
             }
 
@@ -1473,19 +1486,26 @@ internal sealed class AvroTaggedFieldTransformerProvider : ISchemaRegistryTagged
     private sealed class PayloadSchemaTransformers
     {
         private readonly AvroSchema _payloadSchema;
+        private readonly ConditionalWeakTable<RegistrySchema, AvroSchema> _resolvedSchemas;
         private readonly ConditionalWeakTable<RegistrySchema, TransformerEntry> _owners = new();
         private readonly ConditionalWeakTable<RegistrySchema, TransformerEntry>.CreateValueCallback _create;
         private TransformerEntry? _lastOwner;
 
-        public PayloadSchemaTransformers(RegistrySchema payloadSchema)
-            : this(payloadSchema, AvroSchema.Parse(payloadSchema.SchemaString))
+        public PayloadSchemaTransformers(
+            RegistrySchema payloadSchema,
+            ConditionalWeakTable<RegistrySchema, AvroSchema> resolvedSchemas)
+            : this(payloadSchema, AvroSchema.Parse(payloadSchema.SchemaString), resolvedSchemas)
         {
         }
 
-        public PayloadSchemaTransformers(RegistrySchema payloadSchema, AvroSchema avroSchema)
+        public PayloadSchemaTransformers(
+            RegistrySchema payloadSchema,
+            AvroSchema avroSchema,
+            ConditionalWeakTable<RegistrySchema, AvroSchema> resolvedSchemas)
         {
             PayloadSchema = payloadSchema;
             _payloadSchema = avroSchema;
+            _resolvedSchemas = resolvedSchemas;
             _create = Create;
         }
 
@@ -1510,7 +1530,9 @@ internal sealed class AvroTaggedFieldTransformerProvider : ISchemaRegistryTagged
                 owner,
                 ReferenceEquals(owner, PayloadSchema)
                     ? _payloadSchema
-                    : AvroSchema.Parse(owner.SchemaString)));
+                    : _resolvedSchemas.TryGetValue(owner, out var resolved)
+                        ? resolved
+                        : AvroSchema.Parse(owner.SchemaString)));
     }
 
     private sealed class TransformerEntry(

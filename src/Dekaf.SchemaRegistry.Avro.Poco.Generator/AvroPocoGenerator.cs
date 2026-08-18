@@ -15,6 +15,7 @@ namespace Dekaf.SchemaRegistry.Avro.Poco.Generator;
 [Generator(LanguageNames.CSharp)]
 internal sealed class AvroPocoGenerator : IIncrementalGenerator
 {
+    private const int WriteOverflowCheckInterval = 512;
     private const string RecordAttribute = "Dekaf.SchemaRegistry.Avro.Poco.AvroRecordAttribute";
     private const string FieldAttribute = "Dekaf.SchemaRegistry.Avro.Poco.AvroFieldAttribute";
     private const string IgnoreAttribute = "Dekaf.SchemaRegistry.Avro.Poco.AvroIgnoreAttribute";
@@ -1340,14 +1341,25 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
         private void EmitWriteCollection(StringBuilder code, TypeModel type, string value, string indent)
         {
             var index = "__index" + _localId++;
+            var end = "__end" + _localId++;
             var count = type.Kind == TypeKindModel.Array ? ".Length" : ".Count";
             code.Append(indent).Append("if (").Append(value).Append(count).AppendLine(" != 0)");
             code.Append(indent).AppendLine("{");
             code.Append(indent).Append("    writer.WriteBlockCount(").Append(value).Append(count).AppendLine(");");
-            code.Append(indent).Append("    for (var ").Append(index).Append(" = 0; ").Append(index)
-                .Append(" < ").Append(value).Append(count).Append("; ").Append(index).AppendLine("++)");
+            code.Append(indent).Append("    var ").Append(index).AppendLine(" = 0;");
+            code.Append(indent).Append("    while (").Append(index).Append(" < ").Append(value).Append(count)
+                .AppendLine(")");
             code.Append(indent).AppendLine("    {");
-            EmitWriteValue(code, type.Item!, value + "[" + index + "]", indent + "        ");
+            code.Append(indent).Append("        var ").Append(end).Append(" = global::System.Math.Min(")
+                .Append(index).Append(" + ").Append(WriteOverflowCheckInterval).Append(", ")
+                .Append(value).Append(count).AppendLine(");");
+            code.Append(indent).AppendLine("        do");
+            code.Append(indent).AppendLine("        {");
+            EmitWriteValue(code, type.Item!, value + "[" + index + "]", indent + "            ");
+            code.Append(indent).Append("            ").Append(index).AppendLine("++;");
+            code.Append(indent).Append("        } while (").Append(index).Append(" < ").Append(end).AppendLine(");");
+            code.Append(indent).AppendLine("        if (writer.WrittenCount == int.MaxValue)");
+            code.Append(indent).AppendLine("            break;");
             code.Append(indent).AppendLine("    }");
             code.Append(indent).AppendLine("}");
             code.Append(indent).AppendLine("writer.WriteBlockEnd();");
@@ -1363,6 +1375,8 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             code.Append(indent).AppendLine("    {");
             code.Append(indent).Append("        writer.WriteString(").Append(pair).AppendLine(".Key);");
             EmitWriteValue(code, type.Item!, pair + ".Value", indent + "        ");
+            code.Append(indent).AppendLine("        if (writer.WrittenCount == int.MaxValue)");
+            code.Append(indent).AppendLine("            break;");
             code.Append(indent).AppendLine("    }");
             code.Append(indent).AppendLine("}");
             code.Append(indent).AppendLine("writer.WriteBlockEnd();");

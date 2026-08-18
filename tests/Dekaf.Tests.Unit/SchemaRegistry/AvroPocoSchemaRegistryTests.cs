@@ -243,6 +243,103 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    public async Task GeneratedCodec_ContextWarmupResolvesReferencedMigrationTarget()
+    {
+        const string inlineRootSchemaJson =
+            """
+            {"type":"record","name":"PocoReferencedRoot","namespace":"Dekaf.Tests","fields":[{"name":"Address","type":{"type":"record","name":"PocoAddress","fields":[{"name":"City","type":"string"},{"name":"PostCode","type":"string"}]}}]}
+            """;
+        const string addressSchemaJson =
+            """
+            {"type":"record","name":"PocoAddress","namespace":"Dekaf.Tests","fields":[{"name":"City","type":"string"},{"name":"PostCode","type":"string"}]}
+            """;
+        const string referencedRootSchemaJson =
+            """
+            {"type":"record","name":"PocoReferencedRoot","namespace":"Dekaf.Tests","fields":[{"name":"Address","type":"Dekaf.Tests.PocoAddress"}]}
+            """;
+        var migrationRule = new SchemaRule
+        {
+            Name = "rewrite-referenced-layout",
+            Kind = SchemaRuleKind.Transform,
+            Mode = SchemaRuleMode.Upgrade,
+            Type = FixedPayloadMigrationHandler.RuleType
+        };
+        using var registry = new MockSchemaRegistryClient();
+        var writerSchemaId = await registry.RegisterSchemaAsync(
+            "poco-migration-referenced-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = inlineRootSchemaJson
+            });
+        _ = await registry.RegisterSchemaAsync(
+            "poco-migration-referenced-address-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = addressSchemaJson
+            });
+        _ = await registry.RegisterSchemaAsync(
+            "poco-migration-referenced-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = referencedRootSchemaJson,
+                References =
+                [
+                    new Dekaf.SchemaRegistry.SchemaReference
+                    {
+                        Name = "Dekaf.Tests.PocoAddress",
+                        Subject = "poco-migration-referenced-address-value",
+                        Version = 1
+                    }
+                ],
+                RuleSet = new SchemaRuleSet { MigrationRules = [migrationRule] }
+            });
+        var migratedPayload = new byte[64];
+        var migratedWriter = new AvroValueWriter(migratedPayload);
+        PocoReferencedRoot.AvroCodec.Write(
+            ref migratedWriter,
+            new PocoReferencedRoot
+            {
+                Address = new PocoAddress { City = "London", PostCode = "SW1" }
+            });
+        var handler = new FixedPayloadMigrationHandler(
+            migratedPayload.AsMemory(0, migratedWriter.WrittenCount));
+        var nonCachingRegistry = CreateNonCachingRegistry(registry);
+        await using var deserializer = PocoReferencedRoot.CreateAvroDeserializer(
+            nonCachingRegistry,
+            new AvroDeserializerConfig
+            {
+                UseLatestVersion = true,
+                RuleExecutor = new SchemaRegistryRuleExecutor([handler])
+            });
+        var context = new SerializationContext
+        {
+            Topic = "poco-migration-referenced",
+            Component = SerializationComponent.Value
+        };
+        var wire = new byte[64];
+        BinaryPrimitives.WriteInt32BigEndian(wire.AsSpan(1, 4), writerSchemaId);
+        var writer = new AvroValueWriter(wire.AsSpan(5));
+        writer.WriteString("old-city");
+        writer.WriteString("old-postcode");
+        var wireLength = 5 + writer.WrittenCount;
+
+        await deserializer.WarmupAsync(writerSchemaId, context);
+        nonCachingRegistry.ClearReceivedCalls();
+        var actual = deserializer.Deserialize(wire.AsMemory(0, wireLength), context);
+
+        await Assert.That(actual.Address.City).IsEqualTo("London");
+        await Assert.That(actual.Address.PostCode).IsEqualTo("SW1");
+        await Assert.That(handler.ContextHadTaggedFieldTransformer).IsTrue();
+        _ = nonCachingRegistry.DidNotReceiveWithAnyArgs()
+            .GetSchemaAsync(default, default(CancellationToken));
+        _ = nonCachingRegistry.DidNotReceiveWithAnyArgs()
+            .GetSchemaBySubjectAsync(default!, default!, default(CancellationToken));
+    }
+
+    [Test]
     public async Task GeneratedCodec_DistinguishesRecordUnionBranches()
     {
         using var registry = new MockSchemaRegistryClient();

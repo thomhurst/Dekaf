@@ -82,6 +82,24 @@ public sealed class AvroPocoGeneratorDiagnosticsTests
         await Assert.That(generatedSources.Select(static source => source.HintName).Distinct().Count()).IsEqualTo(2);
     }
 
+    [Test]
+    public async Task Generator_StopsCollectionWritesAfterOverflow()
+    {
+        const string declaration =
+            "[AvroRecord] public partial class Collections { " +
+            "public int[] Values { get; set; } = []; " +
+            "public System.Collections.Generic.Dictionary<string, int> Mappings { get; set; } = []; }";
+
+        var runResult = RunGeneratorResult(declaration);
+        var generated = runResult.Results.Single().GeneratedSources.Single().SourceText.ToString();
+        var overflowChecks = generated.Split(
+            "if (writer.WrittenCount == int.MaxValue)",
+            StringSplitOptions.None).Length - 1;
+
+        await Assert.That(runResult.Diagnostics).IsEmpty();
+        await Assert.That(overflowChecks).IsEqualTo(2);
+    }
+
     private static ImmutableArray<Diagnostic> RunGenerator(string declaration)
         => RunGeneratorResult(declaration).Diagnostics;
 

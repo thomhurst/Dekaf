@@ -128,11 +128,13 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         if (TryGetCachedPlan(schemaId, out _) &&
             TryGetPreparedRuleState(preparedKey, out var preparedState))
         {
-            return _migrationRunner?.PrepareAsync(
-                schemaId,
-                preparedState.Subject,
-                preparedState.Schema,
-                cancellationToken) ?? default;
+            return _migrationRunner is null
+                ? default
+                : PrepareMigrationTargetsAsync(
+                    schemaId,
+                    preparedState.Subject,
+                    preparedState.Schema,
+                    cancellationToken);
         }
 
         return PrepareRulesAsync(schemaId, subject, preparedKey, cancellationToken);
@@ -461,21 +463,40 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         var plan = await GetPlanAsync(schemaId, cancellationToken).ConfigureAwait(false);
         var scopedSchema = await _schemaRegistry.GetSchemaAsync(schemaId, subject, cancellationToken)
             .ConfigureAwait(false);
-        if (scopedSchema.RuleSet is not null)
-        {
-            _ = _resolvedSchemas.TryGetValue(schemaId, out var resolved) &&
-                ReferenceEquals(resolved.Plan, plan)
-                ? _taggedFieldTransformers.GetResolved(scopedSchema, resolved.Schema)
-                : _taggedFieldTransformers.Get(scopedSchema);
-        }
+        if (scopedSchema.RuleSet is not null || _migrationRunner is not null)
+            PrepareTaggedTransformer(schemaId, scopedSchema, plan);
 
         if (_migrationRunner is not null)
         {
-            await _migrationRunner.PrepareAsync(schemaId, subject, scopedSchema, cancellationToken)
+            await PrepareMigrationTargetsAsync(schemaId, subject, scopedSchema, cancellationToken)
                 .ConfigureAwait(false);
         }
 
         CachePreparedRuleState(preparedKey, subject, scopedSchema);
+    }
+
+    private async ValueTask PrepareMigrationTargetsAsync(
+        int schemaId,
+        string subject,
+        Schema writerSchema,
+        CancellationToken cancellationToken)
+    {
+        var targets = await _migrationRunner!.PrepareAsync(schemaId, subject, writerSchema, cancellationToken)
+            .ConfigureAwait(false);
+        while (targets.MoveNext(out var target))
+        {
+            var plan = await GetPlanAsync(target.Id, cancellationToken).ConfigureAwait(false);
+            PrepareTaggedTransformer(target.Id, target.Schema, plan);
+        }
+    }
+
+    private void PrepareTaggedTransformer(int schemaId, Schema schema, AvroPocoReaderPlan plan)
+    {
+        var parsed = _resolvedSchemas.TryGetValue(schemaId, out var resolved) &&
+                     ReferenceEquals(resolved.Plan, plan)
+            ? resolved.Schema
+            : AvroSchema.Parse(schema.SchemaString);
+        _ = _taggedFieldTransformers.GetResolved(schema, parsed);
     }
 
     private bool TryGetPreparedRuleState(PreparedRuleKey key, out PreparedRuleState state)
