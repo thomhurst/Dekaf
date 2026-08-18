@@ -903,6 +903,66 @@ public sealed class SchemaRegistryCsfleRuleTests
     }
 
     [Test]
+    public async Task AvroTaggedTransformerProvider_RevisitsReusedRecordWithOwnerSchema()
+    {
+        const string payloadSchemaText = """
+            {"type":"record","name":"SharedEnvelope","namespace":"test","fields":[
+                {"name":"removed","type":{"type":"record","name":"SharedSecret","fields":[
+                    {"name":"secret","type":"bytes"}
+                ]}},
+                {"name":"kept","type":"SharedSecret"}
+            ]}
+            """;
+        const string ownerSchemaText = """
+            {"type":"record","name":"SharedEnvelope","namespace":"test","fields":[
+                {"name":"kept","type":{"type":"record","name":"SharedSecret","fields":[
+                    {"name":"secret","type":"bytes","confluent:tags":["PII"]}
+                ]}}
+            ]}
+            """;
+        var rule = CreateRule(tags: new HashSet<string>(StringComparer.Ordinal) { "PII" });
+        var payloadSchema = new Schema { SchemaType = SchemaType.Avro, SchemaString = payloadSchemaText };
+        var ownerSchema = new Schema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = ownerSchemaText,
+            RuleSet = new SchemaRuleSet
+            {
+                MigrationRules = [rule],
+                HasFixedRuleCollections = true
+            }
+        };
+        var transformer = new AvroTaggedFieldTransformerProvider().Get(payloadSchema, ownerSchema);
+        var avroPayloadSchema = (Avro.RecordSchema)AvroSchema.Parse(payloadSchemaText);
+        var sharedSchema = (Avro.RecordSchema)avroPayloadSchema["removed"].Schema;
+        var removed = new GenericRecord(sharedSchema);
+        removed.Add("secret", new byte[] { 1 });
+        var kept = new GenericRecord(sharedSchema);
+        kept.Add("secret", new byte[] { 2 });
+        var payload = new GenericRecord(avroPayloadSchema);
+        payload.Add("removed", removed);
+        payload.Add("kept", kept);
+        using var encoded = new MemoryStream();
+        var encoder = new BinaryEncoder(encoded);
+        new GenericDatumWriter<GenericRecord>(avroPayloadSchema).Write(payload, encoder);
+        encoder.Flush();
+
+        var transformed = transformer.Transform(
+            encoded.ToArray(),
+            CreateHandlerContext(rule, ownerSchema),
+            new byte[] { 9 },
+            static (_, _, replacement) => replacement);
+        using var decoded = new MemoryStream(transformed.ToArray());
+        var result = new GenericDatumReader<GenericRecord>(avroPayloadSchema, avroPayloadSchema)
+            .Read(new GenericRecord(avroPayloadSchema), new BinaryDecoder(decoded));
+        var transformedRemoved = (GenericRecord)result["removed"]!;
+        var transformedKept = (GenericRecord)result["kept"]!;
+
+        await Assert.That((byte[])transformedRemoved["secret"]!).IsEquivalentTo(new byte[] { 9 });
+        await Assert.That((byte[])transformedKept["secret"]!).IsEquivalentTo(new byte[] { 9 });
+    }
+
+    [Test]
     public async Task AvroTaggedTransformer_TaggedNonEncryptablePrimitives_AreRejected()
     {
         var cases = new (string Type, string ExpectedType, byte[] Payload)[]

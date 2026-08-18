@@ -607,135 +607,149 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
             SchemaRule rule,
             bool mutableTags)
         {
-            var records = new Dictionary<global::Avro.RecordSchema, RecordTargets>(ReferenceEqualityComparer.Instance);
-            List<MutableFieldTarget>? mutableTargets = mutableTags ? [] : null;
-            var visited = new HashSet<AvroSchema>(ReferenceEqualityComparer.Instance);
-            var hasTargets = false;
-            Visit(
+            var recordOwners = new Dictionary<global::Avro.RecordSchema, global::Avro.RecordSchema?>(
+                ReferenceEqualityComparer.Instance);
+            CollectRecordOwners(
                 schema,
                 tagSchema,
-                registrySchema.Metadata?.Tags,
-                rule,
-                mutableTags,
-                records,
-                mutableTargets,
-                visited,
-                ref hasTargets);
+                recordOwners,
+                new HashSet<SchemaVisit>(SchemaVisitReferenceComparer.Instance));
+            var records = new Dictionary<global::Avro.RecordSchema, RecordTargets>(ReferenceEqualityComparer.Instance);
+            List<MutableFieldTarget>? mutableTargets = mutableTags ? [] : null;
+            var hasTargets = false;
+            foreach (var (record, tagRecord) in recordOwners)
+            {
+                BuildRecordTargets(
+                    record,
+                    tagRecord,
+                    registrySchema.Metadata?.Tags,
+                    rule,
+                    mutableTags,
+                    records,
+                    mutableTargets,
+                    ref hasTargets);
+            }
             return new RulePlan(records, mutableTargets?.ToArray(), hasTargets, rule);
         }
 
-        private static void Visit(
+        private static void CollectRecordOwners(
             AvroSchema schema,
             AvroSchema? tagSchema,
-            IReadOnlyDictionary<string, IReadOnlySet<string>>? metadata,
-            SchemaRule rule,
-            bool mutableTags,
-            Dictionary<global::Avro.RecordSchema, RecordTargets> records,
-            List<MutableFieldTarget>? mutableTargets,
-            HashSet<AvroSchema> visited,
-            ref bool hasTargets)
+            Dictionary<global::Avro.RecordSchema, global::Avro.RecordSchema?> recordOwners,
+            HashSet<SchemaVisit> visited)
         {
             if (schema is global::Avro.LogicalSchema logical)
                 schema = logical.BaseSchema;
             if (tagSchema is global::Avro.LogicalSchema tagLogical)
                 tagSchema = tagLogical.BaseSchema;
 
-            if (!visited.Add(schema))
+            if (!visited.Add(new SchemaVisit(schema, tagSchema)))
                 return;
 
             switch (schema)
             {
                 case global::Avro.RecordSchema record:
                     var tagRecord = tagSchema as global::Avro.RecordSchema;
+                    if (!recordOwners.TryGetValue(record, out var owner) ||
+                        (owner is null && tagRecord is not null))
+                        recordOwners[record] = tagRecord;
                     var fields = record.Fields;
-                    var targets = new bool[fields.Count];
-                    MutableFieldTarget?[]? mutableRecordTargets = mutableTags
-                        ? new MutableFieldTarget?[fields.Count]
-                        : null;
-                    records.Add(record, new RecordTargets(targets, mutableRecordTargets));
                     for (var i = 0; i < fields.Count; i++)
                     {
                         var field = fields[i];
                         var tagField = FindTagField(tagRecord, field.Name);
-                        var fullName = tagField is null
-                            ? record.Fullname + "." + field.Name
-                            : tagRecord!.Fullname + "." + tagField.Name;
-                        if (mutableTags)
-                        {
-                            var target = MutableFieldTarget.Create(
-                                tagField,
-                                metadata,
-                                fullName,
-                                rule);
-                            if (target is not null)
-                            {
-                                mutableRecordTargets![field.Pos] = target;
-                                mutableTargets!.Add(target);
-                                targets[field.Pos] = target.IsTarget;
-                                hasTargets |= target.IsTarget;
-                            }
-                        }
-                        else
-                        {
-                            var target = InlineTagsOverlap(tagField, rule.Tags!)
-                                || MetadataTagsOverlap(metadata, fullName, rule.Tags!);
-                            targets[field.Pos] = target;
-                            hasTargets |= target;
-                        }
-
-                        Visit(
+                        CollectRecordOwners(
                             field.Schema,
                             tagField?.Schema,
-                            metadata,
-                            rule,
-                            mutableTags,
-                            records,
-                            mutableTargets,
-                            visited,
-                            ref hasTargets);
+                            recordOwners,
+                            visited);
                     }
                     break;
                 case global::Avro.ArraySchema array:
-                    Visit(
+                    CollectRecordOwners(
                         array.ItemSchema,
                         (tagSchema as global::Avro.ArraySchema)?.ItemSchema,
-                        metadata,
-                        rule,
-                        mutableTags,
-                        records,
-                        mutableTargets,
-                        visited,
-                        ref hasTargets);
+                        recordOwners,
+                        visited);
                     break;
                 case global::Avro.MapSchema map:
-                    Visit(
+                    CollectRecordOwners(
                         map.ValueSchema,
                         (tagSchema as global::Avro.MapSchema)?.ValueSchema,
-                        metadata,
-                        rule,
-                        mutableTags,
-                        records,
-                        mutableTargets,
-                        visited,
-                        ref hasTargets);
+                        recordOwners,
+                        visited);
                     break;
                 case global::Avro.UnionSchema union:
                     var tagUnion = tagSchema as global::Avro.UnionSchema;
                     for (var i = 0; i < union.Count; i++)
                     {
-                        Visit(
+                        CollectRecordOwners(
                             union[i],
                             FindUnionBranch(union[i], tagUnion),
-                            metadata,
-                            rule,
-                            mutableTags,
-                            records,
-                            mutableTargets,
-                            visited,
-                            ref hasTargets);
+                            recordOwners,
+                            visited);
                     }
                     break;
             }
+        }
+
+        private static void BuildRecordTargets(
+            global::Avro.RecordSchema record,
+            global::Avro.RecordSchema? tagRecord,
+            IReadOnlyDictionary<string, IReadOnlySet<string>>? metadata,
+            SchemaRule rule,
+            bool mutableTags,
+            Dictionary<global::Avro.RecordSchema, RecordTargets> records,
+            List<MutableFieldTarget>? mutableTargets,
+            ref bool hasTargets)
+        {
+            var fields = record.Fields;
+            var targets = new bool[fields.Count];
+            MutableFieldTarget?[]? mutableRecordTargets = mutableTags
+                ? new MutableFieldTarget?[fields.Count]
+                : null;
+            records.Add(record, new RecordTargets(targets, mutableRecordTargets));
+            for (var i = 0; i < fields.Count; i++)
+            {
+                var field = fields[i];
+                var tagField = FindTagField(tagRecord, field.Name);
+                var fullName = tagField is null
+                    ? record.Fullname + "." + field.Name
+                    : tagRecord!.Fullname + "." + tagField.Name;
+                if (mutableTags)
+                {
+                    var target = MutableFieldTarget.Create(tagField, metadata, fullName, rule);
+                    if (target is null)
+                        continue;
+                    mutableRecordTargets![field.Pos] = target;
+                    mutableTargets!.Add(target);
+                    targets[field.Pos] = target.IsTarget;
+                    hasTargets |= target.IsTarget;
+                }
+                else
+                {
+                    var target = InlineTagsOverlap(tagField, rule.Tags!)
+                        || MetadataTagsOverlap(metadata, fullName, rule.Tags!);
+                    targets[field.Pos] = target;
+                    hasTargets |= target;
+                }
+            }
+        }
+
+        private readonly record struct SchemaVisit(AvroSchema Schema, AvroSchema? TagSchema);
+
+        private sealed class SchemaVisitReferenceComparer : IEqualityComparer<SchemaVisit>
+        {
+            internal static readonly SchemaVisitReferenceComparer Instance = new();
+
+            private SchemaVisitReferenceComparer() { }
+
+            public bool Equals(SchemaVisit x, SchemaVisit y) =>
+                ReferenceEquals(x.Schema, y.Schema) && ReferenceEquals(x.TagSchema, y.TagSchema);
+
+            public int GetHashCode(SchemaVisit value) => HashCode.Combine(
+                RuntimeHelpers.GetHashCode(value.Schema),
+                value.TagSchema is null ? 0 : RuntimeHelpers.GetHashCode(value.TagSchema));
         }
 
         private static global::Avro.Field? FindTagField(
