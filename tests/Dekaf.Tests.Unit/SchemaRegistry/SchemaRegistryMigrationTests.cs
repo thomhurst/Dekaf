@@ -49,6 +49,41 @@ public sealed class SchemaRegistryMigrationTests
     }
 
     [Test]
+    public async Task Transform_UpgradeTaggedFields_UsesPayloadLayoutAndTargetRuleOwner()
+    {
+        var registry = new MigrationRegistryClient();
+        var writer = CreateSchema("v1");
+        var intermediate = CreateSchema("v2", CreateRule("v2-up", SchemaRuleMode.Upgrade));
+        var target = CreateSchema("v3", CreateRule("v3-up", SchemaRuleMode.Upgrade));
+        var writerId = registry.Register("orders-value", writer);
+        registry.Register("orders-value", intermediate);
+        registry.Register("orders-value", target);
+        var provider = new CapturingTaggedFieldTransformerProvider();
+        var runner = new SchemaRegistryMigrationRunner(
+            registry,
+            new SchemaRegistryRuleExecutor([new CapturingMigrationHandler([])]),
+            TimeSpan.FromSeconds(1));
+
+        _ = runner.Transform(
+            "payload"u8.ToArray(),
+            writerId,
+            "orders-value",
+            writer,
+            SerializationContext,
+            SchemaRegistryPayloadFormat.Avro,
+            provider);
+
+        await Assert.That(provider.Calls.Count).IsEqualTo(4);
+        await Assert.That(provider.Calls[0].PayloadSchema).IsSameReferenceAs(writer);
+        await Assert.That(provider.Calls[1].PayloadSchema).IsSameReferenceAs(writer);
+        await Assert.That(provider.Calls[1].RuleOwnerSchema).IsSameReferenceAs(intermediate);
+        await Assert.That(provider.Calls[2].PayloadSchema).IsSameReferenceAs(writer);
+        await Assert.That(provider.Calls[2].RuleOwnerSchema).IsSameReferenceAs(target);
+        await Assert.That(provider.Calls[3].PayloadSchema).IsSameReferenceAs(writer);
+        await Assert.That(provider.Calls[3].RuleOwnerSchema).IsSameReferenceAs(target);
+    }
+
+    [Test]
     public async Task Transform_DowngradePath_ReversesVersionsAndRulesAndSelectsSecondAction()
     {
         var registry = new MigrationRegistryClient { LatestVersion = 1 };
@@ -477,6 +512,30 @@ public sealed class SchemaRegistryMigrationTests
             suffix.CopyTo(result.AsSpan(payload.Length));
             return result;
         }
+    }
+
+    private sealed class CapturingTaggedFieldTransformerProvider : ISchemaRegistryTaggedFieldTransformerProvider
+    {
+        internal List<(Schema PayloadSchema, Schema? RuleOwnerSchema)> Calls { get; } = [];
+
+        public ISchemaRegistryTaggedFieldTransformer Get(
+            Schema payloadSchema,
+            Schema? ruleOwnerSchema = null)
+        {
+            Calls.Add((payloadSchema, ruleOwnerSchema));
+            return PassthroughTaggedFieldTransformer.Instance;
+        }
+    }
+
+    private sealed class PassthroughTaggedFieldTransformer : ISchemaRegistryTaggedFieldTransformer
+    {
+        internal static PassthroughTaggedFieldTransformer Instance { get; } = new();
+
+        public ReadOnlyMemory<byte> Transform<TState>(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleHandlerContext context,
+            TState state,
+            SchemaRegistryFieldTransform<TState> transform) => payload;
     }
 
     private sealed class CapturingAction(List<string> calls) : ISchemaRegistryRuleAction

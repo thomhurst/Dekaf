@@ -72,7 +72,7 @@ For zero-allocation `GenericRecord` serialization, Avro map values must use
 because their enumeration can allocate per message. Value-type arrays and lists are specialized
 for Avro primitives and built-in logical types; unsupported value-type element representations
 fail instead of silently boxing each element. Custom logical branches in unions must declare one
-sealed CLR type and have at most one value-dependent candidate for that type. Assignable or
+sealed CLR type and exactly one effective value-dependent candidate for that type. Assignable or
 multi-candidate custom logical dispatch is rejected during writer construction because it would
 require a per-message candidate scan.
 
@@ -318,6 +318,28 @@ the payload.
 Binary Avro and Protobuf codec payloads are not currently supported by the JSONata byte handler and
 are rejected explicitly. Their object-level transforms require codec-specific conversion before
 binary encoding.
+
+## Avro tagged-field encryption
+
+Avro domain rules with type `ENCRYPT` transform only fields whose `confluent:tags` overlap the
+rule's tags. Tags may be declared directly on an Avro field or supplied through Schema Registry
+metadata using the field's fully qualified name. Tagged `string` fields store Base64 ciphertext;
+tagged `bytes` fields store raw ciphertext. Arrays, maps, nullable unions, nested records, and
+bytes-backed decimal logical types preserve their Avro shape while their tagged string or bytes
+values are transformed.
+
+Fixed-width fields cannot hold variable-length ciphertext. Dekaf therefore rejects tagged Avro
+`fixed` fields, including fixed-backed decimal logical types, instead of rewriting the schema or
+silently encrypting the whole payload. Untagged fields remain byte-for-byte unchanged. After the
+schema and rule plan are cached, the field walker is allocation-free; the KMS provider still owns
+any algorithm- or key-management-specific costs.
+
+For caller-owned mutable schemas, Avro metadata tag values must use `FrozenSet<string>` or
+`IImmutableSet<string>`. To update them, remove and re-add the containing metadata dictionary entry;
+Dekaf observes the dictionary's structural version and rebuilds the cached plan. Mutable
+`HashSet<string>` and `SortedSet<string>` metadata values are rejected because detecting their
+in-place changes would require an O(n) scan on every message. Rule tag sets may remain mutable;
+their version is checked once per transform.
 
 ## Schema Registry Configuration
 
@@ -653,6 +675,36 @@ public class OrderV2
 
 The serializer automatically registers new schema versions and handles compatibility.
 
+For `GenericRecord`, the serializer keys writers, subjects, and schema IDs by the runtime Avro
+schema's logical identity. Equivalent schema instances reuse one cache entry, while different
+versions on the same `TopicName` subject retain their own IDs. Runtime-schema caches are bounded;
+configure the positive limit when applications intentionally produce many distinct schemas:
+
+```csharp
+var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry, new AvroSerializerConfig
+{
+    MaxCachedSchemas = 500 // Default: 1000
+});
+```
+
+After the primary strong-cache limit is reached, exact schema objects use weak-key entries and a
+second FIFO logical cache retains a bounded overflow working set. The overflow cache uses the same
+configured limit, with a minimum of three entries for short schema rotations. A two-entry hot set
+still gives repeated and alternating overflow schemas a lock-free reference fast path. Specific
+records share one stateless writer; generic records retain a writer per logical schema. Cache entries
+never retain individual `GenericRecord` values.
+
+Reuse parsed Avro `Schema` objects on the per-message path. A previously observed schema object uses
+the O(1) reference lookup. A newly parsed object is a first-seen identity even when it is logically
+equivalent to an existing schema; safely proving that equivalence requires a structural fingerprint
+or comparison. Parse and cache schemas during startup or producer setup instead of constructing a
+new runtime schema for every message.
+
+Each first-seen overflow schema identity gets a weak association with its logical cache entry. This
+adds metadata only on the cold first-seen path, does not retain the schema object, and lets any live
+equivalent instance reuse its writer after logical-cache and hot-set eviction. Repeated use of an
+observed schema identity remains allocation-free.
+
 ## Subject Naming Strategies
 
 ```csharp
@@ -672,7 +724,7 @@ These formats match Confluent serializers. Avro `GenericRecord` subjects use the
 record's runtime schema, JSON Schema subjects use the schema `title` when present, and Protobuf
 subjects use the message descriptor's full name.
 
-Avro generated `ISpecificRecord` types serialize without per-message allocations when their record
+Avro-generated `ISpecificRecord` types serialize without per-message allocations when their record
 fields are scalar `null`, `boolean`, `int`, `long`, `float`, `double`, `string`, or `bytes` fields
 exposed by matching public properties. Unsupported SpecificRecord shapes fail when the serializer is
 created instead of silently falling back to Apache Avro's allocating `Get(int): object` path. Use

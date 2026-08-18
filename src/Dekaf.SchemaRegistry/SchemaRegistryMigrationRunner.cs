@@ -53,7 +53,8 @@ internal sealed class SchemaRegistryMigrationRunner
         string subject,
         Schema writerSchema,
         SerializationContext serializationContext,
-        SchemaRegistryPayloadFormat payloadFormat)
+        SchemaRegistryPayloadFormat payloadFormat,
+        ISchemaRegistryTaggedFieldTransformerProvider? taggedFieldTransformers = null)
     {
         var isNewPlan = false;
         var plan = Volatile.Read(ref _lastPlan);
@@ -90,13 +91,14 @@ internal sealed class SchemaRegistryMigrationRunner
             if (_ruleExecutor is null)
                 return new MigrationResult(payload, plan.ReaderSchema, schemaId);
 
-            var readerContext = SchemaRegistryRuleContext.Rent(
-                serializationContext.Topic,
-                serializationContext.Component,
+            var readerContext = RentContext(
+                serializationContext,
                 plan.ReaderSchema.Id,
                 subject,
                 plan.ReaderSchema.Schema,
-                payloadFormat);
+                payloadFormat,
+                taggedFieldTransformers,
+                taggedFieldSchema: writerSchema);
             try
             {
                 payload = _ruleExecutor.TransformDeserializedPayload(payload, readerContext);
@@ -109,13 +111,13 @@ internal sealed class SchemaRegistryMigrationRunner
             return new MigrationResult(payload, plan.ReaderSchema, schemaId);
         }
 
-        var context = SchemaRegistryRuleContext.Rent(
-            serializationContext.Topic,
-            serializationContext.Component,
+        var context = RentContext(
+            serializationContext,
             schemaId,
             subject,
             writerSchema,
-            payloadFormat);
+            payloadFormat,
+            taggedFieldTransformers);
         try
         {
             payload = _schemaRuleExecutor.TransformDeserializedEncodingPayload(payload, context);
@@ -125,19 +127,21 @@ internal sealed class SchemaRegistryMigrationRunner
             context.Return();
         }
 
+        var encodedSchema = writerSchema;
         var steps = plan.Steps;
         var payloadSchemaId = schemaId;
         for (var i = 0; i < steps.Length; i++)
         {
             ref readonly var step = ref steps[i];
             var owner = step.Mode == SchemaRuleMode.Upgrade ? step.Target.Schema : step.Source.Schema;
-            context = SchemaRegistryRuleContext.Rent(
-                serializationContext.Topic,
-                serializationContext.Component,
+            context = RentContext(
+                serializationContext,
                 schemaId,
                 subject,
                 owner,
                 payloadFormat,
+                taggedFieldTransformers,
+                encodedSchema,
                 step.Source.Schema,
                 step.Target.Schema,
                 step.Mode);
@@ -152,13 +156,14 @@ internal sealed class SchemaRegistryMigrationRunner
             }
         }
 
-        context = SchemaRegistryRuleContext.Rent(
-            serializationContext.Topic,
-            serializationContext.Component,
+        context = RentContext(
+            serializationContext,
             plan.ReaderSchema.Id,
             subject,
             plan.ReaderSchema.Schema,
-            payloadFormat);
+            payloadFormat,
+            taggedFieldTransformers,
+            taggedFieldSchema: encodedSchema);
         try
         {
             payload = _schemaRuleExecutor.TransformDeserializedDomainPayload(payload, context);
@@ -170,6 +175,40 @@ internal sealed class SchemaRegistryMigrationRunner
 
         return new MigrationResult(payload, plan.ReaderSchema, payloadSchemaId);
     }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static SchemaRegistryRuleContext RentContext(
+        SerializationContext serializationContext,
+        int schemaId,
+        string subject,
+        Schema schema,
+        SchemaRegistryPayloadFormat payloadFormat,
+        ISchemaRegistryTaggedFieldTransformerProvider? taggedFieldTransformers,
+        Schema? taggedFieldSchema = null,
+        Schema? sourceSchema = null,
+        Schema? targetSchema = null,
+        SchemaRuleMode? ruleMode = null) => taggedFieldTransformers is null
+        ? SchemaRegistryRuleContext.Rent(
+            serializationContext.Topic,
+            serializationContext.Component,
+            schemaId,
+            subject,
+            schema,
+            payloadFormat,
+            sourceSchema,
+            targetSchema,
+            ruleMode)
+        : SchemaRegistryRuleContext.RentWithTaggedFieldTransformer(
+            serializationContext.Topic,
+            serializationContext.Component,
+            schemaId,
+            subject,
+            schema,
+            payloadFormat,
+            taggedFieldTransformers.Get(taggedFieldSchema ?? schema, schema),
+            sourceSchema,
+            targetSchema,
+            ruleMode);
 
     private async Task<MigrationPlan> CreatePlanAsync(string subject, Schema writerSchema)
     {

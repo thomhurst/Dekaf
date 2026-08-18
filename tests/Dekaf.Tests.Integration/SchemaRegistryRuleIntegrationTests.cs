@@ -21,6 +21,102 @@ namespace Dekaf.Tests.Integration;
 public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryContainer testInfra)
 {
     [Test]
+    public async Task RegisteredAvroCsfleRule_ProduceConsume_RoundTripsTaggedField()
+    {
+        const string schemaText = """
+            {
+              "type": "record",
+              "name": "EncryptedPayment",
+              "namespace": "Dekaf.Tests.Integration",
+              "fields": [
+                { "name": "id", "type": "string" },
+                { "name": "secret", "type": "string", "confluent:tags": ["PII"] }
+              ]
+            }
+            """;
+        var topic = await testInfra.CreateTestTopicAsync();
+        using var registryClient = new CsfleTestRegistryClient(
+            new SchemaRegistryClient(new SchemaRegistryConfig
+            {
+                Url = testInfra.RegistryUrl
+            }));
+        var rule = new SchemaRule
+        {
+            Name = "encrypt-pii",
+            Kind = SchemaRuleKind.Transform,
+            Mode = SchemaRuleMode.WriteRead,
+            Type = SchemaRegistryCsfleRuleHandler.EncryptRuleType,
+            Tags = new HashSet<string>(StringComparer.Ordinal) { "PII" },
+            Parameters = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["encrypt.kek.name"] = $"integration-kek-{Guid.NewGuid():N}",
+                ["encrypt.kms.type"] = LocalKmsProvider.DefaultType,
+                ["encrypt.kms.key.id"] = "local://integration"
+            }
+        };
+        await registryClient.RegisterSchemaAsync($"{topic}-value", new Schema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = schemaText,
+            RuleSet = new SchemaRuleSet { DomainRules = [rule] }
+        });
+        var kms = new LocalKmsProvider(new Dictionary<string, byte[]>(StringComparer.Ordinal)
+        {
+            ["local://integration"] = Enumerable.Range(1, 32).Select(static value => (byte)value).ToArray()
+        });
+        var executor = new SchemaRegistryRuleExecutor(
+        [
+            new SchemaRegistryCsfleRuleHandler(registryClient, [kms])
+        ]);
+        var avroSchema = (Avro.RecordSchema)AvroSchema.Parse(schemaText);
+        var record = new GenericRecord(avroSchema);
+        record.Add("id", "payment-1");
+        record.Add("secret", "account-secret");
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(
+            registryClient,
+            new AvroSerializerConfig { AutoRegisterSchemas = false, RuleExecutor = executor });
+        await using var deserializer = new AvroSchemaRegistryDeserializer<GenericRecord>(
+            registryClient,
+            new AvroDeserializerConfig { RuleExecutor = executor });
+        var serializationContext = CreateContext(topic);
+        var encrypted = new ArrayBufferWriter<byte>();
+        serializer.Serialize(record, ref encrypted, serializationContext);
+
+        await Assert.That(encrypted.WrittenSpan.IndexOf("account-secret"u8)).IsEqualTo(-1);
+        await Assert.That(encrypted.WrittenSpan.IndexOf("payment-1"u8)).IsGreaterThanOrEqualTo(0);
+
+        await using var producer = await Kafka.CreateProducer<string, GenericRecord>()
+            .WithBootstrapServers(testInfra.BootstrapServers)
+            .WithValueSerializer(serializer)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        await producer.ProduceAsync(new ProducerMessage<string, GenericRecord>
+        {
+            Topic = topic,
+            Key = "key",
+            Value = record
+        });
+        await using var consumer = await Kafka.CreateConsumer<string, GenericRecord>()
+            .WithBootstrapServers(testInfra.BootstrapServers)
+            .WithGroupId($"avro-csfle-{Guid.NewGuid():N}")
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithValueDeserializer(deserializer)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        consumer.Subscribe(topic);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        GenericRecord? consumed = null;
+        await foreach (var message in consumer.ConsumeAsync(cts.Token))
+        {
+            consumed = message.Value;
+            break;
+        }
+
+        await Assert.That((string)consumed!["id"]!).IsEqualTo("payment-1");
+        await Assert.That((string)consumed["secret"]!).IsEqualTo("account-secret");
+    }
+
+    [Test]
     public async Task RegisteredJsonataMigrationRule_UseLatestVersion_TransformsPayload()
     {
         var topic = await testInfra.CreateTestTopicAsync();
@@ -405,6 +501,145 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
             using var document = System.Text.Json.JsonDocument.Parse(schema.SchemaString);
             return document.RootElement.GetProperty("title").GetString()!;
         }
+    }
+
+    private sealed class CsfleTestRegistryClient(SchemaRegistryClient inner) : ISchemaRegistryClient
+    {
+        private readonly ConcurrentDictionary<string, Kek> _keks = new(StringComparer.Ordinal);
+        private readonly ConcurrentDictionary<(string Kek, string Subject, DekAlgorithm Algorithm), Dek> _deks = new();
+
+        public int LatestCacheTtlSecs => inner.LatestCacheTtlSecs;
+
+        public Task<int> RegisterSchemaAsync(
+            string subject,
+            Schema schema,
+            CancellationToken cancellationToken = default) =>
+            inner.RegisterSchemaAsync(subject, schema, cancellationToken);
+
+        public Task<Schema> GetSchemaAsync(int id, CancellationToken cancellationToken = default) =>
+            inner.GetSchemaAsync(id, cancellationToken);
+
+        public Task<Schema> GetSchemaAsync(
+            int id,
+            string subject,
+            CancellationToken cancellationToken = default) =>
+            inner.GetSchemaAsync(id, subject, cancellationToken);
+
+        public Task<RegisteredSchema> GetSchemaBySubjectAsync(
+            string subject,
+            string version = "latest",
+            CancellationToken cancellationToken = default) =>
+            inner.GetSchemaBySubjectAsync(subject, version, cancellationToken);
+
+        public Task<RegisteredSchema> LookupSchemaAsync(
+            string subject,
+            Schema schema,
+            bool ignoreDeletedSchemas = true,
+            bool normalize = false,
+            CancellationToken cancellationToken = default) =>
+            inner.LookupSchemaAsync(subject, schema, ignoreDeletedSchemas, normalize, cancellationToken);
+
+        public Task<int> GetOrRegisterSchemaAsync(
+            string subject,
+            Schema schema,
+            CancellationToken cancellationToken = default) =>
+            inner.GetOrRegisterSchemaAsync(subject, schema, cancellationToken);
+
+        public Task<IReadOnlyList<string>> GetAllSubjectsAsync(CancellationToken cancellationToken = default) =>
+            inner.GetAllSubjectsAsync(cancellationToken);
+
+        public Task<IReadOnlyList<int>> GetVersionsAsync(
+            string subject,
+            CancellationToken cancellationToken = default) =>
+            inner.GetVersionsAsync(subject, cancellationToken);
+
+        public Task<bool> IsCompatibleAsync(
+            string subject,
+            Schema schema,
+            string version = "latest",
+            CancellationToken cancellationToken = default) =>
+            inner.IsCompatibleAsync(subject, schema, version, cancellationToken);
+
+        public Task<IReadOnlyList<int>> DeleteSubjectAsync(
+            string subject,
+            bool permanent = false,
+            CancellationToken cancellationToken = default) =>
+            inner.DeleteSubjectAsync(subject, permanent, cancellationToken);
+
+        public Task<Kek> RegisterKekAsync(
+            RegisterKekRequest request,
+            bool testSharing = false,
+            CancellationToken cancellationToken = default)
+        {
+            var kek = new Kek
+            {
+                Name = request.Name,
+                KmsType = request.KmsType,
+                KmsKeyId = request.KmsKeyId,
+                KmsProps = request.KmsProps
+            };
+            _keks[kek.Name] = kek;
+            return Task.FromResult(kek);
+        }
+
+        public Task<Kek> GetKekAsync(
+            string name,
+            bool deleted = false,
+            CancellationToken cancellationToken = default) =>
+            _keks.TryGetValue(name, out var kek)
+                ? Task.FromResult(kek)
+                : Task.FromException<Kek>(new SchemaRegistryException(40470, $"KEK '{name}' not found"));
+
+        public Task<Dek> RegisterDekAsync(
+            string kekName,
+            RegisterDekRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            var algorithm = request.Algorithm ?? DekAlgorithm.Aes256Gcm;
+            var dek = new Dek
+            {
+                KekName = kekName,
+                Subject = request.Subject,
+                Version = request.Version ?? 1,
+                Algorithm = algorithm,
+                EncryptedKeyMaterial = request.EncryptedKeyMaterial,
+                Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+            };
+            _deks[(kekName, request.Subject, algorithm)] = dek;
+            return Task.FromResult(dek);
+        }
+
+        public Task<Dek> GetDekAsync(
+            string kekName,
+            string subject,
+            DekAlgorithm? algorithm = null,
+            bool deleted = false,
+            CancellationToken cancellationToken = default)
+        {
+            var resolvedAlgorithm = algorithm ?? DekAlgorithm.Aes256Gcm;
+            return _deks.TryGetValue((kekName, subject, resolvedAlgorithm), out var dek)
+                ? Task.FromResult(dek)
+                : Task.FromException<Dek>(new SchemaRegistryException(40471, $"DEK for '{subject}' not found"));
+        }
+
+        public Task<Dek> GetDekAsync(
+            string kekName,
+            string subject,
+            int version,
+            bool deleted = false,
+            CancellationToken cancellationToken = default) =>
+            GetDekAsync(kekName, subject, DekAlgorithm.Aes256Gcm, deleted, cancellationToken);
+
+        public Task<Dek> GetDekAsync(
+            string kekName,
+            string subject,
+            int version,
+            DekAlgorithm algorithm,
+            bool deleted = false,
+            CancellationToken cancellationToken = default) =>
+            GetDekAsync(kekName, subject, algorithm, deleted, cancellationToken);
+
+        public void Dispose() => inner.Dispose();
     }
 }
 

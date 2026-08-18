@@ -1,8 +1,11 @@
+using System.Buffers.Binary;
 using Avro.Generic;
+using Avro.IO;
 using Dekaf.Consumer;
 using Dekaf.Producer;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Avro;
+using Dekaf.Serialization;
 using AvroSchema = Avro.Schema;
 
 namespace Dekaf.Tests.Integration;
@@ -36,6 +39,19 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
                 { "name": "username", "type": "string" },
                 { "name": "email", "type": ["null", "string"], "default": null },
                 { "name": "createdAt", "type": "long" }
+            ]
+        }
+        """;
+
+    private const string EvolvedSimpleRecordSchema = """
+        {
+            "type": "record",
+            "name": "SimpleRecord",
+            "namespace": "test",
+            "fields": [
+                { "name": "id", "type": "int" },
+                { "name": "name", "type": "string" },
+                { "name": "nickname", "type": ["null", "string"], "default": null }
             ]
         }
         """;
@@ -175,6 +191,94 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
             await Assert.That((string)record["username"]!).IsEqualTo($"user-{i}");
             await Assert.That((string)record["email"]!).IsEqualTo($"user{i}@example.com");
         }
+    }
+
+    [Test]
+    public async Task AvroSerializer_AlternatingSchemas_WireIdsDecodeEveryRecord()
+    {
+        var topic = await testInfra.CreateTestTopicAsync();
+        const int messageCount = 20;
+
+        using var registryClient = new SchemaRegistryClient(new SchemaRegistryConfig
+        {
+            Url = testInfra.RegistryUrl
+        });
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(registryClient);
+        var simpleSchema = (Avro.RecordSchema)AvroSchema.Parse(SimpleRecordSchema);
+        var evolvedSchema = (Avro.RecordSchema)AvroSchema.Parse(EvolvedSimpleRecordSchema);
+
+        await using (var producer = await Kafka.CreateProducer<string, GenericRecord>()
+            .WithBootstrapServers(testInfra.BootstrapServers)
+            .WithClientId("avro-alternating-schema-producer")
+            .WithValueSerializer(serializer)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync())
+        {
+            for (var i = 0; i < messageCount; i++)
+            {
+                var useSimpleSchema = (i & 1) == 0;
+                var record = new GenericRecord(useSimpleSchema ? simpleSchema : evolvedSchema);
+                record.Add("id", i);
+                record.Add("name", $"record-{i}");
+                if (!useSimpleSchema)
+                    record.Add("nickname", $"nickname-{i}");
+
+                await producer.ProduceAsync(new ProducerMessage<string, GenericRecord>
+                {
+                    Topic = topic,
+                    Key = useSimpleSchema ? $"simple-{i}" : $"alternate-{i}",
+                    Value = record
+                }, CancellationToken.None);
+            }
+
+            await producer.FlushWithTimeoutAsync();
+        }
+
+        await using var consumer = await Kafka.CreateConsumer<string, ReadOnlyMemory<byte>>()
+            .WithBootstrapServers(testInfra.BootstrapServers)
+            .WithClientId("avro-alternating-schema-consumer")
+            .WithGroupId($"avro-alternating-schema-group-{Guid.NewGuid():N}")
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithValueDeserializer(Serializers.RawBytes)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        consumer.Subscribe(topic);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var schemaIds = new HashSet<int>();
+        var consumedCount = 0;
+
+        await foreach (var message in consumer.ConsumeAsync(cts.Token))
+        {
+            var wireValue = message.Value;
+            await Assert.That(wireValue.Length).IsGreaterThan(5);
+            await Assert.That(wireValue.Span[0]).IsEqualTo((byte)0);
+
+            var schemaId = BinaryPrimitives.ReadInt32BigEndian(wireValue.Span.Slice(1, 4));
+            schemaIds.Add(schemaId);
+            var registeredSchema = await registryClient.GetSchemaAsync(schemaId, cts.Token);
+            var writerSchema = (Avro.RecordSchema)AvroSchema.Parse(registeredSchema.SchemaString);
+            var reader = new GenericDatumReader<GenericRecord>(writerSchema, writerSchema);
+            using var payloadStream = new MemoryStream(wireValue.Slice(5).ToArray());
+            var decoded = reader.Read(default!, new BinaryDecoder(payloadStream));
+            var expectedSimpleSchema = message.Key!.StartsWith("simple-", StringComparison.Ordinal);
+            var decodedId = (int)decoded["id"]!;
+
+            await Assert.That(writerSchema.Fullname).IsEqualTo("test.SimpleRecord");
+            await Assert.That(writerSchema.Fields.Count).IsEqualTo(expectedSimpleSchema ? 2 : 3);
+            await Assert.That(message.Key).EndsWith($"-{decodedId}");
+            await Assert.That((string)decoded["name"]!).IsEqualTo($"record-{decodedId}");
+            if (!expectedSimpleSchema)
+                await Assert.That((string)decoded["nickname"]!).IsEqualTo($"nickname-{decodedId}");
+
+            consumedCount++;
+            if (consumedCount == messageCount)
+                break;
+        }
+
+        await Assert.That(consumedCount).IsEqualTo(messageCount);
+        await Assert.That(schemaIds).Count().IsEqualTo(2);
+        await Assert.That(await registryClient.GetVersionsAsync($"{topic}-value", cts.Token)).Count().IsEqualTo(2);
     }
 
     [Test]

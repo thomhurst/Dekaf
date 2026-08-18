@@ -62,6 +62,7 @@ public sealed class AvroSchemaRegistryDeserializer<
     private readonly AvroSchema? _readerSchema;
     private readonly DeserializerSubjectNameCache? _subjectNames;
     private readonly SchemaRegistryMigrationRunner? _migrationRunner;
+    private readonly AvroTaggedFieldTransformerProvider _taggedFieldTransformers = new();
 
     /// <summary>
     /// Creates a new Avro Schema Registry deserializer.
@@ -153,7 +154,18 @@ public sealed class AvroSchemaRegistryDeserializer<
         // Extract Avro payload. Array-backed payloads decode in place; other memory falls back to a pooled copy.
         var payloadMemory = data.Slice(5);
         AvroSchema? migrationReaderSchema = null;
-        if (_ruleExecutor is not null)
+        if (_ruleExecutor is null)
+        {
+            var directCodecState = AvroCodecThreadStateCache.Deserialization ??= new AvroDeserializationThreadState();
+            return ReadAvroPayload(
+                payloadMemory,
+                writerSchema,
+                migrationReaderSchema: null,
+                codecState: directCodecState);
+        }
+
+        var taggedWorkspaceOperation = AvroTaggedFieldTransformerProvider.BeginOperation();
+        try
         {
             string subject;
             if (_subjectNames is null)
@@ -171,13 +183,14 @@ public sealed class AvroSchemaRegistryDeserializer<
             var schema = _schemaRegistry.GetSchemaSync(schemaId, subject, SchemaRegistryTimeout);
             if (_migrationRunner is null)
             {
-                var ruleContext = SchemaRegistryRuleContext.Rent(
+                var ruleContext = SchemaRegistryRuleContext.RentWithTaggedFieldTransformer(
                     context.Topic,
                     context.Component,
                     schemaId,
                     subject,
                     schema,
-                    SchemaRegistryPayloadFormat.Avro);
+                    SchemaRegistryPayloadFormat.Avro,
+                    _taggedFieldTransformers.Get(schema, writerSchema));
                 try
                 {
                     payloadMemory = _ruleExecutor.TransformDeserializedPayload(payloadMemory, ruleContext);
@@ -195,15 +208,19 @@ public sealed class AvroSchemaRegistryDeserializer<
                     subject,
                     schema,
                     context,
-                    SchemaRegistryPayloadFormat.Avro);
+                    SchemaRegistryPayloadFormat.Avro,
+                    _taggedFieldTransformers);
                 payloadMemory = migration.Payload;
                 writerSchema = GetWriterSchemaCached(migration.PayloadSchemaId);
                 migrationReaderSchema = GetWriterSchemaCached(migration.ReaderSchema.Id);
             }
+            var codecState = AvroCodecThreadStateCache.Deserialization ??= new AvroDeserializationThreadState();
+            return ReadAvroPayload(payloadMemory, writerSchema, migrationReaderSchema, codecState);
         }
-
-        var codecState = AvroCodecThreadStateCache.Deserialization ??= new AvroDeserializationThreadState();
-        return ReadAvroPayload(payloadMemory, writerSchema, migrationReaderSchema, codecState);
+        finally
+        {
+            taggedWorkspaceOperation.Dispose();
+        }
     }
 
     private string GetSubjectName(int schemaId, Schema schema, SerializationContext context)

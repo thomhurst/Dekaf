@@ -419,6 +419,7 @@ public class KafkaProducerFastPathTests
     {
         await using var producer = await CreateBufferBoundaryProducerAsync(maxBlockMs: 30_000);
         var accumulator = producer.RecordAccumulator;
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(accumulator);
 
         await Assert.That(accumulator.TryReserveMemoryForTest(BufferMemoryLimit)).IsTrue();
         var syntheticReservationRemaining = BufferMemoryLimit;
@@ -449,7 +450,9 @@ public class KafkaProducerFastPathTests
             await TestWait.UntilAsync(
                 () => accumulator.PendingAppendCountForTest == 0,
                 TimeSpan.FromSeconds(5));
-            await AccumulatorTestHelpers.SealAllAsync(accumulator);
+            await TestWait.UntilAsync(
+                () => HasCompletableCurrentBatch(accumulator, new TopicPartition(Topic, 0)),
+                TimeSpan.FromSeconds(5));
 
             var readyBatch = CompleteCurrentBatch(accumulator, new TopicPartition(Topic, 0));
             await Assert.That(readyBatch.RecordBatch.Records.Count).IsEqualTo(1);
@@ -693,6 +696,22 @@ public class KafkaProducerFastPathTests
             return readyBatch;
 
         throw new InvalidOperationException("Partition deque did not contain a current or sealed batch.");
+    }
+
+    private static bool HasCompletableCurrentBatch(
+        RecordAccumulator accumulator,
+        TopicPartition topicPartition)
+    {
+        var deques = GetInstanceField<object>(accumulator, "_partitionDeques");
+        var tryGetValueMethod = deques.GetType().GetMethod("TryGetValue");
+        var parameters = new object[] { topicPartition, null! };
+        if (!(bool)tryGetValueMethod!.Invoke(deques, parameters)!)
+            return false;
+
+        var partitionDeque = parameters[1]!;
+        return GetInstanceField<object?>(partitionDeque, "CurrentBatch") is not null
+            && !GetInstanceField<bool>(partitionDeque, "AppendInProgress")
+            && !GetInstanceField<bool>(partitionDeque, "RotationInProgress");
     }
 
     private static ValueTask StopProducerBackgroundLoopsAsync(KafkaProducer<string, string> producer)

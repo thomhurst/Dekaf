@@ -7,6 +7,34 @@ namespace Dekaf.Tests.Unit.SchemaRegistry;
 public sealed class SchemaRegistryRuleExecutorTests
 {
     [Test]
+    public async Task RuleContextPool_ReturnClearsTaggedFieldTransformer()
+    {
+        var context = SchemaRegistryRuleContext.RentWithTaggedFieldTransformer(
+            "tagged",
+            SerializationComponent.Value,
+            1,
+            "tagged-value",
+            new Schema { SchemaString = "{}" },
+            SchemaRegistryPayloadFormat.Avro,
+            PassthroughTaggedFieldTransformer.Instance);
+
+        context.Return();
+        var transformerCleared = context.TaggedFieldTransformer is null;
+        var reused = SchemaRegistryRuleContext.Rent(
+            "plain",
+            SerializationComponent.Value,
+            2,
+            "plain-value",
+            null,
+            SchemaRegistryPayloadFormat.Custom);
+        var reusedWithoutTransformer = reused.TaggedFieldTransformer is null;
+        reused.Return();
+
+        await Assert.That(transformerCleared).IsTrue();
+        await Assert.That(reusedWithoutTransformer).IsTrue();
+    }
+
+    [Test]
     public async Task RuleContextPool_ReusesPrimaryContext_AfterNestedRental()
     {
         var schema = new Schema { SchemaString = "{}" };
@@ -518,5 +546,16 @@ public sealed class SchemaRegistryRuleExecutorTests
             ReadOnlyMemory<byte> payload,
             SchemaRegistryRuleHandlerContext context) =>
             throw new InvalidOperationException("Handler failed.");
+    }
+
+    private sealed class PassthroughTaggedFieldTransformer : ISchemaRegistryTaggedFieldTransformer
+    {
+        internal static PassthroughTaggedFieldTransformer Instance { get; } = new();
+
+        public ReadOnlyMemory<byte> Transform<TState>(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleHandlerContext context,
+            TState state,
+            SchemaRegistryFieldTransform<TState> transform) => payload;
     }
 }

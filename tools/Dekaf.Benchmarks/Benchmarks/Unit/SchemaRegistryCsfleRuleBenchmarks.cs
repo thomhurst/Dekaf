@@ -1,6 +1,11 @@
+using System.Collections.Frozen;
+using Avro.Generic;
+using Avro.IO;
 using BenchmarkDotNet.Attributes;
 using Dekaf.SchemaRegistry;
+using Dekaf.SchemaRegistry.Avro;
 using Dekaf.Serialization;
+using AvroSchema = Avro.Schema;
 
 namespace Dekaf.Benchmarks.Benchmarks.Unit;
 
@@ -13,6 +18,21 @@ public class SchemaRegistryCsfleRuleBenchmarks
     private const int RotatingDekCount = 65;
     private static readonly byte[] Payload = "benchmark-payload"u8.ToArray();
     private static readonly byte[] JsonPayload = "{\"name\":\"Ada\",\"ssn\":\"123-45-6789\"}"u8.ToArray();
+    private static readonly byte[] AvroPayload = CreateAvroPayload();
+    private static readonly byte[] LargeAvroPayload = CreateAvroPayload(new string('x', 1024 * 1024 + 1));
+    private const string TaggedAvroSchema = """
+        {
+            "type": "record",
+            "name": "BenchmarkRecord",
+            "fields": [
+                { "name": "id", "type": "int" },
+                { "name": "name", "type": "string" },
+                { "name": "ssn", "type": "string", "confluent:tags": ["PII"] },
+                { "name": "aliases", "type": { "type": "array", "items": "string" } },
+                { "name": "attributes", "type": { "type": "map", "values": "bytes" } }
+            ]
+        }
+        """;
 
     private SchemaRegistryRuleExecutor _executor = null!;
     private SchemaRegistryRuleContext _wholePayloadContext = null!;
@@ -21,6 +41,8 @@ public class SchemaRegistryCsfleRuleBenchmarks
     private SchemaRegistryRuleContext _taggedJsonContext = null!;
     private SchemaRegistryRuleContext _mutableTaggedJsonContext = null!;
     private SchemaRegistryRuleContext _mutableSortedTaggedJsonContext = null!;
+    private SchemaRegistryRuleContext _taggedAvroContext = null!;
+    private SchemaRegistryRuleContext _mutableTaggedAvroContext = null!;
     private SchemaRegistryRuleContext[] _rotatingGcmContexts = null!;
     private SchemaRegistryRuleContext[] _rotatingSivContexts = null!;
     private byte[] _encryptedPayload = null!;
@@ -29,6 +51,8 @@ public class SchemaRegistryCsfleRuleBenchmarks
     private byte[] _encryptedJsonPayload = null!;
     private byte[] _mutableEncryptedJsonPayload = null!;
     private byte[] _mutableSortedEncryptedJsonPayload = null!;
+    private byte[] _encryptedAvroPayload = null!;
+    private byte[] _mutableEncryptedAvroPayload = null!;
 
     [GlobalSetup]
     public void Setup()
@@ -78,6 +102,40 @@ public class SchemaRegistryCsfleRuleBenchmarks
                 },
                 fixedCollections: false),
             SchemaRegistryPayloadFormat.Json);
+        var avroRule = CreateRule(new HashSet<string>(StringComparer.Ordinal) { "PII" });
+        var avroSchema = new Schema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = TaggedAvroSchema,
+            RuleSet = new SchemaRuleSet
+            {
+                DomainRules = [avroRule],
+                HasFixedRuleCollections = true
+            }
+        };
+        _taggedAvroContext = CreateContext(
+            avroSchema,
+            SchemaRegistryPayloadFormat.Avro,
+            AvroTaggedFieldTransformer.Get(AvroSchema.Parse(TaggedAvroSchema), avroSchema));
+        var mutableAvroSchema = new Schema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = TaggedAvroSchema,
+            Metadata = new SchemaMetadata
+            {
+                Tags = new Dictionary<string, IReadOnlySet<string>>(StringComparer.Ordinal)
+                {
+                    ["BenchmarkRecord.ssn"] = FrozenSet.ToFrozenSet(["PII"], StringComparer.Ordinal),
+                    ["BenchmarkRecord.s?n"] = FrozenSet.ToFrozenSet(["PII"], StringComparer.Ordinal),
+                    ["BenchmarkRecord.s*"] = FrozenSet.ToFrozenSet(["PII"], StringComparer.Ordinal)
+                }
+            },
+            RuleSet = new SchemaRuleSet { DomainRules = [avroRule] }
+        };
+        _mutableTaggedAvroContext = CreateContext(
+            mutableAvroSchema,
+            SchemaRegistryPayloadFormat.Avro,
+            AvroTaggedFieldTransformer.Get(AvroSchema.Parse(TaggedAvroSchema), mutableAvroSchema));
         _encryptedPayload = _executor.TransformSerializedPayload(Payload, _wholePayloadContext).ToArray();
         _mutableEncryptedPayload = _executor.TransformSerializedPayload(Payload, _mutableWholePayloadContext).ToArray();
         _deterministicEncryptedPayload = _executor.TransformSerializedPayload(Payload, _deterministicContext).ToArray();
@@ -85,6 +143,10 @@ public class SchemaRegistryCsfleRuleBenchmarks
         _mutableEncryptedJsonPayload = _executor.TransformSerializedPayload(JsonPayload, _mutableTaggedJsonContext).ToArray();
         _mutableSortedEncryptedJsonPayload = _executor
             .TransformSerializedPayload(JsonPayload, _mutableSortedTaggedJsonContext)
+            .ToArray();
+        _encryptedAvroPayload = _executor.TransformSerializedPayload(AvroPayload, _taggedAvroContext).ToArray();
+        _mutableEncryptedAvroPayload = _executor
+            .TransformSerializedPayload(AvroPayload, _mutableTaggedAvroContext)
             .ToArray();
 
         Warm();
@@ -140,6 +202,49 @@ public class SchemaRegistryCsfleRuleBenchmarks
         _executor.TransformDeserializedPayload(_mutableSortedEncryptedJsonPayload, _mutableSortedTaggedJsonContext);
 
     [Benchmark]
+    public ReadOnlyMemory<byte> EncryptTaggedAvroField() =>
+        _executor.TransformSerializedPayload(AvroPayload, _taggedAvroContext);
+
+    [Benchmark]
+    public byte EncryptTaggedAvroFieldInSerializerOperation()
+    {
+        var operation = AvroTaggedFieldTransformerProvider.BeginOperation();
+        try
+        {
+            return _executor.TransformSerializedPayload(AvroPayload, _taggedAvroContext).Span[0];
+        }
+        finally
+        {
+            operation.Dispose();
+        }
+    }
+
+    [Benchmark]
+    public ReadOnlyMemory<byte> DecryptTaggedAvroField() =>
+        _executor.TransformDeserializedPayload(_encryptedAvroPayload, _taggedAvroContext);
+
+    [Benchmark]
+    public ReadOnlyMemory<byte> EncryptMutableTaggedAvroField() =>
+        _executor.TransformSerializedPayload(AvroPayload, _mutableTaggedAvroContext);
+
+    [Benchmark]
+    public ReadOnlyMemory<byte> DecryptMutableTaggedAvroField() =>
+        _executor.TransformDeserializedPayload(_mutableEncryptedAvroPayload, _mutableTaggedAvroContext);
+
+    [Benchmark]
+    public byte EncryptLargeTaggedAvroField()
+    {
+        try
+        {
+            return _executor.TransformSerializedPayload(LargeAvroPayload, _taggedAvroContext).Span[0];
+        }
+        finally
+        {
+            AvroTaggedFieldTransformerProvider.ReleaseOversizedOutputs();
+        }
+    }
+
+    [Benchmark]
     public ReadOnlyMemory<byte> EncryptRotatingGcmDeks() => EncryptRotating(_rotatingGcmContexts);
 
     [Benchmark]
@@ -159,8 +264,28 @@ public class SchemaRegistryCsfleRuleBenchmarks
         DecryptMutableTaggedJsonField();
         EncryptMutableSortedTaggedJsonField();
         DecryptMutableSortedTaggedJsonField();
+        EncryptTaggedAvroField();
+        DecryptTaggedAvroField();
+        EncryptMutableTaggedAvroField();
+        DecryptMutableTaggedAvroField();
         EncryptRotating(_rotatingGcmContexts);
         EncryptRotating(_rotatingSivContexts);
+    }
+
+    private static byte[] CreateAvroPayload(string ssn = "123-45-6789")
+    {
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(TaggedAvroSchema);
+        var record = new GenericRecord(schema);
+        record.Add("id", 42);
+        record.Add("name", "Ada");
+        record.Add("ssn", ssn);
+        record.Add("aliases", new object[] { "x" });
+        record.Add("attributes", new Dictionary<string, object> { ["k"] = "v"u8.ToArray() });
+        using var stream = new MemoryStream();
+        var encoder = new BinaryEncoder(stream);
+        new GenericDatumWriter<GenericRecord>(schema).Write(record, encoder);
+        encoder.Flush();
+        return stream.ToArray();
     }
 
     private ReadOnlyMemory<byte> EncryptRotating(SchemaRegistryRuleContext[] contexts)
@@ -214,6 +339,7 @@ public class SchemaRegistryCsfleRuleBenchmarks
     private static SchemaRegistryRuleContext CreateContext(
         Schema schema,
         SchemaRegistryPayloadFormat format = SchemaRegistryPayloadFormat.Custom,
+        ISchemaRegistryTaggedFieldTransformer? taggedFieldTransformer = null,
         string subject = "benchmark-topic-value") =>
         new()
         {
@@ -222,7 +348,8 @@ public class SchemaRegistryCsfleRuleBenchmarks
             SchemaId = 1,
             Subject = subject,
             Schema = schema,
-            PayloadFormat = format
+            PayloadFormat = format,
+            TaggedFieldTransformer = taggedFieldTransformer
         };
 
     private sealed class BenchmarkSchemaRegistryClient : ISchemaRegistryClient
