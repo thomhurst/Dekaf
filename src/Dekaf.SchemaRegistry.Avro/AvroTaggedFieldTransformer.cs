@@ -227,12 +227,24 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
                 if (count == long.MinValue)
                     ThrowInvalidBlock(context);
                 count = -count;
-                _ = reader.ReadLength();
+                if (reader.ReadLength() > reader.Remaining)
+                    ThrowInvalidBlock(context);
                 output.WriteLong(count);
             }
             else
             {
                 output.Append(reader.Slice(countStart).Span);
+            }
+
+            if (count > reader.Remaining)
+            {
+                // Null and all-zero-width records can legitimately outnumber the bytes left.
+                // One item proves the fixed schema consumes nothing; the rest are identical no-ops.
+                var itemStart = reader.Position;
+                TransformValue(schema.ItemSchema, target, plan, ref reader, output, context, state, transform);
+                if (reader.Position != itemStart)
+                    ThrowInvalidBlock(context);
+                continue;
             }
 
             for (long i = 0; i < count; i++)
@@ -265,13 +277,17 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
                 if (count == long.MinValue)
                     ThrowInvalidBlock(context);
                 count = -count;
-                _ = reader.ReadLength();
+                if (reader.ReadLength() > reader.Remaining)
+                    ThrowInvalidBlock(context);
                 output.WriteLong(count);
             }
             else
             {
                 output.Append(reader.Slice(countStart).Span);
             }
+
+            if (count > reader.Remaining)
+                ThrowInvalidBlock(context);
 
             for (long i = 0; i < count; i++)
             {
@@ -349,6 +365,8 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
     private static void ThrowInvalidBlock(SchemaRegistryRuleHandlerContext context) =>
         throw new SchemaRegistryRuleException(
             $"Schema Registry rule '{context.Rule.Name}' encountered an invalid Avro collection block.");
+
+    internal static bool GlobMatches(string pattern, string value) => RulePlan.GlobMatches(pattern, value);
 
     private sealed class SchemaTransformers
     {
@@ -1259,6 +1277,8 @@ internal sealed class AvroTaggedFieldTransformer : ISchemaRegistryTaggedFieldTra
         public int Position { get; private set; }
 
         public bool End => Position == _payload.Length;
+
+        public int Remaining => _payload.Length - Position;
 
         public ReadOnlyMemory<byte> Read(int length)
         {

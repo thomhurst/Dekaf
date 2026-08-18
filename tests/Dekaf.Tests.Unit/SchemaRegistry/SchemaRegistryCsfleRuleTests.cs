@@ -592,6 +592,92 @@ public sealed class SchemaRegistryCsfleRuleTests
     }
 
     [Test]
+    [Timeout(5_000)]
+    public async Task AvroTaggedTransformer_HugeZeroWidthArrayBlock_CompletesWithoutScanningItems(
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        const string schemaText = """
+            {"type":"record","name":"ArrayPayload","fields":[
+                {"name":"secret","type":"bytes","confluent:tags":["PII"]},
+                {"name":"items","type":{"type":"array","items":"null"}}
+            ]}
+            """;
+        var avroSchema = (Avro.RecordSchema)AvroSchema.Parse(schemaText);
+        var rule = CreateRule(tags: new HashSet<string>(StringComparer.Ordinal) { "PII" });
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = schemaText,
+            RuleSet = new SchemaRuleSet { DomainRules = [rule], HasFixedRuleCollections = true }
+        };
+        var transformer = AvroTaggedFieldTransformer.Get(avroSchema, schema);
+        var payload = WriteCollectionPayload([1], long.MaxValue);
+        var expected = WriteCollectionPayload([2], long.MaxValue);
+
+        var transformed = transformer.Transform(
+            payload,
+            CreateHandlerContext(rule, schema),
+            new byte[] { 2 },
+            static (_, _, replacement) => replacement);
+
+        await Assert.That(transformed.Span.SequenceEqual(expected)).IsTrue();
+    }
+
+    [Test]
+    [Timeout(5_000)]
+    public async Task AvroTaggedTransformer_ImpossibleMapCount_FailsBeforeScanningEntries(
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        const string schemaText = """
+            {"type":"record","name":"MapPayload","fields":[
+                {"name":"secret","type":"bytes","confluent:tags":["PII"]},
+                {"name":"items","type":{"type":"map","values":"null"}}
+            ]}
+            """;
+        var avroSchema = (Avro.RecordSchema)AvroSchema.Parse(schemaText);
+        var rule = CreateRule(tags: new HashSet<string>(StringComparer.Ordinal) { "PII" });
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = schemaText,
+            RuleSet = new SchemaRuleSet { DomainRules = [rule], HasFixedRuleCollections = true }
+        };
+        var transformer = AvroTaggedFieldTransformer.Get(avroSchema, schema);
+
+        await Assert.That(() => transformer.Transform(
+                WriteCollectionPayload([1], long.MaxValue),
+                CreateHandlerContext(rule, schema),
+                new byte[] { 2 },
+                static (_, _, replacement) => replacement))
+            .Throws<SchemaRegistryRuleException>()
+            .WithMessageContaining("invalid Avro collection block");
+    }
+
+    [Test]
+    public async Task AvroMetadataGlobMatcher_RespectsSegmentBoundaries()
+    {
+        var cases = new (string Pattern, string Value, bool Expected)[]
+        {
+            ("test.Profile.secret", "test.Profile.secret", true),
+            ("test.*.secret", "test.Profile.secret", true),
+            ("*.Profile.secret", "test.Profile.secret", true),
+            ("test.Profile.*", "test.Profile.secret", true),
+            ("test.*", "test.Profile.secret", false),
+            ("test.**", "test.Profile.secret", true),
+            ("**.secret", "test.Profile.secret", true),
+            ("other.**", "test.Profile.secret", false)
+        };
+
+        foreach (var (pattern, value, expected) in cases)
+        {
+            await Assert.That(AvroTaggedFieldTransformer.GlobMatches(pattern, value))
+                .IsEqualTo(expected);
+        }
+    }
+
+    [Test]
     public async Task AvroTaggedTransformer_UntrackableCallerOwnedTags_FailsClosed()
     {
         const string schemaText = """
@@ -795,6 +881,13 @@ public sealed class SchemaRegistryCsfleRuleTests
         var secondAvro = AvroSchema.Parse(second.SchemaString);
         _ = provider.Get(first, firstAvro);
         _ = provider.Get(second, secondAvro);
+        // Cross the tiered-call-count threshold before the exact allocation window.
+        for (var i = 0; i < 10_000; i++)
+        {
+            _ = (i & 1) == 0
+                ? provider.Get(first, firstAvro)
+                : provider.Get(second, secondAvro);
+        }
 
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var i = 0; i < 10_000; i++)
@@ -1737,6 +1830,17 @@ public sealed class SchemaRegistryCsfleRuleTests
         using var stream = new MemoryStream();
         var encoder = new BinaryEncoder(stream);
         new GenericDatumWriter<GenericRecord>(schema).Write(record, encoder);
+        encoder.Flush();
+        return stream.ToArray();
+    }
+
+    private static byte[] WriteCollectionPayload(byte[] secret, long count)
+    {
+        using var stream = new MemoryStream();
+        var encoder = new BinaryEncoder(stream);
+        encoder.WriteBytes(secret);
+        encoder.WriteLong(count);
+        encoder.WriteLong(0);
         encoder.Flush();
         return stream.ToArray();
     }

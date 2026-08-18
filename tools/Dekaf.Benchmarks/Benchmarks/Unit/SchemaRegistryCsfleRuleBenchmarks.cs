@@ -1,4 +1,6 @@
 using System.Collections.Frozen;
+using Avro.Generic;
+using Avro.IO;
 using BenchmarkDotNet.Attributes;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Avro;
@@ -16,12 +18,7 @@ public class SchemaRegistryCsfleRuleBenchmarks
     private const int RotatingDekCount = 65;
     private static readonly byte[] Payload = "benchmark-payload"u8.ToArray();
     private static readonly byte[] JsonPayload = "{\"name\":\"Ada\",\"ssn\":\"123-45-6789\"}"u8.ToArray();
-    private static readonly byte[] AvroPayload =
-    [
-        0x54,
-        0x06, 0x41, 0x64, 0x61,
-        0x16, 0x31, 0x32, 0x33, 0x2D, 0x34, 0x35, 0x2D, 0x36, 0x37, 0x38, 0x39
-    ];
+    private static readonly byte[] AvroPayload = CreateAvroPayload();
     private const string TaggedAvroSchema = """
         {
             "type": "record",
@@ -29,7 +26,9 @@ public class SchemaRegistryCsfleRuleBenchmarks
             "fields": [
                 { "name": "id", "type": "int" },
                 { "name": "name", "type": "string" },
-                { "name": "ssn", "type": "string", "confluent:tags": ["PII"] }
+                { "name": "ssn", "type": "string", "confluent:tags": ["PII"] },
+                { "name": "aliases", "type": { "type": "array", "items": "string" } },
+                { "name": "attributes", "type": { "type": "map", "values": "bytes" } }
             ]
         }
         """;
@@ -243,6 +242,22 @@ public class SchemaRegistryCsfleRuleBenchmarks
         DecryptMutableTaggedAvroField();
         EncryptRotating(_rotatingGcmContexts);
         EncryptRotating(_rotatingSivContexts);
+    }
+
+    private static byte[] CreateAvroPayload()
+    {
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(TaggedAvroSchema);
+        var record = new GenericRecord(schema);
+        record.Add("id", 42);
+        record.Add("name", "Ada");
+        record.Add("ssn", "123-45-6789");
+        record.Add("aliases", new object[] { "x" });
+        record.Add("attributes", new Dictionary<string, object> { ["k"] = "v"u8.ToArray() });
+        using var stream = new MemoryStream();
+        var encoder = new BinaryEncoder(stream);
+        new GenericDatumWriter<GenericRecord>(schema).Write(record, encoder);
+        encoder.Flush();
+        return stream.ToArray();
     }
 
     private ReadOnlyMemory<byte> EncryptRotating(SchemaRegistryRuleContext[] contexts)
