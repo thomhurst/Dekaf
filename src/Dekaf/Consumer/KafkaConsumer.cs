@@ -2810,24 +2810,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             var messageBytes = (isKeyNull ? 0 : keyData.Length) +
                                                (isValueNull ? 0 : valueData.Length);
 
-                            if (hasDeserializerPreparers && hasAsyncDeserializers)
-                            {
-                                readingProtocolData = false;
-                                await PrepareRecordDeserializersAsync(
-                                        pending,
-                                        offset,
-                                        keyData,
-                                        isKeyNull,
-                                        valueData,
-                                        isValueNull,
-                                        pooledHeaders,
-                                        pooledHeaderCount,
-                                        timestampMs,
-                                        timestampType,
-                                        cancellationToken)
-                                    .ConfigureAwait(false);
-                            }
-
                             // Start consumer tracing activity — skip all tracing work when no listener
                             // (~2ns HasListeners() check vs ~200ns Activity creation + tag boxing per message)
                             // Uses hoisted hasTraceListeners to avoid per-message virtual dispatch
@@ -5593,7 +5575,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         // propagate even when their type also occurs in protocol codecs.
                         readingProtocolData = false;
                         BeginConsumeOneFetchUse(pending);
-                        if (_hasDeserializerPreparers)
+                        if (_hasDeserializerPreparers && !_hasAsyncDeserializers)
                         {
                             await PrepareRecordDeserializersAsync(
                                     pending,
@@ -6098,8 +6080,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 {
                     if (!keyPreparer.TryDeserialize(keyData, keyContext, out key))
                     {
-                        throw new InvalidOperationException(
-                            "Deserializer remained unprepared after PrepareAsync completed.");
+                        await keyPreparer.PrepareAsync(keyData, keyContext, cancellationToken)
+                            .ConfigureAwait(false);
+                        if (!keyPreparer.TryDeserialize(keyData, keyContext, out key))
+                        {
+                            throw new InvalidOperationException(
+                                "Deserializer remained unprepared after PrepareAsync completed.");
+                        }
                     }
                 }
                 else
@@ -6148,8 +6135,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 if (!valuePreparer.TryDeserialize(valueBytes, valueContext, out value))
                 {
-                    throw new InvalidOperationException(
-                        "Deserializer remained unprepared after PrepareAsync completed.");
+                    await valuePreparer.PrepareAsync(valueBytes, valueContext, cancellationToken)
+                        .ConfigureAwait(false);
+                    if (!valuePreparer.TryDeserialize(valueBytes, valueContext, out value))
+                    {
+                        throw new InvalidOperationException(
+                            "Deserializer remained unprepared after PrepareAsync completed.");
+                    }
                 }
             }
             else

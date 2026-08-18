@@ -1466,9 +1466,13 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             code.Append(indent).AppendLine("    }");
             code.Append(indent).Append("    ").Append(block).AppendLine(" = reader.ReadBlockCount();");
             code.Append(indent).Append("    if (").Append(block).AppendLine(" != 0)");
+            code.Append(indent).AppendLine("    {");
             code.Append(indent).Append("        ").Append(total)
                 .Append(" = global::Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.AddCollectionCount(")
                 .Append(total).Append(", ").Append(block).AppendLine(");");
+            code.Append(indent).Append("        global::Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.ValidateMapAllocation<")
+                .Append(type.Item.SymbolType).Append('>').Append('(').Append(total).AppendLine(");");
+            code.Append(indent).AppendLine("    }");
             code.Append(indent).AppendLine("}");
             code.Append(indent).Append(target).Append(" = ").Append(result).AppendLine(";");
         }

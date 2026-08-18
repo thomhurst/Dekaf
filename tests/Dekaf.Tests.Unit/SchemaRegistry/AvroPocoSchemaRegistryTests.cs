@@ -465,6 +465,40 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    public async Task GeneratedCodec_RejectsMultiBlockMapAllocationAmplification()
+    {
+        const string writerSchemaJson =
+            """
+            {"type":"record","name":"PocoLargeZeroWidthMap","namespace":"Dekaf.Tests","fields":[{"name":"values","type":{"type":"map","values":{"type":"record","name":"PocoLargeZeroWidthItem","fields":[]}}}]}
+            """;
+        const int secondBlockCount = 140_000;
+        using var registry = new MockSchemaRegistryClient();
+        var schemaId = await registry.RegisterSchemaAsync(
+            "poco-large-zero-width-multi-block-map-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = writerSchemaJson
+            });
+        await using var reader = PocoLargeZeroWidthMap.CreateAvroDeserializer(registry);
+        var context = new SerializationContext
+        {
+            Topic = "poco-large-zero-width-multi-block-map",
+            Component = SerializationComponent.Value
+        };
+        var payload = new byte[5 + secondBlockCount + 32];
+        BinaryPrimitives.WriteInt32BigEndian(payload.AsSpan(1, 4), schemaId);
+        var writer = new AvroValueWriter(payload.AsSpan(5));
+        writer.WriteBlockCount(1);
+        writer.WriteString("first");
+        writer.WriteBlockCount(secondBlockCount);
+
+        await Assert.That(() => reader.Deserialize(payload, context))
+            .Throws<InvalidDataException>()
+            .WithMessageContaining("allocation exceeds");
+    }
+
+    [Test]
     public async Task GeneratedCodec_SerializationAllocatesZeroAfterWarmup()
     {
         using var registry = new MockSchemaRegistryClient();

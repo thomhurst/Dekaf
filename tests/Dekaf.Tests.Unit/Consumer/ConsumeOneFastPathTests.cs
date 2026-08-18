@@ -185,7 +185,9 @@ public sealed class ConsumeOneFastPathTests
     {
         var fetch = PendingFetchData.Create(Topic, Partition,
         [
-            CreateBatch(20, CreateRecord(0, "a", "one"))
+            CreateBatch(20,
+                CreateRecord(0, "a", "one"),
+                CreateRecord(1, "b", "two"))
         ]);
         var keyDeserializer = new PreparedOnlyStringDeserializer();
         var valueDeserializer = new CallbackAsyncStringDeserializer(
@@ -196,13 +198,17 @@ public sealed class ConsumeOneFastPathTests
             asyncValueDeserializer: valueDeserializer);
         MarkManualAssignmentCurrent(consumer);
 
-        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(10), CancellationToken.None);
+        var first = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(10), CancellationToken.None);
+        var second = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(10), CancellationToken.None);
 
-        await Assert.That(result).IsNotNull();
-        await Assert.That(result!.Value.Key).IsEqualTo("a");
-        await Assert.That(result.Value.Value).IsEqualTo("one");
+        await Assert.That(first).IsNotNull();
+        await Assert.That(second).IsNotNull();
+        await Assert.That(first!.Value.Key).IsEqualTo("a");
+        await Assert.That(first.Value.Value).IsEqualTo("one");
+        await Assert.That(second!.Value.Key).IsEqualTo("b");
+        await Assert.That(second.Value.Value).IsEqualTo("two");
         await Assert.That(keyDeserializer.PrepareCount).IsEqualTo(1);
-        await Assert.That(keyDeserializer.TryDeserializeCount).IsEqualTo(1);
+        await Assert.That(keyDeserializer.TryDeserializeCount).IsEqualTo(3);
     }
 
     [Test]
@@ -210,7 +216,9 @@ public sealed class ConsumeOneFastPathTests
     {
         var fetch = PendingFetchData.Create(Topic, Partition,
         [
-            CreateBatch(20, CreateRecord(0, "a", "one"))
+            CreateBatch(20,
+                CreateRecord(0, "a", "one"),
+                CreateRecord(1, "b", "two"))
         ]);
         var keyDeserializer = new PreparedOnlyStringDeserializer();
         var valueDeserializer = new CallbackAsyncStringDeserializer(
@@ -225,8 +233,11 @@ public sealed class ConsumeOneFastPathTests
         await Assert.That(await records.MoveNextAsync()).IsTrue();
         await Assert.That(records.Current.Key).IsEqualTo("a");
         await Assert.That(records.Current.Value).IsEqualTo("one");
+        await Assert.That(await records.MoveNextAsync()).IsTrue();
+        await Assert.That(records.Current.Key).IsEqualTo("b");
+        await Assert.That(records.Current.Value).IsEqualTo("two");
         await Assert.That(keyDeserializer.PrepareCount).IsEqualTo(1);
-        await Assert.That(keyDeserializer.TryDeserializeCount).IsEqualTo(1);
+        await Assert.That(keyDeserializer.TryDeserializeCount).IsEqualTo(3);
     }
 
     [Test]
