@@ -1403,6 +1403,59 @@ public sealed class ConsumerAssignmentFastPathTests
     }
 
     [Test]
+    public async Task TopicIdentityChange_PendingRevocationDrainDuringReset_DoesNotSuppressReset()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        metadataManager.SetApiVersion(
+            ApiKey.ListOffsets,
+            ListOffsetsRequest.LowestSupportedVersion,
+            ListOffsetsRequest.HighestSupportedVersion);
+        await using var consumer = CreateGroupConsumer(
+            connectionPool,
+            metadataManager,
+            autoOffsetReset: AutoOffsetReset.ByDuration,
+            autoOffsetResetDuration: TimeSpan.FromMinutes(1));
+        var partition = new TopicPartition("test-topic", 0);
+        consumer.IncrementalAssign([
+            new TopicPartitionOffset(partition.Topic, partition.Partition, 10)
+        ]);
+        await InvokeHandleTopicIdentityChangesAsync(consumer);
+
+        var resetStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseReset = new TaskCompletionSource<ListOffsetsResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
+                Arg.Any<ListOffsetsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                resetStarted.TrySetResult();
+                return new ValueTask<ListOffsetsResponse>(releaseReset.Task);
+            });
+
+        QueueCoordinatorRevokedPartitionsForFetchClear(consumer, [partition]);
+        metadataManager.Metadata.Update(CreateMetadataResponse(Guid.NewGuid(), partitionCount: 2));
+        var recovery = InvokeHandleTopicIdentityChangesAsync(consumer).AsTask();
+        await resetStarted.Task;
+
+        try
+        {
+            await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsFalse();
+        }
+        finally
+        {
+            releaseReset.TrySetResult(CreateListOffsetsResponse(partition.Partition, 100));
+            await recovery;
+        }
+
+        await Assert.That(GetFetchPositions(consumer)[partition]).IsEqualTo(100L);
+    }
+
+    [Test]
     public async Task TopicIdentityChange_DivergingEpochStagedDuringReset_DoesNotGetOverwritten()
     {
         var connectionPool = Substitute.For<IConnectionPool>();
@@ -1508,6 +1561,7 @@ public sealed class ConsumerAssignmentFastPathTests
         try
         {
             QueueCoordinatorRevokedPartitionsForFetchClear(consumer, [partition]);
+            await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
             PublishAssignmentSnapshot(consumer);
             RemovePartitionState(consumer, [partition]);
             SetPosition(consumer, partition, 20);

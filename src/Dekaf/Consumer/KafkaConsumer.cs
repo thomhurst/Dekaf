@@ -9094,8 +9094,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 }
 
                 var preexistingPendingFetchClearVersions =
-                    CapturePendingFetchClearVersions(recreatedPartitions);
-                ClearFetchBufferForPartitions(recreatedPartitions);
+                    CapturePendingFetchClearVersionsAndClearFetchBuffer(recreatedPartitions);
                 InvalidatePartitionCache();
                 InvalidateFetchRequestCache();
                 var fetchBufferEpoch = Volatile.Read(ref _fetchBufferEpoch);
@@ -9132,7 +9131,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             cancellationToken,
                             allowedPendingFetchClearVersion:
                                 preexistingPendingFetchClearVersions?.GetValueOrDefault(partition)
-                                ?? NoPendingFetchClearVersion);
+                                ?? NoPendingFetchClearVersion,
+                            expectedAssignmentSnapshot: assignment);
                         if (reset.IsCompletedSuccessfully)
                         {
                             reset.GetAwaiter().GetResult();
@@ -9185,8 +9185,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
     }
 
-    private Dictionary<TopicPartition, long>? CapturePendingFetchClearVersions(
-        IReadOnlyCollection<TopicPartition> partitions)
+    private Dictionary<TopicPartition, long>? CapturePendingFetchClearVersionsAndClearFetchBuffer(
+        HashSet<TopicPartition> partitions)
     {
         Dictionary<TopicPartition, long>? versions = null;
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
@@ -9195,6 +9195,29 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 if (_coordinatorRevokedPartitionsPendingFetchClear.TryGetValue(partition, out var version))
                     (versions ??= [])[partition] = version;
+            }
+
+            // Claim old-identity markers before a background drain can invalidate the
+            // freshly captured epoch. The lock stays held across the ordered clear, as
+            // it does for the ordinary pending-revocation drain path.
+            ClearFetchBufferForPartitions(partitions);
+
+            if (versions is not null)
+            {
+                foreach (var (partition, version) in versions)
+                {
+                    if (_coordinatorRevokedPartitionsPendingFetchClear.TryGetValue(partition, out var currentVersion)
+                        && currentVersion == version)
+                    {
+                        _coordinatorRevokedPartitionsPendingFetchClear.TryRemove(partition, out _);
+                    }
+                }
+            }
+
+            if (_coordinatorRevokedPartitionsPendingFetchClear.IsEmpty)
+            {
+                Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent, 0);
+                Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 0);
             }
         }
 
@@ -9817,14 +9840,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         TopicPartition partition,
         int fetchBufferEpoch,
         CancellationToken cancellationToken,
-        long allowedPendingFetchClearVersion = NoPendingFetchClearVersion)
+        long allowedPendingFetchClearVersion = NoPendingFetchClearVersion,
+        HashSet<TopicPartition>? expectedAssignmentSnapshot = null)
     {
         // Reset fetch position based on auto.offset.reset policy. Without this, the
         // consumer would retry the same invalid offset forever.
         if (ShouldDropOffsetReset(
                 partition,
                 fetchBufferEpoch,
-                allowedPendingFetchClearVersion))
+                allowedPendingFetchClearVersion,
+                expectedAssignmentSnapshot))
             return;
 
         var resetTimestamp = AutoOffsetResetStrategy.GetListOffsetsTimestamp(_options, DateTimeOffset.UtcNow, partition);
@@ -9836,6 +9861,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 partition,
                 fetchBufferEpoch,
                 allowedPendingFetchClearVersion,
+                expectedAssignmentSnapshot,
                 resetOffset))
             return;
 
@@ -9846,6 +9872,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         TopicPartition partition,
         int fetchBufferEpoch,
         long allowedPendingFetchClearVersion,
+        HashSet<TopicPartition>? expectedAssignmentSnapshot,
         long resetOffset)
     {
         // Keep the final validation and position write atomic with diverging-epoch staging.
@@ -9854,7 +9881,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             if (ShouldDropOffsetReset(
                     partition,
                     fetchBufferEpoch,
-                    allowedPendingFetchClearVersion))
+                    allowedPendingFetchClearVersion,
+                    expectedAssignmentSnapshot))
                 return false;
 
             _fetchPositions[partition] = resetOffset;
@@ -9867,17 +9895,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private bool ShouldDropOffsetReset(
         TopicPartition partition,
         int fetchBufferEpoch,
-        long allowedPendingFetchClearVersion) =>
+        long allowedPendingFetchClearVersion,
+        HashSet<TopicPartition>? expectedAssignmentSnapshot) =>
         IsFetchBufferEpochStale(partition, fetchBufferEpoch)
         || PendingFetchClearVersionChanged(partition, allowedPendingFetchClearVersion)
+        || (expectedAssignmentSnapshot is not null
+            && !ReferenceEquals(expectedAssignmentSnapshot, _assignmentSnapshot))
         || !IsCurrentlyAssigned(partition);
 
     private bool PendingFetchClearVersionChanged(
         TopicPartition partition,
         long allowedPendingFetchClearVersion) =>
         _coordinatorRevokedPartitionsPendingFetchClear.TryGetValue(partition, out var currentVersion)
-            ? currentVersion != allowedPendingFetchClearVersion
-            : allowedPendingFetchClearVersion != NoPendingFetchClearVersion;
+        && currentVersion != allowedPendingFetchClearVersion;
 
     private static bool IsLeaderEpochRefreshError(ErrorCode errorCode) =>
         errorCode is ErrorCode.NotLeaderOrFollower or ErrorCode.FencedLeaderEpoch or ErrorCode.UnknownLeaderEpoch;
