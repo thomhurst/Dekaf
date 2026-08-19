@@ -75,6 +75,8 @@ internal static class SubjectNameResolver
             SubjectNameStrategy.TopicRecordName => useLegacySubjectNames
                 ? $"{topic}-{recordName}{suffix}"
                 : $"{topic}-{RequireRecordName(recordName, strategy)}",
+            SubjectNameStrategy.AssociatedName => throw new InvalidOperationException(
+                "AssociatedName requires asynchronous subject resolution during preparation."),
             _ => topic + suffix
         };
     }

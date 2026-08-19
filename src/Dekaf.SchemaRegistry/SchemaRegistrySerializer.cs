@@ -969,5 +969,11 @@ public enum SubjectNameStrategy
     /// <summary>
     /// Subject name is topic-recordname.
     /// </summary>
-    TopicRecordName
+    TopicRecordName,
+
+    /// <summary>
+    /// Resolve the subject asynchronously from a Schema Registry topic association.
+    /// A custom strategy takes precedence when both are configured.
+    /// </summary>
+    AssociatedName
 }
