@@ -105,6 +105,108 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
         }
     }
 
+    [Test]
+    public async Task KeyedSameServiceAndGroup_RebalancesAndProcessesEveryPartition()
+    {
+        const int partitionCount = 10;
+        const string firstServiceKey = "orders-1";
+        const string secondServiceKey = "orders-2";
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: partitionCount);
+        var groupId = $"hosted-scale-out-{Guid.NewGuid():N}";
+        var tracker = new ScaleOutTracker();
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddSingleton(tracker);
+        builder.Services.AddSingleton<TestTopicHolder>(new TestTopicHolder(topic));
+        builder.Services.AddDekaf(dekaf =>
+        {
+            void Configure(ConsumerBuilder<string, string> consumer) => consumer
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
+                .WithGroupId(groupId)
+                .WithAutoOffsetReset(AutoOffsetReset.Earliest);
+
+            dekaf.AddConsumerService<ScaleOutConsumerService, string, string>(firstServiceKey, Configure);
+            dekaf.AddConsumerService<ScaleOutConsumerService, string, string>(secondServiceKey, Configure);
+        });
+
+        var host = builder.Build();
+        var firstConsumer = host.Services.GetRequiredKeyedService<IKafkaConsumer<string, string>>(firstServiceKey);
+        var secondConsumer = host.Services.GetRequiredKeyedService<IKafkaConsumer<string, string>>(secondServiceKey);
+
+        try
+        {
+            await host.StartAsync().ConfigureAwait(false);
+
+            await WaitForConditionAsync(
+                () => HasEvenNonOverlappingAssignment(firstConsumer, secondConsumer, topic, partitionCount),
+                TimeSpan.FromSeconds(30));
+
+            var expectedValues = new string[partitionCount];
+            for (var partition = 0; partition < partitionCount; partition++)
+            {
+                var value = $"partition-{partition}";
+                expectedValues[partition] = value;
+                await producer.ProduceAsync(new ProducerMessage<string, string>
+                {
+                    Topic = topic,
+                    Key = value,
+                    Value = value,
+                    Partition = partition
+                }, CancellationToken.None);
+            }
+
+            await WaitForConditionAsync(
+                () => tracker.Processed.Count >= partitionCount,
+                TimeSpan.FromSeconds(30));
+
+            var processed = tracker.Processed.ToArray();
+            await Assert.That(processed.Select(message => message.Value))
+                .IsEquivalentTo(expectedValues);
+            await Assert.That(processed.Select(message => message.ServiceId).Distinct().Count())
+                .IsEqualTo(2);
+
+            foreach (var serviceRecords in processed.GroupBy(message => message.ServiceId))
+            {
+                await Assert.That(serviceRecords.Select(message => message.Partition).Distinct().Count())
+                    .IsEqualTo(partitionCount / 2);
+            }
+        }
+        finally
+        {
+            using var stopCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            try
+            {
+                await host.StopAsync(stopCts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (stopCts.IsCancellationRequested)
+            {
+                // Host shutdown can be slow on resource-constrained CI runners.
+            }
+            finally
+            {
+                host.Dispose();
+            }
+        }
+
+        static bool HasEvenNonOverlappingAssignment(
+            IKafkaConsumer<string, string> first,
+            IKafkaConsumer<string, string> second,
+            string topicName,
+            int expectedPartitionCount)
+        {
+            var firstAssignment = first.Assignment.Where(partition => partition.Topic == topicName).ToArray();
+            var secondAssignment = second.Assignment.Where(partition => partition.Topic == topicName).ToArray();
+            return firstAssignment.Length == expectedPartitionCount / 2
+                && secondAssignment.Length == expectedPartitionCount / 2
+                && firstAssignment.Concat(secondAssignment).Distinct().Count() == expectedPartitionCount;
+        }
+    }
+
     [Test, NotInParallel]
     public async Task RetryTopicMessages_NotDue_ResumeAndProcessAcrossPartitions()
     {
@@ -551,6 +653,46 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
         protected override ValueTask ProcessAsync(ConsumeResult<string, string> result, CancellationToken cancellationToken)
         {
             _receivedMessages.Add(result.Value);
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class ScaleOutTracker
+    {
+        private int _nextServiceId;
+
+        public ConcurrentBag<ScaleOutProcessedMessage> Processed { get; } = [];
+
+        public int RegisterService() => Interlocked.Increment(ref _nextServiceId);
+    }
+
+    private readonly record struct ScaleOutProcessedMessage(int ServiceId, string Value, int Partition);
+
+    private sealed class ScaleOutConsumerService : KafkaConsumerService<string, string>
+    {
+        private readonly int _serviceId;
+        private readonly ScaleOutTracker _tracker;
+        private readonly TestTopicHolder _topicHolder;
+
+        public ScaleOutConsumerService(
+            IKafkaConsumer<string, string> consumer,
+            ILogger<ScaleOutConsumerService> logger,
+            ScaleOutTracker tracker,
+            TestTopicHolder topicHolder)
+            : base(consumer, logger)
+        {
+            _serviceId = tracker.RegisterService();
+            _tracker = tracker;
+            _topicHolder = topicHolder;
+        }
+
+        protected override IEnumerable<string> Topics => [_topicHolder.Topic];
+
+        protected override ValueTask ProcessAsync(
+            ConsumeResult<string, string> result,
+            CancellationToken cancellationToken)
+        {
+            _tracker.Processed.Add(new ScaleOutProcessedMessage(_serviceId, result.Value, result.Partition));
             return ValueTask.CompletedTask;
         }
     }
