@@ -4,8 +4,8 @@ namespace Dekaf.Tests.Integration;
 
 [Category("Serialization")]
 [NotInParallel]
-[ClassDataSource<KafkaWithSchemaRegistryContainer>(Shared = SharedType.PerTestSession)]
-public sealed class SchemaRegistryGuidIntegrationTests(KafkaWithSchemaRegistryContainer testInfra)
+[ClassDataSource<KafkaWithAssociationSchemaRegistryContainer>(Shared = SharedType.PerTestSession)]
+public sealed class SchemaRegistryGuidIntegrationTests(KafkaWithAssociationSchemaRegistryContainer testInfra)
 {
     [Test]
     public async Task GuidLookup_WhenRegistryExposesGuid_ReturnsRegisteredSchema()
@@ -31,20 +31,16 @@ public sealed class SchemaRegistryGuidIntegrationTests(KafkaWithSchemaRegistryCo
         await client.RegisterSchemaAsync(subject, expected);
         var registered = await client.GetSchemaBySubjectAsync(subject);
 
-        if (registered.Guid is not { } guid)
-        {
-            Skip.Test("The configured Schema Registry version does not expose schema GUIDs.");
-            return;
-        }
+        await Assert.That(registered.Guid).IsNotNull();
 
         using var uncachedClient = new SchemaRegistryClient(new SchemaRegistryConfig
         {
             Url = testInfra.RegistryUrl,
             MaxCachedSchemas = 0
         });
-        var actual = await uncachedClient.GetSchemaByGuidAsync(guid);
+        var actual = await uncachedClient.GetSchemaByGuidAsync(registered.Guid!);
 
-        await Assert.That(actual.SchemaType).IsEqualTo(expected.SchemaType);
-        await Assert.That(actual.SchemaString).IsEqualTo(expected.SchemaString);
+        await Assert.That(actual.SchemaType).IsEqualTo(registered.Schema.SchemaType);
+        await Assert.That(actual.SchemaString).IsEqualTo(registered.Schema.SchemaString);
     }
 }
