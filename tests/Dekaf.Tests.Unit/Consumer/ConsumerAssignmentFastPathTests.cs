@@ -676,10 +676,9 @@ public sealed class ConsumerAssignmentFastPathTests
         await using var consumer = CreateGroupConsumer(connectionPool, metadataManager);
         var partition = new TopicPartition("test-topic", 0);
 
-        if (bulk)
-            _ = await consumer.GetCommittedOffsetsAsync([partition], CancellationToken.None);
-        else
-            _ = await consumer.GetCommittedOffsetAsync(partition, CancellationToken.None);
+        await (bulk
+            ? (Task)consumer.GetCommittedOffsetsAsync([partition], CancellationToken.None).AsTask()
+            : consumer.GetCommittedOffsetAsync(partition, CancellationToken.None).AsTask());
 
         await Assert.That(GetLastConsumedLeaderEpoch(consumer, partition)).IsEqualTo(4);
     }
@@ -705,10 +704,9 @@ public sealed class ConsumerAssignmentFastPathTests
         var partition = new TopicPartition("test-topic", 0);
         GetFetchPositions(consumer)[partition] = 100;
 
-        if (bulk)
-            _ = await consumer.GetCommittedOffsetsAsync([partition], CancellationToken.None);
-        else
-            _ = await consumer.GetCommittedOffsetAsync(partition, CancellationToken.None);
+        await (bulk
+            ? (Task)consumer.GetCommittedOffsetsAsync([partition], CancellationToken.None).AsTask()
+            : consumer.GetCommittedOffsetAsync(partition, CancellationToken.None).AsTask());
 
         await Assert.That(GetLastConsumedLeaderEpoch(consumer, partition)).IsEqualTo(-1);
     }
