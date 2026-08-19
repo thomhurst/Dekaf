@@ -26,7 +26,7 @@ try {
     git -C $repo commit --quiet -m 'fixture'
 
     git -C $repo worktree add --quiet -b issue-123-fresh-source $sourceWorktree
-    $newSource = Join-Path $sourceWorktree 'src/NewFeature.cs'
+    $newSource = Join-Path $sourceWorktree 'src/build/NewFeature.cs'
     New-Item -ItemType Directory -Path (Split-Path $newSource -Parent) | Out-Null
     Set-Content -LiteralPath $newSource -Value 'internal sealed class NewFeature;'
 
@@ -77,6 +77,14 @@ try {
 
     Assert-True (-not (Test-DisposableWorktreePath -Path 'src/Bin/Generated.cs')) `
         'Differently-cased source directory was treated as disposable output.'
+    foreach ($sourcePath in @(
+        'src/build/NewFeature.cs',
+        'src/.cache/NewFeature.cs',
+        'src/.docusaurus/NewFeature.cs'
+    )) {
+        Assert-True (-not (Test-DisposableWorktreePath -Path $sourcePath)) `
+            "Docs-scoped generated directory was treated as disposable outside docs: $sourcePath"
+    }
     foreach ($generatedPath in @(
         'BenchmarkDotNet.Artifacts/results/report.csv',
         'docs/build/index.html',

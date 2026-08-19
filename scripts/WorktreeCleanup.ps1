@@ -21,8 +21,6 @@ function New-OrdinalStringMap {
 $script:DisposableWorktreeGeneratedDirectories = New-OrdinalStringMap
 foreach ($directory in @(
     '.artifacts',
-    '.cache',
-    '.docusaurus',
     '.vs',
     '__pycache__',
     'ARM',
@@ -32,7 +30,6 @@ foreach ($directory in @(
     'BenchmarkDotNet.Artifacts',
     'bin',
     'bld',
-    'build',
     'CodeCoverage',
     'Debug',
     'DebugPublic',
@@ -53,6 +50,12 @@ foreach ($directory in @(
     $script:DisposableWorktreeGeneratedDirectories[$directory] = $true
 }
 
+$script:DisposableWorktreeScopedDirectories = @(
+    'docs/.cache',
+    'docs/.docusaurus',
+    'docs/build'
+)
+
 function Test-DisposableWorktreePath {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Path)
@@ -61,7 +64,15 @@ function Test-DisposableWorktreePath {
     # risk classifying an unusual source path as generated output.
     if ($Path.StartsWith('"', [System.StringComparison]::Ordinal)) { return $false }
 
-    foreach ($segment in (($Path -replace '\\', '/') -split '/')) {
+    $normalizedPath = $Path -replace '\\', '/'
+    foreach ($docsGeneratedDirectory in $script:DisposableWorktreeScopedDirectories) {
+        if ($normalizedPath -ceq $docsGeneratedDirectory -or
+            $normalizedPath.StartsWith("$docsGeneratedDirectory/", [System.StringComparison]::Ordinal)) {
+            return $true
+        }
+    }
+
+    foreach ($segment in ($normalizedPath -split '/')) {
         if ($script:DisposableWorktreeGeneratedDirectories.ContainsKey($segment)) { return $true }
     }
 
