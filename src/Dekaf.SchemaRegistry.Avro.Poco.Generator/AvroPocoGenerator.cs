@@ -16,6 +16,7 @@ namespace Dekaf.SchemaRegistry.Avro.Poco.Generator;
 internal sealed class AvroPocoGenerator : IIncrementalGenerator
 {
     private const int WriteOverflowCheckInterval = 512;
+    private const int UnboundedDecodedAllocationSize = int.MaxValue / 2;
     private const string RecordAttribute = "Dekaf.SchemaRegistry.Avro.Poco.AvroRecordAttribute";
     private const string FieldAttribute = "Dekaf.SchemaRegistry.Avro.Poco.AvroFieldAttribute";
     private const string IgnoreAttribute = "Dekaf.SchemaRegistry.Avro.Poco.AvroIgnoreAttribute";
@@ -289,6 +290,7 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             }
 
             var members = new List<MemberModel>();
+            var hasBoundedConstructionAllocations = HasBoundedConstructionAllocations(symbol);
             foreach (var member in symbol.GetMembers())
             {
                 if (member.IsStatic || GetAttribute(member, IgnoreAttribute) is not null)
@@ -316,6 +318,7 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                         }
                         memberType = property.Type;
                         sourceOrder = GetSourceOrder(property);
+                        hasBoundedConstructionAllocations &= HasBoundedSetter(property);
                         break;
                     case IFieldSymbol field when !field.IsImplicitlyDeclared && !field.IsConst:
                         if (field.IsReadOnly)
@@ -429,10 +432,86 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                 avroName,
                 avroNamespace,
                 fullName,
-                members.ToImmutableArray());
+                members.ToImmutableArray(),
+                hasBoundedConstructionAllocations);
             _records.Add(symbol, model);
             _building.Remove(symbol);
             return model;
+        }
+
+        private static bool HasBoundedConstructionAllocations(INamedTypeSymbol symbol)
+        {
+            if (!symbol.Locations.Any(static location => location.IsInSource))
+                return false;
+
+            var constructor = symbol.InstanceConstructors.FirstOrDefault(static candidate => candidate.Parameters.Length == 0);
+            if (constructor is null || !HasBoundedConstructor(constructor))
+                return false;
+
+            foreach (var member in symbol.GetMembers())
+            {
+                if (member.IsStatic)
+                    continue;
+
+                foreach (var syntaxReference in member.DeclaringSyntaxReferences)
+                {
+                    var initializer = syntaxReference.GetSyntax() switch
+                    {
+                        VariableDeclaratorSyntax variable => variable.Initializer?.Value,
+                        PropertyDeclarationSyntax property => property.Initializer?.Value,
+                        _ => null
+                    };
+                    if (initializer is not null && !IsAllocationFreeInitializer(initializer))
+                        return false;
+                }
+            }
+            return true;
+        }
+
+        private static bool HasBoundedConstructor(IMethodSymbol constructor)
+        {
+            if (constructor.IsImplicitlyDeclared)
+                return true;
+
+            return constructor.DeclaringSyntaxReferences.Length == 1 &&
+                   constructor.DeclaringSyntaxReferences[0].GetSyntax() is ConstructorDeclarationSyntax
+                   {
+                       Initializer: null,
+                       ExpressionBody: null,
+                       Body.Statements.Count: 0
+                   };
+        }
+
+        private static bool IsAllocationFreeInitializer(ExpressionSyntax expression) => expression switch
+        {
+            LiteralExpressionSyntax => true,
+            DefaultExpressionSyntax => true,
+            ParenthesizedExpressionSyntax parenthesized => IsAllocationFreeInitializer(parenthesized.Expression),
+            PostfixUnaryExpressionSyntax postfix when postfix.IsKind(SyntaxKind.SuppressNullableWarningExpression) =>
+                IsAllocationFreeInitializer(postfix.Operand),
+            PrefixUnaryExpressionSyntax prefix when prefix.IsKind(SyntaxKind.UnaryMinusExpression) ||
+                                                    prefix.IsKind(SyntaxKind.UnaryPlusExpression) =>
+                IsAllocationFreeInitializer(prefix.Operand),
+            MemberAccessExpressionSyntax
+            {
+                Expression: PredefinedTypeSyntax { Keyword.RawKind: (int)SyntaxKind.StringKeyword },
+                Name.Identifier.ValueText: "Empty"
+            } => true,
+            _ => false
+        };
+
+        private static bool HasBoundedSetter(IPropertySymbol property)
+        {
+            if (property.DeclaringSyntaxReferences.Length != 1 ||
+                property.DeclaringSyntaxReferences[0].GetSyntax() is not PropertyDeclarationSyntax declaration)
+            {
+                return false;
+            }
+
+            var accessor = declaration.AccessorList?.Accessors.FirstOrDefault(static candidate =>
+                candidate.IsKind(SyntaxKind.SetAccessorDeclaration) ||
+                candidate.IsKind(SyntaxKind.InitAccessorDeclaration));
+            return accessor is { Body: null, ExpressionBody: null };
         }
 
         private TypeModel? BuildType(
@@ -1595,12 +1674,21 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                 };
             }
 
-            var allocation = type.IsValueType ? 0 : GetMinimumRecordObjectSize(type.Record!);
+            if (!type.Record!.HasBoundedConstructionAllocations)
+                return UnboundedDecodedAllocationSize;
+
+            var allocation = type.IsValueType ? 0 : GetMinimumRecordObjectSize(type.Record);
             foreach (var member in type.Record!.Members)
             {
-                allocation = checked(allocation + Math.Max(
+                var memberAllocation = Math.Max(
                     GetMinimumDecodedAllocationSize(member.Type),
-                    GetMinimumDefaultAllocationSize(member)));
+                    GetMinimumDefaultAllocationSize(member));
+                if (memberAllocation >= UnboundedDecodedAllocationSize ||
+                    allocation >= UnboundedDecodedAllocationSize - memberAllocation)
+                {
+                    return UnboundedDecodedAllocationSize;
+                }
+                allocation += memberAllocation;
             }
             return allocation;
         }
@@ -2066,13 +2154,15 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             string avroName,
             string avroNamespace,
             string fullName,
-            ImmutableArray<MemberModel> members)
+            ImmutableArray<MemberModel> members,
+            bool hasBoundedConstructionAllocations)
         {
             Symbol = symbol;
             AvroName = avroName;
             AvroNamespace = avroNamespace;
             FullName = fullName;
             Members = members;
+            HasBoundedConstructionAllocations = hasBoundedConstructionAllocations;
             TypeName = symbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
         }
 
@@ -2081,6 +2171,7 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
         internal string AvroNamespace { get; }
         internal string FullName { get; }
         internal ImmutableArray<MemberModel> Members { get; }
+        internal bool HasBoundedConstructionAllocations { get; }
         internal string TypeName { get; }
     }
 

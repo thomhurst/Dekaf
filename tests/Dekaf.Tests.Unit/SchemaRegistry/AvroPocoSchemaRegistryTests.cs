@@ -789,6 +789,39 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    public async Task GeneratedCodec_RejectsUnboundedConstructorAllocationAmplification()
+    {
+        const string writerSchemaJson =
+            """
+            {"type":"record","name":"PocoAllocatingConstructorCollection","namespace":"Dekaf.Tests","fields":[{"name":"values","type":{"type":"array","items":{"type":"record","name":"PocoAllocatingConstructorItem","fields":[]}}}]}
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        var schemaId = await registry.RegisterSchemaAsync(
+            "poco-allocating-constructor-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = writerSchemaJson
+            });
+        await using var reader = PocoAllocatingConstructorCollection.CreateAvroDeserializer(registry);
+        var context = new SerializationContext
+        {
+            Topic = "poco-allocating-constructor",
+            Component = SerializationComponent.Value
+        };
+        var payload = new byte[16];
+        BinaryPrimitives.WriteInt32BigEndian(payload.AsSpan(1, 4), schemaId);
+        var writer = new AvroValueWriter(payload.AsSpan(5));
+        writer.WriteBlockCount(10_000);
+        writer.WriteBlockEnd();
+        Array.Resize(ref payload, 5 + writer.WrittenCount);
+
+        await Assert.That(() => reader.Deserialize(payload, context))
+            .Throws<InvalidDataException>()
+            .WithMessageContaining("allocation exceeds");
+    }
+
+    [Test]
     public async Task GeneratedCodec_StopsReadingLaterMembersAfterWriteOverflow()
     {
         var value = new PocoWriteOverflowRecord { First = new string('a', 1024) };
@@ -3425,7 +3458,26 @@ internal sealed partial class PocoByteArrayDefaultCollection
 internal sealed partial class PocoByteArrayDefaultItem
 {
     [AvroField(DefaultJson = "\"abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz\"")]
-    public byte[] Data { get; init; } = [];
+    public byte[] Data { get; init; } = null!;
+}
+
+[AvroRecord(Name = "PocoAllocatingConstructorCollection", Namespace = "Dekaf.Tests")]
+internal sealed partial class PocoAllocatingConstructorCollection
+{
+    [AvroField(Name = "values")]
+    public required PocoAllocatingConstructorItem[] Values { get; init; }
+}
+
+[AvroRecord(Name = "PocoAllocatingConstructorItem", Namespace = "Dekaf.Tests")]
+internal sealed partial class PocoAllocatingConstructorItem
+{
+    public PocoAllocatingConstructorItem() => Hidden = new byte[4096];
+
+    [AvroField(DefaultJson = "0")]
+    public long Value { get; init; }
+
+    [AvroIgnore]
+    public byte[] Hidden { get; }
 }
 
 [AvroRecord(Name = "PocoWriteOverflowRecord", Namespace = "Dekaf.Tests")]
