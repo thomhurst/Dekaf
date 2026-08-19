@@ -765,6 +765,48 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    public async Task GeneratedCodec_GrowsMultiBlockArrayWithoutQuadraticAllocation()
+    {
+        const string writerSchemaJson =
+            """
+            {"type":"record","name":"PocoLargeZeroWidthCollection","namespace":"Dekaf.Tests","fields":[{"name":"items","type":{"type":"array","items":{"type":"record","name":"PocoLargeZeroWidthItem","fields":[]}}}]}
+            """;
+        const int blockCount = 2_000;
+        using var registry = new MockSchemaRegistryClient();
+        var schemaId = await registry.RegisterSchemaAsync(
+            "poco-multi-block-zero-width-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = writerSchemaJson
+            });
+        await using var reader = PocoLargeZeroWidthCollection.CreateAvroDeserializer(registry);
+        var context = new SerializationContext
+        {
+            Topic = "poco-multi-block-zero-width",
+            Component = SerializationComponent.Value
+        };
+        var payload = new byte[5 + blockCount * 2 + 1];
+        BinaryPrimitives.WriteInt32BigEndian(payload.AsSpan(1, 4), schemaId);
+        var writer = new AvroValueWriter(payload.AsSpan(5));
+        for (var index = 0; index < blockCount; index++)
+            writer.WriteBlockCount(1);
+        writer.WriteBlockEnd();
+        Array.Resize(ref payload, 5 + writer.WrittenCount);
+
+        await reader.WarmupAsync(schemaId);
+        var emptyPayload = payload.AsSpan(0, 6).ToArray();
+        emptyPayload[5] = 0;
+        _ = reader.Deserialize(emptyPayload, context);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        var actual = reader.Deserialize(payload, context);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        await Assert.That(actual.Items.Length).IsEqualTo(blockCount);
+        await Assert.That(allocated).IsLessThan(1024 * 1024);
+    }
+
+    [Test]
     public async Task GeneratedCodec_RejectsZeroWidthReferenceRecordAllocationAmplification()
     {
         const string writerSchemaJson =

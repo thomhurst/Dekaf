@@ -1588,10 +1588,16 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             code.Append(indent).AppendLine("{");
             if (type.Kind == TypeKindModel.Array)
             {
+                var capacity = "__capacity" + _localId++;
                 code.Append(indent).Append("    if (").Append(block).Append(" > ").Append(result)
                     .Append(".Length - ").Append(offset).AppendLine(")");
+                code.Append(indent).AppendLine("    {");
+                code.Append(indent).Append("        var ").Append(capacity)
+                    .Append(" = global::Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.GetExpandedCollectionCapacity(")
+                    .Append(result).Append(".Length, ").Append(total).AppendLine(");");
                 code.Append(indent).Append("        global::System.Array.Resize(ref ").Append(result)
-                    .Append(", ").Append(total).AppendLine(");");
+                    .Append(", ").Append(capacity).AppendLine(");");
+                code.Append(indent).AppendLine("    }");
             }
             code.Append(indent).Append("    for (var ").Append(index).Append(" = 0; ").Append(index)
                 .Append(" < ").Append(block).Append("; ").Append(index).AppendLine("++)");
@@ -1618,6 +1624,13 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                 .Append(GetMinimumDecodedAllocationSize(type.Item)).AppendLine(");");
             code.Append(indent).AppendLine("    }");
             code.Append(indent).AppendLine("}");
+            if (type.Kind == TypeKindModel.Array)
+            {
+                code.Append(indent).Append("if (").Append(result).Append(".Length != ").Append(offset)
+                    .AppendLine(")");
+                code.Append(indent).Append("    global::System.Array.Resize(ref ").Append(result)
+                    .Append(", ").Append(offset).AppendLine(");");
+            }
             code.Append(indent).Append(target).Append(" = ").Append(result).AppendLine(";");
         }
 

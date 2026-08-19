@@ -184,6 +184,14 @@ public ref struct AvroValueReader
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public readonly int GetCollectionCapacity(int count) => Math.Min(count, _source.Length - _position);
 
+    /// <summary>Gets a geometrically expanded generated-array capacity bounded by the item-count limit.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static int GetExpandedCollectionCapacity(int currentCapacity, int requiredCapacity)
+    {
+        var expanded = Math.Max(4, currentCapacity * 2);
+        return Math.Max(requiredCapacity, Math.Min(MaxCollectionItemCount, expanded));
+    }
+
     /// <summary>Validates and accumulates collection block counts.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int AddCollectionCount(int currentCount, int blockCount)
