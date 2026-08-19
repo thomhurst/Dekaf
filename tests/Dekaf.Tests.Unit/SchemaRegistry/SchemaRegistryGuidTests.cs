@@ -72,6 +72,22 @@ public sealed class SchemaRegistryGuidTests
     }
 
     [Test]
+    public async Task GetSchemaByGuidAsync_NormalizesEmptyFormatToDefault()
+    {
+        using var handler = new RecordingHandler(static (_, _) => Task.FromResult(JsonResponse(
+            HttpStatusCode.OK,
+            """{ "schema": "{}", "schemaType": "JSON" }""")));
+        using var client = CreateClient(handler);
+
+        var first = await client.GetSchemaByGuidAsync(FirstGuid.ToString());
+        var second = await client.GetSchemaByGuidAsync(FirstGuid.ToString(), string.Empty);
+
+        await Assert.That(second).IsSameReferenceAs(first);
+        await Assert.That(handler.Requests).Count().IsEqualTo(1);
+        await Assert.That(handler.Requests[0].RequestUri!.Query).IsEmpty();
+    }
+
+    [Test]
     public async Task GetSchemaByGuidAsync_SeparatesFormatsAndIntegerIdentity()
     {
         using var handler = new RecordingHandler(static (request, _) => Task.FromResult(JsonResponse(
@@ -116,7 +132,26 @@ public sealed class SchemaRegistryGuidTests
     }
 
     [Test]
-    public async Task GuidCache_EvictionIsBoundedAndDoesNotClearIntegerCaches()
+    public async Task GetOrRegisterSchemaAsync_RegistrationFallbackSeedsGuidCache()
+    {
+        var requestCount = 0;
+        using var handler = new RecordingHandler((_, _) => Task.FromResult(
+            Interlocked.Increment(ref requestCount) == 1
+                ? JsonResponse(HttpStatusCode.NotFound, """{ "error_code": 40403, "message": "not found" }""")
+                : JsonResponse(HttpStatusCode.OK, $$"""{ "id": 42, "guid": "{{FirstGuid:D}}" }""")));
+        using var client = CreateClient(handler);
+        var schema = NewSchema("registered");
+
+        var id = await client.GetOrRegisterSchemaAsync("orders-value", schema);
+
+        await Assert.That(id).IsEqualTo(42);
+        await Assert.That(handler.Requests).Count().IsEqualTo(2);
+        await Assert.That(client.TryGetCachedSchema(FirstGuid, format: null, out var cached)).IsTrue();
+        await Assert.That(cached).IsSameReferenceAs(schema);
+    }
+
+    [Test]
+    public async Task GuidCache_EvictionSharesGlobalSchemaBudget()
     {
         using var client = CreateClient(new RecordingHandler(), maxCachedSchemas: 2);
         client.CacheSchema(1, "subject-1", NewSchema("id-1"));
@@ -127,8 +162,8 @@ public sealed class SchemaRegistryGuidTests
         client.CacheGuidSchema(Guid.Parse("00000000-0000-0000-0000-000000000003"), null, NewSchema("guid-3"));
 
         await Assert.That(client.CachedSchemaByGuidCount).IsEqualTo(1);
-        await Assert.That(client.CachedSchemaByIdCount).IsEqualTo(2);
-        await Assert.That(client.CachedSchemaIdCount).IsEqualTo(2);
+        await Assert.That(client.CachedSchemaByIdCount).IsEqualTo(0);
+        await Assert.That(client.CachedSchemaIdCount).IsEqualTo(0);
     }
 
     [Test]
@@ -210,6 +245,28 @@ public sealed class SchemaRegistryGuidTests
         _ = await Assert.ThrowsAsync<ArgumentException>(() => client.GetSchemaByGuidAsync("not-a-guid"));
 
         await Assert.That(handler.Requests).IsEmpty();
+    }
+
+    [Test]
+    public async Task GetSchemaBySubjectAsync_RejectsInvalidResponseGuid()
+    {
+        using var handler = new RecordingHandler(static (_, _) => Task.FromResult(JsonResponse(
+            HttpStatusCode.OK,
+            """
+            {
+              "subject": "orders-value",
+              "version": 1,
+              "id": 42,
+              "guid": "not-a-guid",
+              "schema": "{}"
+            }
+            """)));
+        using var client = CreateClient(handler);
+
+        var exception = await Assert.ThrowsAsync<SchemaRegistryException>(() =>
+            client.GetSchemaBySubjectAsync("orders-value"));
+
+        await Assert.That(exception!.Message).Contains("invalid schema GUID");
     }
 
     private static SchemaRegistryClient CreateClient(

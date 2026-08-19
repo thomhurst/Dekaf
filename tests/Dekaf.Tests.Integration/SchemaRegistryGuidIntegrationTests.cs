@@ -37,7 +37,12 @@ public sealed class SchemaRegistryGuidIntegrationTests(KafkaWithSchemaRegistryCo
             return;
         }
 
-        var actual = await client.GetSchemaByGuidAsync(guid);
+        using var uncachedClient = new SchemaRegistryClient(new SchemaRegistryConfig
+        {
+            Url = testInfra.RegistryUrl,
+            MaxCachedSchemas = 0
+        });
+        var actual = await uncachedClient.GetSchemaByGuidAsync(guid);
 
         await Assert.That(actual.SchemaType).IsEqualTo(expected.SchemaType);
         await Assert.That(actual.SchemaString).IsEqualTo(expected.SchemaString);

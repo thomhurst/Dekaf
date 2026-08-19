@@ -666,8 +666,15 @@ internal static class AotSmoke
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            return Task.FromResult<IReadOnlyList<int>>(
-                _schemasBySubject.Remove(subject, out var registered) ? [registered.Version] : []);
+            if (!_schemasBySubject.Remove(subject, out var registered))
+                return Task.FromResult<IReadOnlyList<int>>([]);
+
+            _schemasById.Remove(registered.Id);
+            var guid = Guid.Parse(registered.Guid!);
+            foreach (var key in _schemasByGuid.Keys.Where(key => key.Guid == guid).ToArray())
+                _schemasByGuid.Remove(key);
+
+            return Task.FromResult<IReadOnlyList<int>>([registered.Version]);
         }
 
         public bool TryGetCachedSchema(int id, out Schema schema)

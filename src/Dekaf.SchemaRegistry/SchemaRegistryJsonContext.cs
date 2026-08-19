@@ -42,6 +42,7 @@ internal sealed class RegisterSchemaRequest
 internal sealed class RegisterSchemaResponse
 {
     public int Id { get; init; }
+    public string? Guid { get; init; }
 }
 
 internal sealed class GetSchemaResponse

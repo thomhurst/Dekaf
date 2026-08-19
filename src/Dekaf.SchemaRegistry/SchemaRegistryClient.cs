@@ -507,8 +507,10 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             SchemaRegistryJsonContext.Default.RegisterSchemaResponse, cancellationToken).ConfigureAwait(false);
 
         var id = result!.Id;
+        var schemaGuid = ParseSchemaGuid(result.Guid);
 
         CacheSchema(id, subject, schema, effectiveNormalize);
+        CacheGuidSchema(schemaGuid, format: null, schema);
 
         return id;
     }
@@ -544,6 +546,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         if (!Guid.TryParse(guid, out var parsedGuid))
             throw new ArgumentException("The schema GUID is not valid.", nameof(guid));
 
+        format = string.IsNullOrEmpty(format) ? null : format;
         var cacheKey = (parsedGuid, format);
         if (_schemaByGuidCache.TryGetValue(cacheKey, out var cached))
             return cached;
@@ -629,14 +632,15 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             throw new SchemaRegistryException((int)response.StatusCode, "Schema Registry returned an empty schema response");
 
         var schema = CreateSchema(result);
+        var schemaGuid = ParseSchemaGuid(result.Guid);
 
         CacheSchema(result.Id, subject: null, schema);
-        CacheGuidSchema(result.Guid, format: null, schema);
+        CacheGuidSchema(schemaGuid, format: null, schema);
 
         return new RegisteredSchema
         {
             Id = result.Id,
-            Guid = result.Guid,
+            Guid = schemaGuid?.ToString("D"),
             Subject = result.Subject,
             Version = result.Version,
             Schema = schema
@@ -672,18 +676,19 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             throw new SchemaRegistryException((int)response.StatusCode, "Schema Registry returned an empty schema response");
 
         var registeredSchema = CreateSchema(result);
+        var schemaGuid = ParseSchemaGuid(result.Guid);
         CacheSchema(
             result.Id,
             ignoreDeletedSchemas ? subject : null,
             schema,
             effectiveNormalize,
             schemaById: registeredSchema);
-        CacheGuidSchema(result.Guid, format: null, registeredSchema);
+        CacheGuidSchema(schemaGuid, format: null, registeredSchema);
 
         return new RegisteredSchema
         {
             Id = result.Id,
-            Guid = result.Guid,
+            Guid = schemaGuid?.ToString("D"),
             Subject = result.Subject,
             Version = result.Version,
             Schema = registeredSchema
@@ -734,8 +739,9 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             throw new SchemaRegistryException((int)response.StatusCode, "Schema Registry returned an empty schema response");
 
         var registeredSchema = CreateSchema(result);
+        var schemaGuid = ParseSchemaGuid(result.Guid);
         CacheSchema(result.Id, subject, schema, effectiveNormalize, schemaById: registeredSchema);
-        CacheGuidSchema(result.Guid, format: null, registeredSchema);
+        CacheGuidSchema(schemaGuid, format: null, registeredSchema);
 
         return result.Id;
     }
@@ -789,29 +795,41 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             if (_schemaByGuidCache.ContainsKey(cacheKey))
                 return;
 
-            if (_schemaByGuidCache.Count >= _maxCachedSchemas)
-                _schemaByGuidCache.Clear();
+            ClearCachesIfFull();
 
             _schemaByGuidCache.TryAdd(cacheKey, schema);
         }
     }
 
-    private void CacheGuidSchema(string? guid, string? format, Schema schema)
+    private void CacheGuidSchema(Guid? guid, string? format, Schema schema)
     {
-        if (Guid.TryParse(guid, out var parsedGuid))
-            CacheGuidSchema(parsedGuid, format, schema);
+        if (guid is { } value)
+            CacheGuidSchema(value, format, schema);
     }
 
     private void ClearCachesIfFull()
     {
         if (_schemaByIdCache.Count < _maxCachedSchemas &&
             _schemaBySubjectAndIdCache.Count < _maxCachedSchemas &&
-            _idBySchemaCache.Count < _maxCachedSchemas)
+            _idBySchemaCache.Count < _maxCachedSchemas &&
+            _schemaByGuidCache.Count < _maxCachedSchemas)
             return;
 
         _schemaByIdCache.Clear();
         _schemaBySubjectAndIdCache.Clear();
         _idBySchemaCache.Clear();
+        _schemaByGuidCache.Clear();
+    }
+
+    private static Guid? ParseSchemaGuid(string? guid)
+    {
+        if (guid is null)
+            return null;
+
+        if (Guid.TryParse(guid, out var parsedGuid))
+            return parsedGuid;
+
+        throw new SchemaRegistryException(0, "Schema Registry returned an invalid schema GUID.");
     }
 
     public async Task<IReadOnlyList<string>> GetAllSubjectsAsync(CancellationToken cancellationToken = default)
