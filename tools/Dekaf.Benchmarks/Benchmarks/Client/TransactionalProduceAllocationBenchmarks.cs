@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Reflection;
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Configs;
 using BenchmarkDotNet.Engines;
@@ -6,7 +8,6 @@ using Dekaf.Metadata;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Producer;
-using System.Reflection;
 
 namespace Dekaf.Benchmarks.Benchmarks.Client;
 
@@ -37,6 +38,10 @@ public class TransactionalProduceAllocationBenchmarks
     private TopicPartition _topicPartition;
     private long _offset;
     private CancellationTokenSource _cancellation = null!;
+    private ActivityListener? _activityListener;
+
+    [Params(false, true)]
+    public bool TracingEnabled { get; set; }
 
     [GlobalSetup]
     public async Task Setup()
@@ -47,6 +52,15 @@ public class TransactionalProduceAllocationBenchmarks
             .WithBufferMemory(ulong.MaxValue)
             .WithLinger(TimeSpan.Zero)
             .Build();
+        if (TracingEnabled)
+        {
+            _activityListener = new ActivityListener
+            {
+                ShouldListenTo = static source => source.Name == Diagnostics.DekafDiagnostics.ActivitySourceName,
+                Sample = static (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData
+            };
+            ActivitySource.AddActivityListener(_activityListener);
+        }
         var producer = (KafkaProducer<string, string>)_producer;
         await producer.StopSenderLoopsForTestingAsync();
 
@@ -66,6 +80,13 @@ public class TransactionalProduceAllocationBenchmarks
             Value = "value"
         };
         _cancellation = new CancellationTokenSource();
+    }
+
+    [GlobalCleanup]
+    public void Cleanup()
+    {
+        _activityListener?.Dispose();
+        _cancellation.Dispose();
     }
 
     [Benchmark(Baseline = true)]
@@ -113,6 +134,9 @@ public class TransactionalProduceAllocationBenchmarks
         }
 
         _ = produce.GetAwaiter().GetResult();
+        // AwaitWithActivity completes on a worker in this synchronous harness. Reset the
+        // benchmark thread's ambient span so later invocations do not become nested children.
+        Activity.Current = null;
     }
 
     private static void SeedMetadata(MetadataManager metadataManager) =>
