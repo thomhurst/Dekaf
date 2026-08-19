@@ -419,6 +419,56 @@ public interface ISchemaRegistryClient : IDisposable
         bool permanent = false,
         CancellationToken cancellationToken = default)
         => throw new NotSupportedException("This Schema Registry client does not support DEK Registry DEK operations.");
+
+    /// <summary>
+    /// Gets subject associations for an external resource name.
+    /// </summary>
+    /// <param name="resourceName">The resource name, such as a Kafka topic name.</param>
+    /// <param name="resourceNamespace">The resource namespace, or <c>-</c> as a wildcard.</param>
+    /// <param name="resourceType">Optional resource-type filter.</param>
+    /// <param name="associationTypes">Optional repeated association-type filters.</param>
+    /// <param name="lifecycle">Optional lifecycle-policy filter.</param>
+    /// <param name="offset">Zero-based pagination offset.</param>
+    /// <param name="limit">Maximum result count, or -1 for no limit.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>Associations matching the resource and filters.</returns>
+    Task<IReadOnlyList<Association>> GetAssociationsByResourceNameAsync(
+        string resourceName,
+        string resourceNamespace = "-",
+        string? resourceType = null,
+        IReadOnlyList<string>? associationTypes = null,
+        string? lifecycle = null,
+        int offset = 0,
+        int limit = -1,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("This Schema Registry client does not support association operations.");
+
+    /// <summary>
+    /// Creates or updates subject associations for an external resource.
+    /// </summary>
+    /// <param name="request">Association create-or-update request.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The associations acknowledged by Schema Registry.</returns>
+    Task<AssociationResponse> CreateAssociationAsync(
+        AssociationCreateOrUpdateRequest request,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("This Schema Registry client does not support association operations.");
+
+    /// <summary>
+    /// Deletes subject associations for an external resource.
+    /// </summary>
+    /// <param name="resourceId">The resource identifier.</param>
+    /// <param name="resourceType">Optional resource-type filter.</param>
+    /// <param name="associationTypes">Optional repeated association-type filters.</param>
+    /// <param name="cascadeLifecycle">Whether to cascade lifecycle changes to associated schemas.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    Task DeleteAssociationsAsync(
+        string resourceId,
+        string? resourceType = null,
+        IReadOnlyList<string>? associationTypes = null,
+        bool cascadeLifecycle = false,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("This Schema Registry client does not support association operations.");
 }
 
 /// <summary>
