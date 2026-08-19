@@ -10,6 +10,19 @@
 #     system-wide; the `\\?\` extended-length Remove-Item is kept as a fallback for
 #     environments where that config is missing.
 
+function New-OrdinalStringMap {
+    [CmdletBinding()]
+    [OutputType([System.Collections.Generic.Dictionary[string, bool]])]
+    param()
+
+    return [System.Collections.Generic.Dictionary[string, bool]]::new([System.StringComparer]::Ordinal)
+}
+
+$script:DisposableWorktreeGeneratedDirectories = New-OrdinalStringMap
+foreach ($directory in @('.artifacts', '.vs', 'artifacts', 'bin', 'node_modules', 'obj', 'TestResults')) {
+    $script:DisposableWorktreeGeneratedDirectories[$directory] = $true
+}
+
 function Test-DisposableWorktreePath {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Path)
@@ -18,17 +31,8 @@ function Test-DisposableWorktreePath {
     # risk classifying an unusual source path as generated output.
     if ($Path.StartsWith('"', [System.StringComparison]::Ordinal)) { return $false }
 
-    $generatedDirectories = @{
-        '.artifacts' = $true
-        '.vs' = $true
-        'artifacts' = $true
-        'bin' = $true
-        'node_modules' = $true
-        'obj' = $true
-        'TestResults' = $true
-    }
     foreach ($segment in (($Path -replace '\\', '/') -split '/')) {
-        if ($generatedDirectories.ContainsKey($segment)) { return $true }
+        if ($script:DisposableWorktreeGeneratedDirectories.ContainsKey($segment)) { return $true }
     }
 
     return $false
@@ -45,7 +49,7 @@ function Test-WorktreeMatchesMergedPullRequest {
     foreach ($association in $Associations) {
         if (-not $association.merged_at) { continue }
         if ($Detached) { return $true }
-        if ($Branch -and $association.head -and $association.head.ref -eq $Branch) { return $true }
+        if ($Branch -and $association.head -and $association.head.ref -ceq $Branch) { return $true }
     }
 
     return $false

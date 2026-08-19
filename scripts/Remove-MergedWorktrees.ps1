@@ -71,7 +71,10 @@ try {
     # Authoritative merge signal: merged-PR head branches AND head tip SHAs (squash-safe).
     # --limit 1000 covers any realistic leftover window for the NAME tier; anything older
     # falls through to the per-commit association tier below.
-    $mergedNames = @{}; $mergedOids = @{}; $openNames = @{}; $openOids = @{}
+    $mergedNames = New-OrdinalStringMap
+    $mergedOids = New-OrdinalStringMap
+    $openNames = New-OrdinalStringMap
+    $openOids = New-OrdinalStringMap
     $rawMerged = gh pr list @repoArgs --state merged --limit 1000 --json headRefName,headRefOid 2>$null
     if ($LASTEXITCODE -ne 0) { Warn "could not list merged PRs (exit $LASTEXITCODE) -- skipping sweep this round"; exit 0 }
     foreach ($p in (($rawMerged -join "`n") | ConvertFrom-Json)) {

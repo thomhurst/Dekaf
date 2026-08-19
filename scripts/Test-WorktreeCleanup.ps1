@@ -55,13 +55,28 @@ try {
         merged_at = '2026-08-19T00:00:00Z'
         head = [pscustomobject]@{ ref = 'issue-123-fresh-source' }
     }
+    $differentCaseAssociation = [pscustomobject]@{
+        state = 'closed'
+        merged_at = '2026-08-19T00:00:00Z'
+        head = [pscustomobject]@{ ref = 'Issue-123-Fresh-Source' }
+    }
 
     Assert-True (-not (Test-WorktreeMatchesMergedPullRequest -Associations @($mainAssociation) -Branch 'issue-123-fresh-source' -Detached $false)) `
         'Named issue branch matched an unrelated merged PR through a shared commit.'
     Assert-True (Test-WorktreeMatchesMergedPullRequest -Associations @($issueAssociation) -Branch 'issue-123-fresh-source' -Detached $false) `
         'Named issue branch did not match its own merged PR.'
+    Assert-True (-not (Test-WorktreeMatchesMergedPullRequest -Associations @($differentCaseAssociation) -Branch 'issue-123-fresh-source' -Detached $false)) `
+        'Named issue branch matched a differently-cased merged PR branch.'
     Assert-True (Test-WorktreeMatchesMergedPullRequest -Associations @($mainAssociation) -Branch $null -Detached $true) `
         'Detached worktree did not match its merged commit association.'
+
+    $mergedNames = New-OrdinalStringMap
+    $mergedNames['issue-123-fresh-source'] = $true
+    Assert-True (-not $mergedNames.ContainsKey('Issue-123-Fresh-Source')) `
+        'Merged branch map matched a differently-cased branch name.'
+
+    Assert-True (-not (Test-DisposableWorktreePath -Path 'src/Bin/Generated.cs')) `
+        'Differently-cased source directory was treated as disposable output.'
 
     Write-Host 'OK worktree cleanup safety tests passed.'
 }
