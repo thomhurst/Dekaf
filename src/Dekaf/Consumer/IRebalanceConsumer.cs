@@ -53,14 +53,6 @@ public interface IRebalanceConsumer
         TopicPartition partition,
         CancellationToken cancellationToken = default);
 
-    /// <summary>
-    /// Gets committed offsets and leader epochs for the requested partitions in one request.
-    /// Partitions without a committed offset are absent from the returned dictionary.
-    /// </summary>
-    ValueTask<IReadOnlyDictionary<TopicPartition, TopicPartitionOffset>> GetCommittedOffsetsAsync(
-        IReadOnlyCollection<TopicPartition> partitions,
-        CancellationToken cancellationToken = default);
-
     /// <summary>Gets the current position for a partition.</summary>
     long? GetPosition(TopicPartition partition);
 

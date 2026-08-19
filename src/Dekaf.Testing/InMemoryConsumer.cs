@@ -15,6 +15,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     IKafkaConsumer<TKey, TValue>,
     IBoundedKafkaConsumer<TKey, TValue>,
     IConsumerPositions,
+    IConsumerCommittedOffsets,
     IConsumerPartitions,
     IConsumerOffsets,
     IConsumerBatchOffsetStore,

@@ -213,7 +213,7 @@ public sealed class InMemoryKafkaClusterTests
     public async Task Consumer_GetCommittedOffsetsAsync_ReturnsSelectedOffsetsAndLeaderEpochs()
     {
         var cluster = new InMemoryKafkaCluster();
-        var consumer = new InMemoryConsumer<string, string>(
+        IKafkaConsumer<string, string> consumer = new InMemoryConsumer<string, string>(
             cluster,
             new InMemoryConsumerOptions
             {
@@ -229,7 +229,7 @@ public sealed class InMemoryKafkaClusterTests
             new TopicPartitionOffset(tasks.Topic, tasks.Partition, 34, leaderEpoch: 5)
         ]);
 
-        var offsets = await consumer.Positions.GetCommittedOffsetsAsync([jobs, tasks, missing]);
+        var offsets = await consumer.GetCommittedOffsetsAsync([jobs, tasks, missing]);
 
         await Assert.That(offsets).Count().IsEqualTo(2);
         await Assert.That(offsets[jobs])

@@ -575,7 +575,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka) : KafkaIntegrationTest
                 consumed.Value.LeaderEpoch!.Value)
         ]);
 
-        var offsets = await consumer.Positions.GetCommittedOffsetsAsync(
+        var offsets = await consumer.GetCommittedOffsetsAsync(
             [committedPartition, uncommittedPartition],
             cts.Token);
 

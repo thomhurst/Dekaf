@@ -43,6 +43,16 @@ public sealed class PartitionedConsumerRuntimeTests
     }
 
     [Test]
+    public async Task GetCommittedOffsetsAsync_LegacyConsumer_ThrowsNotSupportedException()
+    {
+        IKafkaConsumer<string, string> consumer = new TestConsumer();
+
+        Action act = () => _ = consumer.GetCommittedOffsetsAsync([]);
+
+        await Assert.That(act).Throws<NotSupportedException>();
+    }
+
+    [Test]
     public async Task RunPartitionedAsync_RoutesAssignedPartitionsInOrderAndConcurrently()
     {
         var firstPartition = new TopicPartition("topic-a", 0);
@@ -1450,12 +1460,6 @@ public sealed class PartitionedConsumerRuntimeTests
             TopicPartition partition,
             CancellationToken cancellationToken = default)
             => ValueTask.FromResult<long?>(null);
-
-        public ValueTask<IReadOnlyDictionary<TopicPartition, TopicPartitionOffset>> GetCommittedOffsetsAsync(
-            IReadOnlyCollection<TopicPartition> partitions,
-            CancellationToken cancellationToken = default) =>
-            ValueTask.FromResult<IReadOnlyDictionary<TopicPartition, TopicPartitionOffset>>(
-                new Dictionary<TopicPartition, TopicPartitionOffset>());
 
         public long? GetPosition(TopicPartition partition)
             => null;

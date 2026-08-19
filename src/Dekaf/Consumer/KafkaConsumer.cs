@@ -1113,6 +1113,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     IBoundedKafkaConsumer<TKey, TValue>,
     IConsumerGroupLiveness,
     IConsumerPositions,
+    IConsumerCommittedOffsets,
     IConsumerPartitions,
     IConsumerOffsets,
     IConsumerRebalanceEventSource,
