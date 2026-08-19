@@ -165,6 +165,10 @@ public sealed class KafkaFaultBarrier
     private readonly TaskCompletionSource _entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource _released = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+    internal KafkaFaultBarrier()
+    {
+    }
+
     /// <summary>
     /// Gets whether the barrier has been released.
     /// </summary>

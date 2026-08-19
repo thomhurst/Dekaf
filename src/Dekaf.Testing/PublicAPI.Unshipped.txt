@@ -23,7 +23,6 @@ Dekaf.Testing.KafkaFaultAction.Pause = 1 -> Dekaf.Testing.KafkaFaultAction
 Dekaf.Testing.KafkaFaultAction.Throw = 0 -> Dekaf.Testing.KafkaFaultAction
 Dekaf.Testing.KafkaFaultBarrier
 Dekaf.Testing.KafkaFaultBarrier.IsReleased.get -> bool
-Dekaf.Testing.KafkaFaultBarrier.KafkaFaultBarrier() -> void
 Dekaf.Testing.KafkaFaultBarrier.Release() -> bool
 Dekaf.Testing.KafkaFaultBarrier.WaitUntilEnteredAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
 Dekaf.Testing.KafkaFaultObservation

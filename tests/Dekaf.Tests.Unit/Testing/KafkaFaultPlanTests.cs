@@ -9,6 +9,10 @@ public sealed class KafkaFaultPlanTests
         topic: "orders");
 
     [Test]
+    public async Task KafkaFaultBarrier_HasNoPublicConstructor() =>
+        await Assert.That(typeof(KafkaFaultBarrier).GetConstructors()).IsEmpty();
+
+    [Test]
     public async Task Fail_ConsumesOrderedOneShotAndNextNRules()
     {
         IKafkaFaultPlan plan = new KafkaFaultPlan();
