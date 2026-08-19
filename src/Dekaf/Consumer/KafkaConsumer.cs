@@ -4754,7 +4754,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private void MarkOffsetCommitted(TopicPartition partition, long committedOffset)
     {
-        CacheCommittedOffset(
+        _ = TryCacheCommittedOffset(
             partition,
             committedOffset,
             Interlocked.Increment(ref _committedOffsetGeneration));
@@ -6616,7 +6616,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             var offsets = await _coordinator.FetchOffsetsAsync([partition], apiTimeout.Token).ConfigureAwait(false);
             if (offsets.TryGetValue(partition, out var committedOffset))
             {
-                CacheCommittedOffset(partition, committedOffset.Offset, cacheGeneration);
+                if (TryCacheCommittedOffset(partition, committedOffset.Offset, cacheGeneration))
+                    TrySeedLeaderEpochFromCommittedLookup(partition, committedOffset.LeaderEpoch);
                 return committedOffset.Offset;
             }
         }
@@ -6645,7 +6646,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             foreach (var partition in partitions)
             {
                 if (offsets.TryGetValue(partition, out var committedOffset))
-                    CacheCommittedOffset(partition, committedOffset.Offset, cacheGeneration);
+                {
+                    if (TryCacheCommittedOffset(partition, committedOffset.Offset, cacheGeneration))
+                        TrySeedLeaderEpochFromCommittedLookup(partition, committedOffset.LeaderEpoch);
+                }
                 else
                     RemoveCachedCommittedOffset(partition, cacheGeneration);
             }
@@ -6660,18 +6664,27 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     // Fetch candidates carry their request-start generation. A later commit has a newer
     // generation and wins the dictionary CAS regardless of continuation scheduling.
-    private void CacheCommittedOffset(
+    private bool TryCacheCommittedOffset(
         TopicPartition partition,
         long committedOffset,
         long generation)
     {
         var candidate = new CommittedOffsetCacheEntry(committedOffset, generation);
-        _committed.AddOrUpdate(
+        var published = _committed.AddOrUpdate(
             partition,
             static (_, candidate) => candidate,
             static (_, current, candidate) =>
                 current.Generation > candidate.Generation ? current : candidate,
             candidate);
+        return published.Generation == generation;
+    }
+
+    private void TrySeedLeaderEpochFromCommittedLookup(TopicPartition partition, int leaderEpoch)
+    {
+        if (leaderEpoch < 0 || _fetchPositions.ContainsKey(partition))
+            return;
+
+        _lastConsumedLeaderEpochs.TryAdd(partition, leaderEpoch);
     }
 
     private void RemoveCachedCommittedOffset(TopicPartition partition, long generation)
@@ -8397,7 +8410,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     else
                         ClearLastConsumedLeaderEpoch(partition);
                     _fetchPositions[partition] = committedOffset.Offset;
-                    CacheCommittedOffset(partition, committedOffset.Offset, cacheGeneration);
+                    _ = TryCacheCommittedOffset(partition, committedOffset.Offset, cacheGeneration);
                 }
                 else
                 {

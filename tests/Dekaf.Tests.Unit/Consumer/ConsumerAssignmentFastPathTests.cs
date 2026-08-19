@@ -657,6 +657,63 @@ public sealed class ConsumerAssignmentFastPathTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task GetCommittedOffsetQueries_SeedLeaderEpochWithoutFetchProgress(bool bulk)
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        SetupFindCoordinator(connection);
+        connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(CreateSuccessfulOffsetFetchResponse()));
+
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager);
+        var partition = new TopicPartition("test-topic", 0);
+
+        if (bulk)
+            _ = await consumer.GetCommittedOffsetsAsync([partition], CancellationToken.None);
+        else
+            _ = await consumer.GetCommittedOffsetAsync(partition, CancellationToken.None);
+
+        await Assert.That(GetLastConsumedLeaderEpoch(consumer, partition)).IsEqualTo(4);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task GetCommittedOffsetQueries_DoNotSeedEpochWithActiveFetchProgress(bool bulk)
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        SetupFindCoordinator(connection);
+        connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(CreateSuccessfulOffsetFetchResponse()));
+
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager);
+        var partition = new TopicPartition("test-topic", 0);
+        GetFetchPositions(consumer)[partition] = 100;
+
+        if (bulk)
+            _ = await consumer.GetCommittedOffsetsAsync([partition], CancellationToken.None);
+        else
+            _ = await consumer.GetCommittedOffsetAsync(partition, CancellationToken.None);
+
+        await Assert.That(GetLastConsumedLeaderEpoch(consumer, partition)).IsEqualTo(-1);
+    }
+
+    [Test]
     public async Task GetCommittedOffsetsAsync_MissingCommit_EvictsScalarCache()
     {
         var connectionPool = Substitute.For<IConnectionPool>();
