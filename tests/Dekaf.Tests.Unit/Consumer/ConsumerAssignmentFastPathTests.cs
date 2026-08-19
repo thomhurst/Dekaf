@@ -1463,6 +1463,69 @@ public sealed class ConsumerAssignmentFastPathTests
     }
 
     [Test]
+    public async Task TopicIdentityChange_CoordinatorAbaDuringReset_DoesNotOverwriteReinitializedPosition()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        metadataManager.SetApiVersion(
+            ApiKey.ListOffsets,
+            ListOffsetsRequest.LowestSupportedVersion,
+            ListOffsetsRequest.HighestSupportedVersion);
+        await using var consumer = CreateGroupConsumer(
+            connectionPool,
+            metadataManager,
+            autoOffsetReset: AutoOffsetReset.ByDuration,
+            autoOffsetResetDuration: TimeSpan.FromMinutes(1));
+        var partition = new TopicPartition("test-topic", 1);
+        consumer.IncrementalAssign([
+            new TopicPartitionOffset(partition.Topic, partition.Partition, 10)
+        ]);
+        await InvokeHandleTopicIdentityChangesAsync(consumer);
+
+        var resetStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseReset = new TaskCompletionSource<ListOffsetsResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
+                Arg.Any<ListOffsetsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                var requestedPartition = call.ArgAt<ListOffsetsRequest>(0).Topics[0].Partitions[0].PartitionIndex;
+                if (requestedPartition != partition.Partition)
+                    return ValueTask.FromResult(CreateListOffsetsResponse(requestedPartition, 100));
+
+                resetStarted.TrySetResult();
+                return new ValueTask<ListOffsetsResponse>(releaseReset.Task);
+            });
+
+        metadataManager.Metadata.Update(CreateMetadataResponse(Guid.NewGuid(), partitionCount: 2));
+        var recovery = InvokeHandleTopicIdentityChangesAsync(consumer).AsTask();
+        await resetStarted.Task;
+
+        try
+        {
+            QueueCoordinatorRevokedPartitionsForFetchClear(consumer, [partition]);
+            PublishAssignmentSnapshot(consumer);
+            RemovePartitionState(consumer, [partition]);
+            SetPosition(consumer, partition, 20);
+            GetFetchPositions(consumer)[partition] = 20;
+
+            await Assert.That(consumer.Assignment).Contains(partition);
+            await Assert.That(GetFetchPositions(consumer)[partition]).IsEqualTo(20L);
+        }
+        finally
+        {
+            releaseReset.TrySetResult(CreateListOffsetsResponse(partition.Partition, 100));
+            await recovery;
+        }
+
+        await Assert.That(GetFetchPositions(consumer)[partition]).IsEqualTo(20L);
+    }
+
+    [Test]
     public async Task TopicIdentityChange_AssignmentMutationDuringReset_IsReobserved()
     {
         var connectionPool = Substitute.For<IConnectionPool>();
@@ -2298,7 +2361,7 @@ public sealed class ConsumerAssignmentFastPathTests
         return (ConcurrentDictionary<TopicPartition, int>)field.GetValue(consumer)!;
     }
 
-    private static ConcurrentDictionary<TopicPartition, byte> GetCoordinatorRevokedPartitionsPendingFetchClear(
+    private static ConcurrentDictionary<TopicPartition, long> GetCoordinatorRevokedPartitionsPendingFetchClear(
         KafkaConsumer<string, string> consumer)
     {
         var field = typeof(KafkaConsumer<string, string>).GetField(
@@ -2306,7 +2369,7 @@ public sealed class ConsumerAssignmentFastPathTests
             BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("_coordinatorRevokedPartitionsPendingFetchClear field not found.");
 
-        return (ConcurrentDictionary<TopicPartition, byte>)field.GetValue(consumer)!;
+        return (ConcurrentDictionary<TopicPartition, long>)field.GetValue(consumer)!;
     }
 
     private static int GetCoordinatorRevokedPartitionsPendingFetchClearPending(
@@ -2474,6 +2537,29 @@ public sealed class ConsumerAssignmentFastPathTests
             ?? throw new InvalidOperationException("RemovePartitionState method not found.");
 
         method.Invoke(consumer, [partitions]);
+    }
+
+    private static void PublishAssignmentSnapshot(KafkaConsumer<string, string> consumer)
+    {
+        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+            "PublishAssignmentSnapshot",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("PublishAssignmentSnapshot method not found.");
+
+        method.Invoke(consumer, []);
+    }
+
+    private static void SetPosition(
+        KafkaConsumer<string, string> consumer,
+        TopicPartition partition,
+        long position)
+    {
+        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+            "SetPosition",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("SetPosition method not found.");
+
+        method.Invoke(consumer, [partition, position, false]);
     }
 
     private static bool StageDivergingEpochReset(

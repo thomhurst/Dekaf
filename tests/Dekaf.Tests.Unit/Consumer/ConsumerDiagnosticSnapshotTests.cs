@@ -31,7 +31,7 @@ public sealed class ConsumerDiagnosticSnapshotTests
         consumer.IncrementalAssign(
             [new TopicPartitionOffset(partition.Topic, partition.Partition, 42)]);
 
-        GetField<ConcurrentDictionary<TopicPartition, byte>>(
+        GetField<ConcurrentDictionary<TopicPartition, long>>(
             consumer,
             "_coordinatorRevokedPartitionsPendingFetchClear")[partition] = 0;
         GetField<ConcurrentDictionary<TopicPartition, int>>(
