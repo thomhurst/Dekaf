@@ -3,12 +3,53 @@
 # Remove-MergedWorktrees.ps1. Not meant to be run directly.
 #
 # Removal policy (one place, both callers):
-#   - PRESERVE a worktree with uncommitted TRACKED changes (real WIP). Never
-#     force-discard it; the caller logs and moves on.
-#   - CLEAR untracked build artifacts (node_modules/bin/obj) — they are not work.
+#   - PRESERVE a worktree with uncommitted tracked changes or untracked files outside
+#     known generated directories. Never force-discard possible work.
+#   - CLEAR untracked build artifacts (node_modules/bin/obj/etc.) — they are not work.
 #   - Long-path safe: git's own delete now works because core.longpaths=true is set
 #     system-wide; the `\\?\` extended-length Remove-Item is kept as a fallback for
 #     environments where that config is missing.
+
+function Test-DisposableWorktreePath {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Path)
+
+    # Quoted porcelain paths require Git's escape decoding. Preserve them rather than
+    # risk classifying an unusual source path as generated output.
+    if ($Path.StartsWith('"', [System.StringComparison]::Ordinal)) { return $false }
+
+    $generatedDirectories = @{
+        '.artifacts' = $true
+        '.vs' = $true
+        'artifacts' = $true
+        'bin' = $true
+        'node_modules' = $true
+        'obj' = $true
+        'TestResults' = $true
+    }
+    foreach ($segment in (($Path -replace '\\', '/') -split '/')) {
+        if ($generatedDirectories.ContainsKey($segment)) { return $true }
+    }
+
+    return $false
+}
+
+function Test-WorktreeMatchesMergedPullRequest {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Associations,
+        [AllowNull()][string]$Branch,
+        [bool]$Detached
+    )
+
+    foreach ($association in $Associations) {
+        if (-not $association.merged_at) { continue }
+        if ($Detached) { return $true }
+        if ($Branch -and $association.head -and $association.head.ref -eq $Branch) { return $true }
+    }
+
+    return $false
+}
 
 function Remove-MergedWorktree {
     [CmdletBinding()]
@@ -23,10 +64,20 @@ function Remove-MergedWorktree {
         return
     }
 
-    # Preserve genuine uncommitted work (tracked changes only — untracked is artifacts).
-    $tracked = git -C $Worktree status --porcelain --untracked-files=no 2>$null
-    if ($tracked) {
-        Write-Host "Preserving dirty worktree $Label : $Worktree (uncommitted tracked changes)"
+    # Preserve tracked work and every untracked/ignored path that is not under a known
+    # generated directory. --force below is safe only after this fail-closed check.
+    $status = @(git -C $Worktree status --porcelain=v1 --untracked-files=all --ignored=matching 2>$null)
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Preserving worktree $Label : $Worktree (could not inspect worktree status)"
+        return
+    }
+
+    $work = @($status | Where-Object {
+        if ($_ -notmatch '^(\?\?|!!) ') { return $true }
+        return -not (Test-DisposableWorktreePath -Path $_.Substring(3))
+    })
+    if ($work.Count -gt 0) {
+        Write-Host "Preserving dirty worktree $Label : $Worktree (uncommitted work)"
         return
     }
 
