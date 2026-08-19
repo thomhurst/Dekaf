@@ -96,7 +96,7 @@ public sealed class SchemaRegistryAssociationTests
     }
 
     [Test]
-    public async Task CreateAssociationAsync_ClientNormalization_NormalizesEmbeddedSchema()
+    public async Task CreateAssociationAsync_ClientNormalization_RespectsPerAssociationSetting()
     {
         var handler = new AssociationHandler(HttpStatusCode.OK, """
             {
@@ -128,6 +128,14 @@ public sealed class SchemaRegistryAssociationTests
                 Subject = "orders-key",
                 AssociationType = "key",
                 Lifecycle = "STRONG"
+            },
+            new AssociationCreateOrUpdateInfo
+            {
+                Subject = "legacy-value",
+                AssociationType = "value",
+                Lifecycle = "STRONG",
+                Schema = new Schema { SchemaString = "{}" },
+                Normalize = false
             }
         ]);
 
@@ -139,6 +147,9 @@ public sealed class SchemaRegistryAssociationTests
             .IsTrue();
         await Assert.That(body.RootElement.GetProperty("associations")[1]
                 .TryGetProperty("normalize", out _))
+            .IsFalse();
+        await Assert.That(body.RootElement.GetProperty("associations")[2]
+                .GetProperty("normalize").GetBoolean())
             .IsFalse();
     }
 

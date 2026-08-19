@@ -1256,9 +1256,9 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
                 Lifecycle = association.Lifecycle,
                 Frozen = association.Frozen,
                 Schema = association.Schema is null ? null : CreateRegisterSchemaRequest(association.Schema),
-                Normalize = normalizeSchemas && association.Schema is not null
-                    ? true
-                    : association.Normalize
+                Normalize = association.Schema is null
+                    ? association.Normalize
+                    : association.Normalize ?? normalizeSchemas
             });
         }
 
