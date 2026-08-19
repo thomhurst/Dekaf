@@ -163,6 +163,50 @@ public class KafkaProducerFastPathTests
     }
 
     [Test]
+    public async Task FireAsync_Tracing_AppendsTraceHeaderWithoutReplacingMessage()
+    {
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name == DekafDiagnostics.ActivitySourceName,
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData
+        };
+        ActivitySource.AddActivityListener(listener);
+
+        await using var producer = new KafkaProducer<string, string>(
+            new ProducerOptions
+            {
+                BootstrapServers = ["localhost:9092"],
+                ClientId = "test-producer",
+                BufferMemory = ulong.MaxValue,
+                BatchSize = 4096,
+                LingerMs = 10,
+                RequestTimeoutMs = 500,
+                DeliveryTimeoutMs = 1000,
+                CloseTimeoutMs = 1000
+            },
+            Serializers.String,
+            Serializers.String);
+        await StopProducerBackgroundLoopsAsync(producer);
+        SeedProducerMetadata(producer);
+        SetInstanceField(producer, "_initialized", true);
+        var message = new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Key = "key",
+            Value = "value"
+        };
+
+        await producer.FireAsync(message);
+
+        await Assert.That(message.Headers).IsNull();
+        var readyBatch = CompleteCurrentBatch(producer.RecordAccumulator, new TopicPartition(Topic, 0));
+        var record = readyBatch.RecordBatch.Records[0];
+        await Assert.That(record.HeaderCount).IsEqualTo(1);
+        await Assert.That(record.Headers![0].Key).IsEqualTo("traceparent");
+        readyBatch.CompleteSend(baseOffset: 7, DateTimeOffset.UtcNow);
+    }
+
+    [Test]
     public async Task TransactionProduceAsync_CompletesContinuationInlineOnSenderThread()
     {
         var options = new ProducerOptions
@@ -653,17 +697,18 @@ public class KafkaProducerFastPathTests
             binder: null,
             [
                 typeof(ProducerMessage<string, string>),
+                typeof(Headers),
                 typeof(bool),
                 typeof(CancellationToken),
                 typeof(PooledValueTaskSource<RecordMetadata>).MakeByRefType()
             ],
             modifiers: null);
-        object?[] arguments = [message, runContinuationsAsynchronously, CancellationToken.None, null];
+        object?[] arguments = [message, message.Headers, runContinuationsAsynchronously, CancellationToken.None, null];
 
         try
         {
             var result = (bool)method!.Invoke(producer, arguments)!;
-            completion = (PooledValueTaskSource<RecordMetadata>?)arguments[3];
+            completion = (PooledValueTaskSource<RecordMetadata>?)arguments[4];
             return result;
         }
         catch (TargetInvocationException ex) when (ex.InnerException is not null)

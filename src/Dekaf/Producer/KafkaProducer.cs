@@ -639,12 +639,12 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         // Apply OnSend interceptors before serialization
         message = ApplyOnSendInterceptors(message);
 
-        var activity = StartPublishActivity(ref message);
+        var activity = StartPublishActivity(message, out var headers);
 
         // Async serializers (per-message I/O, issue #2309) cannot run on the synchronous fast
         // path — divert to the dedicated async-serialization path before any sync serialize.
         if (_hasAsyncSerializers)
-            return ProduceWithAsyncSerializationAsync(message, activity, continuationMode, cancellationToken);
+            return ProduceWithAsyncSerializationAsync(message, headers, activity, continuationMode, cancellationToken);
 
         // If a serializer needs async setup (e.g. a one-time Schema Registry fetch), do it here on the
         // async path so the synchronous serialize never blocks on it. After the first message for a
@@ -654,13 +654,13 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             ValueTask prepare;
             try
             {
-                prepare = PrepareSerializersAsync(message.Topic, message.Key, message.Value, message.Headers, cancellationToken);
+                prepare = PrepareSerializersAsync(message.Topic, message.Key, message.Value, headers, cancellationToken);
             }
             catch (Exception ex)
             {
                 // A preparer that throws synchronously must still stop and tag the started span,
                 // matching the invariant AwaitWithActivity enforces on every other completion path.
-                RecordActivityFault(activity, message.Headers, ex);
+                RecordActivityFault(activity, headers, ex);
                 throw;
             }
 
@@ -669,13 +669,14 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 return AwaitPrepareThenProduce(
                     prepare,
                     message,
+                    headers,
                     activity,
                     continuationMode,
                     cancellationToken);
             }
         }
 
-        return ProduceAfterPrepare(message, activity, continuationMode, cancellationToken);
+        return ProduceAfterPrepare(message, headers, activity, continuationMode, cancellationToken);
     }
 
     // Stops and error-tags a started span when async serializer preparation fails before the
@@ -695,6 +696,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
     private ValueTask<RecordMetadata> ProduceAfterPrepare(
         ProducerMessage<TKey, TValue> message,
+        Headers? headers,
         Activity? activity,
         ProduceContinuationMode continuationMode,
         CancellationToken cancellationToken)
@@ -711,7 +713,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
         // Fast path: Try synchronous produce if metadata is initialized and cached.
         // This bypasses channel overhead for 99%+ of calls after warmup.
-        if (TryProduceSyncForAsync(message, runContinuationsAsynchronously, cancellationToken, out var completion))
+        if (TryProduceSyncForAsync(message, headers, runContinuationsAsynchronously, cancellationToken, out var completion))
         {
             // POST-QUEUE: Message appended to a batch (committed to being sent, cancellation
             // only stops the wait) or handed to the slow-path append worker under
@@ -733,12 +735,13 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
         // Slow path: Fall back to channel-based async processing.
         // This handles first-time metadata initialization or cache misses.
-        return ProduceAsyncSlow(message, activity, continuationMode, cancellationToken);
+        return ProduceAsyncSlow(message, headers, activity, continuationMode, cancellationToken);
     }
 
     private async ValueTask<RecordMetadata> AwaitPrepareThenProduce(
         ValueTask prepare,
         ProducerMessage<TKey, TValue> message,
+        Headers? headers,
         Activity? activity,
         ProduceContinuationMode continuationMode,
         CancellationToken cancellationToken)
@@ -751,12 +754,13 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         {
             // Preparation faulted (e.g. Schema Registry unreachable or cancelled mid-fetch) before the
             // message was appended. Stop and error-tag the span here; ProduceAfterPrepare never runs.
-            RecordActivityFault(activity, message.Headers, ex);
+            RecordActivityFault(activity, headers, ex);
             throw;
         }
 
         return await ProduceAfterPrepare(
             message,
+            headers,
             activity,
             continuationMode,
             cancellationToken).ConfigureAwait(false);
@@ -864,6 +868,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     Partition = partition,
                     Timestamp = timestamp
                 },
+                headers,
                 activity: null,
                 continuationMode,
                 cancellationToken);
@@ -926,15 +931,20 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         }
 
         // Cold path: metadata miss only — allocate the full message for the async metadata fetch.
-        return ProduceAsyncSlow(new ProducerMessage<TKey, TValue>
-        {
-            Topic = topic,
-            Key = key,
-            Value = value,
-            Headers = headers,
-            Partition = partition,
-            Timestamp = timestamp
-        }, activity: null, continuationMode, cancellationToken);
+        return ProduceAsyncSlow(
+            new ProducerMessage<TKey, TValue>
+            {
+                Topic = topic,
+                Key = key,
+                Value = value,
+                Headers = headers,
+                Partition = partition,
+                Timestamp = timestamp
+            },
+            headers,
+            activity: null,
+            continuationMode,
+            cancellationToken);
     }
 
     private async ValueTask<RecordMetadata> AwaitPrepareThenProduce(
@@ -1099,6 +1109,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool TryProduceSyncForAsync(
         ProducerMessage<TKey, TValue> message,
+        Headers? headers,
         bool runContinuationsAsynchronously,
         CancellationToken cancellationToken,
         out PooledValueTaskSource<RecordMetadata>? completion)
@@ -1106,7 +1117,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             message.Topic,
             message.Key,
             message.Value,
-            message.Headers,
+            headers,
             message.Partition,
             message.Timestamp,
             runContinuationsAsynchronously,
@@ -1178,6 +1189,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     [MethodImpl(MethodImplOptions.NoInlining)]
     private async ValueTask<RecordMetadata> ProduceAsyncSlow(
         ProducerMessage<TKey, TValue> message,
+        Headers? headers,
         Activity? activity,
         ProduceContinuationMode continuationMode,
         CancellationToken cancellationToken)
@@ -1191,7 +1203,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         var runContinuationsAsynchronously = continuationMode == ProduceContinuationMode.Async;
 
         // Retry fast path - metadata should already be initialized via InitializeAsync()
-        if (TryProduceSyncForAsync(message, runContinuationsAsynchronously, cancellationToken, out var fastCompletion))
+        if (TryProduceSyncForAsync(message, headers, runContinuationsAsynchronously, cancellationToken, out var fastCompletion))
         {
             return await AwaitProduceCompletionAsync(fastCompletion!, activity, metricsEnabled, message.Topic, cancellationToken).ConfigureAwait(false);
         }
@@ -1200,7 +1212,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         var completion = RentCompletion(runContinuationsAsynchronously);
         try
         {
-            await ProduceInternalAsync(message, completion, cancellationToken).ConfigureAwait(false);
+            await ProduceInternalAsync(message, headers, completion, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -1234,12 +1246,12 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         // Apply OnSend interceptors before serialization
         message = ApplyOnSendInterceptors(message);
 
-        var activity = StartPublishActivity(ref message);
+        var activity = StartPublishActivity(message, out var headers);
 
         // Async serializers cannot run on the synchronous append path — serialize on the async
         // path, then enqueue. Delivery errors are observed and logged (fire-and-forget contract).
         if (_hasAsyncSerializers)
-            return FireWithAsyncSerializationAsync(message, activity, deliveryHandler: null);
+            return FireWithAsyncSerializationAsync(message, headers, activity, deliveryHandler: null);
 
         // Fast path: try thread-local cached topic metadata first
         var inThreadLocalCache = TryGetCachedTopicInfo(message.Topic, out var topicInfo);
@@ -1251,7 +1263,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
             try
             {
-                var appendResult = SerializeAndAppendFromSpansAsync(message.Topic, message.Key, message.Value, message.Headers, message.Partition, message.Timestamp, topicInfo!, null);
+                var appendResult = SerializeAndAppendFromSpansAsync(message.Topic, message.Key, message.Value, headers, message.Partition, message.Timestamp, topicInfo!, null);
 
                 if (appendResult.IsCompleted)
                 {
@@ -1270,7 +1282,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             {
                 // BufferMemory backpressure timeout must propagate
                 if (activity is not null) Diagnostics.DekafDiagnostics.RecordException(activity, ex);
-                message.Headers?.RemoveDeferredTraceContext();
+                headers?.RemoveDeferredTraceContext();
                 activity?.Dispose();
                 throw;
             }
@@ -1278,14 +1290,14 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             {
                 // Fire-and-forget: swallow exception but log
                 LogFireAndForgetProduceFailed(ex, message.Topic);
-                message.Headers?.RemoveDeferredTraceContext();
+                headers?.RemoveDeferredTraceContext();
                 activity?.Dispose();
                 return default;
             }
         }
 
         // Metadata miss — full async path
-        return FireAsyncSlow(message, activity);
+        return FireAsyncSlow(message, headers, activity);
     }
 
     /// <inheritdoc />
@@ -1306,6 +1318,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         {
             return FireWithAsyncSerializationAsync(
                 new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value },
+                headers: null,
                 activity: null,
                 deliveryHandler: null);
         }
@@ -1341,7 +1354,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
         // Metadata miss — allocate ProducerMessage only on cold path
         return FireAsyncSlow(
-            new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value }, activity: null);
+            new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value },
+            headers: null,
+            activity: null);
     }
 
     /// <summary>
@@ -1633,9 +1648,13 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     /// Starts a publish activity for tracing, guarded by HasListeners() to avoid
     /// string interpolation allocation when no diagnostic listener is attached.
     /// Sets standard OTel messaging tags and injects trace context into headers.
+    /// Returns the effective headers separately to avoid cloning the immutable message.
     /// </summary>
-    private Activity? StartPublishActivity(ref ProducerMessage<TKey, TValue> message)
+    private Activity? StartPublishActivity(
+        ProducerMessage<TKey, TValue> message,
+        out Headers? headers)
     {
+        headers = message.Headers;
         if (!Diagnostics.DekafDiagnostics.Source.HasListeners())
             return null;
 
@@ -1658,7 +1677,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageKey, message.Key.ToString());
             if (message.Value is null)
                 activity.SetTag(Diagnostics.DekafDiagnostics.MessagingKafkaTombstone, Diagnostics.DekafDiagnostics.BoxedTrue);
-            message = message with { Headers = Diagnostics.TraceContextPropagator.InjectTraceContext(message.Headers, activity) };
+            headers = Diagnostics.TraceContextPropagator.InjectTraceContext(headers, activity);
         }
 
         return activity;
@@ -1709,7 +1728,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         // Async serializers divert before the synchronous append path; the delivery handler is
         // invoked from a background observer when the batch completes (see FireAsync(message)).
         if (_hasAsyncSerializers)
-            return FireWithAsyncSerializationAsync(message, activity: null, deliveryHandler);
+            return FireWithAsyncSerializationAsync(message, message.Headers, activity: null, deliveryHandler);
 
         // Fast path: try thread-local cached topic metadata first
         var inThreadLocalCache = TryGetCachedTopicInfo(message.Topic, out var topicInfo);
@@ -1749,6 +1768,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
     private async ValueTask ProduceInternalAsync(
         ProducerMessage<TKey, TValue> message,
+        Headers? headers,
         PooledValueTaskSource<RecordMetadata> completion,
         CancellationToken cancellationToken)
     {
@@ -1807,8 +1827,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 key = _asyncKeySerializer is not null
                     ? await SerializeToPooledAsync(
                         _asyncKeySerializer, message.Key!, message.Topic,
-                        SerializationComponent.Key, message.Headers, cancellationToken).ConfigureAwait(false)
-                    : SerializeKeyToPooled(message.Key!, message.Topic, message.Headers);
+                        SerializationComponent.Key, headers, cancellationToken).ConfigureAwait(false)
+                    : SerializeKeyToPooled(message.Key!, message.Topic, headers);
             }
 
             if (!valueIsNull)
@@ -1816,8 +1836,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 value = _asyncValueSerializer is not null
                     ? await SerializeToPooledAsync(
                         _asyncValueSerializer, message.Value!, message.Topic,
-                        SerializationComponent.Value, message.Headers, cancellationToken).ConfigureAwait(false)
-                    : SerializeValueToPooled(message.Value!, message.Topic, message.Headers);
+                        SerializationComponent.Value, headers, cancellationToken).ConfigureAwait(false)
+                    : SerializeValueToPooled(message.Value!, message.Topic, headers);
             }
 
             // Determine partition
@@ -1831,9 +1851,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             var timestampMs = timestamp.ToUnixTimeMilliseconds();
 
             // Convert headers with minimal allocations
-            if (message.Headers is not null && message.Headers.Count > 0)
+            if (headers is not null && headers.Count > 0)
             {
-                RentAndFillHeaders(message.Headers, out pooledHeaderArray, out headerCount);
+                RentAndFillHeaders(headers, out pooledHeaderArray, out headerCount);
             }
 
             // Enqueue to per-partition-affine worker instead of calling AppendAsync inline.
@@ -1857,7 +1877,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             key.Return();
             value.Return();
             RecordAccumulator.ReturnPooledHeaders(pooledHeaderArray, headerCount);
-            message.Headers?.RemoveDeferredTraceContext();
+            headers?.RemoveDeferredTraceContext();
             throw;
         }
     }
@@ -4453,6 +4473,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     [MethodImpl(MethodImplOptions.NoInlining)]
     private async ValueTask FireAsyncSlow(
         ProducerMessage<TKey, TValue> message,
+        Headers? headers,
         Activity? activity)
     {
         try
@@ -4480,7 +4501,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
             UpdateCachedTopicInfo(message.Topic, topicInfo);
 
-            var appendResult = await SerializeAndAppendFromSpansAsync(message.Topic, message.Key, message.Value, message.Headers, message.Partition, message.Timestamp, topicInfo, null).ConfigureAwait(false);
+            var appendResult = await SerializeAndAppendFromSpansAsync(message.Topic, message.Key, message.Value, headers, message.Partition, message.Timestamp, topicInfo, null).ConfigureAwait(false);
 
             if (!appendResult)
                 throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
@@ -4498,7 +4519,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         }
         finally
         {
-            message.Headers?.RemoveDeferredTraceContext();
+            headers?.RemoveDeferredTraceContext();
             activity?.Dispose();
         }
     }
@@ -4939,6 +4960,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     /// </summary>
     private async ValueTask<RecordMetadata> ProduceWithAsyncSerializationAsync(
         ProducerMessage<TKey, TValue> message,
+        Headers? headers,
         Activity? activity,
         ProduceContinuationMode continuationMode,
         CancellationToken cancellationToken)
@@ -4953,7 +4975,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         var completion = RentCompletion(runContinuationsAsynchronously);
         try
         {
-            await ProduceInternalAsync(message, completion, cancellationToken).ConfigureAwait(false);
+            await ProduceInternalAsync(message, headers, completion, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -5035,6 +5057,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 #endif
     private async ValueTask FireWithAsyncSerializationAsync(
         ProducerMessage<TKey, TValue> message,
+        Headers? headers,
         Activity? activity,
         Action<RecordMetadata, Exception?>? deliveryHandler)
     {
@@ -5085,8 +5108,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     key = _asyncKeySerializer is not null
                         ? await SerializeToPooledAsync(
                             _asyncKeySerializer, message.Key!, message.Topic,
-                            SerializationComponent.Key, message.Headers, CancellationToken.None).ConfigureAwait(false)
-                        : SerializeKeyToPooled(message.Key!, message.Topic, message.Headers);
+                            SerializationComponent.Key, headers, CancellationToken.None).ConfigureAwait(false)
+                        : SerializeKeyToPooled(message.Key!, message.Topic, headers);
                 }
 
                 if (!valueIsNull)
@@ -5094,13 +5117,13 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     value = _asyncValueSerializer is not null
                         ? await SerializeToPooledAsync(
                             _asyncValueSerializer, message.Value!, message.Topic,
-                            SerializationComponent.Value, message.Headers, CancellationToken.None).ConfigureAwait(false)
-                        : SerializeValueToPooled(message.Value!, message.Topic, message.Headers);
+                            SerializationComponent.Value, headers, CancellationToken.None).ConfigureAwait(false)
+                        : SerializeValueToPooled(message.Value!, message.Topic, headers);
                 }
 
                 var appendResult = await AppendSerializedToAccumulatorAsync(
                     message.Topic, key, keyIsNull, value, valueIsNull,
-                    message.Headers, message.Partition, message.Timestamp,
+                    headers, message.Partition, message.Timestamp,
                     topicInfo, deliveryHandler).ConfigureAwait(false);
 
                 if (!appendResult)
@@ -5137,7 +5160,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         }
         finally
         {
-            message.Headers?.RemoveDeferredTraceContext();
+            headers?.RemoveDeferredTraceContext();
             activity?.Dispose();
         }
     }
