@@ -173,6 +173,9 @@ public sealed class KafkaFaultBarrier
     /// <summary>
     /// Waits until an operation consumes this barrier.
     /// </summary>
+    /// <exception cref="TaskCanceledException">
+    /// The barrier was removed from its fault plan before an operation consumed it.
+    /// </exception>
     public ValueTask WaitUntilEnteredAsync(CancellationToken cancellationToken = default)
     {
         if (_entered.Task.IsCompletedSuccessfully)
@@ -185,6 +188,12 @@ public sealed class KafkaFaultBarrier
     /// Releases the paused operation. Returns false when already released.
     /// </summary>
     public bool Release() => _released.TrySetResult();
+
+    internal void ClearBeforeEntry()
+    {
+        _entered.TrySetCanceled();
+        _released.TrySetResult();
+    }
 
     internal ValueTask EnterAsync(CancellationToken cancellationToken)
     {
@@ -377,7 +386,7 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
                     continue;
 
                 _entries.RemoveAt(i);
-                entry.Barrier?.Release();
+                entry.Barrier?.ClearBeforeEntry();
                 removed++;
             }
         }
@@ -394,7 +403,7 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
         {
             var removed = _entries.Count;
             for (var i = 0; i < _entries.Count; i++)
-                _entries[i].Barrier?.Release();
+                _entries[i].Barrier?.ClearBeforeEntry();
 
             _entries.Clear();
             return removed;

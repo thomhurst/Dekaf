@@ -130,6 +130,20 @@ public sealed class KafkaFaultPlanTests
     }
 
     [Test]
+    public async Task Clear_ExactScopeCancelsUnenteredBarrierWaiter()
+    {
+        var plan = new KafkaFaultPlan();
+        var barrier = plan.PauseNext(ProduceOrders);
+        var entered = barrier.WaitUntilEnteredAsync().AsTask();
+
+        var removed = plan.Clear(ProduceOrders);
+
+        await Assert.That(removed).IsEqualTo(1);
+        await Assert.That(barrier.IsReleased).IsTrue();
+        _ = await Assert.ThrowsAsync<TaskCanceledException>(() => entered);
+    }
+
+    [Test]
     public async Task PauseNext_BlocksUntilReleasedAndPublishesObservation()
     {
         var plan = new KafkaFaultPlan();
@@ -170,11 +184,13 @@ public sealed class KafkaFaultPlanTests
         var plan = new KafkaFaultPlan();
         plan.Fail(ProduceOrders, new InvalidOperationException("failure"));
         var barrier = plan.PauseNext(new KafkaFaultScope(KafkaFaultOperation.Fetch));
+        var entered = barrier.WaitUntilEnteredAsync().AsTask();
 
         var removed = plan.Clear();
 
         await Assert.That(removed).IsEqualTo(2);
         await Assert.That(barrier.IsReleased).IsTrue();
+        _ = await Assert.ThrowsAsync<TaskCanceledException>(() => entered);
         await plan.ApplyAsync(ProduceOrders);
     }
 
