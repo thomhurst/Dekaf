@@ -51,6 +51,7 @@ static Dekaf.ConsumerFacetExtensions.GetCommittedOffsetsAsync<TKey, TValue>(this
 static Dekaf.Protocol.Messages.MetadataRequest.GetRequestHeaderVersion(short version) -> short
 static Dekaf.Protocol.Messages.MetadataRequest.GetResponseHeaderVersion(short version) -> short
 static Dekaf.Protocol.Messages.MetadataRequest.IsFlexibleVersion(short version) -> bool
+Dekaf.KafkaClient.CreateStreamsGroupMember(Dekaf.Streams.StreamsGroupMemberOptions! options) -> Dekaf.Streams.IStreamsGroupMember!
 Dekaf.Consumer.BoundedConsumerExtensions
 Dekaf.Consumer.IBoundedKafkaConsumer<TKey, TValue>
 Dekaf.Consumer.IBoundedKafkaConsumer<TKey, TValue>.ConsumeSnapshotAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Collections.Generic.IAsyncEnumerable<Dekaf.Consumer.ConsumeResult<TKey, TValue>>!

@@ -10,6 +10,7 @@ using Dekaf.Producer;
 using Dekaf.Retry;
 using Dekaf.Security;
 using Dekaf.Security.Sasl;
+using Dekaf.Streams;
 using Microsoft.Extensions.Logging;
 
 /// <summary>
@@ -57,6 +58,21 @@ public sealed class KafkaClient : IAsyncDisposable
     {
         ThrowIfDisposed();
         return new AdminClientBuilder(_infrastructure);
+    }
+
+    /// <summary>
+    /// Creates a Kafka Streams group member that uses this client's shared connections and metadata.
+    /// </summary>
+    public IStreamsGroupMember CreateStreamsGroupMember(StreamsGroupMemberOptions options)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(options);
+        return new StreamsGroupMember(
+            options,
+            _infrastructure.ConnectionPool,
+            _infrastructure.MetadataManager,
+            _infrastructure.RetryBackoffMs,
+            _infrastructure.RetryBackoffMaxMs);
     }
 
     public async ValueTask DisposeAsync()
