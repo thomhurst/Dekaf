@@ -13,6 +13,28 @@ namespace Dekaf.Tests.Unit.Consumer;
 public sealed class ConsumerDirtyCommitTests
 {
     [Test]
+    public async Task CommitAsync_WithoutConsumerGroup_ThrowsWithGroupIdGuidance()
+    {
+        await using var consumer = CreateConsumer([], ErrorCode.None, groupId: null);
+
+        await Assert.That(async () => await consumer.CommitAsync(CancellationToken.None))
+            .Throws<InvalidOperationException>()
+            .And.HasMessageContaining("WithGroupId");
+    }
+
+    [Test]
+    public async Task CommitAsync_WithOffsetsWithoutConsumerGroup_ThrowsWithGroupIdGuidance()
+    {
+        await using var consumer = CreateConsumer([], ErrorCode.None, groupId: null);
+
+        await Assert.That(async () => await consumer.CommitAsync(
+                [new TopicPartitionOffset("topic-a", 0, 10)],
+                CancellationToken.None))
+            .Throws<InvalidOperationException>()
+            .And.HasMessageContaining("WithGroupId");
+    }
+
+    [Test]
     public async Task CommitAsync_AfterSuccessfulCommit_CommitsOnlyOffsetsChangedSinceLastCommit()
     {
         var requests = new List<OffsetCommitRequest>();
@@ -774,7 +796,8 @@ public sealed class ConsumerDirtyCommitTests
         Action<CancellationToken>? onOffsetCommit = null,
         int rebalanceTimeoutMs = 60_000,
         Func<CancellationToken, ValueTask>? onOffsetCommitAsync = null,
-        int defaultApiTimeoutMs = 60_000)
+        int defaultApiTimeoutMs = 60_000,
+        string? groupId = "group-a")
         => CreateConsumer(
             requests,
             new Queue<ErrorCode>([responseError]),
@@ -783,7 +806,8 @@ public sealed class ConsumerDirtyCommitTests
             onOffsetCommit,
             rebalanceTimeoutMs,
             onOffsetCommitAsync,
-            defaultApiTimeoutMs);
+            defaultApiTimeoutMs,
+            groupId);
 
     private static KafkaConsumer<string, string> CreateConsumer(
         List<OffsetCommitRequest> requests,
@@ -793,7 +817,8 @@ public sealed class ConsumerDirtyCommitTests
         Action<CancellationToken>? onOffsetCommit = null,
         int rebalanceTimeoutMs = 60_000,
         Func<CancellationToken, ValueTask>? onOffsetCommitAsync = null,
-        int defaultApiTimeoutMs = 60_000)
+        int defaultApiTimeoutMs = 60_000,
+        string? groupId = "group-a")
     {
         var connectionPool = Substitute.For<IConnectionPool>();
         var connection = Substitute.For<IKafkaConnection>();
@@ -856,7 +881,7 @@ public sealed class ConsumerDirtyCommitTests
             new ConsumerOptions
             {
                 BootstrapServers = ["localhost:9092"],
-                GroupId = "group-a",
+                GroupId = groupId,
                 OffsetCommitMode = offsetCommitMode,
                 EnableAutoOffsetStore = enableAutoOffsetStore,
                 RebalanceTimeoutMs = rebalanceTimeoutMs,

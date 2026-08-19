@@ -125,6 +125,22 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
+    public async Task Consumer_WithoutGroup_CommitOverloadsThrow()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var consumer = new InMemoryConsumer<string, string>(cluster);
+
+        await Assert.That(async () => await consumer.CommitAsync(CancellationToken.None))
+            .Throws<InvalidOperationException>()
+            .And.HasMessageContaining("WithGroupId");
+        await Assert.That(async () => await consumer.CommitAsync(
+                [new TopicPartitionOffset("orders", 0, 1)],
+                CancellationToken.None))
+            .Throws<InvalidOperationException>()
+            .And.HasMessageContaining("WithGroupId");
+    }
+
+    [Test]
     public async Task RunPartitionedAsync_EmptyGroupIdWithAutoCommitDefaults_PassesCommitModeGuard()
     {
         var cluster = new InMemoryKafkaCluster();

@@ -151,6 +151,10 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// <exception cref="KafkaTimeoutException">
     /// The operation exceeds <see cref="ConsumerOptions.DefaultApiTimeoutMs"/>.
     /// </exception>
+    /// <exception cref="InvalidOperationException">
+    /// The consumer was built without a group ID. Configure one with
+    /// <see cref="ConsumerBuilder{TKey,TValue}.WithGroupId"/> before committing offsets.
+    /// </exception>
     ValueTask CommitAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -158,6 +162,10 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// </summary>
     /// <exception cref="KafkaTimeoutException">
     /// The operation exceeds <see cref="ConsumerOptions.DefaultApiTimeoutMs"/>.
+    /// </exception>
+    /// <exception cref="InvalidOperationException">
+    /// The consumer was built without a group ID. Configure one with
+    /// <see cref="ConsumerBuilder{TKey,TValue}.WithGroupId"/> before committing offsets.
     /// </exception>
     ValueTask CommitAsync(IEnumerable<TopicPartitionOffset> offsets, CancellationToken cancellationToken = default);
 

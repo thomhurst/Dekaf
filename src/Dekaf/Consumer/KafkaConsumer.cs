@@ -6359,13 +6359,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     public async ValueTask CommitAsync(CancellationToken cancellationToken = default)
     {
-        // Explicit commit: the caller vouches for everything yielded so far, including
-        // a record still being processed.
-        FlushActiveConsumedPosition();
-        FlushPausedConsumedPositions();
-
-        if (_coordinator is null)
-            return;
+        _ = GetCommitCoordinator();
+        StageExplicitCommitOffsets();
 
         using var apiTimeout = new ApiTimeoutScope(_options.DefaultApiTimeoutMs, cancellationToken);
         try
@@ -6501,8 +6496,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     public async ValueTask CommitAsync(IEnumerable<TopicPartitionOffset> offsets, CancellationToken cancellationToken = default)
     {
-        if (_coordinator is null)
-            return;
+        var coordinator = GetCommitCoordinator();
 
         using var apiTimeout = new ApiTimeoutScope(_options.DefaultApiTimeoutMs, cancellationToken);
         try
@@ -6510,7 +6504,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             // Materialize to list to allow iteration for both commit tracking and interceptors
             var offsetsList = offsets as IReadOnlyList<TopicPartitionOffset> ?? offsets.ToArray();
 
-            await _coordinator.CommitOffsetsAsync(offsetsList, apiTimeout.Token).ConfigureAwait(false);
+            await coordinator.CommitOffsetsAsync(offsetsList, apiTimeout.Token).ConfigureAwait(false);
 
             foreach (var offset in offsetsList)
             {
@@ -6525,6 +6519,20 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             throw apiTimeout.CreateTimeoutException(nameof(CommitAsync), ex);
         }
+    }
+
+    private ConsumerCoordinator GetCommitCoordinator() => _coordinator
+        ?? throw new InvalidOperationException(
+            "Offset commits require a consumer group. Configure one with ConsumerBuilder.WithGroupId(...).");
+
+    /// <summary>
+    /// Explicit commit staging: the caller vouches for everything yielded so far, including
+    /// a record still being processed.
+    /// </summary>
+    private void StageExplicitCommitOffsets()
+    {
+        FlushActiveConsumedPosition();
+        FlushPausedConsumedPositions();
     }
 
     public void StoreOffset(ConsumeResult<TKey, TValue> result)
