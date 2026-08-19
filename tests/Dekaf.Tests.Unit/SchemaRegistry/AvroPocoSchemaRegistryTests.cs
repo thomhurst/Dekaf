@@ -1642,6 +1642,7 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    [NotInParallel]
     [Arguments(SubjectNameStrategy.TopicRecordName, false)]
     [Arguments(SubjectNameStrategy.TopicRecordName, true)]
     [Arguments(SubjectNameStrategy.RecordName, true)]

@@ -252,7 +252,7 @@ public sealed class SchemaRegistryAssociationTests
         var created = await client.CreateAssociationAsync(request);
         var found = await client.GetAssociationsByResourceNameAsync(
             "orders",
-            "lkc-123",
+            "-",
             associationTypes: ["value"]);
 
         await Assert.That(created.Associations[0].Subject).IsEqualTo("orders-value");

@@ -355,10 +355,22 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
         ThrowIfDisposed();
         cancellationToken.ThrowIfCancellationRequested();
 
-        if (!_associationsByResource.TryGetValue((resourceNamespace, resourceName), out var stored))
+        IEnumerable<Association> filtered;
+        if (resourceNamespace == "-")
+        {
+            filtered = _associationsByResource
+                .Where(entry => entry.Key.Name == resourceName)
+                .SelectMany(static entry => entry.Value);
+        }
+        else if (_associationsByResource.TryGetValue((resourceNamespace, resourceName), out var stored))
+        {
+            filtered = stored;
+        }
+        else
+        {
             return Task.FromResult<IReadOnlyList<Association>>([]);
+        }
 
-        IEnumerable<Association> filtered = stored;
         if (resourceType is not null)
             filtered = filtered.Where(association => association.ResourceType == resourceType);
         if (associationTypes is { Count: > 0 })
