@@ -70,6 +70,59 @@ public sealed class ConsumerRecordFilterTests
     }
 
     [Test]
+    public async Task ConsumeOneAsync_FilterObservesCancellationBetweenRejectedRecords()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var filter = new CancellingFilter(cancellation);
+        await using var consumer = CreateConsumer(
+            CreatePollRefreshRecords(),
+            filter,
+            Serializers.String,
+            Serializers.String);
+
+        await Assert.That(async () =>
+                await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), cancellation.Token))
+            .Throws<OperationCanceledException>();
+
+        await Assert.That(filter.CallCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task ConsumeOneAsync_ZeroTimeoutStopsAfterFirstRejectedRecord()
+    {
+        var filter = new HeaderValueFilter("route", "keep"u8.ToArray());
+        await using var consumer = CreateConsumer(
+            CreatePollRefreshRecords(),
+            filter,
+            Serializers.String,
+            Serializers.String);
+
+        var result = await consumer.ConsumeOneAsync(TimeSpan.Zero);
+
+        await Assert.That(result).IsNull();
+        await Assert.That(filter.CallCount).IsLessThanOrEqualTo(1);
+    }
+
+    [Test]
+    public async Task ConsumeOneAsync_AsyncDeserializerFilterObservesCancellationBetweenRejectedRecords()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var filter = new CancellingFilter(cancellation);
+        await using var consumer = CreateConsumer(
+            CreatePollRefreshRecords(),
+            filter,
+            Serializers.String,
+            Serializers.String,
+            new CountingAsyncStringDeserializer());
+
+        await Assert.That(async () =>
+                await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), cancellation.Token))
+            .Throws<OperationCanceledException>();
+
+        await Assert.That(filter.CallCount).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task ConsumeAsync_FilterSkipsRejectedRecordBeforeDeserialization()
     {
         var fetch = CreatePendingFetchData(
@@ -89,6 +142,28 @@ public sealed class ConsumerRecordFilterTests
         await Assert.That(valueDeserializer.Count).IsEqualTo(1);
         await Assert.That(filter.CallCount).IsEqualTo(2);
         await Assert.That(consumer.GetPosition(new TopicPartition("test-topic", 2))).IsEqualTo(2L);
+    }
+
+    [Test]
+    public async Task ConsumeAsync_FilterExceptionPropagatesWithoutAdvancingPosition()
+    {
+        var fetch = CreatePendingFetchData(CreateRecord(0, "key", "value"));
+        var topicPartition = fetch.TopicPartition;
+        var expected = new InvalidOperationException("filter failed");
+        await using var consumer = CreateConsumer(
+            fetch,
+            new ThrowingFilter(expected),
+            Serializers.String,
+            Serializers.String);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+        await using var records = consumer.ConsumeAsync(timeout.Token).GetAsyncEnumerator();
+
+        var actual = (await Assert.That(async () => await records.MoveNextAsync())
+            .Throws<InvalidOperationException>())!;
+
+        await Assert.That(actual).IsSameReferenceAs(expected);
+        await Assert.That(GetFetchPositions(consumer)[topicPartition]).IsEqualTo(0L);
+        await Assert.That(GetPendingFetches(consumer)).IsEmpty();
     }
 
     [Test]
@@ -197,6 +272,30 @@ public sealed class ConsumerRecordFilterTests
         await Assert.That(results[0].Value).IsEqualTo("two");
         await Assert.That(keyDeserializer.Count).IsEqualTo(1);
         await Assert.That(valueDeserializer.Count).IsEqualTo(1);
+        await Assert.That(filter.CallCount).IsEqualTo(2);
+        await Assert.That(storedOffset).IsEqualTo(2L);
+    }
+
+    [Test]
+    public async Task ConsumeBatch_MaxPollRecordsCountsRejectedRecords()
+    {
+        using var pending = CreatePendingFetchData(
+            CreateRecord(0, "reject", "one", new Header("route", "drop"u8.ToArray())),
+            CreateRecord(1, "reject", "two", new Header("route", "drop"u8.ToArray())),
+            CreateRecord(2, "accept", "three", new Header("route", "keep"u8.ToArray())));
+        var filter = new HeaderValueFilter("route", "keep"u8.ToArray());
+        var storedOffset = -1L;
+        var batch = new ConsumeBatch<string, string>(
+            pending,
+            Serializers.String,
+            Serializers.String,
+            storeOffsetOnDelivery: (_, offset, _) => storedOffset = offset,
+            maxRecords: 2,
+            recordFilter: filter);
+
+        var results = batch.ToArray();
+
+        await Assert.That(results).IsEmpty();
         await Assert.That(filter.CallCount).IsEqualTo(2);
         await Assert.That(storedOffset).IsEqualTo(2L);
     }
@@ -418,6 +517,18 @@ public sealed class ConsumerRecordFilterTests
     private sealed class ThrowingFilter(Exception exception) : IConsumerRecordFilter
     {
         public bool ShouldDeserialize(scoped in ConsumerRecordFilterContext context) => throw exception;
+    }
+
+    private sealed class CancellingFilter(CancellationTokenSource cancellation) : IConsumerRecordFilter
+    {
+        public int CallCount { get; private set; }
+
+        public bool ShouldDeserialize(scoped in ConsumerRecordFilterContext context)
+        {
+            CallCount++;
+            cancellation.Cancel();
+            return false;
+        }
     }
 
     private sealed class CountingStringDeserializer : IDeserializer<string>

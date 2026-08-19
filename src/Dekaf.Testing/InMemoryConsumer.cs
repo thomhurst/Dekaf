@@ -1240,6 +1240,10 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             {
                 Topic = topicPartition.Topic,
                 Component = SerializationComponent.Key,
+                Headers = _asyncKeyDeserializer is null
+                          && _keyDeserializer is HeaderRoutingDeserializer<TKey>
+                    ? ConsumeResult<TKey, TValue>.GetCallerOwnedSerializationHeaders(record.Headers)
+                    : null,
                 KeyData = ReadOnlyMemory<byte>.Empty,
                 IsNull = false
             };
@@ -1260,6 +1264,10 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         {
             Topic = topicPartition.Topic,
             Component = SerializationComponent.Value,
+            Headers = _asyncValueDeserializer is null
+                      && _valueDeserializer is HeaderRoutingDeserializer<TValue>
+                ? ConsumeResult<TKey, TValue>.GetCallerOwnedSerializationHeaders(record.Headers)
+                : null,
             KeyData = SerializationContext.NormalizeKeyData(record.Key, record.IsKeyNull),
             IsNull = record.IsValueNull
         };

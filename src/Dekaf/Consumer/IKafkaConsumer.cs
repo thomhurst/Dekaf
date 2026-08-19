@@ -456,6 +456,9 @@ public readonly struct ConsumeResult<TKey, TValue>
     [ThreadStatic]
     private static SerializationContext t_serializationContext;
 
+    [ThreadStatic]
+    private static Headers? t_callerOwnedSerializationHeaders;
+
     // Store raw Unix milliseconds instead of DateTimeOffset to avoid per-message
     // DateTimeOffset.FromUnixTimeMilliseconds() construction in the consume loop.
     // The DateTimeOffset is computed on demand via the Timestamp property.
@@ -647,6 +650,11 @@ public readonly struct ConsumeResult<TKey, TValue>
         // Resolve the thread-static address once; each direct field access otherwise
         // emits another TLS lookup before setting or copying the context.
         ref var serializationContext = ref t_serializationContext;
+        var serializationHeaders = headers is not null
+                                   && (keyDeserializer is IRecordHeaderDeserializer<TKey>
+                                       || valueDeserializer is IRecordHeaderDeserializer<TValue>)
+            ? GetCallerOwnedSerializationHeaders(headers)
+            : null;
 
         // Eagerly deserialize to avoid storing deserializer references (saves 16 bytes per struct)
         if (isPartitionEof || keyDeserializer is null)
@@ -662,7 +670,7 @@ public readonly struct ConsumeResult<TKey, TValue>
         {
             serializationContext.Topic = topic;
             serializationContext.Component = SerializationComponent.Key;
-            serializationContext.Headers = null;
+            serializationContext.Headers = serializationHeaders;
             serializationContext.KeyData = ReadOnlyMemory<byte>.Empty;
             serializationContext.IsNull = false;
 
@@ -677,7 +685,7 @@ public readonly struct ConsumeResult<TKey, TValue>
         {
             serializationContext.Topic = topic;
             serializationContext.Component = SerializationComponent.Value;
-            serializationContext.Headers = null;
+            serializationContext.Headers = serializationHeaders;
             serializationContext.KeyData = SerializationContext.NormalizeKeyData(keyData, isKeyNull);
             serializationContext.IsNull = isValueNull;
 
@@ -754,6 +762,15 @@ public readonly struct ConsumeResult<TKey, TValue>
         => t_serializationContext.Component == SerializationComponent.Key
             ? DeserializationExceptionOrigin.Key
             : DeserializationExceptionOrigin.Value;
+
+    internal static Headers GetCallerOwnedSerializationHeaders(IReadOnlyList<Header> headers)
+    {
+        var serializationHeaders = t_callerOwnedSerializationHeaders ??= new Headers(headers.Count);
+        serializationHeaders.Clear();
+        for (var index = 0; index < headers.Count; index++)
+            serializationHeaders.Add(headers[index]);
+        return serializationHeaders;
+    }
 
     internal static RecordDeserializationException CreateDeserializationException(
         DeserializationExceptionOrigin origin,

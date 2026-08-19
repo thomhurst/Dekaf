@@ -2946,7 +2946,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             // Start consumer tracing activity — skip all tracing work when no listener
                             // (~2ns HasListeners() check vs ~200ns Activity creation + tag boxing per message)
                             // Uses hoisted hasTraceListeners to avoid per-message virtual dispatch
-                            System.Diagnostics.Activity? activity = null;
                             if (hasTraceListeners)
                             {
                                 var headers = LazyConsumeHeaders.Create(
@@ -2954,10 +2953,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                     pooledHeaderCount,
                                     pending,
                                     pending.HeaderGeneration);
-                                activity = StartConsumeActivity(
+                                previousActivity = StartConsumeActivity(
                                     pending, headers, offset, isValueNull, isProcessSpan: true);
-                                if (activity is not null)
-                                    previousActivity = activity;
                             }
 
                             // Create result - deserialization happens eagerly in the constructor,
@@ -5117,14 +5114,22 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 // Reuse the coordinator's timestamp read when it took one this poll.
                 bufferedDrainStarted = pollTimestamp != 0 ? pollTimestamp : Stopwatch.GetTimestamp();
+                var bufferedDrainDeadline = CalculateConsumeOneDeadline(
+                    timeoutMilliseconds,
+                    bufferedDrainStarted.Value);
                 var requiresAsyncPreparation = false;
                 PreparedDeserializerKey? preparedKey = null;
                 var consumedBufferedRecord = _hasDeserializerPreparers
-                    ? TryConsumeOneFromPendingFetchesWithPreparation(
+                    ? TryConsumeOneFromPendingFetchesWithPreparationCancellable(
                         out var bufferedResult,
                         out requiresAsyncPreparation,
-                        out preparedKey)
-                    : TryConsumeOneFromPendingFetches(out bufferedResult);
+                        out preparedKey,
+                        bufferedDrainDeadline,
+                        cancellationToken)
+                    : TryConsumeOneFromPendingFetchesCancellable(
+                        out bufferedResult,
+                        bufferedDrainDeadline,
+                        cancellationToken);
                 if (consumedBufferedRecord)
                     return new ValueTask<ConsumeResult<TKey, TValue>?>(bufferedResult);
 
@@ -5249,6 +5254,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         return remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static long CalculateConsumeOneDeadline(long timeoutMilliseconds, long startedAt) =>
+        timeoutMilliseconds < 0
+            ? 0
+            : startedAt + (timeoutMilliseconds * Stopwatch.Frequency / 1_000);
+
     private bool CanUseBufferedConsumeOneFastPath(CancellationToken cancellationToken)
     {
         if (cancellationToken.IsCancellationRequested
@@ -5367,7 +5378,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 if (asyncResult is not null)
                     return asyncResult;
             }
-            else if (TryConsumeOneFromPendingFetches(out var result))
+            else if (TryConsumeOneFromPendingFetchesCancellable(
+                         out var result,
+                         timeoutDeadline: 0,
+                         cancellationToken))
             {
                 return result;
             }
@@ -5522,33 +5536,63 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     }
 
     private bool TryConsumeOneFromPendingFetches(out ConsumeResult<TKey, TValue> result) =>
+        TryConsumeOneFromPendingFetchesCancellable(
+            out result,
+            timeoutDeadline: 0,
+            CancellationToken.None);
+
+    private bool TryConsumeOneFromPendingFetchesCancellable(
+        out ConsumeResult<TKey, TValue> result,
+        long timeoutDeadline,
+        CancellationToken cancellationToken) =>
         _options.RecordFilter is null
             ? TryConsumeOneFromPendingFetchesForFilterMode<
                 SynchronousDeserializerMode,
                 NoRecordFilterMode>(
-                out result, out _, out _)
+                out result, out _, out _,
+                timeoutDeadline,
+                cancellationToken)
             : TryConsumeOneFromPendingFetchesForFilterMode<
                 SynchronousDeserializerMode,
                 RecordFilterMode>(
-                out result, out _, out _);
+                out result, out _, out _,
+                timeoutDeadline,
+                cancellationToken);
 
     private bool TryConsumeOneFromPendingFetchesWithPreparation(
         out ConsumeResult<TKey, TValue> result,
         out bool requiresAsyncPreparation,
         out PreparedDeserializerKey? preparedKey) =>
+        TryConsumeOneFromPendingFetchesWithPreparationCancellable(
+            out result,
+            out requiresAsyncPreparation,
+            out preparedKey,
+            timeoutDeadline: 0,
+            CancellationToken.None);
+
+    private bool TryConsumeOneFromPendingFetchesWithPreparationCancellable(
+        out ConsumeResult<TKey, TValue> result,
+        out bool requiresAsyncPreparation,
+        out PreparedDeserializerKey? preparedKey,
+        long timeoutDeadline,
+        CancellationToken cancellationToken) =>
         _options.RecordFilter is null
             ? TryConsumeOneFromPendingFetchesForFilterMode<
                 PreparedDeserializerMode,
                 NoRecordFilterMode>(
                 out result,
                 out requiresAsyncPreparation,
-                out preparedKey)
+                out preparedKey,
+                timeoutDeadline,
+                cancellationToken)
             : TryConsumeOneFromPendingFetchesForFilterMode<
                 PreparedDeserializerMode,
                 RecordFilterMode>(
                 out result,
                 out requiresAsyncPreparation,
-                out preparedKey);
+                out preparedKey,
+                timeoutDeadline,
+                cancellationToken);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool TryConsumeOneFromPendingFetchesForFilterMode<
@@ -5556,18 +5600,30 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         TRecordFilterMode>(
         out ConsumeResult<TKey, TValue> result,
         out bool requiresAsyncPreparation,
-        out PreparedDeserializerKey? preparedKey)
+        out PreparedDeserializerKey? preparedKey,
+        long timeoutDeadline,
+        CancellationToken cancellationToken)
         where TDeserializerMode : struct
         where TRecordFilterMode : struct =>
         _hasRecordHeaderDeserializers
             ? TryConsumeOneFromPendingFetchesCore<
                 TDeserializerMode,
                 TRecordFilterMode,
-                RecordHeaderMode>(out result, out requiresAsyncPreparation, out preparedKey)
+                RecordHeaderMode>(
+                out result,
+                out requiresAsyncPreparation,
+                out preparedKey,
+                timeoutDeadline,
+                cancellationToken)
             : TryConsumeOneFromPendingFetchesCore<
                 TDeserializerMode,
                 TRecordFilterMode,
-                NoRecordHeaderMode>(out result, out requiresAsyncPreparation, out preparedKey);
+                NoRecordHeaderMode>(
+                out result,
+                out requiresAsyncPreparation,
+                out preparedKey,
+                timeoutDeadline,
+                cancellationToken);
 
     private bool TryConsumeOneFromPendingFetchesCore<
         TDeserializerMode,
@@ -5575,7 +5631,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         TRecordHeaderMode>(
         out ConsumeResult<TKey, TValue> result,
         out bool requiresAsyncPreparation,
-        out PreparedDeserializerKey? preparedKey)
+        out PreparedDeserializerKey? preparedKey,
+        long timeoutDeadline,
+        CancellationToken cancellationToken)
         where TDeserializerMode : struct
         where TRecordFilterMode : struct
         where TRecordHeaderMode : struct
@@ -5682,8 +5740,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             {
                                 TrackConsumedPosition(pending, offset, messageBytes);
                                 pending.MarkYieldedProcessed();
-                                if (--recordsUntilPollRefresh == 0)
+                                readingProtocolData = true;
+                                if (ShouldYieldAfterFilteredRecord(
+                                        timeoutDeadline,
+                                        ref recordsUntilPollRefresh,
+                                        cancellationToken))
+                                {
                                     return false;
+                                }
                                 continue;
                             }
                         }
@@ -5990,8 +6054,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             {
                                 TrackConsumedPosition(pending, offset, messageBytes);
                                 pending.MarkYieldedProcessed();
-                                if (--recordsUntilPollRefresh == 0)
+                                readingProtocolData = true;
+                                if (ShouldYieldAfterFilteredRecord(
+                                        timeoutDeadline: 0,
+                                        ref recordsUntilPollRefresh,
+                                        cancellationToken))
+                                {
                                     return null;
+                                }
                                 continue;
                             }
                         }
@@ -6175,6 +6245,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         return null;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool ShouldYieldAfterFilteredRecord(
+        long timeoutDeadline,
+        ref int recordsUntilPollRefresh,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return (timeoutDeadline != 0 && Stopwatch.GetTimestamp() >= timeoutDeadline)
+               || --recordsUntilPollRefresh == 0;
     }
 
     /// <summary>
