@@ -210,6 +210,7 @@ public sealed class KafkaFaultPlanTests
         }
         catch (InvalidOperationException)
         {
+            return;
         }
     }
 }

@@ -92,11 +92,17 @@ public readonly struct KafkaFaultScope
     /// <summary>Gets the optional consumer-group selector.</summary>
     public string? GroupId { get; }
 
-    internal bool Matches(KafkaFaultScope context) =>
-        Operation == context.Operation &&
-        (Topic is null || string.Equals(Topic, context.Topic, StringComparison.Ordinal)) &&
-        (Partition is null || Partition == context.Partition) &&
-        (GroupId is null || string.Equals(GroupId, context.GroupId, StringComparison.Ordinal));
+    internal bool Matches(KafkaFaultScope context)
+    {
+        if (Operation != context.Operation)
+            return false;
+        if (Topic is not null && !string.Equals(Topic, context.Topic, StringComparison.Ordinal))
+            return false;
+        if (Partition is not null && Partition != context.Partition)
+            return false;
+
+        return GroupId is null || string.Equals(GroupId, context.GroupId, StringComparison.Ordinal);
+    }
 
     internal bool EqualsExactly(KafkaFaultScope other) =>
         Operation == other.Operation &&
