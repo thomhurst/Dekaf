@@ -9796,33 +9796,40 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             return;
 
         var resetTimestamp = AutoOffsetResetStrategy.GetListOffsetsTimestamp(_options, DateTimeOffset.UtcNow, partition);
-        if (resetTimestamp == LatestOffsetTimestamp || resetTimestamp == EarliestOffsetTimestamp)
-        {
-            if (ShouldDropOffsetReset(
-                    partition,
-                    fetchBufferEpoch,
-                    allowPreexistingPendingFetchClear))
-                return;
+        var resetOffset = resetTimestamp;
+        if (resetTimestamp != LatestOffsetTimestamp && resetTimestamp != EarliestOffsetTimestamp)
+            resetOffset = await ResolveAutoResetOffsetAsync(partition, resetTimestamp, cancellationToken).ConfigureAwait(false);
 
-            _fetchPositions[partition] = resetTimestamp;
-            SetPosition(partition, resetTimestamp, dirty: false);
-            ClearLastConsumedLeaderEpoch(partition);
-        }
-        else
+        if (!TryApplyOffsetReset(
+                partition,
+                fetchBufferEpoch,
+                allowPreexistingPendingFetchClear,
+                resetOffset))
+            return;
+
+        LogOffsetOutOfRangeReset(partition.Topic, partition.Partition, GetAutoOffsetResetName());
+    }
+
+    private bool TryApplyOffsetReset(
+        TopicPartition partition,
+        int fetchBufferEpoch,
+        bool allowPreexistingPendingFetchClear,
+        long resetOffset)
+    {
+        // Keep the final validation and position write atomic with diverging-epoch staging.
+        lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
         {
-            var resetOffset = await ResolveAutoResetOffsetAsync(partition, resetTimestamp, cancellationToken).ConfigureAwait(false);
             if (ShouldDropOffsetReset(
                     partition,
                     fetchBufferEpoch,
                     allowPreexistingPendingFetchClear))
-                return;
+                return false;
 
             _fetchPositions[partition] = resetOffset;
             SetPosition(partition, resetOffset, dirty: false);
             ClearLastConsumedLeaderEpoch(partition);
+            return true;
         }
-
-        LogOffsetOutOfRangeReset(partition.Topic, partition.Partition, GetAutoOffsetResetName());
     }
 
     private bool ShouldDropOffsetReset(
@@ -9830,8 +9837,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         int fetchBufferEpoch,
         bool allowPreexistingPendingFetchClear) =>
         IsFetchBufferEpochStale(partition, fetchBufferEpoch)
-        || (!allowPreexistingPendingFetchClear
-            && _coordinatorRevokedPartitionsPendingFetchClear.ContainsKey(partition))
+        || (allowPreexistingPendingFetchClear
+            ? _pendingDivergingEpochResets.ContainsKey(partition)
+            : _coordinatorRevokedPartitionsPendingFetchClear.ContainsKey(partition))
         || !IsCurrentlyAssigned(partition);
 
     private static bool IsLeaderEpochRefreshError(ErrorCode errorCode) =>

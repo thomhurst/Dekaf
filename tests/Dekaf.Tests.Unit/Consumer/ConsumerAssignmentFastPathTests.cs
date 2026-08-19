@@ -1403,6 +1403,66 @@ public sealed class ConsumerAssignmentFastPathTests
     }
 
     [Test]
+    public async Task TopicIdentityChange_DivergingEpochStagedDuringReset_DoesNotGetOverwritten()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        metadataManager.SetApiVersion(
+            ApiKey.ListOffsets,
+            ListOffsetsRequest.LowestSupportedVersion,
+            ListOffsetsRequest.HighestSupportedVersion);
+        await using var consumer = CreateGroupConsumer(
+            connectionPool,
+            metadataManager,
+            autoOffsetReset: AutoOffsetReset.ByDuration,
+            autoOffsetResetDuration: TimeSpan.FromMinutes(1));
+        var partition = new TopicPartition("test-topic", 0);
+        consumer.IncrementalAssign([
+            new TopicPartitionOffset(partition.Topic, partition.Partition, 10)
+        ]);
+        await InvokeHandleTopicIdentityChangesAsync(consumer);
+
+        var resetStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseReset = new TaskCompletionSource<ListOffsetsResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
+                Arg.Any<ListOffsetsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                resetStarted.TrySetResult();
+                return new ValueTask<ListOffsetsResponse>(releaseReset.Task);
+            });
+
+        metadataManager.Metadata.Update(CreateMetadataResponse(Guid.NewGuid(), partitionCount: 2));
+        var recovery = InvokeHandleTopicIdentityChangesAsync(consumer).AsTask();
+        await resetStarted.Task;
+
+        try
+        {
+            var staged = StageDivergingEpochReset(
+                consumer,
+                partition,
+                endOffset: 5,
+                epoch: 7,
+                GetFetchBufferEpoch(consumer));
+            CompleteDivergingEpochResets(consumer);
+
+            await Assert.That(staged).IsTrue();
+        }
+        finally
+        {
+            releaseReset.TrySetResult(CreateListOffsetsResponse(partition.Partition, 100));
+            await recovery;
+        }
+
+        await Assert.That(GetFetchPositions(consumer)[partition]).IsEqualTo(10L);
+    }
+
+    [Test]
     public async Task TopicIdentityChange_AssignmentMutationDuringReset_IsReobserved()
     {
         var connectionPool = Substitute.For<IConnectionPool>();
@@ -2416,7 +2476,7 @@ public sealed class ConsumerAssignmentFastPathTests
         method.Invoke(consumer, [partitions]);
     }
 
-    private static void StageDivergingEpochReset(
+    private static bool StageDivergingEpochReset(
         KafkaConsumer<string, string> consumer,
         TopicPartition partition,
         long endOffset,
@@ -2428,7 +2488,7 @@ public sealed class ConsumerAssignmentFastPathTests
             BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("StageDivergingEpochReset method not found.");
 
-        method.Invoke(consumer, [partition, endOffset, epoch, fetchBufferEpoch, true]);
+        return (bool)method.Invoke(consumer, [partition, endOffset, epoch, fetchBufferEpoch, true])!;
     }
 
     private static void CompleteDivergingEpochResets(KafkaConsumer<string, string> consumer)
