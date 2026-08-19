@@ -7,8 +7,8 @@
 #   of main and `git merge-base --is-ancestor` reports "not merged". Ancestry is never
 #   used as a merge signal for branches. GitHub's own records are, in four tiers:
 #     1. merged-PR head branch name  (cheap, bulk: one `gh pr list` call)
-#     2. merged-PR head tip SHA      (same call: catches detached/renamed checkouts
-#                                     sitting exactly on a merged PR's tip)
+#     2. merged-PR head tip SHA      (same call: catches detached checkouts sitting
+#                                     exactly on a merged PR's tip)
 #     3. detached HEAD reachable from origin/main (local, free: a detached checkout of
 #                                     an old main commit — A/B baselines etc. Applied to
 #                                     DETACHED worktrees only; a branch is declared
@@ -16,7 +16,9 @@
 #     4. commit→PR association       (`gh api repos/../commits/<sha>/pulls`, one call
 #                                     per still-unmatched worktree: survives squash
 #                                     merges, branch deletion, AND the 1000-PR list
-#                                     window aging out)
+#                                     window aging out). Named worktrees must match the
+#                                     associated PR's head branch; a shared commit alone
+#                                     does not prove that a new branch was merged.
 #
 #   DELIBERATELY NOT a signal: a [gone] upstream branch. [gone] only means the remote
 #   ref was deleted — which also happens when a PR is CLOSED UNMERGED and its branch
@@ -35,7 +37,7 @@
 #   - skip the main checkout and anything inside it (.claude/worktrees is harness-managed)
 #   - skip locked worktrees (an agent session may still own them)
 #   - skip a branch/tip that has an OPEN PR (branch reused for active work)
-#   - PRESERVE any worktree with uncommitted tracked changes (shared helper)
+#   - PRESERVE tracked changes and untracked files outside known generated directories
 #   - worktrees with NO merge evidence are kept and listed; opt in to reaping old
 #     clean ones with -StaleDays <n>
 #
@@ -69,7 +71,10 @@ try {
     # Authoritative merge signal: merged-PR head branches AND head tip SHAs (squash-safe).
     # --limit 1000 covers any realistic leftover window for the NAME tier; anything older
     # falls through to the per-commit association tier below.
-    $mergedNames = @{}; $mergedOids = @{}; $openNames = @{}; $openOids = @{}
+    $mergedNames = New-OrdinalStringMap
+    $mergedOids = New-OrdinalStringMap
+    $openNames = New-OrdinalStringMap
+    $openOids = New-OrdinalStringMap
     $rawMerged = gh pr list @repoArgs --state merged --limit 1000 --json headRefName,headRefOid 2>$null
     if ($LASTEXITCODE -ne 0) { Warn "could not list merged PRs (exit $LASTEXITCODE) -- skipping sweep this round"; exit 0 }
     foreach ($p in (($rawMerged -join "`n") | ConvertFrom-Json)) {
@@ -130,8 +135,9 @@ try {
             if ($LASTEXITCODE -ne 0) { $sha = $null }
             if ($sha -and $openOids.ContainsKey($sha)) { continue }          # tip of an open PR — keep
 
-            # Tier 2: detached or renamed checkout sitting exactly on a merged PR's tip.
-            if ($sha -and $mergedOids.ContainsKey($sha)) { $why = 'merged PR head tip SHA' }
+            # Tier 2: detached checkout sitting exactly on a merged PR's tip. A named
+            # branch expresses independent intent and cannot be identified by SHA alone.
+            if ($sha -and $w.Detached -and $mergedOids.ContainsKey($sha)) { $why = 'merged PR head tip SHA' }
         }
 
         # Tier 3 (detached only): checkout of a commit already reachable from main —
@@ -149,7 +155,9 @@ try {
             if ($LASTEXITCODE -eq 0 -and $assocRaw) {
                 $assoc = @(($assocRaw -join "`n") | ConvertFrom-Json)
                 if (@($assoc | Where-Object { $_.state -eq 'open' }).Count -gt 0) { continue }   # commit belongs to an open PR — keep
-                if (@($assoc | Where-Object { $_.merged_at }).Count -gt 0) { $why = 'merged PR via commit association' }
+                if (Test-WorktreeMatchesMergedPullRequest -Associations $assoc -Branch $w.Branch -Detached $w.Detached) {
+                    $why = 'merged PR via commit association'
+                }
             }
         }
 

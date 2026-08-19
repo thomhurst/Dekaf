@@ -1,8 +1,6 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -109,6 +107,10 @@ jobs:
       - name: Test Agent Lock Token Ownership
         shell: pwsh
         run: ./scripts/Test-AgentLockTokenOwnership.ps1
+
+      - name: Test Worktree Cleanup Safety
+        shell: pwsh
+        run: ./scripts/Test-WorktreeCleanup.ps1
 
       - name: Install GitVersion
         uses: gittools/actions/gitversion/setup@7417b1089e2c7de93510f1901d656ddf60bb024f # v4.7.0
@@ -318,8 +320,8 @@ jobs:
 
   # Integration categories run via the shared group definitions in
   # integration-groups.yml against the prebuilt binaries (no rebuild).
-  # PRs run net10.0 only; pushes to main add net8.0. NuGet publish dispatches
-  # skip this job — the release-matrix jobs below cover a superset.
+  # PRs run net10.0 only; manual non-publish runs add net8.0. NuGet publish
+  # dispatches skip this job — the release-matrix jobs below cover a superset.
   integration:
     name: Integration (${{ matrix.framework }})
     needs: [changes, build]
@@ -654,7 +656,7 @@ jobs:
 
   # Single required status check for branch protection. Succeeds when every
   # upstream job succeeded or was skipped (docs-only PRs skip everything;
-  # release-only jobs skip on PR/push runs).
+  # release-only jobs skip on PR runs).
   ci-passed:
     name: CI Passed
     needs: [changes, build, unit-net8, leak-gates-debug, integration, aot-smoke, aot-integration-publish, aot-integration-smoke, release-matrix, release-matrix-aot, publish, code-quality]
