@@ -616,7 +616,10 @@ public sealed class ConsumerAssignmentFastPathTests
 
         await Assert.That(committed).Count().IsEqualTo(2);
         await Assert.That(committed[partitions[0]])
-            .IsEqualTo(new TopicPartitionOffset("test-topic", 0, 10, leaderEpoch: 4));
+            .IsEqualTo(new TopicPartitionOffset("test-topic", 0, 10, leaderEpoch: 4)
+            {
+                Metadata = "checkpoint-a"
+            });
         await Assert.That(committed[partitions[1]])
             .IsEqualTo(new TopicPartitionOffset("test-topic", 1, 20, leaderEpoch: 5));
         await Assert.That(committed).DoesNotContainKey(partitions[2]);
@@ -2545,6 +2548,7 @@ public sealed class ConsumerAssignmentFastPathTests
                         PartitionIndex = 0,
                         CommittedOffset = 10,
                         CommittedLeaderEpoch = 4,
+                        Metadata = "checkpoint-a",
                         ErrorCode = ErrorCode.None
                     },
                     new OffsetFetchResponsePartition

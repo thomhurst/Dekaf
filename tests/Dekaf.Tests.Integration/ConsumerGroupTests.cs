@@ -573,6 +573,9 @@ public class ConsumerGroupTests(KafkaTestContainer kafka) : KafkaIntegrationTest
                 consumed.Value.Partition,
                 consumed.Value.Offset + 1,
                 consumed.Value.LeaderEpoch!.Value)
+            {
+                Metadata = "bulk-checkpoint"
+            }
         ]);
 
         var offsets = await consumer.GetCommittedOffsetsAsync(
@@ -582,6 +585,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         await Assert.That(offsets).Count().IsEqualTo(1);
         await Assert.That(offsets[committedPartition].Offset).IsEqualTo(consumed.Value.Offset + 1);
         await Assert.That(offsets[committedPartition].LeaderEpoch).IsEqualTo(consumed.Value.LeaderEpoch.Value);
+        await Assert.That(offsets[committedPartition].Metadata).IsEqualTo("bulk-checkpoint");
         await Assert.That(offsets).DoesNotContainKey(uncommittedPartition);
     }
 
