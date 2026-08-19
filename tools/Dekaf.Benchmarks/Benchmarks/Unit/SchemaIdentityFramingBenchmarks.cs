@@ -20,13 +20,13 @@ public class SchemaIdentityFramingBenchmarks
     private readonly byte[] _idPrefix = [0, 0, 0, 0, 42, 7, 8];
     private readonly Headers _producerHeaders = new(1);
     private byte[] _guidFrame = null!;
-    private Header[] _pooledHeaders = null!;
+    private Header _identityHeader;
 
     [GlobalSetup]
     public void Setup()
     {
         _guidFrame = SchemaIdentityFraming.CreateSchemaGuidFrame(SchemaGuid);
-        _pooledHeaders = [new Header(SchemaIdentityHeaderNames.Value, _guidFrame)];
+        _identityHeader = new Header(SchemaIdentityHeaderNames.Value, _guidFrame);
 
         // Retain List<Header> storage so the measured header append does not grow it.
         SchemaIdentityFraming.AddSchemaGuidHeader(
@@ -44,16 +44,14 @@ public class SchemaIdentityFramingBenchmarks
     public SchemaIdentity SharedPrefixRead() => SchemaIdentityFraming.ReadPrefix(_idPrefix, out _);
 
     [Benchmark]
-    public SchemaIdentity PooledHeaderRead() => SchemaIdentityFraming.ReadHeader(
-        _pooledHeaders.AsSpan(),
-        SerializationComponent.Value,
+    public SchemaIdentity SelectedHeaderRead() => SchemaIdentityFraming.ReadHeader(
+        in _identityHeader,
         out _);
 
     [Benchmark]
-    public SchemaIdentity DualPooledHeaderRead() => SchemaIdentityFraming.Read(
+    public SchemaIdentity DualSelectedHeaderRead() => SchemaIdentityFraming.Read(
         _idPrefix,
-        _pooledHeaders.AsSpan(),
-        SerializationComponent.Value,
+        _identityHeader,
         SchemaIdDeserializerStrategy.Dual,
         out _,
         out _);

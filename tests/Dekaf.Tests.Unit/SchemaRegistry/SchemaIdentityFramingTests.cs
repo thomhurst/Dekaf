@@ -52,7 +52,8 @@ public sealed class SchemaIdentityFramingTests
         var encoded = SchemaIdentityFraming.CreateSchemaGuidFrame(SchemaGuid);
 
         SchemaIdentityFraming.AddSchemaGuidHeader(headers, component, encoded);
-        var parsed = SchemaIdentityFraming.ReadHeader(headers, component, out _);
+        var identityHeader = headers[0];
+        var parsed = SchemaIdentityFraming.ReadHeader(in identityHeader, out _);
 
         await Assert.That(headers.Count).IsEqualTo(1);
         await Assert.That(headers[0].Key).IsEqualTo(expectedName);
@@ -68,11 +69,10 @@ public sealed class SchemaIdentityFramingTests
         headerValue[^3] = 0x04;
         headerValue[^2] = 0x02;
         headerValue[^1] = 0x00;
-        var headers = Headers.Create(SchemaIdentityHeaderNames.Value, headerValue);
+        var identityHeader = new Header(SchemaIdentityHeaderNames.Value, headerValue);
 
         _ = SchemaIdentityFraming.ReadHeader(
-            headers,
-            SerializationComponent.Value,
+            in identityHeader,
             out var trailingHeaderData);
 
         await Assert.That(trailingHeaderData.ToArray()).IsEquivalentTo(new byte[] { 4, 2, 0 });
@@ -81,15 +81,14 @@ public sealed class SchemaIdentityFramingTests
     [Test]
     public async Task DualStrategy_HeaderWinsAndPayloadRemainsUnchanged()
     {
-        var headers = Headers.Create(
+        var identityHeader = new Header(
             SchemaIdentityHeaderNames.Value,
             SchemaIdentityFraming.CreateSchemaGuidFrame(SchemaGuid));
         byte[] payloadWithDifferentPrefix = [0, 0, 0, 0, 42, 7, 8];
 
         var parsed = SchemaIdentityFraming.Read(
             payloadWithDifferentPrefix,
-            headers,
-            SerializationComponent.Value,
+            identityHeader,
             SchemaIdDeserializerStrategy.Dual,
             out var payloadOffset,
             out _);
@@ -105,8 +104,7 @@ public sealed class SchemaIdentityFramingTests
 
         var parsed = SchemaIdentityFraming.Read(
             payload,
-            headers: (Headers?)null,
-            SerializationComponent.Value,
+            identityHeader: null,
             SchemaIdDeserializerStrategy.Dual,
             out var payloadOffset,
             out _);
@@ -118,47 +116,15 @@ public sealed class SchemaIdentityFramingTests
     [Test]
     public void DualStrategy_MalformedHeader_DoesNotFallBackToPrefix()
     {
-        var headers = Headers.Create(SchemaIdentityHeaderNames.Value, new byte[] { 1, 2, 3 });
+        var identityHeader = new Header(SchemaIdentityHeaderNames.Value, new byte[] { 1, 2, 3 });
         byte[] validPrefix = [0, 0, 0, 0, 42, 7, 8];
 
         Assert.Throws<InvalidDataException>(() => SchemaIdentityFraming.Read(
             validPrefix,
-            headers,
-            SerializationComponent.Value,
+            identityHeader,
             SchemaIdDeserializerStrategy.Dual,
             out _,
             out _));
-    }
-
-    [Test]
-    public async Task HeaderStrategy_LastDuplicateWins()
-    {
-        var headers = new Headers(2)
-            .Add(SchemaIdentityHeaderNames.Value, SchemaIdentityFraming.CreateSchemaGuidFrame(Guid.Parse("01234567-89ab-cdef-0123-456789abcdef")))
-            .Add(SchemaIdentityHeaderNames.Value, SchemaIdentityFraming.CreateSchemaGuidFrame(SchemaGuid));
-
-        var parsed = SchemaIdentityFraming.ReadHeader(headers, SerializationComponent.Value, out _);
-
-        await Assert.That(parsed).IsEqualTo(new SchemaIdentity(SchemaGuid));
-    }
-
-    [Test]
-    public async Task PooledHeaderSpan_LastDuplicateWinsWithoutMaterialization()
-    {
-        Header[] headers =
-        [
-            new("unrelated", Array.Empty<byte>()),
-            new(SchemaIdentityHeaderNames.Value, SchemaIdentityFraming.CreateSchemaGuidFrame(Guid.Parse("01234567-89ab-cdef-0123-456789abcdef"))),
-            new(SchemaIdentityHeaderNames.Value, SchemaIdentityFraming.CreateSchemaGuidFrame(SchemaGuid)),
-            default
-        ];
-
-        var parsed = SchemaIdentityFraming.ReadHeader(
-            headers.AsSpan(0, 3),
-            SerializationComponent.Value,
-            out _);
-
-        await Assert.That(parsed).IsEqualTo(new SchemaIdentity(SchemaGuid));
     }
 
     [Test]
@@ -168,15 +134,14 @@ public sealed class SchemaIdentityFramingTests
         SchemaIdDeserializerStrategy strategy,
         int expectedOffset)
     {
-        var headers = Headers.Create(
+        var identityHeader = new Header(
             SchemaIdentityHeaderNames.Value,
             SchemaIdentityFraming.CreateSchemaGuidFrame(SchemaGuid));
         byte[] payload = [0, 0, 0, 0, 42, 7, 8];
 
         _ = SchemaIdentityFraming.Read(
             payload,
-            headers,
-            SerializationComponent.Value,
+            identityHeader,
             strategy,
             out var payloadOffset,
             out _);
@@ -195,23 +160,28 @@ public sealed class SchemaIdentityFramingTests
     [Test]
     public void ReadHeader_MissingHeader_ThrowsInvalidDataException() =>
         Assert.Throws<InvalidDataException>(() =>
-            SchemaIdentityFraming.ReadHeader(new Headers(), SerializationComponent.Value, out _));
+            SchemaIdentityFraming.Read(
+                [0, 0, 0, 0, 42],
+                identityHeader: null,
+                SchemaIdDeserializerStrategy.Header,
+                out _,
+                out _));
 
     [Test]
     public void ReadHeader_NullValue_ThrowsInvalidDataException() =>
         Assert.Throws<InvalidDataException>(() =>
-            SchemaIdentityFraming.ReadHeader(
-                Headers.Create(SchemaIdentityHeaderNames.Value, (byte[]?)null),
-                SerializationComponent.Value,
-                out _));
+        {
+            var identityHeader = new Header(SchemaIdentityHeaderNames.Value, (byte[]?)null);
+            _ = SchemaIdentityFraming.ReadHeader(in identityHeader, out _);
+        });
 
     [Test]
     public void ReadHeader_MalformedValue_ThrowsInvalidDataException() =>
         Assert.Throws<InvalidDataException>(() =>
-            SchemaIdentityFraming.ReadHeader(
-                Headers.Create(SchemaIdentityHeaderNames.Value, new byte[] { 1, 2, 3 }),
-                SerializationComponent.Value,
-                out _));
+        {
+            var identityHeader = new Header(SchemaIdentityHeaderNames.Value, new byte[] { 1, 2, 3 });
+            _ = SchemaIdentityFraming.ReadHeader(in identityHeader, out _);
+        });
 
     [Test]
     public void WriteSchemaId_NegativeId_ThrowsArgumentOutOfRangeException() =>

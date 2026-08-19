@@ -151,33 +151,20 @@ internal static class SchemaIdentityFraming
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static SchemaIdentity ReadHeader(
-        Headers? headers,
-        SerializationComponent component,
+        in Header header,
         out ReadOnlyMemory<byte> trailingHeaderData)
     {
-        if (!TryGetLastHeader(headers, GetHeaderName(component), out var value))
-            throw new InvalidDataException("The required Schema Registry identity header is missing.");
+        if (header.IsValueNull)
+            throw new InvalidDataException("The Schema Registry identity header cannot be null.");
 
-        return ReadHeaderValue(value, out trailingHeaderData);
+        return ReadHeaderValue(header.Value, out trailingHeaderData);
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal static SchemaIdentity ReadHeader(
-        ReadOnlySpan<Header> headers,
-        SerializationComponent component,
-        out ReadOnlyMemory<byte> trailingHeaderData)
-    {
-        if (!TryGetLastHeader(headers, GetHeaderName(component), out var value))
-            throw new InvalidDataException("The required Schema Registry identity header is missing.");
-
-        return ReadHeaderValue(value, out trailingHeaderData);
-    }
-
+    // The record parser retains the last matching reserved header so framing never rescans the collection.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static SchemaIdentity Read(
         ReadOnlySpan<byte> payload,
-        Headers? headers,
-        SerializationComponent component,
+        Header? identityHeader,
         SchemaIdDeserializerStrategy strategy,
         out int payloadOffset,
         out ReadOnlyMemory<byte> trailingHeaderData)
@@ -189,43 +176,14 @@ internal static class SchemaIdentityFraming
                 return ReadPrefix(payload, out payloadOffset);
             case SchemaIdDeserializerStrategy.Header:
                 payloadOffset = 0;
-                return ReadHeader(headers, component, out trailingHeaderData);
+                if (identityHeader is not { } requiredHeader)
+                    throw new InvalidDataException("The required Schema Registry identity header is missing.");
+                return ReadHeader(in requiredHeader, out trailingHeaderData);
             case SchemaIdDeserializerStrategy.Dual:
-                if (TryGetLastHeader(headers, GetHeaderName(component), out var value))
+                if (identityHeader is { } optionalHeader)
                 {
                     payloadOffset = 0;
-                    return ReadHeaderValue(value, out trailingHeaderData);
-                }
-
-                trailingHeaderData = default;
-                return ReadPrefix(payload, out payloadOffset);
-            default:
-                throw new ArgumentOutOfRangeException(nameof(strategy), strategy, "Unknown schema identity strategy.");
-        }
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal static SchemaIdentity Read(
-        ReadOnlySpan<byte> payload,
-        ReadOnlySpan<Header> headers,
-        SerializationComponent component,
-        SchemaIdDeserializerStrategy strategy,
-        out int payloadOffset,
-        out ReadOnlyMemory<byte> trailingHeaderData)
-    {
-        switch (strategy)
-        {
-            case SchemaIdDeserializerStrategy.Prefix:
-                trailingHeaderData = default;
-                return ReadPrefix(payload, out payloadOffset);
-            case SchemaIdDeserializerStrategy.Header:
-                payloadOffset = 0;
-                return ReadHeader(headers, component, out trailingHeaderData);
-            case SchemaIdDeserializerStrategy.Dual:
-                if (TryGetLastHeader(headers, GetHeaderName(component), out var value))
-                {
-                    payloadOffset = 0;
-                    return ReadHeaderValue(value, out trailingHeaderData);
+                    return ReadHeader(in optionalHeader, out trailingHeaderData);
                 }
 
                 trailingHeaderData = default;
@@ -310,52 +268,6 @@ internal static class SchemaIdentityFraming
             throw new InvalidDataException("The Schema Registry GUID cannot be empty.");
 
         return new IdentityFrame(new SchemaIdentity(schemaGuid), SchemaGuidFrameSize);
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static bool TryGetLastHeader(Headers? headers, string name, out ReadOnlyMemory<byte> value)
-    {
-        if (headers is not null)
-        {
-            for (var index = headers.Count - 1; index >= 0; index--)
-            {
-                var header = headers[index];
-                if (!string.Equals(header.Key, name, StringComparison.Ordinal))
-                    continue;
-
-                if (header.IsValueNull)
-                    throw new InvalidDataException("The Schema Registry identity header cannot be null.");
-
-                value = header.Value;
-                return true;
-            }
-        }
-
-        value = default;
-        return false;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static bool TryGetLastHeader(
-        ReadOnlySpan<Header> headers,
-        string name,
-        out ReadOnlyMemory<byte> value)
-    {
-        for (var index = headers.Length - 1; index >= 0; index--)
-        {
-            ref readonly var header = ref headers[index];
-            if (!string.Equals(header.Key, name, StringComparison.Ordinal))
-                continue;
-
-            if (header.IsValueNull)
-                throw new InvalidDataException("The Schema Registry identity header cannot be null.");
-
-            value = header.Value;
-            return true;
-        }
-
-        value = default;
-        return false;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
