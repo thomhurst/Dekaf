@@ -1314,17 +1314,28 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private int _fetchBufferEpoch;
     private int _minimumFetchBufferEpoch;
     private readonly ConcurrentDictionary<TopicPartition, int> _minimumFetchBufferEpochsByPartition = new();
-    // Coordinator revocations and diverging-epoch corrections share this partition set because
-    // both must stop record iteration before the poll loop clears stale fetch data. The marker
-    // flag stops iteration as soon as a clear is staged; the pending flag publishes a fully
-    // staged batch without adding dictionary work to the normal path.
+    // Fetch-clear publications share this partition set because they must stop record iteration
+    // before the poll loop clears stale data. Version and source let topic recovery claim one exact
+    // old-identity marker without consuming an explicit position change. The flags avoid dictionary
+    // work on the normal path.
     private readonly object _coordinatorRevokedPartitionsPendingFetchClearLock = new();
-    private readonly ConcurrentDictionary<TopicPartition, byte> _coordinatorRevokedPartitionsPendingFetchClear = new();
+    private readonly ConcurrentDictionary<TopicPartition, long> _coordinatorRevokedPartitionsPendingFetchClear = new();
+    private readonly Dictionary<TopicPartition, PendingFetchClearMarkerSource> _pendingFetchClearMarkerSources = [];
+    // Keep newer marker evidence until an in-flight topic-identity reset validates it.
+    private readonly HashSet<TopicPartition> _topicIdentityResetPartitions = [];
     private readonly ConcurrentDictionary<TopicPartition, (long EndOffset, int Epoch)> _pendingDivergingEpochResets = new();
+    private long _pendingFetchClearVersion;
     private int _stagedDivergingEpochResetBatches;
     private int _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent;
     private int _coordinatorRevokedPartitionsPendingFetchClearPending;
     private readonly BatchIterationEpoch _batchIterationEpoch = new();
+
+    private enum PendingFetchClearMarkerSource : byte
+    {
+        PositionChange,
+        CoordinatorRevocation,
+        DivergingEpoch
+    }
 
     // Background prefetch support
     private readonly MpscFetchBuffer _prefetchBuffer;
@@ -1400,6 +1411,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private const long EarliestOffsetTimestamp = -2;
     private const long LatestOffsetTimestamp = -1;
+    private const long NoPendingFetchClearVersion = 0;
 
     // Cached activity names per topic to avoid repeated string interpolation in fetch paths
     // Instance-level to avoid unbounded growth with dynamic topic names across consumer instances
@@ -7026,7 +7038,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // observes the clear without adding another fence to the per-record hot path.
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
         {
-            _coordinatorRevokedPartitionsPendingFetchClear[partition] = 0;
+            SetPendingFetchClearMarkerLocked(partition, PendingFetchClearMarkerSource.PositionChange);
 
             _batchIterationEpoch.BeginPublication();
             try
@@ -7039,6 +7051,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 _batchIterationEpoch.EndPublication();
             }
         }
+    }
+
+    private void SetPendingFetchClearMarkerLocked(
+        TopicPartition partition,
+        PendingFetchClearMarkerSource source)
+    {
+        var version = Interlocked.Increment(ref _pendingFetchClearVersion);
+        if (version == NoPendingFetchClearVersion)
+            version = Interlocked.Increment(ref _pendingFetchClearVersion);
+
+        _coordinatorRevokedPartitionsPendingFetchClear[partition] = version;
+        _pendingFetchClearMarkerSources[partition] = source;
     }
 
     private void ClearFetchBuffer()
@@ -7079,7 +7103,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private void ClearFetchBufferForPartitions(
         IEnumerable<TopicPartition> partitionsToRemove,
         bool invalidateAllFetches = false,
-        bool stagePendingClear = false)
+        bool stagePendingClear = false,
+        bool preserveDivergingEpochResets = false)
     {
         // Create a set for efficient lookup
         var removeSet = partitionsToRemove is HashSet<TopicPartition> set
@@ -7107,8 +7132,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             else
                 InvalidateFetchesForPartitionsLocked(removeSet);
 
-            foreach (var partition in removeSet)
-                _pendingDivergingEpochResets.TryRemove(partition, out _);
+            if (!preserveDivergingEpochResets)
+            {
+                foreach (var partition in removeSet)
+                    _pendingDivergingEpochResets.TryRemove(partition, out _);
+            }
         }
 
         // Filter in-place without allocating a temporary queue
@@ -7191,7 +7219,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 // Keep the revocation marker so the consume loop still drains stale buffers.
                 _pendingRebalanceSeeks.TryRemove(partition, out _);
                 _pendingDivergingEpochResets.TryRemove(partition, out _);
-                _coordinatorRevokedPartitionsPendingFetchClear[partition] = 0;
+                SetPendingFetchClearMarkerLocked(
+                    partition,
+                    PendingFetchClearMarkerSource.CoordinatorRevocation);
             }
 
             // Invalidate broker fetches that started before the revocation immediately.
@@ -7238,7 +7268,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             return false;
 
         _pendingDivergingEpochResets[partition] = (endOffset, epoch);
-        _coordinatorRevokedPartitionsPendingFetchClear[partition] = 0;
+        SetPendingFetchClearMarkerLocked(partition, PendingFetchClearMarkerSource.DivergingEpoch);
         if (startsBatch)
             _stagedDivergingEpochResetBatches++;
         _batchIterationEpoch.BeginPublication();
@@ -7288,6 +7318,24 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         var partitionsToRemove = _coordinatorRevokedPartitionsPendingFetchClear.Keys.ToHashSet();
+        HashSet<TopicPartition>? reservedPartitions = null;
+        foreach (var partition in _topicIdentityResetPartitions)
+        {
+            if (partitionsToRemove.Remove(partition))
+                (reservedPartitions ??= []).Add(partition);
+        }
+
+        // A newer marker on a reserved partition must remain available to reject the
+        // in-flight identity reset, but its stale queued fetch still must be discarded.
+        if (reservedPartitions is not null)
+        {
+            ClearFetchBufferForPartitions(
+                reservedPartitions,
+                preserveDivergingEpochResets: true);
+        }
+
+        if (partitionsToRemove.Count == 0)
+            return reservedPartitions is not null;
 
         // Keep partitions marked while clearing. Background prefetches use this
         // marker to avoid advancing positions for data that will be discarded.
@@ -7295,10 +7343,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         ClearFetchBufferForPartitions(partitionsToRemove);
 
         foreach (var partition in partitionsToRemove)
+        {
             _coordinatorRevokedPartitionsPendingFetchClear.TryRemove(partition, out _);
+            _pendingFetchClearMarkerSources.Remove(partition);
+        }
 
-        Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent, 0);
-        Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 0);
+        var markersRemain = !_coordinatorRevokedPartitionsPendingFetchClear.IsEmpty;
+        Volatile.Write(
+            ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent,
+            markersRemain ? 1 : 0);
+        Volatile.Write(
+            ref _coordinatorRevokedPartitionsPendingFetchClearPending,
+            markersRemain ? 1 : 0);
 
         if (logTruncationException is not null)
             throw logTruncationException;
@@ -9082,15 +9138,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         recreatedPartitions.Add(partition);
                 }
 
-                ClearFetchBufferForPartitions(recreatedPartitions);
-                InvalidatePartitionCache();
-                InvalidateFetchRequestCache();
-                var fetchBufferEpoch = Volatile.Read(ref _fetchBufferEpoch);
+                Dictionary<TopicPartition, long>? preexistingPendingFetchClearVersions = null;
                 Task[]? resetTasks = null;
                 var resetTaskCount = 0;
 
                 try
                 {
+                    preexistingPendingFetchClearVersions =
+                        CapturePendingFetchClearVersionsAndClearFetchBuffer(recreatedPartitions);
+                    InvalidatePartitionCache();
+                    InvalidateFetchRequestCache();
+                    var fetchBufferEpoch = Volatile.Read(ref _fetchBufferEpoch);
+
                     foreach (var partition in recreatedPartitions)
                     {
                         ClearStoredOffset(partition);
@@ -9110,10 +9169,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         }
 
                         var identities = changedTopics[partition.Topic];
+                        // Only the exact fetch-clear marker captured before this recovery belongs
+                        // to the old topic identity. New marker versions reject ABA invalidations
+                        // even if assignment cleanup removes their fetch-epoch minimum.
                         var reset = ResetOffsetOutOfRangeAsync(
                             partition,
                             fetchBufferEpoch,
-                            cancellationToken);
+                            cancellationToken,
+                            allowedPendingFetchClearVersion:
+                                preexistingPendingFetchClearVersions?.GetValueOrDefault(partition)
+                                ?? NoPendingFetchClearVersion);
                         if (reset.IsCompletedSuccessfully)
                         {
                             reset.GetAwaiter().GetResult();
@@ -9143,6 +9208,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 {
                     if (resetTasks is not null)
                         ArrayPool<Task>.Shared.Return(resetTasks, clearArray: true);
+
+                    ReleaseTopicIdentityResetReservations(recreatedPartitions);
                 }
 
                 foreach (var (topic, identities) in changedTopics)
@@ -9163,6 +9230,63 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         finally
         {
             SemaphoreHelper.ReleaseSafely(_topicIdentityLock);
+        }
+    }
+
+    private Dictionary<TopicPartition, long>? CapturePendingFetchClearVersionsAndClearFetchBuffer(
+        HashSet<TopicPartition> partitions)
+    {
+        Dictionary<TopicPartition, long>? versions = null;
+        lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+        {
+            foreach (var partition in partitions)
+                _topicIdentityResetPartitions.Add(partition);
+
+            foreach (var partition in partitions)
+            {
+                if (_coordinatorRevokedPartitionsPendingFetchClear.TryGetValue(partition, out var version)
+                    && _pendingFetchClearMarkerSources.TryGetValue(partition, out var source)
+                    && source is PendingFetchClearMarkerSource.CoordinatorRevocation
+                        or PendingFetchClearMarkerSource.DivergingEpoch)
+                {
+                    (versions ??= [])[partition] = version;
+                }
+            }
+
+            // Claim old-identity markers before a background drain can invalidate the
+            // freshly captured epoch. The lock stays held across the ordered clear, as
+            // it does for the ordinary pending-revocation drain path.
+            ClearFetchBufferForPartitions(partitions);
+
+            if (versions is not null)
+            {
+                foreach (var (partition, version) in versions)
+                {
+                    if (_coordinatorRevokedPartitionsPendingFetchClear.TryGetValue(partition, out var currentVersion)
+                        && currentVersion == version)
+                    {
+                        _coordinatorRevokedPartitionsPendingFetchClear.TryRemove(partition, out _);
+                        _pendingFetchClearMarkerSources.Remove(partition);
+                    }
+                }
+            }
+
+            if (_coordinatorRevokedPartitionsPendingFetchClear.IsEmpty)
+            {
+                Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent, 0);
+                Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 0);
+            }
+        }
+
+        return versions;
+    }
+
+    private void ReleaseTopicIdentityResetReservations(HashSet<TopicPartition> partitions)
+    {
+        lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+        {
+            foreach (var partition in partitions)
+                _topicIdentityResetPartitions.Remove(partition);
         }
     }
 
@@ -9781,36 +9905,67 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private async ValueTask ResetOffsetOutOfRangeAsync(
         TopicPartition partition,
         int fetchBufferEpoch,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        long allowedPendingFetchClearVersion = NoPendingFetchClearVersion)
     {
         // Reset fetch position based on auto.offset.reset policy. Without this, the
         // consumer would retry the same invalid offset forever.
-        if (ShouldDropStaleFetchPartition(partition, fetchBufferEpoch))
+        if (ShouldDropOffsetReset(
+                partition,
+                fetchBufferEpoch,
+                allowedPendingFetchClearVersion))
             return;
 
         var resetTimestamp = AutoOffsetResetStrategy.GetListOffsetsTimestamp(_options, DateTimeOffset.UtcNow, partition);
-        if (resetTimestamp == LatestOffsetTimestamp || resetTimestamp == EarliestOffsetTimestamp)
-        {
-            if (ShouldDropStaleFetchPartition(partition, fetchBufferEpoch))
-                return;
+        var resetOffset = resetTimestamp;
+        if (resetTimestamp != LatestOffsetTimestamp && resetTimestamp != EarliestOffsetTimestamp)
+            resetOffset = await ResolveAutoResetOffsetAsync(partition, resetTimestamp, cancellationToken).ConfigureAwait(false);
 
-            _fetchPositions[partition] = resetTimestamp;
-            SetPosition(partition, resetTimestamp, dirty: false);
-            ClearLastConsumedLeaderEpoch(partition);
-        }
-        else
+        if (!TryApplyOffsetReset(
+                partition,
+                fetchBufferEpoch,
+                allowedPendingFetchClearVersion,
+                resetOffset))
+            return;
+
+        LogOffsetOutOfRangeReset(partition.Topic, partition.Partition, GetAutoOffsetResetName());
+    }
+
+    private bool TryApplyOffsetReset(
+        TopicPartition partition,
+        int fetchBufferEpoch,
+        long allowedPendingFetchClearVersion,
+        long resetOffset)
+    {
+        // Keep the final validation and position write atomic with diverging-epoch staging.
+        lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
         {
-            var resetOffset = await ResolveAutoResetOffsetAsync(partition, resetTimestamp, cancellationToken).ConfigureAwait(false);
-            if (ShouldDropStaleFetchPartition(partition, fetchBufferEpoch))
-                return;
+            if (ShouldDropOffsetReset(
+                    partition,
+                    fetchBufferEpoch,
+                    allowedPendingFetchClearVersion))
+                return false;
 
             _fetchPositions[partition] = resetOffset;
             SetPosition(partition, resetOffset, dirty: false);
             ClearLastConsumedLeaderEpoch(partition);
+            return true;
         }
-
-        LogOffsetOutOfRangeReset(partition.Topic, partition.Partition, GetAutoOffsetResetName());
     }
+
+    private bool ShouldDropOffsetReset(
+        TopicPartition partition,
+        int fetchBufferEpoch,
+        long allowedPendingFetchClearVersion) =>
+        IsFetchBufferEpochStale(partition, fetchBufferEpoch)
+        || PendingFetchClearVersionChanged(partition, allowedPendingFetchClearVersion)
+        || !IsCurrentlyAssigned(partition);
+
+    private bool PendingFetchClearVersionChanged(
+        TopicPartition partition,
+        long allowedPendingFetchClearVersion) =>
+        _coordinatorRevokedPartitionsPendingFetchClear.TryGetValue(partition, out var currentVersion)
+        && currentVersion != allowedPendingFetchClearVersion;
 
     private static bool IsLeaderEpochRefreshError(ErrorCode errorCode) =>
         errorCode is ErrorCode.NotLeaderOrFollower or ErrorCode.FencedLeaderEpoch or ErrorCode.UnknownLeaderEpoch;
