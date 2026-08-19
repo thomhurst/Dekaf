@@ -1761,11 +1761,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // direct constructor caller can never pair an async deserializer with a live sync one.
         _keyDeserializer = asyncKeyDeserializer is null ? keyDeserializer : AsyncOnlyDeserializerPlaceholder<TKey>.Instance;
         _valueDeserializer = asyncValueDeserializer is null ? valueDeserializer : AsyncOnlyDeserializerPlaceholder<TValue>.Instance;
-        _hasRecordHeaderDeserializers = _keyDeserializer is IRecordHeaderDeserializer<TKey>
-                                        || _valueDeserializer is IRecordHeaderDeserializer<TValue>;
         _recordHeaderRoutingPlan = RecordHeaderRoutingPlan.Create(
             _keyDeserializer,
             _valueDeserializer);
+        _hasRecordHeaderDeserializers = _recordHeaderRoutingPlan is not null;
         _asyncKeyDeserializer = asyncKeyDeserializer;
         _asyncValueDeserializer = asyncValueDeserializer;
         _hasAsyncDeserializers = asyncKeyDeserializer is not null || asyncValueDeserializer is not null;
@@ -5183,7 +5182,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         // Preserve non-blocking poll semantics: an immediately buffered accepted record may
         // win above, but a zero-timeout miss must not enter a CancelAfter(0) scheduling race.
-        if (timeoutMilliseconds == 0)
+        if (IsNonBlockingConsumeOneTimeout(timeout))
             return new ValueTask<ConsumeResult<TKey, TValue>?>((ConsumeResult<TKey, TValue>?)null);
 
         return ConsumeOneWithTimeoutAsync(
@@ -5270,6 +5269,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         return timeoutMilliseconds;
     }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static bool IsNonBlockingConsumeOneTimeout(TimeSpan timeout) =>
+        timeout == TimeSpan.Zero;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static bool RequiresRuntimeTimeoutValidation(long timeoutMilliseconds)

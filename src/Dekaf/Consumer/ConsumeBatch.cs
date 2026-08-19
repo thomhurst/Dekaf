@@ -256,8 +256,6 @@ namespace Dekaf.Consumer
             _pendingFetchData = pendingFetchData;
             _keyDeserializer = keyDeserializer;
             _valueDeserializer = valueDeserializer;
-            _hasRecordHeaderDeserializers = keyDeserializer is IRecordHeaderDeserializer<TKey>
-                                            || valueDeserializer is IRecordHeaderDeserializer<TValue>;
             _iterationGuard = iterationGuard;
             _storeOffsetOnDelivery = storeOffsetOnDelivery;
             _maxRecords = maxRecords;
@@ -268,6 +266,7 @@ namespace Dekaf.Consumer
                                        ?? RecordHeaderRoutingPlan.Create(
                                            keyDeserializer,
                                            valueDeserializer);
+            _hasRecordHeaderDeserializers = _recordHeaderRoutingPlan is not null;
             if (_recordHeaderRoutingPlan is not null)
                 pendingFetchData.ConfigureHeaderRouting(_recordHeaderRoutingPlan);
         }

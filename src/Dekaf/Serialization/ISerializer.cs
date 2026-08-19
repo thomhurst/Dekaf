@@ -54,7 +54,7 @@ internal sealed class RecordHeaderRoutingPlan
         List<string>? names = null;
         Collect(keyDeserializer, ref names);
         Collect(valueDeserializer, ref names);
-        return names is null ? null : new RecordHeaderRoutingPlan(names);
+        return names is { Count: > 0 } ? new RecordHeaderRoutingPlan(names) : null;
     }
 
     private static void Collect<T>(IDeserializer<T>? deserializer, ref List<string>? names)
@@ -203,6 +203,21 @@ internal static class RecordHeaderDeserializer
                 context,
                 in headers)
             : deserializer.Deserialize(data, context);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static T DeserializeChild<T>(
+        IDeserializer<T> deserializer,
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        in RecordHeaderRoutingLookup headers)
+    {
+        if (deserializer is IRecordHeaderDeserializer<T> nested)
+            return nested.Deserialize(data, context, in headers);
+
+        if (context.Headers is not null)
+            context.Headers = null;
+        return deserializer.Deserialize(data, context);
+    }
 }
 
 /// <summary>

@@ -159,15 +159,8 @@ public sealed class HeaderRoutingDeserializer<T> :
         IDeserializer<T> deserializer,
         ReadOnlyMemory<byte> data,
         SerializationContext context,
-        in RecordHeaderRoutingLookup headers)
-    {
-        if (deserializer is IRecordHeaderDeserializer<T> nested)
-            return nested.Deserialize(data, context, in headers);
-
-        if (context.Headers is not null)
-            context.Headers = null;
-        return deserializer.Deserialize(data, context);
-    }
+        in RecordHeaderRoutingLookup headers) =>
+        RecordHeaderDeserializer.DeserializeChild(deserializer, data, context, in headers);
 
     private static void CollectChildHeaderNames(
         List<string> names,

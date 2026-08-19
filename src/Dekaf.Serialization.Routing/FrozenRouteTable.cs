@@ -57,4 +57,19 @@ internal sealed class FrozenRouteTable<TKey, TRoute>(IEqualityComparer<TKey>? co
         route = _fallback!;
         return route is not null;
     }
+
+    internal void CollectHeaderNames(List<string> names)
+    {
+        lock (_gate)
+        {
+            if (_fallback is IRecordHeaderRoutingProvider fallbackProvider)
+                fallbackProvider.CollectHeaderNames(names);
+
+            foreach (var route in _registrations.Values)
+            {
+                if (route is IRecordHeaderRoutingProvider provider)
+                    provider.CollectHeaderNames(names);
+            }
+        }
+    }
 }

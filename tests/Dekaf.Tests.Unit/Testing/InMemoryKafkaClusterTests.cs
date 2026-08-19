@@ -138,6 +138,9 @@ public sealed class InMemoryKafkaClusterTests
         await Assert.That(result).IsNotNull();
         await Assert.That(result!.Value.Key).IsEqualTo("no-headers");
         await Assert.That(result.Value.Value).IsEqualTo("created:payload");
+        await Assert.That(result.Value.Headers).Count().IsEqualTo(1);
+        await Assert.That(result.Value.Headers[0].Key).IsEqualTo("event-type");
+        await Assert.That(result.Value.Headers[0].GetValueAsString()).IsEqualTo("created");
     }
 
     [Test]

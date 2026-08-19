@@ -7,7 +7,10 @@ namespace Dekaf.Serialization.Routing;
 /// Routes deserialization by the record topic.
 /// </summary>
 /// <typeparam name="TBase">The common reference type returned by every route.</typeparam>
-public sealed class TopicRoutingDeserializer<TBase> : IDeserializer<TBase>
+public sealed class TopicRoutingDeserializer<TBase> :
+    IDeserializer<TBase>,
+    IRecordHeaderDeserializer<TBase>,
+    IRecordHeaderRoutingProvider
     where TBase : class
 {
     private readonly FrozenRouteTable<string, IDeserializer<TBase>> _routes = new(StringComparer.Ordinal);
@@ -51,6 +54,20 @@ public sealed class TopicRoutingDeserializer<TBase> : IDeserializer<TBase>
         throw MissingRoute("topic", context.Topic, context);
     }
 
+    TBase IRecordHeaderDeserializer<TBase>.Deserialize(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        in RecordHeaderRoutingLookup headers)
+    {
+        if (_routes.TryGetRoute(context.Topic, out var route))
+            return RecordHeaderDeserializer.DeserializeChild(route, data, context, in headers);
+
+        throw MissingRoute("topic", context.Topic, context);
+    }
+
+    void IRecordHeaderRoutingProvider.CollectHeaderNames(List<string> names) =>
+        _routes.CollectHeaderNames(names);
+
     private static SerializationException MissingRoute(
         string routeKind,
         string routeValue,
@@ -70,7 +87,10 @@ public sealed class TopicRoutingDeserializer<TBase> : IDeserializer<TBase>
 /// before <see cref="Freeze"/>; after freezing, routing is thread-safe and allocation-free.
 /// </remarks>
 /// <typeparam name="TBase">The common reference type returned by every route.</typeparam>
-public sealed class SchemaIdRoutingDeserializer<TBase> : IDeserializer<TBase>
+public sealed class SchemaIdRoutingDeserializer<TBase> :
+    IDeserializer<TBase>,
+    IRecordHeaderDeserializer<TBase>,
+    IRecordHeaderRoutingProvider
     where TBase : class
 {
     private const int HeaderSize = 5;
@@ -128,4 +148,32 @@ public sealed class SchemaIdRoutingDeserializer<TBase> : IDeserializer<TBase>
             Component = context.Component
         };
     }
+
+    TBase IRecordHeaderDeserializer<TBase>.Deserialize(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        in RecordHeaderRoutingLookup headers)
+    {
+        if (data.Length < HeaderSize || data.Span[0] != 0)
+        {
+            throw new SerializationException("Schema-ID routing requires Confluent framing.")
+            {
+                Topic = context.Topic,
+                Component = context.Component
+            };
+        }
+
+        var schemaId = BinaryPrimitives.ReadInt32BigEndian(data.Span.Slice(1, sizeof(int)));
+        if (_routes.TryGetRoute(schemaId, out var route))
+            return RecordHeaderDeserializer.DeserializeChild(route, data, context, in headers);
+
+        throw new SerializationException($"No schema-ID deserializer route is registered for '{schemaId}'.")
+        {
+            Topic = context.Topic,
+            Component = context.Component
+        };
+    }
+
+    void IRecordHeaderRoutingProvider.CollectHeaderNames(List<string> names) =>
+        _routes.CollectHeaderNames(names);
 }

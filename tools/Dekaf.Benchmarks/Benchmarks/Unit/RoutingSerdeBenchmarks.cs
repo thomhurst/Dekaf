@@ -27,10 +27,13 @@ public class RoutingSerdeBenchmarks
     private TopicRoutingDeserializer<Event> _topicDeserializer = null!;
     private SchemaIdRoutingDeserializer<Event> _schemaIdDeserializer = null!;
     private HeaderRoutingDeserializer<Event> _headerDeserializer = null!;
+    private IDeserializer<Event> _topicHeaderDeserializer = null!;
+    private IDeserializer<Event> _schemaIdHeaderDeserializer = null!;
     private TopicRoutingSerializer<Event> _topicSerializer = null!;
     private TypeRoutingSerializer<Event> _typeSerializer = null!;
     private SerializationContext _context;
     private Header[] _headers = null!;
+    private RecordHeaderRoutingLookup _headerLookup;
 
     private sealed class RoutingConfig : ManualConfig
     {
@@ -60,6 +63,20 @@ public class RoutingSerdeBenchmarks
             _deserializer,
             new HeaderDeserializerRoute<Event>(new byte[] { 1 }, _deserializer));
         _headers = [new Header("event-type", new byte[] { 1 })];
+        _topicHeaderDeserializer = new TopicRoutingDeserializer<Event>()
+            .Register("events", _headerDeserializer)
+            .Freeze();
+        _schemaIdHeaderDeserializer = new SchemaIdRoutingDeserializer<Event>()
+            .Register(42, _headerDeserializer)
+            .Freeze();
+        var headerPlan = RecordHeaderRoutingPlan.Create(_deserializer, _topicHeaderDeserializer)!;
+        _headerLookup = new RecordHeaderRoutingLookup(
+            headerPlan,
+            _headers,
+            _headers.Length,
+            firstIndex: 1,
+            secondIndex: 0,
+            routedHeaderTailOffset: RecordHeaderRoutingPlan.FullyIndexedWithoutTail);
         _topicSerializer = new TopicRoutingSerializer<Event>()
             .Register("events", _serializer)
             .Freeze();
@@ -82,6 +99,22 @@ public class RoutingSerdeBenchmarks
     [Benchmark]
     public Event DeserializeByHeader() =>
         _headerDeserializer.DeserializeWithHeaders(Data, _context, _headers);
+
+    [Benchmark]
+    public Event DeserializeByTopicThenHeader() =>
+        RecordHeaderDeserializer.Deserialize(
+            _topicHeaderDeserializer,
+            Data,
+            _context,
+            in _headerLookup);
+
+    [Benchmark]
+    public Event DeserializeBySchemaIdThenHeader() =>
+        RecordHeaderDeserializer.Deserialize(
+            _schemaIdHeaderDeserializer,
+            FramedData,
+            _context,
+            in _headerLookup);
 
     [Benchmark]
     public int SerializeDirect()

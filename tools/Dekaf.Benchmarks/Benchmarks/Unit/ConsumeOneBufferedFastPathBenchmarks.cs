@@ -155,3 +155,37 @@ public class ConsumeOneBufferedFastPathBenchmarks
         => BufferedConsumerHarness.ReseedPendingFetches(
             consumer, Topic, Partition, _batchRecords, BatchCount, RecordsPerBatch);
 }
+
+/// <summary>Measures the allocation-free non-blocking miss path.</summary>
+[MemoryDiagnoser]
+[ShortRunJob(RuntimeMoniker.Net10_0)]
+public class ConsumeOneZeroTimeoutBenchmarks
+{
+    private const string Topic = "consume-one-zero-timeout";
+    private const int Partition = 0;
+    private KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> _consumer = null!;
+
+    [GlobalSetup]
+    public void Setup()
+    {
+        _consumer = new KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>(
+            new ConsumerOptions
+            {
+                BootstrapServers = ["localhost:9092"],
+                OffsetCommitMode = OffsetCommitMode.Manual,
+                QueuedMinMessages = 1,
+                FetchMaxWaitMs = 200,
+            },
+            Serializers.RawBytes,
+            Serializers.RawBytes);
+        BufferedConsumerHarness.InitializeForBufferedFastPath(_consumer, Topic, Partition);
+    }
+
+    [Benchmark]
+    public ValueTask<ConsumeResult<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>?> PollOne() =>
+        _consumer.ConsumeOneAsync(TimeSpan.Zero);
+
+    [GlobalCleanup]
+    public void Cleanup() =>
+        _consumer.DisposeAsync().AsTask().GetAwaiter().GetResult();
+}

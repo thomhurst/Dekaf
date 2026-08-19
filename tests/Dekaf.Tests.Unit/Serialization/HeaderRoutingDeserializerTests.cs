@@ -1,8 +1,10 @@
 using System.Buffers;
+using System.Buffers.Binary;
 using System.Text;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
+using Dekaf.Serialization.Routing;
 
 namespace Dekaf.Tests.Unit.Serialization;
 
@@ -164,6 +166,76 @@ public sealed class HeaderRoutingDeserializerTests
     }
 
     [Test]
+    [Arguments(false, false)]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task Deserialize_OuterRouterPropagatesLookupAndClearsLeaf(
+        bool schemaIdRouter,
+        bool selectHeaderRouter)
+    {
+        var headerRouter = new HeaderRoutingDeserializer<string>(
+            "event-type",
+            new PrefixDeserializer("fallback"),
+            new HeaderDeserializerRoute<string>(
+                "created"u8.ToArray(),
+                new HeaderPresenceDeserializer()));
+        IDeserializer<string> selected = selectHeaderRouter
+            ? headerRouter
+            : new HeaderPresenceDeserializer();
+        IDeserializer<string> root = schemaIdRouter
+            ? new SchemaIdRoutingDeserializer<string>()
+                .Register(42, selected)
+                .Register(43, headerRouter)
+                .Freeze()
+            : new TopicRoutingDeserializer<string>()
+                .Register("events", selected)
+                .Register("header-events", headerRouter)
+                .Freeze();
+        var plan = RecordHeaderRoutingPlan.Create(Serializers.String, root)!;
+        var value = schemaIdRouter ? Frame(42, "payload"u8.ToArray()) : "payload"u8.ToArray();
+        var record = new Record
+        {
+            Value = value,
+            Headers = [new Header("event-type", "created"u8.ToArray())],
+            HeaderCount = 1
+        };
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        record.Write(ref writer);
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var parsed = Record.Read(ref reader, plan);
+        var context = CreateContext();
+        context.Headers = Headers.Create("caller", "owned");
+
+        string result;
+        try
+        {
+            var lookup = parsed.CreateHeaderRoutingLookup(plan);
+            result = RecordHeaderDeserializer.Deserialize(root, parsed.Value, context, in lookup);
+        }
+        finally
+        {
+            ArrayPool<Header>.Shared.Return(parsed.Headers!, clearArray: true);
+        }
+
+        await Assert.That(result).IsEqualTo("no-headers");
+        await Assert.That(context.Headers).Count().IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task HeaderRoutingPlan_OuterRouterWithoutHeaderChildrenReturnsNull()
+    {
+        var router = new TopicRoutingDeserializer<string>()
+            .Register("events", Serializers.String)
+            .Freeze();
+
+        var plan = RecordHeaderRoutingPlan.Create(Serializers.String, router);
+
+        await Assert.That(plan).IsNull();
+    }
+
+    [Test]
     public async Task Constructor_DuplicateRouteValuesThrows()
     {
         await Assert.That(() => new HeaderRoutingDeserializer<string>(
@@ -198,6 +270,14 @@ public sealed class HeaderRoutingDeserializerTests
             headerName,
             new PrefixDeserializer("fallback"),
             new HeaderDeserializerRoute<string>(routeValue, child));
+
+    private static byte[] Frame(int schemaId, ReadOnlySpan<byte> payload)
+    {
+        var frame = new byte[sizeof(byte) + sizeof(int) + payload.Length];
+        BinaryPrimitives.WriteInt32BigEndian(frame.AsSpan(1), schemaId);
+        payload.CopyTo(frame.AsSpan(5));
+        return frame;
+    }
 
     private static SerializationContext CreateContext() => new()
     {

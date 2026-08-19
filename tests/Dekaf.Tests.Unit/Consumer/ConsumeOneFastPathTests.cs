@@ -513,6 +513,17 @@ public sealed class ConsumeOneFastPathTests
     }
 
     [Test]
+    public async Task IsNonBlockingConsumeOneTimeout_RequiresExactZero()
+    {
+        await Assert.That(
+                KafkaConsumer<string, string>.IsNonBlockingConsumeOneTimeout(TimeSpan.Zero))
+            .IsTrue();
+        await Assert.That(
+                KafkaConsumer<string, string>.IsNonBlockingConsumeOneTimeout(TimeSpan.FromTicks(1)))
+            .IsFalse();
+    }
+
+    [Test]
     public async Task ConsumeOneAsync_FractionalNegativeTimeout_MatchesCancelAfterTruncation()
     {
         var fetch = PendingFetchData.Create(Topic, Partition,
