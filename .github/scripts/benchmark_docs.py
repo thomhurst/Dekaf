@@ -372,13 +372,13 @@ def generate_document(
         "",
         "# Benchmark Results",
         "",
-        "How Dekaf compares to Confluent.Kafka, measured with BenchmarkDotNet on GitHub Actions and refreshed on every commit to main.",
+        "How Dekaf compares to Confluent.Kafka, measured with BenchmarkDotNet on GitHub Actions and refreshed daily or on demand from main.",
         "",
         f"**Last Updated:** {updated_at}",
         "",
         "## At a glance",
         "",
-        f"Each scenario is the median Dekaf-vs-Confluent result over the last {window} CI runs (both clients measured on the same runner), aggregated across message and batch sizes. Memory compares heap allocations per operation from the latest run.",
+        f"Each scenario is the median Dekaf-vs-Confluent result over the last {window} benchmark runs (both clients measured on the same runner), aggregated across message and batch sizes. Memory compares heap allocations per operation from the latest run.",
         "",
         *format_summary_table(summaries, alloc_ratios),
         "",
@@ -469,7 +469,9 @@ def generate_document(
         )
     )
 
-    output.append("*Benchmarks are automatically run on every push to main.*")
+    output.append(
+        "*Benchmarks automatically run daily at 05:00 UTC from main and can also be run manually.*"
+    )
 
     return "\n".join(output)
 

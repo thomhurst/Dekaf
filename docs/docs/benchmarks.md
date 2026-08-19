@@ -5,13 +5,13 @@ description: "Dekaf versus Confluent.Kafka on throughput, latency, and allocatio
 
 # Benchmark Results
 
-How Dekaf compares to Confluent.Kafka, measured with BenchmarkDotNet in automated GitHub Actions runs from main.
+How Dekaf compares to Confluent.Kafka, measured with BenchmarkDotNet in daily or on-demand GitHub Actions runs from main.
 
 **Last Updated:** 2026-08-16 14:42 UTC
 
 ## At a glance
 
-Each scenario is the median Dekaf-vs-Confluent result over the last 10 CI runs (both clients measured on the same runner), aggregated across message and batch sizes. Memory compares heap allocations per operation from the latest run.
+Each scenario is the median Dekaf-vs-Confluent result over the last 10 benchmark runs (both clients measured on the same runner), aggregated across message and batch sizes. Memory compares heap allocations per operation from the latest run.
 
 | Scenario | Speed vs Confluent | Memory vs Confluent | Confidence |
 |---|---|---|---|
@@ -231,4 +231,4 @@ Wire protocol serialization/deserialization. **Allocated = `-` means zero heap a
 
 </details>
 
-*Benchmarks automatically run on pushes to main that include changes outside this page.*
+*Benchmarks automatically run daily at 05:00 UTC from main and can also be run manually.*
