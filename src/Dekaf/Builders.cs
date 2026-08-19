@@ -1659,6 +1659,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private int _maxCachedStringValueEntries = DefaultMaxCachedStringValueEntries;
     private IRebalanceListener? _rebalanceListener;
     private IConsumerAwareRebalanceListener? _consumerAwareRebalanceListener;
+    private List<IRebalanceListener>? _additionalRebalanceListeners;
     private TimeSpan _partitionStopTimeout = TimeSpan.FromSeconds(5);
     private Microsoft.Extensions.Logging.ILoggerFactory? _loggerFactory;
     private bool _enablePartitionEof;
@@ -2506,6 +2507,25 @@ public sealed class ConsumerBuilder<TKey, TValue>
     }
 
     /// <summary>
+    /// Adds a rebalance listener without replacing the listener configured by
+    /// <see cref="WithRebalanceListener(IRebalanceListener)"/> or
+    /// <see cref="WithRebalanceListener(IConsumerAwareRebalanceListener)"/>.
+    /// </summary>
+    /// <remarks>
+    /// Additive listeners run after the configured listener, in registration order.
+    /// Each callback is awaited before the next listener runs. Non-cancellation exceptions
+    /// are logged and do not prevent later listeners from running.
+    /// </remarks>
+    /// <param name="listener">The listener to add.</param>
+    /// <returns>This builder.</returns>
+    public ConsumerBuilder<TKey, TValue> AddRebalanceListener(IRebalanceListener listener)
+    {
+        ArgumentNullException.ThrowIfNull(listener);
+        (_additionalRebalanceListeners ??= []).Add(listener);
+        return this;
+    }
+
+    /// <summary>
     /// Sets the maximum time to await an <see cref="IPartitionStopListener"/> during
     /// graceful <c>CloseAsync</c> or <c>DisposeAsync</c>. Default is 5 seconds.
     /// </summary>
@@ -3244,6 +3264,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
             AwsMskIamConfig = _awsMskIamConfig,
             RebalanceListener = _rebalanceListener,
             ConsumerAwareRebalanceListener = _consumerAwareRebalanceListener,
+            AdditionalRebalanceListeners = _additionalRebalanceListeners?.ToArray(),
             PartitionStopTimeout = _partitionStopTimeout,
             EnablePartitionEof = _enablePartitionEof,
             SocketSendBufferBytes = _socketSendBufferBytes,

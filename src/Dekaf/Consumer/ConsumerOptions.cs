@@ -389,6 +389,8 @@ public sealed class ConsumerOptions
     /// <remarks>Takes precedence over <see cref="RebalanceListener"/> when both are set.</remarks>
     public IConsumerAwareRebalanceListener? ConsumerAwareRebalanceListener { get; init; }
 
+    internal IRebalanceListener[]? AdditionalRebalanceListeners { get; init; }
+
     /// <summary>
     /// Socket send buffer size in bytes. Set to 0 to use system default.
     /// </summary>

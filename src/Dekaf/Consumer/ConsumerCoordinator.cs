@@ -30,6 +30,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private readonly MetadataManager _metadataManager;
     private readonly IRebalanceListener? _rebalanceListener;
     private readonly IConsumerAwareRebalanceListener? _consumerAwareRebalanceListener;
+    private readonly IRebalanceListener[]? _additionalRebalanceListeners;
     // Retained for the public six-parameter constructor and direct coordinator callers.
     // KafkaConsumer uses the pre-publication hook below to invalidate buffered fetches.
     private readonly Action<IReadOnlyList<TopicPartition>>? _onPartitionsRevoked;
@@ -142,6 +143,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         _rebalanceListener = _consumerAwareRebalanceListener is null
             ? options.RebalanceListener
             : null;
+        _additionalRebalanceListeners = options.AdditionalRebalanceListeners;
         _onPartitionsRevoked = onPartitionsRevoked;
         _onPartitionsRevoking = onPartitionsRevoking;
         _onPartitionsRevokedAsync = onPartitionsRevokedAsync;
@@ -871,6 +873,20 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 consumerAwareCallback,
                 newlyAssigned,
                 cancellationToken).ConfigureAwait(false);
+        }
+
+        var additionalListeners = _additionalRebalanceListeners;
+        if (additionalListeners is not null)
+        {
+            for (var index = 0; index < additionalListeners.Length; index++)
+            {
+                await InvokeRebalanceListenerAsync(
+                    callbackName,
+                    partitions,
+                    additionalListeners[index],
+                    callback,
+                    cancellationToken).ConfigureAwait(false);
+            }
         }
 
         var runtimeListener = Volatile.Read(ref _runtimeRebalanceListener);
