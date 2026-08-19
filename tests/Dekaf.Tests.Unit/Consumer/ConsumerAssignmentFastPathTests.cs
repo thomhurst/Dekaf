@@ -718,7 +718,7 @@ public sealed class ConsumerAssignmentFastPathTests
 
         await using var consumer = CreateGroupConsumer(connectionPool, metadataManager);
         var fetch = consumer.GetCommittedOffsetsAsync([partition]).AsTask();
-        await fetchCaptured.Task;
+        await fetchCaptured.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
         try
         {
