@@ -76,7 +76,7 @@ const sidebars = {
     {
       type: 'category',
       label: 'RFCs',
-      items: ['rfcs/dekaf-streams'],
+      items: ['rfcs/dekaf-streams', 'rfcs/dekaf-streams-scope'],
     },
   ],
 };
