@@ -28,6 +28,10 @@ public sealed class ConsumerAssignmentFastPathTests
         "_lastPollTimestamp",
         BindingFlags.NonPublic | BindingFlags.Instance)
         ?? throw new InvalidOperationException("_lastPollTimestamp field not found.");
+    private static readonly FieldInfo CommittedOffsetGenerationField = typeof(KafkaConsumer<string, string>).GetField(
+        "_committedOffsetGeneration",
+        BindingFlags.NonPublic | BindingFlags.Instance)
+        ?? throw new InvalidOperationException("_committedOffsetGeneration field not found.");
 
     [Test]
     [Timeout(120_000)]
@@ -735,6 +739,62 @@ public sealed class ConsumerAssignmentFastPathTests
             fetchCaptured.TrySetResult();
             await releaseFetch.Task.WaitAsync(cancellationToken);
             return captured;
+        }
+    }
+
+    [Test]
+    public async Task GetCommittedOffsetsAsync_OverlappingFetchesPublishInBrokerOrder()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        SetupFindCoordinator(connection);
+        var partition = new TopicPartition("test-topic", 0);
+        var firstFetchCaptured = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirstFetch = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var fetchCount = 0;
+        connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call => FetchOffsetsAsync(call.ArgAt<CancellationToken>(2)));
+
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager);
+        var firstFetch = consumer.GetCommittedOffsetsAsync([partition]).AsTask();
+        await firstFetchCaptured.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        var secondFetch = consumer.GetCommittedOffsetsAsync([partition]).AsTask();
+
+        try
+        {
+            releaseFirstFetch.TrySetResult();
+            var first = await firstFetch;
+            var second = await secondFetch;
+
+            await Assert.That(first[partition].Offset).IsEqualTo(10);
+            await Assert.That(second[partition].Offset).IsEqualTo(20);
+            await Assert.That(await consumer.GetCommittedOffsetAsync(partition)).IsEqualTo(20);
+            await Assert.That((long)CommittedOffsetGenerationField.GetValue(consumer)!).IsEqualTo(2);
+            await Assert.That(fetchCount).IsEqualTo(2);
+        }
+        finally
+        {
+            releaseFirstFetch.TrySetResult();
+        }
+
+        async ValueTask<OffsetFetchResponse> FetchOffsetsAsync(CancellationToken cancellationToken)
+        {
+            var fetch = Interlocked.Increment(ref fetchCount);
+            if (fetch == 1)
+            {
+                firstFetchCaptured.TrySetResult();
+                await releaseFirstFetch.Task.WaitAsync(cancellationToken);
+            }
+
+            return CreateOffsetFetchResponse((partition.Partition, fetch * 10L));
         }
     }
 

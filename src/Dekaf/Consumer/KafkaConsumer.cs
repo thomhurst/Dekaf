@@ -6609,7 +6609,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (_coordinator is null)
             return null;
 
-        var cacheGeneration = Volatile.Read(ref _committedOffsetGeneration);
+        var cacheGeneration = Interlocked.Increment(ref _committedOffsetGeneration);
         using var apiTimeout = new ApiTimeoutScope(_options.DefaultApiTimeoutMs, cancellationToken);
         try
         {
@@ -6637,7 +6637,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (partitions.Count == 0 || _coordinator is null)
             return new Dictionary<TopicPartition, TopicPartitionOffset>();
 
-        var cacheGeneration = Volatile.Read(ref _committedOffsetGeneration);
+        var cacheGeneration = Interlocked.Increment(ref _committedOffsetGeneration);
         using var apiTimeout = new ApiTimeoutScope(_options.DefaultApiTimeoutMs, cancellationToken);
         try
         {
@@ -8377,7 +8377,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         CancellationToken cancellationToken)
     {
         var coordinator = _coordinator!;
-        var cacheGeneration = Volatile.Read(ref _committedOffsetGeneration);
+        var cacheGeneration = Interlocked.Increment(ref _committedOffsetGeneration);
         List<TopicPartition>? initializedNewPartitions = null;
         try
         {
