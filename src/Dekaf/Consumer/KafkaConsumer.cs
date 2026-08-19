@@ -1246,6 +1246,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private readonly IDekafMemoryBudget _memoryBudget;
     private readonly bool _ownsInfrastructure;
     private readonly ConsumerCoordinator? _coordinator;
+    private readonly Func<bool> _tryRecordPollFast;
     private readonly CompressionCodecRegistry _compressionCodecs;
     private readonly ILoggerFactory? _loggerFactory;
     private readonly ILogger _logger;
@@ -1840,6 +1841,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         StageRebalanceSeek,
                         GetRebalancePosition));
         }
+
+        _tryRecordPollFast = _coordinator is { } coordinator
+            ? coordinator.TryRecordPollFast
+            : static () => true;
 
         _prefetchBuffer = new MpscFetchBuffer(CalculatePrefetchBufferCapacity(options));
 
@@ -3435,7 +3440,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         _options.MaxPollRecords,
                         _rewindBatchAfterDeliveryFailure,
                         _options.RecordFilter,
-                        _recordHeaderRoutingPlan);
+                        _recordHeaderRoutingPlan,
+                        _tryRecordPollFast);
                     batchYielded = true;
                     yield return batch;
                     // Resumption = the caller requested the next batch, proving this one was
@@ -3577,7 +3583,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 try
                 {
                     // Eagerly parse all records upfront for cache-friendly access
-                    pending.EagerParseAll(_recordHeaderRoutingPlan);
+                    pending.EagerParseAll();
 
                     // Yield the raw batch to the caller for synchronous iteration
                     var batchIterationVersion = Volatile.Read(ref _batchIterationEpoch.Version);
@@ -5147,6 +5153,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     return new ValueTask<ConsumeResult<TKey, TValue>?>(eofResult);
             }
         }
+
+        // Preserve non-blocking poll semantics: an immediately buffered accepted record may
+        // win above, but a zero-timeout miss must not enter a CancelAfter(0) scheduling race.
+        if (timeoutMilliseconds == 0)
+            return new ValueTask<ConsumeResult<TKey, TValue>?>((ConsumeResult<TKey, TValue>?)null);
 
         return ConsumeOneWithTimeoutAsync(
             timeout,

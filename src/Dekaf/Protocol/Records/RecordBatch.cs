@@ -676,7 +676,6 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
                 var recordIndex = _parsedRecordsOffset + i;
                 if (parsedRecords[recordIndex].Headers is { } headers)
                     ArrayPool<Header>.Shared.Return(headers, clearArray: true);
-                parsedRecords[recordIndex].ReturnPooledRoutingIndices();
                 if (!_ownsParsedRecords)
                     parsedRecords[recordIndex] = default;
             }
@@ -1943,7 +1942,6 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
                     // to the GC, preventing the pool from holding onto network buffer memory.
                     ArrayPool<Header>.Shared.Return(headers, clearArray: true);
                 }
-                parsedRecords[i].ReturnPooledRoutingIndices();
             }
 
             ArrayPool<Record>.Shared.Return(parsedRecords, clearArray: true);

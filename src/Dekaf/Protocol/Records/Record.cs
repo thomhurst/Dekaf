@@ -36,7 +36,7 @@ public readonly record struct Record
 
     private int RoutedHeaderIndex0 { get; init; }
     private int RoutedHeaderIndex1 { get; init; }
-    private int[]? RemainingRoutedHeaderIndices { get; init; }
+    private int RoutedHeaderTailOffset { get; init; }
 
     /// <summary>
     /// Returns true if the key is null (empty memory with special flag).
@@ -188,18 +188,22 @@ public readonly record struct Record
         Header[]? headers = null;
         var routedHeaderIndex0 = 0;
         var routedHeaderIndex1 = 0;
-        int[]? remainingRoutedHeaderIndices = null;
+        var routedHeaderTailOffset = headerRoutingPlan is null
+            ? 0
+            : RecordHeaderRoutingPlan.FullyIndexedWithoutTail;
         if (headerCount > 0)
         {
             // Rent from ArrayPool to avoid per-record allocation.
             // The rented array may be oversized; HeaderCount tracks the valid count.
             // The array is returned to the pool when the owning LazyRecordList is disposed.
-            headers = ArrayPool<Header>.Shared.Rent(headerCount);
-            if (headerRoutingPlan is { Count: > 2 })
+            var routedHeaderTailCount = headerRoutingPlan is { Count: > 2 }
+                ? headerRoutingPlan.GetRoutingTailCapacity(headerCount)
+                : 0;
+            headers = ArrayPool<Header>.Shared.Rent(checked(headerCount + routedHeaderTailCount));
+            if (routedHeaderTailCount > 0)
             {
-                remainingRoutedHeaderIndices = ArrayPool<int>.Shared.Rent(
-                    headerRoutingPlan.Count - 2);
-                remainingRoutedHeaderIndices.AsSpan(0, headerRoutingPlan.Count - 2).Clear();
+                routedHeaderTailOffset = headerCount;
+                headers.AsSpan(routedHeaderTailOffset, routedHeaderTailCount).Clear();
             }
             try
             {
@@ -220,7 +224,14 @@ public readonly record struct Record
                                 routedHeaderIndex1 = index;
                                 break;
                             default:
-                                remainingRoutedHeaderIndices![slot - 2] = index;
+                                var mask = routedHeaderTailCount - 1;
+                                var bucket = RecordHeaderRoutingPlan.GetRoutingTailBucket(slot, mask);
+                                while (headers[routedHeaderTailOffset + bucket].Key is { } existingKey
+                                       && !string.Equals(existingKey, header.Key, StringComparison.Ordinal))
+                                {
+                                    bucket = (bucket + 1) & mask;
+                                }
+                                headers[routedHeaderTailOffset + bucket] = header;
                                 break;
                         }
                     }
@@ -231,8 +242,6 @@ public readonly record struct Record
             catch
             {
                 ArrayPool<Header>.Shared.Return(headers, clearArray: true);
-                if (remainingRoutedHeaderIndices is not null)
-                    ArrayPool<int>.Shared.Return(remainingRoutedHeaderIndices, clearArray: false);
                 throw;
             }
         }
@@ -255,7 +264,7 @@ public readonly record struct Record
             HeaderCount = headerCount,
             RoutedHeaderIndex0 = routedHeaderIndex0,
             RoutedHeaderIndex1 = routedHeaderIndex1,
-            RemainingRoutedHeaderIndices = remainingRoutedHeaderIndices
+            RoutedHeaderTailOffset = routedHeaderTailOffset
         };
     }
 
@@ -267,7 +276,7 @@ public readonly record struct Record
             HeaderCount,
             RoutedHeaderIndex0,
             RoutedHeaderIndex1,
-            RemainingRoutedHeaderIndices);
+            RoutedHeaderTailOffset);
 
     internal Record IndexHeaders(RecordHeaderRoutingPlan headerRoutingPlan)
     {
@@ -276,9 +285,6 @@ public readonly record struct Record
 
         var firstIndex = 0;
         var secondIndex = 0;
-        var remainingIndices = headerRoutingPlan.Count > 2
-            ? new int[headerRoutingPlan.Count - 2]
-            : null;
         for (var index = 0; index < HeaderCount; index++)
         {
             if (!headerRoutingPlan.TryGetSlot(Headers[index].Key, out var slot))
@@ -293,9 +299,6 @@ public readonly record struct Record
                 case 1:
                     secondIndex = encodedIndex;
                     break;
-                default:
-                    remainingIndices![slot - 2] = encodedIndex;
-                    break;
             }
         }
 
@@ -303,14 +306,10 @@ public readonly record struct Record
         {
             RoutedHeaderIndex0 = firstIndex,
             RoutedHeaderIndex1 = secondIndex,
-            RemainingRoutedHeaderIndices = remainingIndices
+            RoutedHeaderTailOffset = headerRoutingPlan.Count > 2
+                ? RecordHeaderRoutingPlan.InlineSlotsOnly
+                : RecordHeaderRoutingPlan.FullyIndexedWithoutTail
         };
-    }
-
-    internal void ReturnPooledRoutingIndices()
-    {
-        if (RemainingRoutedHeaderIndices is not null)
-            ArrayPool<int>.Shared.Return(RemainingRoutedHeaderIndices, clearArray: false);
     }
 
     private static void ValidateBodyLength(int declaredLength, long consumedLength)

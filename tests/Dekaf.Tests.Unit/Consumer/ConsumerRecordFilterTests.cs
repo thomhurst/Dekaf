@@ -301,6 +301,58 @@ public sealed class ConsumerRecordFilterTests
     }
 
     [Test]
+    public async Task ConsumeBatch_RejectedDrainReturnsControlAfterBoundedWork()
+    {
+        using var pending = CreatePollRefreshRecords();
+        var filter = new HeaderValueFilter("route", "keep"u8.ToArray());
+        var firstBatch = new ConsumeBatch<string, string>(
+            pending,
+            Serializers.String,
+            Serializers.String,
+            recordFilter: filter);
+
+        var firstResults = firstBatch.ToArray();
+
+        await Assert.That(firstResults).IsEmpty();
+        await Assert.That(filter.CallCount).IsEqualTo(64);
+
+        var secondBatch = new ConsumeBatch<string, string>(
+            pending,
+            Serializers.String,
+            Serializers.String,
+            recordFilter: filter);
+
+        var result = secondBatch.Single();
+
+        await Assert.That(result.Offset).IsEqualTo(65L);
+        await Assert.That(filter.CallCount).IsEqualTo(66);
+    }
+
+    [Test]
+    public async Task ConsumeBatch_RejectedDrainContinuesAfterFastPollRefresh()
+    {
+        using var pending = CreatePollRefreshRecords();
+        var filter = new HeaderValueFilter("route", "keep"u8.ToArray());
+        var refreshCount = 0;
+        var batch = new ConsumeBatch<string, string>(
+            pending,
+            Serializers.String,
+            Serializers.String,
+            recordFilter: filter,
+            tryRecordPollFast: () =>
+            {
+                refreshCount++;
+                return true;
+            });
+
+        var result = batch.Single();
+
+        await Assert.That(result.Offset).IsEqualTo(65L);
+        await Assert.That(filter.CallCount).IsEqualTo(66);
+        await Assert.That(refreshCount).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task ConsumeBatch_HeaderRouterReceivesPooledRecordHeaders()
     {
         using var pending = CreatePendingFetchData(

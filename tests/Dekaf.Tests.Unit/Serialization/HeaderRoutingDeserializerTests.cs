@@ -1,4 +1,7 @@
+using System.Buffers;
 using System.Text;
+using Dekaf.Protocol;
+using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
 
 namespace Dekaf.Tests.Unit.Serialization;
@@ -74,6 +77,51 @@ public sealed class HeaderRoutingDeserializerTests
     }
 
     [Test]
+    public async Task Deserialize_ParsedNestedRoutingUsesPooledHeaderIndex()
+    {
+        var leaf = new PrefixDeserializer("leaf");
+        var route4 = CreateNestedRouter("route-4", "hit"u8.ToArray(), leaf);
+        var route3 = CreateNestedRouter("route-3", "next"u8.ToArray(), route4);
+        var route2 = CreateNestedRouter("route-2", "next"u8.ToArray(), route3);
+        var root = CreateNestedRouter("route-1", "next"u8.ToArray(), route2);
+        var plan = RecordHeaderRoutingPlan.Create(Serializers.String, root)!;
+        var record = new Record
+        {
+            Value = "payload"u8.ToArray(),
+            Headers =
+            [
+                new Header("route-1", "next"u8.ToArray()),
+                new Header("route-2", "next"u8.ToArray()),
+                new Header("route-3", "next"u8.ToArray()),
+                new Header("route-4", "hit"u8.ToArray())
+            ],
+            HeaderCount = 4
+        };
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        record.Write(ref writer);
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var parsed = Record.Read(ref reader, plan);
+
+        string result;
+        try
+        {
+            var lookup = parsed.CreateHeaderRoutingLookup(plan);
+            result = RecordHeaderDeserializer.Deserialize(
+                root,
+                parsed.Value,
+                CreateContext(),
+                in lookup);
+        }
+        finally
+        {
+            ArrayPool<Header>.Shared.Return(parsed.Headers!, clearArray: true);
+        }
+
+        await Assert.That(result).IsEqualTo("leaf:payload");
+    }
+
+    [Test]
     public async Task Constructor_DuplicateRouteValuesThrows()
     {
         await Assert.That(() => new HeaderRoutingDeserializer<string>(
@@ -99,6 +147,15 @@ public sealed class HeaderRoutingDeserializerTests
         new PrefixDeserializer("fallback"),
         new HeaderDeserializerRoute<string>("created"u8.ToArray(), new PrefixDeserializer("created")),
         new HeaderDeserializerRoute<string>("deleted"u8.ToArray(), new PrefixDeserializer("deleted")));
+
+    private static HeaderRoutingDeserializer<string> CreateNestedRouter(
+        string headerName,
+        byte[] routeValue,
+        IDeserializer<string> child) =>
+        new(
+            headerName,
+            new PrefixDeserializer("fallback"),
+            new HeaderDeserializerRoute<string>(routeValue, child));
 
     private static SerializationContext CreateContext() => new()
     {

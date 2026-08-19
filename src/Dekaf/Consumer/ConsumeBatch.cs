@@ -226,6 +226,8 @@ namespace Dekaf.Consumer
     /// <typeparam name="TValue">Value type.</typeparam>
     public sealed class ConsumeBatch<TKey, TValue> : IEnumerable<ConsumeResult<TKey, TValue>>
     {
+        private const int MaxRejectedRecordsPerBatch = 64;
+
         private readonly PendingFetchData _pendingFetchData;
         private readonly IDeserializer<TKey>? _keyDeserializer;
         private readonly IDeserializer<TValue>? _valueDeserializer;
@@ -235,6 +237,7 @@ namespace Dekaf.Consumer
         private readonly Action<TopicPartition, long, int>? _storeOffsetOnDelivery;
         private readonly Action<PendingFetchData, long>? _rewindAfterDeliveryFailure;
         private readonly IConsumerRecordFilter? _recordFilter;
+        private readonly Func<bool>? _tryRecordPollFast;
         private readonly int _maxRecords;
         private long _count;
 
@@ -246,7 +249,8 @@ namespace Dekaf.Consumer
             int maxRecords = int.MaxValue,
             Action<PendingFetchData, long>? rewindAfterDeliveryFailure = null,
             IConsumerRecordFilter? recordFilter = null,
-            RecordHeaderRoutingPlan? recordHeaderRoutingPlan = null)
+            RecordHeaderRoutingPlan? recordHeaderRoutingPlan = null,
+            Func<bool>? tryRecordPollFast = null)
         {
             ArgumentOutOfRangeException.ThrowIfLessThan(maxRecords, 1);
             _pendingFetchData = pendingFetchData;
@@ -259,6 +263,7 @@ namespace Dekaf.Consumer
             _maxRecords = maxRecords;
             _rewindAfterDeliveryFailure = rewindAfterDeliveryFailure;
             _recordFilter = recordFilter;
+            _tryRecordPollFast = tryRecordPollFast;
             _recordHeaderRoutingPlan = recordHeaderRoutingPlan
                                        ?? RecordHeaderRoutingPlan.Create(
                                            keyDeserializer,
@@ -344,6 +349,7 @@ namespace Dekaf.Consumer
             private bool _canContinue;
             private int _observedVersion;
             private int _recordsExamined;
+            private int _rejectedRecordsExamined;
 
             internal Enumerator(ConsumeBatch<TKey, TValue> batch)
             {
@@ -353,6 +359,7 @@ namespace Dekaf.Consumer
                     batch._pendingFetchData.TopicPartition,
                     ref _observedVersion);
                 _recordsExamined = 0;
+                _rejectedRecordsExamined = 0;
                 Current = default!;
             }
 
@@ -549,6 +556,21 @@ namespace Dekaf.Consumer
                         {
                             if (!CompleteRecord(pending, offset, messageBytes, proveProcessed: true))
                                 return false;
+
+                            if (++_rejectedRecordsExamined >= MaxRejectedRecordsPerBatch)
+                            {
+                                _rejectedRecordsExamined = 0;
+                                // Refresh inline when the coordinator can prove the current poll
+                                // generation is healthy. Expired/slow-path states end the batch so
+                                // the outer async iterator can run RecordPollAsync.
+                                if (_batch._tryRecordPollFast is null
+                                    || !_batch._tryRecordPollFast())
+                                {
+                                    _canContinue = false;
+                                    return false;
+                                }
+                            }
+
                             continue;
                         }
                     }

@@ -20,6 +20,7 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 public class ConsumerRecordFilterBenchmarks
 {
     private const int MessageCount = 1_000;
+    private static readonly Func<bool> PollRefresh = static () => true;
     private readonly SingleRecordBatchList _batchList = new();
     private readonly IConsumerRecordFilter _passAll = new PassAllFilter();
     private readonly IConsumerRecordFilter _rejectAll = new RejectAllFilter();
@@ -71,14 +72,20 @@ public class ConsumerRecordFilterBenchmarks
     private int Run(IConsumerRecordFilter filter)
     {
         using var pending = CreatePendingFetch();
-        var batch = new ConsumeBatch<Ignore, ReadOnlyMemory<byte>>(
-            pending,
-            Serializers.Ignore,
-            Serializers.RawBytes,
-            recordFilter: filter);
         var delivered = 0;
-        foreach (var _ in batch)
-            delivered++;
+        do
+        {
+            var batch = new ConsumeBatch<Ignore, ReadOnlyMemory<byte>>(
+                pending,
+                Serializers.Ignore,
+                Serializers.RawBytes,
+                recordFilter: filter,
+                tryRecordPollFast: PollRefresh);
+            foreach (var _ in batch)
+                delivered++;
+        }
+        while (!pending.IsExhausted);
+
         return delivered;
     }
 

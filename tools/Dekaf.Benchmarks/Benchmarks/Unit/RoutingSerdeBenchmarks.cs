@@ -5,6 +5,7 @@ using BenchmarkDotNet.Configs;
 using BenchmarkDotNet.Jobs;
 using BenchmarkDotNet.Reports;
 using BenchmarkDotNet.Running;
+using Dekaf.Protocol;
 using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
 using Dekaf.Serialization.Routing;
@@ -230,5 +231,64 @@ public class HeaderRoutingLookupBenchmarks
             headers[index] = new Header($"noise-{index}", Array.Empty<byte>());
         headers[0] = routedHeader;
         return headers;
+    }
+}
+
+/// <summary>Measures full record parsing with nested header-routing index construction.</summary>
+[MemoryDiagnoser]
+[ShortRunJob(RuntimeMoniker.Net10_0)]
+public class HeaderRoutingParseBenchmarks
+{
+    private readonly RoutingSerdeBenchmarks.EventDeserializer _deserializer = new();
+    private byte[] _encodedRecord = null!;
+    private RecordHeaderRoutingPlan _nestedPlan = null!;
+
+    [GlobalSetup]
+    public void Setup()
+    {
+        IDeserializer<RoutingSerdeBenchmarks.Event> nested = _deserializer;
+        for (var route = 4; route >= 1; route--)
+        {
+            nested = new HeaderRoutingDeserializer<RoutingSerdeBenchmarks.Event>(
+                $"route-{route}",
+                nested);
+        }
+
+        _nestedPlan = RecordHeaderRoutingPlan.Create(_deserializer, nested)!;
+        var record = new Record
+        {
+            Key = new byte[] { 1 },
+            Value = new byte[] { 2 },
+            Headers =
+            [
+                new Header("route-1", new byte[] { 1 }),
+                new Header("route-2", new byte[] { 2 }),
+                new Header("route-3", new byte[] { 3 }),
+                new Header("route-4", new byte[] { 4 })
+            ],
+            HeaderCount = 4
+        };
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        record.Write(ref writer);
+        _encodedRecord = buffer.WrittenSpan.ToArray();
+
+        _ = Parse(headerRoutingPlan: null);
+        _ = Parse(_nestedPlan);
+    }
+
+    [Benchmark(Baseline = true)]
+    public int ParseWithoutRouting() => Parse(headerRoutingPlan: null);
+
+    [Benchmark]
+    public int ParseNestedRouting() => Parse(_nestedPlan);
+
+    private int Parse(RecordHeaderRoutingPlan? headerRoutingPlan)
+    {
+        var reader = new KafkaProtocolReader(_encodedRecord);
+        var record = Record.Read(ref reader, headerRoutingPlan);
+        var count = record.HeaderCount;
+        ArrayPool<Header>.Shared.Return(record.Headers!, clearArray: true);
+        return count;
     }
 }
