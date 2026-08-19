@@ -18,6 +18,7 @@ namespace Dekaf.SchemaRegistry;
 /// </summary>
 public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistryCache
 {
+    private const string AcceptUnknownPropertiesHeader = "Confluent-Accept-Unknown-Properties";
     private static readonly TimeSpan PooledConnectionLifetime = TimeSpan.FromMinutes(2);
 
     private readonly HttpClient _httpClient;
@@ -286,13 +287,16 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             throw new ArgumentException("UserAgent is not a valid HTTP User-Agent value.", nameof(config), ex);
         }
 
+        headers.Add(AcceptUnknownPropertiesHeader, "true");
+
         if (config.DefaultHeaders is null)
             return;
 
         foreach (var (name, value) in config.DefaultHeaders)
         {
             if (string.Equals(name, "User-Agent", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(name, "Accept", StringComparison.OrdinalIgnoreCase))
+                string.Equals(name, "Accept", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(name, AcceptUnknownPropertiesHeader, StringComparison.OrdinalIgnoreCase))
             {
                 throw new ArgumentException(
                     $"The {name} header is managed by SchemaRegistryClient and cannot be overridden.",
@@ -546,7 +550,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
 
         using var response = await GetWithFailoverAsync(
             WithQuery(
-                $"schemas/guids/{Uri.EscapeDataString(guid)}",
+                $"schemas/guids/{parsedGuid:D}",
                 ("format", format)),
             cancellationToken).ConfigureAwait(false);
 

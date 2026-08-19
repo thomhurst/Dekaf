@@ -45,7 +45,7 @@ public sealed class SchemaRegistryGuidTests
         await Assert.That(handler.Requests).Count().IsEqualTo(1);
         await Assert.That(handler.Requests[0].Method).IsEqualTo(HttpMethod.Get);
         await Assert.That(handler.Requests[0].RequestUri!.PathAndQuery)
-            .IsEqualTo("/schemas/guids/%7B01234567-89ab-cdef-0123-456789abcdef%7D?format=serialized%2Fview");
+            .IsEqualTo("/schemas/guids/01234567-89ab-cdef-0123-456789abcdef?format=serialized%2Fview");
         await Assert.That(schema.SchemaType).IsEqualTo(SchemaType.Protobuf);
         await Assert.That(schema.SchemaString).IsEqualTo("message Order {}");
         await Assert.That(schema.References![0].Subject).IsEqualTo("common-value");

@@ -524,17 +524,22 @@ internal static class AotSmoke
             Require(request.Method == HttpMethod.Get, "Schema GUID method mismatch.");
             Require(
                 request.RequestUri!.PathAndQuery ==
-                "/schemas/guids/%7B01234567-89ab-cdef-0123-456789abcdef%7D?format=serialized",
+                "/schemas/guids/01234567-89ab-cdef-0123-456789abcdef?format=serialized",
                 "Schema GUID path mismatch.");
+            Require(
+                request.Headers.GetValues("Confluent-Accept-Unknown-Properties").Single() == "true",
+                "Schema GUID extended-properties header mismatch.");
 
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent(
-                    """{ "schema": "{}", "schemaType": "JSON", "metadata": { "properties": { "owner": "aot" } } }""",
-                    Encoding.UTF8,
-                    "application/json")
-            });
+            return Task.FromResult(JsonResponse());
         }
+
+        private static HttpResponseMessage JsonResponse() => new(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """{ "schema": "{}", "schemaType": "JSON", "metadata": { "properties": { "owner": "aot" } } }""",
+                Encoding.UTF8,
+                "application/json")
+        };
     }
 
     private const string AotPayloadJsonSchema = """
@@ -551,7 +556,7 @@ internal static class AotSmoke
     private sealed class InMemorySchemaRegistry : ISchemaRegistryClient, ISchemaRegistryCache
     {
         private readonly Dictionary<int, Schema> _schemasById = [];
-        private readonly Dictionary<Guid, Schema> _schemasByGuid = [];
+        private readonly Dictionary<(Guid Guid, string? Format), Schema> _schemasByGuid = [];
         private readonly Dictionary<string, RegisteredSchema> _schemasBySubject = new(StringComparer.Ordinal);
         private int _nextId = 1;
 
@@ -577,7 +582,7 @@ internal static class AotSmoke
             };
             _schemasBySubject[subject] = registered;
             _schemasById[id] = schema;
-            _schemasByGuid[guid] = schema;
+            _schemasByGuid[(guid, null)] = schema;
 
             return Task.FromResult(id);
         }
@@ -594,7 +599,13 @@ internal static class AotSmoke
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            return Task.FromResult(_schemasByGuid[Guid.Parse(guid)]);
+            var parsedGuid = Guid.Parse(guid);
+            if (_schemasByGuid.TryGetValue((parsedGuid, format), out var cached))
+                return Task.FromResult(cached);
+
+            var schema = _schemasByGuid[(parsedGuid, null)];
+            _schemasByGuid[(parsedGuid, format)] = schema;
+            return Task.FromResult(schema);
         }
 
         public Task<Schema> GetSchemaAsync(
@@ -673,7 +684,7 @@ internal static class AotSmoke
 
         public bool TryGetCachedSchema(Guid guid, string? format, out Schema schema)
         {
-            if (_schemasByGuid.TryGetValue(guid, out var cached))
+            if (_schemasByGuid.TryGetValue((guid, format), out var cached))
             {
                 schema = cached;
                 return true;
