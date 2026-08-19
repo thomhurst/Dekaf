@@ -24,6 +24,8 @@ namespace Dekaf.Tests.Unit.SchemaRegistry;
 
 public sealed class AvroPocoSchemaRegistryTests
 {
+    private const int AllocationWarmupCount = 10_000;
+
     private static readonly string[] LegacyValues = ["ignored", "field"];
     private static readonly byte[] PositiveDecimalWire = [0, 0, 0, 0, 1, 0x04, 0x30, 0x39];
     private static readonly byte[] NegativeDecimalWire = [0, 0, 0, 0, 1, 0x04, 0xCF, 0xC7];
@@ -1673,7 +1675,9 @@ public sealed class AvroPocoSchemaRegistryTests
         var schemaId = BinaryPrimitives.ReadInt32BigEndian(destination.WrittenSpan.Slice(1, 4));
         await deserializer.WarmupAsync(schemaId, context);
 
-        for (var index = 0; index < 16; index++)
+        // Cross the tiered-compilation call-count threshold before measuring. A short
+        // warmup made the generated generic read path promote during the allocation window.
+        for (var index = 0; index < AllocationWarmupCount; index++)
             _ = deserializer.Deserialize(destination.WrittenMemory, context);
 
         var before = GC.GetAllocatedBytesForCurrentThread();
@@ -1682,6 +1686,64 @@ public sealed class AvroPocoSchemaRegistryTests
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         await Assert.That(allocated).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task GeneratedCodec_RulesPathSubjectResolutionAllocatesZeroUnderParallelPressure()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        var serializerConfig = new AvroSerializerConfig
+        {
+            SubjectNameStrategy = SubjectNameStrategy.TopicRecordName
+        };
+        var deserializerConfig = new AvroDeserializerConfig
+        {
+            SubjectNameStrategy = SubjectNameStrategy.TopicRecordName,
+            RuleExecutor = PassThroughRuleExecutor.Instance
+        };
+        await using var serializer = PocoReadonlyRecord.CreateAvroSerializer(registry, serializerConfig);
+        await using var deserializer = PocoReadonlyRecord.CreateAvroDeserializer(registry, deserializerConfig);
+        var context = new SerializationContext
+        {
+            Topic = "poco-subject-allocation-parallel",
+            Component = SerializationComponent.Value
+        };
+        var destination = new ArrayBufferWriter<byte>(16);
+        serializer.Serialize(new PocoReadonlyRecord { Id = 42 }, ref destination, context);
+        var schemaId = BinaryPrimitives.ReadInt32BigEndian(destination.WrittenSpan.Slice(1, 4));
+        await deserializer.WarmupAsync(schemaId, context);
+
+        var workerCount = Math.Clamp(Environment.ProcessorCount, 4, 16);
+        using var ready = new CountdownEvent(workerCount);
+        using var start = new ManualResetEventSlim();
+        var tasks = new Task<long>[workerCount];
+        for (var taskIndex = 0; taskIndex < tasks.Length; taskIndex++)
+        {
+            tasks[taskIndex] = Task.Run(() =>
+            {
+                try
+                {
+                    for (var index = 0; index < AllocationWarmupCount; index++)
+                        _ = deserializer.Deserialize(destination.WrittenMemory, context);
+                }
+                finally
+                {
+                    ready.Signal();
+                }
+
+                start.Wait();
+                var before = GC.GetAllocatedBytesForCurrentThread();
+                for (var index = 0; index < 1_000; index++)
+                    _ = deserializer.Deserialize(destination.WrittenMemory, context);
+                return GC.GetAllocatedBytesForCurrentThread() - before;
+            });
+        }
+
+        ready.Wait();
+        start.Set();
+        var allocations = await Task.WhenAll(tasks);
+        for (var index = 0; index < allocations.Length; index++)
+            await Assert.That(allocations[index]).IsEqualTo(0);
     }
 
     [Test]
