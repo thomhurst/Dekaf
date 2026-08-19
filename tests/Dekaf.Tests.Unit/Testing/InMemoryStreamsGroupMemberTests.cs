@@ -76,6 +76,43 @@ public sealed class InMemoryStreamsGroupMemberTests
     }
 
     [Test]
+    public async Task JoinAndUpdateAsync_DeepCopyPublishedTaskSets()
+    {
+        await using var member = CreateMember();
+        var joinPartitions = new List<int> { 0, 1 };
+        var joinTasks = new List<StreamsGroupTaskSet>
+        {
+            new() { SubtopologyId = "join", Partitions = joinPartitions }
+        };
+
+        var joinResult = await member.JoinAsync(new StreamsGroupMemberUpdate
+        {
+            ActiveTasks = joinTasks
+        });
+
+        joinPartitions[0] = 99;
+        joinTasks.Clear();
+        await Assert.That(joinResult.ActiveTasks![0].Partitions).IsEquivalentTo([0, 1]);
+        await Assert.That(member.Snapshot.Assignment.ActiveTasks[0].Partitions).IsEquivalentTo([0, 1]);
+
+        var updatePartitions = new List<int> { 2, 3 };
+        var updateTasks = new List<StreamsGroupTaskSet>
+        {
+            new() { SubtopologyId = "update", Partitions = updatePartitions }
+        };
+
+        var updateResult = await member.UpdateAsync(new StreamsGroupMemberUpdate
+        {
+            StandbyTasks = updateTasks
+        });
+
+        updatePartitions.Add(4);
+        updateTasks[0] = new StreamsGroupTaskSet { SubtopologyId = "replacement", Partitions = [9] };
+        await Assert.That(updateResult.StandbyTasks![0].Partitions).IsEquivalentTo([2, 3]);
+        await Assert.That(member.Snapshot.Assignment.StandbyTasks[0].Partitions).IsEquivalentTo([2, 3]);
+    }
+
+    [Test]
     [Arguments(null, StreamsGroupMembershipOperation.Default, false)]
     [Arguments("static-a", StreamsGroupMembershipOperation.Default, true)]
     [Arguments(null, StreamsGroupMembershipOperation.RemainInGroup, true)]

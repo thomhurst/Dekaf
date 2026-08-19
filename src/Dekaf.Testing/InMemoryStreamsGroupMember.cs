@@ -191,9 +191,9 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember
 
     private StreamsGroupHeartbeatResult ApplyUpdate(StreamsGroupMemberUpdate update, bool isJoin)
     {
-        var activeTasks = Copy(update.ActiveTasks);
-        var standbyTasks = Copy(update.StandbyTasks);
-        var warmupTasks = Copy(update.WarmupTasks);
+        var activeTasks = CopyTaskSets(update.ActiveTasks);
+        var standbyTasks = CopyTaskSets(update.StandbyTasks);
+        var warmupTasks = CopyTaskSets(update.WarmupTasks);
         var previous = _snapshot;
         var assignment = new StreamsGroupAssignment
         {
@@ -242,14 +242,26 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember
             PartitionsByUserEndpoint = null
         };
 
-    private static IReadOnlyList<T>? Copy<T>(IReadOnlyList<T>? items)
+    private static IReadOnlyList<StreamsGroupTaskSet>? CopyTaskSets(
+        IReadOnlyList<StreamsGroupTaskSet>? taskSets)
     {
-        if (items is null)
+        if (taskSets is null)
             return null;
 
-        var copy = new T[items.Count];
-        for (var index = 0; index < items.Count; index++)
-            copy[index] = items[index];
+        var copy = new StreamsGroupTaskSet[taskSets.Count];
+        for (var index = 0; index < taskSets.Count; index++)
+        {
+            var taskSet = taskSets[index];
+            var partitions = new int[taskSet.Partitions.Count];
+            for (var partitionIndex = 0; partitionIndex < partitions.Length; partitionIndex++)
+                partitions[partitionIndex] = taskSet.Partitions[partitionIndex];
+            copy[index] = new StreamsGroupTaskSet
+            {
+                SubtopologyId = taskSet.SubtopologyId,
+                Partitions = partitions
+            };
+        }
+
         return copy;
     }
 
