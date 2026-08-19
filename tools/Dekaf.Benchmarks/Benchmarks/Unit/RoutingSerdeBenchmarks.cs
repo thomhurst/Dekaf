@@ -24,9 +24,11 @@ public class RoutingSerdeBenchmarks
     private ArrayBufferWriter<byte> _buffer = new(16);
     private TopicRoutingDeserializer<Event> _topicDeserializer = null!;
     private SchemaIdRoutingDeserializer<Event> _schemaIdDeserializer = null!;
+    private HeaderRoutingDeserializer<Event> _headerDeserializer = null!;
     private TopicRoutingSerializer<Event> _topicSerializer = null!;
     private TypeRoutingSerializer<Event> _typeSerializer = null!;
     private SerializationContext _context;
+    private Header[] _headers = null!;
 
     private sealed class RoutingConfig : ManualConfig
     {
@@ -51,6 +53,11 @@ public class RoutingSerdeBenchmarks
         _schemaIdDeserializer = new SchemaIdRoutingDeserializer<Event>()
             .Register(42, _deserializer)
             .Freeze();
+        _headerDeserializer = new HeaderRoutingDeserializer<Event>(
+            "event-type",
+            _deserializer,
+            new HeaderDeserializerRoute<Event>(new byte[] { 1 }, _deserializer));
+        _headers = [new Header("event-type", new byte[] { 1 })];
         _topicSerializer = new TopicRoutingSerializer<Event>()
             .Register("events", _serializer)
             .Freeze();
@@ -69,6 +76,10 @@ public class RoutingSerdeBenchmarks
 
     [Benchmark]
     public Event DeserializeBySchemaId() => _schemaIdDeserializer.Deserialize(FramedData, _context);
+
+    [Benchmark]
+    public Event DeserializeByHeader() =>
+        _headerDeserializer.DeserializeWithHeaders(Data, _context, _headers);
 
     [Benchmark]
     public int SerializeDirect()

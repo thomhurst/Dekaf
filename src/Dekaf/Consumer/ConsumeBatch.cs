@@ -229,9 +229,11 @@ namespace Dekaf.Consumer
         private readonly PendingFetchData _pendingFetchData;
         private readonly IDeserializer<TKey>? _keyDeserializer;
         private readonly IDeserializer<TValue>? _valueDeserializer;
+        private readonly bool _hasRecordHeaderDeserializers;
         private readonly BatchIterationGuard _iterationGuard;
         private readonly Action<TopicPartition, long, int>? _storeOffsetOnDelivery;
         private readonly Action<PendingFetchData, long>? _rewindAfterDeliveryFailure;
+        private readonly IConsumerRecordFilter? _recordFilter;
         private readonly int _maxRecords;
         private long _count;
 
@@ -241,16 +243,20 @@ namespace Dekaf.Consumer
             BatchIterationGuard iterationGuard = default,
             Action<TopicPartition, long, int>? storeOffsetOnDelivery = null,
             int maxRecords = int.MaxValue,
-            Action<PendingFetchData, long>? rewindAfterDeliveryFailure = null)
+            Action<PendingFetchData, long>? rewindAfterDeliveryFailure = null,
+            IConsumerRecordFilter? recordFilter = null)
         {
             ArgumentOutOfRangeException.ThrowIfLessThan(maxRecords, 1);
             _pendingFetchData = pendingFetchData;
             _keyDeserializer = keyDeserializer;
             _valueDeserializer = valueDeserializer;
+            _hasRecordHeaderDeserializers = keyDeserializer is IRecordHeaderDeserializer<TKey>
+                                            || valueDeserializer is IRecordHeaderDeserializer<TValue>;
             _iterationGuard = iterationGuard;
             _storeOffsetOnDelivery = storeOffsetOnDelivery;
             _maxRecords = maxRecords;
             _rewindAfterDeliveryFailure = rewindAfterDeliveryFailure;
+            _recordFilter = recordFilter;
         }
 
         /// <summary>
@@ -329,7 +335,7 @@ namespace Dekaf.Consumer
             private readonly ConsumeBatch<TKey, TValue> _batch;
             private bool _canContinue;
             private int _observedVersion;
-            private int _recordsYielded;
+            private int _recordsExamined;
 
             internal Enumerator(ConsumeBatch<TKey, TValue> batch)
             {
@@ -338,7 +344,7 @@ namespace Dekaf.Consumer
                 _canContinue = batch._iterationGuard.CanStart(
                     batch._pendingFetchData.TopicPartition,
                     ref _observedVersion);
-                _recordsYielded = 0;
+                _recordsExamined = 0;
                 Current = default!;
             }
 
@@ -362,13 +368,21 @@ namespace Dekaf.Consumer
                 if (!_canContinue)
                     return false;
 
+                return _batch._recordFilter is null && !_batch._hasRecordHeaderDeserializers
+                    ? MoveNextFast(pending)
+                    : MoveNextFilteredOrRouted(pending);
+            }
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            private bool MoveNextFast(PendingFetchData pending)
+            {
                 if (!_batch._iterationGuard.IsCurrent(pending.TopicPartition, ref _observedVersion))
                 {
                     _canContinue = false;
                     return false;
                 }
 
-                if (_recordsYielded >= _batch._maxRecords)
+                if (_recordsExamined >= _batch._maxRecords)
                 {
                     pending.TryBufferNext();
                     _canContinue = false;
@@ -436,9 +450,157 @@ namespace Dekaf.Consumer
                     pending.TopicPartition,
                     offset + 1,
                     pending.LastYieldedLeaderEpoch);
-                _recordsYielded++;
+                _recordsExamined++;
                 _batch._count++;
 
+                return true;
+            }
+
+            [MethodImpl(MethodImplOptions.NoInlining)]
+            private bool MoveNextFilteredOrRouted(PendingFetchData pending)
+            {
+                while (true)
+                {
+                    if (!_batch._iterationGuard.IsCurrent(pending.TopicPartition, ref _observedVersion))
+                    {
+                        _canContinue = false;
+                        return false;
+                    }
+
+                    if (_recordsExamined >= _batch._maxRecords)
+                    {
+                        pending.TryBufferNext();
+                        _canContinue = false;
+                        return false;
+                    }
+
+                    if (!pending.MoveNext())
+                    {
+                        _canContinue = false;
+                        return false;
+                    }
+
+                    ref readonly Protocol.Records.Record record = ref pending.CurrentRecord;
+                    var offset = pending.CurrentBaseOffset + record.OffsetDelta;
+                    var timestampMs = pending.CurrentBaseTimestamp + record.TimestampDelta;
+                    var timestampType = pending.CurrentTimestampType;
+                    var leaderEpoch = pending.CurrentPartitionLeaderEpoch >= 0
+                        ? (int?)pending.CurrentPartitionLeaderEpoch
+                        : null;
+                    var messageBytes = (record.IsKeyNull ? 0 : record.Key.Length) +
+                                       (record.IsValueNull ? 0 : record.Value.Length);
+
+                    if (_batch._recordFilter is { } filter)
+                    {
+                        bool shouldDeserialize;
+                        try
+                        {
+                            var context = new ConsumerRecordFilterContext(
+                                pending.Topic,
+                                pending.PartitionIndex,
+                                offset,
+                                timestampMs,
+                                timestampType,
+                                leaderEpoch,
+                                record.Key,
+                                record.IsKeyNull,
+                                record.Value,
+                                record.IsValueNull,
+                                record.Headers.AsSpan(0, record.HeaderCount));
+                            shouldDeserialize = filter.ShouldDeserialize(in context);
+                        }
+                        catch
+                        {
+                            _canContinue = false;
+                            _batch._rewindAfterDeliveryFailure?.Invoke(pending, offset);
+                            throw;
+                        }
+
+                        if (!shouldDeserialize)
+                        {
+                            if (!CompleteRecord(pending, offset, messageBytes, proveProcessed: true))
+                                return false;
+                            continue;
+                        }
+                    }
+
+                    try
+                    {
+                        Current = _batch._hasRecordHeaderDeserializers
+                            ? ConsumeResult<TKey, TValue>.CreateWithHeaderRouting(
+                                pending.Topic,
+                                pending.PartitionIndex,
+                                offset,
+                                record.Key,
+                                record.IsKeyNull,
+                                record.Value,
+                                record.IsValueNull,
+                                record.Headers,
+                                record.HeaderCount,
+                                pending,
+                                timestampMs,
+                                timestampType,
+                                leaderEpoch,
+                                _batch._keyDeserializer,
+                                _batch._valueDeserializer)
+                            : new ConsumeResult<TKey, TValue>(
+                                topic: pending.Topic,
+                                partition: pending.PartitionIndex,
+                                offset: offset,
+                                keyData: record.Key,
+                                isKeyNull: record.IsKeyNull,
+                                valueData: record.Value,
+                                isValueNull: record.IsValueNull,
+                                pooledHeaders: record.Headers,
+                                pooledHeaderCount: record.HeaderCount,
+                                headerOwner: pending,
+                                timestampMs: timestampMs,
+                                timestampType: timestampType,
+                                leaderEpoch: leaderEpoch,
+                                keyDeserializer: _batch._keyDeserializer,
+                                valueDeserializer: _batch._valueDeserializer);
+                    }
+                    catch (Exception ex)
+                    {
+                        _canContinue = false;
+                        _batch.ThrowAfterDeserializationFailure(pending, offset, ex);
+                        return false;
+                    }
+
+                    if (!CompleteRecord(pending, offset, messageBytes, proveProcessed: false))
+                        return false;
+
+                    _batch._count++;
+                    return true;
+                }
+            }
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            private bool CompleteRecord(
+                PendingFetchData pending,
+                long offset,
+                int messageBytes,
+                bool proveProcessed)
+            {
+                var iterationStatus = _batch._iterationGuard.GetStatusAfterRead(
+                    pending.TopicPartition,
+                    ref _observedVersion);
+                if (iterationStatus != BatchIterationStatus.Continue)
+                {
+                    _canContinue = false;
+                    if (iterationStatus == BatchIterationStatus.Paused)
+                        pending.BufferCurrentForRedelivery();
+                    return false;
+                }
+
+                pending.TrackConsumed(offset, messageBytes);
+                if (proveProcessed)
+                    pending.MarkYieldedProcessed();
+                _batch._storeOffsetOnDelivery?.Invoke(
+                    pending.TopicPartition,
+                    offset + 1,
+                    pending.LastYieldedLeaderEpoch);
+                _recordsExamined++;
                 return true;
             }
 

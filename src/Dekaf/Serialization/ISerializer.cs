@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Runtime.CompilerServices;
 
 namespace Dekaf.Serialization;
 
@@ -33,6 +34,31 @@ public interface IDeserializer<out T>
     /// Deserializes a value from the input data.
     /// </summary>
     T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context);
+}
+
+internal interface IRecordHeaderDeserializer<out T>
+{
+    T Deserialize(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        ReadOnlySpan<Header> headers);
+}
+
+internal static class RecordHeaderDeserializer
+{
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static T Deserialize<T>(
+        IDeserializer<T> deserializer,
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        Header[]? pooledHeaders,
+        int pooledHeaderCount) =>
+        deserializer is IRecordHeaderDeserializer<T> headerDeserializer
+            ? headerDeserializer.Deserialize(
+                data,
+                context,
+                pooledHeaders.AsSpan(0, pooledHeaderCount))
+            : deserializer.Deserialize(data, context);
 }
 
 /// <summary>

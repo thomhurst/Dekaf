@@ -1,4 +1,30 @@
 #nullable enable
+Dekaf.Consumer.ConsumerRecordFilterContext
+Dekaf.Consumer.ConsumerRecordFilterContext.ConsumerRecordFilterContext() -> void
+Dekaf.Consumer.ConsumerRecordFilterContext.Headers.get -> System.ReadOnlySpan<Dekaf.Serialization.Header>
+Dekaf.Consumer.ConsumerRecordFilterContext.IsKeyNull.get -> bool
+Dekaf.Consumer.ConsumerRecordFilterContext.IsValueNull.get -> bool
+Dekaf.Consumer.ConsumerRecordFilterContext.Key.get -> System.ReadOnlyMemory<byte>
+Dekaf.Consumer.ConsumerRecordFilterContext.LeaderEpoch.get -> int?
+Dekaf.Consumer.ConsumerRecordFilterContext.Offset.get -> long
+Dekaf.Consumer.ConsumerRecordFilterContext.Partition.get -> int
+Dekaf.Consumer.ConsumerRecordFilterContext.TimestampMs.get -> long
+Dekaf.Consumer.ConsumerRecordFilterContext.TimestampType.get -> Dekaf.Consumer.TimestampType
+Dekaf.Consumer.ConsumerRecordFilterContext.Topic.get -> string!
+Dekaf.Consumer.ConsumerRecordFilterContext.Value.get -> System.ReadOnlyMemory<byte>
+Dekaf.Consumer.IConsumerRecordFilter
+Dekaf.Consumer.IConsumerRecordFilter.ShouldDeserialize(scoped in Dekaf.Consumer.ConsumerRecordFilterContext context) -> bool
+Dekaf.Serialization.HeaderDeserializerRoute<T>
+Dekaf.Serialization.HeaderDeserializerRoute<T>.Deserializer.get -> Dekaf.Serialization.IDeserializer<T>!
+Dekaf.Serialization.HeaderDeserializerRoute<T>.HeaderDeserializerRoute() -> void
+Dekaf.Serialization.HeaderDeserializerRoute<T>.HeaderDeserializerRoute(System.ReadOnlyMemory<byte> headerValue, Dekaf.Serialization.IDeserializer<T>! deserializer) -> void
+Dekaf.Serialization.HeaderDeserializerRoute<T>.HeaderValue.get -> System.ReadOnlyMemory<byte>
+Dekaf.Serialization.HeaderRoutingDeserializer<T>
+Dekaf.Serialization.HeaderRoutingDeserializer<T>.Deserialize(System.ReadOnlyMemory<byte> data, Dekaf.Serialization.SerializationContext context) -> T
+Dekaf.Serialization.HeaderRoutingDeserializer<T>.HeaderRoutingDeserializer(string! headerName, Dekaf.Serialization.IDeserializer<T>! fallbackDeserializer, params Dekaf.Serialization.HeaderDeserializerRoute<T>[]! routes) -> void
+Dekaf.Consumer.ConsumerOptions.RecordFilter.get -> Dekaf.Consumer.IConsumerRecordFilter?
+Dekaf.Consumer.ConsumerOptions.RecordFilter.init -> void
+Dekaf.ConsumerBuilder<TKey, TValue>.WithRecordFilter(Dekaf.Consumer.IConsumerRecordFilter! filter) -> Dekaf.ConsumerBuilder<TKey, TValue>!
 Dekaf.Consumer.BoundedConsumerExtensions
 Dekaf.Consumer.IBoundedKafkaConsumer<TKey, TValue>
 Dekaf.Consumer.IBoundedKafkaConsumer<TKey, TValue>.ConsumeSnapshotAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Collections.Generic.IAsyncEnumerable<Dekaf.Consumer.ConsumeResult<TKey, TValue>>!

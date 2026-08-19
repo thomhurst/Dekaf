@@ -687,6 +687,70 @@ public readonly struct ConsumeResult<TKey, TValue>
         }
     }
 
+    internal static ConsumeResult<TKey, TValue> CreateWithHeaderRouting(
+        string topic,
+        int partition,
+        long offset,
+        ReadOnlyMemory<byte> keyData,
+        bool isKeyNull,
+        ReadOnlyMemory<byte> valueData,
+        bool isValueNull,
+        Header[]? pooledHeaders,
+        int pooledHeaderCount,
+        PendingFetchData headerOwner,
+        long timestampMs,
+        TimestampType timestampType,
+        int? leaderEpoch,
+        IDeserializer<TKey>? keyDeserializer,
+        IDeserializer<TValue>? valueDeserializer)
+    {
+        ref var serializationContext = ref t_serializationContext;
+        TKey? key = default;
+        if (!isKeyNull && keyDeserializer is not null)
+        {
+            serializationContext.Topic = topic;
+            serializationContext.Component = SerializationComponent.Key;
+            serializationContext.Headers = null;
+            serializationContext.KeyData = ReadOnlyMemory<byte>.Empty;
+            serializationContext.IsNull = false;
+            key = RecordHeaderDeserializer.Deserialize(
+                keyDeserializer,
+                keyData,
+                serializationContext,
+                pooledHeaders,
+                pooledHeaderCount);
+        }
+
+        TValue value = default!;
+        if (valueDeserializer is not null)
+        {
+            serializationContext.Topic = topic;
+            serializationContext.Component = SerializationComponent.Value;
+            serializationContext.Headers = null;
+            serializationContext.KeyData = SerializationContext.NormalizeKeyData(keyData, isKeyNull);
+            serializationContext.IsNull = isValueNull;
+            value = RecordHeaderDeserializer.Deserialize(
+                valueDeserializer,
+                isValueNull ? ReadOnlyMemory<byte>.Empty : valueData,
+                serializationContext,
+                pooledHeaders,
+                pooledHeaderCount);
+        }
+
+        return new ConsumeResult<TKey, TValue>(
+            topic,
+            partition,
+            offset,
+            key,
+            value,
+            pooledHeaders,
+            pooledHeaderCount,
+            headerOwner,
+            timestampMs,
+            timestampType,
+            leaderEpoch);
+    }
+
     internal static DeserializationExceptionOrigin LastDeserializationOrigin
         => t_serializationContext.Component == SerializationComponent.Key
             ? DeserializationExceptionOrigin.Key

@@ -11,7 +11,19 @@ public sealed class HeaderRoutingDeserializerTests
         var router = CreateRouter();
         var headers = new[] { new Header("event-type", "created"u8.ToArray()) };
 
-        var result = router.Deserialize("payload"u8.ToArray(), CreateContext(headers));
+        var result = router.DeserializeWithHeaders("payload"u8.ToArray(), CreateContext(), headers);
+
+        await Assert.That(result).IsEqualTo("created:payload");
+    }
+
+    [Test]
+    public async Task Deserialize_SerializationContextHeadersUsesMatchingChild()
+    {
+        var router = CreateRouter();
+        var context = CreateContext();
+        context.Headers = Headers.Create("event-type", "created");
+
+        var result = router.Deserialize("payload"u8.ToArray(), context);
 
         await Assert.That(result).IsEqualTo("created:payload");
     }
@@ -26,7 +38,7 @@ public sealed class HeaderRoutingDeserializerTests
             ? new[] { new Header("event-type", (byte[]?)null) }
             : [];
 
-        var result = router.Deserialize("payload"u8.ToArray(), CreateContext(headers));
+        var result = router.DeserializeWithHeaders("payload"u8.ToArray(), CreateContext(), headers);
 
         await Assert.That(result).IsEqualTo("fallback:payload");
     }
@@ -41,7 +53,7 @@ public sealed class HeaderRoutingDeserializerTests
             new Header("event-type", "deleted"u8.ToArray())
         };
 
-        var result = router.Deserialize("payload"u8.ToArray(), CreateContext(headers));
+        var result = router.DeserializeWithHeaders("payload"u8.ToArray(), CreateContext(), headers);
 
         await Assert.That(result).IsEqualTo("deleted:payload");
     }
@@ -57,17 +69,26 @@ public sealed class HeaderRoutingDeserializerTests
             .Throws<ArgumentException>();
     }
 
+    [Test]
+    public async Task Constructor_DefaultRouteThrows()
+    {
+        await Assert.That(() => new HeaderRoutingDeserializer<string>(
+                "event-type",
+                new PrefixDeserializer("fallback"),
+                (HeaderDeserializerRoute<string>)default))
+            .Throws<ArgumentException>();
+    }
+
     private static HeaderRoutingDeserializer<string> CreateRouter() => new(
         "event-type",
         new PrefixDeserializer("fallback"),
         new HeaderDeserializerRoute<string>("created"u8.ToArray(), new PrefixDeserializer("created")),
         new HeaderDeserializerRoute<string>("deleted"u8.ToArray(), new PrefixDeserializer("deleted")));
 
-    private static SerializationContext CreateContext(Header[] headers) => new()
+    private static SerializationContext CreateContext() => new()
     {
         Topic = "events",
-        Component = SerializationComponent.Value,
-        RecordHeaders = headers
+        Component = SerializationComponent.Value
     };
 
     private sealed class PrefixDeserializer(string prefix) : IDeserializer<string>

@@ -25,6 +25,7 @@ const sidebars = {
       items: [
         'consumer/basics',
         'consumer/delivery-semantics',
+        'consumer/filtering-and-routing',
         'consumer/offset-management',
         'consumer/consumer-groups',
         'consumer/partitioned-processing-api',

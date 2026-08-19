@@ -460,6 +460,12 @@ public sealed class ConsumerOptions
     public bool EnablePartitionEof { get; init; }
 
     /// <summary>
+    /// Optional predicate invoked after record parsing and before key/value deserialization.
+    /// Rejected records advance consumer position but are not delivered.
+    /// </summary>
+    public IConsumerRecordFilter? RecordFilter { get; init; }
+
+    /// <summary>
     /// Strategy for recovering cluster metadata when all known brokers become unavailable.
     /// <see cref="MetadataRecoveryStrategy.Rebootstrap"/> re-resolves bootstrap server DNS
     /// to discover new broker IPs, which is critical in cloud environments where broker IPs

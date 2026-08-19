@@ -1654,6 +1654,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private IDeserializer<TValue>? _valueDeserializer;
     private IAsyncDeserializer<TKey>? _asyncKeyDeserializer;
     private IAsyncDeserializer<TValue>? _asyncValueDeserializer;
+    private IConsumerRecordFilter? _recordFilter;
     private bool _cacheStringValues;
     private int _maxCachedStringValueBytes = DefaultMaxCachedStringValueBytes;
     private int _maxCachedStringValueEntries = DefaultMaxCachedStringValueEntries;
@@ -2464,6 +2465,19 @@ public sealed class ConsumerBuilder<TKey, TValue>
     }
 
     /// <summary>
+    /// Configures a synchronous, allocation-free predicate that runs before deserialization.
+    /// </summary>
+    /// <remarks>
+    /// Returning <see langword="false"/> skips delivery and advances the consumed position.
+    /// Filter exceptions propagate and leave the failed record unconsumed.
+    /// </remarks>
+    public ConsumerBuilder<TKey, TValue> WithRecordFilter(IConsumerRecordFilter filter)
+    {
+        _recordFilter = filter ?? throw new ArgumentNullException(nameof(filter));
+        return this;
+    }
+
+    /// <summary>
     /// Enables bounded caching for repeated built-in string values.
     /// </summary>
     /// <remarks>
@@ -3267,6 +3281,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
             AdditionalRebalanceListeners = _additionalRebalanceListeners?.ToArray(),
             PartitionStopTimeout = _partitionStopTimeout,
             EnablePartitionEof = _enablePartitionEof,
+            RecordFilter = _recordFilter,
             SocketSendBufferBytes = _socketSendBufferBytes,
             SocketReceiveBufferBytes = _socketReceiveBufferBytes,
             QueuedMinMessages = _queuedMinMessages,
