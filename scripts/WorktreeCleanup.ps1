@@ -3,12 +3,98 @@
 # Remove-MergedWorktrees.ps1. Not meant to be run directly.
 #
 # Removal policy (one place, both callers):
-#   - PRESERVE a worktree with uncommitted TRACKED changes (real WIP). Never
-#     force-discard it; the caller logs and moves on.
-#   - CLEAR untracked build artifacts (node_modules/bin/obj) — they are not work.
+#   - PRESERVE a worktree with uncommitted tracked changes or untracked files outside
+#     known generated directories. Never force-discard possible work.
+#   - CLEAR untracked build artifacts (node_modules/bin/obj/etc.) — they are not work.
 #   - Long-path safe: git's own delete now works because core.longpaths=true is set
 #     system-wide; the `\\?\` extended-length Remove-Item is kept as a fallback for
 #     environments where that config is missing.
+
+function New-OrdinalStringMap {
+    [CmdletBinding()]
+    [OutputType([System.Collections.Generic.Dictionary[string, bool]])]
+    param()
+
+    return [System.Collections.Generic.Dictionary[string, bool]]::new([System.StringComparer]::Ordinal)
+}
+
+$script:DisposableWorktreeGeneratedDirectories = New-OrdinalStringMap
+foreach ($directory in @(
+    '.artifacts',
+    '.vs',
+    '__pycache__',
+    'ARM',
+    'ARM64',
+    'artifacts',
+    'benchmark-results',
+    'BenchmarkDotNet.Artifacts',
+    'bin',
+    'bld',
+    'CodeCoverage',
+    'Debug',
+    'DebugPublic',
+    'log',
+    'logs',
+    'node_modules',
+    'obj',
+    'Release',
+    'Releases',
+    'results',
+    'StrykerOutput',
+    'temptest',
+    'TestResults',
+    'Win32',
+    'x64',
+    'x86'
+)) {
+    $script:DisposableWorktreeGeneratedDirectories[$directory] = $true
+}
+
+$script:DisposableWorktreeScopedDirectories = @(
+    'docs/.cache',
+    'docs/.docusaurus',
+    'docs/build'
+)
+
+function Test-DisposableWorktreePath {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Path)
+
+    # Quoted porcelain paths require Git's escape decoding. Preserve them rather than
+    # risk classifying an unusual source path as generated output.
+    if ($Path.StartsWith('"', [System.StringComparison]::Ordinal)) { return $false }
+
+    $normalizedPath = $Path -replace '\\', '/'
+    foreach ($docsGeneratedDirectory in $script:DisposableWorktreeScopedDirectories) {
+        if ($normalizedPath -ceq $docsGeneratedDirectory -or
+            $normalizedPath.StartsWith("$docsGeneratedDirectory/", [System.StringComparison]::Ordinal)) {
+            return $true
+        }
+    }
+
+    foreach ($segment in ($normalizedPath -split '/')) {
+        if ($script:DisposableWorktreeGeneratedDirectories.ContainsKey($segment)) { return $true }
+    }
+
+    return $false
+}
+
+function Test-WorktreeMatchesMergedPullRequest {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Associations,
+        [AllowNull()][string]$Branch,
+        [bool]$Detached
+    )
+
+    foreach ($association in $Associations) {
+        if (-not $association.merged_at) { continue }
+        if ($Detached) { return $true }
+        if ($Branch -and $association.head -and $association.head.ref -ceq $Branch) { return $true }
+    }
+
+    return $false
+}
 
 function Remove-MergedWorktree {
     [CmdletBinding()]
@@ -23,10 +109,20 @@ function Remove-MergedWorktree {
         return
     }
 
-    # Preserve genuine uncommitted work (tracked changes only — untracked is artifacts).
-    $tracked = git -C $Worktree status --porcelain --untracked-files=no 2>$null
-    if ($tracked) {
-        Write-Host "Preserving dirty worktree $Label : $Worktree (uncommitted tracked changes)"
+    # Preserve tracked work and every untracked/ignored path that is not under a known
+    # generated directory. --force below is safe only after this fail-closed check.
+    $status = @(git -C $Worktree status --porcelain=v1 --untracked-files=all --ignored=matching 2>$null)
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Preserving worktree $Label : $Worktree (could not inspect worktree status)"
+        return
+    }
+
+    $work = @($status | Where-Object {
+        if ($_ -notmatch '^(\?\?|!!) ') { return $true }
+        return -not (Test-DisposableWorktreePath -Path $_.Substring(3))
+    })
+    if ($work.Count -gt 0) {
+        Write-Host "Preserving dirty worktree $Label : $Worktree (uncommitted work)"
         return
     }
 
