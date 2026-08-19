@@ -77,6 +77,26 @@ try {
 
     Assert-True (-not (Test-DisposableWorktreePath -Path 'src/Bin/Generated.cs')) `
         'Differently-cased source directory was treated as disposable output.'
+    foreach ($generatedPath in @(
+        'BenchmarkDotNet.Artifacts/results/report.csv',
+        'docs/build/index.html',
+        'docs/.docusaurus/client-manifest.json',
+        'docs/.cache/webpack/default-development.pack',
+        'CodeCoverage/report.xml',
+        'src/Fixture/Debug/fixture.dll',
+        'src/Fixture/Release/fixture.dll',
+        'src/Fixture/x64/fixture.dll',
+        'src/Fixture/ARM64/fixture.dll',
+        'logs/build.log',
+        '__pycache__/fixture.pyc',
+        'results/test-output.json',
+        'StrykerOutput/reports/mutation-report.html',
+        'benchmark-results/run/output.log',
+        'temptest/fixture.csproj'
+    )) {
+        Assert-True (Test-DisposableWorktreePath -Path $generatedPath) `
+            "Repository-generated path was not treated as disposable: $generatedPath"
+    }
 
     Write-Host 'OK worktree cleanup safety tests passed.'
 }

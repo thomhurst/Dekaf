@@ -19,7 +19,37 @@ function New-OrdinalStringMap {
 }
 
 $script:DisposableWorktreeGeneratedDirectories = New-OrdinalStringMap
-foreach ($directory in @('.artifacts', '.vs', 'artifacts', 'bin', 'node_modules', 'obj', 'TestResults')) {
+foreach ($directory in @(
+    '.artifacts',
+    '.cache',
+    '.docusaurus',
+    '.vs',
+    '__pycache__',
+    'ARM',
+    'ARM64',
+    'artifacts',
+    'benchmark-results',
+    'BenchmarkDotNet.Artifacts',
+    'bin',
+    'bld',
+    'build',
+    'CodeCoverage',
+    'Debug',
+    'DebugPublic',
+    'log',
+    'logs',
+    'node_modules',
+    'obj',
+    'Release',
+    'Releases',
+    'results',
+    'StrykerOutput',
+    'temptest',
+    'TestResults',
+    'Win32',
+    'x64',
+    'x86'
+)) {
     $script:DisposableWorktreeGeneratedDirectories[$directory] = $true
 }
 
