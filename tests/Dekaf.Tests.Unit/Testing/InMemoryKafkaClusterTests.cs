@@ -6,6 +6,7 @@ using Dekaf.Errors;
 using Dekaf.Producer;
 using Dekaf.Protocol;
 using Dekaf.Serialization;
+using Dekaf.Serialization.Routing;
 using Dekaf.ShareConsumer;
 using Dekaf.Testing;
 using Microsoft.Extensions.DependencyInjection;
@@ -112,12 +113,15 @@ public sealed class InMemoryKafkaClusterTests
     {
         var cluster = new InMemoryKafkaCluster();
         var producer = new InMemoryProducer<string, string>(cluster);
-        var router = new HeaderRoutingDeserializer<string>(
+        var headerRouter = new HeaderRoutingDeserializer<string>(
             "event-type",
             new PrefixDeserializer("fallback"),
             new HeaderDeserializerRoute<string>(
                 "created"u8.ToArray(),
                 new PrefixDeserializer("created")));
+        var router = new TopicRoutingDeserializer<string>()
+            .Register("events", headerRouter)
+            .Freeze();
         var consumer = new InMemoryConsumer<string, string>(
             cluster,
             new HeaderPresenceDeserializer(),
@@ -148,12 +152,15 @@ public sealed class InMemoryKafkaClusterTests
     {
         var cluster = new InMemoryKafkaCluster();
         var producer = new InMemoryProducer<string, string>(cluster);
-        var router = new HeaderRoutingDeserializer<string>(
+        var headerRouter = new HeaderRoutingDeserializer<string>(
             "event-type",
             new PrefixDeserializer("fallback"),
             new HeaderDeserializerRoute<string>(
                 "created"u8.ToArray(),
                 new PrefixDeserializer("created")));
+        var router = new TopicRoutingDeserializer<string>()
+            .Register("events", headerRouter)
+            .Freeze();
         var consumer = new InMemoryConsumer<string, string>(
             cluster,
             new AsyncStringDeserializer(),

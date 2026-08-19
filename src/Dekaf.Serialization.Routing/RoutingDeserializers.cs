@@ -10,6 +10,7 @@ namespace Dekaf.Serialization.Routing;
 public sealed class TopicRoutingDeserializer<TBase> :
     IDeserializer<TBase>,
     IRecordHeaderDeserializer<TBase>,
+    ICallerOwnedHeaderDeserializer<TBase>,
     IRecordHeaderRoutingProvider
     where TBase : class
 {
@@ -65,6 +66,16 @@ public sealed class TopicRoutingDeserializer<TBase> :
         throw MissingRoute("topic", context.Topic, context);
     }
 
+    TBase ICallerOwnedHeaderDeserializer<TBase>.DeserializeCallerOwned(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context)
+    {
+        if (_routes.TryGetRoute(context.Topic, out var route))
+            return RecordHeaderDeserializer.DeserializeCallerOwned(route, data, context);
+
+        throw MissingRoute("topic", context.Topic, context);
+    }
+
     void IRecordHeaderRoutingProvider.CollectHeaderNames(List<string> names) =>
         _routes.CollectHeaderNames(names);
 
@@ -90,6 +101,7 @@ public sealed class TopicRoutingDeserializer<TBase> :
 public sealed class SchemaIdRoutingDeserializer<TBase> :
     IDeserializer<TBase>,
     IRecordHeaderDeserializer<TBase>,
+    ICallerOwnedHeaderDeserializer<TBase>,
     IRecordHeaderRoutingProvider
     where TBase : class
 {
@@ -166,6 +178,30 @@ public sealed class SchemaIdRoutingDeserializer<TBase> :
         var schemaId = BinaryPrimitives.ReadInt32BigEndian(data.Span.Slice(1, sizeof(int)));
         if (_routes.TryGetRoute(schemaId, out var route))
             return RecordHeaderDeserializer.DeserializeChild(route, data, context, in headers);
+
+        throw new SerializationException($"No schema-ID deserializer route is registered for '{schemaId}'.")
+        {
+            Topic = context.Topic,
+            Component = context.Component
+        };
+    }
+
+    TBase ICallerOwnedHeaderDeserializer<TBase>.DeserializeCallerOwned(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context)
+    {
+        if (data.Length < HeaderSize || data.Span[0] != 0)
+        {
+            throw new SerializationException("Schema-ID routing requires Confluent framing.")
+            {
+                Topic = context.Topic,
+                Component = context.Component
+            };
+        }
+
+        var schemaId = BinaryPrimitives.ReadInt32BigEndian(data.Span.Slice(1, sizeof(int)));
+        if (_routes.TryGetRoute(schemaId, out var route))
+            return RecordHeaderDeserializer.DeserializeCallerOwned(route, data, context);
 
         throw new SerializationException($"No schema-ID deserializer route is registered for '{schemaId}'.")
         {

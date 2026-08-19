@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Text;
+using Dekaf.Consumer;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
@@ -70,6 +71,72 @@ public sealed class HeaderRoutingDeserializerTests
 
         await Assert.That(result).IsEqualTo("no-headers");
         await Assert.That(context.Headers!.Count).IsEqualTo(2);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Deserialize_PreservesCallerHeadersThroughRoutingWrapper(bool schemaIdRouter)
+    {
+        var inner = new HeaderRoutingDeserializer<string>(
+            "schema",
+            new PrefixDeserializer("inner-fallback"),
+            new HeaderDeserializerRoute<string>("v2"u8.ToArray(), new HeaderPresenceDeserializer()));
+        IDeserializer<string> wrapper = schemaIdRouter
+            ? new SchemaIdRoutingDeserializer<string>().Register(42, inner).Freeze()
+            : new TopicRoutingDeserializer<string>().Register("events", inner).Freeze();
+        var outer = new HeaderRoutingDeserializer<string>(
+            "event-type",
+            new PrefixDeserializer("outer-fallback"),
+            new HeaderDeserializerRoute<string>("created"u8.ToArray(), wrapper));
+        var context = CreateContext();
+        context.Headers = Headers.Create("event-type", "created").Add("schema", "v2");
+        var data = schemaIdRouter ? Frame(42, "payload"u8.ToArray()) : "payload"u8.ToArray();
+
+        var result = outer.Deserialize(data, context);
+
+        await Assert.That(result).IsEqualTo("no-headers");
+        await Assert.That(context.Headers).Count().IsEqualTo(2);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task ConsumeResult_RoutingWrapperClearsCallerHeadersBeforeOrdinaryLeaf(bool schemaIdRouter)
+    {
+        var headerRouter = new HeaderRoutingDeserializer<string>(
+            "event-type",
+            new PrefixDeserializer("fallback"),
+            new HeaderDeserializerRoute<string>("created"u8.ToArray(), new PrefixDeserializer("created")));
+        IDeserializer<string> wrapper = schemaIdRouter
+            ? new SchemaIdRoutingDeserializer<string>()
+                .Register(42, new HeaderPresenceDeserializer())
+                .Register(43, headerRouter)
+                .Freeze()
+            : new TopicRoutingDeserializer<string>()
+                .Register("events", new HeaderPresenceDeserializer())
+                .Register("header-events", headerRouter)
+                .Freeze();
+        var data = schemaIdRouter ? Frame(42, "payload"u8.ToArray()) : "payload"u8.ToArray();
+        Header[] headers = [new Header("event-type", "created"u8.ToArray())];
+
+        var result = new ConsumeResult<string, string>(
+            "events",
+            partition: 0,
+            offset: 0,
+            keyData: ReadOnlyMemory<byte>.Empty,
+            isKeyNull: true,
+            valueData: data,
+            isValueNull: false,
+            headers,
+            timestampMs: 0,
+            timestampType: TimestampType.CreateTime,
+            leaderEpoch: null,
+            keyDeserializer: null,
+            valueDeserializer: wrapper);
+
+        await Assert.That(result.Value).IsEqualTo("no-headers");
+        await Assert.That(result.Headers).Count().IsEqualTo(1);
     }
 
     [Test]

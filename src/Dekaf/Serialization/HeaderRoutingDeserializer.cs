@@ -23,6 +23,7 @@ public readonly struct HeaderDeserializerRoute<T>
 public sealed class HeaderRoutingDeserializer<T> :
     IDeserializer<T>,
     IRecordHeaderDeserializer<T>,
+    ICallerOwnedHeaderDeserializer<T>,
     IRecordHeaderRoutingProvider
 {
     private readonly string _headerName;
@@ -91,6 +92,10 @@ public sealed class HeaderRoutingDeserializer<T> :
         in RecordHeaderRoutingLookup headers) =>
         DeserializeWithHeaders(data, context, in headers);
 
+    T ICallerOwnedHeaderDeserializer<T>.DeserializeCallerOwned(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context) => Deserialize(data, context);
+
     void IRecordHeaderRoutingProvider.CollectHeaderNames(List<string> names)
     {
         AddHeaderName(names, _headerName);
@@ -145,14 +150,7 @@ public sealed class HeaderRoutingDeserializer<T> :
         IDeserializer<T> deserializer,
         ReadOnlyMemory<byte> data,
         SerializationContext context)
-    {
-        if (deserializer is HeaderRoutingDeserializer<T> nested)
-            return nested.Deserialize(data, context);
-
-        if (context.Headers is not null)
-            context.Headers = null;
-        return deserializer.Deserialize(data, context);
-    }
+        => RecordHeaderDeserializer.DeserializeCallerOwned(deserializer, data, context);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static T DeserializeChild(

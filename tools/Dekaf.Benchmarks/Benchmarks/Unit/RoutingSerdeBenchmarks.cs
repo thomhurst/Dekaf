@@ -32,6 +32,7 @@ public class RoutingSerdeBenchmarks
     private TopicRoutingSerializer<Event> _topicSerializer = null!;
     private TypeRoutingSerializer<Event> _typeSerializer = null!;
     private SerializationContext _context;
+    private SerializationContext _callerOwnedContext;
     private Header[] _headers = null!;
     private RecordHeaderRoutingLookup _headerLookup;
 
@@ -52,6 +53,8 @@ public class RoutingSerdeBenchmarks
             Topic = "events",
             Component = SerializationComponent.Value
         };
+        _callerOwnedContext = _context;
+        _callerOwnedContext.Headers = Headers.Create("event-type", new byte[] { 1 });
         _topicDeserializer = new TopicRoutingDeserializer<Event>()
             .Register("events", _deserializer)
             .Freeze();
@@ -115,6 +118,20 @@ public class RoutingSerdeBenchmarks
             FramedData,
             _context,
             in _headerLookup);
+
+    [Benchmark]
+    public Event DeserializeCallerOwnedByTopicThenHeader() =>
+        RecordHeaderDeserializer.DeserializeCallerOwned(
+            _topicHeaderDeserializer,
+            Data,
+            _callerOwnedContext);
+
+    [Benchmark]
+    public Event DeserializeCallerOwnedBySchemaIdThenHeader() =>
+        RecordHeaderDeserializer.DeserializeCallerOwned(
+            _schemaIdHeaderDeserializer,
+            FramedData,
+            _callerOwnedContext);
 
     [Benchmark]
     public int SerializeDirect()

@@ -189,8 +189,27 @@ internal interface IRecordHeaderDeserializer<out T>
         in RecordHeaderRoutingLookup headers);
 }
 
+internal interface ICallerOwnedHeaderDeserializer<out T>
+{
+    T DeserializeCallerOwned(ReadOnlyMemory<byte> data, SerializationContext context);
+}
+
 internal static class RecordHeaderDeserializer
 {
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static T DeserializeCallerOwned<T>(
+        IDeserializer<T> deserializer,
+        ReadOnlyMemory<byte> data,
+        SerializationContext context)
+    {
+        if (deserializer is ICallerOwnedHeaderDeserializer<T> callerOwned)
+            return callerOwned.DeserializeCallerOwned(data, context);
+
+        if (context.Headers is not null)
+            context.Headers = null;
+        return deserializer.Deserialize(data, context);
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static T Deserialize<T>(
         IDeserializer<T> deserializer,

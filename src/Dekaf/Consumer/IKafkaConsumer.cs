@@ -652,10 +652,10 @@ public readonly struct ConsumeResult<TKey, TValue>
         // Resolve the thread-static address once; each direct field access otherwise
         // emits another TLS lookup before setting or copying the context.
         ref var serializationContext = ref t_serializationContext;
-        var keyUsesRecordHeaders = keyDeserializer is IRecordHeaderDeserializer<TKey>;
-        var valueUsesRecordHeaders = valueDeserializer is IRecordHeaderDeserializer<TValue>;
+        var keyUsesCallerOwnedHeaders = keyDeserializer is ICallerOwnedHeaderDeserializer<TKey>;
+        var valueUsesCallerOwnedHeaders = valueDeserializer is ICallerOwnedHeaderDeserializer<TValue>;
         var serializationHeaders = headers is not null
-                                   && (keyUsesRecordHeaders || valueUsesRecordHeaders)
+                                   && (keyUsesCallerOwnedHeaders || valueUsesCallerOwnedHeaders)
             ? GetCallerOwnedSerializationHeaders(headers)
             : null;
 
@@ -673,11 +673,13 @@ public readonly struct ConsumeResult<TKey, TValue>
         {
             serializationContext.Topic = topic;
             serializationContext.Component = SerializationComponent.Key;
-            serializationContext.Headers = keyUsesRecordHeaders ? serializationHeaders : null;
+            serializationContext.Headers = keyUsesCallerOwnedHeaders ? serializationHeaders : null;
             serializationContext.KeyData = ReadOnlyMemory<byte>.Empty;
             serializationContext.IsNull = false;
 
-            Key = keyDeserializer.Deserialize(keyData, serializationContext);
+            Key = keyUsesCallerOwnedHeaders
+                ? RecordHeaderDeserializer.DeserializeCallerOwned(keyDeserializer, keyData, serializationContext)
+                : keyDeserializer.Deserialize(keyData, serializationContext);
         }
 
         if (isPartitionEof || valueDeserializer is null)
@@ -688,13 +690,17 @@ public readonly struct ConsumeResult<TKey, TValue>
         {
             serializationContext.Topic = topic;
             serializationContext.Component = SerializationComponent.Value;
-            serializationContext.Headers = valueUsesRecordHeaders ? serializationHeaders : null;
+            serializationContext.Headers = valueUsesCallerOwnedHeaders ? serializationHeaders : null;
             serializationContext.KeyData = SerializationContext.NormalizeKeyData(keyData, isKeyNull);
             serializationContext.IsNull = isValueNull;
 
-            Value = isValueNull
-                ? valueDeserializer.Deserialize(ReadOnlyMemory<byte>.Empty, serializationContext)
-                : valueDeserializer.Deserialize(valueData, serializationContext);
+            var deserializationData = isValueNull ? ReadOnlyMemory<byte>.Empty : valueData;
+            Value = valueUsesCallerOwnedHeaders
+                ? RecordHeaderDeserializer.DeserializeCallerOwned(
+                    valueDeserializer,
+                    deserializationData,
+                    serializationContext)
+                : valueDeserializer.Deserialize(deserializationData, serializationContext);
         }
     }
 
