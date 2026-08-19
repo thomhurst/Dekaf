@@ -523,10 +523,11 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
 
     private void PrepareTaggedTransformer(int schemaId, Schema schema, AvroPocoReaderPlan plan)
     {
-        var parsed = _resolvedSchemas.TryGetValue(schemaId, out var resolved) &&
-                     ReferenceEquals(resolved.Plan, plan)
+        var parsed = plan.ResolvedWriterSchema ??
+                     (_resolvedSchemas.TryGetValue(schemaId, out var resolved) &&
+                      ReferenceEquals(resolved.Plan, plan)
             ? resolved.Schema
-            : AvroSchema.Parse(schema.SchemaString);
+            : AvroSchema.Parse(schema.SchemaString));
         _ = _taggedFieldTransformers.GetResolved(schema, parsed);
     }
 
@@ -667,6 +668,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         var parsed = AvroSchema.Parse(schema.SchemaString, names) as AvroRecordSchema
             ?? throw new InvalidOperationException("POCO Avro writer schema must be a record.");
         var plan = AvroPocoReaderPlanBuilder.Build<T, TCodec>(parsed);
+        plan.ResolvedWriterSchema = parsed;
         _resolvedSchemas[schemaId] = new ResolvedAvroSchema(plan, parsed);
         return plan;
     }

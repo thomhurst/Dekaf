@@ -19,6 +19,8 @@ public sealed class AvroPocoReaderPlan
 
     internal AvroPocoReadOperation[] Operations { get; }
 
+    internal global::Avro.Schema? ResolvedWriterSchema { get; set; }
+
     /// <summary>Number of fields encoded by the writer schema.</summary>
     public int WriterFieldCount => Operations.Length;
 

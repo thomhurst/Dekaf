@@ -194,6 +194,21 @@ public sealed class AvroPocoSchemaRegistryTests
             Topic = "poco-tagged-referenced-root",
             Component = SerializationComponent.Value
         };
+        var evictedDuringPreparation = false;
+        nonCachingRegistry.GetSchemaAsync(
+                rootSchemaId,
+                "poco-tagged-referenced-root-value",
+                Arg.Any<CancellationToken>())
+            .Returns(async call =>
+            {
+                foreach (var schemaId in evictionSchemaIds)
+                    await deserializer.WarmupAsync(schemaId);
+                evictedDuringPreparation = true;
+                return await registry.GetSchemaAsync(
+                    rootSchemaId,
+                    call.ArgAt<string>(1),
+                    call.ArgAt<CancellationToken>(2));
+            });
         var wire = new byte[64];
         BinaryPrimitives.WriteInt32BigEndian(wire.AsSpan(1, 4), rootSchemaId);
         var writer = new AvroValueWriter(wire.AsSpan(5));
@@ -211,6 +226,7 @@ public sealed class AvroPocoSchemaRegistryTests
         };
         var actual = deserializer.Deserialize(wire.AsMemory(0, wireLength), context);
 
+        await Assert.That(evictedDuringPreparation).IsTrue();
         await Assert.That(actual.Address.City).IsEqualTo("London");
         await Assert.That(actual.Address.PostCode).IsEqualTo("SW1");
         await Assert.That(ruleExecutor.DeserializedContextHadTransformer).IsTrue();
