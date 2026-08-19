@@ -2637,8 +2637,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
     }
 
+#pragma warning disable CS8424 // Preserve shipped metadata; the returned async-iterator core performs token merging.
     public IAsyncEnumerable<ConsumeResult<TKey, TValue>> ConsumeAsync(
-        CancellationToken cancellationToken = default)
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+#pragma warning restore CS8424
     {
         if (_options.RecordFilter is null)
         {
