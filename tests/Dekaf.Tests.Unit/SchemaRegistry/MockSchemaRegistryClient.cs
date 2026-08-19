@@ -9,6 +9,7 @@ namespace Dekaf.Tests.Unit.SchemaRegistry;
 internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistryCache
 {
     private readonly Dictionary<int, Schema> _schemasById = new();
+    private readonly Dictionary<(Guid Guid, string? Format), Schema> _schemasByGuid = new();
     private readonly Dictionary<string, List<(int Version, int Id, Schema Schema)>> _schemasBySubject = new();
     private readonly Dictionary<(string Namespace, string Name), List<Association>> _associationsByResource = new();
     private TaskCompletionSource? _getSchemaEntered;
@@ -98,6 +99,7 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
 
         var id = _nextId++;
         _schemasById[id] = schema;
+        _schemasByGuid[(GuidFromId(id), null)] = schema;
 
         if (!_schemasBySubject.TryGetValue(subject, out var list))
         {
@@ -135,6 +137,28 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
         throw new SchemaRegistryException(40403, $"Schema {id} not found");
     }
 
+    public Task<Schema> GetSchemaByGuidAsync(
+        string guid,
+        string? format = null,
+        CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        cancellationToken.ThrowIfCancellationRequested();
+        if (Guid.TryParse(guid, out var parsedGuid))
+        {
+            if (_schemasByGuid.TryGetValue((parsedGuid, format), out var cached))
+                return Task.FromResult(cached);
+
+            if (_schemasByGuid.TryGetValue((parsedGuid, null), out var schema))
+            {
+                _schemasByGuid[(parsedGuid, format)] = schema;
+                return Task.FromResult(schema);
+            }
+        }
+
+        throw new SchemaRegistryException(40403, $"Schema {guid} not found");
+    }
+
     public Task<Schema> GetSchemaAsync(
         int id,
         string subject,
@@ -160,6 +184,13 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
         ThrowIfDisposed();
         TryGetCachedSchemaCallCount++;
         return _schemasById.TryGetValue(id, out schema!);
+    }
+
+    public bool TryGetCachedSchema(Guid guid, string? format, out Schema schema)
+    {
+        ThrowIfDisposed();
+        TryGetCachedSchemaCallCount++;
+        return _schemasByGuid.TryGetValue((guid, format), out schema!);
     }
 
     public bool TryGetCachedSchema(int id, string subject, out Schema schema)
@@ -199,6 +230,7 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
         return Task.FromResult(new RegisteredSchema
         {
             Id = entry.Id,
+            Guid = GuidFromId(entry.Id).ToString(),
             Subject = subject,
             Version = entry.Version,
             Schema = entry.Schema
@@ -239,6 +271,7 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
         return Task.FromResult(new RegisteredSchema
         {
             Id = entry.Id,
+            Guid = GuidFromId(entry.Id).ToString(),
             Subject = subject,
             Version = entry.Version,
             Schema = entry.Schema
@@ -335,7 +368,14 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
         var versions = list.Select(e => e.Version).ToList();
 
         foreach (var entry in list)
+        {
             _schemasById.Remove(entry.Id);
+            var guid = GuidFromId(entry.Id);
+            foreach (var key in _schemasByGuid.Keys.Where(key => key.Guid == guid).ToArray())
+            {
+                _schemasByGuid.Remove(key);
+            }
+        }
 
         _schemasBySubject.Remove(subject);
 
@@ -478,4 +518,6 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
     }
+
+    private static Guid GuidFromId(int id) => new(id, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
 }

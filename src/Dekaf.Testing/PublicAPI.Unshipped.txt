@@ -18,3 +18,61 @@ Dekaf.Testing.InMemoryStreamsGroupMember.LastUpdate.get -> Dekaf.Streams.Streams
 Dekaf.Testing.InMemoryStreamsGroupMember.ReportTaskOffsetsAsync(Dekaf.Streams.StreamsGroupTaskOffsetReport! report, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Streams.StreamsGroupHeartbeatResult!>
 Dekaf.Testing.InMemoryStreamsGroupMember.Snapshot.get -> Dekaf.Streams.StreamsGroupMemberSnapshot!
 Dekaf.Testing.InMemoryStreamsGroupMember.UpdateAsync(Dekaf.Streams.StreamsGroupMemberUpdate! update, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Streams.StreamsGroupHeartbeatResult!>
+Dekaf.Testing.KafkaFaultAction
+Dekaf.Testing.KafkaFaultAction.Pause = 1 -> Dekaf.Testing.KafkaFaultAction
+Dekaf.Testing.KafkaFaultAction.Throw = 0 -> Dekaf.Testing.KafkaFaultAction
+Dekaf.Testing.KafkaFaultBarrier
+Dekaf.Testing.KafkaFaultBarrier.IsReleased.get -> bool
+Dekaf.Testing.KafkaFaultBarrier.Release() -> bool
+Dekaf.Testing.KafkaFaultBarrier.WaitUntilEnteredAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.KafkaFaultObservation
+Dekaf.Testing.KafkaFaultObservation.Action.get -> Dekaf.Testing.KafkaFaultAction
+Dekaf.Testing.KafkaFaultObservation.Exception.get -> System.Exception?
+Dekaf.Testing.KafkaFaultObservation.IsPersistent.get -> bool
+Dekaf.Testing.KafkaFaultObservation.KafkaFaultObservation() -> void
+Dekaf.Testing.KafkaFaultObservation.OperationScope.get -> Dekaf.Testing.KafkaFaultScope
+Dekaf.Testing.KafkaFaultObservation.RemainingOccurrences.get -> int?
+Dekaf.Testing.KafkaFaultObservation.RuleScope.get -> Dekaf.Testing.KafkaFaultScope
+Dekaf.Testing.KafkaFaultOperation
+Dekaf.Testing.KafkaFaultOperation.AbortTransaction = 13 -> Dekaf.Testing.KafkaFaultOperation
+Dekaf.Testing.KafkaFaultOperation.Admin = 14 -> Dekaf.Testing.KafkaFaultOperation
+Dekaf.Testing.KafkaFaultOperation.Commit = 5 -> Dekaf.Testing.KafkaFaultOperation
+Dekaf.Testing.KafkaFaultOperation.CommitTransaction = 12 -> Dekaf.Testing.KafkaFaultOperation
+Dekaf.Testing.KafkaFaultOperation.Consume = 3 -> Dekaf.Testing.KafkaFaultOperation
+Dekaf.Testing.KafkaFaultOperation.Fetch = 2 -> Dekaf.Testing.KafkaFaultOperation
+Dekaf.Testing.KafkaFaultOperation.InitializeTransactions = 9 -> Dekaf.Testing.KafkaFaultOperation
+Dekaf.Testing.KafkaFaultOperation.JoinGroup = 6 -> Dekaf.Testing.KafkaFaultOperation
+Dekaf.Testing.KafkaFaultOperation.Produce = 1 -> Dekaf.Testing.KafkaFaultOperation
+Dekaf.Testing.KafkaFaultOperation.Rebalance = 8 -> Dekaf.Testing.KafkaFaultOperation
+Dekaf.Testing.KafkaFaultOperation.SendOffsetsToTransaction = 11 -> Dekaf.Testing.KafkaFaultOperation
+Dekaf.Testing.KafkaFaultOperation.ShareAcknowledge = 16 -> Dekaf.Testing.KafkaFaultOperation
+Dekaf.Testing.KafkaFaultOperation.ShareConsume = 15 -> Dekaf.Testing.KafkaFaultOperation
+Dekaf.Testing.KafkaFaultOperation.StoreOffset = 4 -> Dekaf.Testing.KafkaFaultOperation
+Dekaf.Testing.KafkaFaultOperation.SyncGroup = 7 -> Dekaf.Testing.KafkaFaultOperation
+Dekaf.Testing.KafkaFaultOperation.TransactionProduce = 10 -> Dekaf.Testing.KafkaFaultOperation
+Dekaf.Testing.IKafkaFaultPlan
+Dekaf.Testing.IKafkaFaultPlan.ApplyAsync(Dekaf.Testing.KafkaFaultScope operationScope, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.IKafkaFaultPlan.Clear() -> int
+Dekaf.Testing.IKafkaFaultPlan.Clear(Dekaf.Testing.KafkaFaultScope scope) -> int
+Dekaf.Testing.IKafkaFaultPlan.Count.get -> int
+Dekaf.Testing.IKafkaFaultPlan.Fail(Dekaf.Testing.KafkaFaultScope scope, System.Exception! exception, int occurrenceCount = 1) -> void
+Dekaf.Testing.IKafkaFaultPlan.FailPersistently(Dekaf.Testing.KafkaFaultScope scope, System.Exception! exception) -> void
+Dekaf.Testing.IKafkaFaultPlan.FaultConsumed -> System.Action<Dekaf.Testing.KafkaFaultObservation>?
+Dekaf.Testing.IKafkaFaultPlan.PauseNext(Dekaf.Testing.KafkaFaultScope scope) -> Dekaf.Testing.KafkaFaultBarrier!
+Dekaf.Testing.KafkaFaultPlan
+Dekaf.Testing.KafkaFaultPlan.ApplyAsync(Dekaf.Testing.KafkaFaultScope operationScope, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.KafkaFaultPlan.Clear() -> int
+Dekaf.Testing.KafkaFaultPlan.Clear(Dekaf.Testing.KafkaFaultScope scope) -> int
+Dekaf.Testing.KafkaFaultPlan.Count.get -> int
+Dekaf.Testing.KafkaFaultPlan.Fail(Dekaf.Testing.KafkaFaultScope scope, System.Exception! exception, int occurrenceCount = 1) -> void
+Dekaf.Testing.KafkaFaultPlan.FailPersistently(Dekaf.Testing.KafkaFaultScope scope, System.Exception! exception) -> void
+Dekaf.Testing.KafkaFaultPlan.FaultConsumed -> System.Action<Dekaf.Testing.KafkaFaultObservation>?
+Dekaf.Testing.KafkaFaultPlan.KafkaFaultPlan() -> void
+Dekaf.Testing.KafkaFaultPlan.PauseNext(Dekaf.Testing.KafkaFaultScope scope) -> Dekaf.Testing.KafkaFaultBarrier!
+Dekaf.Testing.KafkaFaultScope
+Dekaf.Testing.KafkaFaultScope.GroupId.get -> string?
+Dekaf.Testing.KafkaFaultScope.KafkaFaultScope() -> void
+Dekaf.Testing.KafkaFaultScope.KafkaFaultScope(Dekaf.Testing.KafkaFaultOperation operation, string? topic = null, int? partition = null, string? groupId = null) -> void
+Dekaf.Testing.KafkaFaultScope.Operation.get -> Dekaf.Testing.KafkaFaultOperation
+Dekaf.Testing.KafkaFaultScope.Partition.get -> int?
+Dekaf.Testing.KafkaFaultScope.Topic.get -> string?

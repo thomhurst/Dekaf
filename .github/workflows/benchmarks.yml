@@ -1,11 +1,8 @@
 name: Benchmarks
 
 on:
-  push:
-    branches:
-      - main
-    paths-ignore:
-      - 'docs/docs/benchmarks.md'
+  schedule:
+    - cron: '0 5 * * *'  # Daily at 05:00 UTC
   workflow_dispatch:
     inputs:
       benchmark_filter:
@@ -23,8 +20,8 @@ env:
   ContinuousIntegrationBuild: true
   Deterministic: true
 
-# Cancel superseded runs: a newer commit on main cancels older in-progress
-# benchmark runs. Manual workflow_dispatch runs are never cancelled.
+# Cancel an overlapping scheduled run before starting the next one. Manual
+# workflow_dispatch runs are never cancelled.
 concurrency:
   group: benchmarks-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}

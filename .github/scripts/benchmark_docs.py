@@ -18,6 +18,7 @@ _BENCHMARK_NAME = re.compile(
     r"(?P<parameters>\(.*\))?$"
 )
 _DEKAF_METHOD = re.compile(r"Dekaf_(?P<operation>\w+)")
+_CLIENT_METHOD = re.compile(r"(?P<client>Dekaf|Confluent)_(?P<operation>\w+)")
 
 # Ratios inside this band are indistinguishable from CI noise.
 _PARITY_LOW = 0.83
@@ -148,6 +149,22 @@ def describe_memory(alloc_ratio):
     return f"{_times(alloc_ratio)} more"
 
 
+def _speed_comparison(ratio):
+    if ratio < 1:
+        return f"{_times(1 / ratio)} faster"
+    if ratio > 1:
+        return f"{_times(ratio)} slower"
+    return "1.0×"
+
+
+def _memory_comparison(ratio):
+    if ratio < 1:
+        return f"{_times(1 / ratio)} less"
+    if ratio > 1:
+        return f"{_times(ratio)} more"
+    return "1.0×"
+
+
 def summarize_scenarios(comparisons, variance_threshold=DEFAULT_VARIANCE_THRESHOLD):
     scenarios = {}
     for comparison in comparisons:
@@ -211,6 +228,106 @@ def latest_alloc_ratios(paths):
     return {operation: median(values) for operation, values in ratios.items()}
 
 
+def _parse_measurement(value, unit_factors):
+    match = re.fullmatch(r"([\d,.]+)\s*([^\s]+)", value)
+    if match is None:
+        return None
+    factor = unit_factors.get(match.group(2))
+    if factor is None:
+        return None
+    return float(match.group(1).replace(",", "")) * factor
+
+
+def _format_microseconds(value):
+    if value < 1:
+        return f"{value * 1000:.1f} ns"
+    if value >= 1000:
+        return f"{value / 1000:.2f} ms"
+    return f"{value:.2f} μs"
+
+
+def _format_bytes(value):
+    if value >= 1024 * 1024:
+        return f"{value / (1024 * 1024):.2f} MB"
+    if value >= 1024:
+        return f"{value / 1024:.2f} KB"
+    return f"{value:,.0f} B"
+
+
+def _parameter_note(header, cells):
+    values = dict(zip(header, cells))
+    parts = []
+    message_size = values.get("MessageSize")
+    if message_size and message_size != "—":
+        parts.append(f"{message_size} B")
+    message_count = values.get("MessageCount")
+    if message_count and message_count != "—":
+        parts.append(f"{message_count} messages")
+    batch_size = values.get("BatchSize")
+    if batch_size and batch_size != "—":
+        parts.append(f"batch {batch_size}")
+    return " · ".join(parts)
+
+
+def latest_chart_metrics(paths):
+    """Latest-run absolute timing/allocation values for a representative parameter set.
+
+    BenchmarkDotNet emits parameter sets from smallest to largest. The final complete
+    Dekaf/Confluent pair per operation is therefore the high-load case shown in the chart.
+    """
+    pairs = {}
+    order = []
+    for markdown_path in paths:
+        header = None
+        for line in Path(markdown_path).read_text(encoding="utf-8").splitlines():
+            if not line.startswith("|"):
+                continue
+            cells = [_cell_text(cell) for cell in line.strip().strip("|").split("|")]
+            if "Method" in cells:
+                header = cells
+                continue
+            if header is None or len(cells) != len(header):
+                continue
+
+            values = dict(zip(header, cells))
+            method_match = _CLIENT_METHOD.search(values.get("Method", ""))
+            if method_match is None:
+                continue
+
+            mean = _parse_measurement(
+                values.get("Mean", ""),
+                {"ns": 0.001, "μs": 1, "us": 1, "ms": 1000, "s": 1_000_000},
+            )
+            allocated = _parse_measurement(
+                values.get("Allocated", ""),
+                {"B": 1, "KB": 1024, "MB": 1024 * 1024, "GB": 1024 * 1024 * 1024},
+            )
+            if mean is None:
+                continue
+
+            operation = method_match.group("operation")
+            parameter_columns = tuple(
+                (name, values[name])
+                for name in ("MessageSize", "MessageCount", "BatchSize", "PollsPerIteration")
+                if name in values
+            )
+            key = (operation, parameter_columns)
+            if key not in pairs:
+                pairs[key] = {"operation": operation, "note": _parameter_note(header, cells)}
+                order.append(key)
+            pairs[key][method_match.group("client").lower()] = {
+                "mean": mean,
+                "allocated": allocated,
+            }
+
+    metrics = {}
+    for key in order:
+        pair = pairs[key]
+        if "dekaf" in pair and "confluent" in pair:
+            metrics[pair["operation"]] = pair
+    return metrics
+
+
 def _confidence_label(stable_rows, total_rows):
     if total_rows == 0:
         return "⚠ Insufficient history"
@@ -243,6 +360,77 @@ def format_summary_table(summaries, alloc_ratios):
     if not summaries:
         lines.append("| No comparable history yet | — | — | ⚠ Insufficient history |")
 
+    return lines
+
+
+def format_comparison_charts(summaries, latest_metrics):
+    """Render latest-run absolute values with relative comparisons in brackets."""
+    timing_items = []
+    allocation_items = []
+
+    for summary in summaries:
+        label, _ = _scenario_label(summary["group"], summary["operation"])
+        metrics = latest_metrics.get(summary["operation"])
+        if metrics is None:
+            continue
+
+        dekaf = metrics["dekaf"]
+        confluent = metrics["confluent"]
+        timing_ratio = dekaf["mean"] / confluent["mean"]
+        timing_items.append(
+            {
+                "label": label,
+                "note": metrics["note"],
+                "dekaf": round(dekaf["mean"], 4),
+                "confluent": round(confluent["mean"], 4),
+                "dekafDisplay": f"{_format_microseconds(dekaf['mean'])} ({_speed_comparison(timing_ratio)})",
+                "confluentDisplay": _format_microseconds(confluent["mean"]),
+            }
+        )
+
+        if dekaf["allocated"] is not None and confluent["allocated"] is not None:
+            alloc_ratio = dekaf["allocated"] / confluent["allocated"]
+            allocation_items.append(
+                {
+                    "label": label,
+                    "note": metrics["note"],
+                    "dekaf": round(dekaf["allocated"], 4),
+                    "confluent": round(confluent["allocated"], 4),
+                    "dekafDisplay": f"{_format_bytes(dekaf['allocated'])} ({_memory_comparison(alloc_ratio)})",
+                    "confluentDisplay": _format_bytes(confluent["allocated"]),
+                }
+            )
+
+    if not timing_items:
+        return []
+
+    lines = [
+        "<ComparisonChartGrid>",
+        "",
+        "<ComparisonChart",
+        '  title="Execution time"',
+        '  metric="Latest run · representative high-load case"',
+        '  description="Measured time per benchmark operation; shorter bars are better."',
+        '  better="lower"',
+        f"  items={{{json.dumps(timing_items, ensure_ascii=False)}}}",
+        "/>",
+    ]
+
+    if allocation_items:
+        lines.extend(
+            [
+                "",
+                "<ComparisonChart",
+                '  title="Managed allocations"',
+                '  metric="Latest run · bytes per operation"',
+                '  description="Managed heap bytes allocated per operation; shorter bars are better."',
+                '  better="lower"',
+                f"  items={{{json.dumps(allocation_items, ensure_ascii=False)}}}",
+                "/>",
+            ]
+        )
+
+    lines.extend(["", "</ComparisonChartGrid>", ""])
     return lines
 
 
@@ -363,6 +551,7 @@ def generate_document(
         glob.glob(f"{result_pattern}/Client/results/*Consumer*Benchmarks*-github.md")
     )
     alloc_ratios = latest_alloc_ratios(producer_md + consumer_md)
+    chart_metrics = latest_chart_metrics(producer_md + consumer_md)
     summaries = summarize_scenarios(comparisons, variance_threshold)
 
     output = [
@@ -370,16 +559,21 @@ def generate_document(
         "sidebar_position: 13",
         "---",
         "",
+        "import ComparisonChart, {ComparisonChartGrid} from '@site/src/components/ComparisonChart';",
+        "",
         "# Benchmark Results",
         "",
-        "How Dekaf compares to Confluent.Kafka, measured with BenchmarkDotNet on GitHub Actions and refreshed on every commit to main.",
+        "How Dekaf compares to Confluent.Kafka, measured with BenchmarkDotNet on GitHub Actions and refreshed daily or on demand from main.",
         "",
         f"**Last Updated:** {updated_at}",
         "",
         "## At a glance",
         "",
-        f"Each scenario is the median Dekaf-vs-Confluent result over the last {window} CI runs (both clients measured on the same runner), aggregated across message and batch sizes. Memory compares heap allocations per operation from the latest run.",
+        f"Each scenario is the median Dekaf-vs-Confluent result over the last {window} benchmark runs (both clients measured on the same runner), aggregated across message and batch sizes. Memory compares heap allocations per operation from the latest run.",
         "",
+        "The charts use the representative high-load parameter set from the latest run and show its measured values. Multipliers in brackets are calculated from those displayed figures; the table below summarizes the broader cross-run range.",
+        "",
+        *format_comparison_charts(summaries, chart_metrics),
         *format_summary_table(summaries, alloc_ratios),
         "",
         '"On par" means within ±20% — differences that small are runner noise. A range means the result depends on message or batch size; the per-parameter tables below have the detail.',
@@ -469,7 +663,9 @@ def generate_document(
         )
     )
 
-    output.append("*Benchmarks are automatically run on every push to main.*")
+    output.append(
+        "*Benchmarks automatically run daily at 05:00 UTC from main and can also be run manually.*"
+    )
 
     return "\n".join(output)
 

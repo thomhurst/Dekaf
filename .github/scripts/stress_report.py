@@ -1266,6 +1266,85 @@ def _at_a_glance_row(scenario_key, scenario_results):
     )
 
 
+def _compact_rate(value):
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.2f}M msg/s"
+    if value >= 1_000:
+        return f"{value / 1_000:.2f}K msg/s"
+    return f"{value:,.0f} msg/s"
+
+
+def format_comparison_charts(results):
+    """Render paired throughput and CPU charts from the at-a-glance data."""
+    producer_scenarios, consumer_scenarios = group_by_scenario(results)
+    throughput_items = []
+    cpu_items = []
+
+    for scenarios in (producer_scenarios, consumer_scenarios):
+        for scenario_key in sorted(scenarios):
+            groups = client_sample_groups(scenarios[scenario_key])
+            dekaf = groups.get('dekaf')
+            confluent = groups.get('confluent')
+            if not dekaf or not confluent:
+                continue
+
+            dekaf_rate = aggregate_client_rate(dekaf['results'])
+            confluent_rate = aggregate_client_rate(confluent['results'])
+            if dekaf_rate is None or confluent_rate is None:
+                continue
+
+            label = docs_scenario_label(scenario_key)
+            throughput_ratio = dekaf_rate / confluent_rate
+            throughput_items.append({
+                'label': label,
+                'dekaf': round(dekaf_rate, 4),
+                'confluent': round(confluent_rate, 4),
+                'dekafDisplay': f"{_compact_rate(dekaf_rate)} ({_times(throughput_ratio)})",
+                'confluentDisplay': _compact_rate(confluent_rate),
+            })
+
+            dekaf_cpu = median_cpu_micros(dekaf['results'])
+            confluent_cpu = median_cpu_micros(confluent['results'])
+            if dekaf_cpu and confluent_cpu:
+                cpu_ratio = confluent_cpu / dekaf_cpu
+                cpu_items.append({
+                    'label': label,
+                    'dekaf': round(dekaf_cpu, 4),
+                    'confluent': round(confluent_cpu, 4),
+                    'dekafDisplay': f"{dekaf_cpu:.2f} μs/msg ({_times(cpu_ratio)} less)",
+                    'confluentDisplay': f"{confluent_cpu:.2f} μs/msg",
+                })
+
+    if not throughput_items:
+        return []
+
+    lines = [
+        "<ComparisonChartGrid>",
+        "",
+        "<ComparisonChart",
+        '  title="Sustained throughput"',
+        '  metric="Paired same-VM stress run"',
+        '  description="Broker-confirmed messages per second for the same workload."',
+        f"  items={{{json.dumps(throughput_items, ensure_ascii=False)}}}",
+        "/>",
+    ]
+
+    if cpu_items:
+        lines.extend([
+            "",
+            "<ComparisonChart",
+            '  title="CPU cost per message"',
+            '  metric="Median client CPU time"',
+            '  description="CPU time needed to deliver one message; shorter bars are better."',
+            '  better="lower"',
+            f"  items={{{json.dumps(cpu_items, ensure_ascii=False)}}}",
+            "/>",
+        ])
+
+    lines.extend(["", "</ComparisonChartGrid>", ""])
+    return lines
+
+
 def format_at_a_glance(results):
     """Headline scenario-by-scenario Dekaf vs Confluent comparison table."""
     producer_scenarios, consumer_scenarios = group_by_scenario(results)
@@ -1285,6 +1364,7 @@ def format_at_a_glance(results):
         "workload sequentially on the same VM, and repeated samples are aggregated "
         "with a geometric mean across both run orders.",
         "",
+        *format_comparison_charts(results),
         "| Scenario | Dekaf | Confluent | Throughput | CPU per message |",
         "|---|--:|--:|---|---|",
         *rows,
@@ -1392,6 +1472,8 @@ def generate_docs_page(results, updated_at):
         "---",
         "sidebar_position: 14",
         "---",
+        "",
+        "import ComparisonChart, {ComparisonChartGrid} from '@site/src/components/ComparisonChart';",
         "",
         "# Stress Test Results",
         "",

@@ -236,9 +236,10 @@ class BenchmarkDocsTests(unittest.TestCase):
             results = root / "results" / "Client" / "results"
             results.mkdir(parents=True)
             (results / "ConsumerPollBenchmarks-report-github.md").write_text(
-                "| Method | Ratio | RatioSD |\n"
-                "|---|---:|---:|\n"
-                "| Dekaf_PollSingle | 2.20 | 0.31 |\n",
+                "| Method | MessageSize | Mean | Allocated | Ratio | RatioSD | Alloc Ratio |\n"
+                "|---|---:|---:|---:|---:|---:|---:|\n"
+                "| Confluent_PollSingle | 1000 | 100.00 μs | 1000 B | 1.00 | 0.00 | 1.00 |\n"
+                "| Dekaf_PollSingle | 1000 | 200.00 μs | 500 B | 2.20 | 0.31 | 0.50 |\n",
                 encoding="utf-8",
             )
 
@@ -249,6 +250,11 @@ class BenchmarkDocsTests(unittest.TestCase):
             )
 
         self.assertIn("## At a glance", document)
+        self.assertIn("import ComparisonChart, {ComparisonChartGrid}", document)
+        self.assertIn('title="Execution time"', document)
+        self.assertIn('title="Managed allocations"', document)
+        self.assertIn("200.00 μs (2.0× slower)", document)
+        self.assertIn("500 B (2.0× less)", document)
         self.assertIn("Consume — poll a single message", document)
         self.assertIn("2.1× slower", document)
         self.assertIn("<details>", document)
