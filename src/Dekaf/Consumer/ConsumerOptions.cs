@@ -187,7 +187,9 @@ public sealed class ConsumerOptions
     public int HeartbeatIntervalMs { get; init; } = 3000;
 
     /// <summary>
-    /// Rebalance timeout in milliseconds.
+    /// Maximum time in milliseconds for the consumer to complete a group rebalance.
+    /// Sent to the broker on the initial KIP-848 heartbeat and used to bound the
+    /// automatic revoked-offset commit. Default is 60000.
     /// </summary>
     public int RebalanceTimeoutMs { get; init; } = 60000;
 

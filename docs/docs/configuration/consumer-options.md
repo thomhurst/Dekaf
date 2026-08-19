@@ -100,6 +100,7 @@ Configuration is applied before the optional fluent callback, so fluent calls ca
 | `WithMaxPollRecords(...)` | `MaxPollRecords` | Integer |
 | `WithSessionTimeout(...)` | `SessionTimeoutMs` | Milliseconds |
 | `WithHeartbeatInterval(...)` | `HeartbeatIntervalMs` | Milliseconds |
+| Runtime-configured | `RebalanceTimeoutMs` | Broker-visible KIP-848 rebalance window in milliseconds; default 60000 |
 | `WithIsolationLevel(...)` | `IsolationLevel` | `ReadUncommitted` or `ReadCommitted` |
 | `WithPartitionEof(...)` | `EnablePartitionEof` | Boolean |
 | `WithQueuedMinMessages(...)` | `QueuedMinMessages` | Integer |
