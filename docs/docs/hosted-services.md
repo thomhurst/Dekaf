@@ -79,6 +79,36 @@ builder.Services.AddDekaf(dekaf =>
 });
 ```
 
+### Scale Out One Consumer Workload In-Process
+
+You can also register the same hosted service type more than once to increase consumer-group
+parallelism within one process. Give each registration a unique service key and the same
+`GroupId`. Each registration creates a separate hosted-service singleton with its own consumer:
+
+```csharp
+builder.Services.AddDekaf(dekaf =>
+{
+    dekaf.AddConsumerService<OrderProcessorService, string, Order>("orders-1", consumer => consumer
+        .WithBootstrapServers("localhost:9092")
+        .WithGroupId("order-workers"));
+
+    dekaf.AddConsumerService<OrderProcessorService, string, Order>("orders-2", consumer => consumer
+        .WithBootstrapServers("localhost:9092")
+        .WithGroupId("order-workers"));
+});
+```
+
+Kafka assigns each partition to at most one consumer in the group at a time, so these service
+instances normally process different records. Committed offsets belong to the consumer group,
+not an individual service instance; after a shutdown or rebalance, a new partition owner resumes
+from the group's committed offset. Uncommitted records can be delivered again, so processing
+must remain idempotent. If there are more service instances than partitions, the extra instances
+remain idle.
+
+This is competing-consumer scale-out, not broadcast fan-out. To have every service receive every
+record independently, give each registration a different `GroupId`; each group then maintains its
+own offsets.
+
 When a DLQ callback is supplied, registration verifies at service construction that your subclass actually forwards `DeadLetterOptions` to the base constructor, and fails fast with a clear error if the constructor omits it — a forgotten parameter cannot silently disable dead-lettering.
 
 The service subscribes to `Topics` itself — do not call `SubscribeTo` on the consumer registration as well.
