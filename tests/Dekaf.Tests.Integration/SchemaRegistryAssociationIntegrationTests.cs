@@ -3,6 +3,7 @@ using Dekaf.SchemaRegistry;
 namespace Dekaf.Tests.Integration;
 
 [ClassDataSource<KafkaWithAssociationSchemaRegistryContainer>(Shared = SharedType.PerTestSession)]
+[Category("Serialization")]
 public sealed class SchemaRegistryAssociationIntegrationTests(KafkaWithAssociationSchemaRegistryContainer testInfra)
 {
     [Test]
