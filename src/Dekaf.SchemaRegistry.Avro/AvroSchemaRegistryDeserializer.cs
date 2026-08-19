@@ -211,6 +211,7 @@ public sealed class AvroSchemaRegistryDeserializer<
                     SchemaRegistryPayloadFormat.Avro,
                     _taggedFieldTransformers);
                 payloadMemory = migration.Payload;
+                writerSchema = GetWriterSchemaCached(migration.PayloadSchemaId);
                 migrationReaderSchema = GetWriterSchemaCached(migration.ReaderSchema.Id);
             }
             var codecState = AvroCodecThreadStateCache.Deserialization ??= new AvroDeserializationThreadState();

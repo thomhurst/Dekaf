@@ -1145,7 +1145,7 @@ public sealed class ConsumerPauseResumeCacheTests
             ?? throw new InvalidOperationException("ConsumeOneFromPendingFetchesAsync method not found");
         return (ValueTask<ConsumeResult<string, string>?>)method.Invoke(
             consumer,
-            [CancellationToken.None])!;
+            [null, CancellationToken.None])!;
     }
 
     private static MetadataManager CreateMetadataManager(IConnectionPool pool)

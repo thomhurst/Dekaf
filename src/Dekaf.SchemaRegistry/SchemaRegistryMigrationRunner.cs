@@ -8,7 +8,7 @@ internal sealed class SchemaRegistryMigrationRunner
     internal static ISchemaRegistryRuleExecutor MarkerRuleExecutor { get; } = new MigrationMarkerRuleExecutor();
 
     private static readonly Func<SchemaRegistryMigrationRunner, string, Schema, Task<MigrationPlan>> s_createPlan =
-        static (runner, subject, writerSchema) => runner.CreatePlanAsync(subject, writerSchema);
+        static (runner, subject, writerSchema) => runner.CreatePlanWithTimeoutAsync(subject, writerSchema);
 
     private readonly ISchemaRegistryClient _schemaRegistry;
     private readonly ISchemaRegistryRuleExecutor? _ruleExecutor;
@@ -47,6 +47,86 @@ internal sealed class SchemaRegistryMigrationRunner
         (new SchemaRegistryMigrationRunner(schemaRegistry, ruleExecutor, timeout),
          ruleExecutor ?? MarkerRuleExecutor);
 
+    internal ValueTask<PreparedTargetEnumerator> PrepareAsync(
+        int schemaId,
+        string subject,
+        Schema writerSchema,
+        CancellationToken cancellationToken)
+    {
+        var plan = Volatile.Read(ref _lastPlan);
+        if (plan is not null &&
+            plan.WriterSchemaId == schemaId &&
+            string.Equals(plan.Subject, subject, StringComparison.Ordinal))
+        {
+            if (!IsExpired(plan))
+                return new ValueTask<PreparedTargetEnumerator>(
+                    PreparedTargetEnumerator.Create(plan.Steps));
+
+            _plans.TryRemove(subject, writerSchema, plan);
+            return AwaitPreparedPlanAsync(schemaId, subject, writerSchema, cancellationToken);
+        }
+
+        if (_plans.TryGet(subject, writerSchema, out plan))
+        {
+            if (!IsExpired(plan))
+            {
+                Volatile.Write(ref _lastPlan, plan);
+                return new ValueTask<PreparedTargetEnumerator>(
+                    PreparedTargetEnumerator.Create(plan.Steps));
+            }
+
+            _plans.TryRemove(subject, writerSchema, plan);
+        }
+
+        return AwaitPreparedPlanAsync(schemaId, subject, writerSchema, cancellationToken);
+    }
+
+    private async ValueTask<PreparedTargetEnumerator> AwaitPreparedPlanAsync(
+        int schemaId,
+        string subject,
+        Schema writerSchema,
+        CancellationToken cancellationToken)
+    {
+        var plan = await _plans.ResolveAsync(
+                subject,
+                writerSchema,
+                this,
+                s_createPlan,
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (plan.WriterSchemaId != schemaId)
+        {
+            throw new InvalidOperationException(
+                $"Schema Registry returned writer schema ID {plan.WriterSchemaId} for payload schema ID {schemaId}.");
+        }
+
+        Volatile.Write(ref _lastPlan, plan);
+        plan.MarkPrepared();
+        return PreparedTargetEnumerator.Create(plan.Steps);
+    }
+
+    internal bool TryUsePreparedPlan(int schemaId, string subject, Schema writerSchema)
+    {
+        var plan = Volatile.Read(ref _lastPlan);
+        if (plan is null ||
+            plan.WriterSchemaId != schemaId ||
+            !string.Equals(plan.Subject, subject, StringComparison.Ordinal))
+        {
+            if (!_plans.TryGet(subject, writerSchema, out plan) || plan.WriterSchemaId != schemaId)
+                return false;
+
+            Volatile.Write(ref _lastPlan, plan);
+        }
+
+        if (!IsExpired(plan))
+        {
+            plan.TryConsumePreparation();
+            return true;
+        }
+
+        return plan.TryConsumePreparation();
+    }
+
     internal MigrationResult Transform(
         ReadOnlyMemory<byte> payload,
         int schemaId,
@@ -54,7 +134,8 @@ internal sealed class SchemaRegistryMigrationRunner
         Schema writerSchema,
         SerializationContext serializationContext,
         SchemaRegistryPayloadFormat payloadFormat,
-        ISchemaRegistryTaggedFieldTransformerProvider? taggedFieldTransformers = null)
+        ISchemaRegistryTaggedFieldTransformerProvider? taggedFieldTransformers = null,
+        bool skipLatestRefresh = false)
     {
         var isNewPlan = false;
         var plan = Volatile.Read(ref _lastPlan);
@@ -71,9 +152,7 @@ internal sealed class SchemaRegistryMigrationRunner
             Volatile.Write(ref _lastPlan, plan);
         }
 
-        if (!isNewPlan &&
-            _latestCacheTtlMilliseconds >= 0 &&
-            Environment.TickCount64 - plan.CreatedAtMilliseconds >= _latestCacheTtlMilliseconds)
+        if (!isNewPlan && !skipLatestRefresh && IsExpired(plan))
         {
             _plans.TryRemove(subject, writerSchema, plan);
             plan = _plans.Resolve(subject, writerSchema, this, s_createPlan, _timeout);
@@ -89,7 +168,7 @@ internal sealed class SchemaRegistryMigrationRunner
             }
 
             if (_ruleExecutor is null)
-                return new MigrationResult(payload, plan.ReaderSchema);
+                return new MigrationResult(payload, plan.ReaderSchema, schemaId, writerSchema);
 
             var readerContext = RentContext(
                 serializationContext,
@@ -108,7 +187,15 @@ internal sealed class SchemaRegistryMigrationRunner
                 readerContext.Return();
             }
 
-            return new MigrationResult(payload, plan.ReaderSchema);
+            return new MigrationResult(payload, plan.ReaderSchema, schemaId, writerSchema);
+        }
+
+        var steps = plan.Steps;
+        if (steps.Length == 0 &&
+            writerSchema.RuleSet?.HasDomainOrEncodingRules != true &&
+            plan.ReaderSchema.Schema.RuleSet?.HasDomainOrEncodingRules != true)
+        {
+            return new MigrationResult(payload, plan.ReaderSchema, schemaId, writerSchema);
         }
 
         var context = RentContext(
@@ -127,8 +214,65 @@ internal sealed class SchemaRegistryMigrationRunner
             context.Return();
         }
 
-        var encodedSchema = writerSchema;
-        var steps = plan.Steps;
+        var payloadSchemaId = schemaId;
+        var payloadSchema = writerSchema;
+        if (steps.Length != 0)
+        {
+            if (!TransformMigrationSteps(
+                ref payload,
+                ref payloadSchemaId,
+                ref payloadSchema,
+                schemaId,
+                subject,
+                serializationContext,
+                payloadFormat,
+                taggedFieldTransformers,
+                steps))
+            {
+                return new MigrationResult(payload, plan.ReaderSchema, payloadSchemaId, payloadSchema);
+            }
+        }
+
+        if (!plan.IsMigrationChainComplete)
+            return new MigrationResult(payload, plan.ReaderSchema, payloadSchemaId, payloadSchema);
+
+        context = RentContext(
+            serializationContext,
+            plan.ReaderSchema.Id,
+            subject,
+            plan.ReaderSchema.Schema,
+            payloadFormat,
+            taggedFieldTransformers,
+            taggedFieldSchema: payloadSchema);
+        try
+        {
+            payload = _schemaRuleExecutor.TransformDeserializedDomainPayload(payload, context);
+        }
+        finally
+        {
+            context.Return();
+        }
+
+        return new MigrationResult(payload, plan.ReaderSchema, payloadSchemaId, payloadSchema);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool IsExpired(MigrationPlan plan) =>
+        _latestCacheTtlMilliseconds >= 0 &&
+        Environment.TickCount64 - plan.CreatedAtMilliseconds >= _latestCacheTtlMilliseconds;
+
+    private bool TransformMigrationSteps(
+        ref ReadOnlyMemory<byte> payload,
+        ref int payloadSchemaId,
+        ref Schema payloadSchema,
+        int schemaId,
+        string subject,
+        SerializationContext serializationContext,
+        SchemaRegistryPayloadFormat payloadFormat,
+        ISchemaRegistryTaggedFieldTransformerProvider? taggedFieldTransformers,
+        MigrationStep[] steps)
+    {
+        SchemaRegistryRuleContext context;
         for (var i = 0; i < steps.Length; i++)
         {
             ref readonly var step = ref steps[i];
@@ -140,13 +284,21 @@ internal sealed class SchemaRegistryMigrationRunner
                 owner,
                 payloadFormat,
                 taggedFieldTransformers,
-                encodedSchema,
+                payloadSchema,
                 step.Source.Schema,
                 step.Target.Schema,
                 step.Mode);
             try
             {
-                payload = _schemaRuleExecutor.TransformMigrationPayload(payload, context, step.Mode);
+                var transformResult = _schemaRuleExecutor!.TransformMigrationPayload(
+                    ref payload,
+                    context,
+                    step.Mode);
+                if (transformResult != SchemaRegistryMigrationTransformResult.Transformed)
+                    return false;
+
+                payloadSchemaId = step.Target.Id;
+                payloadSchema = step.Target.Schema;
             }
             finally
             {
@@ -154,24 +306,7 @@ internal sealed class SchemaRegistryMigrationRunner
             }
         }
 
-        context = RentContext(
-            serializationContext,
-            plan.ReaderSchema.Id,
-            subject,
-            plan.ReaderSchema.Schema,
-            payloadFormat,
-            taggedFieldTransformers,
-            taggedFieldSchema: encodedSchema);
-        try
-        {
-            payload = _schemaRuleExecutor.TransformDeserializedDomainPayload(payload, context);
-        }
-        finally
-        {
-            context.Return();
-        }
-
-        return new MigrationResult(payload, plan.ReaderSchema);
+        return true;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -208,22 +343,39 @@ internal sealed class SchemaRegistryMigrationRunner
             targetSchema,
             ruleMode);
 
-    private async Task<MigrationPlan> CreatePlanAsync(string subject, Schema writerSchema)
+    private Task<MigrationPlan> CreatePlanWithTimeoutAsync(string subject, Schema writerSchema) =>
+        SchemaRegistryOperationTimeout.ExecuteAsync(
+            cancellationToken => CreatePlanAsync(subject, writerSchema, cancellationToken),
+            _timeout,
+            "Schema Registry migration plan resolution timed out.");
+
+    private async Task<MigrationPlan> CreatePlanAsync(
+        string subject,
+        Schema writerSchema,
+        CancellationToken cancellationToken)
     {
         var writer = await _schemaRegistry.LookupSchemaAsync(
                 subject,
                 writerSchema,
                 ignoreDeletedSchemas: false,
                 normalize: false,
-                CancellationToken.None)
+                cancellationToken)
             .ConfigureAwait(false);
-        var reader = await _schemaRegistry.GetSchemaBySubjectAsync(subject, "latest", CancellationToken.None)
+        var reader = await _schemaRegistry.GetSchemaBySubjectAsync(subject, "latest", cancellationToken)
             .ConfigureAwait(false);
 
         if (writer.Version == reader.Version)
-            return new MigrationPlan(writer.Id, subject, reader, [], Environment.TickCount64);
+            return new MigrationPlan(
+                writer.Id,
+                subject,
+                reader,
+                [],
+                isMigrationChainComplete: true,
+                Environment.TickCount64);
 
         var steps = new List<MigrationStep>();
+        var hasGap = false;
+        var isMigrationChainComplete = true;
         if (writer.Version < reader.Version)
         {
             var previous = writer;
@@ -231,13 +383,24 @@ internal sealed class SchemaRegistryMigrationRunner
             {
                 var current = version == reader.Version
                     ? reader
-                    : await GetVersionAsync(subject, version).ConfigureAwait(false);
-                if (SchemaRegistryRuleExecutor.HasActiveMigrationRule(
-                        current.Schema.RuleSet,
-                        SchemaRuleMode.Upgrade))
+                    : await GetVersionAsync(subject, version, cancellationToken).ConfigureAwait(false);
+                var hasActiveRule = SchemaRegistryRuleExecutor.HasActiveMigrationRule(
+                    current.Schema.RuleSet,
+                    SchemaRuleMode.Upgrade);
+                if (!hasActiveRule)
                 {
-                    steps.Add(new MigrationStep(SchemaRuleMode.Upgrade, previous, current));
+                    hasGap = true;
+                    previous = current;
+                    continue;
                 }
+
+                if (hasGap)
+                {
+                    isMigrationChainComplete = false;
+                    break;
+                }
+
+                steps.Add(new MigrationStep(SchemaRuleMode.Upgrade, previous, current));
 
                 previous = current;
             }
@@ -249,48 +412,114 @@ internal sealed class SchemaRegistryMigrationRunner
             {
                 var previous = version == reader.Version
                     ? reader
-                    : await GetVersionAsync(subject, version).ConfigureAwait(false);
-                if (SchemaRegistryRuleExecutor.HasActiveMigrationRule(
-                        current.Schema.RuleSet,
-                        SchemaRuleMode.Downgrade))
+                    : await GetVersionAsync(subject, version, cancellationToken).ConfigureAwait(false);
+                var hasActiveRule = SchemaRegistryRuleExecutor.HasActiveMigrationRule(
+                    current.Schema.RuleSet,
+                    SchemaRuleMode.Downgrade);
+                if (!hasActiveRule)
                 {
-                    steps.Add(new MigrationStep(SchemaRuleMode.Downgrade, current, previous));
+                    hasGap = true;
+                    current = previous;
+                    continue;
                 }
+
+                if (hasGap)
+                {
+                    isMigrationChainComplete = false;
+                    break;
+                }
+
+                steps.Add(new MigrationStep(SchemaRuleMode.Downgrade, current, previous));
 
                 current = previous;
             }
         }
 
-        return new MigrationPlan(writer.Id, subject, reader, [.. steps], Environment.TickCount64);
+        return new MigrationPlan(
+            writer.Id,
+            subject,
+            reader,
+            [.. steps],
+            isMigrationChainComplete,
+            Environment.TickCount64);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private Task<RegisteredSchema> GetVersionAsync(string subject, int version) =>
+    private Task<RegisteredSchema> GetVersionAsync(
+        string subject,
+        int version,
+        CancellationToken cancellationToken) =>
         _schemaRegistry.GetSchemaBySubjectAsync(
             subject,
             version.ToString(System.Globalization.CultureInfo.InvariantCulture),
             ignoreDeletedSchemas: false,
-            CancellationToken.None);
+            cancellationToken);
 
     internal readonly record struct MigrationResult(
         ReadOnlyMemory<byte> Payload,
-        RegisteredSchema ReaderSchema);
+        RegisteredSchema ReaderSchema,
+        int PayloadSchemaId,
+        Schema PayloadSchema);
+
+    internal struct PreparedTargetEnumerator
+    {
+        private readonly MigrationStep[]? _steps;
+        private int _index;
+
+        private PreparedTargetEnumerator(MigrationStep[] steps)
+        {
+            _steps = steps;
+            _index = 0;
+        }
+
+        internal static PreparedTargetEnumerator Create(MigrationStep[] steps) => new(steps);
+
+        internal bool MoveNext(out RegisteredSchema target)
+        {
+            if (_steps is not null && _index < _steps.Length)
+            {
+                target = _steps[_index++].Target;
+                return true;
+            }
+
+            target = null!;
+            return false;
+        }
+    }
 
     private sealed class MigrationPlan(
         int writerSchemaId,
         string subject,
         RegisteredSchema readerSchema,
         MigrationStep[] steps,
+        bool isMigrationChainComplete,
         long createdAtMilliseconds)
     {
+        private int _preparationCount;
+
         internal int WriterSchemaId { get; } = writerSchemaId;
         internal string Subject { get; } = subject;
         internal RegisteredSchema ReaderSchema { get; } = readerSchema;
         internal MigrationStep[] Steps { get; } = steps;
+        internal bool IsMigrationChainComplete { get; } = isMigrationChainComplete;
         internal long CreatedAtMilliseconds { get; } = createdAtMilliseconds;
+
+        internal void MarkPrepared() => Interlocked.Increment(ref _preparationCount);
+
+        internal bool TryConsumePreparation()
+        {
+            while (true)
+            {
+                var count = Volatile.Read(ref _preparationCount);
+                if (count == 0)
+                    return false;
+                if (Interlocked.CompareExchange(ref _preparationCount, count - 1, count) == count)
+                    return true;
+            }
+        }
     }
 
-    private readonly record struct MigrationStep(
+    internal readonly record struct MigrationStep(
         SchemaRuleMode Mode,
         RegisteredSchema Source,
         RegisteredSchema Target);
@@ -305,4 +534,11 @@ internal sealed class SchemaRegistryMigrationRunner
             ReadOnlyMemory<byte> payload,
             SchemaRegistryRuleContext context) => payload;
     }
+}
+
+internal enum SchemaRegistryMigrationTransformResult : byte
+{
+    None,
+    Transformed,
+    Failed
 }

@@ -53,6 +53,7 @@
     <Compile Remove="Serialization\Headers.cs" />
     <Compile Remove="Serialization\IAsyncSerializer.cs" />
     <Compile Remove="Serialization\IAsyncSerializerPreparer.cs" />
+    <Compile Remove="Serialization\IAsyncDeserializerPreparer.cs" />
     <Compile Remove="Serialization\ISerializer.cs" />
     <Compile Remove="Telemetry\ApplicationTelemetryMetric.cs" />
     <Compile Remove="TopicPartition.cs" />

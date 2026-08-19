@@ -76,6 +76,82 @@ sealed CLR type and exactly one effective value-dependent candidate for that typ
 multi-candidate custom logical dispatch is rejected during writer construction because it would
 require a per-message candidate scan.
 
+### With source-generated POCOs
+
+`Dekaf.SchemaRegistry.Avro` includes source-generated POCO support for plain CLR models that do
+not implement Apache Avro's `ISpecificRecord`. Opt in with `[AvroRecord]` on a top-level `partial`
+class, record, or struct. The package's bundled source generator emits the schema and strongly
+typed codec at build time; serialization uses constrained static dispatch with no reflection,
+boxing, runtime schema walk, or codec lookup.
+
+```csharp
+using Dekaf.SchemaRegistry.Avro.Poco;
+
+[AvroRecord(Name = "Order", Namespace = "example.orders")]
+public sealed partial class Order
+{
+    [AvroField(Order = 0)]
+    public required string Id { get; init; }
+
+    [AvroField(Order = 1, Precision = 12, Scale = 2)]
+    public decimal Total { get; init; }
+
+    [AvroField(Order = 2, DefaultJson = "null")]
+    public string? Note { get; init; }
+}
+```
+
+```csharp
+using Dekaf;
+using Dekaf.SchemaRegistry;
+using Dekaf.SchemaRegistry.Avro.Poco;
+
+using var registry = new SchemaRegistryClient(new SchemaRegistryConfig
+{
+    Url = "http://localhost:8081"
+});
+
+await using var producer = await Kafka.CreateProducer<string, Order>()
+    .WithBootstrapServers("localhost:9092")
+    .UseAvroPocoSchemaRegistry(registry)
+    .BuildAsync();
+```
+
+Supported generated shapes are primitives, nullable members, enums, arrays, `List<T>`,
+`Dictionary<string,T>`, nested `[AvroRecord]` types, and explicit unions configured with
+`UnionTypes`. Only public fields and properties with public getters and setters are included;
+class inheritance is rejected so inherited state cannot be omitted silently. Explicit unions using
+an `object` or interface carrier accept reference-type branches only; value-type branches are
+rejected because assignment to the carrier would box on every read. Logical mappings are
+`DateOnly` → `date`, `TimeOnly`/`TimeSpan` → `time-micros`, `DateTime`/`DateTimeOffset` →
+`timestamp-micros`, `Guid` → `uuid`, and `decimal` → `decimal`. `TimeSpan` values must represent a
+time of day from zero through less than 24 hours. Generated `DateTime` fields must have
+`Kind == DateTimeKind.Utc`; local and unspecified values are rejected. Use `DateTimeOffset` when
+the source value carries an offset. Decimal members require
+`Precision` from 1 through 29 and `Scale` from 0 through the smaller of 28 and `Precision`.
+
+Use `Name`, `Aliases`, and `DefaultJson` for schema evolution. Defaults must match the first Avro
+union branch; nullable fields therefore use `DefaultJson = "null"`. Current generated defaults
+support null, primitive, string, bytes, and enum values. Invalid shapes, cycles, duplicate
+names/orders, ambiguous unions, and incompatible defaults fail compilation with `DKAVRO` diagnostics.
+
+Call `WarmupAsync` before measuring or entering a latency-sensitive path. After warmup,
+serialization is `0 B` per message for supported shapes. Deserialization allocates only the
+returned class/record and declared arrays, lists, dictionaries, strings, or byte arrays; cached
+schema-resolution plans add no per-message intermediate object graph. Rules remain opt-in and can
+allocate according to the configured rule executor. Generated and standard collection writers use
+one Avro block, allowing exact returned collection capacity. Valid external multi-block collections
+are also accepted and may grow their returned backing storage as later blocks arrive.
+
+A generated POCO deserializer needs the writer schema ID from each record before it can prepare a
+reader plan. Call its `WarmupAsync(schemaId)` when schema IDs are known in advance. Otherwise, the
+first record for each unseen schema ID is prepared asynchronously by `ConsumeAsync` or
+`ConsumeOneAsync`; no consumer thread blocks on the Schema Registry request. Later records use the
+cached synchronous plan. Direct `Deserialize` calls and synchronous batch iteration cannot await a
+cold plan and fail fast, so call `WarmupAsync(schemaId)` before using `ConsumeBatchAsync`. The
+generated consumer convenience extension cannot pre-warm unknown writer schema IDs before the
+first record arrives.
+
 ## Protobuf Serialization
 
 ```csharp

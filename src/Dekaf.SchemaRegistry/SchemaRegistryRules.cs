@@ -660,8 +660,8 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         SchemaRegistryRuleContext context)
         => ApplyReadRuleCollection(payload, context, useEncodingRules: false);
 
-    internal ReadOnlyMemory<byte> TransformMigrationPayload(
-        ReadOnlyMemory<byte> payload,
+    internal SchemaRegistryMigrationTransformResult TransformMigrationPayload(
+        ref ReadOnlyMemory<byte> payload,
         SchemaRegistryRuleContext context,
         SchemaRuleMode mode)
     {
@@ -670,13 +670,15 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         var ruleSet = context.Schema?.RuleSet;
         var rules = ruleSet?.MigrationRules;
         if (rules is null || rules.Count == 0 || !ShouldExecute(ruleSet!))
-            return payload;
+            return SchemaRegistryMigrationTransformResult.None;
 
         var isUpgrade = mode == SchemaRuleMode.Upgrade;
         var index = isUpgrade ? 0 : rules.Count - 1;
         var end = isUpgrade ? rules.Count : -1;
         var step = isUpgrade ? 1 : -1;
         var direction = isUpgrade ? SchemaRegistryRuleDirection.Write : SchemaRegistryRuleDirection.Read;
+        var payloadWasTransformed = false;
+        var payloadTransformFailed = false;
         for (; index != end; index += step)
         {
             var rule = rules[index];
@@ -684,10 +686,26 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
                 continue;
 
             _handlers.TryGetValue(rule.Type, out var handler);
-            payload = ApplyRule(payload, context, rule, handler, direction);
+            var ruleSucceeded = ApplyRule(ref payload, context, rule, handler, direction);
+            if (rule.Kind == SchemaRuleKind.Transform)
+            {
+                payloadWasTransformed |= ruleSucceeded;
+                payloadTransformFailed |= !ruleSucceeded;
+            }
         }
 
-        return payload;
+        if (payloadWasTransformed && payloadTransformFailed)
+        {
+            throw new SchemaRegistryRuleException(
+                "A migration step was only partially transformed and cannot be decoded safely.");
+        }
+
+        if (payloadTransformFailed)
+            return SchemaRegistryMigrationTransformResult.Failed;
+
+        return payloadWasTransformed
+            ? SchemaRegistryMigrationTransformResult.Transformed
+            : SchemaRegistryMigrationTransformResult.None;
     }
 
     internal static bool HasActiveMigrationRule(SchemaRuleSet? ruleSet, SchemaRuleMode mode)
@@ -701,7 +719,8 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
 
         for (var i = 0; i < rules.Count; i++)
         {
-            if (IsActiveMigrationRule(rules[i], mode))
+            var rule = rules[i];
+            if (IsActiveMigrationRule(rule, mode))
                 return true;
         }
 
@@ -879,6 +898,17 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         ISchemaRegistryRuleHandler? handler,
         SchemaRegistryRuleDirection direction)
     {
+        _ = ApplyRule(ref payload, context, rule, handler, direction);
+        return payload;
+    }
+
+    private bool ApplyRule(
+        ref ReadOnlyMemory<byte> payload,
+        SchemaRegistryRuleContext context,
+        SchemaRule rule,
+        ISchemaRegistryRuleHandler? handler,
+        SchemaRegistryRuleDirection direction)
+    {
         var handlerContext = RentHandlerContext(context, rule, direction);
         try
         {
@@ -919,7 +949,7 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
                 RunAction(rule.OnFailure, defaultAction: "ERROR", payload, handlerContext, failure);
             }
 
-            return payload;
+            return failure is null;
         }
         finally
         {
