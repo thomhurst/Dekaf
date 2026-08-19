@@ -210,6 +210,36 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
+    public async Task Consumer_GetCommittedOffsetsAsync_ReturnsSelectedOffsetsAndLeaderEpochs()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions
+            {
+                GroupId = "workers",
+                OffsetCommitMode = OffsetCommitMode.Manual
+            });
+        var jobs = new TopicPartition("jobs", 0);
+        var tasks = new TopicPartition("tasks", 1);
+        var missing = new TopicPartition("missing", 2);
+        await consumer.CommitAsync(
+        [
+            new TopicPartitionOffset(jobs.Topic, jobs.Partition, 12, leaderEpoch: 3),
+            new TopicPartitionOffset(tasks.Topic, tasks.Partition, 34, leaderEpoch: 5)
+        ]);
+
+        var offsets = await consumer.Positions.GetCommittedOffsetsAsync([jobs, tasks, missing]);
+
+        await Assert.That(offsets).Count().IsEqualTo(2);
+        await Assert.That(offsets[jobs])
+            .IsEqualTo(new TopicPartitionOffset(jobs.Topic, jobs.Partition, 12, leaderEpoch: 3));
+        await Assert.That(offsets[tasks])
+            .IsEqualTo(new TopicPartitionOffset(tasks.Topic, tasks.Partition, 34, leaderEpoch: 5));
+        await Assert.That(offsets).DoesNotContainKey(missing);
+    }
+
+    [Test]
     public async Task Consumer_ManualOffsetStore_WithAutoCommit_CommitsStoredOffset()
     {
         var cluster = new InMemoryKafkaCluster();

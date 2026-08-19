@@ -6607,13 +6607,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             var offsets = await _coordinator.FetchOffsetsAsync([partition], apiTimeout.Token).ConfigureAwait(false);
             if (offsets.TryGetValue(partition, out var committedOffset))
             {
-                offset = committedOffset.Offset;
-                _committed[partition] = offset;
-                if (committedOffset.LeaderEpoch >= 0)
-                    SetLastConsumedLeaderEpoch(partition, committedOffset.LeaderEpoch);
-                else
-                    ClearLastConsumedLeaderEpoch(partition);
-                return offset;
+                CacheCommittedOffset(partition, committedOffset);
+                return committedOffset.Offset;
             }
         }
         catch (OperationCanceledException ex) when (apiTimeout.DefaultTimeoutExpired)
@@ -6622,6 +6617,41 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         return null;
+    }
+
+    public async ValueTask<IReadOnlyDictionary<TopicPartition, TopicPartitionOffset>> GetCommittedOffsetsAsync(
+        IReadOnlyCollection<TopicPartition> partitions,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(partitions);
+
+        if (partitions.Count == 0 || _coordinator is null)
+            return new Dictionary<TopicPartition, TopicPartitionOffset>();
+
+        using var apiTimeout = new ApiTimeoutScope(_options.DefaultApiTimeoutMs, cancellationToken);
+        try
+        {
+            var offsets = await _coordinator.FetchOffsetsAsync(partitions, apiTimeout.Token).ConfigureAwait(false);
+            foreach (var (partition, committedOffset) in offsets)
+                CacheCommittedOffset(partition, committedOffset);
+
+            return offsets;
+        }
+        catch (OperationCanceledException ex) when (apiTimeout.DefaultTimeoutExpired)
+        {
+            throw apiTimeout.CreateTimeoutException(nameof(GetCommittedOffsetsAsync), ex);
+        }
+    }
+
+    private void CacheCommittedOffset(
+        TopicPartition partition,
+        TopicPartitionOffset committedOffset)
+    {
+        _committed[partition] = committedOffset.Offset;
+        if (committedOffset.LeaderEpoch >= 0)
+            SetLastConsumedLeaderEpoch(partition, committedOffset.LeaderEpoch);
+        else
+            ClearLastConsumedLeaderEpoch(partition);
     }
 
     public long? GetPosition(TopicPartition partition)

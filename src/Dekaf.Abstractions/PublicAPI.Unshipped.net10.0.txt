@@ -53,6 +53,7 @@ Dekaf.Consumer.IConsumerPartitions.Resume(params Dekaf.TopicPartition[]! partiti
 Dekaf.Consumer.IConsumerPartitions.Unassign() -> void
 Dekaf.Consumer.IConsumerPositions
 Dekaf.Consumer.IConsumerPositions.GetCommittedOffsetAsync(Dekaf.TopicPartition partition, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<long?>
+Dekaf.Consumer.IConsumerPositions.GetCommittedOffsetsAsync(System.Collections.Generic.IReadOnlyCollection<Dekaf.TopicPartition>! partitions, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<Dekaf.TopicPartition, Dekaf.TopicPartitionOffset>!>
 Dekaf.Consumer.IConsumerPositions.GetPosition(Dekaf.TopicPartition partition) -> long?
 Dekaf.Consumer.IConsumerPositions.Seek(Dekaf.TopicPartitionOffset offset) -> void
 Dekaf.Consumer.IConsumerPositions.SeekToBeginning(params Dekaf.TopicPartition[]! partitions) -> void

@@ -60,6 +60,11 @@ internal sealed class RebalanceConsumerScope<TKey, TValue> : IRebalanceConsumerS
         CancellationToken cancellationToken = default) =>
         GetConsumer().Positions.GetCommittedOffsetAsync(partition, cancellationToken);
 
+    public ValueTask<IReadOnlyDictionary<TopicPartition, TopicPartitionOffset>> GetCommittedOffsetsAsync(
+        IReadOnlyCollection<TopicPartition> partitions,
+        CancellationToken cancellationToken = default) =>
+        GetConsumer().Positions.GetCommittedOffsetsAsync(partitions, cancellationToken);
+
     public long? GetPosition(TopicPartition partition) =>
         GetPositionCore(partition);
 

@@ -581,6 +581,51 @@ public sealed class ConsumerAssignmentFastPathTests
     }
 
     [Test]
+    public async Task GetCommittedOffsetsAsync_FetchesAllPartitionsInOneRequest_WithLeaderEpochs()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        SetupFindCoordinator(connection);
+        OffsetFetchRequest? capturedRequest = null;
+        connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                capturedRequest = call.ArgAt<OffsetFetchRequest>(0);
+                return ValueTask.FromResult(CreateSuccessfulOffsetFetchResponse());
+            });
+
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager);
+        TopicPartition[] partitions =
+        [
+            new("test-topic", 0),
+            new("test-topic", 1),
+            new("test-topic", 2)
+        ];
+
+        var committed = await consumer.GetCommittedOffsetsAsync(partitions, CancellationToken.None);
+
+        await Assert.That(committed).Count().IsEqualTo(2);
+        await Assert.That(committed[partitions[0]])
+            .IsEqualTo(new TopicPartitionOffset("test-topic", 0, 10, leaderEpoch: 4));
+        await Assert.That(committed[partitions[1]])
+            .IsEqualTo(new TopicPartitionOffset("test-topic", 1, 20, leaderEpoch: 5));
+        await Assert.That(committed).DoesNotContainKey(partitions[2]);
+        await Assert.That(capturedRequest).IsNotNull();
+        await Assert.That(capturedRequest!.Topics!.Single().PartitionIndexes)
+            .IsEquivalentTo([0, 1, 2]);
+        _ = connection.Received(1).SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+            Arg.Any<OffsetFetchRequest>(),
+            Arg.Any<short>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
     public async Task GetCommittedOffsetAsync_StaleMemberEpoch_UsesAggregateRequestTimeout()
     {
         var connectionPool = Substitute.For<IConnectionPool>();

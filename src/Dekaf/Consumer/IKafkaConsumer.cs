@@ -290,6 +290,20 @@ public interface IConsumerPositions
     ValueTask<long?> GetCommittedOffsetAsync(TopicPartition partition, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Gets the committed offsets for the requested partitions in one coordinator request.
+    /// </summary>
+    /// <remarks>
+    /// The returned values include committed leader epochs. Partitions without a committed
+    /// offset are absent from the returned dictionary.
+    /// </remarks>
+    /// <exception cref="KafkaTimeoutException">
+    /// The operation exceeds <see cref="ConsumerOptions.DefaultApiTimeoutMs"/>.
+    /// </exception>
+    ValueTask<IReadOnlyDictionary<TopicPartition, TopicPartitionOffset>> GetCommittedOffsetsAsync(
+        IReadOnlyCollection<TopicPartition> partitions,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Gets the current position (next offset to consume) for a partition.
     /// In auto-commit mode, reflects the last fully-processed batch boundary;
     /// for per-message accuracy, use manual commit mode.

@@ -1451,6 +1451,12 @@ public sealed class PartitionedConsumerRuntimeTests
             CancellationToken cancellationToken = default)
             => ValueTask.FromResult<long?>(null);
 
+        public ValueTask<IReadOnlyDictionary<TopicPartition, TopicPartitionOffset>> GetCommittedOffsetsAsync(
+            IReadOnlyCollection<TopicPartition> partitions,
+            CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult<IReadOnlyDictionary<TopicPartition, TopicPartitionOffset>>(
+                new Dictionary<TopicPartition, TopicPartitionOffset>());
+
         public long? GetPosition(TopicPartition partition)
             => null;
 

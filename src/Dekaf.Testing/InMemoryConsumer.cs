@@ -748,6 +748,21 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         return ValueTask.FromResult(offset);
     }
 
+    public ValueTask<IReadOnlyDictionary<TopicPartition, TopicPartitionOffset>> GetCommittedOffsetsAsync(
+        IReadOnlyCollection<TopicPartition> partitions,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(partitions);
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+
+        var offsets = _groupId is null
+            ? new Dictionary<TopicPartition, TopicPartitionOffset>()
+            : _cluster.GetCommittedOffsets(_groupId, partitions);
+
+        return ValueTask.FromResult<IReadOnlyDictionary<TopicPartition, TopicPartitionOffset>>(offsets);
+    }
+
     public long? GetPosition(TopicPartition partition)
     {
         ThrowIfDisposed();
