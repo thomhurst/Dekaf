@@ -807,12 +807,6 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         }
     }
 
-    private void CacheGuidSchema(Guid? guid, string? format, Schema schema)
-    {
-        if (guid is { } value)
-            CacheGuidSchema(value, format, schema);
-    }
-
     private static string? NormalizeFormat(string? format) =>
         string.IsNullOrEmpty(format) ? null : format;
 
