@@ -208,6 +208,13 @@ When you supply a DLQ callback to `AddConsumerService`, it passes the registered
 
 The full stop sequence is: cancel the consume loop → drain buffered messages (if enabled) → commit final offsets → flush and dispose the DLQ producer → dispose the consumer. One safety exception: if shutdown interrupted a record mid-handling — whether it cancelled your `ProcessAsync`, an in-place retry, or an in-flight DLQ/retry-topic write, in the consume loop or during the drain itself — both draining and the final explicit commit are skipped, because pulling more records would mark the interrupted record processed and an explicit commit vouches for it directly. The consumer's close path still commits everything *proven* processed, so only the interrupted record is left uncommitted and redelivered on restart. This follows the consumer's [delivery contract](consumer/delivery-semantics.md): a record whose processing threw is never committed. One configuration is exempt: strict manual commit mode (`WithOffsetCommitMode(OffsetCommitMode.Manual)` + `WithAutoOffsetStore(false)`) still runs the final commit, because there it covers exactly the offsets your code explicitly stored — never the interrupted record. The service implements `IAsyncDisposable`; when registered via `AddHostedService`, the generic host uses the async path automatically, so shutdown never blocks a thread pool thread.
 
+If the consumer's rebalance listener implements `IPartitionStopListener`, configure
+its close callback with `WithPartitionStopTimeout` (default: 5 seconds).
+`KafkaConsumerServiceOptions.ShutdownTimeout` is an independent outer wait cap for
+consumer disposal; make it longer than the partition-stop timeout plus remaining
+consumer cleanup when shutdown must await the callback. The generic host's own
+shutdown timeout may impose another outer cap.
+
 ## Delivery Semantics
 
 The service inherits the consumer's guarantees — at-least-once by default, with offsets staged only for records the loop has yielded. See [Delivery Semantics](consumer/delivery-semantics.md) for the precise commit rules. Two service-specific points:

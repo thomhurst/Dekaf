@@ -123,6 +123,55 @@ public sealed class GracefulShutdownTests(KafkaTestContainer kafka) : KafkaInteg
     }
 
     [Test]
+    public async Task GracefulShutdown_PartitionStopTimeout_CancelsCallbackAndCloses()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        var groupId = $"stop-timeout-{Guid.NewGuid():N}";
+        var listener = new BlockingStopRebalanceListener();
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = topic,
+            Key = "key",
+            Value = "value"
+        }, CancellationToken.None);
+
+        var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId(groupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithRebalanceListener(listener)
+            .WithPartitionStopTimeout(TimeSpan.FromMilliseconds(50))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+
+        try
+        {
+            consumer.Subscribe(topic);
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            var message = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
+            await Assert.That(message).IsNotNull();
+
+            var close = consumer.CloseAsync().AsTask();
+
+            await listener.CancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await close.WaitAsync(TimeSpan.FromSeconds(5));
+
+            await Assert.That(listener.Completed.Task.IsCompleted).IsFalse();
+            await Assert.That(consumer.Assignment).IsEmpty();
+        }
+        finally
+        {
+            listener.Release.TrySetResult();
+            await listener.Completed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await consumer.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task GracefulShutdown_AtLeastOnceProcessing_NoMessageLoss()
     {
         // Simulate at-least-once: commit only after successful processing
@@ -488,6 +537,47 @@ public sealed class GracefulShutdownTests(KafkaTestContainer kafka) : KafkaInteg
         {
             StoppedPartitions.Add(partitions.ToList());
             return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class BlockingStopRebalanceListener : IRebalanceListener, IPartitionStopListener
+    {
+        public TaskCompletionSource CancellationObserved { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource Release { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource Completed { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public ValueTask OnPartitionsAssignedAsync(
+            IEnumerable<TopicPartition> partitions,
+            CancellationToken cancellationToken) => ValueTask.CompletedTask;
+
+        public ValueTask OnPartitionsRevokedAsync(
+            IEnumerable<TopicPartition> partitions,
+            CancellationToken cancellationToken) => ValueTask.CompletedTask;
+
+        public ValueTask OnPartitionsLostAsync(
+            IEnumerable<TopicPartition> partitions,
+            CancellationToken cancellationToken) => ValueTask.CompletedTask;
+
+        public async ValueTask OnPartitionsStoppedAsync(
+            IEnumerable<TopicPartition> partitions,
+            CancellationToken cancellationToken)
+        {
+            using var registration = cancellationToken.Register(
+                static state => ((TaskCompletionSource)state!).TrySetResult(),
+                CancellationObserved);
+            try
+            {
+                await Release.Task.ConfigureAwait(false);
+            }
+            finally
+            {
+                Completed.TrySetResult();
+            }
         }
     }
 }

@@ -467,6 +467,33 @@ public class ConsumerBuilderValidationTests
     }
 
     [Test]
+    public async Task WithPartitionStopTimeout_SetsOptions()
+    {
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithPartitionStopTimeout(TimeSpan.FromSeconds(12))
+            .Build();
+
+        var options = GetConsumerOptions(consumer);
+        await Assert.That(options.PartitionStopTimeout).IsEqualTo(TimeSpan.FromSeconds(12));
+    }
+
+    [Test]
+    public async Task WithPartitionStopTimeout_OutsideMillisecondRange_ThrowsArgumentOutOfRangeException()
+    {
+        var builder = Kafka.CreateConsumer<string, string>();
+
+        await Assert.That(() => builder.WithPartitionStopTimeout(TimeSpan.Zero))
+            .Throws<ArgumentOutOfRangeException>();
+        await Assert.That(() => builder.WithPartitionStopTimeout(TimeSpan.FromMilliseconds(-1)))
+            .Throws<ArgumentOutOfRangeException>();
+        await Assert.That(() => builder.WithPartitionStopTimeout(TimeSpan.FromTicks(1)))
+            .Throws<ArgumentOutOfRangeException>();
+        await Assert.That(() => builder.WithPartitionStopTimeout(TimeSpan.FromMilliseconds((double)int.MaxValue + 1)))
+            .Throws<ArgumentOutOfRangeException>();
+    }
+
+    [Test]
     public async Task UseTls_ReturnsSameBuilder()
     {
         var builder = Kafka.CreateConsumer<string, string>();

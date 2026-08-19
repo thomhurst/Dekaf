@@ -375,6 +375,13 @@ public sealed class ConsumerOptions
     public IRebalanceListener? RebalanceListener { get; init; }
 
     /// <summary>
+    /// Maximum time to await <see cref="IPartitionStopListener.OnPartitionsStoppedAsync"/>
+    /// during graceful shutdown. The callback token is cancelled when this timeout expires.
+    /// Default is 5 seconds.
+    /// </summary>
+    public TimeSpan PartitionStopTimeout { get; init; } = TimeSpan.FromSeconds(5);
+
+    /// <summary>
     /// Rebalance listener that receives a callback-scoped restricted consumer view.
     /// </summary>
     /// <remarks>Takes precedence over <see cref="RebalanceListener"/> when both are set.</remarks>

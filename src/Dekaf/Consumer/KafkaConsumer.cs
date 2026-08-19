@@ -1142,8 +1142,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private const int MaxConsecutiveEmptyParsedFetches = 3;
     private const int MaxRepeatedDeterministicPrefetchFailures = 3;
     private const long FilterRefreshIntervalMilliseconds = 30_000;
-    private static readonly TimeSpan PartitionStopListenerTimeout = TimeSpan.FromSeconds(5);
-
     private readonly ConsumerOptions _options;
 
     /// <summary>
@@ -1677,6 +1675,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         ArgumentOutOfRangeException.ThrowIfLessThan(options.DefaultApiTimeoutMs, 1);
     }
 
+    internal static void ValidatePartitionStopTimeout(ConsumerOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        if (options.PartitionStopTimeout < TimeSpan.FromMilliseconds(1)
+            || options.PartitionStopTimeout.TotalMilliseconds > int.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                options.PartitionStopTimeout,
+                "Partition stop timeout must be between one millisecond and Int32.MaxValue milliseconds");
+        }
+    }
+
     private KafkaConsumer(
         ConsumerOptions options,
         IDeserializer<TKey> keyDeserializer,
@@ -1698,6 +1709,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         ArgumentOutOfRangeException.ThrowIfLessThan(options.MaxPollIntervalMs, 1);
         ValidateFetchBufferMemory(options);
         ValidateDefaultApiTimeout(options);
+        ValidatePartitionStopTimeout(options);
         AutoOffsetResetStrategy.ValidateOptions(options);
 
         _options = options;
@@ -11061,10 +11073,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             return null;
 
         LogPartitionStopListenerCall(partitions.Length);
+        using var listenerTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        listenerTimeout.CancelAfter(_options.PartitionStopTimeout);
         try
         {
-            var listenerTask = listener.OnPartitionsStoppedAsync(partitions, cancellationToken).AsTask();
-            await listenerTask.WaitAsync(PartitionStopListenerTimeout, cancellationToken).ConfigureAwait(false);
+            var listenerTask = listener.OnPartitionsStoppedAsync(partitions, listenerTimeout.Token).AsTask();
+            await listenerTask.WaitAsync(listenerTimeout.Token).ConfigureAwait(false);
+            return null;
+        }
+        catch (OperationCanceledException)
+            when (!cancellationToken.IsCancellationRequested && listenerTimeout.IsCancellationRequested)
+        {
+            LogPartitionStopListenerTimedOut(_options.PartitionStopTimeout);
             return null;
         }
         catch (OperationCanceledException ex)
@@ -11500,6 +11520,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     [LoggerMessage(Level = LogLevel.Error, Message = "OnPartitionsStopped partition stop listener callback threw an exception")]
     private partial void LogPartitionStopListenerCallbackError(Exception exception);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "OnPartitionsStopped exceeded timeout {Timeout}; continuing shutdown")]
+    private partial void LogPartitionStopListenerTimedOut(TimeSpan timeout);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Committed pending offsets during close")]
     private partial void LogCommittedPendingOffsets();

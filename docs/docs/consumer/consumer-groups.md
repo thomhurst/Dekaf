@@ -126,6 +126,7 @@ var consumer = await Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
     .WithRebalanceListener(new MyRebalanceListener())
+    .WithPartitionStopTimeout(TimeSpan.FromSeconds(30))
     .BuildAsync();
 ```
 
@@ -138,7 +139,9 @@ Callback semantics:
 | `OnPartitionsLostAsync` | After ownership was lost involuntarily, such as heartbeat timeout or unknown member recovery. | Do not commit offsets for lost partitions unless your application has a separate ownership guarantee. |
 | `OnPartitionsStoppedAsync` | During graceful `CloseAsync` or `DisposeAsync`, after heartbeat, leader-refresh, auto-commit, and prefetch tasks stop and before final auto-commit, `LeaveGroup`, assignment cleanup, and resource disposal. | Drain local work if needed, commit completed offsets, then release resources. |
 
-Non-cancellation callback exceptions are logged and suppressed. `OperationCanceledException` follows the supplied cancellation token.
+Non-cancellation callback exceptions are logged and suppressed. The callback token
+is cancelled by caller cancellation, the aggregate `WithDefaultApiTimeout`, or the
+configured `WithPartitionStopTimeout`.
 
 Use `IConsumerAwareRebalanceListener` when a callback must operate on the consumer
 without capturing its unrestricted instance:
@@ -369,9 +372,21 @@ When a consumer leaves gracefully (`await using` or `CloseAsync`):
 4. Consumer sends `LeaveGroup` and releases resources
 5. Remaining consumers get its partitions
 
-The stop callback is bounded to five seconds. If it is cancelled, Dekaf still
-clears local assignment and releases resources before `CloseAsync` rethrows the
-cancellation.
+The stop callback timeout defaults to five seconds and is configured with
+`WithPartitionStopTimeout`. On expiry, Dekaf cancels the callback token and stops
+awaiting the callback so assignment cleanup and resource disposal can continue. A
+callback that ignores cancellation may keep running after close, so it must not use
+consumer-owned resources after its token is cancelled. Caller cancellation and the
+aggregate `WithDefaultApiTimeout` can end the window sooner; those cancellations are
+re-thrown by `CloseAsync` after local cleanup. `ConsumerCloseOptions` controls only
+whether group membership is retained or left and does not replace the callback
+timeout.
+
+For `KafkaConsumerService`, `KafkaConsumerServiceOptions.ShutdownTimeout`
+independently caps how long the hosted service awaits consumer disposal. Set it
+longer than `WithPartitionStopTimeout` plus remaining close work when the host must
+observe callback completion; the generic host's shutdown timeout can impose a
+further outer cap.
 
 Cancel the token passed to `ConsumeAsync` before closing when you need to stop a pending fetch promptly during shutdown.
 
