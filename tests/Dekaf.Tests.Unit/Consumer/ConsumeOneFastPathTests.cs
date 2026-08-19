@@ -597,7 +597,7 @@ public sealed class ConsumeOneFastPathTests
     }
 
     [Test]
-    public async Task CommitAsync_InAutoMode_FlushesActivePositionWithoutPendingQueue()
+    public async Task ExplicitCommitStaging_InAutoMode_FlushesActivePositionWithoutPendingQueue()
     {
         var fetch = PendingFetchData.Create(Topic, Partition,
         [
@@ -616,7 +616,7 @@ public sealed class ConsumeOneFastPathTests
         pendingFetches.Clear();
         activeFetch.Dispose();
 
-        await consumer.CommitAsync(CancellationToken.None);
+        consumer.StageExplicitCommitOffsetsForTesting();
 
         await Assert.That(positions[tp]).IsEqualTo(21L);
     }

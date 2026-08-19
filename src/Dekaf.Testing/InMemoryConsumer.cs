@@ -605,6 +605,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     {
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
+        _ = GetCommitGroupId();
 
         lock (_gate)
         {
@@ -624,12 +625,16 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         ArgumentNullException.ThrowIfNull(offsets);
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
+        var groupId = GetCommitGroupId();
 
-        if (_groupId is not null)
-            _cluster.CommitOffsets(_groupId, offsets);
+        _cluster.CommitOffsets(groupId, offsets);
 
         return ValueTask.CompletedTask;
     }
+
+    private string GetCommitGroupId() => _groupId
+        ?? throw new InvalidOperationException(
+            "Offset commits require a consumer group. Configure one with ConsumerBuilder.WithGroupId(...).");
 
     public void StoreOffset(ConsumeResult<TKey, TValue> result)
     {

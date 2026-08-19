@@ -103,7 +103,7 @@ public sealed class OffsetStoreTimingTests
     }
 
     [Test]
-    public async Task CommitAsync_ManualModeAfterPauseReconciliation_VouchesForInDoubtRecord()
+    public async Task ExplicitCommitStaging_ManualModeAfterPauseReconciliation_VouchesForInDoubtRecord()
     {
         var fetch = PendingFetchData.Create(Topic, Partition,
         [
@@ -120,7 +120,7 @@ public sealed class OffsetStoreTimingTests
 
         consumer.Pause(tp);
         consumer.Seek(new TopicPartitionOffset(Topic, Partition + 1, 100));
-        await consumer.CommitAsync(CancellationToken.None);
+        consumer.StageExplicitCommitOffsetsForTesting();
 
         await Assert.That(GetDirtyStoredOffsets(consumer)[tp]).IsEqualTo(21L);
     }
@@ -287,7 +287,7 @@ public sealed class OffsetStoreTimingTests
     }
 
     [Test]
-    public async Task CommitAsync_AfterBreak_VouchesForInDoubtRecord()
+    public async Task ExplicitCommitStaging_AfterBreak_VouchesForInDoubtRecord()
     {
         var fetch = PendingFetchData.Create(Topic, Partition,
         [
@@ -304,14 +304,14 @@ public sealed class OffsetStoreTimingTests
                 break;
         }
 
-        await consumer.CommitAsync(CancellationToken.None);
+        consumer.StageExplicitCommitOffsetsForTesting();
 
         // Explicit commit is the caller vouching for everything delivered so far.
         await Assert.That(GetDirtyStoredOffsets(consumer)[tp]).IsEqualTo(22L);
     }
 
     [Test]
-    public async Task CommitAsync_AfterSeek_DoesNotRestoreInDoubtRecord()
+    public async Task ExplicitCommitStaging_AfterSeek_DoesNotRestoreInDoubtRecord()
     {
         var fetch = PendingFetchData.Create(Topic, Partition,
         [
@@ -327,14 +327,14 @@ public sealed class OffsetStoreTimingTests
             CancellationToken.None)).IsNotNull();
 
         consumer.Seek(new TopicPartitionOffset(Topic, Partition, 100));
-        await consumer.CommitAsync(CancellationToken.None);
+        consumer.StageExplicitCommitOffsetsForTesting();
 
         await Assert.That(GetPositions(consumer)[tp]).IsEqualTo(100L);
         await Assert.That(GetDirtyStoredOffsets(consumer)[tp]).IsEqualTo(100L);
     }
 
     [Test]
-    public async Task IncrementalUnassign_AfterConsume_CommitAsyncDoesNotResurrectRevokedPartition()
+    public async Task IncrementalUnassign_AfterConsume_ExplicitCommitStagingDoesNotResurrectRevokedPartition()
     {
         var fetch = PendingFetchData.Create(Topic, Partition,
         [
@@ -349,7 +349,7 @@ public sealed class OffsetStoreTimingTests
         await Assert.That(await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), CancellationToken.None)).IsNotNull();
 
         consumer.IncrementalUnassign([tp]);
-        await consumer.CommitAsync(CancellationToken.None);
+        consumer.StageExplicitCommitOffsetsForTesting();
 
         // Partition removal cleared all per-partition state; the stale snapshot must not
         // bring the revoked partition's position or staged offset back to life.
@@ -415,7 +415,7 @@ public sealed class OffsetStoreTimingTests
     }
 
     [Test]
-    public async Task ConsumeBatchAsync_CommitAsyncInAutoMode_VouchesForIteratedRecords()
+    public async Task ConsumeBatchAsync_ExplicitCommitStagingInAutoMode_VouchesForIteratedRecords()
     {
         var fetch = PendingFetchData.Create(Topic, Partition,
         [
@@ -431,7 +431,7 @@ public sealed class OffsetStoreTimingTests
             await foreach (var batch in consumer.ConsumeBatchAsync(CancellationToken.None))
             {
                 foreach (var _ in batch) { }
-                await consumer.CommitAsync(CancellationToken.None);
+                consumer.StageExplicitCommitOffsetsForTesting();
                 throw new InvalidOperationException("stop after explicit handoff");
             }
         }).Throws<InvalidOperationException>();
@@ -440,7 +440,7 @@ public sealed class OffsetStoreTimingTests
     }
 
     [Test]
-    public async Task ConsumeRawBatchAsync_CommitAsyncInAutoMode_VouchesForIteratedRecords()
+    public async Task ConsumeRawBatchAsync_ExplicitCommitStagingInAutoMode_VouchesForIteratedRecords()
     {
         var fetch = PendingFetchData.Create(Topic, Partition,
         [
@@ -456,7 +456,7 @@ public sealed class OffsetStoreTimingTests
             await foreach (var batch in consumer.ConsumeRawBatchAsync(CancellationToken.None))
             {
                 foreach (var _ in batch) { }
-                await consumer.CommitAsync(CancellationToken.None);
+                consumer.StageExplicitCommitOffsetsForTesting();
                 throw new InvalidOperationException("stop after explicit handoff");
             }
         }).Throws<InvalidOperationException>();
@@ -606,7 +606,7 @@ public sealed class OffsetStoreTimingTests
     [Test]
     [Arguments(false)]
     [Arguments(true)]
-    public async Task ConsumeBatch_FullyEnumeratedBreakThenCommit_VouchesForBatch(bool raw)
+    public async Task ConsumeBatch_FullyEnumeratedBreakThenCommitStaging_VouchesForBatch(bool raw)
     {
         var fetch = PendingFetchData.Create(Topic, Partition,
         [
@@ -634,7 +634,7 @@ public sealed class OffsetStoreTimingTests
             }
         }
 
-        await consumer.CommitAsync(CancellationToken.None);
+        consumer.StageExplicitCommitOffsetsForTesting();
 
         await Assert.That(GetDirtyStoredOffsets(consumer)[tp]).IsEqualTo(22L);
         await Assert.That(GetPendingFetches(consumer)).IsEmpty();
@@ -735,7 +735,7 @@ public sealed class OffsetStoreTimingTests
     }
 
     [Test]
-    public async Task CommitAsync_InAutoMode_StagesInFlightRecord()
+    public async Task ExplicitCommitStaging_InAutoMode_StagesInFlightRecord()
     {
         var fetch = PendingFetchData.Create(Topic, Partition,
         [
@@ -749,7 +749,7 @@ public sealed class OffsetStoreTimingTests
         await Assert.That(await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), CancellationToken.None)).IsNotNull();
         await Assert.That(GetDirtyStoredOffsets(consumer).ContainsKey(tp)).IsFalse();
 
-        await consumer.CommitAsync(CancellationToken.None);
+        consumer.StageExplicitCommitOffsetsForTesting();
 
         await Assert.That(GetDirtyStoredOffsets(consumer)[tp]).IsEqualTo(21L);
     }
@@ -802,7 +802,7 @@ public sealed class OffsetStoreTimingTests
     }
 
     [Test]
-    public async Task CommitAsync_AfterSwitchingToBatch_IgnoresStaleActiveSnapshot()
+    public async Task ExplicitCommitStaging_AfterSwitchingToBatch_IgnoresStaleActiveSnapshot()
     {
         var fetch = PendingFetchData.Create(Topic, Partition,
         [
@@ -826,7 +826,7 @@ public sealed class OffsetStoreTimingTests
             await Assert.That(batches.Current.Select(record => record.Offset).ToArray())
                 .IsEquivalentTo([21L, 22L]);
 
-            await consumer.CommitAsync(CancellationToken.None);
+            consumer.StageExplicitCommitOffsetsForTesting();
         }
 
         await Assert.That(GetDirtyStoredOffsets(consumer)[tp]).IsEqualTo(23L);

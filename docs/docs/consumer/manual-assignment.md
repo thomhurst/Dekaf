@@ -71,6 +71,12 @@ Don't mix `Subscribe` and `Assign` on the same consumer. Use one or the other.
 
 With manual assignment, you're responsible for tracking offsets:
 
+Manual assignment does not require a group ID, but Kafka offset commits do. A consumer built
+without `WithGroupId(...)` must persist offsets in its own storage, as shown below. Calling either
+`CommitAsync` overload without a group ID throws `InvalidOperationException`. If you want Kafka to
+store offsets while retaining manual partition assignment, configure `WithGroupId(...)` before
+building the consumer.
+
 ```csharp
 using Dekaf;
 

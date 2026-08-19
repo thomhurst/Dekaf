@@ -190,6 +190,29 @@ public sealed class ConsumerConfigurationTests(KafkaTestContainer kafka) : Kafka
     }
 
     [Test]
+    public async Task Consumer_ManualAssignWithoutGroup_CommitOverloadsThrow()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-consumer-manual-commit")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        consumer.Assign(new TopicPartition(topic, 0));
+
+        await Assert.That(async () => await consumer.CommitAsync(CancellationToken.None))
+            .Throws<InvalidOperationException>()
+            .And.HasMessageContaining("WithGroupId");
+        await Assert.That(async () => await consumer.CommitAsync(
+                [new TopicPartitionOffset(topic, 0, 1)],
+                CancellationToken.None))
+            .Throws<InvalidOperationException>()
+            .And.HasMessageContaining("WithGroupId");
+    }
+
+    [Test]
     public async Task Consumer_SubscribeThenAssign_BufferedConsumeRecordsGroupPoll()
     {
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);

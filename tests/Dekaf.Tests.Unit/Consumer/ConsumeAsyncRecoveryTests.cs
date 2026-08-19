@@ -697,7 +697,7 @@ public sealed class ConsumeAsyncRecoveryTests
     }
 
     [Test]
-    public async Task CommitAsync_AfterPartialBatchConsumed_FlushesCurrentPosition()
+    public async Task ExplicitCommitStaging_AfterPartialBatchConsumed_FlushesCurrentPosition()
     {
         var fetch = PendingFetchData.Create(Topic, Partition,
         [
@@ -717,7 +717,7 @@ public sealed class ConsumeAsyncRecoveryTests
             await Assert.That(result.Offset).IsEqualTo(20L);
             await Assert.That(positions.TryGetValue(tp, out var position) && position == 21L).IsFalse();
 
-            await consumer.CommitAsync(cts.Token);
+            consumer.StageExplicitCommitOffsetsForTesting();
 
             await Assert.That(positions[tp]).IsEqualTo(21L);
 
