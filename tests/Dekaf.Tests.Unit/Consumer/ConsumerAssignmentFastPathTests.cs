@@ -1582,8 +1582,11 @@ public sealed class ConsumerAssignmentFastPathTests
 
         try
         {
+            GetPendingFetches(consumer).Enqueue(
+                CreateFetch(partition: partition.Partition, baseOffset: 10, value: "stale"));
             QueueCoordinatorRevokedPartitionsForFetchClear(consumer, [partition]);
-            await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsFalse();
+            await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
+            await Assert.That(GetPendingFetches(consumer)).IsEmpty();
             PublishAssignmentSnapshot(consumer);
             RemovePartitionState(consumer, [partition]);
             SetPosition(consumer, partition, 20);

@@ -7103,7 +7103,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private void ClearFetchBufferForPartitions(
         IEnumerable<TopicPartition> partitionsToRemove,
         bool invalidateAllFetches = false,
-        bool stagePendingClear = false)
+        bool stagePendingClear = false,
+        bool preserveDivergingEpochResets = false)
     {
         // Create a set for efficient lookup
         var removeSet = partitionsToRemove is HashSet<TopicPartition> set
@@ -7131,8 +7132,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             else
                 InvalidateFetchesForPartitionsLocked(removeSet);
 
-            foreach (var partition in removeSet)
-                _pendingDivergingEpochResets.TryRemove(partition, out _);
+            if (!preserveDivergingEpochResets)
+            {
+                foreach (var partition in removeSet)
+                    _pendingDivergingEpochResets.TryRemove(partition, out _);
+            }
         }
 
         // Filter in-place without allocating a temporary queue
@@ -7314,9 +7318,24 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         var partitionsToRemove = _coordinatorRevokedPartitionsPendingFetchClear.Keys.ToHashSet();
-        partitionsToRemove.ExceptWith(_topicIdentityResetPartitions);
+        HashSet<TopicPartition>? reservedPartitions = null;
+        foreach (var partition in _topicIdentityResetPartitions)
+        {
+            if (partitionsToRemove.Remove(partition))
+                (reservedPartitions ??= []).Add(partition);
+        }
+
+        // A newer marker on a reserved partition must remain available to reject the
+        // in-flight identity reset, but its stale queued fetch still must be discarded.
+        if (reservedPartitions is not null)
+        {
+            ClearFetchBufferForPartitions(
+                reservedPartitions,
+                preserveDivergingEpochResets: true);
+        }
+
         if (partitionsToRemove.Count == 0)
-            return false;
+            return reservedPartitions is not null;
 
         // Keep partitions marked while clearing. Background prefetches use this
         // marker to avoid advancing positions for data that will be discarded.
