@@ -1415,24 +1415,46 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
     [Timeout(30_000)]
     public async Task RetriableError_OnOnePartition_DoesNotBlockOtherPartitions(CancellationToken ct)
     {
-        // Send 1: batch A (p0) + batch B (p1) coalesced → p0 error, p1 success
-        // Send 2: batch A retry (p0) + batch C (p1) coalesced → both succeed
-        var tcs1 = new TaskCompletionSource<ProduceResponse>();
-        var tcs2 = new TaskCompletionSource<ProduceResponse>();
-        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>();
-        responseQueue.Enqueue(tcs1);
-        responseQueue.Enqueue(tcs2);
-
         var sendCount = 0;
-        var sendSignals = new[] { new TaskCompletionSource(), new TaskCompletionSource() };
-
-        var (pool, _) = CreateMockConnection(responseQueue, onSend: () =>
+        var partitionAttempts = new int[2];
+        var firstSend = new TaskCompletionSource<ProduceResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstResponse = new TaskCompletionSource<ProduceResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var connection = new TestKafkaConnection { CaptureProduceRequests = true };
+        connection.SendProducePipelinedAfterWrite = () =>
         {
-            var idx = Interlocked.Increment(ref sendCount) - 1;
-            if (idx < sendSignals.Length)
-                sendSignals[idx].TrySetResult();
-        });
-        ct = GuardUnscriptedSends(ct);
+            var send = Interlocked.Increment(ref sendCount);
+            IReadOnlyList<(string Name, Guid TopicId, int Partition)> requestedTopics;
+            lock (connection.CapturedProduceRequests)
+                requestedTopics = connection.CapturedProduceRequests[^1].Topics;
+
+            var partitions = new List<(int partition, ErrorCode errorCode, long baseOffset)>(
+                requestedTopics.Count);
+            foreach (var requestedTopic in requestedTopics)
+            {
+                var partition = requestedTopic.Partition;
+                var attempt = Interlocked.Increment(ref partitionAttempts[partition]);
+                partitions.Add(partition switch
+                {
+                    0 when attempt == 1 => (partition, ErrorCode.NotLeaderOrFollower, -1),
+                    0 => (partition, ErrorCode.None, 100),
+                    _ => (partition, ErrorCode.None, 199 + attempt)
+                });
+            }
+
+            var response = CreateMultiPartitionResponse("test-topic", partitions.ToArray());
+            if (send != 1)
+                return new ValueTask<Task<ProduceResponse>>(Task.FromResult(response));
+
+            firstSend.TrySetResult(response);
+            return new ValueTask<Task<ProduceResponse>>(firstResponse.Task);
+        };
+        var pool = Substitute.For<IConnectionPool>();
+        var connectionAvailable = new TaskCompletionSource<IKafkaConnection>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(_ => new ValueTask<IKafkaConnection>(connectionAvailable.Task));
         var options = CreateOptions();
         var accumulator = new RecordAccumulator(options);
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
@@ -1457,47 +1479,42 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
 
         try
         {
-            // Enqueue batch A (p0) and batch B (p1) — they'll coalesce
+            SeedKnownPartitions(
+                sender,
+                new TopicPartition("test-topic", 0),
+                new TopicPartition("test-topic", 1));
+
+            // Hold connection acquisition until both first-wave batches are visible.
             var batchA = CreateTestBatch(vtPool, "test-topic", 0);
             var batchB = CreateTestBatch(vtPool, "test-topic", 1);
             sender.Enqueue(batchA);
             sender.Enqueue(batchB);
+            connectionAvailable.SetResult(connection);
 
-            // Wait for send 1 (coalesced A+B)
-            await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
+            var firstResponsePayload = await firstSend.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
+            IReadOnlyList<(string Name, Guid TopicId, int Partition)> firstRequest;
+            lock (connection.CapturedProduceRequests)
+                firstRequest = connection.CapturedProduceRequests[0].Topics;
+            await Assert.That(firstRequest.Select(static topic => topic.Partition))
+                .IsEquivalentTo([0, 1]);
 
-            // Enqueue batch C (p1) while send 1 is still in flight, BEFORE releasing the
-            // response. Enqueuing after the response completes races the send loop: the p0
-            // retry can dispatch alone before C's channel event is drained, splitting send 2
-            // into two sends and breaking the script. With C already in the channel when the
-            // loop wakes, the same iteration drains it and coalesces it with the retry.
+            // Enqueue C while the first response is held. After p0 becomes muted, C must
+            // still send; the p0 retry and C may legally share a request or use two requests.
             var batchC = CreateTestBatch(vtPool, "test-topic", 1);
             sender.Enqueue(batchC);
 
-            // p0 gets retriable error, p1 succeeds; C proceeds (p1 is not muted)
-            tcs1.SetResult(CreateMultiPartitionResponse("test-topic",
-                (0, ErrorCode.NotLeaderOrFollower, -1),
-                (1, ErrorCode.None, 200)));
-
-            // Wait for send 2 (batch A retry + batch C coalesced — both partitions)
-            await sendSignals[1].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
-
-            // Both succeed
-            tcs2.SetResult(CreateMultiPartitionResponse("test-topic",
-                (0, ErrorCode.None, 100),
-                (1, ErrorCode.None, 201)));
+            firstResponse.SetResult(firstResponsePayload);
 
             await allAcknowledged.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
 
-            // Verify p1 was acknowledged first (from send 1), then p0 retry + p1 from send 2
+            // p1 succeeds on the first response; both the p0 retry and p1 C then complete.
             await Assert.That(ackPartitions).Count().IsEqualTo(3);
-            // First ack must be p1 (from the first response where p1 succeeded)
             await Assert.That(ackPartitions[0]).IsEqualTo((1, 200L));
-            // Remaining: A retry (p0) and C (p1) from send 2
             var remaining = ackPartitions.Skip(1).OrderBy(a => a.partition).ToList();
             await Assert.That(remaining[0]).IsEqualTo((0, 100L));
             await Assert.That(remaining[1]).IsEqualTo((1, 201L));
-            await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(2);
+            await Assert.That(partitionAttempts).IsEquivalentTo([2, 2]);
+            await Assert.That(Volatile.Read(ref sendCount)).IsBetween(2, 3);
         }
         finally
         {
