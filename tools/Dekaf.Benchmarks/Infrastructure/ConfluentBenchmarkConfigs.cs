@@ -7,6 +7,33 @@ namespace Dekaf.Benchmarks.Infrastructure;
 public static class ConfluentBenchmarkConfigs
 {
     /// <summary>
+    /// Producer config shared by comparison benchmarks so acknowledgement, batching,
+    /// linger, and delivery-report settings stay explicit and consistent.
+    /// </summary>
+    public static Confluent.Kafka.ProducerConfig CreateProducerConfig(
+        string bootstrapServers,
+        string clientId,
+        double lingerMs,
+        bool enableDeliveryReports,
+        int? queueBufferingMaxMessages = null)
+    {
+        var config = new Confluent.Kafka.ProducerConfig
+        {
+            BootstrapServers = bootstrapServers,
+            ClientId = clientId,
+            Acks = Confluent.Kafka.Acks.Leader,
+            LingerMs = lingerMs,
+            BatchSize = 16384,
+            EnableDeliveryReports = enableDeliveryReports
+        };
+
+        if (queueBufferingMaxMessages is { } maxMessages)
+            config.QueueBufferingMaxMessages = maxMessages;
+
+        return config;
+    }
+
+    /// <summary>
     /// Consumer config doing the same work as Dekaf's defaults. <c>CheckCrcs</c> is on
     /// because Dekaf validates batch CRCs by default (Java-client parity) while
     /// librdkafka defaults <c>check.crcs</c> off — without it the two clients are not

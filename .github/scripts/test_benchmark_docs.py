@@ -195,6 +195,29 @@ class BenchmarkDocsTests(unittest.TestCase):
         self.assertEqual(2, summary["stable_rows"])
         self.assertEqual(2, summary["total_rows"])
 
+    def test_single_produce_linger_controls_are_separate_scenarios(self):
+        prefix = "Dekaf.Benchmarks.Benchmarks.Client.ProducerSingleBenchmarks"
+        entries = [
+            {
+                "benches": [
+                    benchmark(f"{prefix}.Dekaf_ProduceSingleNoLinger(MessageSize: 100)", 80),
+                    benchmark(f"{prefix}.Confluent_ProduceSingleNoLinger(MessageSize: 100)", 100),
+                    benchmark(f"{prefix}.Dekaf_ProduceSingleLinger5(MessageSize: 100)", 10),
+                    benchmark(f"{prefix}.Confluent_ProduceSingleLinger5(MessageSize: 100)", 100),
+                ]
+            }
+        ] * 2
+
+        summaries = summarize_scenarios(rolling_comparisons(entries))
+
+        self.assertEqual(
+            ["ProduceSingleNoLinger", "ProduceSingleLinger5"],
+            [summary["operation"] for summary in summaries],
+        )
+        table = format_summary_table(summaries, {})
+        self.assertIn("Produce — serial awaited (linger=0)", table[2])
+        self.assertIn("Produce — serial awaited (linger=5 ms)", table[3])
+
     def test_latest_alloc_ratios_reads_dekaf_rows(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "ProducerBenchmarks-report-github.md"
@@ -256,6 +279,7 @@ class BenchmarkDocsTests(unittest.TestCase):
         self.assertIn("200.00 μs (2.0× slower)", document)
         self.assertIn("500 B (2.0× less)", document)
         self.assertIn("Consume — poll a single message", document)
+        self.assertIn("The `linger=0` scenario is the matched client comparison", document)
         self.assertIn("2.1× slower", document)
         self.assertIn("<details>", document)
         self.assertIn(
