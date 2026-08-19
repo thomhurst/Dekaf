@@ -194,7 +194,8 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
                 schemaId,
                 context,
                 preparedState.Subject,
-                preparedState.Schema);
+                preparedState.Schema,
+                plan);
             return true;
         }
 
@@ -283,7 +284,8 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
                 schemaId,
                 context,
                 preparedState.Subject,
-                preparedState.Schema);
+                preparedState.Schema,
+                preparedState.Plan);
         }
 
         return DeserializeWithRules(payload, schemaId, context);
@@ -308,8 +310,9 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
                 context);
         }
 
+        var plan = GetOrBuildPlanCached(schemaId, scopedSchema);
         if (scopedSchema.RuleSet is not null)
-            return DeserializeWithTaggedRules(payload, schemaId, subject, scopedSchema, context);
+            return DeserializeWithTaggedRules(payload, schemaId, subject, scopedSchema, context, plan);
 
         var ruleContext = SchemaRegistryRuleContext.Rent(
             context.Topic,
@@ -328,7 +331,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         }
 
         var reader = new AvroValueReader(payload.Span);
-        return TCodec.Read(ref reader, GetOrBuildPlanCached(schemaId, scopedSchema));
+        return TCodec.Read(ref reader, plan);
     }
 
     // Keep the direct and prepared bodies separate: a shared forwarding helper regresses this hot path.
@@ -337,7 +340,8 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         int schemaId,
         SerializationContext context,
         string subject,
-        Schema scopedSchema)
+        Schema scopedSchema,
+        AvroPocoReaderPlan plan)
     {
         if (_migrationRunner is not null)
         {
@@ -351,7 +355,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         }
 
         if (scopedSchema.RuleSet is not null)
-            return DeserializeWithTaggedRules(payload, schemaId, subject, scopedSchema, context);
+            return DeserializeWithTaggedRules(payload, schemaId, subject, scopedSchema, context, plan);
 
         var ruleContext = SchemaRegistryRuleContext.Rent(
             context.Topic,
@@ -370,7 +374,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         }
 
         var reader = new AvroValueReader(payload.Span);
-        return TCodec.Read(ref reader, GetOrBuildPlanCached(schemaId, scopedSchema));
+        return TCodec.Read(ref reader, plan);
     }
 
     private T DeserializeWithTaggedRules(
@@ -378,7 +382,8 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         int schemaId,
         string subject,
         Schema scopedSchema,
-        SerializationContext context)
+        SerializationContext context,
+        AvroPocoReaderPlan plan)
     {
         var taggedWorkspaceOperation = AvroTaggedFieldTransformerProvider.BeginOperation();
         try
@@ -401,7 +406,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
             }
 
             var reader = new AvroValueReader(payload.Span);
-            return TCodec.Read(ref reader, GetOrBuildPlanCached(schemaId, scopedSchema));
+            return TCodec.Read(ref reader, plan);
         }
         finally
         {
@@ -470,7 +475,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
                 .ConfigureAwait(false);
         }
 
-        CachePreparedRuleState(preparedKey, subject, scopedSchema);
+        CachePreparedRuleState(preparedKey, subject, scopedSchema, plan);
     }
 
     private async ValueTask PrepareMigrationTargetsAsync(
@@ -510,9 +515,13 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         return true;
     }
 
-    private void CachePreparedRuleState(PreparedRuleKey key, string subject, Schema schema)
+    private void CachePreparedRuleState(
+        PreparedRuleKey key,
+        string subject,
+        Schema schema,
+        AvroPocoReaderPlan plan)
     {
-        var state = new PreparedRuleState(key, subject, schema);
+        var state = new PreparedRuleState(key, subject, schema, plan);
         if (!_preparedRuleStates.TryAdd(key, state))
         {
             if (_preparedRuleStates.TryGetValue(key, out var cached))
@@ -740,11 +749,16 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
 
     private sealed record ResolvedAvroSchema(AvroPocoReaderPlan Plan, AvroSchema Schema);
 
-    private sealed class PreparedRuleState(PreparedRuleKey key, string subject, Schema schema)
+    private sealed class PreparedRuleState(
+        PreparedRuleKey key,
+        string subject,
+        Schema schema,
+        AvroPocoReaderPlan plan)
     {
         internal PreparedRuleKey Key { get; } = key;
         internal string Subject { get; } = subject;
         internal Schema Schema { get; } = schema;
+        internal AvroPocoReaderPlan Plan { get; } = plan;
 
         internal bool Matches(int schemaId, string topic, bool isKey) =>
             Key.SchemaId == schemaId &&

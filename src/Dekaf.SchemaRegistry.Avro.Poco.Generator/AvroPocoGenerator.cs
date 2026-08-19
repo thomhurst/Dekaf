@@ -1259,17 +1259,13 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                     EmitFixedWrite(code, "Int64", value + ".Ticks / 10L", indent, stopOnOverflow);
                     break;
                 case TypeKindModel.TimestampMicroseconds:
-                    if (type.SymbolType == "global::System.DateTimeOffset")
-                        EmitFixedWrite(code, "Int64", "(" + value +
-                            ".UtcTicks - global::System.DateTimeOffset.UnixEpoch.UtcTicks) / 10L", indent, stopOnOverflow);
-                    else
+                    if (type.SymbolType != "global::System.DateTimeOffset")
                     {
                         code.Append(indent).Append("if (").Append(value)
                             .AppendLine(".Kind != global::System.DateTimeKind.Utc)");
                         code.Append(indent).AppendLine("    throw new global::System.InvalidOperationException(\"Avro timestamp-micros requires a UTC DateTime.\");");
-                        EmitFixedWrite(code, "Int64", "(" + value +
-                            ".Ticks - global::System.DateTime.UnixEpoch.Ticks) / 10L", indent, stopOnOverflow);
                     }
+                    EmitTimestampMicrosecondsWrite(code, type, value, indent, stopOnOverflow);
                     break;
                 case TypeKindModel.Uuid:
                     code.Append(indent).Append("writer.WriteUuid(").Append(value).AppendLine(");");
@@ -1438,6 +1434,28 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                 code.Append("if (!writer.TryWrite").Append(method).Append('(').Append(value).AppendLine(")) return;");
             else
                 code.Append("writer.Write").Append(method).Append('(').Append(value).AppendLine(");");
+        }
+
+        private void EmitTimestampMicrosecondsWrite(
+            StringBuilder code,
+            TypeModel type,
+            string value,
+            string indent,
+            bool stopOnOverflow)
+        {
+            var ticks = "__timestampTicks" + _localId++;
+            var microseconds = "__timestampMicroseconds" + _localId++;
+            var ticksExpression = type.SymbolType == "global::System.DateTimeOffset"
+                ? value + ".UtcTicks - global::System.DateTimeOffset.UnixEpoch.UtcTicks"
+                : value + ".Ticks - global::System.DateTime.UnixEpoch.Ticks";
+            code.Append(indent).Append("var ").Append(ticks).Append(" = ")
+                .Append(ticksExpression).AppendLine(";");
+            code.Append(indent).Append("var ").Append(microseconds).Append(" = ")
+                .Append(ticks).AppendLine(" / 10L;");
+            code.Append(indent).Append("if (").Append(ticks).Append(" < 0 && ")
+                .Append(ticks).AppendLine(" % 10L != 0)");
+            code.Append(indent).Append("    ").Append(microseconds).AppendLine("--;");
+            EmitFixedWrite(code, "Int64", microseconds, indent, stopOnOverflow);
         }
 
         private void EmitWriteEnum(

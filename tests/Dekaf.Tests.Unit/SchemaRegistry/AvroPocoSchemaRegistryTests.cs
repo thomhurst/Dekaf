@@ -137,7 +137,7 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
-    public async Task GeneratedCodec_ContextWarmupResolvesReferencesForTaggedRules()
+    public async Task GeneratedCodec_ContextWarmupRetainsReferencedPlanThroughTaggedRules()
     {
         const string addressSchemaJson =
             """
@@ -172,6 +172,18 @@ public sealed class AvroPocoSchemaRegistryTests
                 ],
                 RuleSet = new SchemaRuleSet { DomainRules = [] }
             });
+        var evictionSchemaIds = new int[
+            AvroPocoSchemaRegistryDeserializer<PocoReferencedRoot, PocoReferencedRoot.AvroCodec>.MaxCachedPlans];
+        for (var index = 0; index < evictionSchemaIds.Length; index++)
+        {
+            evictionSchemaIds[index] = await registry.RegisterSchemaAsync(
+                "poco-tagged-plan-eviction-value",
+                new Dekaf.SchemaRegistry.Schema
+                {
+                    SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                    SchemaString = PocoReferencedRoot.AvroCodec.SchemaJson
+                });
+        }
         var ruleExecutor = new CapturingTaggedFieldRuleExecutor();
         var nonCachingRegistry = CreateNonCachingRegistry(registry);
         await using var deserializer = PocoReferencedRoot.CreateAvroDeserializer(
@@ -191,6 +203,12 @@ public sealed class AvroPocoSchemaRegistryTests
 
         await deserializer.WarmupAsync(rootSchemaId, context);
         nonCachingRegistry.ClearReceivedCalls();
+        ruleExecutor.BeforeDeserialize = () =>
+        {
+            foreach (var schemaId in evictionSchemaIds)
+                deserializer.WarmupAsync(schemaId).GetAwaiter().GetResult();
+            nonCachingRegistry.ClearReceivedCalls();
+        };
         var actual = deserializer.Deserialize(wire.AsMemory(0, wireLength), context);
 
         await Assert.That(actual.Address.City).IsEqualTo("London");
@@ -454,6 +472,27 @@ public sealed class AvroPocoSchemaRegistryTests
 
         await Assert.That(actual.Timestamp).IsEqualTo(expected.Timestamp);
         await Assert.That(actual.Time).IsEqualTo(expected.Time);
+    }
+
+    [Test]
+    public async Task GeneratedCodec_FloorsPreEpochDateTimeOffsetToMicroseconds()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        await using var serializer = PocoDateTimeOffsetTemporal.CreateAvroSerializer(registry);
+        var context = new SerializationContext
+        {
+            Topic = "poco-datetime-offset-floor",
+            Component = SerializationComponent.Value
+        };
+        var destination = new ArrayBufferWriter<byte>();
+
+        serializer.Serialize(
+            new PocoDateTimeOffsetTemporal { Timestamp = DateTimeOffset.UnixEpoch.AddTicks(-1) },
+            ref destination,
+            context);
+        var reader = new AvroValueReader(destination.WrittenSpan[5..]);
+
+        await Assert.That(reader.ReadInt64()).IsEqualTo(-1L);
     }
 
     [Test]
@@ -3076,6 +3115,7 @@ public sealed class AvroPocoSchemaRegistryTests
     {
         internal bool SerializedContextHadTransformer { get; private set; }
         internal bool DeserializedContextHadTransformer { get; private set; }
+        internal Action? BeforeDeserialize { get; set; }
 
         public ReadOnlyMemory<byte> TransformSerializedPayload(
             ReadOnlyMemory<byte> payload,
@@ -3089,6 +3129,7 @@ public sealed class AvroPocoSchemaRegistryTests
             ReadOnlyMemory<byte> payload,
             SchemaRegistryRuleContext context)
         {
+            BeforeDeserialize?.Invoke();
             DeserializedContextHadTransformer = context.TaggedFieldTransformer is not null;
             return payload;
         }
@@ -3784,6 +3825,12 @@ internal sealed partial class PocoTemporal
 
     [AvroField(Order = 1)]
     public TimeSpan Time { get; init; }
+}
+
+[AvroRecord(Name = "PocoDateTimeOffsetTemporal", Namespace = "Dekaf.Tests")]
+internal sealed partial class PocoDateTimeOffsetTemporal
+{
+    public DateTimeOffset Timestamp { get; init; }
 }
 
 [AvroRecord(Name = "PocoPublicContract", Namespace = "Dekaf.Tests")]
