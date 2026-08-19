@@ -7,13 +7,26 @@ description: "Queue-style consumption with share groups (KIP-932): record-level 
 
 Share consumers implement [KIP-932 "Queues for Kafka"](https://cwiki.apache.org/confluence/display/KAFKA/KIP-932%3A+Queues+for+Kafka). Instead of assigning each partition to exactly one group member, a **share group** lets every member consume from any partition, with the broker handing out records under short-lived acquisition locks. Each record is acknowledged individually — accepted, released for redelivery, or rejected — giving you traditional message-queue semantics on top of Kafka topics.
 
-Use a share consumer when:
+## Consumer or Share Consumer?
 
-- You want more consumers than partitions to share the work
-- Per-record retry and redelivery matters more than partition ordering
-- You are replacing a queue system (RabbitMQ, SQS, ASB) with Kafka
+The two models differ in who owns partitions and how progress is tracked:
 
-Use a [regular consumer group](./consumer-groups) when you need per-partition ordering or offset-based reprocessing.
+| | Consumer group | Share group |
+|---|---|---|
+| Partition ownership | Each partition assigned to exactly one member | None — any member fetches from any partition |
+| Max parallelism | Partition count (extra consumers idle) | Unlimited — scale consumers past partition count |
+| Ordering | Guaranteed within a partition | Not guaranteed; records from one partition process concurrently |
+| Progress tracking | Committed offset per partition | Per-record acknowledgement (Accept / Release / Reject) |
+| Failure handling | Coarse: reprocess from committed offset; one poison message blocks the partition behind it | Per-record: release or reject one record, the rest keep flowing |
+| Position control | Seek, pause, offset reset, replay history | None — the broker manages the delivery window |
+| Delivery counting | Not tracked | `DeliveryCount` per record, enabling max-attempts logic |
+| Broker requirement | Kafka 4.0+ | Kafka 4.2+ with `group.share.enable=true` |
+
+**Pick a [regular consumer group](./consumer-groups)** when you need per-partition ordering, offset-based replay, or stream-processing semantics — event sourcing, changelog consumption, windowed aggregation.
+
+**Pick a share consumer** when you want work-queue semantics — more workers than partitions, per-message retry without blocking neighbors, or you are replacing a queue system (RabbitMQ, SQS, Azure Service Bus) with Kafka.
+
+If you are unsure, start with a regular consumer group: it is the standard Kafka model, has no broker feature flag, and supports the full offset toolbox. Reach for share groups when partition-count ceilings or head-of-line blocking become the actual problem.
 
 ## Requirements
 
