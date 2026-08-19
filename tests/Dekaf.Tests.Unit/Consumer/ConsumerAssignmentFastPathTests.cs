@@ -1583,7 +1583,7 @@ public sealed class ConsumerAssignmentFastPathTests
         try
         {
             QueueCoordinatorRevokedPartitionsForFetchClear(consumer, [partition]);
-            await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
+            await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsFalse();
             PublishAssignmentSnapshot(consumer);
             RemovePartitionState(consumer, [partition]);
             SetPosition(consumer, partition, 20);
@@ -1599,6 +1599,60 @@ public sealed class ConsumerAssignmentFastPathTests
         }
 
         await Assert.That(GetFetchPositions(consumer)[partition]).IsEqualTo(20L);
+    }
+
+    [Test]
+    public async Task TopicIdentityChange_UnrelatedAssignmentUpdateDuringReset_DoesNotSuppressReset()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        metadataManager.SetApiVersion(
+            ApiKey.ListOffsets,
+            ListOffsetsRequest.LowestSupportedVersion,
+            ListOffsetsRequest.HighestSupportedVersion);
+        await using var consumer = CreateGroupConsumer(
+            connectionPool,
+            metadataManager,
+            autoOffsetReset: AutoOffsetReset.ByDuration,
+            autoOffsetResetDuration: TimeSpan.FromMinutes(1));
+        var partition = new TopicPartition("test-topic", 0);
+        consumer.IncrementalAssign([
+            new TopicPartitionOffset(partition.Topic, partition.Partition, 10)
+        ]);
+        await InvokeHandleTopicIdentityChangesAsync(consumer);
+
+        var resetStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseReset = new TaskCompletionSource<ListOffsetsResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
+                Arg.Any<ListOffsetsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                resetStarted.TrySetResult();
+                return new ValueTask<ListOffsetsResponse>(releaseReset.Task);
+            });
+
+        metadataManager.Metadata.Update(CreateMetadataResponse(Guid.NewGuid(), partitionCount: 2));
+        var recovery = InvokeHandleTopicIdentityChangesAsync(consumer).AsTask();
+        await resetStarted.Task;
+
+        try
+        {
+            consumer.IncrementalAssign([
+                new TopicPartitionOffset("other-topic", 0, 0)
+            ]);
+        }
+        finally
+        {
+            releaseReset.TrySetResult(CreateListOffsetsResponse(partition.Partition, 100));
+            await recovery;
+        }
+
+        await Assert.That(GetFetchPositions(consumer)[partition]).IsEqualTo(100L);
     }
 
     [Test]
