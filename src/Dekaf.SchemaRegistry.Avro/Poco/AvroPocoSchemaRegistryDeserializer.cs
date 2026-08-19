@@ -128,10 +128,9 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         {
             return _migrationRunner is null
                 ? default
-                : PrepareMigrationTargetsAsync(
+                : RefreshMigrationTargetsAsync(
                     schemaId,
-                    preparedState.Subject,
-                    preparedState.Schema,
+                    preparedState,
                     cancellationToken);
         }
 
@@ -435,9 +434,16 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
                 _taggedFieldTransformers,
                 skipLatestRefresh);
             var reader = new AvroValueReader(migration.Payload.Span);
-            return TCodec.Read(
-                ref reader,
-                GetOrBuildPlanCached(migration.PayloadSchemaId, migration.PayloadSchema));
+            var preparedKey = new PreparedRuleKey(
+                schemaId,
+                context.Topic,
+                context.Component == SerializationComponent.Key);
+            var plan = skipLatestRefresh &&
+                       TryGetPreparedRuleState(preparedKey, out var preparedState) &&
+                       preparedState.TryGetPlan(migration.PayloadSchemaId, out var preparedPlan)
+                ? preparedPlan
+                : GetOrBuildPlanCached(migration.PayloadSchemaId, migration.PayloadSchema);
+            return TCodec.Read(ref reader, plan);
         }
         finally
         {
@@ -469,16 +475,35 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         if (scopedSchema.RuleSet is not null || _migrationRunner is not null)
             PrepareTaggedTransformer(schemaId, scopedSchema, plan);
 
+        Dictionary<int, AvroPocoReaderPlan>? migrationPlans = null;
         if (_migrationRunner is not null)
         {
-            await PrepareMigrationTargetsAsync(schemaId, subject, scopedSchema, cancellationToken)
+            migrationPlans = await PrepareMigrationTargetPlansAsync(
+                    schemaId,
+                    subject,
+                    scopedSchema,
+                    cancellationToken)
                 .ConfigureAwait(false);
         }
 
-        CachePreparedRuleState(preparedKey, subject, scopedSchema, plan);
+        CachePreparedRuleState(preparedKey, subject, scopedSchema, plan, migrationPlans);
     }
 
-    private async ValueTask PrepareMigrationTargetsAsync(
+    private async ValueTask RefreshMigrationTargetsAsync(
+        int schemaId,
+        PreparedRuleState preparedState,
+        CancellationToken cancellationToken)
+    {
+        var plans = await PrepareMigrationTargetPlansAsync(
+                schemaId,
+                preparedState.Subject,
+                preparedState.Schema,
+                cancellationToken)
+            .ConfigureAwait(false);
+        preparedState.SetMigrationPlans(plans);
+    }
+
+    private async ValueTask<Dictionary<int, AvroPocoReaderPlan>?> PrepareMigrationTargetPlansAsync(
         int schemaId,
         string subject,
         Schema writerSchema,
@@ -486,11 +511,14 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
     {
         var targets = await _migrationRunner!.PrepareAsync(schemaId, subject, writerSchema, cancellationToken)
             .ConfigureAwait(false);
+        Dictionary<int, AvroPocoReaderPlan>? plans = null;
         while (targets.MoveNext(out var target))
         {
             var plan = await GetPlanAsync(target.Id, cancellationToken).ConfigureAwait(false);
             PrepareTaggedTransformer(target.Id, target.Schema, plan);
+            (plans ??= []).Add(target.Id, plan);
         }
+        return plans;
     }
 
     private void PrepareTaggedTransformer(int schemaId, Schema schema, AvroPocoReaderPlan plan)
@@ -519,13 +547,17 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         PreparedRuleKey key,
         string subject,
         Schema schema,
-        AvroPocoReaderPlan plan)
+        AvroPocoReaderPlan plan,
+        Dictionary<int, AvroPocoReaderPlan>? migrationPlans)
     {
-        var state = new PreparedRuleState(key, subject, schema, plan);
+        var state = new PreparedRuleState(key, subject, schema, plan, migrationPlans);
         if (!_preparedRuleStates.TryAdd(key, state))
         {
             if (_preparedRuleStates.TryGetValue(key, out var cached))
+            {
+                cached.SetMigrationPlans(migrationPlans);
                 Volatile.Write(ref _lastPreparedRuleState, cached);
+            }
             return;
         }
 
@@ -753,12 +785,34 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         PreparedRuleKey key,
         string subject,
         Schema schema,
-        AvroPocoReaderPlan plan)
+        AvroPocoReaderPlan plan,
+        Dictionary<int, AvroPocoReaderPlan>? migrationPlans)
     {
         internal PreparedRuleKey Key { get; } = key;
         internal string Subject { get; } = subject;
         internal Schema Schema { get; } = schema;
         internal AvroPocoReaderPlan Plan { get; } = plan;
+
+        private Dictionary<int, AvroPocoReaderPlan>? _migrationPlans = migrationPlans;
+
+        internal void SetMigrationPlans(Dictionary<int, AvroPocoReaderPlan>? plans) =>
+            Volatile.Write(ref _migrationPlans, plans);
+
+        internal bool TryGetPlan(int schemaId, out AvroPocoReaderPlan plan)
+        {
+            if (schemaId == Key.SchemaId)
+            {
+                plan = Plan;
+                return true;
+            }
+
+            var plans = Volatile.Read(ref _migrationPlans);
+            if (plans is not null && plans.TryGetValue(schemaId, out plan!))
+                return true;
+
+            plan = null!;
+            return false;
+        }
 
         internal bool Matches(int schemaId, string topic, bool isKey) =>
             Key.SchemaId == schemaId &&

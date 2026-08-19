@@ -314,6 +314,18 @@ public sealed class AvroPocoSchemaRegistryTests
                 ],
                 RuleSet = new SchemaRuleSet { MigrationRules = [migrationRule] }
             });
+        var evictionSchemaIds = new int[
+            AvroPocoSchemaRegistryDeserializer<PocoReferencedRoot, PocoReferencedRoot.AvroCodec>.MaxCachedPlans];
+        for (var index = 0; index < evictionSchemaIds.Length; index++)
+        {
+            evictionSchemaIds[index] = await registry.RegisterSchemaAsync(
+                "poco-migration-target-eviction-value",
+                new Dekaf.SchemaRegistry.Schema
+                {
+                    SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                    SchemaString = PocoReferencedRoot.AvroCodec.SchemaJson
+                });
+        }
         var migratedPayload = new byte[64];
         var migratedWriter = new AvroValueWriter(migratedPayload);
         PocoReferencedRoot.AvroCodec.Write(
@@ -346,6 +358,12 @@ public sealed class AvroPocoSchemaRegistryTests
 
         await deserializer.WarmupAsync(writerSchemaId, context);
         nonCachingRegistry.ClearReceivedCalls();
+        handler.BeforeDeserialize = () =>
+        {
+            foreach (var schemaId in evictionSchemaIds)
+                deserializer.WarmupAsync(schemaId).GetAwaiter().GetResult();
+            nonCachingRegistry.ClearReceivedCalls();
+        };
         var actual = deserializer.Deserialize(wire.AsMemory(0, wireLength), context);
 
         await Assert.That(actual.Address.City).IsEqualTo("London");
@@ -3204,6 +3222,7 @@ public sealed class AvroPocoSchemaRegistryTests
 
         public string Type => RuleType;
         internal bool ContextHadTaggedFieldTransformer { get; private set; }
+        internal Action? BeforeDeserialize { get; set; }
 
         public ReadOnlyMemory<byte> TransformSerializedPayload(
             ReadOnlyMemory<byte> source,
@@ -3217,6 +3236,7 @@ public sealed class AvroPocoSchemaRegistryTests
             ReadOnlyMemory<byte> source,
             SchemaRegistryRuleHandlerContext context)
         {
+            BeforeDeserialize?.Invoke();
             ContextHadTaggedFieldTransformer |= context.PayloadContext.TaggedFieldTransformer is not null;
             return payload;
         }
