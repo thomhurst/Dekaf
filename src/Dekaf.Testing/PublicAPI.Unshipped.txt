@@ -3,3 +3,18 @@ Dekaf.Testing.InMemoryConsumer<TKey, TValue>.ConsumeSnapshotAsync(System.Threadi
 Dekaf.Testing.InMemoryConsumer<TKey, TValue>.SeekToTailAsync(Dekaf.TopicPartition partition, int offsetCount, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.TopicPartitionOffset>
 Dekaf.Testing.InMemoryConsumer<TKey, TValue>.StoreOffsets(System.ReadOnlySpan<Dekaf.TopicPartitionOffset> offsets) -> void
 Dekaf.Testing.InMemoryConsumer<TKey, TValue>.StoreOffsets<TOffsets>(TOffsets offsets) -> void
+Dekaf.Testing.InMemoryStreamsGroupMember
+Dekaf.Testing.InMemoryStreamsGroupMember.CloseAsync(Dekaf.Streams.StreamsGroupCloseOptions! options, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.InMemoryStreamsGroupMember.CloseAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.InMemoryStreamsGroupMember.DisposeAsync() -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.InMemoryStreamsGroupMember.GroupId.get -> string!
+Dekaf.Testing.InMemoryStreamsGroupMember.InitializeAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Testing.InMemoryStreamsGroupMember.InMemoryStreamsGroupMember(Dekaf.Streams.StreamsGroupMemberOptions! options) -> void
+Dekaf.Testing.InMemoryStreamsGroupMember.InstanceId.get -> string?
+Dekaf.Testing.InMemoryStreamsGroupMember.JoinAsync(Dekaf.Streams.StreamsGroupMemberUpdate! initialState, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Streams.StreamsGroupHeartbeatResult!>
+Dekaf.Testing.InMemoryStreamsGroupMember.LastCloseOptions.get -> Dekaf.Streams.StreamsGroupCloseOptions?
+Dekaf.Testing.InMemoryStreamsGroupMember.LastTaskOffsetReport.get -> Dekaf.Streams.StreamsGroupTaskOffsetReport?
+Dekaf.Testing.InMemoryStreamsGroupMember.LastUpdate.get -> Dekaf.Streams.StreamsGroupMemberUpdate?
+Dekaf.Testing.InMemoryStreamsGroupMember.ReportTaskOffsetsAsync(Dekaf.Streams.StreamsGroupTaskOffsetReport! report, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Streams.StreamsGroupHeartbeatResult!>
+Dekaf.Testing.InMemoryStreamsGroupMember.Snapshot.get -> Dekaf.Streams.StreamsGroupMemberSnapshot!
+Dekaf.Testing.InMemoryStreamsGroupMember.UpdateAsync(Dekaf.Streams.StreamsGroupMemberUpdate! update, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Streams.StreamsGroupHeartbeatResult!>
