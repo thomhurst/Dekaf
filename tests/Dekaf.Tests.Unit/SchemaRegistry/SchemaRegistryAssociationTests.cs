@@ -96,6 +96,53 @@ public sealed class SchemaRegistryAssociationTests
     }
 
     [Test]
+    public async Task CreateAssociationAsync_ClientNormalization_NormalizesEmbeddedSchema()
+    {
+        var handler = new AssociationHandler(HttpStatusCode.OK, """
+            {
+              "resourceName": "orders",
+              "resourceNamespace": "lkc-123",
+              "resourceId": "lkc-123:orders",
+              "resourceType": "topic",
+              "associations": []
+            }
+            """);
+        using var client = new SchemaRegistryClient(
+            new SchemaRegistryConfig
+            {
+                Url = "http://schema-registry.local",
+                NormalizeSchemas = true
+            },
+            handler);
+        var request = CreateAssociationRequest(associations:
+        [
+            new AssociationCreateOrUpdateInfo
+            {
+                Subject = "orders-value",
+                AssociationType = "value",
+                Lifecycle = "STRONG",
+                Schema = new Schema { SchemaString = "{}" }
+            },
+            new AssociationCreateOrUpdateInfo
+            {
+                Subject = "orders-key",
+                AssociationType = "key",
+                Lifecycle = "STRONG"
+            }
+        ]);
+
+        await client.CreateAssociationAsync(request);
+
+        using var body = JsonDocument.Parse(handler.RequestBody!);
+        await Assert.That(body.RootElement.GetProperty("associations")[0]
+                .GetProperty("normalize").GetBoolean())
+            .IsTrue();
+        await Assert.That(body.RootElement.GetProperty("associations")[1]
+                .TryGetProperty("normalize", out _))
+            .IsFalse();
+    }
+
+    [Test]
     public async Task GetAssociationsByResourceNameAsync_UsesCompatiblePathAndRepeatedFilters()
     {
         var handler = new AssociationHandler(HttpStatusCode.OK, """
@@ -266,6 +313,90 @@ public sealed class SchemaRegistryAssociationTests
 
         await Assert.That(found).IsEmpty();
     }
+
+    [Test]
+    public async Task MockSchemaRegistryClient_GetAssociations_ValidatesLikePublicClient()
+    {
+        using var client = new MockSchemaRegistryClient();
+
+        await Assert.That(async () => _ = await client.GetAssociationsByResourceNameAsync("", "-"))
+            .Throws<ArgumentException>();
+        await Assert.That(async () => _ = await client.GetAssociationsByResourceNameAsync("orders", " "))
+            .Throws<ArgumentException>();
+        await Assert.That(async () => _ = await client.GetAssociationsByResourceNameAsync("orders", "-", resourceType: ""))
+            .Throws<ArgumentException>();
+        await Assert.That(async () => _ = await client.GetAssociationsByResourceNameAsync("orders", "-", associationTypes: [""]))
+            .Throws<ArgumentException>();
+        await Assert.That(async () => _ = await client.GetAssociationsByResourceNameAsync("orders", "-", lifecycle: " "))
+            .Throws<ArgumentException>();
+        await Assert.That(async () => _ = await client.GetAssociationsByResourceNameAsync("orders", "-", offset: -1))
+            .Throws<ArgumentOutOfRangeException>();
+        await Assert.That(async () => _ = await client.GetAssociationsByResourceNameAsync("orders", "-", limit: -2))
+            .Throws<ArgumentOutOfRangeException>();
+    }
+
+    [Test]
+    public async Task MockSchemaRegistryClient_CreateAssociation_ValidatesLikePublicClient()
+    {
+        using var client = new MockSchemaRegistryClient();
+
+        await Assert.That(async () => _ = await client.CreateAssociationAsync(null!))
+            .Throws<ArgumentNullException>();
+        await Assert.That(async () => _ = await client.CreateAssociationAsync(CreateAssociationRequest(resourceName: "")))
+            .Throws<ArgumentException>();
+        await Assert.That(async () => _ = await client.CreateAssociationAsync(CreateAssociationRequest(resourceNamespace: "")))
+            .Throws<ArgumentException>();
+        await Assert.That(async () => _ = await client.CreateAssociationAsync(CreateAssociationRequest(resourceId: "")))
+            .Throws<ArgumentException>();
+        await Assert.That(async () => _ = await client.CreateAssociationAsync(CreateAssociationRequest(resourceType: "")))
+            .Throws<ArgumentException>();
+        await Assert.That(async () => _ = await client.CreateAssociationAsync(CreateAssociationRequest(associations: [])))
+            .Throws<ArgumentException>();
+        await Assert.That(async () => _ = await client.CreateAssociationAsync(CreateAssociationRequest(associations:
+        [
+            new AssociationCreateOrUpdateInfo
+            {
+                Subject = "",
+                AssociationType = "value",
+                Lifecycle = "STRONG"
+            }
+        ]))).Throws<ArgumentException>();
+    }
+
+    [Test]
+    public async Task MockSchemaRegistryClient_DeleteAssociations_ValidatesLikePublicClient()
+    {
+        using var client = new MockSchemaRegistryClient();
+
+        await Assert.That(() => client.DeleteAssociationsAsync(""))
+            .Throws<ArgumentException>();
+        await Assert.That(() => client.DeleteAssociationsAsync("resource-1", resourceType: " "))
+            .Throws<ArgumentException>();
+        await Assert.That(() => client.DeleteAssociationsAsync("resource-1", associationTypes: [""]))
+            .Throws<ArgumentException>();
+    }
+
+    private static AssociationCreateOrUpdateRequest CreateAssociationRequest(
+        string resourceName = "orders",
+        string resourceNamespace = "lkc-123",
+        string resourceId = "lkc-123:orders",
+        string resourceType = "topic",
+        IReadOnlyList<AssociationCreateOrUpdateInfo>? associations = null) => new()
+    {
+        ResourceName = resourceName,
+        ResourceNamespace = resourceNamespace,
+        ResourceId = resourceId,
+        ResourceType = resourceType,
+        Associations = associations ??
+        [
+            new AssociationCreateOrUpdateInfo
+            {
+                Subject = "orders-value",
+                AssociationType = "value",
+                Lifecycle = "STRONG"
+            }
+        ]
+    };
 
     private static SchemaRegistryClient CreateClient(HttpMessageHandler handler) => new(
         new SchemaRegistryConfig { Url = "http://schema-registry.local" },

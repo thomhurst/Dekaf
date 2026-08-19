@@ -863,13 +863,14 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         int limit = -1,
         CancellationToken cancellationToken = default)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(resourceName);
-        ArgumentException.ThrowIfNullOrWhiteSpace(resourceNamespace);
-        ValidateOptionalAssociationFilter(resourceType, nameof(resourceType));
-        ValidateOptionalAssociationFilter(lifecycle, nameof(lifecycle));
-        ValidateAssociationTypes(associationTypes);
-        ArgumentOutOfRangeException.ThrowIfNegative(offset);
-        ArgumentOutOfRangeException.ThrowIfLessThan(limit, -1);
+        AssociationValidation.ValidateGet(
+            resourceName,
+            resourceNamespace,
+            resourceType,
+            associationTypes,
+            lifecycle,
+            offset,
+            limit);
 
         var path = WithAssociationQuery(
             $"associations/resources/{Uri.EscapeDataString(resourceNamespace)}/{Uri.EscapeDataString(resourceName)}",
@@ -898,12 +899,11 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         AssociationCreateOrUpdateRequest request,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(request);
-        ValidateAssociationRequest(request);
+        AssociationValidation.ValidateCreate(request);
 
         using var response = await PostAsJsonWithFailoverAsync(
             "associations",
-            ToAssociationRequestDto(request),
+            ToAssociationRequestDto(request, _config.NormalizeSchemas),
             SchemaRegistryJsonContext.Default.AssociationCreateOrUpdateRequestDto,
             cancellationToken).ConfigureAwait(false);
         await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
@@ -928,9 +928,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         bool cascadeLifecycle = false,
         CancellationToken cancellationToken = default)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(resourceId);
-        ValidateOptionalAssociationFilter(resourceType, nameof(resourceType));
-        ValidateAssociationTypes(associationTypes);
+        AssociationValidation.ValidateDelete(resourceId, resourceType, associationTypes);
 
         var path = WithAssociationQuery(
             $"associations/resources/{Uri.EscapeDataString(resourceId)}",
@@ -942,41 +940,6 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             cascadeLifecycle);
         using var response = await DeleteWithFailoverAsync(path, cancellationToken).ConfigureAwait(false);
         await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
-    }
-
-    private static void ValidateAssociationRequest(AssociationCreateOrUpdateRequest request)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(request.ResourceName);
-        ArgumentException.ThrowIfNullOrWhiteSpace(request.ResourceNamespace);
-        ArgumentException.ThrowIfNullOrWhiteSpace(request.ResourceId);
-        ArgumentException.ThrowIfNullOrWhiteSpace(request.ResourceType);
-        ArgumentNullException.ThrowIfNull(request.Associations);
-        if (request.Associations.Count == 0)
-            throw new ArgumentException("At least one association is required.", nameof(request));
-
-        for (var index = 0; index < request.Associations.Count; index++)
-        {
-            var association = request.Associations[index]
-                ?? throw new ArgumentException("Associations cannot contain null entries.", nameof(request));
-            ArgumentException.ThrowIfNullOrWhiteSpace(association.Subject);
-            ArgumentException.ThrowIfNullOrWhiteSpace(association.AssociationType);
-            ArgumentException.ThrowIfNullOrWhiteSpace(association.Lifecycle);
-        }
-    }
-
-    private static void ValidateAssociationTypes(IReadOnlyList<string>? associationTypes)
-    {
-        if (associationTypes is null)
-            return;
-
-        for (var index = 0; index < associationTypes.Count; index++)
-            ArgumentException.ThrowIfNullOrWhiteSpace(associationTypes[index]);
-    }
-
-    private static void ValidateOptionalAssociationFilter(string? value, string paramName)
-    {
-        if (value is not null && string.IsNullOrWhiteSpace(value))
-            throw new ArgumentException("Value cannot be empty or whitespace.", paramName);
     }
 
     private static string GetCompatibilityPath(string? subject)
@@ -1279,7 +1242,8 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
     };
 
     private static AssociationCreateOrUpdateRequestDto ToAssociationRequestDto(
-        AssociationCreateOrUpdateRequest request)
+        AssociationCreateOrUpdateRequest request,
+        bool normalizeSchemas)
     {
         var associations = new List<AssociationCreateOrUpdateInfoDto>(request.Associations.Count);
         for (var index = 0; index < request.Associations.Count; index++)
@@ -1292,7 +1256,9 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
                 Lifecycle = association.Lifecycle,
                 Frozen = association.Frozen,
                 Schema = association.Schema is null ? null : CreateRegisterSchemaRequest(association.Schema),
-                Normalize = association.Normalize
+                Normalize = normalizeSchemas && association.Schema is not null
+                    ? true
+                    : association.Normalize
             });
         }
 

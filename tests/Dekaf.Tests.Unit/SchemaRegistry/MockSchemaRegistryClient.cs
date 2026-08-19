@@ -353,6 +353,14 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
         CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
+        AssociationValidation.ValidateGet(
+            resourceName,
+            resourceNamespace,
+            resourceType,
+            associationTypes,
+            lifecycle,
+            offset,
+            limit);
         cancellationToken.ThrowIfCancellationRequested();
 
         IEnumerable<Association> filtered;
@@ -390,6 +398,7 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
         CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
+        AssociationValidation.ValidateCreate(request);
         cancellationToken.ThrowIfCancellationRequested();
 
         var key = (request.ResourceNamespace, request.ResourceName);
@@ -446,6 +455,7 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
         CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
+        AssociationValidation.ValidateDelete(resourceId, resourceType, associationTypes);
         cancellationToken.ThrowIfCancellationRequested();
 
         foreach (var stored in _associationsByResource.Values)
