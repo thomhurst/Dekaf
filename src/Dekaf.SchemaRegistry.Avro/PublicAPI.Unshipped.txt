@@ -123,6 +123,8 @@ Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.ReadStringBytes() -> byte[]!
 Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.ReadTimeMicrosecondsTicks() -> long
 Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.ReadUuid() -> System.Guid
 Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.Skip(Dekaf.SchemaRegistry.Avro.Poco.AvroPocoReadNode! node) -> void
+Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.ValidateCollectionAllocation<T>(int totalCount, int addedCount, int decodedItemAllocationSize) -> void
+Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader.ValidateMapAllocation<T>(int totalCount, int addedCount, int decodedItemAllocationSize) -> void
 Dekaf.SchemaRegistry.Avro.Poco.AvroValueWriter
 Dekaf.SchemaRegistry.Avro.Poco.AvroValueWriter.AvroValueWriter() -> void
 Dekaf.SchemaRegistry.Avro.Poco.AvroValueWriter.TryWriteBlockCount(int count) -> bool

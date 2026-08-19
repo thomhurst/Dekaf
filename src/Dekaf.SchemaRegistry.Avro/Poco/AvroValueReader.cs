@@ -15,8 +15,13 @@ public ref struct AvroValueReader
     private readonly ReadOnlySpan<byte> _source;
     private int _position;
     private int _skipDepth;
+    private int _remainingCollectionAllocationBytes;
 
-    internal AvroValueReader(ReadOnlySpan<byte> source) => _source = source;
+    internal AvroValueReader(ReadOnlySpan<byte> source)
+    {
+        _source = source;
+        _remainingCollectionAllocationBytes = MaxCollectionAllocationBytes;
+    }
 
     /// <summary>Reads Avro null.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -204,6 +209,17 @@ public ref struct AvroValueReader
             ThrowCollectionAllocationLimit();
     }
 
+    /// <summary>Validates a generated collection and consumes its incremental decode-allocation budget.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void ValidateCollectionAllocation<T>(
+        int totalCount,
+        int addedCount,
+        int decodedItemAllocationSize)
+    {
+        var itemSize = Math.Max(Unsafe.SizeOf<T>(), decodedItemAllocationSize);
+        ValidateAndConsumeCollectionAllocation(totalCount, addedCount, itemSize);
+    }
+
     /// <summary>Validates that a generated map's backing storage stays within its byte limit.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void ValidateMapAllocation<T>(int count) =>
@@ -218,6 +234,31 @@ public ref struct AvroValueReader
                         Math.Max(Unsafe.SizeOf<T>(), decodedItemAllocationSize);
         if ((ulong)(uint)count * (uint)entrySize > MaxCollectionAllocationBytes)
             ThrowCollectionAllocationLimit();
+    }
+
+    /// <summary>Validates a generated map and consumes its incremental decode-allocation budget.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void ValidateMapAllocation<T>(
+        int totalCount,
+        int addedCount,
+        int decodedItemAllocationSize)
+    {
+        const int DictionaryEntryAndBucketMetadataSize = sizeof(int) * 3;
+        var entrySize = DictionaryEntryAndBucketMetadataSize + IntPtr.Size +
+                        Math.Max(Unsafe.SizeOf<T>(), decodedItemAllocationSize);
+        ValidateAndConsumeCollectionAllocation(totalCount, addedCount, entrySize);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void ValidateAndConsumeCollectionAllocation(int totalCount, int addedCount, int itemSize)
+    {
+        if ((ulong)(uint)totalCount * (uint)itemSize > MaxCollectionAllocationBytes)
+            ThrowCollectionAllocationLimit();
+
+        var addedBytes = (ulong)(uint)addedCount * (uint)itemSize;
+        if (addedBytes > (uint)_remainingCollectionAllocationBytes)
+            ThrowCollectionAllocationLimit();
+        _remainingCollectionAllocationBytes -= (int)addedBytes;
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

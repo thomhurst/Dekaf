@@ -829,6 +829,44 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    public async Task GeneratedCodec_RejectsCumulativeNestedCollectionAllocationAmplification()
+    {
+        const string writerSchemaJson =
+            """
+            {"type":"record","name":"PocoNestedCollectionAllocation","namespace":"Dekaf.Tests","fields":[{"name":"items","type":{"type":"array","items":{"type":"record","name":"PocoNestedCollectionAllocationItem","fields":[{"name":"values","type":{"type":"array","items":{"type":"record","name":"PocoLargeZeroWidthItem","fields":[]}}}]}}}]}
+            """;
+        const int innerCount = 170_000;
+        using var registry = new MockSchemaRegistryClient();
+        var schemaId = await registry.RegisterSchemaAsync(
+            "poco-nested-collection-allocation-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = writerSchemaJson
+            });
+        await using var reader = PocoNestedCollectionAllocation.CreateAvroDeserializer(registry);
+        var context = new SerializationContext
+        {
+            Topic = "poco-nested-collection-allocation",
+            Component = SerializationComponent.Value
+        };
+        var payload = new byte[32];
+        BinaryPrimitives.WriteInt32BigEndian(payload.AsSpan(1, 4), schemaId);
+        var writer = new AvroValueWriter(payload.AsSpan(5));
+        writer.WriteBlockCount(2);
+        writer.WriteBlockCount(innerCount);
+        writer.WriteBlockEnd();
+        writer.WriteBlockCount(innerCount);
+        writer.WriteBlockEnd();
+        writer.WriteBlockEnd();
+        Array.Resize(ref payload, 5 + writer.WrittenCount);
+
+        await Assert.That(() => reader.Deserialize(payload, context))
+            .Throws<InvalidDataException>()
+            .WithMessageContaining("allocation exceeds");
+    }
+
+    [Test]
     public async Task GeneratedCodec_RejectsByteArrayDefaultAllocationAmplification()
     {
         const string writerSchemaJson =
@@ -3636,6 +3674,20 @@ internal sealed partial class PocoLargeZeroWidthMap
 {
     [AvroField(Name = "values")]
     public required Dictionary<string, PocoLargeZeroWidthItem> Values { get; init; }
+}
+
+[AvroRecord(Name = "PocoNestedCollectionAllocation", Namespace = "Dekaf.Tests")]
+internal sealed partial class PocoNestedCollectionAllocation
+{
+    [AvroField(Name = "items")]
+    public required PocoNestedCollectionAllocationItem[] Items { get; init; }
+}
+
+[AvroRecord(Name = "PocoNestedCollectionAllocationItem", Namespace = "Dekaf.Tests")]
+internal sealed partial class PocoNestedCollectionAllocationItem
+{
+    [AvroField(Name = "values")]
+    public required PocoLargeZeroWidthItem[] Values { get; init; }
 }
 
 [AvroRecord(Name = "PocoLargeZeroWidthItem", Namespace = "Dekaf.Tests")]
