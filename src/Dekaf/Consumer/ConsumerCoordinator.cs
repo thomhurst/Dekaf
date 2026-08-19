@@ -1521,7 +1521,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 MemberId = memberId,
                 MemberEpoch = memberEpoch,
                 InstanceId = _options.GroupInstanceId,
-                RebalanceTimeoutMs = isInitial ? _options.MaxPollIntervalMs : -1,
+                RebalanceTimeoutMs = isInitial ? _options.RebalanceTimeoutMs : -1,
                 RackId = isInitial ? _options.ClientRack : null,
                 SubscribedTopicNames = subscribedTopics,
                 SubscribedTopicRegex = subscribedTopicRegex,

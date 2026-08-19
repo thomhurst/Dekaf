@@ -140,6 +140,19 @@ Callback semantics:
 
 Non-cancellation callback exceptions are logged and suppressed. `OperationCanceledException` follows the supplied cancellation token.
 
+During a cooperative revoke, Dekaf awaits its automatic revoked-offset commit and
+`OnPartitionsRevokedAsync` before completing the assignment transfer. The initial
+KIP-848 heartbeat advertises `ConsumerOptions.RebalanceTimeoutMs` (60 seconds by
+default), which is the broker-visible window for completing that rebalance. The
+automatic revoked-offset commit is cancelled at the same limit. Listener callbacks
+receive the consumer operation/lifetime token rather than a separate timeout token,
+so revoke work should still complete within `RebalanceTimeoutMs`; exceeding the
+broker window can cause the member to lose its assignment.
+
+`MaxPollIntervalMs` is separate: it limits time between foreground polls and is not
+sent as the rebalance timeout. Configuration-bound consumers can set the window with
+the `RebalanceTimeoutMs` key.
+
 Use `IConsumerAwareRebalanceListener` when a callback must operate on the consumer
 without capturing its unrestricted instance:
 

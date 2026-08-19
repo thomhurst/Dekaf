@@ -454,7 +454,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
-    public async Task ConsumerProtocol_InitialJoin_SendsMaxPollIntervalAsRebalanceTimeout()
+    public async Task ConsumerProtocol_InitialJoin_SendsConfiguredRebalanceTimeout()
     {
         SetupSuccessfulConsumerProtocolJoin();
         var options = CreateConsumerProtocolOptions(
@@ -465,7 +465,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
 
         await _connection.Received().SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
-            Arg.Is<ConsumerGroupHeartbeatRequest>(request => request != null && request.RebalanceTimeoutMs == 12_345),
+            Arg.Is<ConsumerGroupHeartbeatRequest>(request => request != null && request.RebalanceTimeoutMs == 30_000),
             Arg.Any<short>(),
             Arg.Any<CancellationToken>());
     }
