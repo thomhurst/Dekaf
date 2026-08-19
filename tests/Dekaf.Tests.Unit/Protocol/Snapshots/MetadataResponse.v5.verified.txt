@@ -1,0 +1,141 @@
+﻿Response: Dekaf.Protocol.Messages.MetadataResponse
+API key: Metadata (3)
+Version: 5
+Header version: 0
+Body length: 316 bytes
+
+0000: 00 00 00 11 00 00 00 02  00 00 00 01 00 10 62 72 |..............br|
+0010: 6F 6B 65 72 2D 61 2E 65  78 61 6D 70 6C 65 00 00 |oker-a.example..|
+0020: 23 84 00 06 72 61 63 6B  2D 61 00 00 00 02 00 10 |#...rack-a......|
+0030: 62 72 6F 6B 65 72 2D 62  2E 65 78 61 6D 70 6C 65 |broker-b.example|
+0040: 00 00 23 85 FF FF 00 0C  77 69 72 65 2D 63 6C 75 |..#.....wire-clu|
+0050: 73 74 65 72 00 00 00 01  00 00 00 02 00 00 00 0A |ster............|
+0060: 77 69 72 65 2D 74 6F 70  69 63 00 00 00 00 02 00 |wire-topic......|
+0070: 00 00 00 00 00 00 00 00  01 00 00 00 03 00 00 00 |................|
+0080: 01 00 00 00 02 00 00 00  03 00 00 00 02 00 00 00 |................|
+0090: 01 00 00 00 02 00 00 00  01 00 00 00 03 00 06 00 |................|
+00A0: 00 00 01 00 00 00 02 00  00 00 03 00 00 00 01 00 |................|
+00B0: 00 00 02 00 00 00 03 00  00 00 02 00 00 00 01 00 |................|
+00C0: 00 00 02 00 00 00 01 00  00 00 03 00 03 00 0C 77 |...............w|
+00D0: 69 72 65 2D 74 6F 70 69  63 2D 62 00 00 00 00 02 |ire-topic-b.....|
+00E0: 00 00 00 00 00 02 00 00  00 01 00 00 00 03 00 00 |................|
+00F0: 00 01 00 00 00 02 00 00  00 03 00 00 00 02 00 00 |................|
+0100: 00 01 00 00 00 02 00 00  00 01 00 00 00 03 00 06 |................|
+0110: 00 00 00 03 00 00 00 02  00 00 00 03 00 00 00 01 |................|
+0120: 00 00 00 02 00 00 00 03  00 00 00 02 00 00 00 01 |................|
+0130: 00 00 00 02 00 00 00 01  00 00 00 03             |............|
+
+Decoded:
+{
+  "Brokers": [
+    {
+      "Host": "broker-a.example",
+      "NodeId": 1,
+      "Port": 9092,
+      "Rack": "rack-a"
+    },
+    {
+      "Host": "broker-b.example",
+      "NodeId": 2,
+      "Port": 9093,
+      "Rack": null
+    }
+  ],
+  "ClusterAuthorizedOperations": -2147483648,
+  "ClusterId": "wire-cluster",
+  "ControllerId": 1,
+  "ErrorCode": "None",
+  "ThrottleTimeMs": 17,
+  "Topics": [
+    {
+      "ErrorCode": "None",
+      "IsInternal": false,
+      "Name": "wire-topic",
+      "Partitions": [
+        {
+          "ErrorCode": "None",
+          "IsrNodes": [
+            1,
+            2
+          ],
+          "LeaderEpoch": -1,
+          "LeaderId": 1,
+          "OfflineReplicas": [
+            3
+          ],
+          "PartitionIndex": 0,
+          "ReplicaNodes": [
+            1,
+            2,
+            3
+          ]
+        },
+        {
+          "ErrorCode": "NotLeaderOrFollower",
+          "IsrNodes": [
+            1,
+            2
+          ],
+          "LeaderEpoch": -1,
+          "LeaderId": 2,
+          "OfflineReplicas": [
+            3
+          ],
+          "PartitionIndex": 1,
+          "ReplicaNodes": [
+            1,
+            2,
+            3
+          ]
+        }
+      ],
+      "TopicAuthorizedOperations": -2147483648,
+      "TopicId": "00000000-0000-0000-0000-000000000000"
+    },
+    {
+      "ErrorCode": "UnknownTopicOrPartition",
+      "IsInternal": false,
+      "Name": "wire-topic-b",
+      "Partitions": [
+        {
+          "ErrorCode": "None",
+          "IsrNodes": [
+            1,
+            2
+          ],
+          "LeaderEpoch": -1,
+          "LeaderId": 1,
+          "OfflineReplicas": [
+            3
+          ],
+          "PartitionIndex": 2,
+          "ReplicaNodes": [
+            1,
+            2,
+            3
+          ]
+        },
+        {
+          "ErrorCode": "NotLeaderOrFollower",
+          "IsrNodes": [
+            1,
+            2
+          ],
+          "LeaderEpoch": -1,
+          "LeaderId": 2,
+          "OfflineReplicas": [
+            3
+          ],
+          "PartitionIndex": 3,
+          "ReplicaNodes": [
+            1,
+            2,
+            3
+          ]
+        }
+      ],
+      "TopicAuthorizedOperations": -2147483648,
+      "TopicId": "00000000-0000-0000-0000-000000000000"
+    }
+  ]
+}

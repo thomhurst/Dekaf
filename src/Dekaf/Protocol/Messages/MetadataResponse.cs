@@ -14,7 +14,7 @@ public sealed class MetadataResponse : IKafkaResponse
     internal const int MaxReplicaCount = 100_000;
 
     public static ApiKey ApiKey => ApiKey.Metadata;
-    public static short LowestSupportedVersion => 9;
+    public static short LowestSupportedVersion => 5;
     public static short HighestSupportedVersion => 13;
 
     public int ThrottleTimeMs { get; init; }
@@ -34,24 +34,36 @@ public sealed class MetadataResponse : IKafkaResponse
     {
         var throttleTimeMs = reader.ReadInt32();
 
-        var brokers = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r, short v) => BrokerMetadata.Read(ref r, v),
-            version,
-            minElementSize: 11,
-            maxCount: MaxBrokerCount);
+        var brokers = version >= 9
+            ? reader.ReadCompactArray(
+                static (ref KafkaProtocolReader r, short v) => BrokerMetadata.Read(ref r, v),
+                version,
+                minElementSize: 11,
+                maxCount: MaxBrokerCount)
+            : reader.ReadArray(
+                static (ref KafkaProtocolReader r, short v) => BrokerMetadata.Read(ref r, v),
+                version,
+                minElementSize: 12,
+                maxCount: MaxBrokerCount);
 
-        var clusterId = reader.ReadCompactString();
+        var clusterId = version >= 9 ? reader.ReadCompactString() : reader.ReadString();
 
         var controllerId = reader.ReadInt32();
 
-        var topics = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r, short v) => TopicMetadata.Read(ref r, v),
-            version,
-            minElementSize: version >= 10 ? 26 : 10,
-            maxCount: MaxTopicCount);
+        var topics = version >= 9
+            ? reader.ReadCompactArray(
+                static (ref KafkaProtocolReader r, short v) => TopicMetadata.Read(ref r, v),
+                version,
+                minElementSize: version >= 10 ? 26 : 10,
+                maxCount: MaxTopicCount)
+            : reader.ReadArray(
+                static (ref KafkaProtocolReader r, short v) => TopicMetadata.Read(ref r, v),
+                version,
+                minElementSize: version >= 8 ? 13 : 9,
+                maxCount: MaxTopicCount);
 
         var clusterAuthorizedOperations = int.MinValue;
-        if (version <= 10)
+        if (version is >= 8 and <= 10)
         {
             clusterAuthorizedOperations = reader.ReadInt32();
         }
@@ -62,7 +74,8 @@ public sealed class MetadataResponse : IKafkaResponse
             errorCode = (ErrorCode)reader.ReadInt16();
         }
 
-        reader.SkipTaggedFields();
+        if (version >= 9)
+            reader.SkipTaggedFields();
 
         return new MetadataResponse
         {
@@ -90,11 +103,14 @@ public sealed class BrokerMetadata
     public static BrokerMetadata Read(ref KafkaProtocolReader reader, short version)
     {
         var nodeId = reader.ReadInt32();
-        var host = reader.ReadCompactNonNullableString();
+        var host = version >= 9
+            ? reader.ReadCompactNonNullableString()
+            : reader.ReadString() ?? string.Empty;
         var port = reader.ReadInt32();
-        var rack = reader.ReadCompactString();
+        var rack = version >= 9 ? reader.ReadCompactString() : reader.ReadString();
 
-        reader.SkipTaggedFields();
+        if (version >= 9)
+            reader.SkipTaggedFields();
 
         return new BrokerMetadata
         {
@@ -121,7 +137,9 @@ public sealed class TopicMetadata
     public static TopicMetadata Read(ref KafkaProtocolReader reader, short version)
     {
         var errorCode = (ErrorCode)reader.ReadInt16();
-        var name = reader.ReadCompactNonNullableString();
+        var name = version >= 9
+            ? reader.ReadCompactNonNullableString()
+            : reader.ReadString() ?? string.Empty;
 
         var topicId = Guid.Empty;
         if (version >= 10)
@@ -131,15 +149,22 @@ public sealed class TopicMetadata
 
         var isInternal = reader.ReadBoolean();
 
-        var partitions = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r, short v) => PartitionMetadata.Read(ref r, v),
-            version,
-            minElementSize: 18,
-            maxCount: MetadataResponse.MaxPartitionCount);
+        var partitions = version >= 9
+            ? reader.ReadCompactArray(
+                static (ref KafkaProtocolReader r, short v) => PartitionMetadata.Read(ref r, v),
+                version,
+                minElementSize: 18,
+                maxCount: MetadataResponse.MaxPartitionCount)
+            : reader.ReadArray(
+                static (ref KafkaProtocolReader r, short v) => PartitionMetadata.Read(ref r, v),
+                version,
+                minElementSize: version >= 7 ? 26 : 22,
+                maxCount: MetadataResponse.MaxPartitionCount);
 
-        var topicAuthorizedOperations = reader.ReadInt32();
+        var topicAuthorizedOperations = version >= 8 ? reader.ReadInt32() : int.MinValue;
 
-        reader.SkipTaggedFields();
+        if (version >= 9)
+            reader.SkipTaggedFields();
 
         return new TopicMetadata
         {
@@ -171,22 +196,14 @@ public sealed class PartitionMetadata
         var errorCode = (ErrorCode)reader.ReadInt16();
         var partitionIndex = reader.ReadInt32();
         var leaderId = reader.ReadInt32();
-        var leaderEpoch = reader.ReadInt32();
+        var leaderEpoch = version >= 7 ? reader.ReadInt32() : -1;
 
-        var replicaNodes = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => r.ReadInt32(),
-            minElementSize: 4,
-            maxCount: MetadataResponse.MaxReplicaCount);
-        var isrNodes = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => r.ReadInt32(),
-            minElementSize: 4,
-            maxCount: MetadataResponse.MaxReplicaCount);
-        var offlineReplicas = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => r.ReadInt32(),
-            minElementSize: 4,
-            maxCount: MetadataResponse.MaxReplicaCount);
+        var replicaNodes = ReadBrokerIds(ref reader, version);
+        var isrNodes = ReadBrokerIds(ref reader, version);
+        var offlineReplicas = version >= 5 ? ReadBrokerIds(ref reader, version) : null;
 
-        reader.SkipTaggedFields();
+        if (version >= 9)
+            reader.SkipTaggedFields();
 
         return new PartitionMetadata
         {
@@ -199,4 +216,14 @@ public sealed class PartitionMetadata
             OfflineReplicas = offlineReplicas
         };
     }
+
+    private static int[] ReadBrokerIds(ref KafkaProtocolReader reader, short version) => version >= 9
+        ? reader.ReadCompactArray(
+            static (ref KafkaProtocolReader r) => r.ReadInt32(),
+            minElementSize: 4,
+            maxCount: MetadataResponse.MaxReplicaCount)
+        : reader.ReadArray(
+            static (ref KafkaProtocolReader r) => r.ReadInt32(),
+            minElementSize: 4,
+            maxCount: MetadataResponse.MaxReplicaCount);
 }

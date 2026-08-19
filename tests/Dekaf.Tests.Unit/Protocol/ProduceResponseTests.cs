@@ -414,7 +414,7 @@ public class ProduceResponseTests
         writer.WriteUnsignedVarInt(0); // response tagged fields
 
         var reader = new KafkaProtocolReader(buffer.WrittenMemory);
-        return (ProduceResponse)ProduceResponse.Read(ref reader, ProduceResponse.LowestSupportedVersion);
+        return (ProduceResponse)ProduceResponse.Read(ref reader, version: 9);
     }
 
     private static FetchResponse ReadFetchResponse(string topicName)

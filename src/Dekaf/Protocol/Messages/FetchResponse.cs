@@ -24,7 +24,7 @@ public sealed class FetchResponse : IKafkaResponse
     private IReadOnlyList<FetchResponseTopic> _responses = Array.Empty<FetchResponseTopic>();
 
     public static ApiKey ApiKey => ApiKey.Fetch;
-    public static short LowestSupportedVersion => 12;
+    public static short LowestSupportedVersion => 4;
     public static short HighestSupportedVersion => 18;
 
     /// <summary>
@@ -100,16 +100,27 @@ public sealed class FetchResponse : IKafkaResponse
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
         var throttleTimeMs = reader.ReadInt32();
-        var errorCode = (ErrorCode)reader.ReadInt16();
-        var sessionId = reader.ReadInt32();
+        var errorCode = version >= 7 ? (ErrorCode)reader.ReadInt16() : ErrorCode.None;
+        var sessionId = version >= 7 ? reader.ReadInt32() : 0;
 
         // Use pooled list to avoid per-fetch array allocation
         var responses = s_topicListPool.Rent();
         try
         {
-            reader.ReadCompactArrayInto(responses, static (ref KafkaProtocolReader r, short v) => FetchResponseTopic.Read(ref r, v), version);
+            if (FetchRequest.IsFlexibleVersion(version))
+                reader.ReadCompactArrayInto(
+                    responses,
+                    static (ref KafkaProtocolReader r, short v) => FetchResponseTopic.Read(ref r, v),
+                    version);
+            else
+                reader.ReadArrayInto(
+                    responses,
+                    static (ref KafkaProtocolReader r, short v) => FetchResponseTopic.Read(ref r, v),
+                    version);
 
-            var nodeEndpoints = ReadResponseTaggedFields(ref reader, version);
+            var nodeEndpoints = FetchRequest.IsFlexibleVersion(version)
+                ? ReadResponseTaggedFields(ref reader, version)
+                : [];
 
             var response = Rent();
             response.ThrottleTimeMs = throttleTimeMs;
@@ -275,19 +286,38 @@ public sealed class FetchResponseTopic
         }
         else
         {
-            var topicBytes = reader.ReadCompactStringBytes();
-            // Intern topic names to reuse string instances across fetch cycles
-            if (topicBytes is not null)
-                topic = TopicNameInternCache.Intern(topicBytes.Value);
+            if (FetchRequest.IsFlexibleVersion(version))
+            {
+                var topicBytes = reader.ReadCompactStringBytes();
+                // Intern topic names to reuse string instances across fetch cycles
+                if (topicBytes is not null)
+                    topic = TopicNameInternCache.Intern(topicBytes.Value);
+            }
+            else
+            {
+                var topicBytes = reader.ReadStringBytes();
+                if (topicBytes is not null)
+                    topic = TopicNameInternCache.Intern(topicBytes.Value);
+            }
         }
 
         // Use pooled list to avoid per-topic array allocation
         var partitions = s_partitionListPool.Rent();
         try
         {
-            reader.ReadCompactArrayInto(partitions, static (ref KafkaProtocolReader r, short v) => FetchResponsePartition.Read(ref r, v), version);
+            if (FetchRequest.IsFlexibleVersion(version))
+                reader.ReadCompactArrayInto(
+                    partitions,
+                    static (ref KafkaProtocolReader r, short v) => FetchResponsePartition.Read(ref r, v),
+                    version);
+            else
+                reader.ReadArrayInto(
+                    partitions,
+                    static (ref KafkaProtocolReader r, short v) => FetchResponsePartition.Read(ref r, v),
+                    version);
 
-            reader.SkipTaggedFields();
+            if (FetchRequest.IsFlexibleVersion(version))
+                reader.SkipTaggedFields();
 
             var result = Rent();
             result.Topic = topic;
@@ -488,8 +518,8 @@ public sealed class FetchResponsePartition
         var errorCode = (ErrorCode)reader.ReadInt16();
         var highWatermark = reader.ReadInt64();
 
-        var lastStableOffset = reader.ReadInt64();
-        var logStartOffset = reader.ReadInt64();
+        var lastStableOffset = version >= 4 ? reader.ReadInt64() : -1;
+        var logStartOffset = version >= 5 ? reader.ReadInt64() : -1;
 
         EpochEndOffset? divergingEpoch = null;
         LeaderIdAndEpoch? currentLeader = null;
@@ -504,10 +534,15 @@ public sealed class FetchResponsePartition
 
         try
         {
-            var abortedCount = reader.ReadCompactArrayInto(
-                abortedList,
-                static (ref KafkaProtocolReader r, short v) => AbortedTransaction.Read(ref r, v),
-                version);
+            var abortedCount = FetchRequest.IsFlexibleVersion(version)
+                ? reader.ReadCompactArrayInto(
+                    abortedList,
+                    static (ref KafkaProtocolReader r, short v) => AbortedTransaction.Read(ref r, v),
+                    version)
+                : reader.ReadArrayInto(
+                    abortedList,
+                    static (ref KafkaProtocolReader r, short v) => AbortedTransaction.Read(ref r, v),
+                    version);
 
             if (abortedCount > 0)
             {
@@ -520,11 +555,13 @@ public sealed class FetchResponsePartition
                 abortedListReturned = true;
             }
 
-            var preferredReadReplica = reader.ReadInt32();
+            var preferredReadReplica = version >= 11 ? reader.ReadInt32() : -1;
 
             // Read record batches
             // COMPACT_RECORDS uses COMPACT_NULLABLE_BYTES encoding (length+1, 0 = null)
-            var recordsLength = reader.ReadUnsignedVarInt() - 1;
+            var recordsLength = FetchRequest.IsFlexibleVersion(version)
+                ? reader.ReadUnsignedVarInt() - 1
+                : reader.ReadInt32();
 
             if (recordsLength > 0)
             {
@@ -563,7 +600,8 @@ public sealed class FetchResponsePartition
                 }
             }
 
-            ReadPartitionTaggedFields(ref reader, version, out divergingEpoch, out currentLeader, out snapshotId);
+            if (FetchRequest.IsFlexibleVersion(version))
+                ReadPartitionTaggedFields(ref reader, version, out divergingEpoch, out currentLeader, out snapshotId);
 
             var result = Rent();
             result.PartitionIndex = partitionIndex;
@@ -687,7 +725,8 @@ public readonly record struct AbortedTransaction
         var producerId = reader.ReadInt64();
         var firstOffset = reader.ReadInt64();
 
-        reader.SkipTaggedFields();
+        if (FetchRequest.IsFlexibleVersion(version))
+            reader.SkipTaggedFields();
 
         return new AbortedTransaction
         {

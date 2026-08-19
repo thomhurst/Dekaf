@@ -723,6 +723,7 @@ public sealed partial class KafkaConnection :
     private async ValueTask<KafkaConnectionCapabilities> NegotiateCapabilitiesAsync(
         CancellationToken cancellationToken)
     {
+        const short broadlyCompatibleApiVersionsVersion = 3;
         var expectedIdentity = _metadataClusterIdentity?.GetExpectedBrokerIdentity(BrokerId);
         var request = new ApiVersionsRequest
         {
@@ -737,7 +738,7 @@ public sealed partial class KafkaConnection :
         {
             response = await SendAsyncCore<ApiVersionsRequest, ApiVersionsResponse>(
                 request,
-                ApiVersionsRequest.HighestSupportedVersion,
+                broadlyCompatibleApiVersionsVersion,
                 requireReady: false,
                 cancellationToken).ConfigureAwait(false);
 
@@ -770,7 +771,20 @@ public sealed partial class KafkaConnection :
                 ex);
         }
 
-        return KafkaConnectionCapabilities.Create(response);
+        var capabilities = KafkaConnectionCapabilities.Create(response);
+        if (expectedIdentity is not null &&
+            capabilities.SupportsVersion(ApiKey.ApiVersions, ApiVersionsRequest.HighestSupportedVersion))
+        {
+            response = await SendAsyncCore<ApiVersionsRequest, ApiVersionsResponse>(
+                request,
+                ApiVersionsRequest.HighestSupportedVersion,
+                requireReady: false,
+                cancellationToken).ConfigureAwait(false);
+            ThrowIfRebootstrapRequired(response);
+            capabilities = KafkaConnectionCapabilities.Create(response);
+        }
+
+        return capabilities;
     }
 
     private void ThrowIfRebootstrapRequired(ApiVersionsResponse response)
@@ -1868,19 +1882,34 @@ public sealed partial class KafkaConnection :
         header.Write(ref writer);
         var headerLength = writer.BytesWritten;
 
-        writer.WriteCompactNullableString(request.TransactionalId);
+        var flexible = ProduceRequest.IsFlexibleVersion(apiVersion);
+        if (flexible)
+            writer.WriteCompactNullableString(request.TransactionalId);
+        else
+            writer.WriteString(request.TransactionalId);
         writer.WriteInt16(request.Acks);
         writer.WriteInt32(request.TimeoutMs);
-        writer.WriteUnsignedVarInt(2); // one topic, compact count is item count + 1
+        if (flexible)
+            writer.WriteUnsignedVarInt(2); // one topic, compact count is item count + 1
+        else
+            writer.WriteInt32(1);
         if (apiVersion >= ProduceRequest.TopicIdVersion)
             writer.WriteUuid(topic.TopicId);
-        else
+        else if (flexible)
             writer.WriteCompactString(topic.Name);
-        writer.WriteUnsignedVarInt(2); // one partition
+        else
+            writer.WriteString(topic.Name);
+        if (flexible)
+            writer.WriteUnsignedVarInt(2); // one partition
+        else
+            writer.WriteInt32(1);
         writer.WriteInt32(partition.Index);
 
         var encodedBatchSize = batch.GetEncodedSize(partition.Compression);
-        writer.WriteUnsignedVarInt(checked(encodedBatchSize + 1));
+        if (flexible)
+            writer.WriteUnsignedVarInt(checked(encodedBatchSize + 1));
+        else
+            writer.WriteInt32(encodedBatchSize);
         if (!batch.TryWriteSegmentedHeader(
                 metadataWriter,
                 partition.Compression,
@@ -1912,9 +1941,12 @@ public sealed partial class KafkaConnection :
 
         writer.AddBytesWritten(encodedBatchSize);
         prefixLength = metadataWriter.WrittenCount;
-        writer.WriteEmptyTaggedFields(); // partition
-        writer.WriteEmptyTaggedFields(); // topic
-        writer.WriteEmptyTaggedFields(); // request
+        if (flexible)
+        {
+            writer.WriteEmptyTaggedFields(); // partition
+            writer.WriteEmptyTaggedFields(); // topic
+            writer.WriteEmptyTaggedFields(); // request
+        }
         suffixOffset = prefixLength;
         suffixLength = metadataWriter.WrittenCount - prefixLength;
 

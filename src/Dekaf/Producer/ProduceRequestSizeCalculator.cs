@@ -68,6 +68,14 @@ internal static class ProduceRequestSizeCalculator
     internal static int CompactBytesLengthSize(int byteCount)
         => Record.VarUIntSize((uint)checked(byteCount + 1));
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static int ArrayLengthSize(int count, bool flexible)
+        => flexible ? CompactArrayLengthSize(count) : sizeof(int);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static int BytesLengthSize(int byteCount, bool flexible)
+        => flexible ? CompactBytesLengthSize(byteCount) : sizeof(int);
+
     internal static int CompactStringSize(string? value)
     {
         if (value is null)
@@ -77,15 +85,36 @@ internal static class ProduceRequestSizeCalculator
         return checked(CompactBytesLengthSize(byteCount) + byteCount);
     }
 
+    internal static int StringSize(string? value, bool flexible)
+    {
+        if (flexible)
+            return CompactStringSize(value);
+
+        return checked(sizeof(short) + (value is null ? 0 : Encoding.UTF8.GetByteCount(value)));
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static int GetSingleBatchFixedSize(string? transactionalId, string topic)
         => GetSingleBatchFixedSize(transactionalId, CompactStringSize(topic));
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static int GetConservativeSingleBatchFixedSize(string? transactionalId, string topic)
-        => GetSingleBatchFixedSize(
-            transactionalId,
-            Math.Max(TopicIdSize, CompactStringSize(topic)));
+        => Math.Max(
+            GetSingleBatchFixedSize(
+                transactionalId,
+                Math.Max(TopicIdSize, CompactStringSize(topic))),
+            GetLegacySingleBatchFixedSize(transactionalId, topic));
+
+    private static int GetLegacySingleBatchFixedSize(string? transactionalId, string topic)
+        => checked(
+            StringSize(transactionalId, flexible: false) +
+            2 + // Acks
+            4 + // TimeoutMs
+            4 + // Topics array
+            StringSize(topic, flexible: false) +
+            4 + // Partitions array
+            4 + // Partition index
+            4 - CompactBytesLengthSize(0)); // Worst-case legacy record length prefix delta
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static int GetSingleBatchFixedSize(string? transactionalId, int topicFieldSize)

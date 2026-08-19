@@ -12,7 +12,7 @@ namespace Dekaf.Protocol.Messages;
 public sealed class ProduceResponse : IKafkaResponse
 {
     public static ApiKey ApiKey => ApiKey.Produce;
-    public static short LowestSupportedVersion => 9;
+    public static short LowestSupportedVersion => 3;
     public static short HighestSupportedVersion => 13;
 
     private static ProduceResponsePool s_pool = new(maxPoolSize: 64);
@@ -119,14 +119,21 @@ public sealed class ProduceResponse : IKafkaResponse
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
-        var topicCount = reader.ReadUnsignedVarInt() - 1;
+        var topicCount = ProduceRequest.IsFlexibleVersion(version)
+            ? reader.ReadUnsignedVarInt() - 1
+            : reader.ReadInt32();
 
         // Each topic entry needs at least a topic id (16 bytes, v13+) or a compact name
         // length prefix (1 byte), plus partition-count and tagged-fields varints. A count
         // that cannot fit in the remaining payload at that minimum size, or that exceeds
         // the absolute cap, is malformed and must fail before the array allocation.
         if (topicCount > 0)
-            reader.ValidateReadableLength(topicCount, version >= ProduceRequest.TopicIdVersion ? 18 : 3, MaxTopicCount);
+        {
+            var minTopicSize = version >= ProduceRequest.TopicIdVersion
+                ? 18
+                : ProduceRequest.IsFlexibleVersion(version) ? 3 : 6;
+            reader.ValidateReadableLength(topicCount, minTopicSize, MaxTopicCount);
+        }
 
         var response = Volatile.Read(ref s_pool).Rent();
         var parsedTopics = 0;
@@ -143,7 +150,9 @@ public sealed class ProduceResponse : IKafkaResponse
 
             response.TopicCount = Math.Max(topicCount, 0);
             response.ThrottleTimeMs = reader.ReadInt32();
-            response.NodeEndpoints = ReadResponseTaggedFields(ref reader, version);
+            response.NodeEndpoints = ProduceRequest.IsFlexibleVersion(version)
+                ? ReadResponseTaggedFields(ref reader, version)
+                : [];
 
             return response;
         }
@@ -341,11 +350,18 @@ public struct ProduceResponseTopicData
         }
         else
         {
-            Name = TopicNameInternCache.Intern(reader.ReadCompactNonNullableString());
+            var nameBytes = ProduceRequest.IsFlexibleVersion(version)
+                ? reader.ReadCompactStringBytes()
+                : reader.ReadStringBytes();
+            Name = nameBytes is null
+                ? string.Empty
+                : TopicNameInternCache.Intern(nameBytes.Value);
             TopicId = Guid.Empty;
         }
 
-        var partitionCount = reader.ReadUnsignedVarInt() - 1;
+        var partitionCount = ProduceRequest.IsFlexibleVersion(version)
+            ? reader.ReadUnsignedVarInt() - 1
+            : reader.ReadInt32();
 
         PartitionCount = Math.Max(partitionCount, 0);
 
@@ -356,7 +372,13 @@ public struct ProduceResponseTopicData
             // record-errors array, error message, and tagged fields. A count that cannot
             // fit in the remaining payload at that minimum size, or that exceeds the
             // absolute cap, is malformed and must fail before the array allocation.
-            reader.ValidateReadableLength(PartitionCount, 33, ProduceResponse.MaxPartitionCount);
+            var minPartitionSize = ProduceRequest.IsFlexibleVersion(version)
+                ? 33
+                : version >= 8 ? 36 : version >= 5 ? 30 : 22;
+            reader.ValidateReadableLength(
+                PartitionCount,
+                minPartitionSize,
+                ProduceResponse.MaxPartitionCount);
 
             if (PartitionResponses is null || PartitionResponses.Length < PartitionCount)
                 PartitionResponses = new ProduceResponsePartitionData[PartitionCount];
@@ -386,7 +408,8 @@ public struct ProduceResponseTopicData
             HasNestedReferences = false;
         }
 
-        reader.SkipTaggedFields();
+        if (ProduceRequest.IsFlexibleVersion(version))
+            reader.SkipTaggedFields();
     }
 }
 
@@ -445,17 +468,33 @@ public readonly struct ProduceResponsePartitionData
         var errorCode = (ErrorCode)reader.ReadInt16();
         var baseOffset = reader.ReadInt64();
         var logAppendTimeMs = reader.ReadInt64();
-        var logStartOffset = reader.ReadInt64();
+        var logStartOffset = version >= 5 ? reader.ReadInt64() : -1;
 
-        // Each record error needs at least batch index (4), error message prefix (1),
-        // and tagged-fields varint (1) on the wire.
-        var recordErrors = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r, short v) => BatchIndexAndErrorMessage.Read(ref r, v),
-            version,
-            minElementSize: 6,
-            maxCount: ProduceResponse.MaxRecordErrorCount);
-        var errorMessage = reader.ReadCompactString();
-        var currentLeader = ReadPartitionTaggedFields(ref reader, version);
+        BatchIndexAndErrorMessage[]? recordErrors = null;
+        string? errorMessage = null;
+        if (version >= 8)
+        {
+            // Each record error needs at least batch index (4), error-message prefix,
+            // and, for flexible versions, a tagged-fields varint.
+            recordErrors = ProduceRequest.IsFlexibleVersion(version)
+                ? reader.ReadCompactArray(
+                    static (ref KafkaProtocolReader r, short v) => BatchIndexAndErrorMessage.Read(ref r, v),
+                    version,
+                    minElementSize: 6,
+                    maxCount: ProduceResponse.MaxRecordErrorCount)
+                : reader.ReadArray(
+                    static (ref KafkaProtocolReader r, short v) => BatchIndexAndErrorMessage.Read(ref r, v),
+                    version,
+                    minElementSize: 6,
+                    maxCount: ProduceResponse.MaxRecordErrorCount);
+            errorMessage = ProduceRequest.IsFlexibleVersion(version)
+                ? reader.ReadCompactString()
+                : reader.ReadString();
+        }
+
+        var currentLeader = ProduceRequest.IsFlexibleVersion(version)
+            ? ReadPartitionTaggedFields(ref reader, version)
+            : null;
 
         return new ProduceResponsePartitionData
         {
@@ -515,9 +554,12 @@ public readonly struct BatchIndexAndErrorMessage
     public static BatchIndexAndErrorMessage Read(ref KafkaProtocolReader reader, short version)
     {
         var batchIndex = reader.ReadInt32();
-        var errorMessage = reader.ReadCompactString();
+        var errorMessage = ProduceRequest.IsFlexibleVersion(version)
+            ? reader.ReadCompactString()
+            : reader.ReadString();
 
-        reader.SkipTaggedFields();
+        if (ProduceRequest.IsFlexibleVersion(version))
+            reader.SkipTaggedFields();
 
         return new BatchIndexAndErrorMessage
         {

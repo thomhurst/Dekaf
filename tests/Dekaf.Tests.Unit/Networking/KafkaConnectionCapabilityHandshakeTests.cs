@@ -31,7 +31,7 @@ public class KafkaConnectionCapabilityHandshakeTests
             var request = await ReadFrameAsync(stream, cancellationToken);
 
             await Assert.That(BinaryPrimitives.ReadInt16BigEndian(request)).IsEqualTo((short)ApiKey.ApiVersions);
-            await Assert.That(BinaryPrimitives.ReadInt16BigEndian(request.AsSpan(2))).IsEqualTo((short)5);
+            await Assert.That(BinaryPrimitives.ReadInt16BigEndian(request.AsSpan(2))).IsEqualTo((short)3);
 
             var correlationId = BinaryPrimitives.ReadInt32BigEndian(request.AsSpan(4));
             requestReceived.SetResult();
@@ -118,7 +118,7 @@ public class KafkaConnectionCapabilityHandshakeTests
 
     [Test]
     [Timeout(5_000)]
-    public async Task ConnectAsync_WhenV5IsUnsupported_RetriesBrokerSupportedVersionOnSameConnection(
+    public async Task ConnectAsync_WhenV3IsUnsupported_RetriesBrokerSupportedVersionOnSameConnection(
         CancellationToken cancellationToken)
     {
         using var listener = new TcpListener(IPAddress.Loopback, 0);
@@ -133,37 +133,45 @@ public class KafkaConnectionCapabilityHandshakeTests
 
             var initialRequest = await ReadFrameAsync(stream, cancellationToken);
             await Assert.That(BinaryPrimitives.ReadInt16BigEndian(initialRequest)).IsEqualTo((short)ApiKey.ApiVersions);
-            await Assert.That(BinaryPrimitives.ReadInt16BigEndian(initialRequest.AsSpan(2))).IsEqualTo((short)5);
+            await Assert.That(BinaryPrimitives.ReadInt16BigEndian(initialRequest.AsSpan(2))).IsEqualTo((short)3);
             var initialCorrelationId = BinaryPrimitives.ReadInt32BigEndian(initialRequest.AsSpan(4));
             await stream.WriteAsync(
                 BuildV0Response(
                     initialCorrelationId,
                     ErrorCode.UnsupportedVersion,
-                    new ApiVersion(ApiKey.ApiVersions, 0, 3)),
+                    new ApiVersion(ApiKey.ApiVersions, 0, 2)),
                 cancellationToken);
 
             var retryRequest = await ReadFrameAsync(stream, cancellationToken);
             await Assert.That(BinaryPrimitives.ReadInt16BigEndian(retryRequest)).IsEqualTo((short)ApiKey.ApiVersions);
-            await Assert.That(BinaryPrimitives.ReadInt16BigEndian(retryRequest.AsSpan(2))).IsEqualTo((short)3);
+            await Assert.That(BinaryPrimitives.ReadInt16BigEndian(retryRequest.AsSpan(2))).IsEqualTo((short)2);
             var retryCorrelationId = BinaryPrimitives.ReadInt32BigEndian(retryRequest.AsSpan(4));
             await stream.WriteAsync(
-                BuildResponse(
+                BuildLegacyResponse(
                     retryCorrelationId,
                     ErrorCode.None,
-                    new ApiVersion(ApiKey.ApiVersions, 0, 3),
-                    new ApiVersion(ApiKey.Metadata, 9, 12)),
+                    new ApiVersion(ApiKey.ApiVersions, 0, 2),
+                    new ApiVersion(ApiKey.Metadata, 5, 12)),
                 cancellationToken);
             await releaseServer.Task.WaitAsync(cancellationToken);
         }, cancellationToken);
 
-        await using var connection = new KafkaConnection(1, "127.0.0.1", port);
+        await using var connection = new KafkaConnection(
+            1,
+            "127.0.0.1",
+            port,
+            clientId: null,
+            options: null,
+            logger: null,
+            ResponseBufferPool.Default,
+            metadataClusterIdentity: CreateExpectedIdentity());
         try
         {
             await connection.ConnectAsync(cancellationToken);
 
             var capabilities = ((IKafkaCapabilityProvider)connection).Capabilities;
             await Assert.That(connection.IsConnected).IsTrue();
-            await Assert.That(capabilities.NegotiateVersion(ApiKey.ApiVersions, 0, 5)).IsEqualTo((short)3);
+            await Assert.That(capabilities.NegotiateVersion(ApiKey.ApiVersions, 0, 5)).IsEqualTo((short)2);
             await Assert.That(capabilities.NegotiateVersion(ApiKey.Metadata, 9, 13)).IsEqualTo((short)12);
         }
         finally
@@ -201,7 +209,15 @@ public class KafkaConnectionCapabilityHandshakeTests
                 cancellationToken);
         }, cancellationToken);
 
-        await using var connection = new KafkaConnection(1, "127.0.0.1", port);
+        await using var connection = new KafkaConnection(
+            1,
+            "127.0.0.1",
+            port,
+            clientId: null,
+            options: null,
+            logger: null,
+            ResponseBufferPool.Default,
+            metadataClusterIdentity: CreateExpectedIdentity());
         await Assert.That(async () => await connection.ConnectAsync(cancellationToken))
             .Throws<BrokerVersionException>();
         await serverTask;
@@ -228,7 +244,15 @@ public class KafkaConnectionCapabilityHandshakeTests
                 cancellationToken);
         }, cancellationToken);
 
-        await using var connection = new KafkaConnection(1, "127.0.0.1", port);
+        await using var connection = new KafkaConnection(
+            1,
+            "127.0.0.1",
+            port,
+            clientId: null,
+            options: null,
+            logger: null,
+            ResponseBufferPool.Default,
+            metadataClusterIdentity: CreateExpectedIdentity());
         await Assert.That(async () => await connection.ConnectAsync(cancellationToken))
             .Throws<BrokerVersionException>()
             .WithMessageContaining("no valid ApiVersions range");
@@ -255,11 +279,11 @@ public class KafkaConnectionCapabilityHandshakeTests
                 BuildV0Response(
                     initialCorrelationId,
                     ErrorCode.UnsupportedVersion,
-                    new ApiVersion(ApiKey.ApiVersions, 0, 3)),
+                    new ApiVersion(ApiKey.ApiVersions, 0, 2)),
                 cancellationToken);
 
             var retryRequest = await ReadFrameAsync(stream, cancellationToken);
-            await Assert.That(BinaryPrimitives.ReadInt16BigEndian(retryRequest.AsSpan(2))).IsEqualTo((short)3);
+            await Assert.That(BinaryPrimitives.ReadInt16BigEndian(retryRequest.AsSpan(2))).IsEqualTo((short)2);
             var retryCorrelationId = BinaryPrimitives.ReadInt32BigEndian(retryRequest.AsSpan(4));
             await stream.WriteAsync(
                 BuildV0Response(
@@ -269,7 +293,15 @@ public class KafkaConnectionCapabilityHandshakeTests
                 cancellationToken);
         }, cancellationToken);
 
-        await using var connection = new KafkaConnection(1, "127.0.0.1", port);
+        await using var connection = new KafkaConnection(
+            1,
+            "127.0.0.1",
+            port,
+            clientId: null,
+            options: null,
+            logger: null,
+            ResponseBufferPool.Default,
+            metadataClusterIdentity: CreateExpectedIdentity());
         await Assert.That(async () => await connection.ConnectAsync(cancellationToken))
             .Throws<BrokerVersionException>()
             .WithMessageContaining("limited to one retry");
@@ -322,6 +354,16 @@ public class KafkaConnectionCapabilityHandshakeTests
         {
             using var socket = await listener.AcceptSocketAsync(cancellationToken);
             await using var stream = new NetworkStream(socket, ownsSocket: false);
+            var discoveryRequest = await ReadFrameAsync(stream, cancellationToken);
+            await Assert.That(BinaryPrimitives.ReadInt16BigEndian(discoveryRequest.AsSpan(2))).IsEqualTo((short)3);
+            var discoveryCorrelationId = BinaryPrimitives.ReadInt32BigEndian(discoveryRequest.AsSpan(4));
+            await stream.WriteAsync(
+                BuildResponse(
+                    discoveryCorrelationId,
+                    ErrorCode.None,
+                    new ApiVersion(ApiKey.ApiVersions, 0, 5)),
+                cancellationToken);
+
             var request = await ReadFrameAsync(stream, cancellationToken);
             var (clusterId, nodeId) = ReadKip1242Identity(request);
 
@@ -375,10 +417,7 @@ public class KafkaConnectionCapabilityHandshakeTests
             using var socket = await listener.AcceptSocketAsync(cancellationToken);
             await using var stream = new NetworkStream(socket, ownsSocket: false);
             var request = await ReadFrameAsync(stream, cancellationToken);
-            var (clusterId, nodeId) = ReadKip1242Identity(request);
-
-            await Assert.That(clusterId).IsNull();
-            await Assert.That(nodeId).IsEqualTo(-1);
+            await Assert.That(BinaryPrimitives.ReadInt16BigEndian(request.AsSpan(2))).IsEqualTo((short)3);
 
             var correlationId = BinaryPrimitives.ReadInt32BigEndian(request.AsSpan(4));
             await stream.WriteAsync(BuildResponse(correlationId, ErrorCode.None), cancellationToken);
@@ -423,6 +462,15 @@ public class KafkaConnectionCapabilityHandshakeTests
         {
             using var socket = await listener.AcceptSocketAsync(cancellationToken);
             await using var stream = new NetworkStream(socket, ownsSocket: false);
+            var discoveryRequest = await ReadFrameAsync(stream, cancellationToken);
+            var discoveryCorrelationId = BinaryPrimitives.ReadInt32BigEndian(discoveryRequest.AsSpan(4));
+            await stream.WriteAsync(
+                BuildResponse(
+                    discoveryCorrelationId,
+                    ErrorCode.None,
+                    new ApiVersion(ApiKey.ApiVersions, 0, 5)),
+                cancellationToken);
+
             var request = await ReadFrameAsync(stream, cancellationToken);
             var correlationId = BinaryPrimitives.ReadInt32BigEndian(request.AsSpan(4));
             await stream.WriteAsync(
@@ -806,5 +854,37 @@ public class KafkaConnectionCapabilityHandshakeTests
         BinaryPrimitives.WriteInt32BigEndian(frame.AsSpan(sizeof(int)), correlationId);
         body.WrittenSpan.CopyTo(frame.AsSpan(sizeof(int) * 2));
         return frame;
+    }
+
+    private static byte[] BuildLegacyResponse(
+        int correlationId,
+        ErrorCode errorCode,
+        params ApiVersion[] versions)
+    {
+        var body = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(body);
+        writer.WriteInt16((short)errorCode);
+        writer.WriteInt32(versions.Length);
+        foreach (var version in versions)
+        {
+            writer.WriteInt16((short)version.ApiKey);
+            writer.WriteInt16(version.MinVersion);
+            writer.WriteInt16(version.MaxVersion);
+        }
+
+        writer.WriteInt32(0);
+        var frame = new byte[sizeof(int) + sizeof(int) + body.WrittenCount];
+        BinaryPrimitives.WriteInt32BigEndian(frame, frame.Length - sizeof(int));
+        BinaryPrimitives.WriteInt32BigEndian(frame.AsSpan(sizeof(int)), correlationId);
+        body.WrittenSpan.CopyTo(frame.AsSpan(sizeof(int) * 2));
+        return frame;
+    }
+
+    private static MetadataClusterIdentity CreateExpectedIdentity()
+    {
+        var identity = new MetadataClusterIdentity();
+        identity.Configure(enabled: true);
+        identity.UpdateClusterId("cluster-a");
+        return identity;
     }
 }

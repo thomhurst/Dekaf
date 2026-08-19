@@ -4584,12 +4584,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             var topicIdx = 0;
             var partIdx = 0;
             var runStart = 0;
+            var flexible = ProduceRequest.IsFlexibleVersion(apiVersion);
             var requestBodySizeHint = checked(
-                ProduceRequestSizeCalculator.CompactStringSize(_request.TransactionalId) +
+                ProduceRequestSizeCalculator.StringSize(_request.TransactionalId, flexible) +
                 2 + // Acks
                 4 + // TimeoutMs
-                ProduceRequestSizeCalculator.CompactArrayLengthSize(topicCount) +
-                1); // Request tagged fields
+                ProduceRequestSizeCalculator.ArrayLengthSize(topicCount, flexible) +
+                (flexible ? 1 : 0)); // Request tagged fields
 
             // Single pass: populate scratch topic and partition data from contiguous runs
             while (runStart < count)
@@ -4627,9 +4628,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     requestBodySizeHint +
                     (apiVersion >= ProduceRequest.TopicIdVersion
                         ? ProduceRequestSizeCalculator.TopicIdSize
-                        : ProduceRequestSizeCalculator.CompactStringSize(topicName)) +
-                    ProduceRequestSizeCalculator.CompactArrayLengthSize(partCount) +
-                    1); // Topic tagged fields
+                        : ProduceRequestSizeCalculator.StringSize(topicName, flexible)) +
+                    ProduceRequestSizeCalculator.ArrayLengthSize(partCount, flexible) +
+                    (flexible ? 1 : 0)); // Topic tagged fields
 
                 for (var p = 0; p < partCount; p++)
                 {
@@ -4641,9 +4642,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     requestBodySizeHint = checked(
                         requestBodySizeHint +
                         4 + // Partition index
-                        ProduceRequestSizeCalculator.CompactBytesLengthSize(batch.EncodedSize) +
+                        ProduceRequestSizeCalculator.BytesLengthSize(batch.EncodedSize, flexible) +
                         batch.EncodedSize +
-                        1); // Partition tagged fields
+                        (flexible ? 1 : 0)); // Partition tagged fields
                     partIdx++;
                 }
 

@@ -9,9 +9,11 @@ public sealed class FetchVersionCompatibilityTests
     private static readonly Guid DirectoryId = new("00112233-4455-6677-8899-aabbccddeeff");
 
     [Test]
-    public async Task FetchMessages_SupportVersion18()
+    public async Task FetchMessages_SupportVersions4Through18()
     {
+        await Assert.That(FetchRequest.LowestSupportedVersion).IsEqualTo((short)4);
         await Assert.That(FetchRequest.HighestSupportedVersion).IsEqualTo((short)18);
+        await Assert.That(FetchResponse.LowestSupportedVersion).IsEqualTo((short)4);
         await Assert.That(FetchResponse.HighestSupportedVersion).IsEqualTo((short)18);
     }
 

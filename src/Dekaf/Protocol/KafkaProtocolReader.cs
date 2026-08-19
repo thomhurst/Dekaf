@@ -580,6 +580,15 @@ public ref struct KafkaProtocolReader
         return ReadStringContent(length);
     }
 
+    internal ReadOnlyMemory<byte>? ReadStringBytes()
+    {
+        var length = ReadInt16();
+        if (length < 0)
+            return null;
+
+        return ReadMemorySlice(length);
+    }
+
     /// <summary>
     /// Reads a compact string with unsigned varint length prefix (flexible format).
     /// Length is encoded as length + 1 (0 means null).

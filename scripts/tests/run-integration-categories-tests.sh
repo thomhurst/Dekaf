@@ -4,6 +4,8 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 temp_root="$(mktemp -d)"
 ryuk_image="testcontainers/ryuk:0.14.0@sha256:7c1a8a9a47c780ed0f983770a662f80deb115d95cce3e2daa3d12115b8cd28f0"
+eventhubs_image="mcr.microsoft.com/azure-messaging/eventhubs-emulator:2.2.1@sha256:be413f0d59541621879e6d197d73f64f3b3ac5fa45861641fdc1430252b8b44b"
+azurite_image="mcr.microsoft.com/azure-storage/azurite:3.36.0@sha256:76b8127d608fab8287a14a4bfeb9a5502cdcffb4bf1e86f09f324ebb0e70edba"
 trap 'rm -rf "$temp_root"' EXIT
 
 mkdir -p "$temp_root/scripts" \
@@ -30,14 +32,17 @@ grep -q 'Category=Messaging' "$CALLS_FILE"
 grep -q 'Category=Serialization' "$CALLS_FILE"
 
 : > "$CALLS_FILE"
-bash scripts/run-integration-categories.sh net10.0 "Messaging,Interop,Serialization"
+bash scripts/run-integration-categories.sh net10.0 "Messaging,Interop,Serialization,EventHubs"
 grep -q 'Category=Interop' "$CALLS_FILE"
 grep -q 'Category=Serialization.*--maximum-parallel-tests 1' "$CALLS_FILE"
+grep -q 'Category=EventHubs.*--maximum-parallel-tests 1' "$CALLS_FILE"
 
 grep -Eq 'MaximumParallelTests[[:space:]]*=>[[:space:]]*4' \
   "$repo_root/tools/Dekaf.Pipeline/Modules/RunProducerIntegrationTestsModule.cs"
 grep -Fq "\"$ryuk_image\"" "$repo_root/.github/workflows/ci.yml"
 grep -Fq "\"$ryuk_image\"" "$repo_root/.github/workflows/integration-groups.yml"
+grep -Fq "\"$eventhubs_image\"" "$repo_root/.github/workflows/ci.yml"
+grep -Fq "\"$azurite_image\"" "$repo_root/.github/workflows/ci.yml"
 
 fake_docker='#!/usr/bin/env bash
 printf "%s\n" "$*" >> "$DOCKER_CALLS_FILE"
