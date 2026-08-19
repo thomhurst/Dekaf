@@ -111,7 +111,8 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// Each batch contains all records from a single partition fetch response.
     /// Records within a batch are iterated synchronously (no async overhead per message).
     /// Position tracking is deferred to batch completion.
-    /// Partition EOF events are not surfaced by this method; use <see cref="ConsumeAsync"/> for EOF notification.
+    /// When partition EOF reporting is enabled, EOF is surfaced as a zero-record batch whose
+    /// <see cref="ConsumeBatch{TKey,TValue}.IsPartitionEof"/> property is <see langword="true"/>.
     /// </summary>
     /// <remarks>
     /// This is an intentionally long-lived stream. <see cref="ConsumerOptions.DefaultApiTimeoutMs"/>
@@ -123,7 +124,8 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// Consumes raw (undeserialized) messages in batches for maximum throughput.
     /// Records provide zero-copy <see cref="ReadOnlyMemory{T}"/> access to key/value data.
     /// No deserialization, header copying, interceptors, or tracing overhead.
-    /// Partition EOF events are not surfaced by this method; use <see cref="ConsumeAsync"/> for EOF notification.
+    /// When partition EOF reporting is enabled, EOF is surfaced as a zero-record batch whose
+    /// <see cref="ConsumeRawBatch.IsPartitionEof"/> property is <see langword="true"/>.
     /// </summary>
     /// <remarks>
     /// This is an intentionally long-lived stream. <see cref="ConsumerOptions.DefaultApiTimeoutMs"/>

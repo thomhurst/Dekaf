@@ -27,6 +27,7 @@ public class ConsumerHotPathBenchmarks
         new(Serializers.String, maxCachedBytes: 4 * 1024, maxCachedEntries: 128);
     private CachingStringDeserializer _uniqueValuesCachedStringDeserializer = null!;
     private Record[] _records = null!;
+    private Record[] _recordsWithHeaders = null!;
     private Record[] _repeated1KbValueRecords = null!;
     private string _topic = null!;
     private long _timestampMs;
@@ -37,6 +38,18 @@ public class ConsumerHotPathBenchmarks
         _topic = "consumer-hot-path";
         _timestampMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         _records = new Record[MessageCount];
+        _recordsWithHeaders = new Record[MessageCount];
+        Header[] headers =
+        [
+            new("traceparent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"u8.ToArray()),
+            new("tracestate", "vendor=value"u8.ToArray()),
+            new("correlation-id", "order-123456"u8.ToArray()),
+            new("content-type", "application/json"u8.ToArray()),
+            new("tenant-id", "tenant-a"u8.ToArray()),
+            new("source", "benchmark"u8.ToArray()),
+            new("attempt", "1"u8.ToArray()),
+            new("nullable", value: null)
+        ];
 
         for (var i = 0; i < MessageCount; i++)
         {
@@ -53,6 +66,18 @@ public class ConsumerHotPathBenchmarks
                 IsValueNull = false,
                 Headers = null,
                 HeaderCount = 0,
+            };
+
+            _recordsWithHeaders[i] = new Record
+            {
+                OffsetDelta = i,
+                TimestampDelta = i,
+                Key = key,
+                Value = value,
+                IsKeyNull = false,
+                IsValueNull = false,
+                Headers = headers,
+                HeaderCount = headers.Length,
             };
         }
 
@@ -93,6 +118,21 @@ public class ConsumerHotPathBenchmarks
     public int ConsumeRawBatch_Enumerate()
     {
         using var pending = CreatePendingFetchData();
+        var batch = new ConsumeRawBatch(pending);
+        var bytes = 0;
+
+        foreach (var record in batch)
+        {
+            bytes += record.Value.Length;
+        }
+
+        return bytes;
+    }
+
+    [Benchmark(OperationsPerInvoke = MessageCount, Description = "Raw batch enumerate (8 headers)")]
+    public int ConsumeRawBatch_EnumerateWithHeaders()
+    {
+        using var pending = CreatePendingFetchData(_recordsWithHeaders);
         var batch = new ConsumeRawBatch(pending);
         var bytes = 0;
 
