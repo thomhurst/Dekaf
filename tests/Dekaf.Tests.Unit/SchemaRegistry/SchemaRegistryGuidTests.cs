@@ -151,6 +151,25 @@ public sealed class SchemaRegistryGuidTests
     }
 
     [Test]
+    public async Task RegisterSchemaAsync_GuidAliasPreservesRegistrationCacheAtCapacity()
+    {
+        using var handler = new RecordingHandler(static (_, _) => Task.FromResult(JsonResponse(
+            HttpStatusCode.OK,
+            $$"""{ "id": 42, "guid": "{{FirstGuid:D}}" }""")));
+        using var client = CreateClient(handler, maxCachedSchemas: 1);
+        var schema = NewSchema("registered");
+
+        var first = await client.RegisterSchemaAsync("orders-value", schema);
+        var second = await client.RegisterSchemaAsync("orders-value", schema);
+
+        await Assert.That(first).IsEqualTo(42);
+        await Assert.That(second).IsEqualTo(42);
+        await Assert.That(handler.Requests).Count().IsEqualTo(1);
+        await Assert.That(client.TryGetCachedSchema(FirstGuid, null, out var cached)).IsTrue();
+        await Assert.That(cached).IsSameReferenceAs(schema);
+    }
+
+    [Test]
     public async Task GuidCache_NormalizesEmptyFormatAtDirectEntryPoints()
     {
         using var client = CreateClient(new RecordingHandler());

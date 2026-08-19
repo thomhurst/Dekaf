@@ -24,6 +24,7 @@ public class SchemaRegistryIdentityCacheBenchmarks
         var schema = new Schema { SchemaString = "{}", SchemaType = SchemaType.Json };
         _client.CacheSchema(_id, subject: null, schema);
         _client.CacheGuidSchema(_guid, _format, schema);
+        _client.CacheGuidSchema(_guid, string.Empty, schema);
     }
 
     [GlobalCleanup]
@@ -40,6 +41,13 @@ public class SchemaRegistryIdentityCacheBenchmarks
     public Schema LookupByGuid()
     {
         _client.TryGetCachedSchema(_guid, _format, out var schema);
+        return schema;
+    }
+
+    [Benchmark]
+    public Schema LookupByGuidWithEmptyFormat()
+    {
+        _client.TryGetCachedSchema(_guid, string.Empty, out var schema);
         return schema;
     }
 }
