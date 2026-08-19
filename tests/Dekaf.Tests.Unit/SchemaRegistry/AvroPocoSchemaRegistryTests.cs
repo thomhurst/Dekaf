@@ -1842,6 +1842,26 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    public async Task AvroValueWriter_UndersizedStringBuffer_SkipsUtf8Scan()
+    {
+        const string invalidUtf16 = "\uD800";
+        var undersizedDestination = new byte[1];
+        var undersizedWriter = new AvroValueWriter(undersizedDestination);
+
+        undersizedWriter.WriteString(invalidUtf16);
+
+        await Assert.That(undersizedWriter.IsComplete).IsFalse();
+
+        var sufficientDestination = new byte[8];
+        await Assert.That(() =>
+            {
+                var writer = new AvroValueWriter(sufficientDestination);
+                writer.WriteString(invalidUtf16);
+            })
+            .Throws<EncoderFallbackException>();
+    }
+
+    [Test]
     public async Task GeneratedCodec_RejectsInvalidUtf8String()
     {
         using var registry = new MockSchemaRegistryClient();

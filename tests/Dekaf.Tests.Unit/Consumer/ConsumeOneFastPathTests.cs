@@ -107,6 +107,52 @@ public sealed class ConsumeOneFastPathTests
 
     [Test]
     [NotInParallel("ActivityListener")]
+    public async Task ConsumeOneAsync_ReplacedFetchAfterColdPreparation_StartsNewConsumeActivity()
+    {
+        const string activityTopic = "replaced-cold-preparation-activity-topic";
+        var started = new ConcurrentQueue<Activity>();
+        var stopped = new ConcurrentQueue<Activity>();
+        using var listener = CreateConsumeActivityListener(activityTopic, started, stopped);
+        var originalFetch = PendingFetchData.Create(activityTopic, Partition,
+        [
+            CreateBatch(20, CreateRecord(0, "a", "one"))
+        ]);
+        var replacementFetch = PendingFetchData.Create(activityTopic, Partition,
+        [
+            CreateBatch(30, CreateRecord(0, "b", "two"))
+        ]);
+        var deserializer = new PreparedOnlyStringDeserializer();
+        await using var consumer = CreateInitializedConsumerWithDeserializers(
+            originalFetch,
+            valueDeserializer: deserializer);
+        MarkManualAssignmentCurrent(consumer);
+
+        var initialConsumed = TryConsumeOneFromPendingFetchesWithPreparation(
+            consumer,
+            out var requiresAsyncPreparation,
+            out var preparedKey);
+
+        await Assert.That(initialConsumed).IsFalse();
+        await Assert.That(requiresAsyncPreparation).IsTrue();
+
+        var pendingFetches = GetPendingFetches(consumer);
+        pendingFetches.Dequeue().Dispose();
+        pendingFetches.Enqueue(replacementFetch);
+
+        var result = await ConsumeOneFromPendingFetchesAsync(consumer, preparedKey);
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(result!.Value.Offset).IsEqualTo(30L);
+        await Assert.That(result.Value.Value).IsEqualTo("two");
+        await Assert.That(started).Count().IsEqualTo(2);
+        await Assert.That(stopped).Count().IsEqualTo(2);
+        await Assert.That(stopped.Select(static activity =>
+                (long)activity.GetTagItem("messaging.kafka.offset")!))
+            .IsEquivalentTo([20L, 30L]);
+    }
+
+    [Test]
+    [NotInParallel("ActivityListener")]
     public async Task ConsumeOneAsync_CanceledColdPreparation_StopsConsumeActivity()
     {
         const string activityTopic = "canceled-cold-preparation-activity-topic";
@@ -1074,7 +1120,8 @@ public sealed class ConsumeOneFastPathTests
             asyncValueDeserializer: asyncValueDeserializer);
 
         SetInitialized(consumer);
-        AssignTestPartition(consumer);
+        consumer.Assign(fetch.TopicPartition);
+        GetFetchPositions(consumer)[fetch.TopicPartition] = 0;
         GetPendingFetches(consumer).Enqueue(fetch);
         return consumer;
     }
@@ -1426,7 +1473,8 @@ public sealed class ConsumeOneFastPathTests
     }
 
     private static ValueTask<ConsumeResult<string, string>?> ConsumeOneFromPendingFetchesAsync(
-        KafkaConsumer<string, string> consumer)
+        KafkaConsumer<string, string> consumer,
+        object? preparedKey = null)
     {
         var method = typeof(KafkaConsumer<string, string>)
             .GetMethod("ConsumeOneFromPendingFetchesAsync", BindingFlags.NonPublic | BindingFlags.Instance)
@@ -1434,7 +1482,26 @@ public sealed class ConsumeOneFastPathTests
 
         return (ValueTask<ConsumeResult<string, string>?>)method.Invoke(
             consumer,
-            [null, CancellationToken.None])!;
+            [preparedKey, CancellationToken.None])!;
+    }
+
+    private static bool TryConsumeOneFromPendingFetchesWithPreparation(
+        KafkaConsumer<string, string> consumer,
+        out bool requiresAsyncPreparation,
+        out object? preparedKey)
+    {
+        var method = typeof(KafkaConsumer<string, string>)
+            .GetMethod(
+                "TryConsumeOneFromPendingFetchesWithPreparation",
+                BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException(
+                "TryConsumeOneFromPendingFetchesWithPreparation method not found.");
+
+        object?[] args = [null, false, null];
+        var consumed = (bool)method.Invoke(consumer, args)!;
+        requiresAsyncPreparation = (bool)args[1]!;
+        preparedKey = args[2];
+        return consumed;
     }
 
     private static MpscFetchBuffer GetPrefetchBuffer(KafkaConsumer<string, string> consumer)

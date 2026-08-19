@@ -135,6 +135,14 @@ public ref struct AvroValueWriter
     public void WriteString(string value)
     {
         ArgumentNullException.ThrowIfNull(value);
+        // UTF-8 always needs at least one byte per UTF-16 code unit, plus the Avro
+        // length prefix. Reject obviously undersized retry buffers before scanning
+        // a potentially large string to determine its exact encoded length.
+        if (value.Length >= _destination.Length - _position)
+        {
+            _ = Overflow();
+            return;
+        }
         var byteCount = StrictUtf8.GetByteCount(value);
         WriteInt64(byteCount);
         if (!Ensure(byteCount))

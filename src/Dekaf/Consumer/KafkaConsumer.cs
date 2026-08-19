@@ -5288,28 +5288,48 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         private readonly PendingFetchData? _pending;
         private readonly long _offset;
+        private readonly int _pendingGeneration;
         private System.Diagnostics.Activity? _preparationActivity;
 
-        internal PreparedDeserializerKey(System.Diagnostics.Activity preparationActivity) =>
+        internal PreparedDeserializerKey(
+            PendingFetchData pending,
+            long offset,
+            System.Diagnostics.Activity preparationActivity)
+        {
+            _pending = pending;
+            _offset = offset;
+            _pendingGeneration = pending.HeaderGeneration;
             _preparationActivity = preparationActivity;
+        }
 
         internal PreparedDeserializerKey(PendingFetchData pending, long offset, TKey? value)
         {
             _pending = pending;
             _offset = offset;
+            _pendingGeneration = pending.HeaderGeneration;
             Value = value;
         }
 
         internal TKey? Value { get; }
 
         internal bool Matches(PendingFetchData pending, long offset) =>
-            ReferenceEquals(_pending, pending) && _offset == offset;
+            ReferenceEquals(_pending, pending)
+            && _offset == offset
+            && _pendingGeneration == pending.HeaderGeneration;
 
         internal void RetainPreparationActivity(System.Diagnostics.Activity activity) =>
             _preparationActivity = activity;
 
-        internal System.Diagnostics.Activity? TakePreparationActivity()
+        internal System.Diagnostics.Activity? TakePreparationActivity(
+            PendingFetchData pending,
+            long offset)
         {
+            if (!Matches(pending, offset))
+            {
+                DisposePreparationActivity();
+                return null;
+            }
+
             var activity = _preparationActivity;
             _preparationActivity = null;
             return activity;
@@ -5444,7 +5464,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                 if (activity is not null)
                                 {
                                     if (preparedKey is null)
-                                        preparedKey = new PreparedDeserializerKey(activity);
+                                        preparedKey = new PreparedDeserializerKey(pending, offset, activity);
                                     else
                                         preparedKey.RetainPreparationActivity(activity);
                                     activity = null;
@@ -5593,7 +5613,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             EagerParsePendingOrRemove(pending);
 
             // lgtm[cs/missed-using-statement] Activity can be acquired after loop entry and reassigned.
-            System.Diagnostics.Activity? activity = preparedKey?.TakePreparationActivity();
+            System.Diagnostics.Activity? activity = null;
             var pendingDisposed = false;
             var pendingRemoved = false;
             try
@@ -5609,6 +5629,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                         var record = pending.CurrentRecord;
                         offset = pending.CurrentBaseOffset + record.OffsetDelta;
+                        if (preparedKey is not null && activity is null)
+                            activity = preparedKey.TakePreparationActivity(pending, offset);
                         var timestampMs = pending.CurrentBaseTimestamp + record.TimestampDelta;
                         var timestampType = pending.CurrentTimestampType;
                         // Hoist every record field used below into locals before the await:
