@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Reflection;
 using Dekaf.Compression;
@@ -39,6 +40,10 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
     private static readonly Type BatchReferenceType = typeof(BrokerSender).GetNestedType(
         "BatchReference",
         BindingFlags.NonPublic)!;
+
+    private static readonly FieldInfo MutedPartitionsField = typeof(BrokerSender).GetField(
+        "_mutedPartitions",
+        BindingFlags.Instance | BindingFlags.NonPublic)!;
 
     private static ProducerOptions CreateOptions(Acks acks = Acks.All, int maxInFlight = 1,
         int retryBackoffMs = 0, int retryBackoffMaxMs = 0,
@@ -1423,7 +1428,7 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             TaskCreationOptions.RunContinuationsAsynchronously);
         var p0OnlyRetryStarted = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        var p1FollowupStarted = new TaskCompletionSource(
+        var p1FollowupStarted = new TaskCompletionSource<ProduceResponse>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var p1FollowupResponse = new TaskCompletionSource<ProduceResponse>(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1460,7 +1465,7 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
 
             if (includesPartitionOne)
             {
-                p1FollowupStarted.TrySetResult();
+                p1FollowupStarted.TrySetResult(response);
                 return new ValueTask<Task<ProduceResponse>>(p1FollowupResponse.Task);
             }
 
@@ -1496,6 +1501,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
                 }
             }
         });
+        var mutedPartitions =
+            (ConcurrentDictionary<TopicPartition, byte>)MutedPartitionsField.GetValue(sender)!;
+        var partitionZero = new TopicPartition("test-topic", 0);
 
         try
         {
@@ -1518,23 +1526,26 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             await Assert.That(firstRequest.Select(static topic => topic.Partition))
                 .IsEquivalentTo([0, 1]);
 
-            // Enqueue C while the first response is held. After p0 becomes muted and enters
-            // retry backoff, C must still send without waiting for p0 to become retry-ready.
+            firstResponse.SetResult(firstResponsePayload);
+
+            // Observe p0's mute before making C visible. This prevents C from dispatching
+            // against the still-in-flight first request and bypassing the state under test.
+            await Assert.That(() => mutedPartitions.ContainsKey(partitionZero))
+                .Eventually(isMuted => isMuted.IsTrue(), DiagnosticWaitTimeout);
+            await Assert.That(Volatile.Read(ref partitionAttempts[0])).IsEqualTo(1);
+
             var batchC = CreateTestBatch(vtPool, "test-topic", 1);
             sender.Enqueue(batchC);
 
-            firstResponse.SetResult(firstResponsePayload);
-
             // p0 has a practically-unbounded retry backoff. C must dispatch while p0 cannot
             // become retry-ready, proving p0's mute does not stall p1.
-            await p1FollowupStarted.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
+            var p1FollowupPayload = await p1FollowupStarted.Task
+                .WaitAsync(TimeSpan.FromSeconds(30), ct);
             await Assert.That(p0OnlyRetryStarted.Task.IsCompleted).IsFalse();
             await Assert.That(Volatile.Read(ref partitionAttempts[0])).IsEqualTo(1);
 
             batchA.RetryNotBefore = 0;
-            p1FollowupResponse.SetResult(CreateMultiPartitionResponse(
-                "test-topic",
-                (1, ErrorCode.None, 201)));
+            p1FollowupResponse.SetResult(p1FollowupPayload);
 
             await allAcknowledged.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
 
@@ -1551,6 +1562,7 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
         {
             connectionAvailable.TrySetResult(connection);
             firstResponse.TrySetCanceled(CancellationToken.None);
+            p1FollowupStarted.TrySetCanceled(CancellationToken.None);
             p1FollowupResponse.TrySetCanceled(CancellationToken.None);
             await sender.DisposeAsync();
             await accumulator.DisposeAsync();
