@@ -50,7 +50,8 @@ public sealed class StreamsGroupHeartbeatMessageTests
         var original = new StreamsGroupHeartbeatResponse
         {
             ThrottleTimeMs = 12,
-            ErrorCode = ErrorCode.None,
+            ErrorCode = ErrorCode.UnknownServerError,
+            ErrorMessage = "retry later",
             MemberId = "member-a",
             MemberEpoch = 4,
             HeartbeatIntervalMs = 5_000,
@@ -86,6 +87,8 @@ public sealed class StreamsGroupHeartbeatMessageTests
         var remaining = reader.Remaining;
 
         await Assert.That(response.ThrottleTimeMs).IsEqualTo(12);
+        await Assert.That(response.ErrorCode).IsEqualTo(ErrorCode.UnknownServerError);
+        await Assert.That(response.ErrorMessage).IsEqualTo("retry later");
         await Assert.That(response.MemberId).IsEqualTo("member-a");
         await Assert.That(response.MemberEpoch).IsEqualTo(4);
         await Assert.That(response.AcceptableRecoveryLag).IsEqualTo(10);
