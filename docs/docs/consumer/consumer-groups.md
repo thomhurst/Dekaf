@@ -7,6 +7,8 @@ description: "Share partitions across consumer instances, covering rebalancing, 
 
 Consumer groups enable multiple consumer instances to share the work of consuming a topic. Kafka automatically distributes partitions among group members.
 
+For queue-style consumption where any member can process records from any partition with per-record acknowledgement, see [Share Consumers (KIP-932)](./share-consumers) instead.
+
 ## How Consumer Groups Work
 
 When multiple consumers share a group ID:
