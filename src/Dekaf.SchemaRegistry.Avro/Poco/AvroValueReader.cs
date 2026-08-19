@@ -10,12 +10,15 @@ public ref struct AvroValueReader
 {
     internal const int MaxCollectionItemCount = 1_048_576;
     private const int MaxCollectionAllocationBytes = 8 * 1024 * 1024;
+    private const int MinimumReferenceObjectSize = 24;
+    private const int PrechargedReferencePayloadSize = 16;
     private const int MaxSkipDepth = 256;
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
     private readonly ReadOnlySpan<byte> _source;
     private int _position;
     private int _skipDepth;
     private int _remainingCollectionAllocationBytes;
+    private bool _hasReservedRemainingDecodedPayload;
 
     internal AvroValueReader(ReadOnlySpan<byte> source)
     {
@@ -100,10 +103,29 @@ public ref struct AvroValueReader
         return ReadBytesSpan().ToArray();
     }
 
+    /// <summary>Reads Avro bytes while consuming generated decode-allocation budget.</summary>
+    [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
+    public byte[] ReadBytesWithAllocationBudget(int prechargedPayloadBytes)
+    {
+        var value = ReadBytesSpan();
+        ConsumeDecodedAllocation(GetUnchargedPayloadBytes(value.Length, sizeof(byte), prechargedPayloadBytes));
+        return value.ToArray();
+    }
+
     /// <summary>Reads validated Avro string bytes into the returned object graph.</summary>
     public byte[] ReadStringBytes()
     {
         var value = ReadBytesSpan();
+        ValidateUtf8(value);
+        return value.ToArray();
+    }
+
+    /// <summary>Reads validated Avro string bytes while consuming generated decode-allocation budget.</summary>
+    [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
+    public byte[] ReadStringBytesWithAllocationBudget(int prechargedPayloadBytes)
+    {
+        var value = ReadBytesSpan();
+        ConsumeDecodedAllocation(GetUnchargedPayloadBytes(value.Length, sizeof(byte), prechargedPayloadBytes));
         ValidateUtf8(value);
         return value.ToArray();
     }
@@ -192,6 +214,25 @@ public ref struct AvroValueReader
         return Math.Max(requiredCapacity, Math.Min(MaxCollectionItemCount, expanded));
     }
 
+    /// <summary>Reads an Avro UTF-8 string while consuming generated decode-allocation budget.</summary>
+    [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
+    public string ReadStringWithAllocationBudget(int prechargedPayloadBytes)
+    {
+        var length = ReadLength();
+        Ensure(length);
+        ConsumeDecodedAllocation(GetUnchargedPayloadBytes(length, sizeof(char), prechargedPayloadBytes));
+        try
+        {
+            var value = StrictUtf8.GetString(_source.Slice(_position, length));
+            _position += length;
+            return value;
+        }
+        catch (DecoderFallbackException exception)
+        {
+            throw new InvalidDataException("Invalid Avro UTF-8 string.", exception);
+        }
+    }
+
     /// <summary>Validates and accumulates collection block counts.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int AddCollectionCount(int currentCount, int blockCount)
@@ -203,6 +244,43 @@ public ref struct AvroValueReader
         return (int)total;
     }
 
+    /// <summary>Consumes generated decode-allocation budget.</summary>
+    [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void ConsumeDecodedAllocation(ulong bytes)
+    {
+        if (_hasReservedRemainingDecodedPayload)
+            return;
+        if (bytes > (uint)_remainingCollectionAllocationBytes)
+            ThrowCollectionAllocationLimit();
+        _remainingCollectionAllocationBytes -= (int)bytes;
+    }
+
+    /// <summary>Reserves a conservative decoded-payload bound for the remaining generated read.</summary>
+    [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool TryReserveRemainingDecodedPayload(int maximumExpansionFactor)
+    {
+        if (_hasReservedRemainingDecodedPayload)
+            return true;
+
+        var maximumPayloadBytes = (ulong)(uint)(_source.Length - _position) * (uint)maximumExpansionFactor;
+        if (maximumPayloadBytes > (uint)_remainingCollectionAllocationBytes)
+            return false;
+
+        _remainingCollectionAllocationBytes -= (int)maximumPayloadBytes;
+        _hasReservedRemainingDecodedPayload = true;
+        return true;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static ulong GetUnchargedPayloadBytes(int length, int elementSize, int prechargedPayloadBytes)
+    {
+        var payloadBytes = ((ulong)(uint)length * (uint)elementSize + 7UL) & ~7UL;
+        var prechargedBytes = (uint)Math.Max(0, prechargedPayloadBytes);
+        return payloadBytes > prechargedBytes ? payloadBytes - prechargedBytes : 0;
+    }
+
     /// <summary>Validates that a generated collection's backing storage stays within its byte limit.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void ValidateCollectionAllocation<T>(int count) =>
@@ -212,8 +290,8 @@ public ref struct AvroValueReader
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void ValidateCollectionAllocation<T>(int count, int decodedItemAllocationSize)
     {
-        var itemSize = Math.Max(Unsafe.SizeOf<T>(), decodedItemAllocationSize);
-        if ((ulong)(uint)count * (uint)itemSize > MaxCollectionAllocationBytes)
+        var itemSize = (ulong)(uint)Unsafe.SizeOf<T>() + (uint)Math.Max(decodedItemAllocationSize, 0);
+        if ((ulong)(uint)count * itemSize > MaxCollectionAllocationBytes)
             ThrowCollectionAllocationLimit();
     }
 
@@ -224,7 +302,7 @@ public ref struct AvroValueReader
         int addedCount,
         int decodedItemAllocationSize)
     {
-        var itemSize = Math.Max(Unsafe.SizeOf<T>(), decodedItemAllocationSize);
+        var itemSize = (ulong)(uint)Unsafe.SizeOf<T>() + (uint)Math.Max(decodedItemAllocationSize, 0);
         ValidateAndConsumeCollectionAllocation(totalCount, addedCount, itemSize);
     }
 
@@ -238,9 +316,10 @@ public ref struct AvroValueReader
     public static void ValidateMapAllocation<T>(int count, int decodedItemAllocationSize)
     {
         const int DictionaryEntryAndBucketMetadataSize = sizeof(int) * 3;
-        var entrySize = DictionaryEntryAndBucketMetadataSize + IntPtr.Size +
-                        Math.Max(Unsafe.SizeOf<T>(), decodedItemAllocationSize);
-        if ((ulong)(uint)count * (uint)entrySize > MaxCollectionAllocationBytes)
+        var entrySize = (ulong)(DictionaryEntryAndBucketMetadataSize + IntPtr.Size + MinimumReferenceObjectSize +
+                                PrechargedReferencePayloadSize) +
+                        (uint)Unsafe.SizeOf<T>() + (uint)Math.Max(decodedItemAllocationSize, 0);
+        if ((ulong)(uint)count * entrySize > MaxCollectionAllocationBytes)
             ThrowCollectionAllocationLimit();
     }
 
@@ -252,18 +331,19 @@ public ref struct AvroValueReader
         int decodedItemAllocationSize)
     {
         const int DictionaryEntryAndBucketMetadataSize = sizeof(int) * 3;
-        var entrySize = DictionaryEntryAndBucketMetadataSize + IntPtr.Size +
-                        Math.Max(Unsafe.SizeOf<T>(), decodedItemAllocationSize);
+        var entrySize = (ulong)(DictionaryEntryAndBucketMetadataSize + IntPtr.Size + MinimumReferenceObjectSize +
+                                PrechargedReferencePayloadSize) +
+                        (uint)Unsafe.SizeOf<T>() + (uint)Math.Max(decodedItemAllocationSize, 0);
         ValidateAndConsumeCollectionAllocation(totalCount, addedCount, entrySize);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void ValidateAndConsumeCollectionAllocation(int totalCount, int addedCount, int itemSize)
+    private void ValidateAndConsumeCollectionAllocation(int totalCount, int addedCount, ulong itemSize)
     {
-        if ((ulong)(uint)totalCount * (uint)itemSize > MaxCollectionAllocationBytes)
+        if ((ulong)(uint)totalCount * itemSize > MaxCollectionAllocationBytes)
             ThrowCollectionAllocationLimit();
 
-        var addedBytes = (ulong)(uint)addedCount * (uint)itemSize;
+        var addedBytes = (ulong)(uint)addedCount * itemSize;
         if (addedBytes > (uint)_remainingCollectionAllocationBytes)
             ThrowCollectionAllocationLimit();
         _remainingCollectionAllocationBytes -= (int)addedBytes;

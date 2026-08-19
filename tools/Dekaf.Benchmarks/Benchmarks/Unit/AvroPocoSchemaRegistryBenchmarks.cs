@@ -180,6 +180,10 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
         """
         {"type":"record","name":"PocoCollectionBenchmarkRecord","namespace":"Dekaf.Benchmarks.Benchmarks.Unit","fields":[{"name":"Values","type":{"type":"array","items":"int"}}]}
         """;
+    private const string ReferenceCollectionSchemaJson =
+        """
+        {"type":"record","name":"PocoReferenceCollectionBenchmarkRecord","namespace":"Dekaf.Benchmarks.Benchmarks.Unit","fields":[{"name":"Values","type":{"type":"array","items":"string"}}]}
+        """;
     private const string SkipSchemaJson =
         """
         {"type":"record","name":"PocoSkipBenchmarkRecord","namespace":"Dekaf.Benchmarks.Benchmarks.Unit","fields":[{"name":"Id","type":"int"},{"name":"ignored","type":{"type":"record","name":"PocoSkippedRecord","fields":[{"name":"value","type":"int"}]}}]}
@@ -224,6 +228,9 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
         _latestWriterUnionPoco = null!;
     private AvroPocoSchemaRegistryDeserializer<PocoCollectionBenchmarkRecord, PocoCollectionBenchmarkRecord.AvroCodec>
         _collectionPoco = null!;
+    private AvroPocoSchemaRegistryDeserializer<
+        PocoReferenceCollectionBenchmarkRecord,
+        PocoReferenceCollectionBenchmarkRecord.AvroCodec> _referenceCollectionPoco = null!;
     private AvroPocoSchemaRegistryDeserializer<PocoSkipBenchmarkRecord, PocoSkipBenchmarkRecord.AvroCodec>
         _skipPoco = null!;
     private AvroPocoSchemaRegistryDeserializer<PocoSkipBenchmarkRecord, PocoSkipBenchmarkRecord.AvroCodec>
@@ -236,6 +243,7 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
     private byte[] _decimalWireData = null!;
     private byte[] _writerUnionWireData = null!;
     private byte[] _collectionWireData = null!;
+    private byte[] _referenceCollectionWireData = null!;
     private byte[] _skipWireData = null!;
     private byte[] _skipCollectionWireData = null!;
     private byte[] _skipEnumWireData = null!;
@@ -294,6 +302,12 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
                 SchemaType = global::Dekaf.SchemaRegistry.SchemaType.Avro,
                 SchemaString = CollectionSchemaJson
             }));
+        _referenceCollectionPoco = PocoReferenceCollectionBenchmarkRecord.CreateAvroDeserializer(
+            new BenchmarkSchemaRegistryClient(new global::Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = global::Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = ReferenceCollectionSchemaJson
+            }));
         _skipPoco = PocoSkipBenchmarkRecord.CreateAvroDeserializer(
             new BenchmarkSchemaRegistryClient(new global::Dekaf.SchemaRegistry.Schema
             {
@@ -322,6 +336,14 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
         _decimalWireData = [0, 0, 0, 0, SchemaId, 0x04, 0x30, 0x39];
         _writerUnionWireData = [0, 0, 0, 0, SchemaId, 0x00, 0x54];
         _collectionWireData = [0, 0, 0, 0, SchemaId, 0x06, 0x02, 0x04, 0x06, 0x00];
+        _referenceCollectionWireData =
+        [
+            0, 0, 0, 0, SchemaId, 0x06,
+            0x06, (byte)'o', (byte)'n', (byte)'e',
+            0x06, (byte)'t', (byte)'w', (byte)'o',
+            0x0A, (byte)'t', (byte)'h', (byte)'r', (byte)'e', (byte)'e',
+            0x00
+        ];
         _skipWireData = [0, 0, 0, 0, SchemaId, 0x54, 0x0E];
         _skipCollectionWireData = [0, 0, 0, 0, SchemaId, 0x54, 0x06, 0x02, 0x04, 0x06, 0x00];
         _skipEnumWireData = [0, 0, 0, 0, SchemaId, 0x54, 0x02];
@@ -339,6 +361,7 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
         await _decimalPoco.WarmupAsync(SchemaId).ConfigureAwait(false);
         await _writerUnionPoco.WarmupAsync(SchemaId).ConfigureAwait(false);
         await _collectionPoco.WarmupAsync(SchemaId).ConfigureAwait(false);
+        await _referenceCollectionPoco.WarmupAsync(SchemaId).ConfigureAwait(false);
         await _skipPoco.WarmupAsync(SchemaId).ConfigureAwait(false);
         await _skipCollectionPoco.WarmupAsync(SchemaId).ConfigureAwait(false);
         await _skipEnumPoco.WarmupAsync(SchemaId).ConfigureAwait(false);
@@ -358,6 +381,7 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
         await _writerUnionPoco.DisposeAsync().ConfigureAwait(false);
         await _latestWriterUnionPoco.DisposeAsync().ConfigureAwait(false);
         await _collectionPoco.DisposeAsync().ConfigureAwait(false);
+        await _referenceCollectionPoco.DisposeAsync().ConfigureAwait(false);
         await _skipPoco.DisposeAsync().ConfigureAwait(false);
         await _skipCollectionPoco.DisposeAsync().ConfigureAwait(false);
         await _skipEnumPoco.DisposeAsync().ConfigureAwait(false);
@@ -405,6 +429,10 @@ public class AvroPocoSchemaRegistryDeserializationBenchmarks
     [Benchmark(Description = "Deserialize generated collection POCO")]
     public PocoCollectionBenchmarkRecord DeserializeCollectionPoco() =>
         _collectionPoco.Deserialize(_collectionWireData, _context);
+
+    [Benchmark(Description = "Deserialize generated reference collection POCO")]
+    public PocoReferenceCollectionBenchmarkRecord DeserializeReferenceCollectionPoco() =>
+        _referenceCollectionPoco.Deserialize(_referenceCollectionWireData, _context);
 
     [Benchmark(Description = "Deserialize generated POCO with skipped record")]
     public PocoSkipBenchmarkRecord DeserializeSkippedRecordPoco() =>
@@ -1083,6 +1111,12 @@ public readonly partial record struct PocoWriterUnionBenchmarkRecord
 public sealed partial class PocoCollectionBenchmarkRecord
 {
     public required int[] Values { get; init; }
+}
+
+[AvroRecord(Name = "PocoReferenceCollectionBenchmarkRecord", Namespace = "Dekaf.Benchmarks.Benchmarks.Unit")]
+public sealed partial class PocoReferenceCollectionBenchmarkRecord
+{
+    public required string[] Values { get; init; }
 }
 
 [AvroRecord(Name = "PocoSkipBenchmarkRecord", Namespace = "Dekaf.Benchmarks.Benchmarks.Unit")]

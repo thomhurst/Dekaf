@@ -17,6 +17,8 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
 {
     private const int WriteOverflowCheckInterval = 512;
     private const int UnboundedDecodedAllocationSize = int.MaxValue / 2;
+    private const int MinimumReferenceObjectSize = 24;
+    private const int PrechargedReferencePayloadSize = 16;
     private const string RecordAttribute = "Dekaf.SchemaRegistry.Avro.Poco.AvroRecordAttribute";
     private const string FieldAttribute = "Dekaf.SchemaRegistry.Avro.Poco.AvroFieldAttribute";
     private const string IgnoreAttribute = "Dekaf.SchemaRegistry.Avro.Poco.AvroIgnoreAttribute";
@@ -1035,20 +1037,49 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
 
         private void EmitRead(StringBuilder code)
         {
+            var hasVariableDecodedAllocation =
+                _record.Members.Any(static member => HasVariableDecodedAllocation(member.Type));
             code.Append("        public static ").Append(_record.TypeName)
                 .AppendLine(" Read(ref global::Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader reader, global::Dekaf.SchemaRegistry.Avro.Poco.AvroPocoReaderPlan plan)");
             code.AppendLine("        {");
+            if (hasVariableDecodedAllocation)
+            {
+                code.AppendLine("            if (!reader.TryReserveRemainingDecodedPayload(2))");
+                code.AppendLine("                return ReadWithAllocationBudget(ref reader, plan);");
+                code.AppendLine();
+            }
             code.AppendLine("            return plan.RequiresWriterUnionDispatch");
             code.AppendLine("                ? ReadWithWriterUnions(ref reader, plan)");
             code.AppendLine("                : ReadFast(ref reader, plan);");
             code.AppendLine("        }");
             code.AppendLine();
-            EmitReadCore(code, "ReadFast", resolveWriterUnions: false);
+            EmitReadCore(code, "ReadFast", resolveWriterUnions: false, trackDecodedReferences: false);
             code.AppendLine();
-            EmitReadCore(code, "ReadWithWriterUnions", resolveWriterUnions: true);
+            EmitReadCore(code, "ReadWithWriterUnions", resolveWriterUnions: true, trackDecodedReferences: false);
+
+            if (!hasVariableDecodedAllocation)
+                return;
+
+            code.AppendLine();
+            code.AppendLine("        [global::System.ComponentModel.EditorBrowsable(global::System.ComponentModel.EditorBrowsableState.Never)]");
+            code.Append("        public static ").Append(_record.TypeName)
+                .AppendLine(" ReadWithAllocationBudget(ref global::Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader reader, global::Dekaf.SchemaRegistry.Avro.Poco.AvroPocoReaderPlan plan)");
+            code.AppendLine("        {");
+            code.AppendLine("            return plan.RequiresWriterUnionDispatch");
+            code.AppendLine("                ? ReadWithWriterUnionsAndAllocationBudget(ref reader, plan)");
+            code.AppendLine("                : ReadFastWithAllocationBudget(ref reader, plan);");
+            code.AppendLine("        }");
+            code.AppendLine();
+            EmitReadCore(code, "ReadFastWithAllocationBudget", resolveWriterUnions: false, trackDecodedReferences: true);
+            code.AppendLine();
+            EmitReadCore(code, "ReadWithWriterUnionsAndAllocationBudget", resolveWriterUnions: true, trackDecodedReferences: true);
         }
 
-        private void EmitReadCore(StringBuilder code, string methodName, bool resolveWriterUnions)
+        private void EmitReadCore(
+            StringBuilder code,
+            string methodName,
+            bool resolveWriterUnions,
+            bool trackDecodedReferences)
         {
             code.Append("        private static ").Append(_record.TypeName).Append(' ').Append(methodName)
                 .AppendLine("(ref global::Dekaf.SchemaRegistry.Avro.Poco.AvroValueReader reader, global::Dekaf.SchemaRegistry.Avro.Poco.AvroPocoReaderPlan plan)");
@@ -1069,7 +1100,7 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             {
                 code.Append("                    case ").Append(index).AppendLine(":");
                 EmitReadValue(code, _record.Members[index].Type, "__operation.WriterType", "__field" + index,
-                    "                        ", resolveWriterUnions);
+                    "                        ", resolveWriterUnions, trackDecodedReferences);
                 if (_record.Members[index].DefaultJson is not null)
                     code.Append("                        __seen").Append(index).AppendLine(" = true;");
                 code.AppendLine("                        break;");
@@ -1285,7 +1316,8 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             string node,
             string target,
             string indent,
-            bool resolveWriterUnions)
+            bool resolveWriterUnions,
+            bool trackDecodedReferences)
         {
             if (type.Kind is TypeKindModel.Nullable or TypeKindModel.Union)
             {
@@ -1313,7 +1345,8 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                 {
                     var temp = "__nullable" + _localId++;
                     code.Append(indent).Append("    ").Append(nonNull.SymbolType).Append(' ').Append(temp).AppendLine(" = default!;");
-                    EmitReadValue(code, nonNull, branch, temp, indent + "    ", resolveWriterUnions);
+                    EmitReadValue(code, nonNull, branch, temp, indent + "    ", resolveWriterUnions,
+                        trackDecodedReferences);
                     code.Append(indent).Append("    ").Append(target).Append(" = ").Append(temp).AppendLine(";");
                 }
                 else
@@ -1330,7 +1363,8 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                         var temp = "__unionRead" + _localId++;
                         code.Append(indent).Append("        ").Append(unionBranch.SymbolType).Append(' ')
                             .Append(temp).AppendLine(" = default!;");
-                        EmitReadValue(code, unionBranch, branch, temp, indent + "        ", resolveWriterUnions);
+                        EmitReadValue(code, unionBranch, branch, temp, indent + "        ", resolveWriterUnions,
+                            trackDecodedReferences);
                         code.Append(indent).Append("        ").Append(target).Append(" = ").Append(temp).AppendLine(";");
                         code.Append(indent).AppendLine("    }");
                         first = false;
@@ -1380,23 +1414,37 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                     Assign(code, target, node + ".Kind switch { global::Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.Double => reader.ReadDouble(), global::Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.Float => reader.ReadSingle(), global::Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.Int => reader.ReadInt32(), _ => reader.ReadInt64() }", indent);
                     break;
                 case TypeKindModel.Bytes:
-                    Assign(code, target, node + ".Kind is global::Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.String or global::Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.Uuid ? reader.ReadStringBytes() : reader.ReadBytes()", indent);
+                    var readStringBytes = trackDecodedReferences
+                        ? "reader.ReadStringBytesWithAllocationBudget(16)"
+                        : "reader.ReadStringBytes()";
+                    var readBytes = trackDecodedReferences
+                        ? "reader.ReadBytesWithAllocationBudget(16)"
+                        : "reader.ReadBytes()";
+                    Assign(code, target, node + ".Kind is global::Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.String or global::Dekaf.SchemaRegistry.Avro.Poco.AvroPocoTypeKind.Uuid ? " + readStringBytes + " : " + readBytes, indent);
                     break;
                 case TypeKindModel.String:
-                    Assign(code, target, "reader.ReadString()", indent);
+                    Assign(code, target, trackDecodedReferences
+                        ? "reader.ReadStringWithAllocationBudget(16)"
+                        : "reader.ReadString()", indent);
                     break;
                 case TypeKindModel.Enum:
                     EmitReadEnum(code, type, node, target, indent);
                     break;
                 case TypeKindModel.Record:
-                    Assign(code, target, type.SymbolType + ".AvroCodec.Read(ref reader, " + node + ".RecordPlan!)", indent);
+                    var readMethod = trackDecodedReferences && HasVariableDecodedAllocation(type)
+                        ? "ReadWithAllocationBudget"
+                        : "Read";
+                    Assign(code, target, type.SymbolType + ".AvroCodec." + readMethod + "(ref reader, " +
+                                         node + ".RecordPlan!)", indent);
                     break;
                 case TypeKindModel.Array:
                 case TypeKindModel.List:
-                    EmitReadCollection(code, type, node, target, indent, resolveWriterUnions);
+                    EmitReadCollection(code, type, node, target, indent, resolveWriterUnions,
+                        trackDecodedReferences);
                     break;
                 case TypeKindModel.Map:
-                    EmitReadMap(code, type, node, target, indent, resolveWriterUnions);
+                    EmitReadMap(code, type, node, target, indent, resolveWriterUnions,
+                        trackDecodedReferences);
                     break;
                 case TypeKindModel.Date:
                     Assign(code, target, "global::System.DateOnly.FromDateTime(global::System.DateTime.UnixEpoch).AddDays(reader.ReadInt32())", indent);
@@ -1561,7 +1609,8 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             string node,
             string target,
             string indent,
-            bool resolveWriterUnions)
+            bool resolveWriterUnions,
+            bool trackDecodedReferences)
         {
             var count = "__count" + _localId++;
             var result = "__collection" + _localId++;
@@ -1599,19 +1648,8 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                     .Append(", ").Append(capacity).AppendLine(");");
                 code.Append(indent).AppendLine("    }");
             }
-            code.Append(indent).Append("    for (var ").Append(index).Append(" = 0; ").Append(index)
-                .Append(" < ").Append(block).Append("; ").Append(index).AppendLine("++)");
-            code.Append(indent).AppendLine("    {");
-            var item = "__item" + _localId++;
-            code.Append(indent).Append("        ").Append(type.Item!.SymbolType).Append(' ').Append(item).AppendLine(" = default!;");
-            EmitReadValue(code, type.Item, node + ".Item!", item, indent + "        ", resolveWriterUnions);
-            if (type.Kind == TypeKindModel.Array)
-            {
-                code.Append(indent).Append("        ").Append(result).Append('[').Append(offset).Append("++] = ").Append(item).AppendLine(";");
-            }
-            else
-                code.Append(indent).Append("        ").Append(result).Append(".Add(").Append(item).AppendLine(");");
-            code.Append(indent).AppendLine("    }");
+            EmitReadCollectionItems(code, type, node, result, offset, block, index, indent + "    ",
+                resolveWriterUnions, trackDecodedReferences);
             code.Append(indent).Append("    ").Append(block).AppendLine(" = reader.ReadBlockCount();");
             code.Append(indent).Append("    if (").Append(block).AppendLine(" != 0)");
             code.Append(indent).AppendLine("    {");
@@ -1634,13 +1672,42 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             code.Append(indent).Append(target).Append(" = ").Append(result).AppendLine(";");
         }
 
+        private void EmitReadCollectionItems(
+            StringBuilder code,
+            TypeModel type,
+            string node,
+            string result,
+            string offset,
+            string block,
+            string index,
+            string indent,
+            bool resolveWriterUnions,
+            bool trackDecodedReferences)
+        {
+            code.Append(indent).Append("for (var ").Append(index).Append(" = 0; ").Append(index)
+                .Append(" < ").Append(block).Append("; ").Append(index).AppendLine("++)");
+            code.Append(indent).AppendLine("{");
+            var item = "__item" + _localId++;
+            code.Append(indent).Append("    ").Append(type.Item!.SymbolType).Append(' ').Append(item)
+                .AppendLine(" = default!;");
+            EmitReadValue(code, type.Item, node + ".Item!", item, indent + "    ", resolveWriterUnions,
+                trackDecodedReferences);
+            if (type.Kind == TypeKindModel.Array)
+                code.Append(indent).Append("    ").Append(result).Append('[').Append(offset).Append("++] = ")
+                    .Append(item).AppendLine(";");
+            else
+                code.Append(indent).Append("    ").Append(result).Append(".Add(").Append(item).AppendLine(");");
+            code.Append(indent).AppendLine("}");
+        }
+
         private void EmitReadMap(
             StringBuilder code,
             TypeModel type,
             string node,
             string target,
             string indent,
-            bool resolveWriterUnions)
+            bool resolveWriterUnions,
+            bool trackDecodedReferences)
         {
             var count = "__count" + _localId++;
             var result = "__map" + _localId++;
@@ -1659,17 +1726,8 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
                 .Append('(').Append(count).AppendLine(");");
             code.Append(indent).Append("while (").Append(block).AppendLine(" != 0)");
             code.Append(indent).AppendLine("{");
-            code.Append(indent).Append("    for (var ").Append(index).Append(" = 0; ").Append(index)
-                .Append(" < ").Append(block).Append("; ").Append(index).AppendLine("++)");
-            code.Append(indent).AppendLine("    {");
-            var key = "__key" + _localId++;
-            code.Append(indent).Append("        var ").Append(key).AppendLine(" = reader.ReadString();");
-            var item = "__item" + _localId++;
-            code.Append(indent).Append("        ").Append(type.Item!.SymbolType).Append(' ').Append(item).AppendLine(" = default!;");
-            EmitReadValue(code, type.Item, node + ".Item!", item, indent + "        ", resolveWriterUnions);
-            code.Append(indent).Append("        ").Append(result).Append(".Add(").Append(key).Append(", ")
-                .Append(item).AppendLine(");");
-            code.Append(indent).AppendLine("    }");
+            EmitReadMapItems(code, type, node, result, block, index, indent + "    ", resolveWriterUnions,
+                trackDecodedReferences);
             code.Append(indent).Append("    ").Append(block).AppendLine(" = reader.ReadBlockCount();");
             code.Append(indent).Append("    if (").Append(block).AppendLine(" != 0)");
             code.Append(indent).AppendLine("    {");
@@ -1683,6 +1741,50 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             code.Append(indent).AppendLine("    }");
             code.Append(indent).AppendLine("}");
             code.Append(indent).Append(target).Append(" = ").Append(result).AppendLine(";");
+        }
+
+        private void EmitReadMapItems(
+            StringBuilder code,
+            TypeModel type,
+            string node,
+            string result,
+            string block,
+            string index,
+            string indent,
+            bool resolveWriterUnions,
+            bool trackDecodedReferences)
+        {
+            code.Append(indent).Append("for (var ").Append(index).Append(" = 0; ").Append(index)
+                .Append(" < ").Append(block).Append("; ").Append(index).AppendLine("++)");
+            code.Append(indent).AppendLine("{");
+            var key = "__key" + _localId++;
+            code.Append(indent).Append("    var ").Append(key).Append(" = reader.")
+                .AppendLine(trackDecodedReferences
+                    ? "ReadStringWithAllocationBudget(16);"
+                    : "ReadString();");
+            var item = "__item" + _localId++;
+            code.Append(indent).Append("    ").Append(type.Item!.SymbolType).Append(' ').Append(item)
+                .AppendLine(" = default!;");
+            EmitReadValue(code, type.Item, node + ".Item!", item, indent + "    ", resolveWriterUnions,
+                trackDecodedReferences);
+            code.Append(indent).Append("    ").Append(result).Append(".Add(").Append(key).Append(", ")
+                .Append(item).AppendLine(");");
+            code.Append(indent).AppendLine("}");
+        }
+
+        private static bool HasVariableDecodedAllocation(TypeModel type)
+        {
+            if (type.Kind is TypeKindModel.String or TypeKindModel.Bytes or TypeKindModel.Map)
+                return true;
+
+            if (type.Kind is TypeKindModel.Nullable or TypeKindModel.Union)
+                return type.Branches.Any(HasVariableDecodedAllocation);
+
+            if (type.Kind is TypeKindModel.Array or TypeKindModel.List)
+                return HasVariableDecodedAllocation(type.Item!);
+
+            return type.Kind == TypeKindModel.Record &&
+                   type.Record!.Members.Any(static member => HasVariableDecodedAllocation(member.Type));
         }
 
         private static int GetMinimumDecodedAllocationSize(TypeModel type)
@@ -1702,6 +1804,8 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             {
                 return type.Kind switch
                 {
+                    TypeKindModel.String or TypeKindModel.Bytes =>
+                        MinimumReferenceObjectSize + PrechargedReferencePayloadSize,
                     TypeKindModel.Array => 24,
                     TypeKindModel.List => 32,
                     TypeKindModel.Map => 80,
@@ -1778,8 +1882,7 @@ internal sealed class AvroPocoGenerator : IIncrementalGenerator
             if (type.Kind != TypeKindModel.Bytes)
                 return 0;
 
-            const int ArrayHeaderSize = 24;
-            return checked(ArrayHeaderSize + ((value.GetString()!.Length + 7) & ~7));
+            return checked(MinimumReferenceObjectSize + ((value.GetString()!.Length + 7) & ~7));
         }
 
         private static void Assign(StringBuilder code, string target, string expression, string indent) =>

@@ -909,6 +909,112 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    public async Task GeneratedCodec_RejectsStringObjectAllocationAmplification()
+    {
+        const string writerSchemaJson =
+            """
+            {"type":"record","name":"PocoStringCollection","namespace":"Dekaf.Tests","fields":[{"name":"values","type":{"type":"array","items":"string"}}]}
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        var schemaId = await registry.RegisterSchemaAsync(
+            "poco-string-object-allocation-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = writerSchemaJson
+            });
+        await using var reader = PocoStringCollection.CreateAvroDeserializer(registry);
+        var context = new SerializationContext
+        {
+            Topic = "poco-string-object-allocation",
+            Component = SerializationComponent.Value
+        };
+        var payload = new byte[16];
+        BinaryPrimitives.WriteInt32BigEndian(payload.AsSpan(1, 4), schemaId);
+        var writer = new AvroValueWriter(payload.AsSpan(5));
+        writer.WriteBlockCount(500_000);
+        Array.Resize(ref payload, 5 + writer.WrittenCount);
+
+        await Assert.That(() => reader.Deserialize(payload, context))
+            .Throws<InvalidDataException>()
+            .WithMessageContaining("allocation exceeds");
+    }
+
+    [Test]
+    public async Task GeneratedCodec_RejectsStringPayloadAllocationAmplification()
+    {
+        const string writerSchemaJson =
+            """
+            {"type":"record","name":"PocoStringCollection","namespace":"Dekaf.Tests","fields":[{"name":"values","type":{"type":"array","items":"string"}}]}
+            """;
+        const int itemCount = 60_000;
+        const string value = "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijkl";
+        using var registry = new MockSchemaRegistryClient();
+        var schemaId = await registry.RegisterSchemaAsync(
+            "poco-string-payload-allocation-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = writerSchemaJson
+            });
+        await using var reader = PocoStringCollection.CreateAvroDeserializer(registry);
+        var context = new SerializationContext
+        {
+            Topic = "poco-string-payload-allocation",
+            Component = SerializationComponent.Value
+        };
+        var payload = new byte[5 + itemCount * (value.Length + 2) + 16];
+        BinaryPrimitives.WriteInt32BigEndian(payload.AsSpan(1, 4), schemaId);
+        var writer = new AvroValueWriter(payload.AsSpan(5));
+        writer.WriteBlockCount(itemCount);
+        for (var index = 0; index < itemCount; index++)
+            writer.WriteString(value);
+        writer.WriteBlockEnd();
+        Array.Resize(ref payload, 5 + writer.WrittenCount);
+
+        await Assert.That(() => reader.Deserialize(payload, context))
+            .Throws<InvalidDataException>()
+            .WithMessageContaining("allocation exceeds");
+    }
+
+    [Test]
+    public async Task GeneratedCodec_RejectsBytePayloadAllocationAmplification()
+    {
+        const string writerSchemaJson =
+            """
+            {"type":"record","name":"PocoBytesCollection","namespace":"Dekaf.Tests","fields":[{"name":"values","type":{"type":"array","items":"bytes"}}]}
+            """;
+        const int itemCount = 60_000;
+        var value = new byte[128];
+        using var registry = new MockSchemaRegistryClient();
+        var schemaId = await registry.RegisterSchemaAsync(
+            "poco-bytes-payload-allocation-value",
+            new Dekaf.SchemaRegistry.Schema
+            {
+                SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+                SchemaString = writerSchemaJson
+            });
+        await using var reader = PocoBytesCollection.CreateAvroDeserializer(registry);
+        var context = new SerializationContext
+        {
+            Topic = "poco-bytes-payload-allocation",
+            Component = SerializationComponent.Value
+        };
+        var payload = new byte[5 + itemCount * (value.Length + 2) + 16];
+        BinaryPrimitives.WriteInt32BigEndian(payload.AsSpan(1, 4), schemaId);
+        var writer = new AvroValueWriter(payload.AsSpan(5));
+        writer.WriteBlockCount(itemCount);
+        for (var index = 0; index < itemCount; index++)
+            writer.WriteBytes(value);
+        writer.WriteBlockEnd();
+        Array.Resize(ref payload, 5 + writer.WrittenCount);
+
+        await Assert.That(() => reader.Deserialize(payload, context))
+            .Throws<InvalidDataException>()
+            .WithMessageContaining("allocation exceeds");
+    }
+
+    [Test]
     public async Task GeneratedCodec_RejectsByteArrayDefaultAllocationAmplification()
     {
         const string writerSchemaJson =
@@ -3750,6 +3856,20 @@ internal sealed partial class PocoNestedCollectionAllocationItem
 {
     [AvroField(Name = "values")]
     public required PocoLargeZeroWidthItem[] Values { get; init; }
+}
+
+[AvroRecord(Name = "PocoStringCollection", Namespace = "Dekaf.Tests")]
+internal sealed partial class PocoStringCollection
+{
+    [AvroField(Name = "values")]
+    public required string[] Values { get; init; }
+}
+
+[AvroRecord(Name = "PocoBytesCollection", Namespace = "Dekaf.Tests")]
+internal sealed partial class PocoBytesCollection
+{
+    [AvroField(Name = "values")]
+    public required List<byte[]> Values { get; init; }
 }
 
 [AvroRecord(Name = "PocoLargeZeroWidthItem", Namespace = "Dekaf.Tests")]
