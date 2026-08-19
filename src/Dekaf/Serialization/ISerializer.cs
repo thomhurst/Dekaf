@@ -266,6 +266,11 @@ public struct SerializationContext
     /// <summary>
     /// Headers associated with the record.
     /// </summary>
+    /// <remarks>
+    /// During consumption this instance may be cleared, refilled, and reused for later records.
+    /// It is valid only for the current <see cref="IDeserializer{T}.Deserialize"/> or async
+    /// deserializer call. Deserializers must not retain it; copy entries when a snapshot is needed.
+    /// </remarks>
     public Headers? Headers { get; set; }
 
     /// <summary>

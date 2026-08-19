@@ -120,7 +120,7 @@ public sealed class InMemoryKafkaClusterTests
                 new PrefixDeserializer("created")));
         var consumer = new InMemoryConsumer<string, string>(
             cluster,
-            Serializers.String,
+            new HeaderPresenceDeserializer(),
             router,
             new InMemoryConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest });
 
@@ -136,7 +136,8 @@ public sealed class InMemoryKafkaClusterTests
         var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1));
 
         await Assert.That(result).IsNotNull();
-        await Assert.That(result!.Value.Value).IsEqualTo("created:payload");
+        await Assert.That(result!.Value.Key).IsEqualTo("no-headers");
+        await Assert.That(result.Value.Value).IsEqualTo("created:payload");
     }
 
     [Test]
@@ -998,6 +999,12 @@ public sealed class InMemoryKafkaClusterTests
     {
         public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
             $"{prefix}:{Encoding.UTF8.GetString(data.Span)}";
+    }
+
+    private sealed class HeaderPresenceDeserializer : IDeserializer<string>
+    {
+        public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
+            context.Headers is null ? "no-headers" : "headers";
     }
 
     private sealed class AsyncStringDeserializer : IAsyncDeserializer<string>
