@@ -1380,6 +1380,29 @@ public sealed class ConsumerAssignmentFastPathTests
     }
 
     [Test]
+    public async Task TopicIdentityChange_PreexistingRevocation_DoesNotSuppressReset()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        await using var consumer = CreateGroupConsumer(
+            connectionPool,
+            metadataManager,
+            autoOffsetReset: AutoOffsetReset.Earliest);
+        var partition = new TopicPartition("test-topic", 0);
+        consumer.IncrementalAssign([
+            new TopicPartitionOffset(partition.Topic, partition.Partition, 10)
+        ]);
+        await InvokeHandleTopicIdentityChangesAsync(consumer);
+
+        QueueCoordinatorRevokedPartitionsForFetchClear(consumer, [partition]);
+        metadataManager.Metadata.Update(CreateMetadataResponse(Guid.NewGuid(), partitionCount: 2));
+
+        await InvokeHandleTopicIdentityChangesAsync(consumer);
+
+        await Assert.That(GetFetchPositions(consumer)[partition]).IsEqualTo(-2L);
+    }
+
+    [Test]
     public async Task TopicIdentityChange_AssignmentMutationDuringReset_IsReobserved()
     {
         var connectionPool = Substitute.For<IConnectionPool>();

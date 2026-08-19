@@ -9110,10 +9110,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         }
 
                         var identities = changedTopics[partition.Topic];
+                        // A fetch-clear marker staged before this recovery belongs to the old
+                        // topic identity. The captured epoch still rejects newer invalidations.
                         var reset = ResetOffsetOutOfRangeAsync(
                             partition,
                             fetchBufferEpoch,
-                            cancellationToken);
+                            cancellationToken,
+                            allowPreexistingPendingFetchClear: true);
                         if (reset.IsCompletedSuccessfully)
                         {
                             reset.GetAwaiter().GetResult();
@@ -9781,17 +9784,24 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private async ValueTask ResetOffsetOutOfRangeAsync(
         TopicPartition partition,
         int fetchBufferEpoch,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool allowPreexistingPendingFetchClear = false)
     {
         // Reset fetch position based on auto.offset.reset policy. Without this, the
         // consumer would retry the same invalid offset forever.
-        if (ShouldDropStaleFetchPartition(partition, fetchBufferEpoch))
+        if (ShouldDropOffsetReset(
+                partition,
+                fetchBufferEpoch,
+                allowPreexistingPendingFetchClear))
             return;
 
         var resetTimestamp = AutoOffsetResetStrategy.GetListOffsetsTimestamp(_options, DateTimeOffset.UtcNow, partition);
         if (resetTimestamp == LatestOffsetTimestamp || resetTimestamp == EarliestOffsetTimestamp)
         {
-            if (ShouldDropStaleFetchPartition(partition, fetchBufferEpoch))
+            if (ShouldDropOffsetReset(
+                    partition,
+                    fetchBufferEpoch,
+                    allowPreexistingPendingFetchClear))
                 return;
 
             _fetchPositions[partition] = resetTimestamp;
@@ -9801,7 +9811,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         else
         {
             var resetOffset = await ResolveAutoResetOffsetAsync(partition, resetTimestamp, cancellationToken).ConfigureAwait(false);
-            if (ShouldDropStaleFetchPartition(partition, fetchBufferEpoch))
+            if (ShouldDropOffsetReset(
+                    partition,
+                    fetchBufferEpoch,
+                    allowPreexistingPendingFetchClear))
                 return;
 
             _fetchPositions[partition] = resetOffset;
@@ -9811,6 +9824,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         LogOffsetOutOfRangeReset(partition.Topic, partition.Partition, GetAutoOffsetResetName());
     }
+
+    private bool ShouldDropOffsetReset(
+        TopicPartition partition,
+        int fetchBufferEpoch,
+        bool allowPreexistingPendingFetchClear) =>
+        IsFetchBufferEpochStale(partition, fetchBufferEpoch)
+        || (!allowPreexistingPendingFetchClear
+            && _coordinatorRevokedPartitionsPendingFetchClear.ContainsKey(partition))
+        || !IsCurrentlyAssigned(partition);
 
     private static bool IsLeaderEpochRefreshError(ErrorCode errorCode) =>
         errorCode is ErrorCode.NotLeaderOrFollower or ErrorCode.FencedLeaderEpoch or ErrorCode.UnknownLeaderEpoch;
