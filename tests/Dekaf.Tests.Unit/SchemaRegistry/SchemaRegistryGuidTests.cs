@@ -151,6 +151,21 @@ public sealed class SchemaRegistryGuidTests
     }
 
     [Test]
+    public async Task GuidCache_NormalizesEmptyFormatAtDirectEntryPoints()
+    {
+        using var client = CreateClient(new RecordingHandler());
+        var schema = NewSchema("default-format");
+
+        client.CacheGuidSchema(FirstGuid, string.Empty, schema);
+
+        await Assert.That(client.TryGetCachedSchema(FirstGuid, format: null, out var defaultCached)).IsTrue();
+        await Assert.That(defaultCached).IsSameReferenceAs(schema);
+        await Assert.That(client.TryGetCachedSchema(FirstGuid, string.Empty, out var emptyCached)).IsTrue();
+        await Assert.That(emptyCached).IsSameReferenceAs(schema);
+        await Assert.That(client.CachedSchemaByGuidCount).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task GuidCache_EvictionSharesGlobalSchemaBudget()
     {
         using var client = CreateClient(new RecordingHandler(), maxCachedSchemas: 2);
@@ -265,6 +280,64 @@ public sealed class SchemaRegistryGuidTests
 
         var exception = await Assert.ThrowsAsync<SchemaRegistryException>(() =>
             client.GetSchemaBySubjectAsync("orders-value"));
+
+        await Assert.That(exception!.Message).Contains("invalid schema GUID");
+    }
+
+    [Test]
+    public async Task RegisterSchemaAsync_RejectsInvalidResponseGuid()
+    {
+        using var handler = new RecordingHandler(static (_, _) => Task.FromResult(JsonResponse(
+            HttpStatusCode.OK,
+            """{ "id": 42, "guid": "not-a-guid" }""")));
+        using var client = CreateClient(handler);
+
+        var exception = await Assert.ThrowsAsync<SchemaRegistryException>(() =>
+            client.RegisterSchemaAsync("orders-value", NewSchema("{}")));
+
+        await Assert.That(exception!.Message).Contains("invalid schema GUID");
+    }
+
+    [Test]
+    public async Task LookupSchemaAsync_RejectsInvalidResponseGuid()
+    {
+        using var handler = new RecordingHandler(static (_, _) => Task.FromResult(JsonResponse(
+            HttpStatusCode.OK,
+            """
+            {
+              "subject": "orders-value",
+              "version": 1,
+              "id": 42,
+              "guid": "not-a-guid",
+              "schema": "{}"
+            }
+            """)));
+        using var client = CreateClient(handler);
+
+        var exception = await Assert.ThrowsAsync<SchemaRegistryException>(() =>
+            client.LookupSchemaAsync("orders-value", NewSchema("{}")));
+
+        await Assert.That(exception!.Message).Contains("invalid schema GUID");
+    }
+
+    [Test]
+    public async Task GetOrRegisterSchemaAsync_RejectsInvalidResponseGuid()
+    {
+        using var handler = new RecordingHandler(static (_, _) => Task.FromResult(JsonResponse(
+            HttpStatusCode.OK,
+            """
+            {
+              "subject": "orders-value",
+              "version": 1,
+              "id": 42,
+              "guid": "not-a-guid",
+              "schema": "{}"
+            }
+            """)));
+        using var client = CreateClient(handler);
+
+        var exception = await Assert.ThrowsAsync<SchemaRegistryException>(() =>
+            client.GetOrRegisterSchemaAsync("orders-value", NewSchema("{}")));
 
         await Assert.That(exception!.Message).Contains("invalid schema GUID");
     }

@@ -509,8 +509,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         var id = result!.Id;
         var schemaGuid = ParseSchemaGuid(result.Guid);
 
-        CacheSchema(id, subject, schema, effectiveNormalize);
-        CacheGuidSchema(schemaGuid, format: null, schema);
+        CacheSchema(id, subject, schema, effectiveNormalize, schemaGuid: schemaGuid);
 
         return id;
     }
@@ -546,7 +545,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         if (!Guid.TryParse(guid, out var parsedGuid))
             throw new ArgumentException("The schema GUID is not valid.", nameof(guid));
 
-        format = string.IsNullOrEmpty(format) ? null : format;
+        format = NormalizeFormat(format);
         var cacheKey = (parsedGuid, format);
         if (_schemaByGuidCache.TryGetValue(cacheKey, out var cached))
             return cached;
@@ -573,7 +572,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         => _schemaByIdCache.TryGetValue(id, out schema!);
 
     public bool TryGetCachedSchema(Guid guid, string? format, out Schema schema)
-        => _schemaByGuidCache.TryGetValue((guid, format), out schema!);
+        => _schemaByGuidCache.TryGetValue((guid, NormalizeFormat(format)), out schema!);
 
     public async Task<Schema> GetSchemaAsync(
         int id,
@@ -634,8 +633,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         var schema = CreateSchema(result);
         var schemaGuid = ParseSchemaGuid(result.Guid);
 
-        CacheSchema(result.Id, subject: null, schema);
-        CacheGuidSchema(schemaGuid, format: null, schema);
+        CacheSchema(result.Id, subject: null, schema, schemaGuid: schemaGuid);
 
         return new RegisteredSchema
         {
@@ -682,8 +680,8 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             ignoreDeletedSchemas ? subject : null,
             schema,
             effectiveNormalize,
-            schemaById: registeredSchema);
-        CacheGuidSchema(schemaGuid, format: null, registeredSchema);
+            schemaById: registeredSchema,
+            schemaGuid: schemaGuid);
 
         return new RegisteredSchema
         {
@@ -740,8 +738,13 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
 
         var registeredSchema = CreateSchema(result);
         var schemaGuid = ParseSchemaGuid(result.Guid);
-        CacheSchema(result.Id, subject, schema, effectiveNormalize, schemaById: registeredSchema);
-        CacheGuidSchema(schemaGuid, format: null, registeredSchema);
+        CacheSchema(
+            result.Id,
+            subject,
+            schema,
+            effectiveNormalize,
+            schemaById: registeredSchema,
+            schemaGuid: schemaGuid);
 
         return result.Id;
     }
@@ -751,7 +754,8 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         string? subject,
         Schema schema,
         bool normalize = false,
-        Schema? schemaById = null)
+        Schema? schemaById = null,
+        Guid? schemaGuid = null)
     {
         if (_maxCachedSchemas == 0)
             return;
@@ -768,6 +772,8 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             {
                 _idBySchemaCache.TryAdd((subject, schema, normalize), id);
             }
+            if (schemaGuid is { } guid)
+                _schemaByGuidCache.TryAdd((guid, null), schemaById ?? schema);
         }
     }
 
@@ -789,7 +795,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         if (_maxCachedSchemas == 0)
             return;
 
-        var cacheKey = (guid, format);
+        var cacheKey = (guid, NormalizeFormat(format));
         lock (_cacheLock)
         {
             if (_schemaByGuidCache.ContainsKey(cacheKey))
@@ -806,6 +812,9 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         if (guid is { } value)
             CacheGuidSchema(value, format, schema);
     }
+
+    private static string? NormalizeFormat(string? format) =>
+        string.IsNullOrEmpty(format) ? null : format;
 
     private void ClearCachesIfFull()
     {
