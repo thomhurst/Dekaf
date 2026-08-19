@@ -11,7 +11,7 @@ public sealed class KafkaFaultPlanTests
     [Test]
     public async Task Fail_ConsumesOrderedOneShotAndNextNRules()
     {
-        var plan = new KafkaFaultPlan();
+        IKafkaFaultPlan plan = new KafkaFaultPlan();
         var first = new InvalidOperationException("first");
         var second = new TimeoutException("second");
         plan.Fail(ProduceOrders, first);
@@ -194,7 +194,7 @@ public sealed class KafkaFaultPlanTests
     }
 
     private static async Task AssertFaultAsync(
-        KafkaFaultPlan plan,
+        IKafkaFaultPlan plan,
         KafkaFaultScope context,
         Exception expected)
     {
@@ -202,7 +202,7 @@ public sealed class KafkaFaultPlanTests
         await Assert.That(actual).IsSameReferenceAs(expected);
     }
 
-    private static async Task ApplyIgnoringFaultAsync(KafkaFaultPlan plan, KafkaFaultScope context)
+    private static async Task ApplyIgnoringFaultAsync(IKafkaFaultPlan plan, KafkaFaultScope context)
     {
         try
         {

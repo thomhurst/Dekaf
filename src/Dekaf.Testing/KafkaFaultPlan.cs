@@ -196,7 +196,55 @@ public sealed class KafkaFaultBarrier
 /// <summary>
 /// Thread-safe ordered fault script for Dekaf in-memory clients.
 /// </summary>
-public sealed class KafkaFaultPlan
+public interface IKafkaFaultPlan
+{
+    /// <summary>
+    /// Raised synchronously after a matching entry is consumed and before its action runs.
+    /// </summary>
+    event Action<KafkaFaultObservation>? FaultConsumed;
+
+    /// <summary>
+    /// Gets the number of queued entries. A next-N failure is one entry.
+    /// </summary>
+    int Count { get; }
+
+    /// <summary>
+    /// Appends a failure consumed by the next matching operations.
+    /// </summary>
+    void Fail(KafkaFaultScope scope, Exception exception, int occurrenceCount = 1);
+
+    /// <summary>
+    /// Appends a failure that every matching operation consumes until it is cleared.
+    /// </summary>
+    void FailPersistently(KafkaFaultScope scope, Exception exception);
+
+    /// <summary>
+    /// Appends a one-shot deterministic barrier and returns its controller.
+    /// </summary>
+    KafkaFaultBarrier PauseNext(KafkaFaultScope scope);
+
+    /// <summary>
+    /// Applies the first matching scripted entry, or completes synchronously when none matches.
+    /// </summary>
+    ValueTask ApplyAsync(
+        KafkaFaultScope operationScope,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Removes entries configured with exactly the supplied scope and releases their barriers.
+    /// </summary>
+    int Clear(KafkaFaultScope scope);
+
+    /// <summary>
+    /// Removes every entry and releases all queued barriers.
+    /// </summary>
+    int Clear();
+}
+
+/// <summary>
+/// Default thread-safe <see cref="IKafkaFaultPlan"/> implementation.
+/// </summary>
+public sealed class KafkaFaultPlan : IKafkaFaultPlan
 {
     private readonly object _gate = new();
     private readonly List<FaultEntry> _entries = [];
