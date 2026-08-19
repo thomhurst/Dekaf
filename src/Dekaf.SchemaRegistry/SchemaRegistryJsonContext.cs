@@ -22,6 +22,9 @@ namespace Dekaf.SchemaRegistry;
 [JsonSerializable(typeof(GetCompatibilityResponse))]
 [JsonSerializable(typeof(UpdateCompatibilityRequest))]
 [JsonSerializable(typeof(UpdateCompatibilityResponse))]
+[JsonSerializable(typeof(AssociationCreateOrUpdateRequestDto))]
+[JsonSerializable(typeof(AssociationResponseDto))]
+[JsonSerializable(typeof(List<AssociationDto>))]
 [JsonSerializable(typeof(ErrorResponse))]
 [JsonSerializable(typeof(List<string>))]
 [JsonSerializable(typeof(List<int>))]
@@ -163,6 +166,56 @@ internal sealed class UpdateCompatibilityRequest
 internal sealed class UpdateCompatibilityResponse
 {
     public string? Compatibility { get; init; }
+}
+
+internal sealed class AssociationDto
+{
+    public required string Subject { get; init; }
+    public required string Guid { get; init; }
+    public required string ResourceName { get; init; }
+    public required string ResourceNamespace { get; init; }
+    public required string ResourceId { get; init; }
+    public required string ResourceType { get; init; }
+    public required string AssociationType { get; init; }
+    public required string Lifecycle { get; init; }
+    public bool Frozen { get; init; }
+}
+
+internal sealed class AssociationCreateOrUpdateInfoDto
+{
+    public required string Subject { get; init; }
+    public required string AssociationType { get; init; }
+    public required string Lifecycle { get; init; }
+    public bool? Frozen { get; init; }
+    public RegisterSchemaRequest? Schema { get; init; }
+    public bool? Normalize { get; init; }
+}
+
+internal sealed class AssociationCreateOrUpdateRequestDto
+{
+    public required string ResourceName { get; init; }
+    public required string ResourceNamespace { get; init; }
+    public required string ResourceId { get; init; }
+    public required string ResourceType { get; init; }
+    public required List<AssociationCreateOrUpdateInfoDto> Associations { get; init; }
+}
+
+internal sealed class AssociationInfoDto
+{
+    public required string Subject { get; init; }
+    public required string AssociationType { get; init; }
+    public required string Lifecycle { get; init; }
+    public bool Frozen { get; init; }
+    public GetSchemaResponse? Schema { get; init; }
+}
+
+internal sealed class AssociationResponseDto
+{
+    public required string ResourceName { get; init; }
+    public required string ResourceNamespace { get; init; }
+    public required string ResourceId { get; init; }
+    public required string ResourceType { get; init; }
+    public required List<AssociationInfoDto> Associations { get; init; }
 }
 
 internal sealed class ErrorResponse

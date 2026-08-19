@@ -10,6 +10,7 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
 {
     private readonly Dictionary<int, Schema> _schemasById = new();
     private readonly Dictionary<string, List<(int Version, int Id, Schema Schema)>> _schemasBySubject = new();
+    private readonly Dictionary<(string Namespace, string Name), List<Association>> _associationsByResource = new();
     private TaskCompletionSource? _getSchemaEntered;
     private TaskCompletionSource? _getSchemaRelease;
     private TaskCompletionSource? _getOrRegisterSchemaEntered;
@@ -339,6 +340,133 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
         _schemasBySubject.Remove(subject);
 
         return Task.FromResult<IReadOnlyList<int>>(versions);
+    }
+
+    public Task<IReadOnlyList<Association>> GetAssociationsByResourceNameAsync(
+        string resourceName,
+        string resourceNamespace = "-",
+        string? resourceType = null,
+        IReadOnlyList<string>? associationTypes = null,
+        string? lifecycle = null,
+        int offset = 0,
+        int limit = -1,
+        CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        AssociationValidation.ValidateGet(
+            resourceName,
+            resourceNamespace,
+            resourceType,
+            associationTypes,
+            lifecycle,
+            offset,
+            limit);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        IEnumerable<Association> filtered;
+        if (resourceNamespace == "-")
+        {
+            filtered = _associationsByResource
+                .Where(entry => entry.Key.Name == resourceName)
+                .SelectMany(static entry => entry.Value);
+        }
+        else if (_associationsByResource.TryGetValue((resourceNamespace, resourceName), out var stored))
+        {
+            filtered = stored;
+        }
+        else
+        {
+            return Task.FromResult<IReadOnlyList<Association>>([]);
+        }
+
+        if (resourceType is not null)
+            filtered = filtered.Where(association => association.ResourceType == resourceType);
+        if (associationTypes is { Count: > 0 })
+            filtered = filtered.Where(association => associationTypes.Contains(association.AssociationType));
+        if (lifecycle is not null)
+            filtered = filtered.Where(association => association.Lifecycle == lifecycle);
+        if (offset > 0)
+            filtered = filtered.Skip(offset);
+        if (limit >= 0)
+            filtered = filtered.Take(limit);
+
+        return Task.FromResult<IReadOnlyList<Association>>(filtered.ToArray());
+    }
+
+    public Task<AssociationResponse> CreateAssociationAsync(
+        AssociationCreateOrUpdateRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        AssociationValidation.ValidateCreate(request);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var key = (request.ResourceNamespace, request.ResourceName);
+        if (!_associationsByResource.TryGetValue(key, out var stored))
+        {
+            stored = [];
+            _associationsByResource[key] = stored;
+        }
+
+        var responseAssociations = new AssociationInfo[request.Associations.Count];
+        for (var index = 0; index < request.Associations.Count; index++)
+        {
+            var association = request.Associations[index];
+            stored.RemoveAll(existing =>
+                existing.Subject == association.Subject &&
+                existing.AssociationType == association.AssociationType);
+            stored.Add(new Association
+            {
+                Subject = association.Subject,
+                Guid = $"mock-{request.ResourceId}-{association.AssociationType}",
+                ResourceName = request.ResourceName,
+                ResourceNamespace = request.ResourceNamespace,
+                ResourceId = request.ResourceId,
+                ResourceType = request.ResourceType,
+                AssociationType = association.AssociationType,
+                Lifecycle = association.Lifecycle,
+                Frozen = association.Frozen ?? false
+            });
+            responseAssociations[index] = new AssociationInfo
+            {
+                Subject = association.Subject,
+                AssociationType = association.AssociationType,
+                Lifecycle = association.Lifecycle,
+                Frozen = association.Frozen ?? false,
+                Schema = association.Schema
+            };
+        }
+
+        return Task.FromResult(new AssociationResponse
+        {
+            ResourceName = request.ResourceName,
+            ResourceNamespace = request.ResourceNamespace,
+            ResourceId = request.ResourceId,
+            ResourceType = request.ResourceType,
+            Associations = responseAssociations
+        });
+    }
+
+    public Task DeleteAssociationsAsync(
+        string resourceId,
+        string? resourceType = null,
+        IReadOnlyList<string>? associationTypes = null,
+        bool cascadeLifecycle = false,
+        CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        AssociationValidation.ValidateDelete(resourceId, resourceType, associationTypes);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        foreach (var stored in _associationsByResource.Values)
+        {
+            stored.RemoveAll(association =>
+                association.ResourceId == resourceId &&
+                (resourceType is null || association.ResourceType == resourceType) &&
+                (associationTypes is not { Count: > 0 } || associationTypes.Contains(association.AssociationType)));
+        }
+
+        return Task.CompletedTask;
     }
 
     public void Dispose()

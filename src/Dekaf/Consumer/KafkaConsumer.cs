@@ -214,6 +214,8 @@ internal sealed class PendingFetchData : IDisposable
         private set => _snapshotEndOffset = value;
     }
     internal bool IsSnapshotEnd => SnapshotEndOffset >= 0;
+    internal bool IsPartitionEof => _partitionEofOffset >= 0;
+    internal long? PartitionEofOffset => IsPartitionEof ? _partitionEofOffset : null;
 
     private long _emittedMessageCount;
     private long _emittedBytesConsumed;
@@ -331,6 +333,20 @@ internal sealed class PendingFetchData : IDisposable
         instance._batches = Array.Empty<RecordBatch>();
         instance.SnapshotEndOffset = endOffset;
         instance._snapshotMarkerState = snapshot;
+        return instance;
+    }
+
+    public static PendingFetchData CreatePartitionEof(
+        string topic,
+        int partitionIndex,
+        long endOffset)
+    {
+        var instance = Rent();
+        instance.Topic = topic;
+        instance.PartitionIndex = partitionIndex;
+        instance.TopicPartition = new TopicPartition(topic, partitionIndex);
+        instance._batches = Array.Empty<RecordBatch>();
+        instance._partitionEofOffset = endOffset;
         return instance;
     }
 
@@ -879,6 +895,7 @@ internal sealed class PendingFetchData : IDisposable
         FetchEndLeaderEpoch = -1;
         ReachedSnapshotEnd = false;
         SnapshotEndOffset = -1;
+        _partitionEofOffset = -1;
         _emittedMessageCount = 0;
         _emittedBytesConsumed = 0;
         _skipRecordsBelowOffset = -1;
@@ -905,6 +922,7 @@ internal sealed class PendingFetchData : IDisposable
     // support does not move the cache-hot record iteration fields in this pooled object.
     private long _fetchEndOffsetExclusive = -1;
     private long _snapshotEndOffset = -1;
+    private long _partitionEofOffset = -1;
     private long _stopAtOffsetExclusive = -1;
     private int _fetchEndLeaderEpoch = -1;
     private bool _reachedSnapshotEnd;
@@ -3461,11 +3479,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 }
             }
 
-            // Drain any pending EOF events (batch API does not surface partition EOF;
-            // callers who need EOF notification should use ConsumeAsync instead)
-            while (_pendingEofEvents.TryDequeue(out _))
+            while (_pendingEofEvents.TryDequeue(out var eofEvent))
             {
-                // Discarded — EOF is informational and not relevant for batch throughput
+                using var eofPending = PendingFetchData.CreatePartitionEof(
+                    eofEvent.Partition.Topic,
+                    eofEvent.Partition.Partition,
+                    eofEvent.Offset);
+                yield return new ConsumeBatch<TKey, TValue>(
+                    eofPending,
+                    _keyDeserializer,
+                    _valueDeserializer);
+                await RecordPollAsync(cancellationToken).ConfigureAwait(false);
             }
         }
     }
@@ -3614,11 +3638,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 }
             }
 
-            // Drain any pending EOF events (raw batch API does not surface partition EOF;
-            // callers who need EOF notification should use ConsumeAsync instead)
-            while (_pendingEofEvents.TryDequeue(out _))
+            while (_pendingEofEvents.TryDequeue(out var eofEvent))
             {
-                // Discarded — EOF is informational and not relevant for raw batch throughput
+                using var eofPending = PendingFetchData.CreatePartitionEof(
+                    eofEvent.Partition.Topic,
+                    eofEvent.Partition.Partition,
+                    eofEvent.Offset);
+                yield return new ConsumeRawBatch(eofPending);
+                await RecordPollAsync(cancellationToken).ConfigureAwait(false);
             }
         }
     }

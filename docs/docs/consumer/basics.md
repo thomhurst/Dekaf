@@ -7,6 +7,8 @@ description: "Create a consumer, subscribe to topics, and process records with a
 
 The consumer reads messages from Kafka topics. We use `IAsyncEnumerable` so you can process messages with a simple `await foreach` loop.
 
+This page covers the standard Kafka consumer: partition-based, ordered, offset-tracked. Dekaf also ships a [share consumer (KIP-932)](./share-consumers) for queue-style workloads — see the [comparison](./share-consumers#consumer-or-share-consumer) if you're unsure which fits.
+
 ## Creating a Consumer
 
 Use the fluent builder API:

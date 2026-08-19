@@ -1,3 +1,4 @@
+using Dekaf.Admin;
 using Dekaf.Consumer;
 using Dekaf.Producer;
 
@@ -339,6 +340,89 @@ public class PartitionEofTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
         // Assert - should have received EOF with no messages
         await Assert.That(eofReceived).IsTrue();
         await Assert.That(messagesReceived).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task ConsumeBatchAsync_EmptyPartition_YieldsEofBatch()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithPartitionEof(true)
+            .WithQueuedMinMessages(1)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        var partition = new TopicPartition(topic, 0);
+        consumer.Assign(partition);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        await using var batches = consumer.ConsumeBatchAsync(timeout.Token).GetAsyncEnumerator();
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        var eofBatch = batches.Current;
+
+        await Assert.That(eofBatch.TopicPartition).IsEqualTo(partition);
+        await Assert.That(eofBatch.IsPartitionEof).IsTrue();
+        await Assert.That(eofBatch.PartitionEofOffset).IsEqualTo(0);
+        using var records = eofBatch.GetEnumerator();
+        await Assert.That(records.MoveNext()).IsFalse();
+    }
+
+    [Test]
+    public async Task ConsumeRawBatchAsync_CompactedAwayTailShape_YieldsEofAtHighWatermark()
+    {
+        // DeleteRecords deterministically creates the same non-zero empty offset range a
+        // compacted-away tail exposes, without depending on the asynchronous log cleaner.
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        await using (var producer = await Kafka.CreateProducer<string, string>()
+                         .WithBootstrapServers(KafkaContainer.BootstrapServers)
+                         .WithAcks(Acks.All)
+                         .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+                         .BuildAsync())
+        {
+            for (var i = 0; i < 3; i++)
+            {
+                await producer.ProduceAsync(new ProducerMessage<string, string>
+                {
+                    Topic = topic,
+                    Key = "same-key",
+                    Value = $"value-{i}"
+                }, CancellationToken.None);
+            }
+        }
+
+        var partition = new TopicPartition(topic, 0);
+        await using (var admin = Kafka.CreateAdminClient()
+                         .WithBootstrapServers(KafkaContainer.BootstrapServers)
+                         .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+                         .Build())
+        {
+            var deleted = await admin.DeleteRecordsAsync(new Dictionary<TopicPartition, long>
+            {
+                [partition] = 3
+            });
+            await Assert.That(deleted[partition]).IsGreaterThanOrEqualTo(3);
+        }
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithPartitionEof(true)
+            .WithQueuedMinMessages(1)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        consumer.Assign(partition);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        await using var batches = consumer.ConsumeRawBatchAsync(timeout.Token).GetAsyncEnumerator();
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        var eofBatch = batches.Current;
+
+        await Assert.That(eofBatch.TopicPartition).IsEqualTo(partition);
+        await Assert.That(eofBatch.IsPartitionEof).IsTrue();
+        await Assert.That(eofBatch.PartitionEofOffset).IsEqualTo(3);
+        using var records = eofBatch.GetEnumerator();
+        await Assert.That(records.MoveNext()).IsFalse();
     }
 
     [Test]

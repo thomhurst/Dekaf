@@ -46,6 +46,7 @@ internal static class AotSmoke
         RunSchemaRegistryHttpPipelineConstructionSmoke();
         await RunSchemaRegistrySmokeAsync();
         await RunSchemaRegistryCompatibilitySmokeAsync();
+        await RunSchemaRegistryAssociationSmokeAsync();
         await RunSchemaRegistryPackageSmokeAsync();
         await RunCoreSmokeAsync();
     }
@@ -166,6 +167,51 @@ internal static class AotSmoke
         Require(current == SchemaCompatibilityLevel.Backward, "Compatibility GET smoke failed.");
         Require(updated == SchemaCompatibilityLevel.FullTransitive, "Compatibility PUT smoke failed.");
         Require(handler.RequestCount == 2, "Compatibility request count mismatch.");
+    }
+
+    private static async Task RunSchemaRegistryAssociationSmokeAsync()
+    {
+        using var handler = new AssociationHandler();
+        using var registry = new SchemaRegistryClient(
+            new SchemaRegistryConfig { Url = "https://schema-registry.example.test" },
+            handler);
+        var request = new AssociationCreateOrUpdateRequest
+        {
+            ResourceName = "aot-topic",
+            ResourceNamespace = "lkc-aot",
+            ResourceId = "lkc-aot:aot-topic",
+            ResourceType = "topic",
+            Associations =
+            [
+                new AssociationCreateOrUpdateInfo
+                {
+                    Subject = "aot-topic-value",
+                    AssociationType = "value",
+                    Lifecycle = "STRONG",
+                    Schema = new Schema
+                    {
+                        SchemaString = AotPayloadJsonSchema,
+                        SchemaType = SchemaType.Json
+                    }
+                }
+            ]
+        };
+
+        var created = await registry.CreateAssociationAsync(request);
+        var found = await registry.GetAssociationsByResourceNameAsync(
+            "aot-topic",
+            "lkc-aot",
+            associationTypes: ["value"]);
+        await registry.DeleteAssociationsAsync(
+            "lkc-aot:aot-topic",
+            associationTypes: ["value"],
+            cascadeLifecycle: true);
+
+        Require(created.Associations.Count == 1, "Association create smoke failed.");
+        Require(created.Associations[0].Schema?.SchemaType == SchemaType.Json,
+            "Association schema mapping smoke failed.");
+        Require(found.Count == 1, "Association list smoke failed.");
+        Require(handler.RequestCount == 3, "Association request count mismatch.");
     }
 
     private static async Task RunSchemaRegistryPackageSmokeAsync()
@@ -374,6 +420,73 @@ internal static class AotSmoke
             Require(body.Contains("\"compatibility\":\"FULL_TRANSITIVE\"", StringComparison.Ordinal),
                 "Compatibility PUT body mismatch.");
             return JsonResponse("""{ "compatibility": "FULL_TRANSITIVE" }""");
+        }
+
+        private static HttpResponseMessage JsonResponse(string json) => new(HttpStatusCode.OK)
+        {
+            Content = new StringContent(json, Encoding.UTF8, "application/json")
+        };
+    }
+
+    private sealed class AssociationHandler : HttpMessageHandler
+    {
+        internal int RequestCount { get; private set; }
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            RequestCount++;
+            if (RequestCount == 1)
+            {
+                Require(request.Method == HttpMethod.Post, "Association POST method mismatch.");
+                var body = await request.Content!.ReadAsStringAsync(cancellationToken);
+                Require(body.Contains("\"schemaType\":\"JSON\"", StringComparison.Ordinal),
+                    "Association schema body mismatch.");
+                return JsonResponse("""
+                    {
+                      "resourceName": "aot-topic",
+                      "resourceNamespace": "lkc-aot",
+                      "resourceId": "lkc-aot:aot-topic",
+                      "resourceType": "topic",
+                      "associations": [
+                        {
+                          "subject": "aot-topic-value",
+                          "associationType": "value",
+                          "lifecycle": "STRONG",
+                          "frozen": false,
+                          "schema": {
+                            "schema": "{}",
+                            "schemaType": "JSON"
+                          }
+                        }
+                      ]
+                    }
+                    """);
+            }
+
+            if (RequestCount == 2)
+            {
+                Require(request.Method == HttpMethod.Get, "Association GET method mismatch.");
+                return JsonResponse("""
+                    [
+                      {
+                        "subject": "aot-topic-value",
+                        "guid": "guid-aot",
+                        "resourceName": "aot-topic",
+                        "resourceNamespace": "lkc-aot",
+                        "resourceId": "lkc-aot:aot-topic",
+                        "resourceType": "topic",
+                        "associationType": "value",
+                        "lifecycle": "STRONG",
+                        "frozen": false
+                      }
+                    ]
+                    """);
+            }
+
+            Require(request.Method == HttpMethod.Delete, "Association DELETE method mismatch.");
+            return new HttpResponseMessage(HttpStatusCode.NoContent);
         }
 
         private static HttpResponseMessage JsonResponse(string json) => new(HttpStatusCode.OK)

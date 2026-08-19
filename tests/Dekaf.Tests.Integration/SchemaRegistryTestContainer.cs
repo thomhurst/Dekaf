@@ -14,7 +14,7 @@ namespace Dekaf.Tests.Integration;
 /// </summary>
 public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposable
 {
-    private static readonly ContainerImageBootstrapCoordinator ImageBootstrapCoordinator = new();
+    private static readonly ConcurrentDictionary<string, ContainerImageBootstrapCoordinator> ImageBootstrapCoordinators = new();
 
     private KafkaContainer? _kafkaContainer;
     private IContainer? _schemaRegistryContainer;
@@ -34,6 +34,8 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
     /// The Schema Registry URL.
     /// </summary>
     public string RegistryUrl => _registryUrl;
+
+    protected virtual string SchemaRegistryImage => "confluentinc/cp-schema-registry:7.9.0";
 
     public async Task InitializeAsync()
     {
@@ -55,7 +57,10 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
         }
 
         // A complete first startup guarantees Testcontainers has pulled both images.
-        await ImageBootstrapCoordinator.RunAsync(StartLocalContainersAsync).ConfigureAwait(false);
+        var bootstrapCoordinator = ImageBootstrapCoordinators.GetOrAdd(
+            SchemaRegistryImage,
+            static _ => new ContainerImageBootstrapCoordinator());
+        await bootstrapCoordinator.RunAsync(StartLocalContainersAsync).ConfigureAwait(false);
     }
 
     private async Task StartLocalContainersAsync()
@@ -92,7 +97,7 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
         Console.WriteLine("[KafkaWithSchemaRegistry] Starting Schema Registry container...");
 
         // Start Schema Registry connected to Kafka via network
-        _schemaRegistryContainer = new ContainerBuilder("confluentinc/cp-schema-registry:7.9.0")
+        _schemaRegistryContainer = new ContainerBuilder(SchemaRegistryImage)
             .WithNetwork(_network)
             .WithNetworkAliases("schema-registry")
             .WithPortBinding(8081, true)
@@ -251,4 +256,9 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
 
         GC.SuppressFinalize(this);
     }
+}
+
+public sealed class KafkaWithAssociationSchemaRegistryContainer : KafkaWithSchemaRegistryContainer
+{
+    protected override string SchemaRegistryImage => "confluentinc/cp-schema-registry:8.2.0";
 }

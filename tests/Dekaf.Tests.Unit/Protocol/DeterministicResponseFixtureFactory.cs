@@ -43,10 +43,63 @@ internal static class DeterministicResponseFixtureFactory
             ["OffsetFetchResponse.v10"] = Encode(WriteOffsetFetchResponseV10),
             ["ProduceResponse.v12"] = Encode(WriteProduceResponseV12),
             ["ProduceResponse.v13"] = Encode(WriteProduceResponseV13),
+            ["StreamsGroupHeartbeatResponse.v0"] = Encode(WriteStreamsGroupHeartbeatResponse),
             ["UpdateFeaturesResponse.v0"] = EncodeUpdateFeaturesResponse(version: 0),
             ["UpdateFeaturesResponse.v1"] = EncodeUpdateFeaturesResponse(version: 1),
             ["UpdateFeaturesResponse.v2"] = EncodeUpdateFeaturesResponse(version: 2)
         };
+
+    private static void WriteStreamsGroupHeartbeatResponse(ref KafkaProtocolWriter writer)
+    {
+        writer.WriteInt32(17);
+        writer.WriteInt16((short)ErrorCode.None);
+        writer.WriteCompactNullableString(null);
+        writer.WriteCompactString("wire-member");
+        writer.WriteInt32(3);
+        writer.WriteInt32(5_000);
+        writer.WriteInt32(42);
+        writer.WriteInt32(10_000);
+
+        WriteCompactArrayLength(ref writer, 1);
+        writer.WriteInt8(1);
+        writer.WriteCompactString("missing source");
+        WriteEmptyTaggedFields(ref writer);
+
+        WriteCompactArrayLength(ref writer, 1);
+        WriteStreamsTaskIds(ref writer, "wire-subtopology", [0, 2]);
+        WriteCompactArrayLength(ref writer, 0);
+        writer.WriteUnsignedVarInt(0);
+
+        writer.WriteInt32(7);
+        WriteCompactArrayLength(ref writer, 1);
+        writer.WriteCompactString("broker.example");
+        writer.WriteUInt16(7070);
+        WriteEmptyTaggedFields(ref writer);
+        WriteCompactArrayLength(ref writer, 1);
+        writer.WriteCompactString("wire-topic");
+        WriteCompactArrayLength(ref writer, 2);
+        writer.WriteInt32(0);
+        writer.WriteInt32(2);
+        WriteEmptyTaggedFields(ref writer);
+        WriteCompactArrayLength(ref writer, 0);
+        WriteEmptyTaggedFields(ref writer);
+        WriteEmptyTaggedFields(ref writer);
+    }
+
+    private static void WriteStreamsTaskIds(
+        ref KafkaProtocolWriter writer,
+        string subtopologyId,
+        IReadOnlyList<int> partitions)
+    {
+        writer.WriteCompactString(subtopologyId);
+        WriteCompactArrayLength(ref writer, partitions.Count);
+        for (var i = 0; i < partitions.Count; i++)
+        {
+            writer.WriteInt32(partitions[i]);
+        }
+
+        WriteEmptyTaggedFields(ref writer);
+    }
 
     private static byte[] EncodeDescribeClusterResponse(short version)
     {

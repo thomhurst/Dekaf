@@ -157,3 +157,9 @@ Dekaf.Consumer.ConsumerOptions.PartitionStopTimeout.get -> System.TimeSpan
 Dekaf.Consumer.ConsumerOptions.PartitionStopTimeout.init -> void
 Dekaf.ConsumerBuilder<TKey, TValue>.WithPartitionStopTimeout(System.TimeSpan timeout) -> Dekaf.ConsumerBuilder<TKey, TValue>!
 Dekaf.ConsumerBuilder<TKey, TValue>.AddRebalanceListener(Dekaf.Consumer.IRebalanceListener! listener) -> Dekaf.ConsumerBuilder<TKey, TValue>!
+Dekaf.Consumer.ConsumeBatch<TKey, TValue>.IsPartitionEof.get -> bool
+Dekaf.Consumer.ConsumeBatch<TKey, TValue>.PartitionEofOffset.get -> long?
+Dekaf.Consumer.ConsumeRawBatch.IsPartitionEof.get -> bool
+Dekaf.Consumer.ConsumeRawBatch.PartitionEofOffset.get -> long?
+Dekaf.Consumer.ConsumeRawRecord.Headers.get -> System.ReadOnlyMemory<Dekaf.Serialization.Header>
+Dekaf.Consumer.ConsumeRawRecord.LeaderEpoch.get -> int?

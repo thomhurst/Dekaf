@@ -7,6 +7,8 @@ description: "Share partitions across consumer instances, covering rebalancing, 
 
 Consumer groups enable multiple consumer instances to share the work of consuming a topic. Kafka automatically distributes partitions among group members.
 
+Consumer groups guarantee per-partition ordering and give you full offset control (seek, replay, reset), but parallelism is capped at the partition count and one unprocessable message blocks the partition behind it. If you need work-queue semantics instead — more workers than partitions, per-record retry and redelivery, no ordering requirement — see [Share Consumers (KIP-932)](./share-consumers), which includes a [side-by-side comparison](./share-consumers#consumer-or-share-consumer) of the two models.
+
 ## How Consumer Groups Work
 
 When multiple consumers share a group ID:

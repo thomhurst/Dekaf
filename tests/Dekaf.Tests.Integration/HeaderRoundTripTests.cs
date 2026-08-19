@@ -139,6 +139,64 @@ public class HeaderRoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTe
     }
 
     [Test]
+    public async Task ConsumeRawBatch_HeadersAndLeaderEpoch_DecodeFromBrokerFetch()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        var partition = new TopicPartition(topic, 0);
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        var headers = new Headers()
+            .Add("null-header", (byte[]?)null)
+            .Add("normal-header", "has-value");
+
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = topic,
+            Partition = partition.Partition,
+            Key = "key",
+            Value = "value",
+            Headers = headers
+        }, CancellationToken.None);
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithQueuedMinMessages(1)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        consumer.Assign(partition);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await using var batches = consumer.ConsumeRawBatchAsync(timeout.Token).GetAsyncEnumerator();
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        var batch = batches.Current;
+        using var records = batch.GetEnumerator();
+        await Assert.That(records.MoveNext()).IsTrue();
+        var record = records.Current;
+        var decodedHeaders = record.Headers;
+        var leaderEpoch = record.LeaderEpoch;
+        var sawNullHeader = false;
+        string? normalHeaderValue = null;
+        for (var index = 0; index < decodedHeaders.Length; index++)
+        {
+            var header = decodedHeaders.Span[index];
+            if (header.Key == "null-header")
+                sawNullHeader = header.IsValueNull;
+            else if (header.Key == "normal-header")
+                normalHeaderValue = Encoding.UTF8.GetString(header.Value.Span);
+        }
+
+        await Assert.That(batch.TopicPartition).IsEqualTo(partition);
+        await Assert.That(leaderEpoch).IsNotNull();
+        await Assert.That(leaderEpoch!.Value).IsGreaterThanOrEqualTo(0);
+        await Assert.That(sawNullHeader).IsTrue();
+        await Assert.That(normalHeaderValue).IsEqualTo("has-value");
+        await Assert.That(records.MoveNext()).IsFalse();
+    }
+
+    [Test]
     public async Task EmptyHeaderValue_Preserved()
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
