@@ -45,6 +45,7 @@ internal static class AotSmoke
         RunJsonSmoke();
         RunSchemaRegistryHttpPipelineConstructionSmoke();
         await RunSchemaRegistrySmokeAsync();
+        await RunSchemaRegistryGuidSmokeAsync();
         await RunSchemaRegistryCompatibilitySmokeAsync();
         await RunSchemaRegistryAssociationSmokeAsync();
         await RunSchemaRegistryPackageSmokeAsync();
@@ -212,6 +213,22 @@ internal static class AotSmoke
             "Association schema mapping smoke failed.");
         Require(found.Count == 1, "Association list smoke failed.");
         Require(handler.RequestCount == 3, "Association request count mismatch.");
+    }
+
+    private static async Task RunSchemaRegistryGuidSmokeAsync()
+    {
+        using var handler = new GuidSchemaHandler();
+        using var registry = new SchemaRegistryClient(
+            new SchemaRegistryConfig { Url = "https://schema-registry.example.test" },
+            handler);
+
+        var schema = await registry.GetSchemaByGuidAsync(
+            "{01234567-89ab-cdef-0123-456789abcdef}",
+            "serialized");
+
+        Require(handler.RequestCount == 1, "Schema GUID request count mismatch.");
+        Require(schema.SchemaType == SchemaType.Json, "Schema GUID type mismatch.");
+        Require(schema.Metadata?.Properties?["owner"] == "aot", "Schema GUID metadata mismatch.");
     }
 
     private static async Task RunSchemaRegistryPackageSmokeAsync()
@@ -495,6 +512,31 @@ internal static class AotSmoke
         };
     }
 
+    private sealed class GuidSchemaHandler : HttpMessageHandler
+    {
+        internal int RequestCount { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            RequestCount++;
+            Require(request.Method == HttpMethod.Get, "Schema GUID method mismatch.");
+            Require(
+                request.RequestUri!.PathAndQuery ==
+                "/schemas/guids/%7B01234567-89ab-cdef-0123-456789abcdef%7D?format=serialized",
+                "Schema GUID path mismatch.");
+
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    """{ "schema": "{}", "schemaType": "JSON", "metadata": { "properties": { "owner": "aot" } } }""",
+                    Encoding.UTF8,
+                    "application/json")
+            });
+        }
+    }
+
     private const string AotPayloadJsonSchema = """
         {
           "type": "object",
@@ -509,6 +551,7 @@ internal static class AotSmoke
     private sealed class InMemorySchemaRegistry : ISchemaRegistryClient, ISchemaRegistryCache
     {
         private readonly Dictionary<int, Schema> _schemasById = [];
+        private readonly Dictionary<Guid, Schema> _schemasByGuid = [];
         private readonly Dictionary<string, RegisteredSchema> _schemasBySubject = new(StringComparer.Ordinal);
         private int _nextId = 1;
 
@@ -523,15 +566,18 @@ internal static class AotSmoke
                 return Task.FromResult(existing.Id);
 
             var id = _nextId++;
+            var guid = GuidFromId(id);
             var registered = new RegisteredSchema
             {
                 Id = id,
+                Guid = guid.ToString(),
                 Subject = subject,
                 Version = 1,
                 Schema = schema
             };
             _schemasBySubject[subject] = registered;
             _schemasById[id] = schema;
+            _schemasByGuid[guid] = schema;
 
             return Task.FromResult(id);
         }
@@ -540,6 +586,15 @@ internal static class AotSmoke
         {
             cancellationToken.ThrowIfCancellationRequested();
             return Task.FromResult(_schemasById[id]);
+        }
+
+        public Task<Schema> GetSchemaByGuidAsync(
+            string guid,
+            string? format = null,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(_schemasByGuid[Guid.Parse(guid)]);
         }
 
         public Task<Schema> GetSchemaAsync(
@@ -616,6 +671,18 @@ internal static class AotSmoke
             return false;
         }
 
+        public bool TryGetCachedSchema(Guid guid, string? format, out Schema schema)
+        {
+            if (_schemasByGuid.TryGetValue(guid, out var cached))
+            {
+                schema = cached;
+                return true;
+            }
+
+            schema = null!;
+            return false;
+        }
+
         public bool TryGetCachedSchema(int id, string subject, out Schema schema)
         {
             if (_schemasBySubject.TryGetValue(subject, out var registered)
@@ -632,6 +699,8 @@ internal static class AotSmoke
         public void Dispose()
         {
         }
+
+        private static Guid GuidFromId(int id) => new(id, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
     }
 }
 

@@ -58,6 +58,7 @@ internal sealed class GetSubjectVersionResponse
     public required string Subject { get; init; }
     public int Version { get; init; }
     public int Id { get; init; }
+    public string? Guid { get; init; }
     public required string Schema { get; init; }
     public string? SchemaType { get; init; }
     public List<SchemaReferenceDto>? References { get; init; }
