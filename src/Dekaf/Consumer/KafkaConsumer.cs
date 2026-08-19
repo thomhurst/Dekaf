@@ -6608,7 +6608,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             var offsets = await _coordinator.FetchOffsetsAsync([partition], apiTimeout.Token).ConfigureAwait(false);
             if (offsets.TryGetValue(partition, out var committedOffset))
             {
-                CacheCommittedOffset(partition, committedOffset);
+                CacheCommittedOffset(partition, committedOffset.Offset);
                 return committedOffset.Offset;
             }
         }
@@ -6633,8 +6633,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         try
         {
             var offsets = await _coordinator.FetchOffsetsAsync(partitions, apiTimeout.Token).ConfigureAwait(false);
-            foreach (var (partition, committedOffset) in offsets)
-                CacheCommittedOffset(partition, committedOffset);
+            foreach (var partition in partitions)
+            {
+                if (offsets.TryGetValue(partition, out var committedOffset))
+                    CacheCommittedOffset(partition, committedOffset.Offset);
+                else
+                    _committed.TryRemove(partition, out _);
+            }
 
             return offsets;
         }
@@ -6644,16 +6649,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
     }
 
-    private void CacheCommittedOffset(
-        TopicPartition partition,
-        TopicPartitionOffset committedOffset)
-    {
-        _committed[partition] = committedOffset.Offset;
-        if (committedOffset.LeaderEpoch >= 0)
-            SetLastConsumedLeaderEpoch(partition, committedOffset.LeaderEpoch);
-        else
-            ClearLastConsumedLeaderEpoch(partition);
-    }
+    // A committed epoch describes the log at the committed offset. It must not replace
+    // the current fetch epoch, which may already have advanced beyond that position.
+    private void CacheCommittedOffset(TopicPartition partition, long committedOffset) =>
+        _committed[partition] = committedOffset;
 
     public long? GetPosition(TopicPartition partition)
     {

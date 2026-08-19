@@ -223,10 +223,12 @@ public sealed class InMemoryKafkaClusterTests
         var jobs = new TopicPartition("jobs", 0);
         var tasks = new TopicPartition("tasks", 1);
         var missing = new TopicPartition("missing", 2);
+        var unrequested = new TopicPartition("other", 3);
         await consumer.CommitAsync(
         [
             new TopicPartitionOffset(jobs.Topic, jobs.Partition, 12, leaderEpoch: 3),
-            new TopicPartitionOffset(tasks.Topic, tasks.Partition, 34, leaderEpoch: 5)
+            new TopicPartitionOffset(tasks.Topic, tasks.Partition, 34, leaderEpoch: 5),
+            new TopicPartitionOffset(unrequested.Topic, unrequested.Partition, 56, leaderEpoch: 7)
         ]);
 
         var offsets = await consumer.GetCommittedOffsetsAsync([jobs, tasks, missing]);
@@ -237,6 +239,7 @@ public sealed class InMemoryKafkaClusterTests
         await Assert.That(offsets[tasks])
             .IsEqualTo(new TopicPartitionOffset(tasks.Topic, tasks.Partition, 34, leaderEpoch: 5));
         await Assert.That(offsets).DoesNotContainKey(missing);
+        await Assert.That(offsets).DoesNotContainKey(unrequested);
     }
 
     [Test]

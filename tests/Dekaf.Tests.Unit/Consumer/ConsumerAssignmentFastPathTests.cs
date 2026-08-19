@@ -626,6 +626,60 @@ public sealed class ConsumerAssignmentFastPathTests
     }
 
     [Test]
+    public async Task GetCommittedOffsetsAsync_PreservesActiveFetchLeaderEpoch()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        SetupFindCoordinator(connection);
+        connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(CreateSuccessfulOffsetFetchResponse()));
+
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager);
+        var partition = new TopicPartition("test-topic", 0);
+        SetLastConsumedLeaderEpoch(consumer, partition, 9);
+
+        _ = await consumer.GetCommittedOffsetsAsync([partition], CancellationToken.None);
+
+        await Assert.That(GetLastConsumedLeaderEpoch(consumer, partition)).IsEqualTo(9);
+    }
+
+    [Test]
+    public async Task GetCommittedOffsetsAsync_MissingCommit_EvictsScalarCache()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        SetupFindCoordinator(connection);
+        var callCount = 0;
+        connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ => Interlocked.Increment(ref callCount) switch
+            {
+                1 => ValueTask.FromResult(CreateOffsetFetchResponse((0, 10))),
+                2 => ValueTask.FromResult(CreateOffsetFetchResponse((0, -1))),
+                _ => ValueTask.FromResult(CreateOffsetFetchResponse((0, 30)))
+            });
+
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager);
+        var partition = new TopicPartition("test-topic", 0);
+
+        await Assert.That(await consumer.GetCommittedOffsetAsync(partition)).IsEqualTo(10);
+        await Assert.That(await consumer.GetCommittedOffsetsAsync([partition])).IsEmpty();
+        await Assert.That(await consumer.GetCommittedOffsetAsync(partition)).IsEqualTo(30);
+        await Assert.That(callCount).IsEqualTo(3);
+    }
+
+    [Test]
     public async Task GetCommittedOffsetAsync_StaleMemberEpoch_UsesAggregateRequestTimeout()
     {
         var connectionPool = Substitute.For<IConnectionPool>();
@@ -2691,6 +2745,19 @@ public sealed class ConsumerAssignmentFastPathTests
             ?? throw new InvalidOperationException("GetLastConsumedLeaderEpoch method not found.");
 
         return (int)method.Invoke(consumer, [partition])!;
+    }
+
+    private static void SetLastConsumedLeaderEpoch(
+        KafkaConsumer<string, string> consumer,
+        TopicPartition partition,
+        int leaderEpoch)
+    {
+        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+            "SetLastConsumedLeaderEpoch",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("SetLastConsumedLeaderEpoch method not found.");
+
+        method.Invoke(consumer, [partition, leaderEpoch]);
     }
 
     private static void QueueCoordinatorRevokedPartitionsForFetchClear(
