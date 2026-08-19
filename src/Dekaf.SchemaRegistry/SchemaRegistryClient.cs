@@ -347,18 +347,54 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
     {
         StringBuilder? builder = null;
         foreach (var (name, value) in parameters)
-        {
-            if (value is null)
-                continue;
-
-            builder ??= new StringBuilder(path);
-            builder.Append(builder.Length == path.Length ? '?' : '&');
-            builder.Append(Uri.EscapeDataString(name));
-            builder.Append('=');
-            builder.Append(Uri.EscapeDataString(value));
-        }
+            AppendQueryParameter(ref builder, path, name, value);
 
         return builder?.ToString() ?? path;
+    }
+
+    private static string WithAssociationQuery(
+        string path,
+        string? resourceType,
+        IReadOnlyList<string>? associationTypes,
+        string? lifecycle,
+        int? offset,
+        int? limit,
+        bool? cascadeLifecycle)
+    {
+        StringBuilder? builder = null;
+        AppendQueryParameter(ref builder, path, "resourceType", resourceType);
+
+        if (associationTypes is not null)
+        {
+            for (var index = 0; index < associationTypes.Count; index++)
+                AppendQueryParameter(ref builder, path, "associationType", associationTypes[index]);
+        }
+
+        AppendQueryParameter(ref builder, path, "lifecycle", lifecycle);
+        AppendQueryParameter(ref builder, path, "offset", IntQuery(offset));
+        AppendQueryParameter(ref builder, path, "limit", IntQuery(limit));
+        AppendQueryParameter(
+            ref builder,
+            path,
+            "cascadeLifecycle",
+            cascadeLifecycle.HasValue ? cascadeLifecycle.Value ? "true" : "false" : null);
+        return builder?.ToString() ?? path;
+    }
+
+    private static void AppendQueryParameter(
+        ref StringBuilder? builder,
+        string path,
+        string name,
+        string? value)
+    {
+        if (value is null)
+            return;
+
+        builder ??= new StringBuilder(path);
+        builder.Append(builder.Length == path.Length ? '?' : '&');
+        builder.Append(Uri.EscapeDataString(name));
+        builder.Append('=');
+        builder.Append(Uri.EscapeDataString(value));
     }
 
     private static string? BoolQuery(bool value) => value ? "true" : null;
@@ -817,6 +853,95 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             SchemaRegistryJsonContext.Default.ListInt32, cancellationToken).ConfigureAwait(false) ?? [];
     }
 
+    public async Task<IReadOnlyList<Association>> GetAssociationsByResourceNameAsync(
+        string resourceName,
+        string resourceNamespace = "-",
+        string? resourceType = null,
+        IReadOnlyList<string>? associationTypes = null,
+        string? lifecycle = null,
+        int offset = 0,
+        int limit = -1,
+        CancellationToken cancellationToken = default)
+    {
+        AssociationValidation.ValidateGet(
+            resourceName,
+            resourceNamespace,
+            resourceType,
+            associationTypes,
+            lifecycle,
+            offset,
+            limit);
+
+        var path = WithAssociationQuery(
+            $"associations/resources/{Uri.EscapeDataString(resourceNamespace)}/{Uri.EscapeDataString(resourceName)}",
+            resourceType,
+            associationTypes,
+            lifecycle,
+            offset == 0 ? null : offset,
+            limit == -1 ? null : limit,
+            cascadeLifecycle: null);
+        using var response = await GetWithFailoverAsync(path, cancellationToken).ConfigureAwait(false);
+        await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
+
+        var result = await response.Content.ReadFromJsonAsync<List<AssociationDto>>(
+            SchemaRegistryJsonContext.Default.ListAssociationDto,
+            cancellationToken).ConfigureAwait(false);
+        if (result is null or { Count: 0 })
+            return [];
+
+        var associations = new Association[result.Count];
+        for (var index = 0; index < result.Count; index++)
+            associations[index] = ToAssociation(result[index]);
+        return associations;
+    }
+
+    public async Task<AssociationResponse> CreateAssociationAsync(
+        AssociationCreateOrUpdateRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        AssociationValidation.ValidateCreate(request);
+
+        using var response = await PostAsJsonWithFailoverAsync(
+            "associations",
+            ToAssociationRequestDto(request, _config.NormalizeSchemas),
+            SchemaRegistryJsonContext.Default.AssociationCreateOrUpdateRequestDto,
+            cancellationToken).ConfigureAwait(false);
+        await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
+
+        var result = await response.Content.ReadFromJsonAsync<AssociationResponseDto>(
+            SchemaRegistryJsonContext.Default.AssociationResponseDto,
+            cancellationToken).ConfigureAwait(false);
+        if (result is null)
+        {
+            throw new SchemaRegistryException(
+                (int)response.StatusCode,
+                "Schema Registry returned an empty association response");
+        }
+
+        return ToAssociationResponse(result);
+    }
+
+    public async Task DeleteAssociationsAsync(
+        string resourceId,
+        string? resourceType = null,
+        IReadOnlyList<string>? associationTypes = null,
+        bool cascadeLifecycle = false,
+        CancellationToken cancellationToken = default)
+    {
+        AssociationValidation.ValidateDelete(resourceId, resourceType, associationTypes);
+
+        var path = WithAssociationQuery(
+            $"associations/resources/{Uri.EscapeDataString(resourceId)}",
+            resourceType,
+            associationTypes,
+            lifecycle: null,
+            offset: null,
+            limit: null,
+            cascadeLifecycle);
+        using var response = await DeleteWithFailoverAsync(path, cancellationToken).ConfigureAwait(false);
+        await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
+    }
+
     private static string GetCompatibilityPath(string? subject)
     {
         if (subject is null)
@@ -1115,6 +1240,76 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         Metadata = ToMetadataDto(schema.Metadata),
         RuleSet = ToRuleSetDto(schema.RuleSet)
     };
+
+    private static AssociationCreateOrUpdateRequestDto ToAssociationRequestDto(
+        AssociationCreateOrUpdateRequest request,
+        bool normalizeSchemas)
+    {
+        var associations = new List<AssociationCreateOrUpdateInfoDto>(request.Associations.Count);
+        for (var index = 0; index < request.Associations.Count; index++)
+        {
+            var association = request.Associations[index];
+            associations.Add(new AssociationCreateOrUpdateInfoDto
+            {
+                Subject = association.Subject,
+                AssociationType = association.AssociationType,
+                Lifecycle = association.Lifecycle,
+                Frozen = association.Frozen,
+                Schema = association.Schema is null ? null : CreateRegisterSchemaRequest(association.Schema),
+                Normalize = association.Schema is null
+                    ? association.Normalize
+                    : association.Normalize ?? normalizeSchemas
+            });
+        }
+
+        return new AssociationCreateOrUpdateRequestDto
+        {
+            ResourceName = request.ResourceName,
+            ResourceNamespace = request.ResourceNamespace,
+            ResourceId = request.ResourceId,
+            ResourceType = request.ResourceType,
+            Associations = associations
+        };
+    }
+
+    private static Association ToAssociation(AssociationDto association) => new()
+    {
+        Subject = association.Subject,
+        Guid = association.Guid,
+        ResourceName = association.ResourceName,
+        ResourceNamespace = association.ResourceNamespace,
+        ResourceId = association.ResourceId,
+        ResourceType = association.ResourceType,
+        AssociationType = association.AssociationType,
+        Lifecycle = association.Lifecycle,
+        Frozen = association.Frozen
+    };
+
+    private static AssociationResponse ToAssociationResponse(AssociationResponseDto response)
+    {
+        var associations = new AssociationInfo[response.Associations.Count];
+        for (var index = 0; index < response.Associations.Count; index++)
+        {
+            var association = response.Associations[index];
+            associations[index] = new AssociationInfo
+            {
+                Subject = association.Subject,
+                AssociationType = association.AssociationType,
+                Lifecycle = association.Lifecycle,
+                Frozen = association.Frozen,
+                Schema = association.Schema is null ? null : CreateSchema(association.Schema)
+            };
+        }
+
+        return new AssociationResponse
+        {
+            ResourceName = response.ResourceName,
+            ResourceNamespace = response.ResourceNamespace,
+            ResourceId = response.ResourceId,
+            ResourceType = response.ResourceType,
+            Associations = associations
+        };
+    }
 
     private static Schema CreateSchema(GetSchemaResponse response) => new()
     {

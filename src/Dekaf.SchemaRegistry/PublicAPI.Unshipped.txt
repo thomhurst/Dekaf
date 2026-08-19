@@ -143,3 +143,79 @@ static Dekaf.SchemaRegistry.ResolvedSchemaContext.operator !=(Dekaf.SchemaRegist
 static Dekaf.SchemaRegistry.ResolvedSchemaContext.operator ==(Dekaf.SchemaRegistry.ResolvedSchemaContext left, Dekaf.SchemaRegistry.ResolvedSchemaContext right) -> bool
 ~override Dekaf.SchemaRegistry.ResolvedSchemaContext.Equals(object obj) -> bool
 ~override Dekaf.SchemaRegistry.ResolvedSchemaContext.ToString() -> string
+Dekaf.SchemaRegistry.Association
+Dekaf.SchemaRegistry.Association.Association() -> void
+Dekaf.SchemaRegistry.Association.AssociationType.get -> string!
+Dekaf.SchemaRegistry.Association.AssociationType.init -> void
+Dekaf.SchemaRegistry.Association.Frozen.get -> bool
+Dekaf.SchemaRegistry.Association.Frozen.init -> void
+Dekaf.SchemaRegistry.Association.Guid.get -> string!
+Dekaf.SchemaRegistry.Association.Guid.init -> void
+Dekaf.SchemaRegistry.Association.Lifecycle.get -> string!
+Dekaf.SchemaRegistry.Association.Lifecycle.init -> void
+Dekaf.SchemaRegistry.Association.ResourceId.get -> string!
+Dekaf.SchemaRegistry.Association.ResourceId.init -> void
+Dekaf.SchemaRegistry.Association.ResourceName.get -> string!
+Dekaf.SchemaRegistry.Association.ResourceName.init -> void
+Dekaf.SchemaRegistry.Association.ResourceNamespace.get -> string!
+Dekaf.SchemaRegistry.Association.ResourceNamespace.init -> void
+Dekaf.SchemaRegistry.Association.ResourceType.get -> string!
+Dekaf.SchemaRegistry.Association.ResourceType.init -> void
+Dekaf.SchemaRegistry.Association.Subject.get -> string!
+Dekaf.SchemaRegistry.Association.Subject.init -> void
+Dekaf.SchemaRegistry.AssociationCreateOrUpdateInfo
+Dekaf.SchemaRegistry.AssociationCreateOrUpdateInfo.AssociationCreateOrUpdateInfo() -> void
+Dekaf.SchemaRegistry.AssociationCreateOrUpdateInfo.AssociationType.get -> string!
+Dekaf.SchemaRegistry.AssociationCreateOrUpdateInfo.AssociationType.init -> void
+Dekaf.SchemaRegistry.AssociationCreateOrUpdateInfo.Frozen.get -> bool?
+Dekaf.SchemaRegistry.AssociationCreateOrUpdateInfo.Frozen.init -> void
+Dekaf.SchemaRegistry.AssociationCreateOrUpdateInfo.Lifecycle.get -> string!
+Dekaf.SchemaRegistry.AssociationCreateOrUpdateInfo.Lifecycle.init -> void
+Dekaf.SchemaRegistry.AssociationCreateOrUpdateInfo.Normalize.get -> bool?
+Dekaf.SchemaRegistry.AssociationCreateOrUpdateInfo.Normalize.init -> void
+Dekaf.SchemaRegistry.AssociationCreateOrUpdateInfo.Schema.get -> Dekaf.SchemaRegistry.Schema?
+Dekaf.SchemaRegistry.AssociationCreateOrUpdateInfo.Schema.init -> void
+Dekaf.SchemaRegistry.AssociationCreateOrUpdateInfo.Subject.get -> string!
+Dekaf.SchemaRegistry.AssociationCreateOrUpdateInfo.Subject.init -> void
+Dekaf.SchemaRegistry.AssociationCreateOrUpdateRequest
+Dekaf.SchemaRegistry.AssociationCreateOrUpdateRequest.AssociationCreateOrUpdateRequest() -> void
+Dekaf.SchemaRegistry.AssociationCreateOrUpdateRequest.Associations.get -> System.Collections.Generic.IReadOnlyList<Dekaf.SchemaRegistry.AssociationCreateOrUpdateInfo!>!
+Dekaf.SchemaRegistry.AssociationCreateOrUpdateRequest.Associations.init -> void
+Dekaf.SchemaRegistry.AssociationCreateOrUpdateRequest.ResourceId.get -> string!
+Dekaf.SchemaRegistry.AssociationCreateOrUpdateRequest.ResourceId.init -> void
+Dekaf.SchemaRegistry.AssociationCreateOrUpdateRequest.ResourceName.get -> string!
+Dekaf.SchemaRegistry.AssociationCreateOrUpdateRequest.ResourceName.init -> void
+Dekaf.SchemaRegistry.AssociationCreateOrUpdateRequest.ResourceNamespace.get -> string!
+Dekaf.SchemaRegistry.AssociationCreateOrUpdateRequest.ResourceNamespace.init -> void
+Dekaf.SchemaRegistry.AssociationCreateOrUpdateRequest.ResourceType.get -> string!
+Dekaf.SchemaRegistry.AssociationCreateOrUpdateRequest.ResourceType.init -> void
+Dekaf.SchemaRegistry.AssociationInfo
+Dekaf.SchemaRegistry.AssociationInfo.AssociationInfo() -> void
+Dekaf.SchemaRegistry.AssociationInfo.AssociationType.get -> string!
+Dekaf.SchemaRegistry.AssociationInfo.AssociationType.init -> void
+Dekaf.SchemaRegistry.AssociationInfo.Frozen.get -> bool
+Dekaf.SchemaRegistry.AssociationInfo.Frozen.init -> void
+Dekaf.SchemaRegistry.AssociationInfo.Lifecycle.get -> string!
+Dekaf.SchemaRegistry.AssociationInfo.Lifecycle.init -> void
+Dekaf.SchemaRegistry.AssociationInfo.Schema.get -> Dekaf.SchemaRegistry.Schema?
+Dekaf.SchemaRegistry.AssociationInfo.Schema.init -> void
+Dekaf.SchemaRegistry.AssociationInfo.Subject.get -> string!
+Dekaf.SchemaRegistry.AssociationInfo.Subject.init -> void
+Dekaf.SchemaRegistry.AssociationResponse
+Dekaf.SchemaRegistry.AssociationResponse.AssociationResponse() -> void
+Dekaf.SchemaRegistry.AssociationResponse.Associations.get -> System.Collections.Generic.IReadOnlyList<Dekaf.SchemaRegistry.AssociationInfo!>!
+Dekaf.SchemaRegistry.AssociationResponse.Associations.init -> void
+Dekaf.SchemaRegistry.AssociationResponse.ResourceId.get -> string!
+Dekaf.SchemaRegistry.AssociationResponse.ResourceId.init -> void
+Dekaf.SchemaRegistry.AssociationResponse.ResourceName.get -> string!
+Dekaf.SchemaRegistry.AssociationResponse.ResourceName.init -> void
+Dekaf.SchemaRegistry.AssociationResponse.ResourceNamespace.get -> string!
+Dekaf.SchemaRegistry.AssociationResponse.ResourceNamespace.init -> void
+Dekaf.SchemaRegistry.AssociationResponse.ResourceType.get -> string!
+Dekaf.SchemaRegistry.AssociationResponse.ResourceType.init -> void
+Dekaf.SchemaRegistry.ISchemaRegistryClient.CreateAssociationAsync(Dekaf.SchemaRegistry.AssociationCreateOrUpdateRequest! request, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Dekaf.SchemaRegistry.AssociationResponse!>!
+Dekaf.SchemaRegistry.ISchemaRegistryClient.DeleteAssociationsAsync(string! resourceId, string? resourceType = null, System.Collections.Generic.IReadOnlyList<string!>? associationTypes = null, bool cascadeLifecycle = false, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task!
+Dekaf.SchemaRegistry.ISchemaRegistryClient.GetAssociationsByResourceNameAsync(string! resourceName, string! resourceNamespace = "-", string? resourceType = null, System.Collections.Generic.IReadOnlyList<string!>? associationTypes = null, string? lifecycle = null, int offset = 0, int limit = -1, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<System.Collections.Generic.IReadOnlyList<Dekaf.SchemaRegistry.Association!>!>!
+Dekaf.SchemaRegistry.SchemaRegistryClient.CreateAssociationAsync(Dekaf.SchemaRegistry.AssociationCreateOrUpdateRequest! request, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Dekaf.SchemaRegistry.AssociationResponse!>!
+Dekaf.SchemaRegistry.SchemaRegistryClient.DeleteAssociationsAsync(string! resourceId, string? resourceType = null, System.Collections.Generic.IReadOnlyList<string!>? associationTypes = null, bool cascadeLifecycle = false, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task!
+Dekaf.SchemaRegistry.SchemaRegistryClient.GetAssociationsByResourceNameAsync(string! resourceName, string! resourceNamespace = "-", string? resourceType = null, System.Collections.Generic.IReadOnlyList<string!>? associationTypes = null, string? lifecycle = null, int offset = 0, int limit = -1, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<System.Collections.Generic.IReadOnlyList<Dekaf.SchemaRegistry.Association!>!>!
