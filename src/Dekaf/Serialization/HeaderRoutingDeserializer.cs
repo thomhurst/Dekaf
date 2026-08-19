@@ -20,7 +20,10 @@ public readonly struct HeaderDeserializerRoute<T>
 /// The last header with the configured name wins. Missing, null, and unrecognized values use the
 /// fallback. Routes are copied and indexed during construction; warmed calls do not allocate.
 /// </remarks>
-public sealed class HeaderRoutingDeserializer<T> : IDeserializer<T>, IRecordHeaderDeserializer<T>
+public sealed class HeaderRoutingDeserializer<T> :
+    IDeserializer<T>,
+    IRecordHeaderDeserializer<T>,
+    IRecordHeaderRoutingProvider
 {
     private readonly string _headerName;
     private readonly IDeserializer<T> _fallbackDeserializer;
@@ -85,8 +88,40 @@ public sealed class HeaderRoutingDeserializer<T> : IDeserializer<T>, IRecordHead
     T IRecordHeaderDeserializer<T>.Deserialize(
         ReadOnlyMemory<byte> data,
         SerializationContext context,
-        ReadOnlySpan<Header> headers) =>
-        DeserializeWithHeaders(data, context, headers);
+        in RecordHeaderRoutingLookup headers) =>
+        DeserializeWithHeaders(data, context, in headers);
+
+    void IRecordHeaderRoutingProvider.CollectHeaderNames(List<string> names)
+    {
+        AddHeaderName(names, _headerName);
+        CollectChildHeaderNames(names, _fallbackDeserializer);
+        for (var index = 0; index < _routes.Length; index++)
+            CollectChildHeaderNames(names, _routes[index].Deserializer);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private T DeserializeWithHeaders(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        in RecordHeaderRoutingLookup headers)
+    {
+        if (headers.TryGetLast(_headerName, out var header)
+            && !header.IsValueNull
+            && TryGetDeserializer(header.Value.Span, out var deserializer))
+        {
+            return RecordHeaderDeserializer.Deserialize(
+                deserializer,
+                data,
+                context,
+                in headers);
+        }
+
+        return RecordHeaderDeserializer.Deserialize(
+            _fallbackDeserializer,
+            data,
+            context,
+            in headers);
+    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal T DeserializeWithHeaders(
@@ -101,12 +136,35 @@ public sealed class HeaderRoutingDeserializer<T> : IDeserializer<T>, IRecordHead
                 continue;
 
             if (!header.IsValueNull && TryGetDeserializer(header.Value.Span, out var deserializer))
-                return deserializer.Deserialize(data, context);
+                return deserializer is HeaderRoutingDeserializer<T> nested
+                    ? nested.DeserializeWithHeaders(data, context, headers)
+                    : deserializer.Deserialize(data, context);
 
             break;
         }
 
-        return _fallbackDeserializer.Deserialize(data, context);
+        return _fallbackDeserializer is HeaderRoutingDeserializer<T> nestedFallback
+            ? nestedFallback.DeserializeWithHeaders(data, context, headers)
+            : _fallbackDeserializer.Deserialize(data, context);
+    }
+
+    private static void CollectChildHeaderNames(
+        List<string> names,
+        IDeserializer<T> deserializer)
+    {
+        if (deserializer is IRecordHeaderRoutingProvider provider)
+            provider.CollectHeaderNames(names);
+    }
+
+    private static void AddHeaderName(List<string> names, string headerName)
+    {
+        for (var index = 0; index < names.Count; index++)
+        {
+            if (string.Equals(names[index], headerName, StringComparison.Ordinal))
+                return;
+        }
+
+        names.Add(headerName);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

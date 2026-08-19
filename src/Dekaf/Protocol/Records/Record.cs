@@ -34,6 +34,10 @@ public readonly record struct Record
     /// </summary>
     public int HeaderCount { get; init; }
 
+    private int RoutedHeaderIndex0 { get; init; }
+    private int RoutedHeaderIndex1 { get; init; }
+    private int[]? RemainingRoutedHeaderIndices { get; init; }
+
     /// <summary>
     /// Returns true if the key is null (empty memory with special flag).
     /// </summary>
@@ -122,6 +126,11 @@ public readonly record struct Record
     /// The returned Record's Key and Value reference memory from the reader's buffer.
     /// </summary>
     public static Record Read(ref KafkaProtocolReader reader)
+        => Read(ref reader, headerRoutingPlan: null);
+
+    internal static Record Read(
+        ref KafkaProtocolReader reader,
+        RecordHeaderRoutingPlan? headerRoutingPlan)
     {
         var length = reader.ReadVarInt();
         if (length < 0)
@@ -139,7 +148,7 @@ public readonly record struct Record
 
         try
         {
-            return ReadBody(ref bodyReader, length, bodyStart);
+            return ReadBody(ref bodyReader, length, bodyStart, headerRoutingPlan);
         }
         catch (RecordBodyLengthMismatchException ex)
         {
@@ -155,7 +164,11 @@ public readonly record struct Record
         }
     }
 
-    private static Record ReadBody(ref KafkaProtocolReader reader, int length, long bodyStart)
+    private static Record ReadBody(
+        ref KafkaProtocolReader reader,
+        int length,
+        long bodyStart,
+        RecordHeaderRoutingPlan? headerRoutingPlan)
     {
         var attributes = (byte)reader.ReadInt8();
         var timestampDelta = reader.ReadVarLong();
@@ -173,22 +186,53 @@ public readonly record struct Record
         ValidateHeaderCount(headerCount, length, reader.Consumed - bodyStart, reader.Remaining);
 
         Header[]? headers = null;
+        var routedHeaderIndex0 = 0;
+        var routedHeaderIndex1 = 0;
+        int[]? remainingRoutedHeaderIndices = null;
         if (headerCount > 0)
         {
             // Rent from ArrayPool to avoid per-record allocation.
             // The rented array may be oversized; HeaderCount tracks the valid count.
             // The array is returned to the pool when the owning LazyRecordList is disposed.
             headers = ArrayPool<Header>.Shared.Rent(headerCount);
+            if (headerRoutingPlan is { Count: > 2 })
+            {
+                remainingRoutedHeaderIndices = ArrayPool<int>.Shared.Rent(
+                    headerRoutingPlan.Count - 2);
+                remainingRoutedHeaderIndices.AsSpan(0, headerRoutingPlan.Count - 2).Clear();
+            }
             try
             {
                 for (var i = 0; i < headerCount; i++)
-                    headers[i] = HeaderProtocol.Read(ref reader);
+                {
+                    var header = HeaderProtocol.Read(ref reader);
+                    headers[i] = header;
+                    if (headerRoutingPlan is not null
+                        && headerRoutingPlan.TryGetSlot(header.Key, out var slot))
+                    {
+                        var index = i + 1;
+                        switch (slot)
+                        {
+                            case 0:
+                                routedHeaderIndex0 = index;
+                                break;
+                            case 1:
+                                routedHeaderIndex1 = index;
+                                break;
+                            default:
+                                remainingRoutedHeaderIndices![slot - 2] = index;
+                                break;
+                        }
+                    }
+                }
 
                 ValidateBodyLength(length, reader.Consumed - bodyStart);
             }
             catch
             {
                 ArrayPool<Header>.Shared.Return(headers, clearArray: true);
+                if (remainingRoutedHeaderIndices is not null)
+                    ArrayPool<int>.Shared.Return(remainingRoutedHeaderIndices, clearArray: false);
                 throw;
             }
         }
@@ -208,8 +252,65 @@ public readonly record struct Record
             Value = value,
             IsValueNull = isValueNull,
             Headers = headers,
-            HeaderCount = headerCount
+            HeaderCount = headerCount,
+            RoutedHeaderIndex0 = routedHeaderIndex0,
+            RoutedHeaderIndex1 = routedHeaderIndex1,
+            RemainingRoutedHeaderIndices = remainingRoutedHeaderIndices
         };
+    }
+
+    internal RecordHeaderRoutingLookup CreateHeaderRoutingLookup(
+        RecordHeaderRoutingPlan? headerRoutingPlan) =>
+        new(
+            headerRoutingPlan,
+            Headers,
+            HeaderCount,
+            RoutedHeaderIndex0,
+            RoutedHeaderIndex1,
+            RemainingRoutedHeaderIndices);
+
+    internal Record IndexHeaders(RecordHeaderRoutingPlan headerRoutingPlan)
+    {
+        if (Headers is null || HeaderCount == 0)
+            return this;
+
+        var firstIndex = 0;
+        var secondIndex = 0;
+        var remainingIndices = headerRoutingPlan.Count > 2
+            ? new int[headerRoutingPlan.Count - 2]
+            : null;
+        for (var index = 0; index < HeaderCount; index++)
+        {
+            if (!headerRoutingPlan.TryGetSlot(Headers[index].Key, out var slot))
+                continue;
+
+            var encodedIndex = index + 1;
+            switch (slot)
+            {
+                case 0:
+                    firstIndex = encodedIndex;
+                    break;
+                case 1:
+                    secondIndex = encodedIndex;
+                    break;
+                default:
+                    remainingIndices![slot - 2] = encodedIndex;
+                    break;
+            }
+        }
+
+        return this with
+        {
+            RoutedHeaderIndex0 = firstIndex,
+            RoutedHeaderIndex1 = secondIndex,
+            RemainingRoutedHeaderIndices = remainingIndices
+        };
+    }
+
+    internal void ReturnPooledRoutingIndices()
+    {
+        if (RemainingRoutedHeaderIndices is not null)
+            ArrayPool<int>.Shared.Return(RemainingRoutedHeaderIndices, clearArray: false);
     }
 
     private static void ValidateBodyLength(int declaredLength, long consumedLength)

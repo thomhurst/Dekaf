@@ -5,6 +5,7 @@ using BenchmarkDotNet.Configs;
 using BenchmarkDotNet.Jobs;
 using BenchmarkDotNet.Reports;
 using BenchmarkDotNet.Running;
+using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
 using Dekaf.Serialization.Routing;
 
@@ -107,7 +108,7 @@ public class RoutingSerdeBenchmarks
 
     public sealed class Event;
 
-    private sealed class EventDeserializer : IDeserializer<Event>
+    internal sealed class EventDeserializer : IDeserializer<Event>
     {
         public Event Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) => Payload;
     }
@@ -144,5 +145,90 @@ public class RoutingSerdeBenchmarks
 
         public bool IsAvailable(Summary summary) => true;
         public bool IsDefault(Summary summary, BenchmarkCase benchmarkCase) => false;
+    }
+}
+
+/// <summary>Verifies parsed header routing remains O(1) and allocation-free as headers grow.</summary>
+[MemoryDiagnoser]
+[ShortRunJob(RuntimeMoniker.Net10_0)]
+public class HeaderRoutingLookupBenchmarks
+{
+    private static readonly ReadOnlyMemory<byte> Data = new byte[] { 1, 2, 3 };
+    private readonly RoutingSerdeBenchmarks.EventDeserializer _deserializer = new();
+    private HeaderRoutingDeserializer<RoutingSerdeBenchmarks.Event> _router = null!;
+    private RecordHeaderRoutingLookup _matched;
+    private RecordHeaderRoutingLookup _fallback;
+    private RecordHeaderRoutingLookup _null;
+    private Header[] _matchedHeaders = null!;
+    private SerializationContext _context;
+
+    [Params(1, 8, 64, 1_024)]
+    public int HeaderCount { get; set; }
+
+    [GlobalSetup]
+    public void Setup()
+    {
+        _context = new SerializationContext
+        {
+            Topic = "events",
+            Component = SerializationComponent.Value
+        };
+        _router = new HeaderRoutingDeserializer<RoutingSerdeBenchmarks.Event>(
+            "event-type",
+            _deserializer,
+            new HeaderDeserializerRoute<RoutingSerdeBenchmarks.Event>(
+                new byte[] { 1 },
+                _deserializer));
+        var plan = RecordHeaderRoutingPlan.Create(_deserializer, _router)!;
+        _matchedHeaders = CreateHeaders(new Header("event-type", new byte[] { 1 }));
+        _matched = CreateLookup(plan, _matchedHeaders);
+        _fallback = CreateLookup(plan, new Header("event-type", new byte[] { 2 }));
+        _null = CreateLookup(plan, new Header("event-type", (byte[]?)null));
+    }
+
+    [Benchmark(Baseline = true)]
+    public RoutingSerdeBenchmarks.Event LinearMatched() =>
+        _router.DeserializeWithHeaders(Data, _context, _matchedHeaders);
+
+    [Benchmark]
+    public RoutingSerdeBenchmarks.Event Matched() => Deserialize(in _matched);
+
+    [Benchmark]
+    public RoutingSerdeBenchmarks.Event Fallback() => Deserialize(in _fallback);
+
+    [Benchmark]
+    public RoutingSerdeBenchmarks.Event Null() => Deserialize(in _null);
+
+    private RoutingSerdeBenchmarks.Event Deserialize(in RecordHeaderRoutingLookup lookup) =>
+        RecordHeaderDeserializer.Deserialize(
+            _router,
+            Data,
+            _context,
+            in lookup);
+
+    private RecordHeaderRoutingLookup CreateLookup(
+        RecordHeaderRoutingPlan plan,
+        Header routedHeader) =>
+        CreateLookup(plan, CreateHeaders(routedHeader));
+
+    private static RecordHeaderRoutingLookup CreateLookup(
+        RecordHeaderRoutingPlan plan,
+        Header[] headers)
+    {
+        var record = new Record
+        {
+            Headers = headers,
+            HeaderCount = headers.Length
+        }.IndexHeaders(plan);
+        return record.CreateHeaderRoutingLookup(plan);
+    }
+
+    private Header[] CreateHeaders(Header routedHeader)
+    {
+        var headers = new Header[HeaderCount];
+        for (var index = 0; index < headers.Length; index++)
+            headers[index] = new Header($"noise-{index}", Array.Empty<byte>());
+        headers[0] = routedHeader;
+        return headers;
     }
 }

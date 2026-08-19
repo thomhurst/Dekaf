@@ -31,6 +31,45 @@ public sealed class ConsumerRecordFilterTests
     }
 
     [Test]
+    public async Task ConsumeOneAsync_FilterYieldsToPollAfterRejectedRecordInterval()
+    {
+        var filter = new HeaderValueFilter("route", "keep"u8.ToArray());
+        await using var consumer = CreateConsumer(
+            CreatePollRefreshRecords(),
+            filter,
+            Serializers.String,
+            Serializers.String);
+
+        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1));
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(result!.Value.Offset).IsEqualTo(65L);
+        await Assert.That(filter.CallCount).IsEqualTo(66);
+        await Assert.That(consumer.GetPosition(new TopicPartition("test-topic", 2))).IsEqualTo(66L);
+    }
+
+    [Test]
+    public async Task ConsumeOneAsync_AsyncDeserializerFilterYieldsToPollAfterRejectedRecordInterval()
+    {
+        var filter = new HeaderValueFilter("route", "keep"u8.ToArray());
+        var valueDeserializer = new CountingAsyncStringDeserializer();
+        await using var consumer = CreateConsumer(
+            CreatePollRefreshRecords(),
+            filter,
+            Serializers.String,
+            Serializers.String,
+            valueDeserializer);
+
+        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1));
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(result!.Value.Offset).IsEqualTo(65L);
+        await Assert.That(filter.CallCount).IsEqualTo(66);
+        await Assert.That(valueDeserializer.Count).IsEqualTo(1);
+        await Assert.That(consumer.GetPosition(new TopicPartition("test-topic", 2))).IsEqualTo(66L);
+    }
+
+    [Test]
     public async Task ConsumeAsync_FilterSkipsRejectedRecordBeforeDeserialization()
     {
         var fetch = CreatePendingFetchData(
@@ -84,6 +123,34 @@ public sealed class ConsumerRecordFilterTests
             new PrefixDeserializer("fallback"),
             new HeaderDeserializerRoute<string>("created"u8.ToArray(), new PrefixDeserializer("created")));
         await using var consumer = CreateConsumer(fetch, null, Serializers.String, router);
+
+        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1));
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(result!.Value.Value).IsEqualTo("created:payload");
+    }
+
+    [Test]
+    public async Task ConsumeOneAsync_NestedHeaderRoutersReuseParsedLookup()
+    {
+        var fetch = CreatePendingFetchData(
+            CreateRecord(
+                0,
+                "key",
+                "payload",
+                new Header("event-family", "domain"u8.ToArray()),
+                new Header("event-type", "created"u8.ToArray())));
+        var inner = new HeaderRoutingDeserializer<string>(
+            "event-type",
+            new PrefixDeserializer("inner-fallback"),
+            new HeaderDeserializerRoute<string>(
+                "created"u8.ToArray(),
+                new PrefixDeserializer("created")));
+        var outer = new HeaderRoutingDeserializer<string>(
+            "event-family",
+            new PrefixDeserializer("outer-fallback"),
+            new HeaderDeserializerRoute<string>("domain"u8.ToArray(), inner));
+        await using var consumer = CreateConsumer(fetch, null, Serializers.String, outer);
 
         var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1));
 
@@ -229,6 +296,26 @@ public sealed class ConsumerRecordFilterTests
         var pending = PendingFetchData.Create("test-topic", 2, [batch]);
         pending.EagerParseAll();
         return pending;
+    }
+
+    private static PendingFetchData CreatePollRefreshRecords()
+    {
+        var records = new Record[66];
+        for (var offset = 0; offset < records.Length - 1; offset++)
+        {
+            records[offset] = CreateRecord(
+                offset,
+                "reject",
+                "value",
+                new Header("route", "drop"u8.ToArray()));
+        }
+
+        records[^1] = CreateRecord(
+            records.Length - 1,
+            "accept",
+            "value",
+            new Header("route", "keep"u8.ToArray()));
+        return CreatePendingFetchData(records);
     }
 
     private static KafkaConsumer<string, string> CreateConsumer(

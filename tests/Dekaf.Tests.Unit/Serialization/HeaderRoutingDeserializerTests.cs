@@ -59,6 +59,21 @@ public sealed class HeaderRoutingDeserializerTests
     }
 
     [Test]
+    public async Task Deserialize_UnknownNewestDuplicateUsesFallback()
+    {
+        var router = CreateRouter();
+        var headers = new[]
+        {
+            new Header("event-type", "created"u8.ToArray()),
+            new Header("event-type", "unknown"u8.ToArray())
+        };
+
+        var result = router.DeserializeWithHeaders("payload"u8.ToArray(), CreateContext(), headers);
+
+        await Assert.That(result).IsEqualTo("fallback:payload");
+    }
+
+    [Test]
     public async Task Constructor_DuplicateRouteValuesThrows()
     {
         await Assert.That(() => new HeaderRoutingDeserializer<string>(
@@ -75,7 +90,7 @@ public sealed class HeaderRoutingDeserializerTests
         await Assert.That(() => new HeaderRoutingDeserializer<string>(
                 "event-type",
                 new PrefixDeserializer("fallback"),
-                (HeaderDeserializerRoute<string>)default))
+                default(HeaderDeserializerRoute<string>)))
             .Throws<ArgumentException>();
     }
 

@@ -697,6 +697,7 @@ public readonly struct ConsumeResult<TKey, TValue>
         bool isValueNull,
         Header[]? pooledHeaders,
         int pooledHeaderCount,
+        in RecordHeaderRoutingLookup headerRouting,
         PendingFetchData headerOwner,
         long timestampMs,
         TimestampType timestampType,
@@ -717,8 +718,7 @@ public readonly struct ConsumeResult<TKey, TValue>
                 keyDeserializer,
                 keyData,
                 serializationContext,
-                pooledHeaders,
-                pooledHeaderCount);
+                in headerRouting);
         }
 
         TValue value = default!;
@@ -733,8 +733,7 @@ public readonly struct ConsumeResult<TKey, TValue>
                 valueDeserializer,
                 isValueNull ? ReadOnlyMemory<byte>.Empty : valueData,
                 serializationContext,
-                pooledHeaders,
-                pooledHeaderCount);
+                in headerRouting);
         }
 
         return new ConsumeResult<TKey, TValue>(

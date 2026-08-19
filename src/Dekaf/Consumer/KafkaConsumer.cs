@@ -511,13 +511,17 @@ internal sealed class PendingFetchData : IDisposable
     /// (disposed check + bounds check + EnsureParsedUpTo call per indexer access).
     /// This is a per-batch cost amortized over all records in the batch.
     /// </summary>
-    public void EagerParseAll()
+    public void EagerParseAll(RecordHeaderRoutingPlan? headerRoutingPlan = null)
     {
         // Check _eagerParsed first: it is only set after a successful parse, and _error
         // is only set on instances that never parse (CreateError), so the order swap is
         // safe and spares the already-parsed steady state a full-fence Interlocked per poll.
         if (_eagerParsed)
+        {
+            if (headerRoutingPlan is not null)
+                ConfigureHeaderRouting(headerRoutingPlan);
             return;
+        }
 
         if (Interlocked.Exchange(ref _error, null) is { } error)
             throw error;
@@ -542,6 +546,7 @@ internal sealed class PendingFetchData : IDisposable
             for (var i = 0; i < batchCount; i++)
             {
                 var batch = _batches[i];
+                batch.ConfigureHeaderRouting(headerRoutingPlan);
                 batch.EnsureAllRecordsParsed();
                 if (batch.Records is Protocol.Records.LazyRecordList lazyList)
                     lazyList.EnsureAllParsed();
@@ -553,6 +558,12 @@ internal sealed class PendingFetchData : IDisposable
         }
 
         _eagerParsed = true;
+    }
+
+    internal void ConfigureHeaderRouting(RecordHeaderRoutingPlan headerRoutingPlan)
+    {
+        for (var index = 0; index < _batches.Count; index++)
+            _batches[index].ConfigureHeaderRouting(headerRoutingPlan);
     }
 
     /// <summary>
@@ -1214,6 +1225,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private readonly IDeserializer<TKey> _keyDeserializer;
     private readonly IDeserializer<TValue> _valueDeserializer;
     private readonly bool _hasRecordHeaderDeserializers;
+    private readonly RecordHeaderRoutingPlan? _recordHeaderRoutingPlan;
     // Non-null when the user configured an IAsyncDeserializer for that component (issue #2309:
     // deserializers that perform per-record I/O, e.g. envelope decryption with short-lived keys).
     // When either is set, ConsumeAsync/ConsumeOneAsync await deserialization per record before
@@ -1732,6 +1744,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         _valueDeserializer = asyncValueDeserializer is null ? valueDeserializer : AsyncOnlyDeserializerPlaceholder<TValue>.Instance;
         _hasRecordHeaderDeserializers = _keyDeserializer is IRecordHeaderDeserializer<TKey>
                                         || _valueDeserializer is IRecordHeaderDeserializer<TValue>;
+        _recordHeaderRoutingPlan = RecordHeaderRoutingPlan.Create(
+            _keyDeserializer,
+            _valueDeserializer);
         _asyncKeyDeserializer = asyncKeyDeserializer;
         _asyncValueDeserializer = asyncValueDeserializer;
         _hasAsyncDeserializers = asyncKeyDeserializer is not null || asyncValueDeserializer is not null;
@@ -2833,6 +2848,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         var offset = -1L;
                         var runningInterceptor = false;
                         var runningFilter = false;
+                        var filteredRecordRejected = false;
                         try
                         {
                             if (!pending.MoveNext())
@@ -2859,6 +2875,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             var isValueNull = record.IsValueNull;
                             var pooledHeaders = record.Headers;
                             var pooledHeaderCount = record.HeaderCount;
+                            var headerRouting = record.CreateHeaderRoutingLookup(
+                                _recordHeaderRoutingPlan);
                             var messageBytes = (isKeyNull ? 0 : keyData.Length) +
                                                (isValueNull ? 0 : valueData.Length);
 
@@ -2920,14 +2938,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                         TrackConsumedPosition(pending, offset, messageBytes);
                                     }
                                     pending.MarkYieldedProcessed();
-
-                                    if (--recordsUntilPollRefresh == 0)
-                                    {
-                                        await RecordPollAsync(cancellationToken).ConfigureAwait(false);
-                                        recordsUntilPollRefresh = PollRefreshRecordInterval;
-                                    }
-
-                                    continue;
+                                    filteredRecordRejected = true;
+                                    goto FilteredRecordComplete;
                                 }
                             }
 
@@ -2966,6 +2978,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                     isValueNull,
                                     pooledHeaders,
                                     pooledHeaderCount,
+                                    headerRouting,
                                     timestampMs,
                                     timestampType,
                                     pending.CurrentPartitionLeaderEpoch >= 0 ? pending.CurrentPartitionLeaderEpoch : null,
@@ -2986,6 +2999,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                         isValueNull,
                                         pooledHeaders,
                                         pooledHeaderCount,
+                                        in headerRouting,
                                         timestampMs,
                                         timestampType,
                                         leaderEpoch,
@@ -3028,6 +3042,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                                 isValueNull,
                                                 pooledHeaders,
                                                 pooledHeaderCount,
+                                                in headerRouting,
                                                 timestampMs,
                                                 timestampType,
                                                 leaderEpoch,
@@ -3053,6 +3068,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                         isValueNull,
                                         pooledHeaders,
                                         pooledHeaderCount,
+                                        in headerRouting,
                                         pending,
                                         timestampMs,
                                         timestampType,
@@ -3173,6 +3189,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             ThrowAfterDeliveryFailure(
                                 pending, offset, runningInterceptor || runningFilter, hasAsyncDeserializers, ex);
                             throw;
+                        }
+
+                    FilteredRecordComplete:
+                        if (filteredRecordRejected)
+                        {
+                            if (--recordsUntilPollRefresh == 0)
+                            {
+                                await RecordPollAsync(cancellationToken).ConfigureAwait(false);
+                                recordsUntilPollRefresh = PollRefreshRecordInterval;
+                            }
+
+                            continue;
                         }
 
                         yield return nextResult;
@@ -3394,7 +3422,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 try
                 {
                     // Eagerly parse all records upfront for cache-friendly access
-                    pending.EagerParseAll();
+                    pending.EagerParseAll(_recordHeaderRoutingPlan);
 
                     // Yield the batch to the caller for synchronous iteration
                     var batchIterationVersion = Volatile.Read(ref _batchIterationEpoch.Version);
@@ -3409,7 +3437,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         _storeOffsetOnDelivery,
                         _options.MaxPollRecords,
                         _rewindBatchAfterDeliveryFailure,
-                        _options.RecordFilter);
+                        _options.RecordFilter,
+                        _recordHeaderRoutingPlan);
                     batchYielded = true;
                     yield return batch;
                     // Resumption = the caller requested the next batch, proving this one was
@@ -3551,7 +3580,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 try
                 {
                     // Eagerly parse all records upfront for cache-friendly access
-                    pending.EagerParseAll();
+                    pending.EagerParseAll(_recordHeaderRoutingPlan);
 
                     // Yield the raw batch to the caller for synchronous iteration
                     var batchIterationVersion = Volatile.Read(ref _batchIterationEpoch.Version);
@@ -5411,7 +5440,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         try
         {
-            pending.EagerParseAll();
+            pending.EagerParseAll(_recordHeaderRoutingPlan);
         }
         catch
         {
@@ -5563,6 +5592,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         var recordFilter = typeof(TRecordFilterMode) == typeof(RecordFilterMode)
             ? _options.RecordFilter
             : null;
+        var recordsUntilPollRefresh = PollRefreshRecordInterval;
 
         // A new consume call proves the record returned by the previous call was processed
         // (poll contract), so everything yielded from the head fetch becomes committable.
@@ -5610,6 +5640,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         var isValueNull = record.IsValueNull;
                         var pooledHeaders = record.Headers;
                         var pooledHeaderCount = record.HeaderCount;
+                        var headerRouting = record.CreateHeaderRoutingLookup(
+                            _recordHeaderRoutingPlan);
                         var messageBytes = (isKeyNull ? 0 : keyData.Length) +
                                            (isValueNull ? 0 : valueData.Length);
 
@@ -5650,6 +5682,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             {
                                 TrackConsumedPosition(pending, offset, messageBytes);
                                 pending.MarkYieldedProcessed();
+                                if (--recordsUntilPollRefresh == 0)
+                                    return false;
                                 continue;
                             }
                         }
@@ -5683,6 +5717,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                     isValueNull,
                                     pooledHeaders,
                                     pooledHeaderCount,
+                                    headerRouting,
                                     timestampMs,
                                     timestampType,
                                     pending.CurrentPartitionLeaderEpoch >= 0
@@ -5722,6 +5757,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                     isValueNull,
                                     pooledHeaders,
                                     pooledHeaderCount,
+                                    headerRouting,
                                     pending,
                                     timestampMs,
                                     timestampType,
@@ -5866,6 +5902,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         var recordFilter = typeof(TRecordFilterMode) == typeof(RecordFilterMode)
             ? _options.RecordFilter
             : null;
+        var recordsUntilPollRefresh = PollRefreshRecordInterval;
 
         // A new consume call proves the record returned by the previous call was processed
         // (poll contract), so everything yielded from the head fetch becomes committable.
@@ -5913,6 +5950,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         var isValueNull = record.IsValueNull;
                         var pooledHeaders = record.Headers;
                         var pooledHeaderCount = record.HeaderCount;
+                        var headerRouting = record.CreateHeaderRoutingLookup(
+                            _recordHeaderRoutingPlan);
                         var messageBytes = (isKeyNull ? 0 : keyData.Length) +
                                            (isValueNull ? 0 : valueData.Length);
 
@@ -5951,6 +5990,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             {
                                 TrackConsumedPosition(pending, offset, messageBytes);
                                 pending.MarkYieldedProcessed();
+                                if (--recordsUntilPollRefresh == 0)
+                                    return null;
                                 continue;
                             }
                         }
@@ -5988,6 +6029,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                     isValueNull,
                                     pooledHeaders,
                                     pooledHeaderCount,
+                                    headerRouting,
                                     timestampMs,
                                     timestampType,
                                     leaderEpoch,
@@ -6007,6 +6049,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                         isValueNull,
                                         pooledHeaders,
                                         pooledHeaderCount,
+                                        in headerRouting,
                                         timestampMs,
                                         timestampType,
                                         leaderEpoch,
@@ -6194,6 +6237,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         bool isValueNull,
         Header[]? pooledHeaders,
         int pooledHeaderCount,
+        in RecordHeaderRoutingLookup headerRouting,
         long timestampMs,
         TimestampType timestampType,
         int? leaderEpoch,
@@ -6211,6 +6255,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 isValueNull,
                 pooledHeaders,
                 pooledHeaderCount,
+                in headerRouting,
                 timestampMs,
                 timestampType,
                 leaderEpoch,
@@ -6227,6 +6272,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             isValueNull,
             pooledHeaders,
             pooledHeaderCount,
+            in headerRouting,
             timestampMs,
             timestampType,
             leaderEpoch,
@@ -6243,6 +6289,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         bool isValueNull,
         Header[]? pooledHeaders,
         int pooledHeaderCount,
+        in RecordHeaderRoutingLookup headerRouting,
         long timestampMs,
         TimestampType timestampType,
         int? leaderEpoch,
@@ -6283,8 +6330,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             _keyDeserializer,
                             keyData,
                             keyContext,
-                            pooledHeaders,
-                            pooledHeaderCount);
+                            in headerRouting);
                     }
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
@@ -6336,8 +6382,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     _valueDeserializer,
                     valueBytes,
                     valueContext,
-                    pooledHeaders,
-                    pooledHeaderCount);
+                    in headerRouting);
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -6481,6 +6526,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         bool isValueNull,
         Header[]? pooledHeaders,
         int pooledHeaderCount,
+        RecordHeaderRoutingLookup headerRouting,
         long timestampMs,
         TimestampType timestampType,
         int? leaderEpoch,
@@ -6528,8 +6574,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         _keyDeserializer,
                         keyData,
                         keyContext,
-                        pooledHeaders,
-                        pooledHeaderCount);
+                        in headerRouting);
                 }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -6588,8 +6633,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     _valueDeserializer,
                     valueBytes,
                     valueContext,
-                    pooledHeaders,
-                    pooledHeaderCount);
+                    in headerRouting);
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

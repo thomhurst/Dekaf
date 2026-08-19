@@ -230,6 +230,7 @@ namespace Dekaf.Consumer
         private readonly IDeserializer<TKey>? _keyDeserializer;
         private readonly IDeserializer<TValue>? _valueDeserializer;
         private readonly bool _hasRecordHeaderDeserializers;
+        private readonly RecordHeaderRoutingPlan? _recordHeaderRoutingPlan;
         private readonly BatchIterationGuard _iterationGuard;
         private readonly Action<TopicPartition, long, int>? _storeOffsetOnDelivery;
         private readonly Action<PendingFetchData, long>? _rewindAfterDeliveryFailure;
@@ -244,7 +245,8 @@ namespace Dekaf.Consumer
             Action<TopicPartition, long, int>? storeOffsetOnDelivery = null,
             int maxRecords = int.MaxValue,
             Action<PendingFetchData, long>? rewindAfterDeliveryFailure = null,
-            IConsumerRecordFilter? recordFilter = null)
+            IConsumerRecordFilter? recordFilter = null,
+            RecordHeaderRoutingPlan? recordHeaderRoutingPlan = null)
         {
             ArgumentOutOfRangeException.ThrowIfLessThan(maxRecords, 1);
             _pendingFetchData = pendingFetchData;
@@ -257,6 +259,12 @@ namespace Dekaf.Consumer
             _maxRecords = maxRecords;
             _rewindAfterDeliveryFailure = rewindAfterDeliveryFailure;
             _recordFilter = recordFilter;
+            _recordHeaderRoutingPlan = recordHeaderRoutingPlan
+                                       ?? RecordHeaderRoutingPlan.Create(
+                                           keyDeserializer,
+                                           valueDeserializer);
+            if (_recordHeaderRoutingPlan is not null)
+                pendingFetchData.ConfigureHeaderRouting(_recordHeaderRoutingPlan);
         }
 
         /// <summary>
@@ -487,12 +495,21 @@ namespace Dekaf.Consumer
                     var leaderEpoch = pending.CurrentPartitionLeaderEpoch >= 0
                         ? (int?)pending.CurrentPartitionLeaderEpoch
                         : null;
-                    var messageBytes = (record.IsKeyNull ? 0 : record.Key.Length) +
-                                       (record.IsValueNull ? 0 : record.Value.Length);
+                    var keyData = record.Key;
+                    var valueData = record.Value;
+                    var isKeyNull = record.IsKeyNull;
+                    var isValueNull = record.IsValueNull;
+                    var pooledHeaders = record.Headers;
+                    var pooledHeaderCount = record.HeaderCount;
+                    var headerRouting = record.CreateHeaderRoutingLookup(
+                        _batch._recordHeaderRoutingPlan);
+                    var messageBytes = (isKeyNull ? 0 : keyData.Length) +
+                                       (isValueNull ? 0 : valueData.Length);
 
                     if (_batch._recordFilter is { } filter)
                     {
                         bool shouldDeserialize;
+                        using var retention = pending.RetainForIteration();
                         try
                         {
                             var context = new ConsumerRecordFilterContext(
@@ -502,18 +519,30 @@ namespace Dekaf.Consumer
                                 timestampMs,
                                 timestampType,
                                 leaderEpoch,
-                                record.Key,
-                                record.IsKeyNull,
-                                record.Value,
-                                record.IsValueNull,
-                                record.Headers.AsSpan(0, record.HeaderCount));
+                                keyData,
+                                isKeyNull,
+                                valueData,
+                                isValueNull,
+                                pooledHeaders.AsSpan(0, pooledHeaderCount));
                             shouldDeserialize = filter.ShouldDeserialize(in context);
                         }
+                        // lgtm[cs/catch-of-all-exceptions] Arbitrary user filter failures must rewind.
                         catch
                         {
                             _canContinue = false;
                             _batch._rewindAfterDeliveryFailure?.Invoke(pending, offset);
                             throw;
+                        }
+
+                        var filterIterationStatus = _batch._iterationGuard.GetStatusAfterRead(
+                            pending.TopicPartition,
+                            ref _observedVersion);
+                        if (filterIterationStatus != BatchIterationStatus.Continue)
+                        {
+                            _canContinue = false;
+                            if (filterIterationStatus == BatchIterationStatus.Paused)
+                                pending.BufferCurrentForRedelivery();
+                            return false;
                         }
 
                         if (!shouldDeserialize)
@@ -531,12 +560,13 @@ namespace Dekaf.Consumer
                                 pending.Topic,
                                 pending.PartitionIndex,
                                 offset,
-                                record.Key,
-                                record.IsKeyNull,
-                                record.Value,
-                                record.IsValueNull,
-                                record.Headers,
-                                record.HeaderCount,
+                                keyData,
+                                isKeyNull,
+                                valueData,
+                                isValueNull,
+                                pooledHeaders,
+                                pooledHeaderCount,
+                                in headerRouting,
                                 pending,
                                 timestampMs,
                                 timestampType,
@@ -547,12 +577,12 @@ namespace Dekaf.Consumer
                                 topic: pending.Topic,
                                 partition: pending.PartitionIndex,
                                 offset: offset,
-                                keyData: record.Key,
-                                isKeyNull: record.IsKeyNull,
-                                valueData: record.Value,
-                                isValueNull: record.IsValueNull,
-                                pooledHeaders: record.Headers,
-                                pooledHeaderCount: record.HeaderCount,
+                                keyData: keyData,
+                                isKeyNull: isKeyNull,
+                                valueData: valueData,
+                                isValueNull: isValueNull,
+                                pooledHeaders: pooledHeaders,
+                                pooledHeaderCount: pooledHeaderCount,
                                 headerOwner: pending,
                                 timestampMs: timestampMs,
                                 timestampType: timestampType,

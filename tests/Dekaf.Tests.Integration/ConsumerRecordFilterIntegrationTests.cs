@@ -52,6 +52,55 @@ public sealed class ConsumerRecordFilterIntegrationTests(KafkaTestContainer kafk
     }
 
     [Test]
+    public async Task FilteredRecord_AdvancesAutomaticCommit()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        var groupId = $"record-filter-auto-{Guid.NewGuid():N}";
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        await ProduceAsync(producer, topic, "drop", "filtered");
+        await ProduceAsync(producer, topic, "keep", "delivered");
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId(groupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithOffsetCommitMode(OffsetCommitMode.Auto)
+            .WithAutoCommitInterval(TimeSpan.FromMilliseconds(100))
+            .WithQueuedMinMessages(1)
+            .WithRecordFilter(new RouteHeaderFilter())
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        consumer.Subscribe(topic);
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var delivered = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), timeout.Token);
+        await Assert.That(delivered).IsNotNull();
+        await Assert.That(delivered!.Value.Offset).IsEqualTo(1L);
+
+        // Requesting the next record proves the delivered record was processed. There is no
+        // third record, so the short poll returns null while making offsets 0 and 1 committable.
+        _ = await consumer.ConsumeOneAsync(TimeSpan.FromMilliseconds(100), timeout.Token);
+
+        var partition = new TopicPartition(topic, 0);
+        long? committed = null;
+        while (!timeout.IsCancellationRequested)
+        {
+            committed = await consumer.GetCommittedOffsetAsync(partition, timeout.Token);
+            if (committed >= 2)
+                break;
+
+            await Task.Delay(100, timeout.Token);
+        }
+
+        await Assert.That(committed).IsEqualTo(2L);
+    }
+
+    [Test]
     public async Task RunPartitionedAsync_FilterSkipsBeforePartitionDelivery()
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
@@ -90,6 +139,7 @@ public sealed class ConsumerRecordFilterIntegrationTests(KafkaTestContainer kafk
         }
         catch (OperationCanceledException) when (timeout.IsCancellationRequested)
         {
+            await Assert.That(timeout.IsCancellationRequested).IsTrue();
         }
 
         await Assert.That(deliveredOffsets.ToArray()).IsEquivalentTo([1L]);

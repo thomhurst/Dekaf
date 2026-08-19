@@ -98,7 +98,7 @@ Configuration is applied before the optional fluent callback, so fluent calls ca
 | `WithFetchMaxWait(...)` | `FetchMaxWaitMs` | Milliseconds |
 | `WithFetchSessions(...)` | `EnableFetchSessions` | Boolean |
 | `WithMaxPollRecords(...)` | `MaxPollRecords` | Integer |
-| `WithRecordFilter(...)` | Runtime callback | Allocation-free predicate invoked before key/value deserialization; see [Filtering and routing](../consumer/filtering-and-routing.md) |
+| `WithRecordFilter(...)` | Runtime callback | Allocation-free invocation path before key/value deserialization; user predicates must avoid allocations to preserve zero-allocation delivery. See [Filtering and routing](../consumer/filtering-and-routing.md) |
 | `WithSessionTimeout(...)` | `SessionTimeoutMs` | Milliseconds |
 | `WithHeartbeatInterval(...)` | `HeartbeatIntervalMs` | Milliseconds |
 | Runtime-configured | `RebalanceTimeoutMs` | Broker-visible KIP-848 rebalance window in milliseconds; default 60000 |

@@ -3,6 +3,78 @@ using System.Runtime.CompilerServices;
 
 namespace Dekaf.Serialization;
 
+internal interface IRecordHeaderRoutingProvider
+{
+    void CollectHeaderNames(List<string> names);
+}
+
+internal sealed class RecordHeaderRoutingPlan
+{
+    private readonly Dictionary<string, int> _slots;
+
+    private RecordHeaderRoutingPlan(List<string> names)
+    {
+        _slots = new Dictionary<string, int>(names.Count, StringComparer.Ordinal);
+        for (var index = 0; index < names.Count; index++)
+            _slots.Add(names[index], index);
+    }
+
+    internal int Count => _slots.Count;
+
+    internal bool TryGetSlot(string headerName, out int slot) =>
+        _slots.TryGetValue(headerName, out slot);
+
+    internal static RecordHeaderRoutingPlan? Create<TKey, TValue>(
+        IDeserializer<TKey>? keyDeserializer,
+        IDeserializer<TValue>? valueDeserializer)
+    {
+        List<string>? names = null;
+        Collect(keyDeserializer, ref names);
+        Collect(valueDeserializer, ref names);
+        return names is null ? null : new RecordHeaderRoutingPlan(names);
+    }
+
+    private static void Collect<T>(IDeserializer<T>? deserializer, ref List<string>? names)
+    {
+        if (deserializer is not IRecordHeaderRoutingProvider provider)
+            return;
+
+        names ??= [];
+        provider.CollectHeaderNames(names);
+    }
+}
+
+internal readonly struct RecordHeaderRoutingLookup(
+    RecordHeaderRoutingPlan? plan,
+    Header[]? headers,
+    int headerCount,
+    int firstIndex,
+    int secondIndex,
+    int[]? remainingIndices)
+{
+    internal bool TryGetLast(string headerName, out Header header)
+    {
+        if (plan is not null && plan.TryGetSlot(headerName, out var slot))
+        {
+            var index = slot switch
+            {
+                0 => firstIndex,
+                1 => secondIndex,
+                _ when remainingIndices is not null => remainingIndices[slot - 2],
+                _ => 0
+            } - 1;
+            if ((uint)index < (uint)headerCount && headers is not null)
+            {
+                header = headers[index];
+                return true;
+            }
+        }
+
+        header = default;
+        return false;
+    }
+}
+
 /// <summary>
 /// Interface for serializing values to bytes.
 /// </summary>
@@ -41,7 +113,7 @@ internal interface IRecordHeaderDeserializer<out T>
     T Deserialize(
         ReadOnlyMemory<byte> data,
         SerializationContext context,
-        ReadOnlySpan<Header> headers);
+        in RecordHeaderRoutingLookup headers);
 }
 
 internal static class RecordHeaderDeserializer
@@ -51,13 +123,12 @@ internal static class RecordHeaderDeserializer
         IDeserializer<T> deserializer,
         ReadOnlyMemory<byte> data,
         SerializationContext context,
-        Header[]? pooledHeaders,
-        int pooledHeaderCount) =>
+        in RecordHeaderRoutingLookup headers) =>
         deserializer is IRecordHeaderDeserializer<T> headerDeserializer
             ? headerDeserializer.Deserialize(
                 data,
                 context,
-                pooledHeaders.AsSpan(0, pooledHeaderCount))
+                in headers)
             : deserializer.Deserialize(data, context);
 }
 
