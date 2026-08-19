@@ -509,7 +509,12 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         var id = result!.Id;
         var schemaGuid = ParseSchemaGuid(result.Guid);
 
-        CacheSchema(id, subject, schema, effectiveNormalize, schemaGuid: schemaGuid);
+        CacheSchema(
+            id,
+            subject,
+            schema,
+            effectiveNormalize,
+            schemaGuid: effectiveNormalize ? null : schemaGuid);
 
         return id;
     }

@@ -151,6 +151,26 @@ public sealed class SchemaRegistryGuidTests
     }
 
     [Test]
+    public async Task RegisterSchemaAsync_NormalizedSchemaDoesNotSeedGuidAliasFromRequest()
+    {
+        var requestCount = 0;
+        using var handler = new RecordingHandler((_, _) => Task.FromResult(
+            Interlocked.Increment(ref requestCount) == 1
+                ? JsonResponse(HttpStatusCode.OK, $$"""{ "id": 42, "guid": "{{FirstGuid:D}}" }""")
+                : JsonResponse(HttpStatusCode.OK, """{ "schema": "normalized", "schemaType": "JSON" }""")));
+        using var client = CreateClient(handler);
+
+        _ = await client.RegisterSchemaAsync(
+            "orders-value",
+            NewSchema("unnormalized"),
+            normalize: true);
+        var resolved = await client.GetSchemaByGuidAsync(FirstGuid.ToString("D"));
+
+        await Assert.That(handler.Requests).Count().IsEqualTo(2);
+        await Assert.That(resolved.SchemaString).IsEqualTo("normalized");
+    }
+
+    [Test]
     public async Task RegisterSchemaAsync_GuidAliasPreservesRegistrationCacheAtCapacity()
     {
         using var handler = new RecordingHandler(static (_, _) => Task.FromResult(JsonResponse(
