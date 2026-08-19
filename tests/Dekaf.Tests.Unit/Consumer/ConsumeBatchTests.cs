@@ -84,6 +84,19 @@ public class ConsumeBatchTests
     }
 
     [Test]
+    public async Task ConsumeBatch_PartitionEofMarker_IsEmptyAndCarriesOffset()
+    {
+        using var pending = PendingFetchData.CreatePartitionEof("test-topic", 4, 73);
+        var batch = new ConsumeBatch<string, string>(pending, Serializers.String, Serializers.String);
+
+        await Assert.That(batch.TopicPartition).IsEqualTo(new TopicPartition("test-topic", 4));
+        await Assert.That(batch.IsPartitionEof).IsTrue();
+        await Assert.That(batch.PartitionEofOffset).IsEqualTo(73);
+        using var records = batch.GetEnumerator();
+        await Assert.That(records.MoveNext()).IsFalse();
+    }
+
+    [Test]
     public async Task ConsumeBatch_Records_HaveDeserializedKeyAndValue()
     {
         using var pending = CreatePendingFetchData("test-topic", partitionIndex: 0, baseOffset: 0, messageCount: 2);

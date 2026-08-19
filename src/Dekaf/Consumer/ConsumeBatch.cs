@@ -275,6 +275,17 @@ namespace Dekaf.Consumer
         public long Count => _count;
 
         /// <summary>
+        /// Indicates whether this zero-record batch marks the current end offset of its partition.
+        /// Emitted only when partition EOF reporting is enabled.
+        /// </summary>
+        public bool IsPartitionEof => _pendingFetchData.IsPartitionEof;
+
+        /// <summary>
+        /// Gets the partition end offset for an EOF batch, or <see langword="null"/> for a data batch.
+        /// </summary>
+        public long? PartitionEofOffset => _pendingFetchData.PartitionEofOffset;
+
+        /// <summary>
         /// Returns a struct enumerator that avoids boxing allocation.
         /// </summary>
         public Enumerator GetEnumerator()
