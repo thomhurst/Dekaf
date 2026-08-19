@@ -130,3 +130,4 @@ Dekaf.Serialization.IAsyncDeserializerPreparer<T>.PrepareAsync(System.ReadOnlyMe
 Dekaf.Consumer.ConsumerOptions.PartitionStopTimeout.get -> System.TimeSpan
 Dekaf.Consumer.ConsumerOptions.PartitionStopTimeout.init -> void
 Dekaf.ConsumerBuilder<TKey, TValue>.WithPartitionStopTimeout(System.TimeSpan timeout) -> Dekaf.ConsumerBuilder<TKey, TValue>!
+Dekaf.ConsumerBuilder<TKey, TValue>.AddRebalanceListener(Dekaf.Consumer.IRebalanceListener! listener) -> Dekaf.ConsumerBuilder<TKey, TValue>!
