@@ -1425,7 +1425,7 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             TaskCreationOptions.RunContinuationsAsynchronously);
         var p1FollowupStarted = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseP0OnlyRetry = new TaskCompletionSource(
+        var p1FollowupResponse = new TaskCompletionSource<ProduceResponse>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var connection = new TestKafkaConnection { CaptureProduceRequests = true };
         connection.SendProducePipelinedAfterWrite = () =>
@@ -1438,9 +1438,9 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             var partitions = new List<(int partition, ErrorCode errorCode, long baseOffset)>(
                 requestedTopics.Count);
             var includesPartitionOne = false;
-            foreach (var requestedTopic in requestedTopics)
+            for (var i = 0; i < requestedTopics.Count; i++)
             {
-                var partition = requestedTopic.Partition;
+                var partition = requestedTopics[i].Partition;
                 includesPartitionOne |= partition == 1;
                 var attempt = Interlocked.Increment(ref partitionAttempts[partition]);
                 partitions.Add(partition switch
@@ -1461,18 +1461,21 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             if (includesPartitionOne)
             {
                 p1FollowupStarted.TrySetResult();
-                return new ValueTask<Task<ProduceResponse>>(Task.FromResult(response));
+                return new ValueTask<Task<ProduceResponse>>(p1FollowupResponse.Task);
             }
 
             p0OnlyRetryStarted.TrySetResult();
-            return new ValueTask<Task<ProduceResponse>>(CompleteP0RetryAsync(response));
+            return new ValueTask<Task<ProduceResponse>>(Task.FromResult(response));
         };
         var pool = Substitute.For<IConnectionPool>();
         var connectionAvailable = new TaskCompletionSource<IKafkaConnection>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
             .Returns(_ => new ValueTask<IKafkaConnection>(connectionAvailable.Task));
-        var options = CreateOptions(maxInFlight: 2);
+        var options = CreateOptions(
+            maxInFlight: 2,
+            retryBackoffMs: int.MaxValue,
+            retryBackoffMaxMs: int.MaxValue);
         var accumulator = new RecordAccumulator(options);
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
 
@@ -1515,25 +1518,23 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             await Assert.That(firstRequest.Select(static topic => topic.Partition))
                 .IsEquivalentTo([0, 1]);
 
-            // Enqueue C while the first response is held. After p0 becomes muted, C must
-            // still send; the p0 retry and C may legally share a request or use two requests.
+            // Enqueue C while the first response is held. After p0 becomes muted and enters
+            // retry backoff, C must still send without waiting for p0 to become retry-ready.
             var batchC = CreateTestBatch(vtPool, "test-topic", 1);
             sender.Enqueue(batchC);
 
             firstResponse.SetResult(firstResponsePayload);
 
-            var firstFollowup = await Task.WhenAny(
-                    p0OnlyRetryStarted.Task,
-                    p1FollowupStarted.Task)
-                .WaitAsync(TimeSpan.FromSeconds(30), ct);
-            if (ReferenceEquals(firstFollowup, p0OnlyRetryStarted.Task))
-            {
-                // A p0-only retry is in flight. C must still dispatch before that retry
-                // completes, proving p0's mute does not stall the unmuted partition.
-                await p1FollowupStarted.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
-            }
+            // p0 has a practically-unbounded retry backoff. C must dispatch while p0 cannot
+            // become retry-ready, proving p0's mute does not stall p1.
+            await p1FollowupStarted.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
+            await Assert.That(p0OnlyRetryStarted.Task.IsCompleted).IsFalse();
+            await Assert.That(Volatile.Read(ref partitionAttempts[0])).IsEqualTo(1);
 
-            releaseP0OnlyRetry.TrySetResult();
+            batchA.RetryNotBefore = 0;
+            p1FollowupResponse.SetResult(CreateMultiPartitionResponse(
+                "test-topic",
+                (1, ErrorCode.None, 201)));
 
             await allAcknowledged.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
 
@@ -1544,22 +1545,16 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             await Assert.That(remaining[0]).IsEqualTo((0, 100L));
             await Assert.That(remaining[1]).IsEqualTo((1, 201L));
             await Assert.That(partitionAttempts).IsEquivalentTo([2, 2]);
-            await Assert.That(Volatile.Read(ref sendCount)).IsBetween(2, 3);
+            await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(3);
         }
         finally
         {
             connectionAvailable.TrySetResult(connection);
             firstResponse.TrySetCanceled(CancellationToken.None);
-            releaseP0OnlyRetry.TrySetResult();
+            p1FollowupResponse.TrySetCanceled(CancellationToken.None);
             await sender.DisposeAsync();
             await accumulator.DisposeAsync();
             await vtPool.DisposeAsync();
-        }
-
-        async Task<ProduceResponse> CompleteP0RetryAsync(ProduceResponse response)
-        {
-            await releaseP0OnlyRetry.Task;
-            return response;
         }
     }
 
