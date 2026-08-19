@@ -2477,7 +2477,9 @@ public sealed class ConnectionPoolTests
 
                 return new ValueTask<IKafkaConnection>(CreateConnectedConnection(brokerId, host, port));
             },
-            randomDouble: static () => 0.5);
+            randomDouble: static () => 0.5,
+            // Keep the backoff pending even if the test thread is descheduled past 200ms.
+            timestampProvider: static () => 0);
 
         await using (pool)
         {
