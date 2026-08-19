@@ -1403,6 +1403,28 @@ public sealed class ConsumerAssignmentFastPathTests
     }
 
     [Test]
+    public async Task TopicIdentityChange_ExplicitSeekMarker_DoesNotGetClaimed()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager);
+        var partition = new TopicPartition("test-topic", 0);
+        consumer.IncrementalAssign([
+            new TopicPartitionOffset(partition.Topic, partition.Partition, 10)
+        ]);
+        await InvokeHandleTopicIdentityChangesAsync(consumer);
+
+        GetPendingFetches(consumer).Enqueue(
+            CreateFetch(partition: partition.Partition, baseOffset: 10, value: "stale"));
+        consumer.SeekToBeginning(partition);
+        metadataManager.Metadata.Update(CreateMetadataResponse(Guid.NewGuid(), partitionCount: 2));
+
+        await InvokeHandleTopicIdentityChangesAsync(consumer);
+
+        await Assert.That(GetFetchPositions(consumer)[partition]).IsEqualTo(0L);
+    }
+
+    [Test]
     public async Task TopicIdentityChange_PendingRevocationDrainDuringReset_DoesNotSuppressReset()
     {
         var connectionPool = Substitute.For<IConnectionPool>();

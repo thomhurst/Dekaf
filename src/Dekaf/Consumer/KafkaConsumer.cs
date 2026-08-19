@@ -1314,18 +1314,26 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private int _fetchBufferEpoch;
     private int _minimumFetchBufferEpoch;
     private readonly ConcurrentDictionary<TopicPartition, int> _minimumFetchBufferEpochsByPartition = new();
-    // Coordinator revocations and diverging-epoch corrections share this partition set because
-    // both must stop record iteration before the poll loop clears stale fetch data. The marker
-    // value identifies its publication so recovery can allow one exact preexisting marker while
-    // rejecting later ABA invalidations. The flags avoid dictionary work on the normal path.
+    // Fetch-clear publications share this partition set because they must stop record iteration
+    // before the poll loop clears stale data. Version and source let topic recovery claim one exact
+    // old-identity marker without consuming an explicit position change. The flags avoid dictionary
+    // work on the normal path.
     private readonly object _coordinatorRevokedPartitionsPendingFetchClearLock = new();
     private readonly ConcurrentDictionary<TopicPartition, long> _coordinatorRevokedPartitionsPendingFetchClear = new();
+    private readonly Dictionary<TopicPartition, PendingFetchClearMarkerSource> _pendingFetchClearMarkerSources = [];
     private readonly ConcurrentDictionary<TopicPartition, (long EndOffset, int Epoch)> _pendingDivergingEpochResets = new();
     private long _pendingFetchClearVersion;
     private int _stagedDivergingEpochResetBatches;
     private int _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent;
     private int _coordinatorRevokedPartitionsPendingFetchClearPending;
     private readonly BatchIterationEpoch _batchIterationEpoch = new();
+
+    private enum PendingFetchClearMarkerSource : byte
+    {
+        PositionChange,
+        CoordinatorRevocation,
+        DivergingEpoch
+    }
 
     // Background prefetch support
     private readonly MpscFetchBuffer _prefetchBuffer;
@@ -7028,7 +7036,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // observes the clear without adding another fence to the per-record hot path.
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
         {
-            SetPendingFetchClearMarkerLocked(partition);
+            SetPendingFetchClearMarkerLocked(partition, PendingFetchClearMarkerSource.PositionChange);
 
             _batchIterationEpoch.BeginPublication();
             try
@@ -7043,13 +7051,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
     }
 
-    private void SetPendingFetchClearMarkerLocked(TopicPartition partition)
+    private void SetPendingFetchClearMarkerLocked(
+        TopicPartition partition,
+        PendingFetchClearMarkerSource source)
     {
         var version = Interlocked.Increment(ref _pendingFetchClearVersion);
         if (version == NoPendingFetchClearVersion)
             version = Interlocked.Increment(ref _pendingFetchClearVersion);
 
         _coordinatorRevokedPartitionsPendingFetchClear[partition] = version;
+        _pendingFetchClearMarkerSources[partition] = source;
     }
 
     private void ClearFetchBuffer()
@@ -7202,7 +7213,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 // Keep the revocation marker so the consume loop still drains stale buffers.
                 _pendingRebalanceSeeks.TryRemove(partition, out _);
                 _pendingDivergingEpochResets.TryRemove(partition, out _);
-                SetPendingFetchClearMarkerLocked(partition);
+                SetPendingFetchClearMarkerLocked(
+                    partition,
+                    PendingFetchClearMarkerSource.CoordinatorRevocation);
             }
 
             // Invalidate broker fetches that started before the revocation immediately.
@@ -7249,7 +7262,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             return false;
 
         _pendingDivergingEpochResets[partition] = (endOffset, epoch);
-        SetPendingFetchClearMarkerLocked(partition);
+        SetPendingFetchClearMarkerLocked(partition, PendingFetchClearMarkerSource.DivergingEpoch);
         if (startsBatch)
             _stagedDivergingEpochResetBatches++;
         _batchIterationEpoch.BeginPublication();
@@ -7306,7 +7319,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         ClearFetchBufferForPartitions(partitionsToRemove);
 
         foreach (var partition in partitionsToRemove)
+        {
             _coordinatorRevokedPartitionsPendingFetchClear.TryRemove(partition, out _);
+            _pendingFetchClearMarkerSources.Remove(partition);
+        }
 
         Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent, 0);
         Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 0);
@@ -9193,8 +9209,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             foreach (var partition in partitions)
             {
-                if (_coordinatorRevokedPartitionsPendingFetchClear.TryGetValue(partition, out var version))
+                if (_coordinatorRevokedPartitionsPendingFetchClear.TryGetValue(partition, out var version)
+                    && _pendingFetchClearMarkerSources.TryGetValue(partition, out var source)
+                    && source is PendingFetchClearMarkerSource.CoordinatorRevocation
+                        or PendingFetchClearMarkerSource.DivergingEpoch)
+                {
                     (versions ??= [])[partition] = version;
+                }
             }
 
             // Claim old-identity markers before a background drain can invalidate the
@@ -9210,6 +9231,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         && currentVersion == version)
                     {
                         _coordinatorRevokedPartitionsPendingFetchClear.TryRemove(partition, out _);
+                        _pendingFetchClearMarkerSources.Remove(partition);
                     }
                 }
             }
