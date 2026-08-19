@@ -1659,6 +1659,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private int _maxCachedStringValueEntries = DefaultMaxCachedStringValueEntries;
     private IRebalanceListener? _rebalanceListener;
     private IConsumerAwareRebalanceListener? _consumerAwareRebalanceListener;
+    private TimeSpan _partitionStopTimeout = TimeSpan.FromSeconds(5);
     private Microsoft.Extensions.Logging.ILoggerFactory? _loggerFactory;
     private bool _enablePartitionEof;
     private int _socketSendBufferBytes;
@@ -2504,6 +2505,21 @@ public sealed class ConsumerBuilder<TKey, TValue>
         return this;
     }
 
+    /// <summary>
+    /// Sets the maximum time to await an <see cref="IPartitionStopListener"/> during
+    /// graceful <c>CloseAsync</c> or <c>DisposeAsync</c>. Default is 5 seconds.
+    /// </summary>
+    /// <param name="timeout">The partition-stop callback timeout. Must be at least one millisecond.</param>
+    public ConsumerBuilder<TKey, TValue> WithPartitionStopTimeout(TimeSpan timeout)
+    {
+        if (timeout < TimeSpan.FromMilliseconds(1))
+            throw new ArgumentOutOfRangeException(nameof(timeout), "Partition stop timeout must be at least one millisecond");
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
+
+        _partitionStopTimeout = timeout;
+        return this;
+    }
+
     public ConsumerBuilder<TKey, TValue> WithLoggerFactory(Microsoft.Extensions.Logging.ILoggerFactory loggerFactory)
     {
         _loggerFactory = loggerFactory;
@@ -3228,6 +3244,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
             AwsMskIamConfig = _awsMskIamConfig,
             RebalanceListener = _rebalanceListener,
             ConsumerAwareRebalanceListener = _consumerAwareRebalanceListener,
+            PartitionStopTimeout = _partitionStopTimeout,
             EnablePartitionEof = _enablePartitionEof,
             SocketSendBufferBytes = _socketSendBufferBytes,
             SocketReceiveBufferBytes = _socketReceiveBufferBytes,
