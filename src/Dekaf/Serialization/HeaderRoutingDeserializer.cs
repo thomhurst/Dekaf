@@ -76,13 +76,13 @@ public sealed class HeaderRoutingDeserializer<T> :
                     continue;
 
                 if (!header.IsValueNull && TryGetDeserializer(header.Value.Span, out var deserializer))
-                    return deserializer.Deserialize(data, context);
+                    return DeserializeChild(deserializer, data, context);
 
                 break;
             }
         }
 
-        return _fallbackDeserializer.Deserialize(data, context);
+        return DeserializeChild(_fallbackDeserializer, data, context);
     }
 
     T IRecordHeaderDeserializer<T>.Deserialize(
@@ -109,18 +109,10 @@ public sealed class HeaderRoutingDeserializer<T> :
             && !header.IsValueNull
             && TryGetDeserializer(header.Value.Span, out var deserializer))
         {
-            return RecordHeaderDeserializer.Deserialize(
-                deserializer,
-                data,
-                context,
-                in headers);
+            return DeserializeChild(deserializer, data, context, in headers);
         }
 
-        return RecordHeaderDeserializer.Deserialize(
-            _fallbackDeserializer,
-            data,
-            context,
-            in headers);
+        return DeserializeChild(_fallbackDeserializer, data, context, in headers);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -146,6 +138,35 @@ public sealed class HeaderRoutingDeserializer<T> :
         return _fallbackDeserializer is HeaderRoutingDeserializer<T> nestedFallback
             ? nestedFallback.DeserializeWithHeaders(data, context, headers)
             : _fallbackDeserializer.Deserialize(data, context);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static T DeserializeChild(
+        IDeserializer<T> deserializer,
+        ReadOnlyMemory<byte> data,
+        SerializationContext context)
+    {
+        if (deserializer is HeaderRoutingDeserializer<T> nested)
+            return nested.Deserialize(data, context);
+
+        if (context.Headers is not null)
+            context.Headers = null;
+        return deserializer.Deserialize(data, context);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static T DeserializeChild(
+        IDeserializer<T> deserializer,
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        in RecordHeaderRoutingLookup headers)
+    {
+        if (deserializer is IRecordHeaderDeserializer<T> nested)
+            return nested.Deserialize(data, context, in headers);
+
+        if (context.Headers is not null)
+            context.Headers = null;
+        return deserializer.Deserialize(data, context);
     }
 
     private static void CollectChildHeaderNames(

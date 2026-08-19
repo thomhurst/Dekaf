@@ -32,6 +32,45 @@ public sealed class HeaderRoutingDeserializerTests
     }
 
     [Test]
+    [Arguments("created")]
+    [Arguments("unknown")]
+    public async Task Deserialize_ClearsCallerOwnedHeadersBeforeLeaf(string routeValue)
+    {
+        var leaf = new HeaderPresenceDeserializer();
+        var router = new HeaderRoutingDeserializer<string>(
+            "event-type",
+            leaf,
+            new HeaderDeserializerRoute<string>("created"u8.ToArray(), leaf));
+        var context = CreateContext();
+        context.Headers = Headers.Create("event-type", routeValue);
+
+        var result = router.Deserialize("payload"u8.ToArray(), context);
+
+        await Assert.That(result).IsEqualTo("no-headers");
+        await Assert.That(context.Headers!.Count).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task Deserialize_PreservesHeadersThroughNestedRouterThenClearsLeaf()
+    {
+        var inner = new HeaderRoutingDeserializer<string>(
+            "schema",
+            new PrefixDeserializer("inner-fallback"),
+            new HeaderDeserializerRoute<string>("v2"u8.ToArray(), new HeaderPresenceDeserializer()));
+        var outer = new HeaderRoutingDeserializer<string>(
+            "event-type",
+            new PrefixDeserializer("outer-fallback"),
+            new HeaderDeserializerRoute<string>("created"u8.ToArray(), inner));
+        var context = CreateContext();
+        context.Headers = Headers.Create("event-type", "created").Add("schema", "v2");
+
+        var result = outer.Deserialize("payload"u8.ToArray(), context);
+
+        await Assert.That(result).IsEqualTo("no-headers");
+        await Assert.That(context.Headers!.Count).IsEqualTo(2);
+    }
+
+    [Test]
     [Arguments(false)]
     [Arguments(true)]
     public async Task Deserialize_MissingOrNullHeaderUsesFallback(bool includeNullHeader)
@@ -79,7 +118,7 @@ public sealed class HeaderRoutingDeserializerTests
     [Test]
     public async Task Deserialize_ParsedNestedRoutingUsesPooledHeaderIndex()
     {
-        var leaf = new PrefixDeserializer("leaf");
+        var leaf = new HeaderPresenceDeserializer();
         var route4 = CreateNestedRouter("route-4", "hit"u8.ToArray(), leaf);
         var route3 = CreateNestedRouter("route-3", "next"u8.ToArray(), route4);
         var route2 = CreateNestedRouter("route-2", "next"u8.ToArray(), route3);
@@ -102,6 +141,8 @@ public sealed class HeaderRoutingDeserializerTests
         record.Write(ref writer);
         var reader = new KafkaProtocolReader(buffer.WrittenMemory);
         var parsed = Record.Read(ref reader, plan);
+        var context = CreateContext();
+        context.Headers = Headers.Create("caller", "owned");
 
         string result;
         try
@@ -110,7 +151,7 @@ public sealed class HeaderRoutingDeserializerTests
             result = RecordHeaderDeserializer.Deserialize(
                 root,
                 parsed.Value,
-                CreateContext(),
+                context,
                 in lookup);
         }
         finally
@@ -118,7 +159,8 @@ public sealed class HeaderRoutingDeserializerTests
             ArrayPool<Header>.Shared.Return(parsed.Headers!, clearArray: true);
         }
 
-        await Assert.That(result).IsEqualTo("leaf:payload");
+        await Assert.That(result).IsEqualTo("no-headers");
+        await Assert.That(context.Headers!.Count).IsEqualTo(1);
     }
 
     [Test]
@@ -167,5 +209,11 @@ public sealed class HeaderRoutingDeserializerTests
     {
         public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
             $"{prefix}:{Encoding.UTF8.GetString(data.Span)}";
+    }
+
+    private sealed class HeaderPresenceDeserializer : IDeserializer<string>
+    {
+        public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
+            context.Headers is null ? "no-headers" : "headers";
     }
 }
