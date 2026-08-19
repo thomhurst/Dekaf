@@ -312,7 +312,7 @@ auto-commit, `LeaveGroup`, assignment cleanup, and resource disposal:
 .WithPartitionStopTimeout(TimeSpan.FromSeconds(30)) // Default: 5 seconds
 ```
 
-The same method accepts `IConsumerAwareRebalanceListener`. Its callbacks receive an
+`WithRebalanceListener` also accepts `IConsumerAwareRebalanceListener`. Its callbacks receive an
 `IRebalanceConsumer` view with safe commit, seek, pause/resume, metadata, and offset
 operations. The view is invalidated as soon as the callback completes.
 

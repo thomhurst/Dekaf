@@ -653,11 +653,12 @@ internal interface IConsumerRebalanceEventSource
 /// and disposal. The callback receives the current assigned partitions.
 ///
 /// Non-cancellation exceptions follow the rebalance listener policy: they are caught
-/// and logged at <c>Error</c> level. <see cref="OperationCanceledException"/> follows
-/// the <see cref="IKafkaConsumer{TKey,TValue}.CloseAsync(CancellationToken)"/> token or internal
-/// disposal shutdown token, but close/disposal teardown still runs before
-/// <c>CloseAsync</c> rethrows the cancellation. The callback is bounded by a
-/// five-second timeout.
+/// and logged at <c>Error</c> level. Cancellation caused by
+/// <see cref="ConsumerOptions.PartitionStopTimeout"/> is logged and suppressed so shutdown can
+/// continue. Cancellation from the <see cref="IKafkaConsumer{TKey,TValue}.CloseAsync(CancellationToken)"/>
+/// token or internal disposal shutdown token is deferred until teardown completes, then rethrown
+/// by <c>CloseAsync</c>. The callback token is cancelled after the configured timeout, which
+/// defaults to five seconds.
 /// </remarks>
 public interface IPartitionStopListener
 {

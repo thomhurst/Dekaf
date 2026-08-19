@@ -211,9 +211,10 @@ The full stop sequence is: cancel the consume loop → drain buffered messages (
 If the consumer's rebalance listener implements `IPartitionStopListener`, configure
 its close callback with `WithPartitionStopTimeout` (default: 5 seconds).
 `KafkaConsumerServiceOptions.ShutdownTimeout` is an independent outer wait cap for
-consumer disposal; make it longer than the partition-stop timeout plus remaining
-consumer cleanup when shutdown must await the callback. The generic host's own
-shutdown timeout may impose another outer cap.
+draining and consumer disposal. Set it long enough for draining, final commit, DLQ
+flush, the partition-stop timeout, and remaining consumer cleanup when shutdown
+must await the callback. The generic host's own shutdown timeout may impose another
+outer cap.
 
 ## Delivery Semantics
 
