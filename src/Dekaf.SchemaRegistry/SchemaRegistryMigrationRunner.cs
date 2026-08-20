@@ -376,9 +376,8 @@ internal sealed class SchemaRegistryMigrationRunner
 
         var payloadSchemaId = schemaId;
         var payloadSchema = writerSchema;
-        if (steps.Length != 0)
-        {
-            if (!TransformMigrationSteps(
+        if (steps.Length != 0 &&
+            !TransformMigrationSteps(
                 ref payload,
                 ref payloadSchemaId,
                 ref payloadSchema,
@@ -388,9 +387,8 @@ internal sealed class SchemaRegistryMigrationRunner
                 payloadFormat,
                 taggedFieldTransformers,
                 steps))
-            {
-                return new MigrationResult(payload, plan.ReaderSchema, payloadSchemaId, payloadSchema);
-            }
+        {
+            return new MigrationResult(payload, plan.ReaderSchema, payloadSchemaId, payloadSchema);
         }
 
         if (!plan.IsMigrationChainComplete)

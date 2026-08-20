@@ -156,31 +156,46 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         if (rules.Length != 0)
         {
             var value = GetCurrentValue(ref reader, payload);
-            for (var index = 0; index < rules.Length; index++)
+            var memberCount = node.ValidationRuleMembers?.Count ?? 0;
+            var memberValues = memberCount == 0
+                ? null
+                : CompiledValidationRule.GetMemberValues(memberCount);
+            try
             {
-                var compiledRule = rules[index];
-                try
+                if (memberValues is not null)
+                    node.ValidationRuleMembers!.Resolve(value, memberValues);
+
+                for (var index = 0; index < rules.Length; index++)
                 {
-                    var result = compiledRule.Evaluate(value, now);
-                    if (result.Kind == ValidationResultKind.Boolean ? !result.Boolean : result.String!.Length != 0)
+                    var compiledRule = rules[index];
+                    try
+                    {
+                        var result = compiledRule.Evaluate(value, now, memberValues);
+                        if (result.Kind == ValidationResultKind.Boolean ? !result.Boolean : result.String!.Length != 0)
+                        {
+                            (violations ??= []).Add(new ValidationRuleError(
+                                compiledRule.Rule,
+                                path.ToString(),
+                                result.Kind == ValidationResultKind.String ? result.String : null));
+                            if (failFast)
+                                return false;
+                        }
+                    }
+                    catch (SchemaRegistryRuleException exception)
                     {
                         (violations ??= []).Add(new ValidationRuleError(
                             compiledRule.Rule,
                             path.ToString(),
-                            result.Kind == ValidationResultKind.String ? result.String : null));
+                            cause: exception));
                         if (failFast)
                             return false;
                     }
                 }
-                catch (SchemaRegistryRuleException exception)
-                {
-                    (violations ??= []).Add(new ValidationRuleError(
-                        compiledRule.Rule,
-                        path.ToString(),
-                        cause: exception));
-                    if (failFast)
-                        return false;
-                }
+            }
+            finally
+            {
+                if (memberValues is not null)
+                    Array.Clear(memberValues, 0, memberCount);
             }
         }
 
@@ -1058,7 +1073,8 @@ internal sealed class SchemaCompiler : IDisposable
         if (schema.ValueKind != JsonValueKind.Object)
             throw new InvalidOperationException($"JSON Schema at '{pointer}' must be an object or boolean.");
 
-        node.ValidationRules = CompileValidationRules(schema);
+        node.ValidationRules = CompileValidationRules(schema, out var validationRuleMembers);
+        node.ValidationRuleMembers = validationRuleMembers;
         baseUri = GetEffectiveBaseUri(schema, baseUri);
         dialect = GetDialect(schema, dialect);
         if (schema.TryGetProperty("$ref", out var referenceElement))
@@ -1132,16 +1148,23 @@ internal sealed class SchemaCompiler : IDisposable
         return [.. compiled];
     }
 
-    private static CompiledValidationRule[] CompileValidationRules(JsonElement schema)
+    private static CompiledValidationRule[] CompileValidationRules(
+        JsonElement schema,
+        out ValidationCelMemberTable? members)
     {
-        if (!schema.TryGetProperty("confluent:rules", out var rules) || rules.ValueKind != JsonValueKind.Array)
+        members = null;
+        if (!schema.TryGetProperty("confluent:rules", out var rules))
             return [];
+        if (rules.ValueKind != JsonValueKind.Array)
+            throw new InvalidOperationException("JSON Schema 'confluent:rules' must be an array.");
 
         var compiled = new List<CompiledValidationRule>();
+        var memberIndexes = new Dictionary<string, int>(StringComparer.Ordinal);
+        var memberNames = new List<byte[]>();
         foreach (var element in rules.EnumerateArray())
         {
             if (element.ValueKind != JsonValueKind.Object)
-                continue;
+                throw new InvalidOperationException("JSON Schema 'confluent:rules' entries must be objects.");
             var rule = new ValidationRule
             {
                 Name = GetOptionalString(element, "name"),
@@ -1149,8 +1172,10 @@ internal sealed class SchemaCompiler : IDisposable
                 Expr = GetOptionalString(element, "expr"),
                 Sql = GetOptionalString(element, "sql")
             };
-            compiled.Add(CompiledValidationRule.Compile(rule));
+            compiled.Add(CompiledValidationRule.Compile(rule, memberIndexes, memberNames));
         }
+        if (memberNames.Count != 0)
+            members = new ValidationCelMemberTable([.. memberNames]);
         return [.. compiled];
 
         static string? GetOptionalString(JsonElement owner, string name) =>
@@ -1628,6 +1653,7 @@ internal sealed class CompiledSchemaNode
     internal JsonSchemaType Types { get; set; } = JsonSchemaType.Any;
     internal CompiledSchemaNode? Reference { get; set; }
     internal CompiledValidationRule[] ValidationRules { get; set; } = [];
+    internal ValidationCelMemberTable? ValidationRuleMembers { get; set; }
     internal CompiledSchemaNode[] AllOf { get; set; } = [];
     internal bool HasAnyOf { get; set; }
     internal CompiledSchemaNode[] AnyOf { get; set; } = [];
