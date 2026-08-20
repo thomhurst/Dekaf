@@ -11,20 +11,27 @@ public sealed class ProgressWatchdogTests
     public async Task Track_Stall_CapturesStacksAndProducerDiagnosticsThenExits()
     {
         var outputDirectory = CreateOutputDirectory();
+        ProgressWatchdog? watchdog = null;
+        IDisposable? registration = null;
         try
         {
             var exited = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var exitCount = 0;
             var throughput = new ThroughputTracker();
             throughput.Start();
 
-            using var watchdog = new ProgressWatchdog(
+            watchdog = new ProgressWatchdog(
                 outputDirectory,
                 captureAfter: TimeSpan.FromMilliseconds(40),
                 exitAfter: TimeSpan.FromMilliseconds(500),
                 pollInterval: TimeSpan.FromMilliseconds(10),
-                exitProcess: code => exited.TrySetResult(code),
+                exitProcess: code =>
+                {
+                    Interlocked.Increment(ref exitCount);
+                    exited.TrySetResult(code);
+                },
                 captureManagedStackReport: () => "fake managed stack");
-            using var registration = watchdog.Track(
+            registration = watchdog.Track(
                 throughput,
                 "Dekaf",
                 "producer",
@@ -36,8 +43,14 @@ public sealed class ProgressWatchdogTests
                 CreateConsumerSnapshot);
 
             var exitCode = await exited.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await Assert.That(watchdog.WaitForWorkerExit(TimeSpan.FromSeconds(5))).IsTrue();
+            registration.Dispose();
+            registration = null;
+            watchdog.Dispose();
+            watchdog = null;
 
             await Assert.That(exitCode).IsEqualTo(1);
+            await Assert.That(exitCount).IsEqualTo(1);
             var diagnosticsDirectory = GetDiagnosticsDirectory(outputDirectory);
             var stackArtifacts = Directory.GetFiles(diagnosticsDirectory, "*-stacks.txt");
             var producerArtifacts = Directory.GetFiles(diagnosticsDirectory, "*-producer.json");
@@ -55,6 +68,8 @@ public sealed class ProgressWatchdogTests
         }
         finally
         {
+            registration?.Dispose();
+            watchdog?.Dispose();
             Directory.Delete(outputDirectory, recursive: true);
         }
     }
@@ -63,22 +78,28 @@ public sealed class ProgressWatchdogTests
     public async Task Track_FatalStall_ExitsWhenStackCaptureFails()
     {
         var outputDirectory = CreateOutputDirectory();
+        ProgressWatchdog? watchdog = null;
+        IDisposable? registration = null;
         try
         {
             var exited = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
             var throughput = new ThroughputTracker();
             throughput.Start();
 
-            using var watchdog = new ProgressWatchdog(
+            watchdog = new ProgressWatchdog(
                 outputDirectory,
                 captureAfter: TimeSpan.FromMilliseconds(20),
                 exitAfter: TimeSpan.FromMilliseconds(60),
                 pollInterval: TimeSpan.FromMilliseconds(10),
                 exitProcess: code => exited.TrySetResult(code),
                 captureManagedStackReport: () => throw new InvalidOperationException("capture unavailable"));
-            using var registration = watchdog.Track(throughput, "Dekaf", "consumer");
+            registration = watchdog.Track(throughput, "Dekaf", "consumer");
 
             var exitCode = await exited.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            registration.Dispose();
+            registration = null;
+            watchdog.Dispose();
+            watchdog = null;
 
             await Assert.That(exitCode).IsEqualTo(1);
             var fatalArtifact = Directory.GetFiles(
@@ -88,6 +109,8 @@ public sealed class ProgressWatchdogTests
         }
         finally
         {
+            registration?.Dispose();
+            watchdog?.Dispose();
             Directory.Delete(outputDirectory, recursive: true);
         }
     }
@@ -98,13 +121,15 @@ public sealed class ProgressWatchdogTests
         var outputDirectory = CreateOutputDirectory();
         using var releaseCapture = new ManualResetEventSlim(initialState: false);
         using var capturesCompleted = new CountdownEvent(initialCount: 2);
+        ProgressWatchdog? watchdog = null;
+        IDisposable? registration = null;
         try
         {
             var exited = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
             var throughput = new ThroughputTracker();
             throughput.Start();
 
-            using var watchdog = new ProgressWatchdog(
+            watchdog = new ProgressWatchdog(
                 outputDirectory,
                 captureAfter: TimeSpan.FromMilliseconds(20),
                 exitAfter: TimeSpan.FromMilliseconds(100),
@@ -112,7 +137,7 @@ public sealed class ProgressWatchdogTests
                 exitProcess: code => exited.TrySetResult(code),
                 captureManagedStackReport: () => "fake managed stack",
                 producerDiagnosticsTimeout: TimeSpan.FromMilliseconds(30));
-            using var registration = watchdog.Track(
+            registration = watchdog.Track(
                 throughput,
                 "Dekaf",
                 "producer",
@@ -124,6 +149,12 @@ public sealed class ProgressWatchdogTests
                 });
 
             var exitCode = await exited.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            registration.Dispose();
+            registration = null;
+            releaseCapture.Set();
+            await Assert.That(capturesCompleted.Wait(TimeSpan.FromSeconds(5))).IsTrue();
+            watchdog.Dispose();
+            watchdog = null;
 
             await Assert.That(exitCode).IsEqualTo(1);
             var diagnosticsDirectory = GetDiagnosticsDirectory(outputDirectory);
@@ -134,9 +165,12 @@ public sealed class ProgressWatchdogTests
         }
         finally
         {
+            registration?.Dispose();
             releaseCapture.Set();
-            capturesCompleted.Wait(TimeSpan.FromSeconds(5));
-            Directory.Delete(outputDirectory, recursive: true);
+            var capturesStopped = capturesCompleted.Wait(TimeSpan.FromSeconds(5));
+            watchdog?.Dispose();
+            if (capturesStopped)
+                Directory.Delete(outputDirectory, recursive: true);
         }
     }
 
@@ -144,9 +178,10 @@ public sealed class ProgressWatchdogTests
     public void Track_SequentialPhases_ReusesWatchdog()
     {
         var outputDirectory = CreateOutputDirectory();
+        ProgressWatchdog? watchdog = null;
         try
         {
-            using var watchdog = new ProgressWatchdog(outputDirectory);
+            watchdog = new ProgressWatchdog(outputDirectory);
             var produceProgress = new ThroughputTracker();
             var consumeProgress = new ThroughputTracker();
 
@@ -157,9 +192,13 @@ public sealed class ProgressWatchdogTests
             using (watchdog.Track(consumeProgress, "Dekaf", "producer-roundtrip-consume"))
             {
             }
+
+            watchdog.Dispose();
+            watchdog = null;
         }
         finally
         {
+            watchdog?.Dispose();
             Directory.Delete(outputDirectory, recursive: true);
         }
     }
