@@ -3218,6 +3218,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     FilteredRecordComplete:
                         if (filteredRecordRejected)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             if (--recordsUntilPollRefresh == 0)
                             {
                                 await RecordPollAsync(cancellationToken).ConfigureAwait(false);

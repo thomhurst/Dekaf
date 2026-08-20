@@ -145,6 +145,24 @@ public sealed class ConsumerRecordFilterTests
     }
 
     [Test]
+    public async Task ConsumeAsync_FilterObservesCancellationBetweenRejectedRecords()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var filter = new CancellingFilter(cancellation);
+        await using var consumer = CreateConsumer(
+            CreatePollRefreshRecords(),
+            filter,
+            Serializers.String,
+            Serializers.String);
+        await using var records = consumer.ConsumeAsync(cancellation.Token).GetAsyncEnumerator();
+
+        await Assert.That(async () => await records.MoveNextAsync())
+            .Throws<OperationCanceledException>();
+
+        await Assert.That(filter.CallCount).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task ConsumeAsync_FilterExceptionPropagatesWithoutAdvancingPosition()
     {
         var fetch = CreatePendingFetchData(CreateRecord(0, "key", "value"));
