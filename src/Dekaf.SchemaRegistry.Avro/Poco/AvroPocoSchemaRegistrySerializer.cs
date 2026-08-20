@@ -45,7 +45,6 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
     private AvroPocoSerializerBufferState? _primaryRuleBuffer;
     private ConditionalWeakTable<Thread, AvroPocoSerializerBufferState>? _additionalRuleBuffers;
     private SubjectSchemaIdCache? _associatedSubjectCache;
-    private readonly AssociatedSubjectSchemaIdCacheHandoff? _associatedSubjectHandoff;
 
     /// <summary>Creates a generated POCO Avro serializer.</summary>
     public AvroPocoSchemaRegistrySerializer(
@@ -73,7 +72,6 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
 
         if (_asyncSubjectNameStrategy is AssociatedNameStrategy associatedNameStrategy)
         {
-            _associatedSubjectHandoff = new AssociatedSubjectSchemaIdCacheHandoff();
             AssociatedNameCacheInvalidationTargetRegistration.Register(
                 this,
                 associatedNameStrategy,
@@ -150,18 +148,12 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
                     value.SchemaId,
                     value.Schema!);
                 if (ReferenceEquals(cache, Volatile.Read(ref _associatedSubjectCache)))
-                {
-                    _associatedSubjectHandoff?.Retain(cached);
                     return ToResolvedContext(cached);
-                }
             }
 
             cache = Volatile.Read(ref _associatedSubjectCache)!;
             if (cache.TryGet(topic, isKey, out var current))
-            {
-                _associatedSubjectHandoff?.Retain(current);
                 return ToResolvedContext(current);
-            }
         }
 
         throw new InvalidOperationException(
@@ -487,10 +479,11 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         if (cache.TryGet(topic, isKey, out var cached))
             return cached;
 
-        if (_asyncSubjectNameStrategy is not null
-            && _associatedSubjectHandoff is not null
-            && _associatedSubjectHandoff.TryGet(topic, isKey, out cached))
-            return cached;
+        if (_asyncSubjectNameStrategy is not null)
+        {
+            throw new InvalidOperationException(
+                "The asynchronous subject-name strategy requires PrepareAsync before serialization.");
+        }
 
         return cache.GetOrAdd(
             topic,

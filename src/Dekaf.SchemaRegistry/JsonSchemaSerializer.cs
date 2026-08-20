@@ -651,10 +651,11 @@ public sealed class JsonSchemaRegistrySerializer<T> :
         if (cache.TryGet(topic, isKey, out var cached))
             return cached;
 
-        if (state is not null
-            && state.Handoff is not null
-            && state.Handoff.TryGet(topic, isKey, out cached))
-            return cached;
+        if (state is not null)
+        {
+            throw new InvalidOperationException(
+                "The asynchronous subject-name strategy requires PrepareAsync before serialization.");
+        }
 
         return cache.GetOrAdd(
             topic,
@@ -757,18 +758,12 @@ public sealed class JsonSchemaRegistrySerializer<T> :
                     value.SchemaId,
                     value.Schema!);
                 if (ReferenceEquals(cache, Volatile.Read(ref state.Cache)))
-                {
-                    state.Handoff?.Retain(cached);
                     return ToResolvedContext(cached);
-                }
             }
 
             cache = Volatile.Read(ref state.Cache);
             if (cache.TryGet(topic, isKey, out var current))
-            {
-                state.Handoff?.Retain(current);
                 return ToResolvedContext(current);
-            }
         }
 
         throw new InvalidOperationException(
@@ -864,8 +859,6 @@ public sealed class JsonSchemaRegistrySerializer<T> :
     {
         internal IAsyncSubjectNameStrategy Strategy { get; } = strategy;
         internal SubjectSchemaIdCache Cache = new();
-        internal AssociatedSubjectSchemaIdCacheHandoff? Handoff { get; } =
-            strategy is AssociatedNameStrategy ? new() : null;
 
         public ValueTask<string> GetSubjectNameAsync(
             string topic,

@@ -44,7 +44,6 @@ public sealed class ProtobufSchemaRegistrySerializer<
     private readonly SchemaResolutionCache<RegisteredDependency> _referenceResolutionCache = new();
     private readonly Schema _resolutionIdentitySchema;
     private SubjectSchemaIdCache? _associatedSubjectSchemaIdCache;
-    private readonly AssociatedSubjectSchemaIdCacheHandoff? _associatedSubjectHandoff;
 
     /// <summary>
     /// Creates a new Protobuf Schema Registry serializer.
@@ -88,7 +87,6 @@ public sealed class ProtobufSchemaRegistrySerializer<
 
         if (_asyncSubjectNameStrategy is AssociatedNameStrategy associatedNameStrategy)
         {
-            _associatedSubjectHandoff = new AssociatedSubjectSchemaIdCacheHandoff();
             AssociatedNameCacheInvalidationTargetRegistration.Register(
                 this,
                 associatedNameStrategy,
@@ -210,10 +208,11 @@ public sealed class ProtobufSchemaRegistrySerializer<
         if (cache.TryGet(topic, isKey, out var cached))
             return cached;
 
-        if (_asyncSubjectNameStrategy is not null
-            && _associatedSubjectHandoff is not null
-            && _associatedSubjectHandoff.TryGet(topic, isKey, out cached))
-            return cached;
+        if (_asyncSubjectNameStrategy is not null)
+        {
+            throw new InvalidOperationException(
+                "The asynchronous subject-name strategy requires PrepareAsync before serialization.");
+        }
 
         return cache.GetOrAdd(
             topic,
@@ -319,18 +318,12 @@ public sealed class ProtobufSchemaRegistrySerializer<
                     value.SchemaId,
                     value.Schema!);
                 if (ReferenceEquals(cache, Volatile.Read(ref _associatedSubjectSchemaIdCache)))
-                {
-                    _associatedSubjectHandoff?.Retain(cached);
                     return ToResolvedContext(cached);
-                }
             }
 
             cache = Volatile.Read(ref _associatedSubjectSchemaIdCache)!;
             if (cache.TryGet(topic, isKey, out var current))
-            {
-                _associatedSubjectHandoff?.Retain(current);
                 return ToResolvedContext(current);
-            }
         }
 
         throw new InvalidOperationException(

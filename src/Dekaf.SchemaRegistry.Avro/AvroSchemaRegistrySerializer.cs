@@ -74,7 +74,6 @@ public sealed class AvroSchemaRegistrySerializer<
     private DynamicSchemaCache? _lastDynamicSchemaCache;
     private DynamicSchemaCache? _previousDynamicSchemaCache;
     private SubjectSchemaIdCache? _associatedSubjectSchemaIdCache;
-    private readonly AssociatedSubjectSchemaIdCacheHandoff? _associatedSubjectHandoff;
 
     /// <summary>
     /// Creates a new Avro Schema Registry serializer.
@@ -104,9 +103,6 @@ public sealed class AvroSchemaRegistrySerializer<
         _associatedSubjectSchemaIdCache = _asyncSubjectNameStrategy is null
             ? null
             : new SubjectSchemaIdCache();
-        _associatedSubjectHandoff = _asyncSubjectNameStrategy is AssociatedNameStrategy
-            ? new AssociatedSubjectSchemaIdCacheHandoff()
-            : null;
 
         // Try to get schema from type T if it's a specific record
         _writerSchema = GetSchemaFromType();
@@ -372,11 +368,8 @@ public sealed class AvroSchemaRegistrySerializer<
             if (associatedCache.TryGet(topic, isKey, out var associated))
                 return associated;
 
-            var handoff = GetAssociatedSubjectHandoff(avroSchema);
-            if (handoff is not null && handoff.TryGet(topic, isKey, out associated))
-                return associated;
-
-            cache = associatedCache;
+            throw new InvalidOperationException(
+                "The asynchronous subject-name strategy requires PrepareAsync before serialization.");
         }
 
         var state = new SubjectSchemaIdState(this, avroSchema);
@@ -441,7 +434,6 @@ public sealed class AvroSchemaRegistrySerializer<
         SubjectSchemaIdCache cache,
         CancellationToken cancellationToken)
     {
-        var handoff = GetAssociatedSubjectHandoff(avroSchema);
         for (var attempt = 0; attempt < MaxAssociatedNameInvalidationRetries; attempt++)
         {
             var subject = await _asyncSubjectNameStrategy!.GetSubjectNameAsync(
@@ -460,18 +452,12 @@ public sealed class AvroSchemaRegistrySerializer<
                     value.SchemaId,
                     value.Schema!);
                 if (ReferenceEquals(cache, GetAssociatedSubjectSchemaIdCache(avroSchema)))
-                {
-                    handoff?.Retain(cached);
                     return ToResolvedContext(cached);
-                }
             }
 
             cache = GetAssociatedSubjectSchemaIdCache(avroSchema);
             if (cache.TryGet(topic, isKey, out var current))
-            {
-                handoff?.Retain(current);
                 return ToResolvedContext(current);
-            }
         }
 
         throw new InvalidOperationException(
@@ -642,27 +628,6 @@ public sealed class AvroSchemaRegistrySerializer<
 
         var created = new SubjectSchemaIdCache();
         return Interlocked.CompareExchange(ref cache.AssociatedSubjectSchemaIdCache, created, null) ?? created;
-    }
-
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    private AssociatedSubjectSchemaIdCacheHandoff? GetAssociatedSubjectHandoff(AvroSchema schema)
-    {
-        if (_asyncSubjectNameStrategy is not AssociatedNameStrategy)
-            return null;
-
-        if (_writerSchema is not null)
-            return _associatedSubjectHandoff!;
-
-        var last = Volatile.Read(ref _lastDynamicSchemaCache);
-        var cache = last is not null && ReferenceEquals(Volatile.Read(ref last.LastSeenSchema), schema)
-            ? last
-            : GetDynamicSchemaCacheSlow(schema, last);
-        var handoff = Volatile.Read(ref cache.AssociatedSubjectHandoff);
-        if (handoff is not null)
-            return handoff;
-
-        var created = new AssociatedSubjectSchemaIdCacheHandoff();
-        return Interlocked.CompareExchange(ref cache.AssociatedSubjectHandoff, created, null) ?? created;
     }
 
     private AllocationFreeGenericRecordWriter GetGenericWriter(AvroSchema schema) =>
@@ -850,7 +815,6 @@ public sealed class AvroSchemaRegistrySerializer<
         internal bool IsLogicallyCached;
         internal SubjectSchemaIdCache SubjectSchemaIdCache { get; }
         internal SubjectSchemaIdCache? AssociatedSubjectSchemaIdCache;
-        internal AssociatedSubjectSchemaIdCacheHandoff? AssociatedSubjectHandoff;
         internal AllocationFreeGenericRecordWriter Writer { get; }
     }
 

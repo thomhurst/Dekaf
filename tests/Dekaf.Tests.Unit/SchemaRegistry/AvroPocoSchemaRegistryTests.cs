@@ -75,11 +75,10 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
-    public async Task GeneratedSerializer_InvalidationAfterPreparationPreservesSerializeHandoff()
+    public async Task GeneratedSerializer_InvalidationRejectsStaleSynchronousSerialization()
     {
         using var registry = new MockSchemaRegistryClient();
         await SetPocoAssociationAsync(registry, "poco-orders", "poco-v1");
-        await SetPocoAssociationAsync(registry, "poco-payments", "poco-payments-v1");
         var strategy = new Dekaf.SchemaRegistry.AssociatedNameStrategy(registry);
         await using var serializer = PocoOrder.CreateAvroSerializer(
             registry,
@@ -92,10 +91,10 @@ public sealed class AvroPocoSchemaRegistryTests
             Component = SerializationComponent.Value
         };
 
+        await registry.DeleteAssociationsAsync("poco-orders", "topic", ["value"]);
+        await SetPocoAssociationAsync(registry, "poco-orders", "poco-v2");
         strategy.ClearCache();
-        _ = await serializer.PrepareAsync("poco-payments");
-        strategy.ClearCache();
-        serializer.Serialize(new PocoOrder
+        var value = new PocoOrder
         {
             Id = 42,
             Customer = "Ada",
@@ -104,10 +103,15 @@ public sealed class AvroPocoSchemaRegistryTests
             Totals = [],
             Address = new PocoAddress { City = "London", PostCode = "SW1" },
             Created = DateTime.UnixEpoch
-        }, ref destination, context);
+        };
+        Assert.Throws<InvalidOperationException>(() =>
+            serializer.Serialize(value, ref destination, context));
+        var refreshed = await serializer.PrepareAsync("poco-orders");
+        serializer.Serialize(value, ref destination, context);
 
         await Assert.That(BinaryPrimitives.ReadInt32BigEndian(destination.WrittenSpan.Slice(1)))
-            .IsEqualTo(prepared.SchemaId);
+            .IsEqualTo(refreshed.SchemaId)
+            .And.IsNotEqualTo(prepared.SchemaId);
     }
 
     private static Task<Dekaf.SchemaRegistry.AssociationResponse> SetPocoAssociationAsync(
@@ -1284,6 +1288,7 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    [NotInParallel]
     public async Task GeneratedCodec_SerializationAllocatesZeroAfterWarmup()
     {
         using var registry = new MockSchemaRegistryClient();

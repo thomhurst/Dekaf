@@ -286,11 +286,10 @@ public sealed class AssociatedNameStrategyTests
     }
 
     [Test]
-    public async Task GenericSerializer_InvalidationAfterPreparationPreservesSerializeHandoff()
+    public async Task GenericSerializer_InvalidationRejectsStaleSynchronousSerialization()
     {
         using var client = new MockSchemaRegistryClient();
         await AssociateAsync(client, "orders", "orders-v1");
-        await AssociateAsync(client, "payments", "payments-v1");
         var resolver = CreateResolver(client);
         await using var serializer = new SchemaRegistrySerializer<int>(
             client,
@@ -305,14 +304,18 @@ public sealed class AssociatedNameStrategyTests
             Component = SerializationComponent.Value
         };
 
+        await ReplaceAssociationAsync(client, "orders", "orders-v2");
         resolver.ClearCache();
-        _ = await serializer.PrepareAsync("payments", 42);
-        resolver.ClearCache();
+        Assert.Throws<InvalidOperationException>(() =>
+            serializer.Serialize(42, ref destination, context));
+        var refreshed = await serializer.PrepareAsync("orders", 42);
         serializer.Serialize(42, ref destination, context);
 
         await Assert.That(destination.WrittenCount).IsEqualTo(5);
+        await Assert.That(refreshed.Subject).IsEqualTo("orders-v2");
         await Assert.That(BinaryPrimitives.ReadInt32BigEndian(destination.WrittenSpan.Slice(1)))
-            .IsEqualTo(prepared.SchemaId);
+            .IsEqualTo(refreshed.SchemaId)
+            .And.IsNotEqualTo(prepared.SchemaId);
     }
 
     [Test]
@@ -336,11 +339,10 @@ public sealed class AssociatedNameStrategyTests
     }
 
     [Test]
-    public async Task JsonSerializer_InvalidationAfterPreparationPreservesSerializeHandoff()
+    public async Task JsonSerializer_InvalidationRejectsStaleSynchronousSerialization()
     {
         using var client = new MockSchemaRegistryClient();
         await AssociateAsync(client, "orders", "json-v1");
-        await AssociateAsync(client, "payments", "json-payments-v1");
         var resolver = CreateResolver(client);
         await using var serializer = new JsonSchemaRegistrySerializer<int>(
             client,
@@ -354,13 +356,17 @@ public sealed class AssociatedNameStrategyTests
             Component = SerializationComponent.Value
         };
 
+        await ReplaceAssociationAsync(client, "orders", "json-v2");
         resolver.ClearCache();
-        _ = await serializer.PrepareAsync("payments", 42);
-        resolver.ClearCache();
+        Assert.Throws<InvalidOperationException>(() =>
+            serializer.Serialize(42, ref destination, context));
+        var refreshed = await serializer.PrepareAsync("orders", 42);
         serializer.Serialize(42, ref destination, context);
 
+        await Assert.That(refreshed.Subject).IsEqualTo("json-v2");
         await Assert.That(BinaryPrimitives.ReadInt32BigEndian(destination.WrittenSpan.Slice(1)))
-            .IsEqualTo(prepared.SchemaId);
+            .IsEqualTo(refreshed.SchemaId)
+            .And.IsNotEqualTo(prepared.SchemaId);
     }
 
     [Test]
@@ -387,11 +393,10 @@ public sealed class AssociatedNameStrategyTests
     }
 
     [Test]
-    public async Task AvroSerializer_InvalidationAfterPreparationPreservesSerializeHandoff()
+    public async Task AvroSerializer_InvalidationRejectsStaleSynchronousSerialization()
     {
         using var client = new MockSchemaRegistryClient();
         await AssociateAsync(client, "orders", "avro-v1");
-        await AssociateAsync(client, "payments", "avro-payments-v1");
         var resolver = CreateResolver(client);
         var schema = (global::Avro.RecordSchema)global::Avro.Schema.Parse(
             """{"type":"record","name":"Order","fields":[{"name":"id","type":"int"}]}""");
@@ -408,13 +413,17 @@ public sealed class AssociatedNameStrategyTests
             Component = SerializationComponent.Value
         };
 
+        await ReplaceAssociationAsync(client, "orders", "avro-v2");
         resolver.ClearCache();
-        _ = await serializer.PrepareAsync("payments", value);
-        resolver.ClearCache();
+        Assert.Throws<InvalidOperationException>(() =>
+            serializer.Serialize(value, ref destination, context));
+        var refreshed = await serializer.PrepareAsync("orders", value);
         serializer.Serialize(value, ref destination, context);
 
+        await Assert.That(refreshed.Subject).IsEqualTo("avro-v2");
         await Assert.That(BinaryPrimitives.ReadInt32BigEndian(destination.WrittenSpan.Slice(1)))
-            .IsEqualTo(prepared.SchemaId);
+            .IsEqualTo(refreshed.SchemaId)
+            .And.IsNotEqualTo(prepared.SchemaId);
     }
 
     [Test]
@@ -438,11 +447,10 @@ public sealed class AssociatedNameStrategyTests
     }
 
     [Test]
-    public async Task ProtobufSerializer_InvalidationAfterPreparationPreservesSerializeHandoff()
+    public async Task ProtobufSerializer_InvalidationRejectsStaleSynchronousSerialization()
     {
         using var client = new MockSchemaRegistryClient();
         await AssociateAsync(client, "orders", "protobuf-v1");
-        await AssociateAsync(client, "payments", "protobuf-payments-v1");
         var resolver = CreateResolver(client);
         var value = new TestMessage { Id = 42 };
         await using var serializer = new ProtobufSchemaRegistrySerializer<TestMessage>(
@@ -456,13 +464,17 @@ public sealed class AssociatedNameStrategyTests
             Component = SerializationComponent.Value
         };
 
+        await ReplaceAssociationAsync(client, "orders", "protobuf-v2");
         resolver.ClearCache();
-        _ = await serializer.PrepareAsync("payments", value);
-        resolver.ClearCache();
+        Assert.Throws<InvalidOperationException>(() =>
+            serializer.Serialize(value, ref destination, context));
+        var refreshed = await serializer.PrepareAsync("orders", value);
         serializer.Serialize(value, ref destination, context);
 
+        await Assert.That(refreshed.Subject).IsEqualTo("protobuf-v2");
         await Assert.That(BinaryPrimitives.ReadInt32BigEndian(destination.WrittenSpan.Slice(1)))
-            .IsEqualTo(prepared.SchemaId);
+            .IsEqualTo(refreshed.SchemaId)
+            .And.IsNotEqualTo(prepared.SchemaId);
     }
 
     [Test]
