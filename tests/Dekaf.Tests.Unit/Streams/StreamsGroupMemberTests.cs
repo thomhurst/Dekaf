@@ -656,6 +656,93 @@ public sealed class StreamsGroupMemberTests
     }
 
     [Test]
+    public async Task BackgroundHeartbeat_PermanentProtocolFailureAllowsExplicitRejoin()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1, heartbeatIntervalMs: 1));
+        connection.EnqueueHeartbeat(new StreamsGroupHeartbeatResponse
+        {
+            ErrorCode = ErrorCode.StreamsInvalidTopology,
+            MemberId = "member-1"
+        });
+        connection.EnqueueHeartbeat(Success(epoch: 2));
+        await using var fixture = CreateFixture(connection);
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+        await Assert.That(() => fixture.Member.Snapshot.IsJoined)
+            .Eventually(joined => joined.IsFalse(), TimeSpan.FromSeconds(5));
+
+        var result = await fixture.Member.JoinAsync(CreateInitialUpdate());
+
+        await Assert.That(connection.HeartbeatRequests[2].MemberEpoch).IsEqualTo(0);
+        await Assert.That(result.MemberEpoch).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task UpdateAsync_AmbiguousCancellationRetainsStateForExplicitRejoin()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1));
+        var pendingUpdate = new TaskCompletionSource<StreamsGroupHeartbeatResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.EnqueueHeartbeat(pendingUpdate.Task);
+        connection.EnqueueHeartbeat(Success(epoch: 2));
+        await using var fixture = CreateFixture(connection);
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+        using var cancellation = new CancellationTokenSource();
+
+        var update = fixture.Member.UpdateAsync(
+            new StreamsGroupMemberUpdate { ProcessId = "process-2" },
+            cancellation.Token).AsTask();
+        await connection.SecondHeartbeatStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        cancellation.Cancel();
+        _ = await Assert.ThrowsAsync<OperationCanceledException>(() => update);
+
+        await Assert.That(() => fixture.Member.Snapshot.IsJoined)
+            .Eventually(joined => joined.IsFalse(), TimeSpan.FromSeconds(5));
+        var result = await fixture.Member.JoinAsync(new StreamsGroupMemberUpdate
+        {
+            Topology = CreateInitialUpdate().Topology
+        });
+
+        var recovery = connection.HeartbeatRequests[2];
+        await Assert.That(recovery.MemberEpoch).IsEqualTo(0);
+        await Assert.That(recovery.ProcessId).IsEqualTo("process-2");
+        await Assert.That(result.MemberEpoch).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task UpdateAsync_AmbiguousTransportThenRejectionRetainsStateForExplicitRejoin()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1));
+        connection.EnqueueHeartbeat(Task.FromException<StreamsGroupHeartbeatResponse>(
+            new IOException("response lost")));
+        connection.EnqueueHeartbeat(new StreamsGroupHeartbeatResponse
+        {
+            ErrorCode = ErrorCode.StreamsInvalidTopology,
+            MemberId = "member-1"
+        });
+        connection.EnqueueHeartbeat(Success(epoch: 2));
+        await using var fixture = CreateFixture(connection);
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+
+        var failure = await Assert.ThrowsAsync<GroupException>(async () =>
+            await fixture.Member.UpdateAsync(new StreamsGroupMemberUpdate { ProcessId = "process-2" }));
+
+        await Assert.That(failure!.ErrorCode).IsEqualTo(ErrorCode.StreamsInvalidTopology);
+        await Assert.That(fixture.Member.Snapshot.IsJoined).IsFalse();
+        var result = await fixture.Member.JoinAsync(new StreamsGroupMemberUpdate
+        {
+            Topology = CreateInitialUpdate().Topology
+        });
+
+        var recovery = connection.HeartbeatRequests[3];
+        await Assert.That(recovery.MemberEpoch).IsEqualTo(0);
+        await Assert.That(recovery.ProcessId).IsEqualTo("process-2");
+        await Assert.That(result.MemberEpoch).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task UpdateAsync_FailedTopologyChangePreservesJoinedEpoch()
     {
         var connection = new ScriptedConnection();
@@ -1082,7 +1169,8 @@ public sealed class StreamsGroupMemberTests
 
         _ = await Assert.ThrowsAsync<OperationCanceledException>(() => update);
         await fixture.Member.CloseAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
-        await Assert.That(connection.HeartbeatRequests).Count().IsEqualTo(3);
+        await Assert.That(connection.HeartbeatRequests).Count().IsEqualTo(2);
+        await Assert.That(fixture.Member.Snapshot.IsClosed).IsTrue();
     }
 
     private static Fixture CreateFixture(ScriptedConnection connection, string? instanceId = null)

@@ -95,6 +95,8 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(initialState);
+        if (initialState.Topology is null)
+            throw new ArgumentException("The initial Streams group state must include a topology.", nameof(initialState));
         cancellationToken.ThrowIfCancellationRequested();
 
         lock (_gate)

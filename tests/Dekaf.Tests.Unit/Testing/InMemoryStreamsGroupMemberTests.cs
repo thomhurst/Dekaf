@@ -6,6 +6,18 @@ namespace Dekaf.Tests.Unit.Testing;
 public sealed class InMemoryStreamsGroupMemberTests
 {
     [Test]
+    public async Task JoinAsync_WithoutTopologyThrowsArgumentException()
+    {
+        await using var member = CreateMember();
+
+        var exception = Assert.Throws<ArgumentException>(() =>
+            member.JoinAsync(new StreamsGroupMemberUpdate()));
+
+        await Assert.That(exception.ParamName).IsEqualTo("initialState");
+        await Assert.That(member.Snapshot.IsJoined).IsFalse();
+    }
+
+    [Test]
     public async Task JoinAsync_PublishesInitialAssignmentAndSnapshot()
     {
         await using var member = new InMemoryStreamsGroupMember(new StreamsGroupMemberOptions
@@ -51,6 +63,7 @@ public sealed class InMemoryStreamsGroupMemberTests
         await using var member = CreateMember();
         await member.JoinAsync(new StreamsGroupMemberUpdate
         {
+            Topology = CreateTopology(),
             ActiveTasks = [new StreamsGroupTaskSet { SubtopologyId = "sub-0", Partitions = [2] }],
             StandbyTasks = [],
             WarmupTasks = []
@@ -87,6 +100,7 @@ public sealed class InMemoryStreamsGroupMemberTests
 
         var joinResult = await member.JoinAsync(new StreamsGroupMemberUpdate
         {
+            Topology = CreateTopology(),
             ActiveTasks = joinTasks
         });
 
@@ -127,7 +141,7 @@ public sealed class InMemoryStreamsGroupMemberTests
             GroupId = "streams-group",
             InstanceId = instanceId
         });
-        await member.JoinAsync(new StreamsGroupMemberUpdate());
+        await member.JoinAsync(new StreamsGroupMemberUpdate { Topology = CreateTopology() });
         var closeOptions = new StreamsGroupCloseOptions
         {
             GroupMembershipOperation = operation,
