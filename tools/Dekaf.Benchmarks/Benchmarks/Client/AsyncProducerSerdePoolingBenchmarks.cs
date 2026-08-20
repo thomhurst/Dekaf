@@ -25,6 +25,7 @@ public class AsyncProducerSerdePoolingBenchmarks
     private KafkaTestEnvironment _kafka = null!;
     private DekafProducer.IKafkaProducer<string, string> _producer = null!;
     private DekafProducer.IKafkaProducer<string, string> _yieldingProducer = null!;
+    private DekafProducer.ProducerMessage<string, string> _messageWithHeaders = null!;
     private string _value = null!;
 
     [GlobalSetup]
@@ -36,6 +37,13 @@ public class AsyncProducerSerdePoolingBenchmarks
             _kafka.CreateTopicAsync(YieldingTopic, 3)).ConfigureAwait(false);
 
         _value = new string('x', 100);
+        _messageWithHeaders = new DekafProducer.ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Key = Keys[0],
+            Value = _value,
+            Headers = new Headers(1).Add("caller", "value")
+        };
         _producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(_kafka.BootstrapServers)
             .WithClientId("bench-async-producer-serde")
@@ -71,6 +79,16 @@ public class AsyncProducerSerdePoolingBenchmarks
         for (var i = 0; i < Operations; i++)
         {
             await _producer.FireAsync(Topic, Keys[i], _value)
+                .ConfigureAwait(false);
+        }
+    }
+
+    [Benchmark(OperationsPerInvoke = Operations)]
+    public async Task FireAsync_CompletedSerializerWithHeaders()
+    {
+        for (var i = 0; i < Operations; i++)
+        {
+            await _producer.FireAsync(_messageWithHeaders)
                 .ConfigureAwait(false);
         }
     }

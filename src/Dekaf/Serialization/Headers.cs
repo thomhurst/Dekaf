@@ -67,6 +67,21 @@ public sealed class Headers : IEnumerable<Header>
     /// </summary>
     public int Count => _headers.Count;
 
+    internal int CountWithoutDeferredTraceContext
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get
+        {
+            var headerCount = _headers.Count;
+            var count = headerCount;
+            if ((uint)_deferredTraceparentIndex < (uint)headerCount)
+                count--;
+            if ((uint)_deferredTracestateIndex < (uint)headerCount)
+                count--;
+            return count;
+        }
+    }
+
     /// <summary>
     /// Gets the header at the specified index.
     /// </summary>

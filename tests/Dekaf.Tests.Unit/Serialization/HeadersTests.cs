@@ -79,6 +79,18 @@ public class HeadersTests
         await Assert.That(headers.Count).IsEqualTo(3);
     }
 
+    [Arguments(null)]
+    [Arguments("vendor=value")]
+    [Test]
+    public async Task CountWithoutDeferredTraceContext_ExcludesTracingHeaders(string? traceState)
+    {
+        var headers = Headers.Create("caller", "value");
+        headers.AddDeferredTraceContext(new object(), traceState);
+
+        await Assert.That(headers.Count).IsEqualTo(traceState is null ? 2 : 3);
+        await Assert.That(headers.CountWithoutDeferredTraceContext).IsEqualTo(1);
+    }
+
     [Test]
     public async Task Indexer_ReturnsCorrectHeader()
     {

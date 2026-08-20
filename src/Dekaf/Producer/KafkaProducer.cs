@@ -181,7 +181,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         out int originalCount,
         out bool usesWorkspace)
     {
-        originalCount = headers?.Count ?? 0;
+        originalCount = headers?.CountWithoutDeferredTraceContext ?? 0;
         usesWorkspace = false;
         if (!_producesRecordHeaders || headers is not null)
             return headers;
@@ -1897,7 +1897,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         var value = PooledMemory.Null;
         Header[]? pooledHeaderArray = null;
         var headerCount = 0;
-        var originalHeaderCount = headers?.Count ?? 0;
+        var originalHeaderCount = headers?.CountWithoutDeferredTraceContext ?? 0;
         var serializationHeaders = headers;
         if (_producesRecordHeaders && serializationHeaders is null)
             serializationHeaders = new Headers(2);
@@ -5223,7 +5223,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         Activity? activity,
         Action<RecordMetadata, Exception?>? deliveryHandler)
     {
-        var originalHeaderCount = headers?.Count ?? 0;
+        var originalHeaderCount = headers?.CountWithoutDeferredTraceContext ?? 0;
         var serializationHeaders = headers;
         if (_producesRecordHeaders && serializationHeaders is null)
             serializationHeaders = new Headers(2);

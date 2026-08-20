@@ -166,6 +166,57 @@ public class KafkaProducerFastPathTests
     }
 
     [Test]
+    public async Task ProduceAsync_AsyncSerializerTracing_RestoresCallerOwnedHeadersAfterAppend()
+    {
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name == DekafDiagnostics.ActivitySourceName,
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData
+        };
+        ActivitySource.AddActivityListener(listener);
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 4096,
+            LingerMs = 10,
+            RequestTimeoutMs = 500,
+            DeliveryTimeoutMs = 1000,
+            CloseTimeoutMs = 1000
+        };
+
+        await using var producer = new KafkaProducer<string, string>(
+            options,
+            Serializers.String,
+            Serializers.String,
+            asyncValueSerializer: new AsyncStringSerializer());
+        await StopProducerBackgroundLoopsAsync(producer);
+        SeedProducerMetadata(producer);
+        SetInstanceField(producer, "_initialized", true);
+        var headers = new Headers(3).Add("existing", "value");
+
+        var produceTask = producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Key = "key",
+            Value = "value",
+            Headers = headers
+        });
+
+        await Assert.That(headers.Count).IsEqualTo(1);
+        await Assert.That(headers[0].Key).IsEqualTo("existing");
+        await Assert.That(() => producer.RecordAccumulator.BufferedBytes)
+            .Eventually(bytes => bytes.IsGreaterThan(0), TimeSpan.FromSeconds(5));
+
+        var readyBatch = CompleteCurrentBatch(producer.RecordAccumulator, new TopicPartition(Topic, 0));
+        readyBatch.CompleteSend(baseOffset: 7, DateTimeOffset.UtcNow);
+        _ = await produceTask;
+
+        await Assert.That(headers.Count).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task FireAsync_Tracing_AppendsTraceHeaderWithoutReplacingMessage()
     {
         using var listener = new ActivityListener
@@ -809,6 +860,22 @@ public class KafkaProducerFastPathTests
         {
             context.Headers!.Add("identity", Encoding.UTF8.GetBytes(value));
             Serializers.String.Serialize(value, ref destination, context);
+        }
+    }
+
+    private sealed class AsyncStringSerializer : IAsyncSerializer<string>
+    {
+        public ValueTask SerializeAsync(
+            string value,
+            IBufferWriter<byte> destination,
+            SerializationContext context,
+            CancellationToken cancellationToken = default)
+        {
+            var byteCount = Encoding.UTF8.GetByteCount(value);
+            var span = destination.GetSpan(byteCount);
+            var written = Encoding.UTF8.GetBytes(value, span);
+            destination.Advance(written);
+            return ValueTask.CompletedTask;
         }
     }
 
