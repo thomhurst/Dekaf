@@ -514,18 +514,39 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
             ApplyResponse(response, createResult: false);
             Volatile.Write(ref _backgroundFailure, null);
         }
-        catch (Exception exception)
+        catch (KafkaException exception)
         {
-            var fatal = IsFatalHeartbeatFailure(exception);
-            if (fatal)
-                MarkUnjoined();
-            Volatile.Write(
-                ref _backgroundFailure,
-                fatal ? exception : null);
+            HandleBackgroundHeartbeatFailure(exception);
+        }
+        catch (IOException exception)
+        {
+            HandleBackgroundHeartbeatFailure(exception);
+        }
+        catch (System.Net.Sockets.SocketException exception)
+        {
+            HandleBackgroundHeartbeatFailure(exception);
+        }
+        catch (TimeoutException exception)
+        {
+            HandleBackgroundHeartbeatFailure(exception);
+        }
+        catch (DnsResolutionException exception)
+        {
+            HandleBackgroundHeartbeatFailure(exception);
         }
 
         if (Volatile.Read(ref _closeRequested) == 0 && Volatile.Read(ref _backgroundFailure) is null)
             ScheduleHeartbeat();
+    }
+
+    private void HandleBackgroundHeartbeatFailure(Exception exception)
+    {
+        var fatal = IsFatalHeartbeatFailure(exception);
+        if (fatal)
+            MarkUnjoined();
+        Volatile.Write(
+            ref _backgroundFailure,
+            fatal ? exception : null);
     }
 
     private async ValueTask ProcessCloseAsync(StreamsGroupCloseOptions options)
@@ -858,6 +879,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
     private static bool IsFatalHeartbeatFailure(Exception? exception) => exception switch
     {
         BrokerVersionException => true,
+        AuthenticationException or AuthorizationException => true,
         GroupException { ErrorCode: ErrorCode.UnknownServerError } => false,
         GroupException { ErrorCode: { } errorCode } => !errorCode.IsRetriable(),
         _ => false
