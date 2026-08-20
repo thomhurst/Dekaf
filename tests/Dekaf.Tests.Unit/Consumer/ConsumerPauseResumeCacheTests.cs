@@ -90,9 +90,13 @@ public sealed class ConsumerPauseResumeCacheTests
         consumer.Assign(partition0, partition1);
         var paused = (ConcurrentDictionary<TopicPartition, byte>)GetField("_paused").GetValue(consumer)!;
         var epoch = (BatchIterationEpoch)GetField("_batchIterationEpoch").GetValue(consumer)!;
+        using var publisherReady = new ManualResetEventSlim();
+        using var startPublisher = new ManualResetEventSlim();
         Exception? publisherFailure = null;
         var publisher = new Thread(() =>
         {
+            publisherReady.Set();
+            startPublisher.Wait();
             try
             {
                 consumer.Pause(partition0);
@@ -107,10 +111,12 @@ public sealed class ConsumerPauseResumeCacheTests
         };
 
         bool publisherMutated;
+        publisher.Start();
+        var publisherWasReady = publisherReady.Wait(TimeSpan.FromSeconds(5));
         epoch.BeginPublication();
         try
         {
-            publisher.Start();
+            startPublisher.Set();
             publisherMutated = SpinWait.SpinUntil(
                 () => paused.ContainsKey(partition0),
                 TimeSpan.FromSeconds(5));
@@ -118,12 +124,14 @@ public sealed class ConsumerPauseResumeCacheTests
         }
         finally
         {
+            startPublisher.Set();
             epoch.EndPublication();
         }
 
         var publisherCompleted = publisher.Join(TimeSpan.FromSeconds(5));
         var snapshot = (HashSet<TopicPartition>)GetField("_pausedSnapshot").GetValue(consumer)!;
 
+        await Assert.That(publisherWasReady).IsTrue();
         await Assert.That(publisherMutated).IsTrue();
         await Assert.That(publisherCompleted).IsTrue();
         await Assert.That(publisherFailure).IsNull();
@@ -499,21 +507,29 @@ public sealed class ConsumerPauseResumeCacheTests
         await using var consumer = CreatePrefetchedConsumer(CreatePendingFetch(partition, 10, 1));
         consumer.Pause(partition);
 
-        using var cancellationSource = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        using var cancellationSource = new CancellationTokenSource();
         var consume = consumer.ConsumeOneAsync(Timeout.InfiniteTimeSpan, cancellationSource.Token).AsTask();
         var pausedDirectFetchCancellationSource = GetField("_pausedDirectFetchCancellationSource");
-        await Assert.That(SpinWait.SpinUntil(
-            () => pausedDirectFetchCancellationSource.GetValue(consumer) is not null,
-            TimeSpan.FromSeconds(5))).IsTrue();
+        try
+        {
+            await Assert.That(SpinWait.SpinUntil(
+                () => pausedDirectFetchCancellationSource.GetValue(consumer) is not null,
+                TimeSpan.FromSeconds(5))).IsTrue();
 
-        consumer.Resume(partition);
+            consumer.Resume(partition);
 
-        var resumed = await consume;
-        await Assert.That(resumed).IsNotNull();
-        await Assert.That(resumed!.Value.Topic).IsEqualTo(partition.Topic);
-        await Assert.That(resumed.Value.Partition).IsEqualTo(partition.Partition);
-        await Assert.That(resumed.Value.Offset).IsEqualTo(10);
-        await Assert.That(pausedDirectFetchCancellationSource.GetValue(consumer)).IsNull();
+            var resumed = await consume.WaitAsync(TimeSpan.FromSeconds(5));
+            await Assert.That(resumed).IsNotNull();
+            await Assert.That(resumed!.Value.Topic).IsEqualTo(partition.Topic);
+            await Assert.That(resumed.Value.Partition).IsEqualTo(partition.Partition);
+            await Assert.That(resumed.Value.Offset).IsEqualTo(10);
+            await Assert.That(pausedDirectFetchCancellationSource.GetValue(consumer)).IsNull();
+        }
+        finally
+        {
+            cancellationSource.Cancel();
+            await ((Task)consume).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+        }
     }
 
     [Test]
