@@ -287,6 +287,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         // After serialization, data is copied to a right-sized pooled buffer for the batch.
         // This trades a small copy for eliminating buffer allocation overhead.
         public byte[]? KeySerializationBuffer;
+        // A second slot keeps nested custom-partitioner production allocation-free after warmup.
+        public byte[]? SpareKeySerializationBuffer;
         public byte[]? ValueSerializationBuffer;
         public Headers?[]? SerializationHeaderWorkspaces;
         public int SerializationHeaderWorkspaceDepth;
@@ -1575,8 +1577,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
         Header[]? pooledHeaderArray = null;
         var headerCount = 0;
-        var customPartitionerKey = PooledMemory.Null;
-        var customPartitionerValue = PooledMemory.Null;
+        byte[]? customPartitionerKeyBuffer = null;
         var cache = GetOrCreateCache();
 
         try
@@ -1585,13 +1586,34 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             var keySpan = ReadOnlySpan<byte>.Empty;
             if (!keyIsNull)
             {
-                var keyWriter = new ReusableBufferWriter(ref cache.KeySerializationBuffer, DefaultKeyBufferSize);
-                cache.SerializationContext.Topic = topic;
-                cache.SerializationContext.Component = SerializationComponent.Key;
-                cache.SerializationContext.Headers = headers;
-                _keySerializer.Serialize(key!, ref keyWriter, cache.SerializationContext);
-                keySpan = keyWriter.WrittenSpan;
-                keyWriter.UpdateBufferRef(ref cache.KeySerializationBuffer);
+                if (partition is null && _usesCustomPartitioner)
+                {
+                    SerializeCustomPartitionerKey(
+                        topic, key!, headers, cache,
+                        out var keyBuffer, out customPartitionerKeyBuffer, out var keyLength);
+                    keySpan = keyBuffer.AsSpan(0, keyLength);
+                }
+                else
+                {
+                    var keyWriter = new ReusableBufferWriter(ref cache.KeySerializationBuffer, DefaultKeyBufferSize);
+                    cache.SerializationContext.Topic = topic;
+                    cache.SerializationContext.Component = SerializationComponent.Key;
+                    cache.SerializationContext.Headers = headers;
+                    _keySerializer.Serialize(key!, ref keyWriter, cache.SerializationContext);
+                    keySpan = keyWriter.WrittenSpan;
+                    keyWriter.UpdateBufferRef(ref cache.KeySerializationBuffer);
+                }
+            }
+
+            // Determine partition
+            int resolvedPartition;
+            if (partition is { } explicitPartition)
+            {
+                resolvedPartition = explicitPartition;
+            }
+            else
+            {
+                resolvedPartition = _partitioner.Partition(topic, keySpan, keyIsNull, topicInfo.PartitionCount);
             }
 
             var valueIsNull = value is null;
@@ -1605,34 +1627,6 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 _valueSerializer.Serialize(value!, ref valueWriter, cache.SerializationContext);
                 valueSpan = valueWriter.WrittenSpan;
                 valueWriter.UpdateBufferRef(ref cache.ValueSerializationBuffer);
-            }
-
-            // Determine partition
-            int resolvedPartition;
-            if (partition is { } explicitPartition)
-            {
-                resolvedPartition = explicitPartition;
-            }
-            else
-            {
-                if (_usesCustomPartitioner)
-                {
-                    // User partitioners can run arbitrary code, including reentrant ProduceAsync.
-                    // Keep serialized bytes independent of thread-local buffers until append copies them.
-                    if (!keyIsNull && keySpan.Length > 0)
-                    {
-                        customPartitionerKey = CopySpanToPooledMemory(keySpan);
-                        keySpan = customPartitionerKey.Span;
-                    }
-
-                    if (!valueIsNull && valueSpan.Length > 0)
-                    {
-                        customPartitionerValue = CopySpanToPooledMemory(valueSpan);
-                        valueSpan = customPartitionerValue.Span;
-                    }
-                }
-
-                resolvedPartition = _partitioner.Partition(topic, keySpan, keyIsNull, topicInfo.PartitionCount);
             }
 
             var batchCompletionPartitionCount = GetUniformStickyPartitionCount(
@@ -1669,10 +1663,6 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 // The accumulator owns every handed-off resource from this call on, including
                 // when it throws synchronously; null the locals so the catch below cannot
                 // double-return them.
-                var keyOwned = customPartitionerKey;
-                var valueOwned = customPartitionerValue;
-                customPartitionerKey = PooledMemory.Null;
-                customPartitionerValue = PooledMemory.Null;
                 var headersOwned = pooledHeaderArray;
                 pooledHeaderArray = null;
 
@@ -1682,27 +1672,24 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     timestampMs,
                     keySpan,
                     keyIsNull,
-                    keyOwned,
                     valueSpan,
                     valueIsNull,
-                    valueOwned,
                     headersOwned,
                     headerCount,
                     completion,
                     cancellationToken,
                     batchCompletionPartitionCount);
+                RestoreCustomPartitionerKeyBuffer(cache, ref customPartitionerKeyBuffer);
                 return;
             }
 
-            customPartitionerKey.Return();
-            customPartitionerValue.Return();
+            RestoreCustomPartitionerKeyBuffer(cache, ref customPartitionerKeyBuffer);
         }
         catch (Exception ex)
         {
             RecordAccumulator.ReturnPooledHeaders(pooledHeaderArray, headerCount);
             headers?.RemoveDeferredTraceContext();
-            customPartitionerKey.Return();
-            customPartitionerValue.Return();
+            RestoreCustomPartitionerKeyBuffer(cache, ref customPartitionerKeyBuffer);
             if (ex is not ObjectDisposedException)
                 completion.TrySetException(ex);
             throw;
@@ -4788,10 +4775,14 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         var cache = GetOrCreateCache();
         var serializationHeaders = PrepareSerializationHeaders(
             headers, cache, out var originalHeaderCount, out var usesHeaderWorkspace);
-        var customPartitionerKey = PooledMemory.Null;
-        var customPartitionerValue = PooledMemory.Null;
         try
         {
+            if (partition is null && _usesCustomPartitioner)
+            {
+                return SerializeAndAppendWithCustomPartitionerAsync(
+                    topic, key, value, serializationHeaders, timestamp, topicInfo, callback);
+            }
+
             var keyIsNull = key is null;
             int keyLength = 0;
 
@@ -4826,32 +4817,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             var valueSpan = valueIsNull
                 ? ReadOnlySpan<byte>.Empty
                 : cache.ValueSerializationBuffer.AsSpan(0, valueLength);
-            int resolvedPartition;
-            if (partition is { } explicitPartition)
-            {
-                resolvedPartition = explicitPartition;
-            }
-            else
-            {
-                if (_usesCustomPartitioner)
-                {
-                    // User partitioners can reenter produce and overwrite the thread-local buffers.
-                    if (!keyIsNull && keySpan.Length > 0)
-                    {
-                        customPartitionerKey = CopySpanToPooledMemory(keySpan);
-                        keySpan = customPartitionerKey.Span;
-                    }
-
-                    if (!valueIsNull && valueSpan.Length > 0)
-                    {
-                        customPartitionerValue = CopySpanToPooledMemory(valueSpan);
-                        valueSpan = customPartitionerValue.Span;
-                    }
-                }
-
-                resolvedPartition = _partitioner.Partition(
-                    topic, keySpan, keyIsNull, topicInfo.PartitionCount);
-            }
+            var resolvedPartition = partition
+                ?? _partitioner.Partition(topic, keySpan, keyIsNull, topicInfo.PartitionCount);
             var batchCompletionPartitionCount = GetUniformStickyPartitionCount(
                 partition, keySpan, keyIsNull, topicInfo.PartitionCount);
 
@@ -4876,10 +4843,70 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         }
         finally
         {
-            customPartitionerKey.Return();
-            customPartitionerValue.Return();
             RestoreSerializationHeaders(
                 serializationHeaders, originalHeaderCount, cache, usesHeaderWorkspace);
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private ValueTask<bool> SerializeAndAppendWithCustomPartitionerAsync(
+        string topic, TKey? key, TValue value, Headers? headers, DateTimeOffset? timestamp,
+        TopicInfo topicInfo,
+        Action<RecordMetadata, Exception?>? callback)
+    {
+        var cache = GetOrCreateCache();
+        var keyIsNull = key is null;
+        byte[]? retainedKeyBuffer = null;
+        byte[]? keyBuffer = null;
+        var keyLength = 0;
+        if (!keyIsNull)
+        {
+            SerializeCustomPartitionerKey(
+                topic, key!, headers, cache,
+                out keyBuffer, out retainedKeyBuffer, out keyLength);
+        }
+
+        try
+        {
+            var keySpan = keyIsNull
+                ? ReadOnlySpan<byte>.Empty
+                : keyBuffer.AsSpan(0, keyLength);
+            var resolvedPartition = _partitioner.Partition(
+                topic, keySpan, keyIsNull, topicInfo.PartitionCount);
+
+            // Serialize after the user partitioner returns: it may reenter produce and overwrite
+            // this thread's reusable value buffer.
+            var valueIsNull = value is null;
+            var valueSpan = ReadOnlySpan<byte>.Empty;
+            if (!valueIsNull)
+            {
+                var valueWriter = new ReusableBufferWriter(ref cache.ValueSerializationBuffer, DefaultValueBufferSize);
+                cache.SerializationContext.Topic = topic;
+                cache.SerializationContext.Component = SerializationComponent.Value;
+                cache.SerializationContext.Headers = headers;
+                _valueSerializer.Serialize(value!, ref valueWriter, cache.SerializationContext);
+                valueSpan = valueWriter.WrittenSpan;
+                valueWriter.UpdateBufferRef(ref cache.ValueSerializationBuffer);
+            }
+
+            var timestampMs = timestamp?.ToUnixTimeMilliseconds() ?? GetFastTimestampMs();
+            Header[]? pooledHeaderArray = null;
+            var headerCount = 0;
+            if (headers is { Count: > 0 })
+            {
+                RentAndFillHeaders(headers, out pooledHeaderArray, out headerCount);
+            }
+
+            // AppendFromSpansAsync copies both spans before returning, including its slow path.
+            return _accumulator.AppendFromSpansAsync(
+                topic, resolvedPartition, timestampMs,
+                keySpan, keyIsNull,
+                valueSpan, valueIsNull,
+                pooledHeaderArray, headerCount, callback, CancellationToken.None);
+        }
+        finally
+        {
+            RestoreCustomPartitionerKeyBuffer(cache, ref retainedKeyBuffer);
         }
     }
 
@@ -5445,14 +5472,58 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static PooledMemory CopySpanToPooledMemory(ReadOnlySpan<byte> data)
+    private void SerializeCustomPartitionerKey(
+        string topic,
+        TKey key,
+        Headers? headers,
+        ProducerThreadCache cache,
+        out byte[] keyBuffer,
+        out byte[]? retainedBuffer,
+        out int keyLength)
     {
-        if (data.Length == 0)
-            return new PooledMemory(null, 0, isNull: false);
+        retainedBuffer = cache.KeySerializationBuffer;
+        cache.KeySerializationBuffer = null;
+        if (retainedBuffer is null && cache.SpareKeySerializationBuffer is { } reentrantBuffer)
+        {
+            retainedBuffer = reentrantBuffer;
+            cache.SpareKeySerializationBuffer = null;
+        }
 
-        var pooledArray = ProducerDataPool.BytePool.Rent(data.Length);
-        data.CopyTo(pooledArray);
-        return new PooledMemory(pooledArray, data.Length);
+        var writer = new ReusableBufferWriter(ref retainedBuffer, DefaultKeyBufferSize);
+        try
+        {
+            var context = new SerializationContext
+            {
+                Topic = topic,
+                Component = SerializationComponent.Key,
+                Headers = headers,
+            };
+            _keySerializer.Serialize(key, ref writer, context);
+            keyLength = writer.WrittenCount;
+            keyBuffer = writer.WrittenBuffer;
+            writer.UpdateBufferRef(ref retainedBuffer);
+        }
+        catch
+        {
+            cache.KeySerializationBuffer = retainedBuffer;
+            retainedBuffer = null;
+            throw;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void RestoreCustomPartitionerKeyBuffer(
+        ProducerThreadCache cache,
+        ref byte[]? retainedBuffer)
+    {
+        if (retainedBuffer is null)
+            return;
+
+        if (cache.KeySerializationBuffer is { } reentrantBuffer)
+            cache.SpareKeySerializationBuffer ??= reentrantBuffer;
+
+        cache.KeySerializationBuffer = retainedBuffer;
+        retainedBuffer = null;
     }
 
     /// <summary>
@@ -6171,6 +6242,8 @@ internal ref struct ReusableBufferWriter : IBufferWriter<byte>
     public readonly int WrittenCount => _written;
 
     public readonly ReadOnlySpan<byte> WrittenSpan => _buffer.AsSpan(0, _written);
+
+    internal readonly byte[] WrittenBuffer => _buffer;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Advance(int count)
