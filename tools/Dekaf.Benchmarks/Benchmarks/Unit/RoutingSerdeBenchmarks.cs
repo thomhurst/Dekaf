@@ -211,8 +211,10 @@ public class HeaderRoutingLookupBenchmarks
     private RecordHeaderRoutingLookup _fallback;
     private RecordHeaderRoutingLookup _null;
     private RecordHeaderRoutingLookup _lateAttachedNested;
+    private RecordHeaderRoutingLookup _recordBatchLateAttachedNested;
     private Header[] _matchedHeaders = null!;
     private LazyRecordList _lateAttachedRecords = null!;
+    private RecordBatch _lateAttachedBatch = null!;
     private SerializationContext _context;
 
     [Params(1, 8, 64, 1_024)]
@@ -259,10 +261,24 @@ public class HeaderRoutingLookupBenchmarks
         _lateAttachedRecords.EnsureAllParsed();
         _lateAttachedRecords.ConfigureHeaderRouting(nestedPlan);
         _lateAttachedNested = _lateAttachedRecords[0].CreateHeaderRoutingLookup(nestedPlan);
+
+        using var sourceBatch = new RecordBatch { Records = [nestedRecord] };
+        var batchBuffer = new ArrayBufferWriter<byte>();
+        sourceBatch.Write(batchBuffer);
+        var reader = new KafkaProtocolReader(batchBuffer.WrittenMemory);
+        _lateAttachedBatch = RecordBatch.Read(ref reader);
+        _ = _lateAttachedBatch.Records[0];
+        _lateAttachedBatch.ConfigureHeaderRouting(nestedPlan);
+        _recordBatchLateAttachedNested =
+            _lateAttachedBatch.Records[0].CreateHeaderRoutingLookup(nestedPlan);
     }
 
     [GlobalCleanup]
-    public void Cleanup() => _lateAttachedRecords.Dispose();
+    public void Cleanup()
+    {
+        _lateAttachedRecords.Dispose();
+        _lateAttachedBatch.Dispose();
+    }
 
     [Benchmark(Baseline = true)]
     public RoutingSerdeBenchmarks.Event LinearMatched() =>
@@ -280,6 +296,10 @@ public class HeaderRoutingLookupBenchmarks
     [Benchmark]
     public bool LateAttachedNested() =>
         _lateAttachedNested.TryGetLast("route-4", out _);
+
+    [Benchmark]
+    public bool RecordBatchLateAttachedNested() =>
+        _recordBatchLateAttachedNested.TryGetLast("route-4", out _);
 
     private RoutingSerdeBenchmarks.Event Deserialize(in RecordHeaderRoutingLookup lookup) =>
         RecordHeaderDeserializer.Deserialize(

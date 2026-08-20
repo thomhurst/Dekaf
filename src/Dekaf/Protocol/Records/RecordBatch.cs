@@ -565,6 +565,16 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
             for (var index = 0; index < records.Length; index++)
                 records[index] = records[index].IndexHeaders(headerRoutingPlan);
         }
+        if (headerRoutingPlan is not null
+            && ReferenceEquals(_records, this)
+            && _parsedRecords is { } parsedRecords)
+        {
+            for (var index = 0; index < _parsedRecordCount; index++)
+            {
+                var recordIndex = _parsedRecordsOffset + index;
+                parsedRecords[recordIndex] = parsedRecords[recordIndex].IndexPooledHeaders(headerRoutingPlan);
+            }
+        }
         if (_records is LazyRecordList lazyRecords)
             lazyRecords.ConfigureHeaderRouting(headerRoutingPlan);
     }

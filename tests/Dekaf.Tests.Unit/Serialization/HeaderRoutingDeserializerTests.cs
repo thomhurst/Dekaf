@@ -236,16 +236,7 @@ public sealed class HeaderRoutingDeserializerTests
     public async Task LazyRecordList_AttachingPlanAfterParsingBuildsCompletePooledHeaderIndex()
     {
         const int routeCount = 18;
-        IDeserializer<string> root = new HeaderPresenceDeserializer();
-        var headers = new Header[routeCount];
-        for (var index = routeCount - 1; index >= 0; index--)
-        {
-            var headerName = $"route-{index}";
-            root = CreateNestedRouter(headerName, "next"u8.ToArray(), root);
-            headers[index] = new Header(headerName, "next"u8.ToArray());
-        }
-
-        var plan = RecordHeaderRoutingPlan.Create(Serializers.String, root)!;
+        var (plan, headers) = CreateNestedHeaderRoutingPlan(routeCount);
         var record = new Record
         {
             Value = "payload"u8.ToArray(),
@@ -267,6 +258,56 @@ public sealed class HeaderRoutingDeserializerTests
 
         await Assert.That(found).IsTrue();
         await Assert.That(indexedHeader.Key).IsEqualTo($"route-{routeCount - 1}");
+    }
+
+    [Test]
+    public async Task RecordBatch_AttachingPlanAfterPartialParsingBuildsCompletePooledHeaderIndex()
+    {
+        const int routeCount = 18;
+        var (plan, headers) = CreateNestedHeaderRoutingPlan(routeCount);
+        var record = new Record
+        {
+            Value = "payload"u8.ToArray(),
+            Headers = headers,
+            HeaderCount = headers.Length
+        };
+        using var source = new RecordBatch { Records = [record, record] };
+        var buffer = new ArrayBufferWriter<byte>();
+        source.Write(buffer);
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var batch = RecordBatch.Read(ref reader);
+        var slab = ArrayPool<Record>.Shared.Rent(3);
+        slab.AsSpan().Clear();
+        try
+        {
+            batch.UseParsedRecordSlab(slab, offset: 1);
+            _ = batch.Records[0];
+
+            batch.ConfigureHeaderRouting(plan);
+            var parsedBeforeAttach = batch.Records[0];
+            var parsedAfterAttach = batch.Records[1];
+            parsedBeforeAttach.Headers![routeCount - 1] = default;
+            parsedAfterAttach.Headers![routeCount - 1] = default;
+            var lookupBeforeAttach = parsedBeforeAttach.CreateHeaderRoutingLookup(plan);
+            var lookupAfterAttach = parsedAfterAttach.CreateHeaderRoutingLookup(plan);
+
+            var foundBeforeAttach = lookupBeforeAttach.TryGetLast(
+                $"route-{routeCount - 1}",
+                out var indexedBeforeAttach);
+            var foundAfterAttach = lookupAfterAttach.TryGetLast(
+                $"route-{routeCount - 1}",
+                out var indexedAfterAttach);
+
+            await Assert.That(foundBeforeAttach).IsTrue();
+            await Assert.That(indexedBeforeAttach.Key).IsEqualTo($"route-{routeCount - 1}");
+            await Assert.That(foundAfterAttach).IsTrue();
+            await Assert.That(indexedAfterAttach.Key).IsEqualTo($"route-{routeCount - 1}");
+        }
+        finally
+        {
+            batch.Dispose();
+            ArrayPool<Record>.Shared.Return(slab, clearArray: true);
+        }
     }
 
     [Test]
@@ -374,6 +415,21 @@ public sealed class HeaderRoutingDeserializerTests
             headerName,
             new PrefixDeserializer("fallback"),
             new HeaderDeserializerRoute<string>(routeValue, child));
+
+    private static (RecordHeaderRoutingPlan Plan, Header[] Headers) CreateNestedHeaderRoutingPlan(
+        int routeCount)
+    {
+        IDeserializer<string> root = new HeaderPresenceDeserializer();
+        var headers = new Header[routeCount];
+        for (var index = routeCount - 1; index >= 0; index--)
+        {
+            var headerName = $"route-{index}";
+            root = CreateNestedRouter(headerName, "next"u8.ToArray(), root);
+            headers[index] = new Header(headerName, "next"u8.ToArray());
+        }
+
+        return (RecordHeaderRoutingPlan.Create(Serializers.String, root)!, headers);
+    }
 
     private static byte[] Frame(int schemaId, ReadOnlySpan<byte> payload)
     {
