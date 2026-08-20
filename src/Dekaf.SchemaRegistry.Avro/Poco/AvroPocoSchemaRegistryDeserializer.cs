@@ -13,6 +13,8 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
     : IDeserializer<T>, IAsyncDeserializerPreparer<T>, IAsyncDisposable
     where TCodec : struct, IAvroPocoCodec<T>
 {
+    bool IAsyncDeserializerPreparer<T>.RequiresPreparation => true;
+
     private const byte MagicByte = 0;
     private const int WireHeaderSize = 5;
     private const int GeneratedSubjectCacheSchemaId = 0;
@@ -69,8 +71,10 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         if (_ruleExecutor is not null)
         {
             _subjectNames = DeserializerSubjectNameCache.Create(
+                schemaRegistry,
                 _config.SubjectNameStrategy,
                 _config.CustomSubjectNameStrategy,
+                _config.AsyncSubjectNameStrategy,
                 _config.UseLegacySubjectNames);
         }
 
@@ -94,6 +98,19 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         }
 
         var isKey = context.Component == SerializationComponent.Key;
+        if (_subjectNames is { RequiresPreparation: true })
+        {
+            await _subjectNames.PrepareAsync(
+                    _schemaRegistry,
+                    schemaId,
+                    context.Topic,
+                    isKey,
+                    TCodec.FullName,
+                    cancellationToken,
+                    cacheSchemaId: GeneratedSubjectCacheSchemaId)
+                .ConfigureAwait(false);
+        }
+
         var subject = GetSubjectName(context.Topic, isKey);
         await PrepareRulesAsync(
                 schemaId,
@@ -121,6 +138,12 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         }
 
         var isKey = context.Component == SerializationComponent.Key;
+        if (_subjectNames is { RequiresPreparation: true }
+            && !_subjectNames.IsPrepared(GeneratedSubjectCacheSchemaId, context.Topic, isKey))
+        {
+            return PrepareSubjectAndRulesAsync(schemaId, context, isKey, cancellationToken);
+        }
+
         var subject = GetSubjectName(context.Topic, isKey);
         var preparedKey = new PreparedRuleKey(schemaId, context.Topic, isKey);
         if (TryGetCachedPlan(schemaId, out _) &&
@@ -167,6 +190,13 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         if (_ruleExecutor is not null)
         {
             var isKey = context.Component == SerializationComponent.Key;
+            if (_subjectNames is { RequiresPreparation: true }
+                && !_subjectNames.IsPrepared(GeneratedSubjectCacheSchemaId, context.Topic, isKey))
+            {
+                value = default!;
+                return false;
+            }
+
             var preparedState = Volatile.Read(ref _lastPreparedRuleState);
             if (preparedState is null || !preparedState.Matches(schemaId, context.Topic, isKey))
             {
@@ -201,6 +231,30 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         var reader = new AvroValueReader(data.Span.Slice(WireHeaderSize));
         value = TCodec.Read(ref reader, plan);
         return true;
+    }
+
+    private async ValueTask PrepareSubjectAndRulesAsync(
+        int schemaId,
+        SerializationContext context,
+        bool isKey,
+        CancellationToken cancellationToken)
+    {
+        await _subjectNames!.PrepareAsync(
+                _schemaRegistry,
+                schemaId,
+                context.Topic,
+                isKey,
+                TCodec.FullName,
+                cancellationToken,
+                cacheSchemaId: GeneratedSubjectCacheSchemaId)
+            .ConfigureAwait(false);
+        var subject = GetSubjectName(context.Topic, isKey);
+        await PrepareRulesAsync(
+                schemaId,
+                subject,
+                new PreparedRuleKey(schemaId, context.Topic, isKey),
+                cancellationToken)
+            .ConfigureAwait(false);
     }
 
     private bool TryGetCachedPlan(

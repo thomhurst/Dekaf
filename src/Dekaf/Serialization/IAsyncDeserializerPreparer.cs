@@ -15,6 +15,15 @@ namespace Dekaf.Serialization;
 public interface IAsyncDeserializerPreparer<T>
 {
     /// <summary>
+    /// Gets whether this instance currently requires the asynchronous preparation path.
+    /// </summary>
+    /// <remarks>
+    /// Consumers read this once during construction so conditionally configured preparers do not
+    /// add interface dispatch or asynchronous drain bookkeeping to the synchronous path.
+    /// </remarks>
+    bool RequiresPreparation { get; }
+
+    /// <summary>
     /// Attempts synchronous deserialization using already-prepared state. Returns <see langword="false"/>
     /// only when <see cref="PrepareAsync"/> must be awaited before retrying.
     /// </summary>

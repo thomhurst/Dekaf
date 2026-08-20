@@ -1,4 +1,6 @@
+using System.Buffers.Binary;
 using Dekaf.SchemaRegistry;
+using Dekaf.Serialization;
 
 namespace Dekaf.Tests.Integration;
 
@@ -18,7 +20,7 @@ public sealed class SchemaRegistryAssociationIntegrationTests(KafkaWithAssociati
         {
             Url = testInfra.RegistryUrl
         });
-        await client.RegisterSchemaAsync(subject, new Schema
+        var schemaId = await client.RegisterSchemaAsync(subject, new Schema
         {
             SchemaType = SchemaType.Json,
             SchemaString = "{\"type\":\"object\"}"
@@ -67,6 +69,30 @@ public sealed class SchemaRegistryAssociationIntegrationTests(KafkaWithAssociati
                 SubjectNameStrategy.AssociatedName);
             var resolved = await serializer.PrepareAsync(resourceName, 42);
             await Assert.That(resolved.Subject).IsEqualTo(subject);
+
+            var ruleExecutor = new CapturingRuleExecutor();
+            await using var deserializer = SchemaRegistryDeserializer.Create<int>(
+                client,
+                static (_, _) => 42,
+                new SchemaRegistryDeserializerConfig
+                {
+                    SubjectNameStrategy = SubjectNameStrategy.AssociatedName
+                },
+                ruleExecutor: ruleExecutor);
+            var preparer = (IAsyncDeserializerPreparer<int>)deserializer;
+            var context = new SerializationContext
+            {
+                Topic = resourceName,
+                Component = SerializationComponent.Value
+            };
+            var data = new byte[5];
+            BinaryPrimitives.WriteInt32BigEndian(data.AsSpan(1), schemaId);
+
+            await Assert.That(preparer.TryDeserialize(data, context, out _)).IsFalse();
+            await preparer.PrepareAsync(data, context);
+            await Assert.That(preparer.TryDeserialize(data, context, out var value)).IsTrue();
+            await Assert.That(value).IsEqualTo(42);
+            await Assert.That(ruleExecutor.Subject).IsEqualTo(subject);
         }
         finally
         {
@@ -79,5 +105,22 @@ public sealed class SchemaRegistryAssociationIntegrationTests(KafkaWithAssociati
         var remaining = await client.GetAssociationsByResourceNameAsync(resourceName, resourceNamespace);
 
         await Assert.That(remaining).IsEmpty();
+    }
+
+    private sealed class CapturingRuleExecutor : ISchemaRegistryRuleExecutor
+    {
+        internal string? Subject { get; private set; }
+
+        public ReadOnlyMemory<byte> TransformSerializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleContext context) => payload;
+
+        public ReadOnlyMemory<byte> TransformDeserializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleContext context)
+        {
+            Subject = context.Subject;
+            return payload;
+        }
     }
 }

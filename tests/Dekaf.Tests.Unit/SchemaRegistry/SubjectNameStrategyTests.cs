@@ -248,6 +248,38 @@ public sealed class SubjectNameStrategyTests
         await Assert.That(config.UseLegacySubjectNames).IsFalse();
     }
 
+    [Test]
+    public async Task SchemaRegistryConfigs_RetainConfiguredAsyncStrategy()
+    {
+        var strategy = new FixedAsyncSubjectNameStrategy();
+        var genericDeserializer = new SchemaRegistryDeserializerConfig
+        {
+            AsyncSubjectNameStrategy = strategy
+        };
+        var avroSerializer = new AvroSerializerConfig
+        {
+            AsyncSubjectNameStrategy = strategy
+        };
+        var avroDeserializer = new AvroDeserializerConfig
+        {
+            AsyncSubjectNameStrategy = strategy
+        };
+        var protobufSerializer = new ProtobufSerializerConfig
+        {
+            AsyncSubjectNameStrategy = strategy
+        };
+        var protobufDeserializer = new ProtobufDeserializerConfig
+        {
+            AsyncSubjectNameStrategy = strategy
+        };
+
+        await Assert.That(genericDeserializer.AsyncSubjectNameStrategy).IsSameReferenceAs(strategy);
+        await Assert.That(avroSerializer.AsyncSubjectNameStrategy).IsSameReferenceAs(strategy);
+        await Assert.That(avroDeserializer.AsyncSubjectNameStrategy).IsSameReferenceAs(strategy);
+        await Assert.That(protobufSerializer.AsyncSubjectNameStrategy).IsSameReferenceAs(strategy);
+        await Assert.That(protobufDeserializer.AsyncSubjectNameStrategy).IsSameReferenceAs(strategy);
+    }
+
     // --- Integration with AvroSchemaRegistrySerializer ---
 
     private const string SimpleRecordSchema = """
@@ -1045,6 +1077,16 @@ public sealed class SubjectNameStrategyTests
             var suffix = isKey ? "key" : "value";
             return $"{_prefix}.{topic}-{suffix}";
         }
+    }
+
+    private sealed class FixedAsyncSubjectNameStrategy : IAsyncSubjectNameStrategy
+    {
+        public ValueTask<string> GetSubjectNameAsync(
+            string topic,
+            string? recordType,
+            bool isKey,
+            CancellationToken cancellationToken = default) =>
+            new("configured-subject");
     }
 
     private static class RuntimeGenericRecord

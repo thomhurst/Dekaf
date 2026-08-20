@@ -42,7 +42,7 @@ public sealed class AvroSchemaRegistryDeserializer<
     [DynamicallyAccessedMembers(
         DynamicallyAccessedMemberTypes.PublicFields |
         DynamicallyAccessedMemberTypes.PublicParameterlessConstructor)] T>
-    : IDeserializer<T>, IAsyncDisposable
+    : IDeserializer<T>, IAsyncDeserializerPreparer<T>, IAsyncDisposable
 {
     private const byte MagicByte = 0x00;
     private static readonly TimeSpan SchemaRegistryTimeout = TimeSpan.FromSeconds(30);
@@ -87,8 +87,10 @@ public sealed class AvroSchemaRegistryDeserializer<
         }
 
         _subjectNames = DeserializerSubjectNameCache.Create(
+            schemaRegistry,
             _config.SubjectNameStrategy,
             _config.CustomSubjectNameStrategy,
+            _config.AsyncSubjectNameStrategy,
             _config.UseLegacySubjectNames);
         if (_config.UseLatestVersion)
         {
@@ -104,6 +106,51 @@ public sealed class AvroSchemaRegistryDeserializer<
 
     internal int CachedGenericReaderCount => _genericReaders.Count;
     internal int CachedSpecificReaderCount => _specificReaders.Count;
+
+    bool IAsyncDeserializerPreparer<T>.RequiresPreparation =>
+        _ruleExecutor is not null && _subjectNames is { RequiresPreparation: true };
+
+    ValueTask IAsyncDeserializerPreparer<T>.PrepareAsync(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        CancellationToken cancellationToken)
+    {
+        if (_ruleExecutor is null
+            || _subjectNames is not { RequiresPreparation: true }
+            || !DeserializerSubjectNameCache.TryReadSchemaId(data, out var schemaId))
+        {
+            return default;
+        }
+
+        return _subjectNames.PrepareAsync(
+            _schemaRegistry,
+            schemaId,
+            context.Topic,
+            context.Component == SerializationComponent.Key,
+            FallbackRecordName,
+            cancellationToken);
+    }
+
+    bool IAsyncDeserializerPreparer<T>.TryDeserialize(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        out T value)
+    {
+        if (_ruleExecutor is not null
+            && _subjectNames is { RequiresPreparation: true }
+            && DeserializerSubjectNameCache.TryReadSchemaId(data, out var schemaId)
+            && !_subjectNames.IsPrepared(
+                schemaId,
+                context.Topic,
+                context.Component == SerializationComponent.Key))
+        {
+            value = default!;
+            return false;
+        }
+
+        value = Deserialize(data, context);
+        return true;
+    }
 
     /// <summary>
     /// Pre-warms the schema cache for a specific schema ID.

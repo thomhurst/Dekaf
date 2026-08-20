@@ -86,10 +86,12 @@ public sealed class AvroSchemaRegistrySerializer<
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _config = config ?? new AvroSerializerConfig();
-        if (_config.CustomSubjectNameStrategy is null
-            && _config.SubjectNameStrategy == SubjectNameStrategy.AssociatedName)
+        if (_config.CustomSubjectNameStrategy is null)
         {
-            _asyncSubjectNameStrategy = new AssociatedNameStrategy(schemaRegistry);
+            _asyncSubjectNameStrategy = _config.AsyncSubjectNameStrategy
+                ?? (_config.SubjectNameStrategy == SubjectNameStrategy.AssociatedName
+                    ? new AssociatedNameStrategy(schemaRegistry)
+                    : null);
         }
         ArgumentOutOfRangeException.ThrowIfLessThan(_config.MaxCachedSchemas, 1);
         _maxCachedSchemas = _config.MaxCachedSchemas;

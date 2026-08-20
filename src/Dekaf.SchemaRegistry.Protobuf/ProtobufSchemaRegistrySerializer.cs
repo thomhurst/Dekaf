@@ -55,10 +55,12 @@ public sealed class ProtobufSchemaRegistrySerializer<
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _config = config ?? new ProtobufSerializerConfig();
-        if (_config.CustomSubjectNameStrategy is null
-            && _config.SubjectNameStrategy == SubjectNameStrategy.AssociatedName)
+        if (_config.CustomSubjectNameStrategy is null)
         {
-            _asyncSubjectNameStrategy = new AssociatedNameStrategy(schemaRegistry);
+            _asyncSubjectNameStrategy = _config.AsyncSubjectNameStrategy
+                ?? (_config.SubjectNameStrategy == SubjectNameStrategy.AssociatedName
+                    ? new AssociatedNameStrategy(schemaRegistry)
+                    : null);
         }
         _ownsClient = ownsClient;
 

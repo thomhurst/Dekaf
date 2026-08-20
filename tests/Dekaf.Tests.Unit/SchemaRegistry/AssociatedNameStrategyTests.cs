@@ -1,4 +1,9 @@
+using System.Buffers.Binary;
+using Avro.Generic;
 using Dekaf.SchemaRegistry;
+using Dekaf.SchemaRegistry.Avro;
+using Dekaf.SchemaRegistry.Protobuf;
+using Dekaf.Serialization;
 
 namespace Dekaf.Tests.Unit.SchemaRegistry;
 
@@ -248,20 +253,118 @@ public sealed class AssociatedNameStrategyTests
     }
 
     [Test]
-    public async Task GenericDeserializer_AssociatedNameRejectsMissingAsyncPreparation()
+    public async Task GenericDeserializer_AssociatedNamePreparesBeforeReadRules()
     {
         using var client = new MockSchemaRegistryClient();
+        const string subject = "orders-associated-value";
+        var schemaId = await client.RegisterSchemaAsync(subject, new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = """{"type":"integer"}"""
+        });
+        await AssociateAsync(client, "orders", subject);
+        var executor = new CapturingRuleExecutor();
+        await using var deserializer = new SchemaRegistryDeserializer<int>(
+            client,
+            static (_, _) => 42,
+            ownsClient: false,
+            executor,
+            new SchemaRegistryDeserializerConfig
+            {
+                SubjectNameStrategy = SubjectNameStrategy.AssociatedName
+            });
+        var preparer = (IAsyncDeserializerPreparer<int>)deserializer;
+        var context = new SerializationContext
+        {
+            Topic = "orders",
+            Component = SerializationComponent.Value
+        };
+        var data = new byte[5];
+        BinaryPrimitives.WriteInt32BigEndian(data.AsSpan(1), schemaId);
 
-        await Assert.That(() => new SchemaRegistryDeserializer<int>(
-                client,
-                static (_, _) => 0,
-                ownsClient: false,
-                config: new SchemaRegistryDeserializerConfig
-                {
-                    UseLatestVersion = true,
-                    SubjectNameStrategy = SubjectNameStrategy.AssociatedName
-                }))
-            .Throws<ArgumentException>();
+        var cold = preparer.TryDeserialize(data, context, out _);
+        await preparer.PrepareAsync(data, context);
+        var warm = preparer.TryDeserialize(data, context, out var value);
+
+        await Assert.That(preparer.RequiresPreparation).IsTrue();
+        await Assert.That(cold).IsFalse();
+        await Assert.That(warm).IsTrue();
+        await Assert.That(value).IsEqualTo(42);
+        await Assert.That(executor.Subject).IsEqualTo(subject);
+        await Assert.That(client.AssociationLookupCallCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task GenericDeserializer_SynchronousStrategyDisablesPreparationPath()
+    {
+        using var client = new MockSchemaRegistryClient();
+        await using var deserializer = new SchemaRegistryDeserializer<int>(
+            client,
+            static (_, _) => 42,
+            ownsClient: false,
+            ruleExecutor: new CapturingRuleExecutor(),
+            config: new SchemaRegistryDeserializerConfig());
+
+        var preparer = (IAsyncDeserializerPreparer<int>)deserializer;
+
+        await Assert.That(preparer.RequiresPreparation).IsFalse();
+    }
+
+    [Test]
+    public async Task SchemaDeserializers_ConfiguredAsyncStrategyEnablesPreparation()
+    {
+        using var client = new MockSchemaRegistryClient();
+        var strategy = new FixedAsyncSubjectNameStrategy("configured-associated");
+        var executor = new CapturingRuleExecutor();
+        var genericConfig = new SchemaRegistryDeserializerConfig
+        {
+            AsyncSubjectNameStrategy = strategy
+        };
+        await using var json = new JsonSchemaRegistryDeserializer<int>(
+            client,
+            jsonOptions: null,
+            config: genericConfig,
+            ownsClient: false,
+            ruleExecutor: executor);
+        await using var avro = new AvroSchemaRegistryDeserializer<GenericRecord>(
+            client,
+            new AvroDeserializerConfig
+            {
+                AsyncSubjectNameStrategy = strategy,
+                RuleExecutor = executor
+            });
+        await using var protobuf = new ProtobufSchemaRegistryDeserializer<TestMessage>(
+            client,
+            new ProtobufDeserializerConfig
+            {
+                AsyncSubjectNameStrategy = strategy,
+                RuleExecutor = executor
+            });
+
+        await Assert.That(((IAsyncDeserializerPreparer<int>)json).RequiresPreparation).IsTrue();
+        await Assert.That(((IAsyncDeserializerPreparer<GenericRecord>)avro).RequiresPreparation).IsTrue();
+        await Assert.That(((IAsyncDeserializerPreparer<TestMessage>)protobuf).RequiresPreparation).IsTrue();
+    }
+
+    [Test]
+    public async Task GenericSerializer_ConfiguredAsyncStrategyIsUsed()
+    {
+        using var client = new MockSchemaRegistryClient();
+        var strategy = new FixedAsyncSubjectNameStrategy("configured-associated");
+        await using var serializer = new SchemaRegistrySerializer<int>(
+            client,
+            static (_, _) => { },
+            static () => new Schema
+            {
+                SchemaType = SchemaType.Json,
+                SchemaString = """{"type":"integer"}"""
+            },
+            strategy);
+
+        var resolved = await serializer.PrepareAsync("orders", 42);
+
+        await Assert.That(resolved.Subject).IsEqualTo("configured-associated");
+        await Assert.That(strategy.CallCount).IsEqualTo(1);
     }
 
     [Test]
@@ -405,4 +508,36 @@ public sealed class AssociatedNameStrategyTests
         });
 
     private static string ResourceId(string topic) => $"{ClusterId}:{topic}";
+
+    private sealed class CapturingRuleExecutor : ISchemaRegistryRuleExecutor
+    {
+        public string? Subject { get; private set; }
+
+        public ReadOnlyMemory<byte> TransformSerializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleContext context) => payload;
+
+        public ReadOnlyMemory<byte> TransformDeserializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleContext context)
+        {
+            Subject = context.Subject;
+            return payload;
+        }
+    }
+
+    private sealed class FixedAsyncSubjectNameStrategy(string subject) : IAsyncSubjectNameStrategy
+    {
+        public int CallCount { get; private set; }
+
+        public ValueTask<string> GetSubjectNameAsync(
+            string topic,
+            string? recordType,
+            bool isKey,
+            CancellationToken cancellationToken = default)
+        {
+            CallCount++;
+            return new ValueTask<string>(subject);
+        }
+    }
 }

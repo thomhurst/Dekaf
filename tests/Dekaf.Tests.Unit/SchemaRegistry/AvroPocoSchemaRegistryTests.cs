@@ -10,6 +10,7 @@ using Dekaf.SchemaRegistry.Avro.Poco;
 using Dekaf.Serialization;
 using NSubstitute;
 using ISchemaRegistryRuleExecutor = Dekaf.SchemaRegistry.ISchemaRegistryRuleExecutor;
+using IAsyncSubjectNameStrategy = Dekaf.SchemaRegistry.IAsyncSubjectNameStrategy;
 using ISchemaRegistryRuleHandler = Dekaf.SchemaRegistry.ISchemaRegistryRuleHandler;
 using SchemaRegistryRuleContext = Dekaf.SchemaRegistry.SchemaRegistryRuleContext;
 using SchemaRegistryRuleExecutor = Dekaf.SchemaRegistry.SchemaRegistryRuleExecutor;
@@ -37,6 +38,21 @@ public sealed class AvroPocoSchemaRegistryTests
         0x02, 0x02, (byte)'a', 0x02, 0x02, (byte)'b', 0,
         0x02, 0x02, (byte)'x', 0x02, 0x02, 0x02, (byte)'y', 0x04, 0
     ];
+
+    [Test]
+    public async Task GeneratedSerializer_UsesConfiguredAsyncSubjectNameStrategy()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        var strategy = new FixedAsyncSubjectNameStrategy("poco-associated");
+        await using var serializer = PocoOrder.CreateAvroSerializer(
+            registry,
+            new AvroSerializerConfig { AsyncSubjectNameStrategy = strategy });
+
+        var resolved = await serializer.PrepareAsync("poco-orders");
+
+        await Assert.That(resolved.Subject).IsEqualTo("poco-associated");
+        await Assert.That(strategy.CallCount).IsEqualTo(1);
+    }
 
     [Test]
     public async Task GeneratedCodec_RoundTripsSupportedShapes()
@@ -3468,6 +3484,21 @@ public sealed class AvroPocoSchemaRegistryTests
         public ReadOnlyMemory<byte> TransformDeserializedPayload(
             ReadOnlyMemory<byte> payload,
             SchemaRegistryRuleContext context) => payload;
+    }
+
+    private sealed class FixedAsyncSubjectNameStrategy(string subject) : IAsyncSubjectNameStrategy
+    {
+        internal int CallCount { get; private set; }
+
+        public ValueTask<string> GetSubjectNameAsync(
+            string topic,
+            string? recordType,
+            bool isKey,
+            CancellationToken cancellationToken = default)
+        {
+            CallCount++;
+            return new ValueTask<string>(subject);
+        }
     }
 
     private sealed class ReentrantRuleExecutor : ISchemaRegistryRuleExecutor

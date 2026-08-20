@@ -35,6 +35,7 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
 
     private readonly ISchemaRegistryClient _schemaRegistry;
     private readonly AvroSerializerConfig _config;
+    private readonly IAsyncSubjectNameStrategy? _asyncSubjectNameStrategy;
     private readonly bool _ownsClient;
     private readonly RegistrySchema _schema;
     private readonly SubjectSchemaIdCache _subjectCache = new();
@@ -51,6 +52,13 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _config = config ?? new AvroSerializerConfig();
+        if (_config.CustomSubjectNameStrategy is null)
+        {
+            _asyncSubjectNameStrategy = _config.AsyncSubjectNameStrategy
+                ?? (_config.SubjectNameStrategy == SubjectNameStrategy.AssociatedName
+                    ? new AssociatedNameStrategy(schemaRegistry)
+                    : null);
+        }
         _ownsClient = ownsClient;
         _schema = new RegistrySchema
         {
@@ -78,6 +86,9 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         if (_subjectCache.TryGet(topic, isKey, out var cached))
             return new ValueTask<ResolvedSchemaContext>(ToResolvedContext(cached));
 
+        if (_asyncSubjectNameStrategy is not null)
+            return PrepareAssociatedCoreAsync(topic, isKey, cancellationToken);
+
         var subject = GetSubjectName(topic, isKey);
         var resolution = ResolveSchemaAsync(subject, cancellationToken);
         if (resolution.IsCompletedSuccessfully)
@@ -88,6 +99,26 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         }
 
         return AwaitResolutionAsync(topic, isKey, subject, resolution);
+    }
+
+    private async ValueTask<ResolvedSchemaContext> PrepareAssociatedCoreAsync(
+        string topic,
+        bool isKey,
+        CancellationToken cancellationToken)
+    {
+        var subject = await _asyncSubjectNameStrategy!.GetSubjectNameAsync(
+                topic,
+                TCodec.FullName,
+                isKey,
+                cancellationToken)
+            .ConfigureAwait(false);
+        var value = await ResolveSchemaAsync(subject, cancellationToken).ConfigureAwait(false);
+        return ToResolvedContext(_subjectCache.CacheEntry(
+            topic,
+            isKey,
+            subject,
+            value.SchemaId,
+            value.Schema!));
     }
 
     /// <inheritdoc />

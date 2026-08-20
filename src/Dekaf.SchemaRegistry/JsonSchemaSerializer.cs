@@ -381,6 +381,69 @@ public sealed class JsonSchemaRegistrySerializer<T> :
     }
 
     /// <summary>
+    /// Creates a new JSON Schema Registry serializer with an asynchronous subject-name strategy.
+    /// </summary>
+    [RequiresUnreferencedCode("JsonSerializerOptions-based JSON serialization uses reflection. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
+    [RequiresDynamicCode("JsonSerializerOptions-based JSON serialization may require runtime code generation. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
+    public JsonSchemaRegistrySerializer(
+        ISchemaRegistryClient schemaRegistry,
+        string jsonSchema,
+        IAsyncSubjectNameStrategy asyncSubjectNameStrategy,
+        JsonSerializerOptions? jsonOptions = null,
+        bool autoRegisterSchemas = true,
+        bool ownsClient = false,
+        ISchemaRegistryRuleExecutor? ruleExecutor = null,
+        bool normalizeSchemas = false)
+    {
+        _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
+        _asyncSubjectNameStrategy = asyncSubjectNameStrategy
+            ?? throw new ArgumentNullException(nameof(asyncSubjectNameStrategy));
+        _jsonOptions = CreateJsonOptions(jsonOptions);
+        _serializePayload = SerializeWithOptions;
+        _autoRegisterSchemas = autoRegisterSchemas;
+        _normalizeSchemas = normalizeSchemas;
+        _ownsClient = ownsClient;
+        _ruleExecutor = ruleExecutor;
+        _schema = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = jsonSchema
+        };
+        _recordName = SubjectNameResolver.GetRecordName(_schema, typeof(T).FullName ?? typeof(T).Name);
+    }
+
+    /// <summary>
+    /// Creates a NativeAOT-safe JSON Schema Registry serializer with an asynchronous
+    /// subject-name strategy.
+    /// </summary>
+    public JsonSchemaRegistrySerializer(
+        ISchemaRegistryClient schemaRegistry,
+        string jsonSchema,
+        IAsyncSubjectNameStrategy asyncSubjectNameStrategy,
+        JsonTypeInfo<T> jsonTypeInfo,
+        bool autoRegisterSchemas = true,
+        bool ownsClient = false,
+        ISchemaRegistryRuleExecutor? ruleExecutor = null,
+        bool normalizeSchemas = false)
+    {
+        _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
+        _asyncSubjectNameStrategy = asyncSubjectNameStrategy
+            ?? throw new ArgumentNullException(nameof(asyncSubjectNameStrategy));
+        _jsonTypeInfo = jsonTypeInfo ?? throw new ArgumentNullException(nameof(jsonTypeInfo));
+        _serializePayload = SerializeWithTypeInfo;
+        _autoRegisterSchemas = autoRegisterSchemas;
+        _normalizeSchemas = normalizeSchemas;
+        _ownsClient = ownsClient;
+        _ruleExecutor = ruleExecutor;
+        _schema = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = jsonSchema
+        };
+        _recordName = SubjectNameResolver.GetRecordName(_schema, typeof(T).FullName ?? typeof(T).Name);
+    }
+
+    /// <summary>
     /// Resolves and caches the subject, schema ID, and schema for a serialization context.
     /// </summary>
     public ValueTask<ResolvedSchemaContext> PrepareAsync(
@@ -705,7 +768,10 @@ public sealed class JsonSchemaRegistrySerializer<T> :
 /// </para>
 /// </remarks>
 /// <typeparam name="T">The type to deserialize.</typeparam>
-public sealed class JsonSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisposable
+public sealed class JsonSchemaRegistryDeserializer<T> :
+    IDeserializer<T>,
+    IAsyncDeserializerPreparer<T>,
+    IAsyncDisposable
 {
     private const byte MagicByte = 0x00;
     private static readonly TimeSpan SchemaRegistryTimeout = TimeSpan.FromSeconds(30);
@@ -758,7 +824,7 @@ public sealed class JsonSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
         : this(schemaRegistry, jsonOptions, ownsClient, ruleExecutor)
     {
         ArgumentNullException.ThrowIfNull(config);
-        _subjectNames = DeserializerSubjectNameCache.Create(config);
+        _subjectNames = DeserializerSubjectNameCache.Create(schemaRegistry, config);
         if (config.UseLatestVersion)
         {
             (_migrationRunner, _ruleExecutor) = SchemaRegistryMigrationRunner.Create(
@@ -834,7 +900,7 @@ public sealed class JsonSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
         : this(schemaRegistry, jsonTypeInfo, ownsClient, ruleExecutor)
     {
         ArgumentNullException.ThrowIfNull(config);
-        _subjectNames = DeserializerSubjectNameCache.Create(config);
+        _subjectNames = DeserializerSubjectNameCache.Create(schemaRegistry, config);
         if (config.UseLatestVersion)
         {
             (_migrationRunner, _ruleExecutor) = SchemaRegistryMigrationRunner.Create(
@@ -873,6 +939,51 @@ public sealed class JsonSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
     {
         ArgumentNullException.ThrowIfNull(validationOptions);
         _validatorFactory = validationOptions.GetDeserializerFactory();
+    }
+
+    bool IAsyncDeserializerPreparer<T>.RequiresPreparation =>
+        _ruleExecutor is not null && _subjectNames is { RequiresPreparation: true };
+
+    ValueTask IAsyncDeserializerPreparer<T>.PrepareAsync(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        CancellationToken cancellationToken)
+    {
+        if (_ruleExecutor is null
+            || _subjectNames is not { RequiresPreparation: true }
+            || !DeserializerSubjectNameCache.TryReadSchemaId(data, out var schemaId))
+        {
+            return default;
+        }
+
+        return _subjectNames.PrepareAsync(
+            _schemaRegistry,
+            schemaId,
+            context.Topic,
+            context.Component == SerializationComponent.Key,
+            FallbackRecordName,
+            cancellationToken);
+    }
+
+    bool IAsyncDeserializerPreparer<T>.TryDeserialize(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        out T value)
+    {
+        if (_ruleExecutor is not null
+            && _subjectNames is { RequiresPreparation: true }
+            && DeserializerSubjectNameCache.TryReadSchemaId(data, out var schemaId)
+            && !_subjectNames.IsPrepared(
+                schemaId,
+                context.Topic,
+                context.Component == SerializationComponent.Key))
+        {
+            value = default!;
+            return false;
+        }
+
+        value = Deserialize(data, context);
+        return true;
     }
 
     public T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
