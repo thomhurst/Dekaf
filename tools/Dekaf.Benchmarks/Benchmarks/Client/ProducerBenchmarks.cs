@@ -129,7 +129,7 @@ public class ProducerBenchmarks
 
     [BenchmarkCategory("BatchProduce")]
     [Benchmark(Baseline = true)]
-    public async Task Confluent_ProduceBatch()
+    public async Task Confluent_ProduceBatchAllIdempotent()
     {
         var tasks = new List<Task<Confluent.Kafka.DeliveryResult<string, string>>>(BatchSize);
 
@@ -147,7 +147,7 @@ public class ProducerBenchmarks
 
     [BenchmarkCategory("BatchProduce")]
     [Benchmark]
-    public async Task Dekaf_ProduceBatch()
+    public async Task Dekaf_ProduceBatchAllIdempotent()
     {
         // ProduceAllAsync is the idiomatic batch-produce API: it awaits every message through a
         // single counting completion instead of allocating a Task per message via AsTask().
@@ -158,7 +158,7 @@ public class ProducerBenchmarks
 
     [BenchmarkCategory("FireAndForget")]
     [Benchmark(Baseline = true)]
-    public void Confluent_FireAndForget()
+    public void Confluent_FireAndForgetAllIdempotent()
     {
         for (var i = 0; i < BatchSize; i++)
         {
@@ -185,7 +185,7 @@ public class ProducerBenchmarks
 
     [BenchmarkCategory("FireAndForget")]
     [Benchmark]
-    public async Task Dekaf_FireAndForget()
+    public async Task Dekaf_FireAndForgetAllIdempotent()
     {
         for (var i = 0; i < BatchSize; i++)
         {

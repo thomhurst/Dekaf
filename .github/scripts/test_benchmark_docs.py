@@ -109,6 +109,36 @@ class BenchmarkDocsTests(unittest.TestCase):
             comparisons[0]["parameters"],
         )
 
+    def test_changed_producer_guarantees_start_new_history_series(self):
+        prefix = "Dekaf.Benchmarks.Benchmarks.Client.ProducerBenchmarks"
+        parameters = "(MessageSize: 100, BatchSize: 100)"
+        entries = [
+            {
+                "benches": [
+                    benchmark(f"{prefix}.Dekaf_ProduceBatch{parameters}", 40),
+                    benchmark(f"{prefix}.Confluent_ProduceBatch{parameters}", 100),
+                ]
+            },
+            {
+                "benches": [
+                    benchmark(
+                        f"{prefix}.Dekaf_ProduceBatchAllIdempotent{parameters}", 50
+                    ),
+                    benchmark(
+                        f"{prefix}.Confluent_ProduceBatchAllIdempotent{parameters}",
+                        100,
+                    ),
+                ]
+            },
+        ]
+
+        comparisons = rolling_comparisons(entries)
+
+        self.assertEqual(1, len(comparisons))
+        self.assertEqual("ProduceBatchAllIdempotent", comparisons[0]["operation"])
+        self.assertEqual(1, comparisons[0]["runs"])
+        self.assertEqual(0.5, comparisons[0]["median"])
+
     def test_latest_ratio_sd_is_visibly_flagged(self):
         table = [
             "| Method | Ratio | RatioSD |",
@@ -176,10 +206,22 @@ class BenchmarkDocsTests(unittest.TestCase):
         entries = [
             {
                 "benches": [
-                    benchmark(f"{prefix}.Dekaf_ProduceBatch(BatchSize: 100)", 40),
-                    benchmark(f"{prefix}.Confluent_ProduceBatch(BatchSize: 100)", 100),
-                    benchmark(f"{prefix}.Dekaf_ProduceBatch(BatchSize: 1000)", 110),
-                    benchmark(f"{prefix}.Confluent_ProduceBatch(BatchSize: 1000)", 100),
+                    benchmark(
+                        f"{prefix}.Dekaf_ProduceBatchAllIdempotent(BatchSize: 100)",
+                        40,
+                    ),
+                    benchmark(
+                        f"{prefix}.Confluent_ProduceBatchAllIdempotent(BatchSize: 100)",
+                        100,
+                    ),
+                    benchmark(
+                        f"{prefix}.Dekaf_ProduceBatchAllIdempotent(BatchSize: 1000)",
+                        110,
+                    ),
+                    benchmark(
+                        f"{prefix}.Confluent_ProduceBatchAllIdempotent(BatchSize: 1000)",
+                        100,
+                    ),
                 ]
             }
         ] * 2
@@ -189,7 +231,7 @@ class BenchmarkDocsTests(unittest.TestCase):
         self.assertEqual(1, len(summaries))
         summary = summaries[0]
         self.assertEqual("ProducerBenchmarks", summary["group"])
-        self.assertEqual("ProduceBatch", summary["operation"])
+        self.assertEqual("ProduceBatchAllIdempotent", summary["operation"])
         self.assertEqual(0.4, summary["best"])
         self.assertEqual(1.1, summary["worst"])
         self.assertEqual(2, summary["stable_rows"])

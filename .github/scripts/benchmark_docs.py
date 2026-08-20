@@ -38,8 +38,14 @@ _SCENARIO_LABELS = {
         "Produce — serial awaited (linger=5 ms; legacy)",
         1,
     ),
-    ("ProducerBenchmarks", "ProduceBatch"): ("Produce — batches", 2),
-    ("ProducerBenchmarks", "FireAndForget"): ("Produce — fire-and-forget", 3),
+    ("ProducerBenchmarks", "ProduceBatchAllIdempotent"): (
+        "Produce — batches (acks=all, idempotent)",
+        2,
+    ),
+    ("ProducerBenchmarks", "FireAndForgetAllIdempotent"): (
+        "Produce — fire-and-forget (acks=all, idempotent)",
+        3,
+    ),
     ("ConsumerBenchmarks", "ConsumeAll"): ("Consume — drain a topic", 4),
     ("ConsumerPollBenchmarks", "PollSingle"): ("Consume — poll a single message", 5),
 }

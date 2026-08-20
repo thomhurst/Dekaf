@@ -101,6 +101,7 @@ public class ProducerSingleBenchmarks
 
     private async Task CleanupAsync()
     {
+        using var confluentProducer = _confluentProducer;
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
         try
         {
@@ -108,9 +109,8 @@ public class ProducerSingleBenchmarks
         }
         finally
         {
-            _confluentProducer.Flush(TimeSpan.FromSeconds(60));
+            confluentProducer.Flush(TimeSpan.FromSeconds(60));
             await _dekafProducer.DisposeAsync().ConfigureAwait(false);
-            _confluentProducer.Dispose();
             await _kafka.DisposeAsync().ConfigureAwait(false);
         }
     }
