@@ -1565,7 +1565,7 @@ public class RecordAccumulatorTests
     }
 
     [Test]
-    public async Task ProduceRequestSizeCalculator_ConservativeTopicField_CoversNamesAndTopicIds()
+    public async Task ProduceRequestSizeCalculator_ConservativeFixedSize_CoversAllWireFormats()
     {
         const string shortTopic = "a";
         const string longTopic = "topic-name-longer-than-a-topic-id";
@@ -1580,7 +1580,7 @@ public class RecordAccumulatorTests
         await Assert.That(shortConservativeFixedSize - shortNameFixedSize)
             .IsEqualTo(ProduceRequestSizeCalculator.TopicIdSize
                 - ProduceRequestSizeCalculator.CompactStringSize(shortTopic));
-        await Assert.That(longConservativeFixedSize).IsEqualTo(longNameFixedSize);
+        await Assert.That(longConservativeFixedSize).IsGreaterThan(longNameFixedSize);
     }
 
     [Test]

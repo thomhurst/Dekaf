@@ -12,8 +12,11 @@ namespace Dekaf.Protocol.Messages;
 public sealed class ProduceRequest : IKafkaRequest<ProduceResponse>, IKafkaRequestBodySizeHint
 {
     public static ApiKey ApiKey => ApiKey.Produce;
-    public static short LowestSupportedVersion => 9;
+    public static short LowestSupportedVersion => 3;
     public static short HighestSupportedVersion => 13;
+    public static bool IsFlexibleVersion(short version) => version >= 9;
+    public static short GetRequestHeaderVersion(short version) => IsFlexibleVersion(version) ? (short)2 : (short)1;
+    public static short GetResponseHeaderVersion(short version) => IsFlexibleVersion(version) ? (short)1 : (short)0;
     internal const short TopicIdVersion = 13;
     internal const short ImplicitTransactionPartitionEnrollmentVersion = 12;
 
@@ -103,26 +106,49 @@ public sealed class ProduceRequest : IKafkaRequest<ProduceResponse>, IKafkaReque
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        writer.WriteCompactNullableString(TransactionalId);
+        if (IsFlexibleVersion(version))
+            writer.WriteCompactNullableString(TransactionalId);
+        else
+            writer.WriteString(TransactionalId);
         writer.WriteInt16(Acks);
         writer.WriteInt32(TimeoutMs);
 
         if (_topicDataScratch is { } topicDataScratch)
         {
-            writer.WriteCompactArray(
-                topicDataScratch.AsSpan(0, _topicDataScratchCount),
-                static (ref KafkaProtocolWriter w, ProduceRequestTopicData t, short v) => t.Write(ref w, v),
-                version);
+            if (IsFlexibleVersion(version))
+            {
+                writer.WriteCompactArray(
+                    topicDataScratch.AsSpan(0, _topicDataScratchCount),
+                    static (ref KafkaProtocolWriter w, ProduceRequestTopicData t, short v) => t.Write(ref w, v),
+                    version);
+            }
+            else
+            {
+                writer.WriteInt32(_topicDataScratchCount);
+                for (var i = 0; i < _topicDataScratchCount; i++)
+                    topicDataScratch[i].Write(ref writer, version);
+            }
         }
         else
         {
-            writer.WriteCompactArray(
-                TopicData,
-                static (ref KafkaProtocolWriter w, ProduceRequestTopicData t, short v) => t.Write(ref w, v),
-                version);
+            if (IsFlexibleVersion(version))
+            {
+                writer.WriteCompactArray(
+                    TopicData,
+                    static (ref KafkaProtocolWriter w, ProduceRequestTopicData t, short v) => t.Write(ref w, v),
+                    version);
+            }
+            else
+            {
+                writer.WriteArray(
+                    TopicData,
+                    static (ref KafkaProtocolWriter w, ProduceRequestTopicData t, short v) => t.Write(ref w, v),
+                    version);
+            }
         }
 
-        writer.WriteEmptyTaggedFields();
+        if (IsFlexibleVersion(version))
+            writer.WriteEmptyTaggedFields();
     }
 }
 
@@ -201,24 +227,44 @@ public sealed class ProduceRequestTopicData
         if (version >= ProduceRequest.TopicIdVersion)
             writer.WriteUuid(TopicId);
         else
-            writer.WriteCompactString(Name);
+        {
+            if (ProduceRequest.IsFlexibleVersion(version))
+                writer.WriteCompactString(Name);
+            else
+                writer.WriteString(Name);
+        }
 
         if (_partitionDataScratch is { } partitionDataScratch)
         {
-            writer.WriteCompactArray(
-                partitionDataScratch.AsSpan(_partitionDataScratchStart, _partitionDataScratchCount),
-                static (ref KafkaProtocolWriter w, ProduceRequestPartitionData p, short v) => p.Write(ref w, v),
-                version);
+            if (ProduceRequest.IsFlexibleVersion(version))
+                writer.WriteCompactArray(
+                    partitionDataScratch.AsSpan(_partitionDataScratchStart, _partitionDataScratchCount),
+                    static (ref KafkaProtocolWriter w, ProduceRequestPartitionData p, short v) => p.Write(ref w, v),
+                    version);
+            else
+            {
+                writer.WriteInt32(_partitionDataScratchCount);
+                var end = _partitionDataScratchStart + _partitionDataScratchCount;
+                for (var i = _partitionDataScratchStart; i < end; i++)
+                    partitionDataScratch[i].Write(ref writer, version);
+            }
         }
         else
         {
-            writer.WriteCompactArray(
-                PartitionData,
-                static (ref KafkaProtocolWriter w, ProduceRequestPartitionData p, short v) => p.Write(ref w, v),
-                version);
+            if (ProduceRequest.IsFlexibleVersion(version))
+                writer.WriteCompactArray(
+                    PartitionData,
+                    static (ref KafkaProtocolWriter w, ProduceRequestPartitionData p, short v) => p.Write(ref w, v),
+                    version);
+            else
+                writer.WriteArray(
+                    PartitionData,
+                    static (ref KafkaProtocolWriter w, ProduceRequestPartitionData p, short v) => p.Write(ref w, v),
+                    version);
         }
 
-        writer.WriteEmptyTaggedFields();
+        if (ProduceRequest.IsFlexibleVersion(version))
+            writer.WriteEmptyTaggedFields();
     }
 }
 
@@ -274,8 +320,10 @@ public sealed class ProduceRequestPartitionData
                 }
             }
 
-            // COMPACT_RECORDS uses COMPACT_NULLABLE_BYTES encoding (length+1, 0 = null).
-            writer.WriteUnsignedVarInt(checked(recordsLength + 1));
+            if (ProduceRequest.IsFlexibleVersion(version))
+                writer.WriteUnsignedVarInt(checked(recordsLength + 1));
+            else
+                writer.WriteInt32(recordsLength);
             var output = writer.BufferWriter;
             var actualRecordsLength = 0;
             for (var i = 0; i < Records.Count; i++)
@@ -313,6 +361,7 @@ public sealed class ProduceRequestPartitionData
             }
         }
 
-        writer.WriteEmptyTaggedFields();
+        if (ProduceRequest.IsFlexibleVersion(version))
+            writer.WriteEmptyTaggedFields();
     }
 }

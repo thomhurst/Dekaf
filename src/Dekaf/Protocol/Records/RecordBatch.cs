@@ -478,6 +478,7 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
     private int _recordCount;
     private int _parsedRecordCount;
     private int _nextRecordParseOffset;
+    private RecordHeaderRoutingPlan? _headerRoutingPlan;
 
     int IReadOnlyCollection<Record>.Count =>
         ReferenceEquals(_records, this) ? GetLazyRecordCount() : Records.Count;
@@ -553,6 +554,31 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
         _ownsParsedRecords = false;
     }
 
+    internal void ConfigureHeaderRouting(RecordHeaderRoutingPlan? headerRoutingPlan)
+    {
+        if (ReferenceEquals(_headerRoutingPlan, headerRoutingPlan))
+            return;
+
+        _headerRoutingPlan = headerRoutingPlan;
+        if (headerRoutingPlan is not null && _records is Record[] records)
+        {
+            for (var index = 0; index < records.Length; index++)
+                records[index] = records[index].IndexHeaders(headerRoutingPlan);
+        }
+        if (headerRoutingPlan is not null
+            && ReferenceEquals(_records, this)
+            && _parsedRecords is { } parsedRecords)
+        {
+            for (var index = 0; index < _parsedRecordCount; index++)
+            {
+                var recordIndex = _parsedRecordsOffset + index;
+                parsedRecords[recordIndex] = parsedRecords[recordIndex].IndexPooledHeaders(headerRoutingPlan);
+            }
+        }
+        if (_records is LazyRecordList lazyRecords)
+            lazyRecords.ConfigureHeaderRouting(headerRoutingPlan);
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void EnsureAllRecordsParsed()
     {
@@ -625,7 +651,9 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
                 readerStartOffset + (int)reader.Consumed);
             try
             {
-                _parsedRecords[_parsedRecordsOffset + _parsedRecordCount] = Record.Read(ref reader);
+                _parsedRecords[_parsedRecordsOffset + _parsedRecordCount] = Record.Read(
+                    ref reader,
+                    _headerRoutingPlan);
                 _parsedRecordCount++;
                 _nextRecordParseOffset = readerStartOffset + (int)reader.Consumed;
             }
@@ -672,6 +700,7 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
         _parsedRecordsOffset = 0;
         _ownsParsedRecords = false;
         _nextRecordParseOffset = 0;
+        _headerRoutingPlan = null;
     }
 
     /// <summary>
@@ -970,6 +999,7 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
             item._recordCount = 0;
             item._parsedRecordCount = 0;
             item._nextRecordParseOffset = 0;
+            item._headerRoutingPlan = null;
             item.PreCompressedRecords = null;
             item.PreCompressedLength = 0;
             item.PreCompressedType = CompressionType.None;
@@ -1719,6 +1749,7 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
     private int _parsedCount;         // Number of records parsed into _parsedRecords
     private int _nextParseOffset;
     private int _disposed;
+    private RecordHeaderRoutingPlan? _headerRoutingPlan;
 
     private LazyRecordList() { }
 
@@ -1779,6 +1810,19 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal Record[]? GetParsedArray() => _parsedRecords;
+
+    internal void ConfigureHeaderRouting(RecordHeaderRoutingPlan? headerRoutingPlan)
+    {
+        if (ReferenceEquals(_headerRoutingPlan, headerRoutingPlan))
+            return;
+
+        _headerRoutingPlan = headerRoutingPlan;
+        if (headerRoutingPlan is not null && _parsedRecords is { } parsedRecords)
+        {
+            for (var index = 0; index < _parsedCount; index++)
+                parsedRecords[index] = parsedRecords[index].IndexPooledHeaders(headerRoutingPlan);
+        }
+    }
 
     public Record this[int index]
     {
@@ -1858,7 +1902,7 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
                 readerStartOffset + (int)reader.Consumed);
             try
             {
-                var record = Record.Read(ref reader);
+                var record = Record.Read(ref reader, _headerRoutingPlan);
                 _parsedRecords[_parsedCount++] = record;
                 _nextParseOffset = readerStartOffset + (int)reader.Consumed;
             }
@@ -1925,6 +1969,7 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
         _count = 0;
         _parsedCount = 0;
         _nextParseOffset = 0;
+        _headerRoutingPlan = null;
 
         // Return to pool. If full, let GC handle this instance.
         s_instancePool.Return(this);

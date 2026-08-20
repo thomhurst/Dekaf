@@ -478,6 +478,9 @@ public readonly struct ConsumeResult<TKey, TValue>
     [ThreadStatic]
     private static SerializationContext t_serializationContext;
 
+    [ThreadStatic]
+    private static Headers? t_callerOwnedSerializationHeaders;
+
     // Store raw Unix milliseconds instead of DateTimeOffset to avoid per-message
     // DateTimeOffset.FromUnixTimeMilliseconds() construction in the consume loop.
     // The DateTimeOffset is computed on demand via the Timestamp property.
@@ -669,6 +672,12 @@ public readonly struct ConsumeResult<TKey, TValue>
         // Resolve the thread-static address once; each direct field access otherwise
         // emits another TLS lookup before setting or copying the context.
         ref var serializationContext = ref t_serializationContext;
+        var keyUsesCallerOwnedHeaders = keyDeserializer is ICallerOwnedHeaderDeserializer<TKey>;
+        var valueUsesCallerOwnedHeaders = valueDeserializer is ICallerOwnedHeaderDeserializer<TValue>;
+        var serializationHeaders = headers is not null
+                                   && (keyUsesCallerOwnedHeaders || valueUsesCallerOwnedHeaders)
+            ? GetCallerOwnedSerializationHeaders(headers)
+            : null;
 
         // Eagerly deserialize to avoid storing deserializer references (saves 16 bytes per struct)
         if (isPartitionEof || keyDeserializer is null)
@@ -684,11 +693,13 @@ public readonly struct ConsumeResult<TKey, TValue>
         {
             serializationContext.Topic = topic;
             serializationContext.Component = SerializationComponent.Key;
-            serializationContext.Headers = null;
+            serializationContext.Headers = keyUsesCallerOwnedHeaders ? serializationHeaders : null;
             serializationContext.KeyData = ReadOnlyMemory<byte>.Empty;
             serializationContext.IsNull = false;
 
-            Key = keyDeserializer.Deserialize(keyData, serializationContext);
+            Key = keyUsesCallerOwnedHeaders
+                ? RecordHeaderDeserializer.DeserializeCallerOwned(keyDeserializer, keyData, serializationContext)
+                : keyDeserializer.Deserialize(keyData, serializationContext);
         }
 
         if (isPartitionEof || valueDeserializer is null)
@@ -699,20 +710,96 @@ public readonly struct ConsumeResult<TKey, TValue>
         {
             serializationContext.Topic = topic;
             serializationContext.Component = SerializationComponent.Value;
-            serializationContext.Headers = null;
+            serializationContext.Headers = valueUsesCallerOwnedHeaders ? serializationHeaders : null;
             serializationContext.KeyData = SerializationContext.NormalizeKeyData(keyData, isKeyNull);
             serializationContext.IsNull = isValueNull;
 
-            Value = isValueNull
-                ? valueDeserializer.Deserialize(ReadOnlyMemory<byte>.Empty, serializationContext)
-                : valueDeserializer.Deserialize(valueData, serializationContext);
+            var deserializationData = isValueNull ? ReadOnlyMemory<byte>.Empty : valueData;
+            Value = valueUsesCallerOwnedHeaders
+                ? RecordHeaderDeserializer.DeserializeCallerOwned(
+                    valueDeserializer,
+                    deserializationData,
+                    serializationContext)
+                : valueDeserializer.Deserialize(deserializationData, serializationContext);
         }
+    }
+
+    internal static ConsumeResult<TKey, TValue> CreateWithHeaderRouting(
+        string topic,
+        int partition,
+        long offset,
+        ReadOnlyMemory<byte> keyData,
+        bool isKeyNull,
+        ReadOnlyMemory<byte> valueData,
+        bool isValueNull,
+        Header[]? pooledHeaders,
+        int pooledHeaderCount,
+        in RecordHeaderRoutingLookup headerRouting,
+        PendingFetchData headerOwner,
+        long timestampMs,
+        TimestampType timestampType,
+        int? leaderEpoch,
+        IDeserializer<TKey>? keyDeserializer,
+        IDeserializer<TValue>? valueDeserializer)
+    {
+        ref var serializationContext = ref t_serializationContext;
+        TKey? key = default;
+        if (!isKeyNull && keyDeserializer is not null)
+        {
+            serializationContext.Topic = topic;
+            serializationContext.Component = SerializationComponent.Key;
+            serializationContext.Headers = null;
+            serializationContext.KeyData = ReadOnlyMemory<byte>.Empty;
+            serializationContext.IsNull = false;
+            key = RecordHeaderDeserializer.Deserialize(
+                keyDeserializer,
+                keyData,
+                serializationContext,
+                in headerRouting);
+        }
+
+        TValue value = default!;
+        if (valueDeserializer is not null)
+        {
+            serializationContext.Topic = topic;
+            serializationContext.Component = SerializationComponent.Value;
+            serializationContext.Headers = null;
+            serializationContext.KeyData = SerializationContext.NormalizeKeyData(keyData, isKeyNull);
+            serializationContext.IsNull = isValueNull;
+            value = RecordHeaderDeserializer.Deserialize(
+                valueDeserializer,
+                isValueNull ? ReadOnlyMemory<byte>.Empty : valueData,
+                serializationContext,
+                in headerRouting);
+        }
+
+        return new ConsumeResult<TKey, TValue>(
+            topic,
+            partition,
+            offset,
+            key,
+            value,
+            pooledHeaders,
+            pooledHeaderCount,
+            headerOwner,
+            timestampMs,
+            timestampType,
+            leaderEpoch);
     }
 
     internal static DeserializationExceptionOrigin LastDeserializationOrigin
         => t_serializationContext.Component == SerializationComponent.Key
             ? DeserializationExceptionOrigin.Key
             : DeserializationExceptionOrigin.Value;
+
+    internal static Headers GetCallerOwnedSerializationHeaders(IReadOnlyList<Header> headers)
+    {
+        var serializationHeaders = t_callerOwnedSerializationHeaders ??= new Headers(headers.Count);
+        serializationHeaders.Clear();
+        for (var index = 0; index < headers.Count; index++)
+            serializationHeaders.Add(headers[index]);
+        return serializationHeaders;
+    }
 
     internal static RecordDeserializationException CreateDeserializationException(
         DeserializationExceptionOrigin origin,

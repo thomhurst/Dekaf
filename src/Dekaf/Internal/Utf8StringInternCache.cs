@@ -15,39 +15,63 @@ internal sealed class Utf8StringInternCache
     private readonly int _maxCachedEntries;
     private readonly int _maxCachedBytes;
     private readonly Func<string, string>? _canonicalize;
+    private readonly bool _cacheLastEntry;
+    private CacheEntry? _lastEntry;
     private int _count;
 
-    internal Utf8StringInternCache(int maxCachedEntries, int maxCachedBytes, Func<string, string>? canonicalize = null)
+    internal Utf8StringInternCache(
+        int maxCachedEntries,
+        int maxCachedBytes,
+        Func<string, string>? canonicalize = null,
+        bool cacheLastEntry = false)
     {
         _maxCachedEntries = maxCachedEntries;
         _maxCachedBytes = maxCachedBytes;
         _canonicalize = canonicalize;
+        _cacheLastEntry = cacheLastEntry;
     }
 
     internal string Intern(ReadOnlyMemory<byte> utf8Bytes)
+        => Intern(utf8Bytes.Span);
+
+    internal string Intern(ReadOnlySpan<byte> utf8Bytes)
     {
         if (utf8Bytes.Length == 0)
             return string.Empty;
 
-        var span = utf8Bytes.Span;
         if (utf8Bytes.Length > _maxCachedBytes)
-            return Decode(span);
+            return Decode(utf8Bytes);
 
-        var hash = XxHash64.HashToUInt64(span);
-        if (_cache.TryGetValue(hash, out var entry) && entry.Matches(span))
+        if (_cacheLastEntry)
+        {
+            var lastEntry = Volatile.Read(ref _lastEntry);
+            if (lastEntry is not null && lastEntry.Matches(utf8Bytes))
+                return lastEntry.Value;
+        }
+
+        var hash = XxHash64.HashToUInt64(utf8Bytes);
+        if (_cache.TryGetValue(hash, out var entry) && entry.Matches(utf8Bytes))
+        {
+            if (_cacheLastEntry)
+                Volatile.Write(ref _lastEntry, entry);
             return entry.Value;
+        }
 
-        var value = Decode(span);
+        var value = Decode(utf8Bytes);
         if (Volatile.Read(ref _count) >= _maxCachedEntries)
             return value;
 
-        var newEntry = new CacheEntry(span.ToArray(), value);
+        var newEntry = new CacheEntry(utf8Bytes.ToArray(), value);
         if (_cache.TryAdd(hash, newEntry))
         {
             Interlocked.Increment(ref _count);
+            if (_cacheLastEntry)
+                Volatile.Write(ref _lastEntry, newEntry);
         }
-        else if (_cache.TryGetValue(hash, out entry) && entry.Matches(span))
+        else if (_cache.TryGetValue(hash, out entry) && entry.Matches(utf8Bytes))
         {
+            if (_cacheLastEntry)
+                Volatile.Write(ref _lastEntry, entry);
             return entry.Value;
         }
 
@@ -61,7 +85,7 @@ internal sealed class Utf8StringInternCache
         return _canonicalize is null ? value : _canonicalize(value);
     }
 
-    private readonly struct CacheEntry(byte[] utf8Bytes, string value)
+    private sealed class CacheEntry(byte[] utf8Bytes, string value)
     {
         private readonly byte[] _utf8Bytes = utf8Bytes;
         internal string Value { get; } = value;
