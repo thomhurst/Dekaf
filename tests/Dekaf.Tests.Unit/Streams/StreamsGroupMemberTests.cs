@@ -214,6 +214,24 @@ public sealed class StreamsGroupMemberTests
         await Assert.That(exception.Message).Contains("group.coordinator.rebalance.protocols");
     }
 
+    [Test]
+    public async Task JoinAsync_StaticMemberRetriesUnreleasedInstanceId()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(new StreamsGroupHeartbeatResponse
+        {
+            ErrorCode = ErrorCode.UnreleasedInstanceId,
+            MemberId = "member-1"
+        });
+        connection.EnqueueHeartbeat(Success(epoch: 1));
+        await using var fixture = CreateFixture(connection, instanceId: "instance-1");
+
+        var result = await fixture.Member.JoinAsync(CreateInitialUpdate());
+
+        await Assert.That(result.MemberEpoch).IsEqualTo(1);
+        await Assert.That(connection.HeartbeatRequests).Count().IsEqualTo(2);
+    }
+
     [Arguments(null, -1)]
     [Arguments("instance-1", -2)]
     [Test]
@@ -272,6 +290,22 @@ public sealed class StreamsGroupMemberTests
     }
 
     [Test]
+    public async Task DisposeAsync_WhenTerminalHeartbeatFailsStillCompletes()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1));
+        connection.EnqueueHeartbeat(Task.FromException<StreamsGroupHeartbeatResponse>(
+            new NotSupportedException("terminal heartbeat failed")));
+        var fixture = CreateFixture(connection);
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+
+        await fixture.Member.DisposeAsync();
+
+        await Assert.That(fixture.Member.Snapshot.IsClosed).IsTrue();
+        await fixture.DisposeAsync();
+    }
+
+    [Test]
     public async Task BackgroundHeartbeat_AppliesIntervalChangeWithoutRace()
     {
         var connection = new ScriptedConnection();
@@ -307,17 +341,86 @@ public sealed class StreamsGroupMemberTests
     }
 
     [Test]
+    public async Task BackgroundHeartbeat_TransientFailureDoesNotBlockForegroundOperation()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1, heartbeatIntervalMs: 1));
+        connection.EnqueueHeartbeat(new StreamsGroupHeartbeatResponse
+        {
+            ErrorCode = ErrorCode.UnknownServerError,
+            MemberId = "member-1"
+        });
+        var pendingHeartbeat = new TaskCompletionSource<StreamsGroupHeartbeatResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.EnqueueHeartbeat(pendingHeartbeat.Task);
+        connection.EnqueueHeartbeat(Success(epoch: 2));
+        await using var fixture = CreateFixture(connection);
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+        await connection.ThirdHeartbeatStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var update = fixture.Member.UpdateAsync(new StreamsGroupMemberUpdate
+        {
+            EndpointInformationEpoch = 1
+        }).AsTask();
+        pendingHeartbeat.SetResult(Success(epoch: 1, heartbeatIntervalMs: 60_000));
+        var result = await update;
+
+        await Assert.That(result.MemberEpoch).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task SteadyRequestCache_RebuildsWhenIdentityChanges()
+    {
+        var cache = new StreamsGroupHeartbeatRequestCache();
+        var initial = cache.Get("group", "member-1", 1, 2, "instance-1");
+
+        var unchanged = cache.Get("group", "member-1", 1, 2, "instance-1");
+        var changed = cache.Get("group", "member-2", 2, 3, "instance-2");
+
+        await Assert.That(unchanged).IsSameReferenceAs(initial);
+        await Assert.That(changed).IsNotSameReferenceAs(initial);
+        await Assert.That(changed.MemberId).IsEqualTo("member-2");
+        await Assert.That(changed.MemberEpoch).IsEqualTo(2);
+        await Assert.That(changed.EndpointInformationEpoch).IsEqualTo(3);
+        await Assert.That(changed.InstanceId).IsEqualTo("instance-2");
+    }
+
+    [Test]
     public async Task CloseAsync_WhenTerminalHeartbeatFailsStillStopsWorker()
     {
         var connection = new ScriptedConnection();
         connection.EnqueueHeartbeat(Success(epoch: 1));
+        connection.EnqueueHeartbeat(Task.FromException<StreamsGroupHeartbeatResponse>(
+            new NotSupportedException("terminal heartbeat failed")));
         await using var fixture = CreateFixture(connection);
         await fixture.Member.JoinAsync(CreateInitialUpdate());
 
-        await Assert.ThrowsAsync<InvalidOperationException>(
+        await Assert.ThrowsAsync<NotSupportedException>(
             async () => await fixture.Member.CloseAsync());
         await fixture.Member.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
 
+        await Assert.That(fixture.Member.Snapshot.IsClosed).IsTrue();
+    }
+
+    [Test]
+    public async Task CloseAsync_WhenCallerCancelsObservesLaterTerminalFailure()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1));
+        var terminalHeartbeat = new TaskCompletionSource<StreamsGroupHeartbeatResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.EnqueueHeartbeat(terminalHeartbeat.Task);
+        await using var fixture = CreateFixture(connection);
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+        using var cancellation = new CancellationTokenSource();
+
+        var close = fixture.Member.CloseAsync(cancellation.Token).AsTask();
+        await connection.SecondHeartbeatStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        cancellation.Cancel();
+        _ = await Assert.ThrowsAsync<OperationCanceledException>(() => close);
+        terminalHeartbeat.SetException(new NotSupportedException("terminal heartbeat failed"));
+
+        await fixture.Member.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
         await Assert.That(fixture.Member.Snapshot.IsClosed).IsTrue();
     }
 
@@ -422,6 +525,8 @@ public sealed class StreamsGroupMemberTests
             TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource SecondHeartbeatCompleted { get; } = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ThirdHeartbeatStarted { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
 
         public void EnqueueFindCoordinator(FindCoordinatorResponse response) =>
             _findCoordinatorResponses.Enqueue(Task.FromResult(response));
@@ -456,10 +561,18 @@ public sealed class StreamsGroupMemberTests
                 HeartbeatRequests.Add(heartbeat);
                 if (HeartbeatRequests.Count == 2)
                     SecondHeartbeatStarted.TrySetResult();
-                var response = await _heartbeatResponses.Dequeue().WaitAsync(cancellationToken);
-                if (HeartbeatRequests.Count == 2)
-                    SecondHeartbeatCompleted.TrySetResult();
-                return (TResponse)(IKafkaResponse)response;
+                if (HeartbeatRequests.Count == 3)
+                    ThirdHeartbeatStarted.TrySetResult();
+                try
+                {
+                    var response = await _heartbeatResponses.Dequeue().WaitAsync(cancellationToken);
+                    return (TResponse)(IKafkaResponse)response;
+                }
+                finally
+                {
+                    if (HeartbeatRequests.Count == 2)
+                        SecondHeartbeatCompleted.TrySetResult();
+                }
             }
 
             throw new NotSupportedException(typeof(TRequest).Name);

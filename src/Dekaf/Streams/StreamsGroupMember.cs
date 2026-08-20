@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Threading.Channels;
 using Dekaf.Errors;
 using Dekaf.Metadata;
@@ -169,7 +170,15 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
             return;
         }
 
-        await command.Completion.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await command.Completion.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            ObserveFault(command.Completion.Task);
+            throw;
+        }
         await _workerTask.WaitAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -181,6 +190,11 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         try
         {
             await CloseAsync().ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // Explicit CloseAsync callers receive terminal-heartbeat failures. Disposal is
+            // best-effort cleanup and must still release the timer after observing the fault.
         }
         finally
         {
@@ -325,10 +339,12 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         }
         catch (Exception exception)
         {
-            Volatile.Write(ref _backgroundFailure, exception);
+            Volatile.Write(
+                ref _backgroundFailure,
+                IsFatalHeartbeatFailure(exception) ? exception : null);
         }
 
-        if (Volatile.Read(ref _closeRequested) == 0 && !IsFatalHeartbeatFailure(_backgroundFailure))
+        if (Volatile.Read(ref _closeRequested) == 0 && Volatile.Read(ref _backgroundFailure) is null)
             ScheduleHeartbeat();
     }
 
@@ -337,9 +353,9 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         _heartbeatTimer.Change(Timeout.Infinite, Timeout.Infinite);
         try
         {
-            var terminalEpoch = options.GroupMembershipOperation switch
+            int? terminalEpoch = options.GroupMembershipOperation switch
             {
-                StreamsGroupMembershipOperation.RemainInGroup => (int?)null,
+                StreamsGroupMembershipOperation.RemainInGroup => null,
                 StreamsGroupMembershipOperation.LeaveGroup => -1,
                 StreamsGroupMembershipOperation.Default when InstanceId is not null => -2,
                 _ => -1
@@ -386,6 +402,8 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         bool recoverFencing = true)
     {
         var fencedRecoveryAttempted = false;
+        var unreleasedFailureCount = 0;
+        long unreleasedStartedAt = -1;
         for (var attempt = 0; attempt < 5; attempt++)
         {
             if (_coordinatorId < 0)
@@ -435,6 +453,30 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
                     "The broker rejected StreamsGroupHeartbeat although it advertised API 88. " +
                     "Enable the Streams rebalance protocol (streams.version >= 1 and " +
                     "group.coordinator.rebalance.protocols containing 'streams').");
+            }
+
+            if (response.ErrorCode == ErrorCode.UnreleasedInstanceId
+                && InstanceId is not null
+                && request.MemberEpoch == 0)
+            {
+                if (unreleasedStartedAt < 0)
+                    unreleasedStartedAt = Stopwatch.GetTimestamp();
+                var elapsed = Stopwatch.GetElapsedTime(unreleasedStartedAt);
+                if (elapsed >= _options.RebalanceTimeout)
+                    throw CreateGroupException(response);
+
+                var remainingMs = Math.Max(
+                    1,
+                    (int)Math.Ceiling((_options.RebalanceTimeout - elapsed).TotalMilliseconds));
+                var delayMs = Math.Min(
+                    remainingMs,
+                    Math.Max(1, ExponentialRetryBackoff.CalculateDelayMilliseconds(
+                        _retryBackoffMs,
+                        _retryBackoffMaxMs,
+                        ++unreleasedFailureCount)));
+                await Task.Delay(delayMs, cancellationToken).ConfigureAwait(false);
+                attempt--;
+                continue;
             }
 
             if (response.ErrorCode is ErrorCode.NotCoordinator
