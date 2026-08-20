@@ -143,6 +143,76 @@ public sealed class InMemoryConsumerFaultTests
     }
 
     [Test]
+    public async Task ConsumeOneAsync_CustomPlanCachesUnrelatedPersistentFault()
+    {
+        var innerPlan = new KafkaFaultPlan();
+        var faultPlan = new DelegatingFaultPlan(innerPlan);
+        var cluster = new InMemoryKafkaCluster(new InMemoryKafkaClusterOptions(), faultPlan);
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync(Topic, "key", "first");
+        await producer.ProduceAsync(Topic, "key", "second");
+        await using var consumer = CreateConsumer(cluster);
+        consumer.Subscribe(Topic);
+        innerPlan.FailPersistently(
+            new KafkaFaultScope(KafkaFaultOperation.Produce, Topic, 0),
+            new InvalidOperationException("producer only"));
+
+        var first = await consumer.ConsumeOneAsync(TimeSpan.Zero);
+        var probeCount = faultPlan.PotentialProbeCount;
+        var second = await consumer.ConsumeOneAsync(TimeSpan.Zero);
+
+        await Assert.That(first).IsNotNull();
+        await Assert.That(second).IsNotNull();
+        await Assert.That(probeCount).IsEqualTo(2);
+        await Assert.That(faultPlan.PotentialProbeCount).IsEqualTo(probeCount);
+    }
+
+    [Test]
+    public async Task ConsumeOneAsync_PausedPartitionFaultDoesNotDivertActivePartition()
+    {
+        var innerPlan = new KafkaFaultPlan();
+        var faultPlan = new DelegatingFaultPlan(innerPlan);
+        var cluster = new InMemoryKafkaCluster(new InMemoryKafkaClusterOptions(), faultPlan);
+        cluster.CreateTopic(Topic, partitionCount: 2);
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Partition = 0,
+            Key = "key",
+            Value = "paused"
+        });
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Partition = 1,
+            Key = "key",
+            Value = "active"
+        });
+        await using var consumer = CreateConsumer(cluster);
+        var pausedPartition = new TopicPartition(Topic, 0);
+        consumer.Assign(pausedPartition, new TopicPartition(Topic, 1));
+        consumer.Pause(pausedPartition);
+        var failure = new InvalidOperationException("paused partition");
+        innerPlan.FailPersistently(
+            new KafkaFaultScope(KafkaFaultOperation.Consume, Topic, 0, GroupId),
+            failure);
+
+        var operation = consumer.ConsumeOneAsync(TimeSpan.Zero);
+
+        await Assert.That(operation.IsCompletedSuccessfully).IsTrue();
+        await Assert.That(operation.Result).IsNotNull();
+        await Assert.That(operation.Result!.Value.Partition).IsEqualTo(1);
+        await Assert.That(faultPlan.MatchingProbeCount).IsEqualTo(0);
+
+        consumer.Resume(pausedPartition);
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => consumer.ConsumeOneAsync(TimeSpan.Zero).AsTask());
+
+        await Assert.That(actual).IsSameReferenceAs(failure);
+    }
+
+    [Test]
     public async Task ConsumeOneAsync_GroupOwnershipChangeInvalidatesFaultCache()
     {
         var cluster = new InMemoryKafkaCluster();
@@ -609,6 +679,21 @@ public sealed class InMemoryConsumerFaultTests
 
         await Assert.That(concurrentCommitBarrier.Release()).IsTrue();
         _ = await Assert.ThrowsAsync<ObjectDisposedException>(() => concurrentConsume);
+    }
+
+    [Test]
+    public async Task AutoCommitAdvancementWaitHook_IsReusableAndCloseCompletesIt()
+    {
+        var consumer = CreateConsumer(new InMemoryKafkaCluster());
+
+        var first = consumer.WaitUntilAutoCommitAdvancementWaiterEnteredAsync();
+        var second = consumer.WaitUntilAutoCommitAdvancementWaiterEnteredAsync();
+
+        await Assert.That(second).IsSameReferenceAs(first);
+        await consumer.CloseAsync();
+        await first;
+        await Assert.That(consumer.WaitUntilAutoCommitAdvancementWaiterEnteredAsync().IsCompletedSuccessfully)
+            .IsTrue();
     }
 
     [Test]
@@ -1223,6 +1308,8 @@ public sealed class InMemoryConsumerFaultTests
     {
         public int MatchingProbeCount { get; private set; }
 
+        public int PotentialProbeCount { get; private set; }
+
         public event Action<KafkaFaultObservation>? FaultConsumed
         {
             add => inner.FaultConsumed += value;
@@ -1230,6 +1317,8 @@ public sealed class InMemoryConsumerFaultTests
         }
 
         public int Count => inner.Count;
+
+        public long Version => inner.Version;
 
         public bool HasMatchingFault(in KafkaFaultScope operationScope)
         {
@@ -1240,8 +1329,11 @@ public sealed class InMemoryConsumerFaultTests
         public bool HasPotentialFault(
             KafkaFaultOperation operation,
             string? groupId,
-            IReadOnlySet<TopicPartition> resources) =>
-            inner.HasPotentialFault(operation, groupId, resources);
+            IReadOnlySet<TopicPartition> resources)
+        {
+            PotentialProbeCount++;
+            return inner.HasPotentialFault(operation, groupId, resources);
+        }
 
         public bool TryGetFirstMatchingFaultScope(
             ReadOnlySpan<KafkaFaultScope> operationScopes,

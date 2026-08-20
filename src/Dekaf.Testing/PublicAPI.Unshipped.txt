@@ -66,6 +66,7 @@ Dekaf.Testing.IKafkaFaultPlan.FaultConsumed -> System.Action<Dekaf.Testing.Kafka
 Dekaf.Testing.IKafkaFaultPlan.HasMatchingFault(in Dekaf.Testing.KafkaFaultScope operationScope) -> bool
 Dekaf.Testing.IKafkaFaultPlan.HasPotentialFault(Dekaf.Testing.KafkaFaultOperation operation, string? groupId, System.Collections.Generic.IReadOnlySet<Dekaf.TopicPartition>! resources) -> bool
 Dekaf.Testing.IKafkaFaultPlan.TryGetFirstMatchingFaultScope(System.ReadOnlySpan<Dekaf.Testing.KafkaFaultScope> operationScopes, out Dekaf.Testing.KafkaFaultScope operationScope) -> bool
+Dekaf.Testing.IKafkaFaultPlan.Version.get -> long
 Dekaf.Testing.IKafkaFaultPlan.PauseNext(Dekaf.Testing.KafkaFaultScope scope) -> Dekaf.Testing.KafkaFaultBarrier!
 Dekaf.Testing.KafkaFaultPlan
 Dekaf.Testing.KafkaFaultPlan.ApplyAsync(Dekaf.Testing.KafkaFaultScope operationScope, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
@@ -78,6 +79,7 @@ Dekaf.Testing.KafkaFaultPlan.FaultConsumed -> System.Action<Dekaf.Testing.KafkaF
 Dekaf.Testing.KafkaFaultPlan.HasMatchingFault(in Dekaf.Testing.KafkaFaultScope operationScope) -> bool
 Dekaf.Testing.KafkaFaultPlan.HasPotentialFault(Dekaf.Testing.KafkaFaultOperation operation, string? groupId, System.Collections.Generic.IReadOnlySet<Dekaf.TopicPartition>! resources) -> bool
 Dekaf.Testing.KafkaFaultPlan.TryGetFirstMatchingFaultScope(System.ReadOnlySpan<Dekaf.Testing.KafkaFaultScope> operationScopes, out Dekaf.Testing.KafkaFaultScope operationScope) -> bool
+Dekaf.Testing.KafkaFaultPlan.Version.get -> long
 Dekaf.Testing.KafkaFaultPlan.KafkaFaultPlan() -> void
 Dekaf.Testing.KafkaFaultPlan.PauseNext(Dekaf.Testing.KafkaFaultScope scope) -> Dekaf.Testing.KafkaFaultBarrier!
 Dekaf.Testing.KafkaFaultScope

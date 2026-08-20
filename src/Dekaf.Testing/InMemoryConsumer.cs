@@ -47,12 +47,13 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private readonly Dictionary<TopicPartition, TopicPartitionOffset> _storedOffsets = [];
     private Dictionary<TopicPartition, PendingAutoCommitAdvancement>? _pendingAutoCommitAdvancements;
     private int _storedOffsetsVersion;
-    private long _potentialFaultScopeVersion = -1;
+    private long _potentialFaultPlanVersion = -1;
     private int _potentialFaultConsumerStateVersion = -1;
     private int _potentialFaultConsumerGroupGeneration = -1;
     private int _potentialFaultStoredOffsetsVersion = -1;
     private bool _hasPotentialConsumerFault;
     private IReadOnlySet<TopicPartition>? _potentialFaultAssignment;
+    private IReadOnlySet<TopicPartition>? _potentialFaultActiveResources;
     private int _potentialFaultAssignmentConsumerStateVersion = -1;
     private int _potentialFaultAssignmentConsumerGroupGeneration = -1;
     private int _committableOffsetConsumerStateVersion = -1;
@@ -1032,6 +1033,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             UnregisterConsumerGroupMemberUnderLock();
             _consumerStateVersion++;
             _disposed = true;
+            _autoCommitAdvancementWaiterEntered?.TrySetResult();
+            _autoCommitAdvancementWaiterEntered = null;
             if (_pendingAutoCommitAdvancements is not null)
             {
                 foreach (var (partition, pending) in _pendingAutoCommitAdvancements)
@@ -1403,6 +1406,12 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     {
         lock (_gate)
         {
+            if (_disposed)
+                return Task.CompletedTask;
+
+            if (_autoCommitAdvancementWaiterEntered is { Task.IsCompleted: false } existing)
+                return existing.Task;
+
             _autoCommitAdvancementWaiterEntered = new TaskCompletionSource(
                 TaskCreationOptions.RunContinuationsAsynchronously);
             return _autoCommitAdvancementWaiterEntered.Task;
@@ -2214,10 +2223,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private bool HasPotentialConsumerFault()
     {
         var faultPlan = _cluster.FaultPlan;
-        if (faultPlan is not KafkaFaultPlan indexedPlan)
-            return HasPotentialCustomConsumerFault(faultPlan);
-
-        var scopeVersion = indexedPlan.ScopeVersion;
+        var indexedPlan = faultPlan as KafkaFaultPlan;
+        var planVersion = indexedPlan is null ? faultPlan.Version : indexedPlan.Version;
         var consumerStateVersion = Volatile.Read(ref _consumerStateVersion);
         var autoCommitEnabled = _groupId is not null &&
                                 _options.OffsetCommitMode == OffsetCommitMode.Auto;
@@ -2229,7 +2236,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         var consumerGroupGeneration = _groupId is null
             ? -1
             : _cluster.GetConsumerGroupGeneration(_groupId);
-        if (Volatile.Read(ref _potentialFaultScopeVersion) == scopeVersion &&
+        if (Volatile.Read(ref _potentialFaultPlanVersion) == planVersion &&
             Volatile.Read(ref _potentialFaultConsumerStateVersion) == consumerStateVersion &&
             Volatile.Read(ref _potentialFaultConsumerGroupGeneration) == consumerGroupGeneration &&
             Volatile.Read(ref _potentialFaultStoredOffsetsVersion) == storedOffsetsVersion)
@@ -2242,6 +2249,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             consumerStateVersion = _consumerStateVersion;
             storedOffsetsVersion = requiresStoredOffset ? _storedOffsetsVersion : -1;
             var assignment = GetPotentialFaultAssignmentUnderLock(
+                out var activeResources,
                 out consumerGroupGeneration);
 
             var includeCommit = autoCommitEnabled &&
@@ -2249,43 +2257,41 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                                  HasCommittableStoredOffsetUnderLock(
                                      assignment,
                                      consumerGroupGeneration));
-            var hasPotentialFault = indexedPlan.HasPotentialConsumerMatch(
-                _groupId,
-                assignment,
-                includeCommit,
-                out scopeVersion);
+            bool hasPotentialFault;
+            if (indexedPlan is not null)
+            {
+                hasPotentialFault = indexedPlan.HasPotentialConsumerMatch(
+                    _groupId,
+                    activeResources,
+                    assignment,
+                    includeCommit,
+                    out planVersion);
+            }
+            else
+            {
+                do
+                {
+                    planVersion = faultPlan.Version;
+                    hasPotentialFault =
+                        faultPlan.HasPotentialFault(KafkaFaultOperation.Fetch, _groupId, activeResources) ||
+                        faultPlan.HasPotentialFault(KafkaFaultOperation.Consume, _groupId, activeResources) ||
+                        includeCommit &&
+                        faultPlan.HasPotentialFault(KafkaFaultOperation.Commit, _groupId, assignment);
+                }
+                while (planVersion != faultPlan.Version);
+            }
+
             Volatile.Write(ref _hasPotentialConsumerFault, hasPotentialFault);
             Volatile.Write(ref _potentialFaultConsumerStateVersion, consumerStateVersion);
             Volatile.Write(ref _potentialFaultConsumerGroupGeneration, consumerGroupGeneration);
             Volatile.Write(ref _potentialFaultStoredOffsetsVersion, storedOffsetsVersion);
-            Volatile.Write(ref _potentialFaultScopeVersion, scopeVersion);
+            Volatile.Write(ref _potentialFaultPlanVersion, planVersion);
             return hasPotentialFault;
         }
     }
 
-    private bool HasPotentialCustomConsumerFault(IKafkaFaultPlan faultPlan)
-    {
-        if (faultPlan.Count == 0)
-            return false;
-
-        lock (_gate)
-        {
-            var assignment = GetPotentialFaultAssignmentUnderLock(
-                out var consumerGroupGeneration);
-            var includeCommit = _groupId is not null &&
-                                _options.OffsetCommitMode == OffsetCommitMode.Auto &&
-                                (_options.EnableAutoOffsetStore ||
-                                 HasCommittableStoredOffsetUnderLock(
-                                     assignment,
-                                     consumerGroupGeneration));
-            return faultPlan.HasPotentialFault(KafkaFaultOperation.Fetch, _groupId, assignment) ||
-                   faultPlan.HasPotentialFault(KafkaFaultOperation.Consume, _groupId, assignment) ||
-                   includeCommit &&
-                   faultPlan.HasPotentialFault(KafkaFaultOperation.Commit, _groupId, assignment);
-        }
-    }
-
     private IReadOnlySet<TopicPartition> GetPotentialFaultAssignmentUnderLock(
+        out IReadOnlySet<TopicPartition> activeResources,
         out int consumerGroupGeneration)
     {
         while (true)
@@ -2297,6 +2303,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 _potentialFaultAssignmentConsumerStateVersion == _consumerStateVersion &&
                 _potentialFaultAssignmentConsumerGroupGeneration == consumerGroupGeneration)
             {
+                activeResources = _potentialFaultActiveResources!;
                 return _potentialFaultAssignment;
             }
 
@@ -2309,6 +2316,23 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
             consumerGroupGeneration = assignmentGeneration;
             _potentialFaultAssignment = assignment;
+            if (_paused.Count == 0)
+            {
+                activeResources = assignment;
+            }
+            else
+            {
+                var unpaused = new HashSet<TopicPartition>(assignment.Count);
+                foreach (var partition in assignment)
+                {
+                    if (!_paused.Contains(partition))
+                        unpaused.Add(partition);
+                }
+
+                activeResources = unpaused;
+            }
+
+            _potentialFaultActiveResources = activeResources;
             _potentialFaultAssignmentConsumerStateVersion = _consumerStateVersion;
             _potentialFaultAssignmentConsumerGroupGeneration = consumerGroupGeneration;
             return assignment;

@@ -111,19 +111,21 @@ public sealed class KafkaFaultPlanTests
         var matched = plan.HasPotentialConsumerMatch(
             "billing",
             assignment,
+            assignment,
             includeCommit: true,
             out var version);
 
         await Assert.That(matched).IsFalse();
-        await Assert.That(version).IsEqualTo(plan.ScopeVersion);
+        await Assert.That(version).IsEqualTo(plan.Version);
 
         plan.FailPersistently(
             new KafkaFaultScope(KafkaFaultOperation.Consume, "orders", 0, "billing"),
             new InvalidOperationException("consume"));
 
-        await Assert.That(plan.ScopeVersion).IsGreaterThan(version);
+        await Assert.That(plan.Version).IsGreaterThan(version);
         await Assert.That(plan.HasPotentialConsumerMatch(
             "billing",
+            assignment,
             assignment,
             includeCommit: true,
             out _)).IsTrue();

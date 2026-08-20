@@ -278,6 +278,8 @@ public class InMemoryConsumerBenchmarks
 
         public int Count => inner.Count;
 
+        public long Version => inner.Version;
+
         public bool HasMatchingFault(in KafkaFaultScope operationScope) =>
             inner.HasMatchingFault(operationScope);
 

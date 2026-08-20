@@ -246,6 +246,14 @@ public interface IKafkaFaultPlan
     int Count { get; }
 
     /// <summary>
+    /// Gets a value that changes whenever the queued fault script changes.
+    /// </summary>
+    /// <remarks>
+    /// Implementations must expose this value thread-safely and change it whenever matching results can change.
+    /// </remarks>
+    long Version { get; }
+
+    /// <summary>
     /// Returns whether the supplied concrete operation scope matches a queued entry.
     /// </summary>
     bool HasMatchingFault(in KafkaFaultScope operationScope);
@@ -582,7 +590,8 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
         };
     }
 
-    internal long ScopeVersion => Volatile.Read(ref _scopeIndex).Version;
+    /// <inheritdoc />
+    public long Version => Volatile.Read(ref _scopeIndex).Version;
 
     internal bool HasPotentialMatch(KafkaFaultOperation operation, string? groupId) =>
         Volatile.Read(ref _scopeIndex).HasPotentialMatch(operation, groupId);
@@ -640,16 +649,17 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
 
     internal bool HasPotentialConsumerMatch(
         string? groupId,
-        IReadOnlySet<TopicPartition> assignment,
+        IReadOnlySet<TopicPartition> activeResources,
+        IReadOnlySet<TopicPartition> ownedResources,
         bool includeCommit,
         out long scopeVersion)
     {
         var index = Volatile.Read(ref _scopeIndex);
         scopeVersion = index.Version;
-        return index.HasPotentialMatch(KafkaFaultOperation.Fetch, groupId, assignment) ||
-               index.HasPotentialMatch(KafkaFaultOperation.Consume, groupId, assignment) ||
+        return index.HasPotentialMatch(KafkaFaultOperation.Fetch, groupId, activeResources) ||
+               index.HasPotentialMatch(KafkaFaultOperation.Consume, groupId, activeResources) ||
                includeCommit &&
-               index.HasPotentialMatch(KafkaFaultOperation.Commit, groupId, assignment);
+               index.HasPotentialMatch(KafkaFaultOperation.Commit, groupId, ownedResources);
     }
 
     private void PublishScopeIndexUnderLock()
@@ -712,7 +722,7 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
             string? groupId,
             IReadOnlySet<TopicPartition> assignment)
         {
-            if (!HasPotentialMatch(operation, groupId))
+            if (assignment.Count == 0 || !HasPotentialMatch(operation, groupId))
                 return false;
 
             foreach (var scope in _scopes)
