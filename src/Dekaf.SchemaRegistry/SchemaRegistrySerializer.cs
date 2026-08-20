@@ -54,7 +54,7 @@ public sealed class SchemaRegistrySerializer<T> :
     private readonly SchemaResolutionCache<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> _schemaResolutionCache = new();
     private readonly SubjectSchemaCache? _subjectSchemaCache;
     private SubjectSchemaIdCache _subjectSchemaIdCache = new();
-    private SubjectSchemaIdCache? _previousSubjectSchemaIdCache;
+    private AssociatedSubjectSchemaIdCacheHandoff? _associatedSubjectHandoff;
 
     /// <summary>
     /// Creates a new Schema Registry serializer.
@@ -354,8 +354,8 @@ public sealed class SchemaRegistrySerializer<T> :
     [MethodImpl(MethodImplOptions.NoInlining)]
     private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry ResolveSchemaForContext(string topic, bool isKey)
     {
-        var previous = Volatile.Read(ref _previousSubjectSchemaIdCache);
-        return previous is not null && previous.TryGet(topic, isKey, out var cached)
+        var handoff = Volatile.Read(ref _associatedSubjectHandoff);
+        return handoff is not null && handoff.TryGet(topic, isKey, out var cached)
             ? cached
             : ResolveSchema(topic, isKey);
     }
@@ -437,12 +437,18 @@ public sealed class SchemaRegistrySerializer<T> :
                     value.SchemaId,
                     value.Schema!);
                 if (ReferenceEquals(cache, Volatile.Read(ref _subjectSchemaIdCache)))
+                {
+                    _associatedSubjectHandoff?.Retain(preparedEntry);
                     return ToResolvedContext(preparedEntry);
+                }
             }
 
             cache = Volatile.Read(ref _subjectSchemaIdCache);
             if (cache.TryGet(topic, isKey, out var cached))
+            {
+                _associatedSubjectHandoff?.Retain(cached);
                 return ToResolvedContext(cached);
+            }
         }
 
         throw new InvalidOperationException(
@@ -884,14 +890,14 @@ public sealed class SchemaRegistrySerializer<T> :
     private void RegisterAssociatedNameInvalidation()
     {
         if (_asyncSubjectNameStrategy is AssociatedNameStrategy strategy)
+        {
+            _associatedSubjectHandoff = new AssociatedSubjectSchemaIdCacheHandoff();
             strategy.RegisterCacheInvalidationTarget(this);
+        }
     }
 
     void IAssociatedNameCacheInvalidationTarget.InvalidateAssociatedNameCache()
     {
-        var current = Volatile.Read(ref _subjectSchemaIdCache);
-        if (current.CachedEntryCount != 0)
-            Volatile.Write(ref _previousSubjectSchemaIdCache, current);
         Volatile.Write(ref _subjectSchemaIdCache, new SubjectSchemaIdCache());
     }
 

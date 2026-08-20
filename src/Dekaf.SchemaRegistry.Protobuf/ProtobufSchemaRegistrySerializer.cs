@@ -44,7 +44,7 @@ public sealed class ProtobufSchemaRegistrySerializer<
     private readonly SchemaResolutionCache<RegisteredDependency> _referenceResolutionCache = new();
     private readonly Schema _resolutionIdentitySchema;
     private SubjectSchemaIdCache? _associatedSubjectSchemaIdCache;
-    private SubjectSchemaIdCache? _previousAssociatedSubjectSchemaIdCache;
+    private AssociatedSubjectSchemaIdCacheHandoff? _associatedSubjectHandoff;
 
     /// <summary>
     /// Creates a new Protobuf Schema Registry serializer.
@@ -87,10 +87,13 @@ public sealed class ProtobufSchemaRegistrySerializer<
             _associatedSubjectSchemaIdCache = new SubjectSchemaIdCache();
 
         if (_asyncSubjectNameStrategy is AssociatedNameStrategy associatedNameStrategy)
+        {
+            _associatedSubjectHandoff = new AssociatedSubjectSchemaIdCacheHandoff();
             AssociatedNameCacheInvalidationTargetRegistration.Register(
                 this,
                 associatedNameStrategy,
                 InvalidateAssociatedSubjectSchemaCache);
+        }
     }
 
     /// <summary>
@@ -209,8 +212,8 @@ public sealed class ProtobufSchemaRegistrySerializer<
 
         if (_asyncSubjectNameStrategy is not null)
         {
-            var previous = Volatile.Read(ref _previousAssociatedSubjectSchemaIdCache);
-            if (previous is not null && previous.TryGet(topic, isKey, out cached))
+            if (_associatedSubjectHandoff is not null
+                && _associatedSubjectHandoff.TryGet(topic, isKey, out cached))
                 return cached;
         }
 
@@ -318,12 +321,18 @@ public sealed class ProtobufSchemaRegistrySerializer<
                     value.SchemaId,
                     value.Schema!);
                 if (ReferenceEquals(cache, Volatile.Read(ref _associatedSubjectSchemaIdCache)))
+                {
+                    _associatedSubjectHandoff?.Retain(cached);
                     return ToResolvedContext(cached);
+                }
             }
 
             cache = Volatile.Read(ref _associatedSubjectSchemaIdCache)!;
             if (cache.TryGet(topic, isKey, out var current))
+            {
+                _associatedSubjectHandoff?.Retain(current);
                 return ToResolvedContext(current);
+            }
         }
 
         throw new InvalidOperationException(
@@ -711,9 +720,6 @@ public sealed class ProtobufSchemaRegistrySerializer<
 
     private void InvalidateAssociatedSubjectSchemaCache()
     {
-        var current = Volatile.Read(ref _associatedSubjectSchemaIdCache)!;
-        if (current.CachedEntryCount != 0)
-            Volatile.Write(ref _previousAssociatedSubjectSchemaIdCache, current);
         Volatile.Write(ref _associatedSubjectSchemaIdCache, new SubjectSchemaIdCache());
     }
 }

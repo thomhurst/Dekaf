@@ -45,7 +45,7 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
     private AvroPocoSerializerBufferState? _primaryRuleBuffer;
     private ConditionalWeakTable<Thread, AvroPocoSerializerBufferState>? _additionalRuleBuffers;
     private SubjectSchemaIdCache? _associatedSubjectCache;
-    private SubjectSchemaIdCache? _previousAssociatedSubjectCache;
+    private AssociatedSubjectSchemaIdCacheHandoff? _associatedSubjectHandoff;
 
     /// <summary>Creates a generated POCO Avro serializer.</summary>
     public AvroPocoSchemaRegistrySerializer(
@@ -72,10 +72,13 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
             _associatedSubjectCache = new SubjectSchemaIdCache();
 
         if (_asyncSubjectNameStrategy is AssociatedNameStrategy associatedNameStrategy)
+        {
+            _associatedSubjectHandoff = new AssociatedSubjectSchemaIdCacheHandoff();
             AssociatedNameCacheInvalidationTargetRegistration.Register(
                 this,
                 associatedNameStrategy,
                 InvalidateAssociatedSubjectSchemaCache);
+        }
     }
 
     /// <summary>Prepares one topic/component and returns its Schema Registry ID.</summary>
@@ -147,12 +150,18 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
                     value.SchemaId,
                     value.Schema!);
                 if (ReferenceEquals(cache, Volatile.Read(ref _associatedSubjectCache)))
+                {
+                    _associatedSubjectHandoff?.Retain(cached);
                     return ToResolvedContext(cached);
+                }
             }
 
             cache = Volatile.Read(ref _associatedSubjectCache)!;
             if (cache.TryGet(topic, isKey, out var current))
+            {
+                _associatedSubjectHandoff?.Retain(current);
                 return ToResolvedContext(current);
+            }
         }
 
         throw new InvalidOperationException(
@@ -480,8 +489,8 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
 
         if (_asyncSubjectNameStrategy is not null)
         {
-            var previous = Volatile.Read(ref _previousAssociatedSubjectCache);
-            if (previous is not null && previous.TryGet(topic, isKey, out cached))
+            if (_associatedSubjectHandoff is not null
+                && _associatedSubjectHandoff.TryGet(topic, isKey, out cached))
                 return cached;
         }
 
@@ -737,9 +746,6 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
 
     private void InvalidateAssociatedSubjectSchemaCache()
     {
-        var current = Volatile.Read(ref _associatedSubjectCache)!;
-        if (current.CachedEntryCount != 0)
-            Volatile.Write(ref _previousAssociatedSubjectCache, current);
         Volatile.Write(ref _associatedSubjectCache, new SubjectSchemaIdCache());
     }
 

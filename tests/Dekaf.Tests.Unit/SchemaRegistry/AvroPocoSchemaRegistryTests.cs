@@ -79,6 +79,7 @@ public sealed class AvroPocoSchemaRegistryTests
     {
         using var registry = new MockSchemaRegistryClient();
         await SetPocoAssociationAsync(registry, "poco-orders", "poco-v1");
+        await SetPocoAssociationAsync(registry, "poco-payments", "poco-payments-v1");
         var strategy = new Dekaf.SchemaRegistry.AssociatedNameStrategy(registry);
         await using var serializer = PocoOrder.CreateAvroSerializer(
             registry,
@@ -92,6 +93,7 @@ public sealed class AvroPocoSchemaRegistryTests
         };
 
         strategy.ClearCache();
+        _ = await serializer.PrepareAsync("poco-payments");
         strategy.ClearCache();
         serializer.Serialize(new PocoOrder
         {

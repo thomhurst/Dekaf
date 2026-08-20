@@ -290,6 +290,7 @@ public sealed class AssociatedNameStrategyTests
     {
         using var client = new MockSchemaRegistryClient();
         await AssociateAsync(client, "orders", "orders-v1");
+        await AssociateAsync(client, "payments", "payments-v1");
         var resolver = CreateResolver(client);
         await using var serializer = new SchemaRegistrySerializer<int>(
             client,
@@ -305,6 +306,7 @@ public sealed class AssociatedNameStrategyTests
         };
 
         resolver.ClearCache();
+        _ = await serializer.PrepareAsync("payments", 42);
         resolver.ClearCache();
         serializer.Serialize(42, ref destination, context);
 
@@ -338,6 +340,7 @@ public sealed class AssociatedNameStrategyTests
     {
         using var client = new MockSchemaRegistryClient();
         await AssociateAsync(client, "orders", "json-v1");
+        await AssociateAsync(client, "payments", "json-payments-v1");
         var resolver = CreateResolver(client);
         await using var serializer = new JsonSchemaRegistrySerializer<int>(
             client,
@@ -352,6 +355,7 @@ public sealed class AssociatedNameStrategyTests
         };
 
         resolver.ClearCache();
+        _ = await serializer.PrepareAsync("payments", 42);
         resolver.ClearCache();
         serializer.Serialize(42, ref destination, context);
 
@@ -387,6 +391,7 @@ public sealed class AssociatedNameStrategyTests
     {
         using var client = new MockSchemaRegistryClient();
         await AssociateAsync(client, "orders", "avro-v1");
+        await AssociateAsync(client, "payments", "avro-payments-v1");
         var resolver = CreateResolver(client);
         var schema = (global::Avro.RecordSchema)global::Avro.Schema.Parse(
             """{"type":"record","name":"Order","fields":[{"name":"id","type":"int"}]}""");
@@ -404,6 +409,7 @@ public sealed class AssociatedNameStrategyTests
         };
 
         resolver.ClearCache();
+        _ = await serializer.PrepareAsync("payments", value);
         resolver.ClearCache();
         serializer.Serialize(value, ref destination, context);
 
@@ -436,6 +442,7 @@ public sealed class AssociatedNameStrategyTests
     {
         using var client = new MockSchemaRegistryClient();
         await AssociateAsync(client, "orders", "protobuf-v1");
+        await AssociateAsync(client, "payments", "protobuf-payments-v1");
         var resolver = CreateResolver(client);
         var value = new TestMessage { Id = 42 };
         await using var serializer = new ProtobufSchemaRegistrySerializer<TestMessage>(
@@ -450,6 +457,7 @@ public sealed class AssociatedNameStrategyTests
         };
 
         resolver.ClearCache();
+        _ = await serializer.PrepareAsync("payments", value);
         resolver.ClearCache();
         serializer.Serialize(value, ref destination, context);
 

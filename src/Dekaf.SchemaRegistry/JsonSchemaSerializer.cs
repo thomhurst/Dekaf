@@ -653,8 +653,7 @@ public sealed class JsonSchemaRegistrySerializer<T> :
 
         if (state is not null)
         {
-            var previous = Volatile.Read(ref state.PreviousCache);
-            if (previous is not null && previous.TryGet(topic, isKey, out cached))
+            if (state.Handoff is not null && state.Handoff.TryGet(topic, isKey, out cached))
                 return cached;
         }
 
@@ -759,12 +758,18 @@ public sealed class JsonSchemaRegistrySerializer<T> :
                     value.SchemaId,
                     value.Schema!);
                 if (ReferenceEquals(cache, Volatile.Read(ref state.Cache)))
+                {
+                    state.Handoff?.Retain(cached);
                     return ToResolvedContext(cached);
+                }
             }
 
             cache = Volatile.Read(ref state.Cache);
             if (cache.TryGet(topic, isKey, out var current))
+            {
+                state.Handoff?.Retain(current);
                 return ToResolvedContext(current);
+            }
         }
 
         throw new InvalidOperationException(
@@ -860,7 +865,8 @@ public sealed class JsonSchemaRegistrySerializer<T> :
     {
         internal IAsyncSubjectNameStrategy Strategy { get; } = strategy;
         internal SubjectSchemaIdCache Cache = new();
-        internal SubjectSchemaIdCache? PreviousCache;
+        internal AssociatedSubjectSchemaIdCacheHandoff? Handoff { get; } =
+            strategy is AssociatedNameStrategy ? new() : null;
 
         public ValueTask<string> GetSubjectNameAsync(
             string topic,
@@ -871,9 +877,6 @@ public sealed class JsonSchemaRegistrySerializer<T> :
 
         void IAssociatedNameCacheInvalidationTarget.InvalidateAssociatedNameCache()
         {
-            var current = Volatile.Read(ref Cache);
-            if (current.CachedEntryCount != 0)
-                Volatile.Write(ref PreviousCache, current);
             Volatile.Write(ref Cache, new SubjectSchemaIdCache());
         }
     }
