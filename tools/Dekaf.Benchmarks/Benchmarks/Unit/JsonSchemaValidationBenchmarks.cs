@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Text;
 using BenchmarkDotNet.Attributes;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Json;
@@ -127,6 +128,7 @@ public class JsonSchemaValidationBenchmarks
     private ReadOnlyMemory<byte> _nestedInlineRulesJsonPayload;
     private IJsonSchemaValidator _nestedInlineRulesValidator = null!;
     private ReadOnlyMemory<byte> _structuralEqualityJsonPayload;
+    private ReadOnlyMemory<byte> _deepStructuralEqualityJsonPayload;
     private IJsonSchemaValidator _structuralEqualityValidator = null!;
     private ReadOnlyMemory<byte> _siblingInlineRulesJsonPayload;
     private IJsonSchemaValidator _siblingInlineRulesValidator = null!;
@@ -220,6 +222,11 @@ public class JsonSchemaValidationBenchmarks
             SchemaString = StructuralEqualityJsonSchema
         });
         _structuralEqualityValidator.ValidateRules(_structuralEqualityJsonPayload, 3, failFast: false);
+        _deepStructuralEqualityJsonPayload = CreateDeepStructuralEqualityPayload(depth: 48);
+        _structuralEqualityValidator.ValidateRules(
+            _deepStructuralEqualityJsonPayload,
+            3,
+            failFast: false);
         _siblingInlineRulesJsonPayload =
             """{"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8}"""u8.ToArray();
         _siblingInlineRulesValidator = inlineRulesFactory.GetOrCreate(new Schema
@@ -304,6 +311,13 @@ public class JsonSchemaValidationBenchmarks
         _structuralEqualityValidator.ValidateRules(_structuralEqualityJsonPayload, 3, failFast: false);
 
     [Benchmark]
+    public void ValidateDeepStructuralEquality() =>
+        _structuralEqualityValidator.ValidateRules(
+            _deepStructuralEqualityJsonPayload,
+            3,
+            failFast: false);
+
+    [Benchmark]
     public void ValidateSiblingInlineRules() =>
         _siblingInlineRulesValidator.ValidateRules(_siblingInlineRulesJsonPayload, 4, failFast: false);
 
@@ -328,6 +342,25 @@ public class JsonSchemaValidationBenchmarks
         _validatorFactory.GetOrCreate(_validatorSchema);
 
     public sealed record BenchmarkPayload(int Id, string Name);
+
+    private static byte[] CreateDeepStructuralEqualityPayload(int depth)
+    {
+        var json = new StringBuilder(depth * 24);
+        json.Append("{\"left\":");
+        AppendNestedValue(json, depth);
+        json.Append(",\"right\":");
+        AppendNestedValue(json, depth);
+        json.Append(",\"values\":[],\"expected\":[]}");
+        return Encoding.UTF8.GetBytes(json.ToString());
+    }
+
+    private static void AppendNestedValue(StringBuilder json, int depth)
+    {
+        for (var index = 0; index < depth; index++)
+            json.Append("{\"value\":");
+        json.Append('1');
+        json.Append('}', depth);
+    }
 
     private sealed class BenchmarkSchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistryCache
     {
