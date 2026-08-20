@@ -166,8 +166,8 @@ public sealed class SchemaIdentityFramingTests
         Assert.Throws<InvalidDataException>(() => SchemaIdentityFraming.ReadPrefix(GuidVector, out _));
 
     [Test]
-    public void ReadPrefix_NegativeId_ThrowsArgumentOutOfRangeException() =>
-        Assert.Throws<ArgumentOutOfRangeException>(() =>
+    public void ReadPrefix_NegativeId_ThrowsInvalidDataException() =>
+        Assert.Throws<InvalidDataException>(() =>
             SchemaIdentityFraming.ReadPrefix([0, 0xff, 0xff, 0xff, 0xff], out _));
 
     [Test]

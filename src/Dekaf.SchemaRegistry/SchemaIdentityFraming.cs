@@ -139,6 +139,9 @@ internal static class SchemaIdentityFraming
             ThrowUnknownPrefixMagicByte(payload[0]);
 
         var schemaId = BinaryPrimitives.ReadInt32BigEndian(payload[1..]);
+        if (schemaId < 0)
+            ThrowNegativeSchemaId(schemaId);
+
         payloadOffset = SchemaIdFrameSize;
         return new SchemaIdentity(schemaId);
     }
@@ -215,6 +218,11 @@ internal static class SchemaIdentityFraming
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static void ThrowUnknownPrefixMagicByte(byte magicByte) =>
         throw new InvalidDataException($"Unknown Schema Registry prefix magic byte: {magicByte}.");
+
+    [DoesNotReturn]
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void ThrowNegativeSchemaId(int schemaId) =>
+        throw new InvalidDataException($"The Schema Registry ID cannot be negative: {schemaId}.");
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static SchemaIdentity ReadHeaderValueSlow(
