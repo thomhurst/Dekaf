@@ -18,11 +18,13 @@ namespace Dekaf.SchemaRegistry;
 /// </summary>
 public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistryCache
 {
+    private const string AcceptUnknownPropertiesHeader = "Confluent-Accept-Unknown-Properties";
     private static readonly TimeSpan PooledConnectionLifetime = TimeSpan.FromMinutes(2);
 
     private readonly HttpClient _httpClient;
     private readonly SchemaRegistryConfig _config;
     private readonly ConcurrentDictionary<int, Schema> _schemaByIdCache = new();
+    private readonly ConcurrentDictionary<(Guid Guid, string? Format), Schema> _schemaByGuidCache = new();
     private readonly ConcurrentDictionary<(int Id, string Subject), Schema> _schemaBySubjectAndIdCache = new();
     private readonly ConcurrentDictionary<(string Subject, Schema Schema, bool Normalize), int> _idBySchemaCache = new();
     private readonly object _cacheLock = new();
@@ -100,6 +102,7 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
     }
 
     internal int CachedSchemaByIdCount => _schemaByIdCache.Count;
+    internal int CachedSchemaByGuidCount => _schemaByGuidCache.Count;
     internal int CachedSchemaBySubjectAndIdCount => _schemaBySubjectAndIdCache.Count;
     internal int CachedSchemaIdCount => _idBySchemaCache.Count;
 
@@ -284,13 +287,16 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             throw new ArgumentException("UserAgent is not a valid HTTP User-Agent value.", nameof(config), ex);
         }
 
+        headers.Add(AcceptUnknownPropertiesHeader, "true");
+
         if (config.DefaultHeaders is null)
             return;
 
         foreach (var (name, value) in config.DefaultHeaders)
         {
             if (string.Equals(name, "User-Agent", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(name, "Accept", StringComparison.OrdinalIgnoreCase))
+                string.Equals(name, "Accept", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(name, AcceptUnknownPropertiesHeader, StringComparison.OrdinalIgnoreCase))
             {
                 throw new ArgumentException(
                     $"The {name} header is managed by SchemaRegistryClient and cannot be overridden.",
@@ -501,8 +507,14 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             SchemaRegistryJsonContext.Default.RegisterSchemaResponse, cancellationToken).ConfigureAwait(false);
 
         var id = result!.Id;
+        var schemaGuid = ParseSchemaGuid(result.Guid);
 
-        CacheSchema(id, subject, schema, effectiveNormalize);
+        CacheSchema(
+            id,
+            subject,
+            schema,
+            effectiveNormalize,
+            schemaGuid: effectiveNormalize ? null : schemaGuid);
 
         return id;
     }
@@ -529,8 +541,43 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         return schema;
     }
 
+    public async Task<Schema> GetSchemaByGuidAsync(
+        string guid,
+        string? format = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(guid);
+        if (!Guid.TryParse(guid, out var parsedGuid))
+            throw new ArgumentException("The schema GUID is not valid.", nameof(guid));
+
+        format = NormalizeFormat(format);
+        var cacheKey = (parsedGuid, format);
+        if (_schemaByGuidCache.TryGetValue(cacheKey, out var cached))
+            return cached;
+
+        using var response = await GetWithFailoverAsync(
+            WithQuery(
+                $"schemas/guids/{parsedGuid:D}",
+                ("format", format)),
+            cancellationToken).ConfigureAwait(false);
+
+        await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
+
+        var result = await response.Content.ReadFromJsonAsync<GetSchemaResponse>(
+            SchemaRegistryJsonContext.Default.GetSchemaResponse, cancellationToken).ConfigureAwait(false);
+        if (result is null)
+            throw new SchemaRegistryException((int)response.StatusCode, "Schema Registry returned an empty schema response");
+
+        var schema = CreateSchema(result);
+        CacheGuidSchema(parsedGuid, format, schema);
+        return schema;
+    }
+
     public bool TryGetCachedSchema(int id, out Schema schema)
         => _schemaByIdCache.TryGetValue(id, out schema!);
+
+    public bool TryGetCachedSchema(Guid guid, string? format, out Schema schema)
+        => _schemaByGuidCache.TryGetValue((guid, NormalizeFormat(format)), out schema!);
 
     public async Task<Schema> GetSchemaAsync(
         int id,
@@ -589,12 +636,14 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             throw new SchemaRegistryException((int)response.StatusCode, "Schema Registry returned an empty schema response");
 
         var schema = CreateSchema(result);
+        var schemaGuid = ParseSchemaGuid(result.Guid);
 
-        CacheSchema(result.Id, subject: null, schema);
+        CacheSchema(result.Id, subject: null, schema, schemaGuid: schemaGuid);
 
         return new RegisteredSchema
         {
             Id = result.Id,
+            Guid = schemaGuid?.ToString("D"),
             Subject = result.Subject,
             Version = result.Version,
             Schema = schema
@@ -630,16 +679,19 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             throw new SchemaRegistryException((int)response.StatusCode, "Schema Registry returned an empty schema response");
 
         var registeredSchema = CreateSchema(result);
+        var schemaGuid = ParseSchemaGuid(result.Guid);
         CacheSchema(
             result.Id,
             ignoreDeletedSchemas ? subject : null,
             schema,
             effectiveNormalize,
-            schemaById: registeredSchema);
+            schemaById: registeredSchema,
+            schemaGuid: schemaGuid);
 
         return new RegisteredSchema
         {
             Id = result.Id,
+            Guid = schemaGuid?.ToString("D"),
             Subject = result.Subject,
             Version = result.Version,
             Schema = registeredSchema
@@ -690,7 +742,14 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             throw new SchemaRegistryException((int)response.StatusCode, "Schema Registry returned an empty schema response");
 
         var registeredSchema = CreateSchema(result);
-        CacheSchema(result.Id, subject, schema, effectiveNormalize, schemaById: registeredSchema);
+        var schemaGuid = ParseSchemaGuid(result.Guid);
+        CacheSchema(
+            result.Id,
+            subject,
+            schema,
+            effectiveNormalize,
+            schemaById: registeredSchema,
+            schemaGuid: schemaGuid);
 
         return result.Id;
     }
@@ -700,7 +759,8 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         string? subject,
         Schema schema,
         bool normalize = false,
-        Schema? schemaById = null)
+        Schema? schemaById = null,
+        Guid? schemaGuid = null)
     {
         if (_maxCachedSchemas == 0)
             return;
@@ -717,6 +777,8 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             {
                 _idBySchemaCache.TryAdd((subject, schema, normalize), id);
             }
+            if (schemaGuid is { } guid)
+                _schemaByGuidCache.TryAdd((guid, null), schemaById ?? schema);
         }
     }
 
@@ -733,16 +795,49 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         }
     }
 
+    internal void CacheGuidSchema(Guid guid, string? format, Schema schema)
+    {
+        if (_maxCachedSchemas == 0)
+            return;
+
+        var cacheKey = (guid, NormalizeFormat(format));
+        lock (_cacheLock)
+        {
+            if (_schemaByGuidCache.ContainsKey(cacheKey))
+                return;
+
+            ClearCachesIfFull();
+
+            _schemaByGuidCache.TryAdd(cacheKey, schema);
+        }
+    }
+
+    private static string? NormalizeFormat(string? format) =>
+        string.IsNullOrEmpty(format) ? null : format;
+
     private void ClearCachesIfFull()
     {
         if (_schemaByIdCache.Count < _maxCachedSchemas &&
             _schemaBySubjectAndIdCache.Count < _maxCachedSchemas &&
-            _idBySchemaCache.Count < _maxCachedSchemas)
+            _idBySchemaCache.Count < _maxCachedSchemas &&
+            _schemaByGuidCache.Count < _maxCachedSchemas)
             return;
 
         _schemaByIdCache.Clear();
         _schemaBySubjectAndIdCache.Clear();
         _idBySchemaCache.Clear();
+        _schemaByGuidCache.Clear();
+    }
+
+    private static Guid? ParseSchemaGuid(string? guid)
+    {
+        if (guid is null)
+            return null;
+
+        if (Guid.TryParse(guid, out var parsedGuid))
+            return parsedGuid;
+
+        throw new SchemaRegistryException(0, "Schema Registry returned an invalid schema GUID.");
     }
 
     public async Task<IReadOnlyList<string>> GetAllSubjectsAsync(CancellationToken cancellationToken = default)

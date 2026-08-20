@@ -50,6 +50,20 @@ public interface ISchemaRegistryClient : IDisposable
     Task<Schema> GetSchemaAsync(int id, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Gets a schema by its globally unique identifier.
+    /// </summary>
+    /// <param name="guid">The Schema Registry GUID.</param>
+    /// <param name="format">Optional schema output format, such as <c>serialized</c>.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The schema.</returns>
+    Task<Schema> GetSchemaByGuidAsync(
+        string guid,
+        string? format = null,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException(
+            $"{GetType().Name} does not support schema GUID lookup. Implement {nameof(GetSchemaByGuidAsync)} to consume GUID-framed records.");
+
+    /// <summary>
     /// Gets a schema by global ID using the consumed subject to resolve subject-scoped metadata and rules.
     /// </summary>
     /// <param name="id">The schema ID.</param>
@@ -485,6 +499,19 @@ public interface ISchemaRegistryCache
     bool TryGetCachedSchema(int id, out Schema schema);
 
     /// <summary>
+    /// Attempts to get a schema by GUID and output format from the local cache without allocating.
+    /// </summary>
+    /// <param name="guid">The Schema Registry GUID.</param>
+    /// <param name="format">Optional schema output format.</param>
+    /// <param name="schema">The cached schema, when found.</param>
+    /// <returns>True when the schema is already cached.</returns>
+    bool TryGetCachedSchema(Guid guid, string? format, out Schema schema)
+    {
+        schema = null!;
+        return false;
+    }
+
+    /// <summary>
     /// Attempts to get subject-scoped schema metadata by ID without allocating.
     /// </summary>
     /// <param name="id">The schema ID.</param>
@@ -560,6 +587,11 @@ public sealed class RegisteredSchema
     /// The global schema ID.
     /// </summary>
     public required int Id { get; init; }
+
+    /// <summary>
+    /// The globally unique schema identifier, when supplied by Schema Registry.
+    /// </summary>
+    public string? Guid { get; init; }
 
     /// <summary>
     /// The subject this schema is registered under.

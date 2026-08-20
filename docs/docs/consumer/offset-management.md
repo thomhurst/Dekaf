@@ -205,6 +205,15 @@ long? committed = await consumer.Positions.GetCommittedOffsetAsync(
     new TopicPartition("my-topic", 0)
 );
 
+// Fetch selected partitions in one OffsetFetch request. Values include leader epochs.
+// Partitions with no committed offset are absent from the dictionary.
+var committedOffsets = await consumer.GetCommittedOffsetsAsync(
+    [
+        new TopicPartition("my-topic", 0),
+        new TopicPartition("my-topic", 1)
+    ]
+);
+
 // Get current position (next offset to be consumed)
 long? position = consumer.Positions.GetPosition(new TopicPartition("my-topic", 0));
 ```
