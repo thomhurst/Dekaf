@@ -107,6 +107,10 @@ public class ProducerSingleBenchmarks
         {
             await _dekafProducer.FlushAsync(cts.Token).ConfigureAwait(false);
         }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        {
+            // Ignore the bounded cleanup flush timeout.
+        }
         finally
         {
             confluentProducer.Flush(TimeSpan.FromSeconds(60));
