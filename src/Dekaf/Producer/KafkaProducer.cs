@@ -178,13 +178,15 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     private Headers? PrepareSerializationHeaders(
         Headers? headers,
         ProducerThreadCache cache,
-        out int originalCount,
+        out Headers.Checkpoint checkpoint,
         out bool usesWorkspace)
     {
-        originalCount = headers?.CountWithoutDeferredTraceContext ?? 0;
         usesWorkspace = false;
         if (!_producesRecordHeaders || headers is not null)
+        {
+            checkpoint = headers?.CaptureCheckpoint() ?? default;
             return headers;
+        }
 
         var depth = cache.SerializationHeaderWorkspaceDepth;
         var workspaces = cache.SerializationHeaderWorkspaces;
@@ -203,23 +205,24 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         workspace.Clear();
         cache.SerializationHeaderWorkspaceDepth = depth + 1;
         usesWorkspace = true;
+        checkpoint = workspace.CaptureCheckpoint();
         return workspace;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void RestoreSerializationHeaders(Headers? headers, int originalCount)
+    private static void RestoreSerializationHeaders(Headers? headers, in Headers.Checkpoint checkpoint)
     {
-        headers?.Truncate(originalCount);
+        headers?.Restore(in checkpoint);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static void RestoreSerializationHeaders(
         Headers? headers,
-        int originalCount,
+        in Headers.Checkpoint checkpoint,
         ProducerThreadCache cache,
         bool usesWorkspace)
     {
-        headers?.Truncate(originalCount);
+        headers?.Restore(in checkpoint);
         if (usesWorkspace)
             cache.SerializationHeaderWorkspaceDepth--;
     }
@@ -1517,7 +1520,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         {
             var headerCache = GetOrCreateCache();
             var serializationHeaders = PrepareSerializationHeaders(
-                headers, headerCache, out var originalHeaderCount, out var usesHeaderWorkspace);
+                headers, headerCache, out var headerCheckpoint, out var usesHeaderWorkspace);
             try
             {
                 TryProduceSyncCore(
@@ -1527,7 +1530,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             finally
             {
                 RestoreSerializationHeaders(
-                    serializationHeaders, originalHeaderCount, headerCache, usesHeaderWorkspace);
+                    serializationHeaders, in headerCheckpoint, headerCache, usesHeaderWorkspace);
             }
 
             return;
@@ -1897,10 +1900,10 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         var value = PooledMemory.Null;
         Header[]? pooledHeaderArray = null;
         var headerCount = 0;
-        var originalHeaderCount = headers?.CountWithoutDeferredTraceContext ?? 0;
         var serializationHeaders = headers;
         if (_producesRecordHeaders && serializationHeaders is null)
             serializationHeaders = new Headers(2);
+        var headerCheckpoint = serializationHeaders?.CaptureCheckpoint() ?? default;
         try
         {
             if (!keyIsNull)
@@ -1963,7 +1966,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         }
         finally
         {
-            RestoreSerializationHeaders(serializationHeaders, originalHeaderCount);
+            RestoreSerializationHeaders(serializationHeaders, in headerCheckpoint);
         }
     }
 
@@ -4748,7 +4751,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     {
         var cache = GetOrCreateCache();
         var serializationHeaders = PrepareSerializationHeaders(
-            headers, cache, out var originalHeaderCount, out var usesHeaderWorkspace);
+            headers, cache, out var headerCheckpoint, out var usesHeaderWorkspace);
         try
         {
             var keyIsNull = key is null;
@@ -4807,7 +4810,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         finally
         {
             RestoreSerializationHeaders(
-                serializationHeaders, originalHeaderCount, cache, usesHeaderWorkspace);
+                serializationHeaders, in headerCheckpoint, cache, usesHeaderWorkspace);
         }
     }
 
@@ -5223,10 +5226,10 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         Activity? activity,
         Action<RecordMetadata, Exception?>? deliveryHandler)
     {
-        var originalHeaderCount = headers?.CountWithoutDeferredTraceContext ?? 0;
         var serializationHeaders = headers;
         if (_producesRecordHeaders && serializationHeaders is null)
             serializationHeaders = new Headers(2);
+        var headerCheckpoint = serializationHeaders?.CaptureCheckpoint() ?? default;
         try
         {
             // Metadata: thread-local cache, then manager cache, then bounded fetch
@@ -5326,7 +5329,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         }
         finally
         {
-            RestoreSerializationHeaders(serializationHeaders, originalHeaderCount);
+            RestoreSerializationHeaders(serializationHeaders, in headerCheckpoint);
             headers?.RemoveDeferredTraceContext();
             activity?.Dispose();
         }

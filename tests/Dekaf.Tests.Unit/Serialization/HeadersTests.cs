@@ -171,6 +171,30 @@ public class HeadersTests
         await Assert.That(afterRemoval.GetValueAsString()).IsEqualTo("identity");
     }
 
+    [Arguments(null)]
+    [Arguments("vendor=value")]
+    [Test]
+    public async Task Restore_CheckpointRestoresIdentityIndexesWithoutDeferredTraceContext(string? traceState)
+    {
+        var headers = new Headers()
+            .Add("__key_schema_id", "original-key")
+            .Add("__value_schema_id", "original-value");
+        headers.AddDeferredTraceContext(new object(), traceState);
+        var checkpoint = headers.CaptureCheckpoint();
+        headers.Add("__key_schema_id", "temporary-key");
+        headers.Add("__value_schema_id", "temporary-value");
+
+        headers.Restore(in checkpoint);
+
+        var foundKey = headers.TryGetLastSchemaIdentity(SerializationComponent.Key, out var keyHeader);
+        var foundValue = headers.TryGetLastSchemaIdentity(SerializationComponent.Value, out var valueHeader);
+        await Assert.That(headers.Count).IsEqualTo(2);
+        await Assert.That(foundKey).IsTrue();
+        await Assert.That(keyHeader.GetValueAsString()).IsEqualTo("original-key");
+        await Assert.That(foundValue).IsTrue();
+        await Assert.That(valueHeader.GetValueAsString()).IsEqualTo("original-value");
+    }
+
     [Test]
     public async Task Indexer_ReturnsCorrectHeader()
     {

@@ -23,6 +23,8 @@ public class SchemaIdentityFramingBenchmarks
     private RecordHeaderRoutingLookup _routingLookup;
     private readonly Headers _ordinaryHeaders = new(1);
     private Headers _callerOwnedHeaders = null!;
+    private Headers _restoredHeaders = null!;
+    private Headers _truncatedHeaders = null!;
 
     [GlobalSetup]
     public void Setup()
@@ -31,12 +33,19 @@ public class SchemaIdentityFramingBenchmarks
         _identityHeader = new Header(SchemaIdentityHeaderNames.Value, _guidFrame);
 
         var multiHeaders = new Header[33];
+        var noiseHeaders = new Header[32];
         for (var index = 0; index < 32; index++)
-            multiHeaders[index] = new Header($"noise-{index}", ReadOnlyMemory<byte>.Empty);
+        {
+            var noiseHeader = new Header($"noise-{index}", ReadOnlyMemory<byte>.Empty);
+            multiHeaders[index] = noiseHeader;
+            noiseHeaders[index] = noiseHeader;
+        }
         multiHeaders[32] = new Header(
             SchemaIdentityHeaderNames.Value,
             [.. _guidFrame, 0]);
         _callerOwnedHeaders = new Headers(multiHeaders);
+        _restoredHeaders = new Headers(noiseHeaders);
+        _truncatedHeaders = new Headers(noiseHeaders);
 
         var routingPlan = RecordHeaderRoutingPlan.Create<byte, byte>(
             null,
@@ -115,6 +124,24 @@ public class SchemaIdentityFramingBenchmarks
         _ordinaryHeaders.Clear();
         _ordinaryHeaders.Add(new Header("ordinary", _guidFrame));
         return _ordinaryHeaders.Count;
+    }
+
+    [Benchmark]
+    public int AddAndRestoreIdentityHeaderWith32NoiseHeaders()
+    {
+        var checkpoint = _restoredHeaders.CaptureCheckpoint();
+        _restoredHeaders.Add(_identityHeader);
+        _restoredHeaders.Restore(in checkpoint);
+        return _restoredHeaders.Count;
+    }
+
+    [Benchmark]
+    public int AddAndTruncateIdentityHeaderWith32NoiseHeaders()
+    {
+        var count = _truncatedHeaders.CountWithoutDeferredTraceContext;
+        _truncatedHeaders.Add(_identityHeader);
+        _truncatedHeaders.Truncate(count);
+        return _truncatedHeaders.Count;
     }
 
     private sealed class IdentityRoutingDeserializer : IDeserializer<byte>, IRecordHeaderRoutingProvider

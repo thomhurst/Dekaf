@@ -185,6 +185,27 @@ public sealed class Headers : IEnumerable<Header>
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal Checkpoint CaptureCheckpoint() => new(
+        CountWithoutDeferredTraceContext,
+        _keySchemaIdentityIndex,
+        _valueSchemaIdentityIndex);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void Restore(in Checkpoint checkpoint)
+    {
+        if ((uint)checkpoint.Count > (uint)_headers.Count)
+            throw new ArgumentOutOfRangeException(nameof(checkpoint));
+
+        if (checkpoint.Count != _headers.Count)
+            _headers.RemoveRange(checkpoint.Count, _headers.Count - checkpoint.Count);
+
+        _deferredTraceparentIndex = -1;
+        _deferredTracestateIndex = -1;
+        _keySchemaIdentityIndex = checkpoint.KeySchemaIdentityIndex;
+        _valueSchemaIdentityIndex = checkpoint.ValueSchemaIdentityIndex;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void Truncate(int count)
     {
         if ((uint)count > (uint)_headers.Count)
@@ -377,6 +398,11 @@ public sealed class Headers : IEnumerable<Header>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static int AdjustTrackedIndex(int trackedIndex, int removedIndex) =>
         trackedIndex == removedIndex ? -1 : trackedIndex > removedIndex ? trackedIndex - 1 : trackedIndex;
+
+    internal readonly record struct Checkpoint(
+        int Count,
+        int KeySchemaIdentityIndex,
+        int ValueSchemaIdentityIndex);
 
     /// <summary>
     /// Adds multiple headers from a collection of key-value pairs.
