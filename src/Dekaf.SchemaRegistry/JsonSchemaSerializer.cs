@@ -115,7 +115,7 @@ public sealed class JsonSchemaRegistrySerializer<T> :
     {
         ArgumentNullException.ThrowIfNull(validationOptions);
         _validatorFactory = validationOptions.GetSerializerFactory();
-        _validationRulesFactory = validationOptions.GetValidationRulesFactory();
+        _validationRulesFactory = validationOptions.GetValidationRulesFactory(ruleExecutor);
         _validationRulesExecution = validationOptions.ValidationRulesExecution;
         _validationRulesFailFast = validationOptions.ValidationRulesFailFast;
     }
@@ -215,7 +215,7 @@ public sealed class JsonSchemaRegistrySerializer<T> :
     {
         ArgumentNullException.ThrowIfNull(validationOptions);
         _validatorFactory = validationOptions.GetSerializerFactory();
-        _validationRulesFactory = validationOptions.GetValidationRulesFactory();
+        _validationRulesFactory = validationOptions.GetValidationRulesFactory(ruleExecutor);
         _validationRulesExecution = validationOptions.ValidationRulesExecution;
         _validationRulesFailFast = validationOptions.ValidationRulesFailFast;
     }
@@ -289,7 +289,7 @@ public sealed class JsonSchemaRegistrySerializer<T> :
     {
         ArgumentNullException.ThrowIfNull(validationOptions);
         _validatorFactory = validationOptions.GetSerializerFactory();
-        _validationRulesFactory = validationOptions.GetValidationRulesFactory();
+        _validationRulesFactory = validationOptions.GetValidationRulesFactory(ruleExecutor);
         _validationRulesExecution = validationOptions.ValidationRulesExecution;
         _validationRulesFailFast = validationOptions.ValidationRulesFailFast;
     }
@@ -358,7 +358,7 @@ public sealed class JsonSchemaRegistrySerializer<T> :
     {
         ArgumentNullException.ThrowIfNull(validationOptions);
         _validatorFactory = validationOptions.GetSerializerFactory();
-        _validationRulesFactory = validationOptions.GetValidationRulesFactory();
+        _validationRulesFactory = validationOptions.GetValidationRulesFactory(ruleExecutor);
         _validationRulesExecution = validationOptions.ValidationRulesExecution;
         _validationRulesFailFast = validationOptions.ValidationRulesFailFast;
     }
@@ -1458,7 +1458,7 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
             ISchemaRegistryRuleExecutor? ruleExecutor)
     {
         var validatorFactory = validationOptions.GetDeserializerFactory();
-        var validationRulesFactory = validationOptions.GetValidationRulesFactory();
+        var validationRulesFactory = validationOptions.GetValidationRulesFactory(ruleExecutor);
         if (ruleExecutor is not null || validationRulesFactory is null)
             return (validatorFactory, validationRulesFactory);
 
