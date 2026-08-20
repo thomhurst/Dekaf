@@ -656,6 +656,29 @@ public sealed class StreamsGroupMemberTests
     }
 
     [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task BackgroundHeartbeat_SecurityFailureBlocksForegroundOperation(bool authentication)
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1, heartbeatIntervalMs: 1));
+        Exception securityFailure = authentication
+            ? new AuthenticationException("authentication failed")
+            : new AuthorizationException("authorization failed");
+        connection.EnqueueHeartbeat(Task.FromException<StreamsGroupHeartbeatResponse>(securityFailure));
+        await using var fixture = CreateFixture(connection);
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+        await Assert.That(() => fixture.Member.Snapshot.IsJoined)
+            .Eventually(joined => joined.IsFalse(), TimeSpan.FromSeconds(5));
+
+        var failure = await Assert.ThrowsAsync<GroupException>(async () =>
+            await fixture.Member.UpdateAsync(new StreamsGroupMemberUpdate { ProcessId = "process-2" }));
+
+        await Assert.That(failure!.InnerException).IsSameReferenceAs(securityFailure);
+        await Assert.That(connection.HeartbeatRequests).Count().IsEqualTo(2);
+    }
+
+    [Test]
     public async Task BackgroundHeartbeat_PermanentProtocolFailureAllowsExplicitRejoin()
     {
         var connection = new ScriptedConnection();
