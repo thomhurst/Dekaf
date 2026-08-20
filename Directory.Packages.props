@@ -7,7 +7,7 @@
 
   <ItemGroup>
     <PackageVersion Include="Apache.Avro" Version="1.12.2" />
-    <PackageVersion Include="AWSSDK.KeyManagementService" Version="4.0.100.9" />
+    <PackageVersion Include="AWSSDK.KeyManagementService" Version="4.0.100.10" />
     <PackageVersion Include="Azure.Identity" Version="1.21.0" />
     <PackageVersion Include="Azure.Security.KeyVault.Keys" Version="4.10.0" />
     <PackageVersion Include="BenchmarkDotNet" Version="0.15.8" />
