@@ -60,7 +60,9 @@ Dekaf.SchemaRegistry.SchemaRegistryDeserializerConfig.UseLegacySubjectNames.get 
 Dekaf.SchemaRegistry.SchemaRegistryDeserializerConfig.UseLegacySubjectNames.init -> void
 static Dekaf.SchemaRegistry.SchemaRegistryDeserializer.Create<T>(Dekaf.SchemaRegistry.ISchemaRegistryClient! schemaRegistry, System.Func<System.ReadOnlyMemory<byte>, Dekaf.SchemaRegistry.Schema!, T>! deserialize, Dekaf.SchemaRegistry.SchemaRegistryDeserializerConfig! config, bool ownsClient = false, Dekaf.SchemaRegistry.ISchemaRegistryRuleExecutor? ruleExecutor = null) -> Dekaf.SchemaRegistry.SchemaRegistryDeserializer<T>!
 Dekaf.SchemaRegistry.IJsonSchemaValidator
+Dekaf.SchemaRegistry.IJsonSchemaValidator.Validate(System.ReadOnlyMemory<byte> payload, int schemaId) -> void
 Dekaf.SchemaRegistry.IJsonSchemaValidator.Validate(System.ReadOnlySpan<byte> payload, int schemaId) -> void
+Dekaf.SchemaRegistry.IJsonSchemaValidator.ValidateRules(System.ReadOnlyMemory<byte> payload, int schemaId, bool failFast) -> void
 Dekaf.SchemaRegistry.IJsonSchemaValidatorFactory
 Dekaf.SchemaRegistry.IJsonSchemaValidatorFactory.GetOrCreate(Dekaf.SchemaRegistry.Schema! schema) -> Dekaf.SchemaRegistry.IJsonSchemaValidator!
 Dekaf.SchemaRegistry.ISchemaRegistryRuleAction
@@ -104,6 +106,34 @@ Dekaf.SchemaRegistry.JsonSchemaValidationOptions.Mode.get -> Dekaf.SchemaRegistr
 Dekaf.SchemaRegistry.JsonSchemaValidationOptions.Mode.init -> void
 Dekaf.SchemaRegistry.JsonSchemaValidationOptions.ValidatorFactory.get -> Dekaf.SchemaRegistry.IJsonSchemaValidatorFactory!
 Dekaf.SchemaRegistry.JsonSchemaValidationOptions.ValidatorFactory.init -> void
+Dekaf.SchemaRegistry.JsonSchemaValidationOptions.ValidationRulesExecution.get -> Dekaf.SchemaRegistry.ValidationRulesExecution
+Dekaf.SchemaRegistry.JsonSchemaValidationOptions.ValidationRulesExecution.init -> void
+Dekaf.SchemaRegistry.JsonSchemaValidationOptions.ValidationRulesFailFast.get -> bool
+Dekaf.SchemaRegistry.JsonSchemaValidationOptions.ValidationRulesFailFast.init -> void
+Dekaf.SchemaRegistry.ValidationRule
+Dekaf.SchemaRegistry.ValidationRule.Doc.get -> string?
+Dekaf.SchemaRegistry.ValidationRule.Doc.init -> void
+Dekaf.SchemaRegistry.ValidationRule.Expr.get -> string?
+Dekaf.SchemaRegistry.ValidationRule.Expr.init -> void
+Dekaf.SchemaRegistry.ValidationRule.Name.get -> string?
+Dekaf.SchemaRegistry.ValidationRule.Name.init -> void
+Dekaf.SchemaRegistry.ValidationRule.Sql.get -> string?
+Dekaf.SchemaRegistry.ValidationRule.Sql.init -> void
+Dekaf.SchemaRegistry.ValidationRule.ValidationRule() -> void
+Dekaf.SchemaRegistry.ValidationRuleError
+Dekaf.SchemaRegistry.ValidationRuleError.Cause.get -> System.Exception?
+Dekaf.SchemaRegistry.ValidationRuleError.FieldPath.get -> string!
+Dekaf.SchemaRegistry.ValidationRuleError.Message.get -> string?
+Dekaf.SchemaRegistry.ValidationRuleError.Rule.get -> Dekaf.SchemaRegistry.ValidationRule!
+Dekaf.SchemaRegistry.ValidationRuleError.ValidationRuleError(Dekaf.SchemaRegistry.ValidationRule! rule, string! fieldPath, string? message = null, System.Exception? cause = null) -> void
+Dekaf.SchemaRegistry.ValidationRulesExecution
+Dekaf.SchemaRegistry.ValidationRulesExecution.AfterDomainRules = 2 -> Dekaf.SchemaRegistry.ValidationRulesExecution
+Dekaf.SchemaRegistry.ValidationRulesExecution.BeforeDomainRules = 1 -> Dekaf.SchemaRegistry.ValidationRulesExecution
+Dekaf.SchemaRegistry.ValidationRulesExecution.Disabled = 0 -> Dekaf.SchemaRegistry.ValidationRulesExecution
+Dekaf.SchemaRegistry.ValidationRulesFailedException
+Dekaf.SchemaRegistry.ValidationRulesFailedException.ValidationRulesFailedException(System.Collections.Generic.IReadOnlyList<Dekaf.SchemaRegistry.ValidationRuleError!>! violations) -> void
+Dekaf.SchemaRegistry.ValidationRulesFailedException.Violations.get -> System.Collections.Generic.IReadOnlyList<Dekaf.SchemaRegistry.ValidationRuleError!>!
+override Dekaf.SchemaRegistry.ValidationRuleError.ToString() -> string!
 Dekaf.SchemaRegistry.SchemaCompatibilityLevel
 Dekaf.SchemaRegistry.SchemaCompatibilityLevel.Backward = 1 -> Dekaf.SchemaRegistry.SchemaCompatibilityLevel
 Dekaf.SchemaRegistry.SchemaCompatibilityLevel.BackwardTransitive = 2 -> Dekaf.SchemaRegistry.SchemaCompatibilityLevel

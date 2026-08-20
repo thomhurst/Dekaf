@@ -26,17 +26,40 @@ public class JsonSchemaValidationBenchmarks
         }
         """;
 
+    private const string InlineRulesJsonSchema = """
+        {
+          "type": "object",
+          "confluent:rules": [
+            { "name": "valid", "expr": "this.id > 0 && this.name.startsWith('bench')" }
+          ],
+          "properties": {
+            "id": { "type": "integer" },
+            "name": {
+              "type": "string",
+              "confluent:rules": [{ "name": "name", "expr": "size(this) > 0" }]
+            }
+          },
+          "required": ["id", "name"]
+        }
+        """;
+
     private ArrayBufferWriter<byte> _disabledDestination = new(256);
     private ArrayBufferWriter<byte> _enabledDestination = new(256);
+    private ArrayBufferWriter<byte> _inlineRulesDestination = new(256);
     private readonly BenchmarkPayload _value = new(7, "benchmark");
     private JsonSchemaRegistrySerializer<BenchmarkPayload> _disabledSerializer = null!;
     private JsonSchemaRegistrySerializer<BenchmarkPayload> _enabledSerializer = null!;
+    private JsonSchemaRegistrySerializer<BenchmarkPayload> _inlineRulesSerializer = null!;
     private JsonSchemaRegistryDeserializer<BenchmarkPayload> _disabledDeserializer = null!;
     private JsonSchemaRegistryDeserializer<BenchmarkPayload> _enabledDeserializer = null!;
+    private JsonSchemaRegistryDeserializer<BenchmarkPayload> _inlineRulesDeserializer = null!;
     private StreamingJsonSchemaValidatorFactory _validatorFactory = null!;
     private Schema _validatorSchema = null!;
     private ReadOnlyMemory<byte> _wirePayload;
     private ReadOnlyMemory<byte> _alternateWirePayload;
+    private ReadOnlyMemory<byte> _inlineRulesWirePayload;
+    private ReadOnlyMemory<byte> _inlineRulesJsonPayload;
+    private IJsonSchemaValidator _inlineRulesValidator = null!;
     private SerializationContext _context;
     private int _alternateSchemaIndex;
 
@@ -71,6 +94,24 @@ public class JsonSchemaValidationBenchmarks
             jsonOptions: null,
             validationOptions: validation);
 
+        var inlineRulesRegistry = new BenchmarkSchemaRegistryClient();
+        var inlineRulesFactory = new StreamingJsonSchemaValidatorFactory(inlineRulesRegistry);
+        var inlineRulesValidation = new JsonSchemaValidationOptions
+        {
+            ValidatorFactory = inlineRulesFactory,
+            Mode = JsonSchemaValidationMode.None,
+            ValidationRulesExecution = ValidationRulesExecution.AfterDomainRules
+        };
+        _inlineRulesSerializer = new JsonSchemaRegistrySerializer<BenchmarkPayload>(
+            inlineRulesRegistry,
+            InlineRulesJsonSchema,
+            jsonOptions: null,
+            validationOptions: inlineRulesValidation);
+        _inlineRulesDeserializer = new JsonSchemaRegistryDeserializer<BenchmarkPayload>(
+            inlineRulesRegistry,
+            jsonOptions: null,
+            validationOptions: inlineRulesValidation);
+
         _disabledSerializer.Serialize(_value, ref _disabledDestination, _context);
         _wirePayload = _disabledDestination.WrittenMemory.ToArray();
         var alternateWirePayload = _wirePayload.ToArray();
@@ -84,9 +125,16 @@ public class JsonSchemaValidationBenchmarks
         _disabledDestination.Clear();
         _enabledSerializer.Serialize(_value, ref _enabledDestination, _context);
         _enabledDestination.Clear();
+        _inlineRulesSerializer.Serialize(_value, ref _inlineRulesDestination, _context);
+        _inlineRulesWirePayload = _inlineRulesDestination.WrittenMemory.ToArray();
+        _inlineRulesJsonPayload = _inlineRulesWirePayload[5..];
+        _inlineRulesValidator = inlineRulesFactory.GetOrCreate(inlineRulesRegistry.GetSchema(1));
+        _inlineRulesValidator.ValidateRules(_inlineRulesJsonPayload, 1, failFast: false);
+        _inlineRulesDestination.Clear();
         _ = _disabledDeserializer.Deserialize(_wirePayload, _context);
         _ = _enabledDeserializer.Deserialize(_wirePayload, _context);
         _ = _enabledDeserializer.Deserialize(_alternateWirePayload, _context);
+        _ = _inlineRulesDeserializer.Deserialize(_inlineRulesWirePayload, _context);
         _ = _validatorFactory.GetOrCreate(_validatorSchema);
     }
 
@@ -95,8 +143,10 @@ public class JsonSchemaValidationBenchmarks
     {
         await _disabledSerializer.DisposeAsync();
         await _enabledSerializer.DisposeAsync();
+        await _inlineRulesSerializer.DisposeAsync();
         await _disabledDeserializer.DisposeAsync();
         await _enabledDeserializer.DisposeAsync();
+        await _inlineRulesDeserializer.DisposeAsync();
     }
 
     [Benchmark(Baseline = true)]
@@ -114,12 +164,27 @@ public class JsonSchemaValidationBenchmarks
     }
 
     [Benchmark]
+    public void SerializeInlineRulesEnabled()
+    {
+        _inlineRulesDestination.Clear();
+        _inlineRulesSerializer.Serialize(_value, ref _inlineRulesDestination, _context);
+    }
+
+    [Benchmark]
     public BenchmarkPayload DeserializeValidationDisabled() =>
         _disabledDeserializer.Deserialize(_wirePayload, _context);
 
     [Benchmark]
     public BenchmarkPayload DeserializeValidationEnabled() =>
         _enabledDeserializer.Deserialize(_wirePayload, _context);
+
+    [Benchmark]
+    public BenchmarkPayload DeserializeInlineRulesEnabled() =>
+        _inlineRulesDeserializer.Deserialize(_inlineRulesWirePayload, _context);
+
+    [Benchmark]
+    public void ValidateInlineRules() =>
+        _inlineRulesValidator.ValidateRules(_inlineRulesJsonPayload, 1, failFast: false);
 
     [Benchmark]
     public BenchmarkPayload DeserializeValidationEnabledAlternatingSchemas()
@@ -141,6 +206,8 @@ public class JsonSchemaValidationBenchmarks
         private readonly Dictionary<int, Schema> _schemas = [];
 
         public void AddSchema(int id, Schema schema) => _schemas[id] = schema;
+
+        public Schema GetSchema(int id) => _schemas[id];
 
         public Task<int> RegisterSchemaAsync(
             string subject,

@@ -77,6 +77,7 @@ public sealed class StreamingJsonSchemaValidatorFactory : IJsonSchemaValidatorFa
 internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJsonSchemaValidator
 {
     private const int MaxReferenceDepth = 128;
+    private const int SuppressFailureSchemaId = int.MinValue;
 
     public void Validate(ReadOnlySpan<byte> payload, int schemaId)
     {
@@ -113,6 +114,287 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         }
     }
 
+    public void ValidateRules(ReadOnlyMemory<byte> payload, int schemaId, bool failFast)
+    {
+        var reader = new Utf8JsonReader(payload.Span, new JsonReaderOptions
+        {
+            CommentHandling = JsonCommentHandling.Disallow,
+            MaxDepth = 128
+        });
+        if (!reader.Read())
+            return;
+
+        var path = new ValidationPathBuilder();
+        List<ValidationRuleError>? violations = null;
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        WalkValidationRules(
+            ref reader,
+            payload,
+            root,
+            ref path,
+            now,
+            failFast,
+            ref violations);
+        if (violations is not null)
+            throw new ValidationRulesFailedException(violations);
+    }
+
+    private static bool WalkValidationRules(
+        ref Utf8JsonReader reader,
+        ReadOnlyMemory<byte> payload,
+        CompiledSchemaNode node,
+        scoped ref ValidationPathBuilder path,
+        long now,
+        bool failFast,
+        ref List<ValidationRuleError>? violations,
+        int referenceDepth = 0)
+    {
+        if (reader.TokenType == JsonTokenType.Null)
+            return true;
+
+        var value = GetCurrentValue(ref reader, payload);
+        var rules = node.ValidationRules;
+        for (var index = 0; index < rules.Length; index++)
+        {
+            var compiledRule = rules[index];
+            try
+            {
+                var result = compiledRule.Evaluate(value, now);
+                if (result.Kind == ValidationResultKind.Boolean ? !result.Boolean : result.String!.Length != 0)
+                {
+                    (violations ??= []).Add(new ValidationRuleError(
+                        compiledRule.Rule,
+                        path.ToString(),
+                        result.Kind == ValidationResultKind.String ? result.String : null));
+                    if (failFast)
+                        return false;
+                }
+            }
+            catch (SchemaRegistryRuleException exception)
+            {
+                (violations ??= []).Add(new ValidationRuleError(
+                    compiledRule.Rule,
+                    path.ToString(),
+                    cause: exception));
+                if (failFast)
+                    return false;
+            }
+        }
+
+        if (node.Reference is not null)
+        {
+            if (referenceDepth == MaxReferenceDepth)
+                throw new SchemaRegistryRuleException("Inline validation reference depth exceeded 128.");
+            var referencedReader = reader;
+            if (!WalkValidationRules(
+                    ref referencedReader,
+                    payload,
+                    node.Reference,
+                    ref path,
+                    now,
+                    failFast,
+                    ref violations,
+                    referenceDepth + 1))
+                return false;
+            if (!node.HasLocalValidationTraversal)
+            {
+                reader = referencedReader;
+                return true;
+            }
+        }
+
+        for (var index = 0; index < node.AllOf.Length; index++)
+        {
+            var branchReader = reader;
+            if (!WalkValidationRules(
+                    ref branchReader,
+                    payload,
+                    node.AllOf[index],
+                    ref path,
+                    now,
+                    failFast,
+                    ref violations,
+                    referenceDepth))
+                return false;
+        }
+
+        if (!WalkMatchingBranches(
+                ref reader,
+                payload,
+                node.AnyOf,
+                oneOnly: false,
+                ref path,
+                now,
+                failFast,
+                ref violations,
+                referenceDepth))
+            return false;
+        if (!WalkMatchingBranches(
+                ref reader,
+                payload,
+                node.OneOf,
+                oneOnly: true,
+                ref path,
+                now,
+                failFast,
+                ref violations,
+                referenceDepth))
+            return false;
+
+        return reader.TokenType switch
+        {
+            JsonTokenType.StartObject => WalkValidationObject(
+                ref reader, payload, node, ref path, now, failFast, ref violations, referenceDepth),
+            JsonTokenType.StartArray => WalkValidationArray(
+                ref reader, payload, node, ref path, now, failFast, ref violations, referenceDepth),
+            _ => true
+        };
+    }
+
+    private static bool WalkMatchingBranches(
+        ref Utf8JsonReader reader,
+        ReadOnlyMemory<byte> payload,
+        CompiledSchemaNode[] branches,
+        bool oneOnly,
+        scoped ref ValidationPathBuilder path,
+        long now,
+        bool failFast,
+        ref List<ValidationRuleError>? violations,
+        int referenceDepth)
+    {
+        for (var index = 0; index < branches.Length; index++)
+        {
+            var branchReader = reader;
+            if (!MatchesValidationShape(ref branchReader, branches[index], referenceDepth))
+                continue;
+            branchReader = reader;
+            if (!WalkValidationRules(
+                    ref branchReader,
+                    payload,
+                    branches[index],
+                    ref path,
+                    now,
+                    failFast,
+                    ref violations,
+                    referenceDepth))
+                return false;
+            if (oneOnly)
+                break;
+        }
+
+        return true;
+    }
+
+    private static bool MatchesValidationShape(
+        ref Utf8JsonReader reader,
+        CompiledSchemaNode node,
+        int referenceDepth)
+    {
+        var path = new JsonPathBuilder();
+        return ValidateNode(
+            ref reader,
+            node,
+            ref path,
+            SuppressFailureSchemaId,
+            out _,
+            referenceDepth);
+    }
+
+    private static bool WalkValidationObject(
+        ref Utf8JsonReader reader,
+        ReadOnlyMemory<byte> payload,
+        CompiledSchemaNode node,
+        scoped ref ValidationPathBuilder path,
+        long now,
+        bool failFast,
+        ref List<ValidationRuleError>? violations,
+        int referenceDepth)
+    {
+        while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
+        {
+            if (reader.TokenType != JsonTokenType.PropertyName)
+                return true;
+            var property = node.Properties?.Find(ref reader);
+            var pathMark = path.Length;
+            if (property is not null)
+                path.AppendProperty(property.Name);
+            else if (node.AdditionalProperties is not null)
+                path.AppendMapKey(ref reader);
+            if (!reader.Read())
+                return true;
+
+            var child = property?.IsDeclared == true ? property.Schema : node.AdditionalProperties;
+            if (child is not null)
+            {
+                if (!WalkValidationRules(
+                        ref reader,
+                        payload,
+                        child,
+                        ref path,
+                        now,
+                        failFast,
+                        ref violations,
+                        referenceDepth))
+                    return false;
+            }
+            else
+            {
+                reader.Skip();
+            }
+            path.Truncate(pathMark);
+        }
+        return true;
+    }
+
+    private static bool WalkValidationArray(
+        ref Utf8JsonReader reader,
+        ReadOnlyMemory<byte> payload,
+        CompiledSchemaNode node,
+        scoped ref ValidationPathBuilder path,
+        long now,
+        bool failFast,
+        ref List<ValidationRuleError>? violations,
+        int referenceDepth)
+    {
+        var index = 0;
+        while (reader.Read() && reader.TokenType != JsonTokenType.EndArray)
+        {
+            var child = index < node.PrefixItems.Length ? node.PrefixItems[index] : node.Items;
+            var pathMark = path.Length;
+            path.AppendIndex(index);
+            if (child is not null)
+            {
+                if (!WalkValidationRules(
+                        ref reader,
+                        payload,
+                        child,
+                        ref path,
+                        now,
+                        failFast,
+                        ref violations,
+                        referenceDepth))
+                    return false;
+            }
+            else
+            {
+                reader.Skip();
+            }
+            path.Truncate(pathMark);
+            index++;
+        }
+        return true;
+    }
+
+    private static ReadOnlyMemory<byte> GetCurrentValue(
+        ref Utf8JsonReader reader,
+        ReadOnlyMemory<byte> payload)
+    {
+        var start = checked((int)reader.TokenStartIndex);
+        var endReader = reader;
+        endReader.Skip();
+        return payload.Slice(start, checked((int)endReader.BytesConsumed) - start);
+    }
+
     private static bool ValidateNode(
         ref Utf8JsonReader reader,
         CompiledSchemaNode node,
@@ -144,6 +426,61 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
                 reader = referencedReader;
                 return true;
             }
+        }
+
+        for (var index = 0; index < node.AllOf.Length; index++)
+        {
+            var branchReader = reader;
+            if (!ValidateNode(
+                    ref branchReader,
+                    node.AllOf[index],
+                    ref path,
+                    schemaId,
+                    out failure,
+                    referenceDepth))
+                return false;
+        }
+
+        if (node.AnyOf.Length != 0)
+        {
+            var matched = false;
+            for (var index = 0; index < node.AnyOf.Length; index++)
+            {
+                var branchReader = reader;
+                if (ValidateNode(
+                        ref branchReader,
+                        node.AnyOf[index],
+                        ref path,
+                        SuppressFailureSchemaId,
+                        out _,
+                        referenceDepth))
+                {
+                    matched = true;
+                    break;
+                }
+            }
+            if (!matched)
+                return Fail(schemaId, "anyOf", ref path, out failure);
+        }
+
+        if (node.OneOf.Length != 0)
+        {
+            var matches = 0;
+            for (var index = 0; index < node.OneOf.Length; index++)
+            {
+                var branchReader = reader;
+                if (ValidateNode(
+                        ref branchReader,
+                        node.OneOf[index],
+                        ref path,
+                        SuppressFailureSchemaId,
+                        out _,
+                        referenceDepth) &&
+                    ++matches > 1)
+                    break;
+            }
+            if (matches != 1)
+                return Fail(schemaId, "oneOf", ref path, out failure);
         }
 
         if (!MatchesType(ref reader, node.Types))
@@ -422,6 +759,12 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         scoped ref JsonPathBuilder path,
         out JsonSchemaValidationException? failure)
     {
+        if (schemaId == SuppressFailureSchemaId)
+        {
+            failure = null;
+            return false;
+        }
+
         var jsonPath = path.ToString();
         failure = new JsonSchemaValidationException(
             schemaId,
@@ -449,7 +792,7 @@ internal sealed class SchemaCompiler : IDisposable
 
     private static readonly HashSet<string> UnsupportedAssertions = new(StringComparer.Ordinal)
     {
-        "allOf", "anyOf", "oneOf", "not", "if", "then", "else", "contains", "minContains",
+        "not", "if", "then", "else", "contains", "minContains",
         "maxContains", "uniqueItems", "pattern", "patternProperties", "propertyNames",
         "additionalItems", "dependentSchemas", "dependentRequired", "dependencies", "unevaluatedItems",
         "unevaluatedProperties", "enum", "const"
@@ -710,6 +1053,7 @@ internal sealed class SchemaCompiler : IDisposable
         if (schema.ValueKind != JsonValueKind.Object)
             throw new InvalidOperationException($"JSON Schema at '{pointer}' must be an object or boolean.");
 
+        node.ValidationRules = CompileValidationRules(schema);
         baseUri = GetEffectiveBaseUri(schema, baseUri);
         dialect = GetDialect(schema, dialect);
         if (schema.TryGetProperty("$ref", out var referenceElement))
@@ -737,11 +1081,75 @@ internal sealed class SchemaCompiler : IDisposable
         node.MinLength = GetNonNegativeInt32(schema, "minLength", 0);
         node.MaxLength = GetNonNegativeInt32(schema, "maxLength", int.MaxValue);
         ParseNumericAssertions(schema, node);
+        node.AllOf = CompileSchemaArray(document, schema, "allOf", pointer, baseUri, dialect, depth);
+        node.AnyOf = CompileSchemaArray(document, schema, "anyOf", pointer, baseUri, dialect, depth);
+        node.OneOf = CompileSchemaArray(document, schema, "oneOf", pointer, baseUri, dialect, depth);
         CompileObjectKeywords(document, schema, pointer, baseUri, dialect, depth, node);
         CompileArrayKeywords(document, schema, pointer, baseUri, dialect, depth, node);
         RejectUnsupportedAssertions(schema, pointer);
         node.HasLocalAssertions = HasLocalAssertions(node);
+        node.HasLocalValidationTraversal = node.ValidationRules.Length != 0 ||
+            node.AllOf.Length != 0 || node.AnyOf.Length != 0 || node.OneOf.Length != 0 ||
+            node.Properties is not null || node.AdditionalProperties is not null ||
+            node.Items is not null || node.PrefixItems.Length != 0;
         return node;
+    }
+
+    private CompiledSchemaNode[] CompileSchemaArray(
+        SchemaDocument document,
+        JsonElement schema,
+        string keyword,
+        string pointer,
+        Uri baseUri,
+        SchemaDialect dialect,
+        int depth)
+    {
+        if (!schema.TryGetProperty(keyword, out var elements))
+            return [];
+        if (elements.ValueKind != JsonValueKind.Array)
+            throw new InvalidOperationException($"JSON Schema '{keyword}' at '{pointer}' must be an array.");
+
+        var compiled = new List<CompiledSchemaNode>();
+        var index = 0;
+        foreach (var element in elements.EnumerateArray())
+        {
+            compiled.Add(CompileNode(
+                document,
+                element,
+                AppendPointer(AppendPointer(pointer, keyword), index.ToString(CultureInfo.InvariantCulture)),
+                baseUri,
+                dialect,
+                depth + 1));
+            index++;
+        }
+        return [.. compiled];
+    }
+
+    private static CompiledValidationRule[] CompileValidationRules(JsonElement schema)
+    {
+        if (!schema.TryGetProperty("confluent:rules", out var rules) || rules.ValueKind != JsonValueKind.Array)
+            return [];
+
+        var compiled = new List<CompiledValidationRule>();
+        foreach (var element in rules.EnumerateArray())
+        {
+            if (element.ValueKind != JsonValueKind.Object)
+                continue;
+            var rule = new ValidationRule
+            {
+                Name = GetOptionalString(element, "name"),
+                Doc = GetOptionalString(element, "doc"),
+                Expr = GetOptionalString(element, "expr"),
+                Sql = GetOptionalString(element, "sql")
+            };
+            compiled.Add(CompiledValidationRule.Compile(rule));
+        }
+        return [.. compiled];
+
+        static string? GetOptionalString(JsonElement owner, string name) =>
+            owner.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+                ? value.GetString()
+                : null;
     }
 
     private void CompileObjectKeywords(
@@ -1098,6 +1506,9 @@ internal sealed class SchemaCompiler : IDisposable
 
     private static bool HasLocalAssertions(CompiledSchemaNode node) =>
         node.Types != JsonSchemaType.Any ||
+        node.AllOf.Length != 0 ||
+        node.AnyOf.Length != 0 ||
+        node.OneOf.Length != 0 ||
         node.Properties is not null ||
         node.RequiredCount != 0 ||
         !node.AllowsAdditionalProperties ||
@@ -1209,6 +1620,11 @@ internal sealed class CompiledSchemaNode
     internal bool HasLocalAssertions { get; set; }
     internal JsonSchemaType Types { get; set; } = JsonSchemaType.Any;
     internal CompiledSchemaNode? Reference { get; set; }
+    internal CompiledValidationRule[] ValidationRules { get; set; } = [];
+    internal CompiledSchemaNode[] AllOf { get; set; } = [];
+    internal CompiledSchemaNode[] AnyOf { get; set; } = [];
+    internal CompiledSchemaNode[] OneOf { get; set; } = [];
+    internal bool HasLocalValidationTraversal { get; set; }
     internal CompiledPropertyTable? Properties { get; set; }
     internal int RequiredCount { get; set; }
     internal bool AllowsAdditionalProperties { get; set; } = true;
@@ -1227,6 +1643,81 @@ internal sealed class CompiledSchemaNode
     internal bool ExclusiveMaximum { get; set; }
     internal CompiledJsonNumber? MultipleOf { get; set; }
     internal bool HasNumericAssertions { get; set; }
+}
+
+internal struct ValidationPathBuilder
+{
+    [ThreadStatic]
+    private static char[]? t_buffer;
+
+    private char[] _buffer;
+
+    public ValidationPathBuilder()
+    {
+        _buffer = t_buffer ??= new char[256];
+        Length = 1;
+        _buffer[0] = '$';
+    }
+
+    internal int Length { get; private set; }
+
+    internal void AppendProperty(string name)
+    {
+        EnsureCapacity(name.Length + 1);
+        _buffer[Length++] = '.';
+        name.AsSpan().CopyTo(_buffer.AsSpan(Length));
+        Length += name.Length;
+    }
+
+    internal void AppendMapKey(ref Utf8JsonReader reader)
+    {
+        var maximumLength = reader.ValueSpan.Length;
+        EnsureCapacity((maximumLength * 2) + 4);
+        _buffer[Length++] = '[';
+        _buffer[Length++] = '"';
+        var contentStart = Length;
+        var written = reader.CopyString(_buffer.AsSpan(contentStart, maximumLength));
+        var escapes = 0;
+        for (var index = 0; index < written; index++)
+        {
+            if (_buffer[contentStart + index] is '\\' or '"')
+                escapes++;
+        }
+        var destination = contentStart + written + escapes - 1;
+        for (var source = contentStart + written - 1; source >= contentStart; source--)
+        {
+            var character = _buffer[source];
+            _buffer[destination--] = character;
+            if (character is '\\' or '"')
+                _buffer[destination--] = '\\';
+        }
+        Length = contentStart + written + escapes;
+        _buffer[Length++] = '"';
+        _buffer[Length++] = ']';
+    }
+
+    internal void AppendIndex(int index)
+    {
+        EnsureCapacity(13);
+        _buffer[Length++] = '[';
+        _ = index.TryFormat(_buffer.AsSpan(Length), out var written, provider: CultureInfo.InvariantCulture);
+        Length += written;
+        _buffer[Length++] = ']';
+    }
+
+    internal void Truncate(int length) => Length = length;
+
+    public override string ToString() => new(_buffer, 0, Length);
+
+    private void EnsureCapacity(int additionalLength)
+    {
+        if (Length + additionalLength <= _buffer.Length)
+            return;
+        var expanded = new char[Math.Max(Length + additionalLength, _buffer.Length * 2)];
+        _buffer.AsSpan(0, Length).CopyTo(expanded);
+        _buffer = expanded;
+        t_buffer = expanded;
+    }
 }
 
 internal readonly struct CompiledJsonNumber

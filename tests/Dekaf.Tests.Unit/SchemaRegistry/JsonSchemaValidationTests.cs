@@ -667,6 +667,414 @@ public sealed class JsonSchemaValidationTests
             new MockSchemaRegistryClient());
     }
 
+    [Test]
+    public async Task InlineRules_AggregateNestedArrayAndMapViolations()
+    {
+        const string schemaText = """
+            {
+              "type": "object",
+              "confluent:rules": [{ "name": "root", "expr": "this.name != 'forbidden'" }],
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "confluent:rules": [{ "name": "name", "doc": "name required", "expr": "size(this) > 0" }]
+                },
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "confluent:rules": [{ "name": "positive", "expr": "this >= 0" }]
+                  }
+                },
+                "labels": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string",
+                    "confluent:rules": [{ "name": "label", "expr": "size(this) > 0" }]
+                  }
+                }
+              }
+            }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
+
+        var exception = Assert.Throws<ValidationRulesFailedException>(() => validator.ValidateRules(
+            """{"name":"","items":[1,-1],"labels":{"region":""}}"""u8.ToArray(),
+            17,
+            failFast: false));
+
+        await Assert.That(exception.Violations.Count).IsEqualTo(3);
+        await Assert.That(exception.Message).Contains("$.name: name: name required");
+        await Assert.That(exception.Message).Contains("$.items[1]: positive");
+        await Assert.That(exception.Message).Contains("$.labels[\"region\"]: label");
+    }
+
+    [Test]
+    public async Task InlineRules_StringResultAndFailFastMatchConfluentSemantics()
+    {
+        const string schemaText = """
+            {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "confluent:rules": [
+                    { "name": "prefix", "expr": "this.startsWith('ord-') ? '' : 'id must start with ord-'" },
+                    { "name": "length", "expr": "size(this) > 8" }
+                  ]
+                }
+              }
+            }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
+
+        var exception = Assert.Throws<ValidationRulesFailedException>(() => validator.ValidateRules(
+            """{"id":"bad"}"""u8.ToArray(),
+            18,
+            failFast: true));
+
+        await Assert.That(exception.Violations.Count).IsEqualTo(1);
+        await Assert.That(exception.Violations[0].Message).IsEqualTo("id must start with ord-");
+        await Assert.That(exception.Message).Contains("1 violation)");
+    }
+
+    [Test]
+    public void InlineRules_SkipNullAndSupportNowInternalReferencesAndOneOf()
+    {
+        const string schemaText = """
+            {
+              "$defs": {
+                "code": {
+                  "type": ["string", "null"],
+                  "confluent:rules": [{ "name": "code", "expr": "size(this) > 0 && now > timestamp('2000-01-01T00:00:00Z')" }]
+                }
+              },
+              "type": "object",
+              "properties": {
+                "code": { "$ref": "#/$defs/code" },
+                "choice": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "required": ["a"],
+                      "confluent:rules": [{ "name": "a", "expr": "this.a == 'ok'" }],
+                      "properties": { "a": { "type": "string" } }
+                    },
+                    {
+                      "type": "object",
+                      "required": ["b"],
+                      "confluent:rules": [{ "name": "b", "expr": "this.b == 'ok'" }],
+                      "properties": { "b": { "type": "string" } }
+                    }
+                  ]
+                }
+              }
+            }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
+
+        validator.ValidateRules("""{"code":null,"choice":{"b":"ok"}}"""u8.ToArray(), 19, failFast: false);
+    }
+
+    [Test]
+    public void InlineRules_ParseAdjacentArithmeticOperators()
+    {
+        const string schemaText = """
+            {
+              "type": "integer",
+              "confluent:rules": [{ "name": "sum", "expr": "this+2 == 5" }]
+            }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
+
+        validator.ValidateRules("3"u8.ToArray(), 21, failFast: false);
+    }
+
+    [Test]
+    public void InlineRules_PreserveLargeNumbersAndCountUnicodeScalars()
+    {
+        const string schemaText = """
+            {
+              "type": "object",
+              "confluent:rules": [
+                {
+                  "name": "exact",
+                  "expr": "this.large == 9007199254740993 && size(this.symbol) == 1"
+                }
+              ]
+            }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
+
+        validator.ValidateRules(
+            """{"large":9007199254740993,"symbol":"😀"}"""u8.ToArray(),
+            23,
+            failFast: false);
+        Assert.Throws<ValidationRulesFailedException>(() => validator.ValidateRules(
+            """{"large":9007199254740992,"symbol":"😀"}"""u8.ToArray(),
+            23,
+            failFast: false));
+    }
+
+    [Test]
+    public void InlineRules_SizeCountsNestedCollectionElementsOnce()
+    {
+        const string schemaText = """
+            {
+              "type": "array",
+              "confluent:rules": [{ "name": "two", "expr": "size(this) == 2" }]
+            }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
+
+        validator.ValidateRules("[{},[]]"u8.ToArray(), 25, failFast: false);
+    }
+
+    [Test]
+    public async Task Validator_EnforcesCompositionKeywordsWithoutAllocatingProbeFailures()
+    {
+        const string schemaText = """
+            {
+              "allOf": [{ "type": "object" }],
+              "anyOf": [
+                { "required": ["legacy"] },
+                { "required": ["current"] }
+              ],
+              "oneOf": [
+                { "required": ["a"] },
+                { "required": ["b"] }
+              ]
+            }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
+
+        validator.Validate("""{"current":true,"a":true}"""u8, 22);
+        var anyOf = Assert.Throws<JsonSchemaValidationException>(
+            () => validator.Validate("""{"a":true}"""u8, 22));
+        var oneOf = Assert.Throws<JsonSchemaValidationException>(
+            () => validator.Validate("""{"current":true,"a":true,"b":true}"""u8, 22));
+
+        await Assert.That(anyOf.Keyword).IsEqualTo("anyOf");
+        await Assert.That(oneOf.Keyword).IsEqualTo("oneOf");
+    }
+
+    [Test]
+    public async Task Serializer_InlineRulesRunBetweenDomainAndEncodingRules()
+    {
+        const string schemaText = """
+            {
+              "type": "object",
+              "confluent:rules": [{ "name": "validName", "expr": "this.name == 'ok'" }],
+              "properties": { "name": { "type": "string" } }
+            }
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        await registry.RegisterSchemaAsync(
+            "inline-value",
+            new Schema
+            {
+                SchemaType = SchemaType.Json,
+                SchemaString = schemaText,
+                RuleSet = new SchemaRuleSet
+                {
+                    DomainRules = [CreateRule("domain", "DOMAIN")],
+                    EncodingRules = [CreateRule("encoding", "ENCODING")]
+                }
+            });
+        var calls = new List<string>();
+        var executor = new SchemaRegistryRuleExecutor([
+            new ReplacingRuleHandler("DOMAIN", """{"name":"ok"}"""u8.ToArray(), calls),
+            new ReplacingRuleHandler("ENCODING", """{"name":"encoded"}"""u8.ToArray(), calls)
+        ]);
+        var options = new JsonSchemaValidationOptions
+        {
+            ValidatorFactory = new StreamingJsonSchemaValidatorFactory(registry),
+            Mode = JsonSchemaValidationMode.None,
+            ValidationRulesExecution = ValidationRulesExecution.AfterDomainRules
+        };
+        await using var serializer = new JsonSchemaRegistrySerializer<NamePayload>(
+            registry,
+            schemaText,
+            jsonOptions: null,
+            validationOptions: options,
+            autoRegisterSchemas: false,
+            ruleExecutor: executor);
+        var buffer = new ArrayBufferWriter<byte>();
+        var context = new SerializationContext
+        {
+            Topic = "inline",
+            Component = SerializationComponent.Value
+        };
+
+        serializer.Serialize(new NamePayload("bad"), ref buffer, context);
+
+        await Assert.That(calls).IsEquivalentTo(["domain", "encoding"]);
+        await Assert.That(Encoding.UTF8.GetString(buffer.WrittenSpan[5..])).IsEqualTo("""{"name":"encoded"}""");
+
+        await using var beforeSerializer = new JsonSchemaRegistrySerializer<NamePayload>(
+            registry,
+            schemaText,
+            jsonOptions: null,
+            validationOptions: new JsonSchemaValidationOptions
+            {
+                ValidatorFactory = options.ValidatorFactory,
+                Mode = JsonSchemaValidationMode.None,
+                ValidationRulesExecution = ValidationRulesExecution.BeforeDomainRules
+            },
+            autoRegisterSchemas: false,
+            ruleExecutor: executor);
+        var beforeBuffer = new ArrayBufferWriter<byte>();
+        Assert.Throws<ValidationRulesFailedException>(
+            () => beforeSerializer.Serialize(new NamePayload("bad"), ref beforeBuffer, context));
+    }
+
+    [Test]
+    public async Task Deserializer_InlineRulesRunBetweenEncodingAndDomainRules()
+    {
+        const string schemaText = """
+            {
+              "type": "object",
+              "confluent:rules": [{ "name": "validName", "expr": "this.name == 'ok'" }],
+              "properties": { "name": { "type": "string" } }
+            }
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        var schemaId = await registry.RegisterSchemaAsync(
+            "validation-value",
+            new Schema
+            {
+                SchemaType = SchemaType.Json,
+                SchemaString = schemaText,
+                RuleSet = new SchemaRuleSet
+                {
+                    DomainRules = [CreateRule("domain", "DOMAIN", SchemaRuleMode.Read)],
+                    EncodingRules = [CreateRule("encoding", "ENCODING", SchemaRuleMode.Read)]
+                }
+            });
+        var calls = new List<string>();
+        var executor = new SchemaRegistryRuleExecutor([
+            new ReplacingRuleHandler("DOMAIN", """{"name":"ok"}"""u8.ToArray(), calls),
+            new ReplacingRuleHandler("ENCODING", """{"name":"bad"}"""u8.ToArray(), calls)
+        ]);
+        var factory = new StreamingJsonSchemaValidatorFactory(registry);
+        await using var deserializer = new JsonSchemaRegistryDeserializer<NamePayload>(
+            registry,
+            jsonOptions: null,
+            validationOptions: new JsonSchemaValidationOptions
+            {
+                ValidatorFactory = factory,
+                Mode = JsonSchemaValidationMode.None,
+                ValidationRulesExecution = ValidationRulesExecution.AfterDomainRules
+            },
+            ruleExecutor: executor);
+
+        var result = deserializer.Deserialize(
+            CreateWirePayload(schemaId, """{"name":"encoded"}"""),
+            Context);
+
+        await Assert.That(result.Name).IsEqualTo("ok");
+        await Assert.That(calls).IsEquivalentTo(["encoding", "domain"]);
+
+        calls.Clear();
+        await using var beforeDeserializer = new JsonSchemaRegistryDeserializer<NamePayload>(
+            registry,
+            jsonOptions: null,
+            validationOptions: new JsonSchemaValidationOptions
+            {
+                ValidatorFactory = factory,
+                Mode = JsonSchemaValidationMode.None,
+                ValidationRulesExecution = ValidationRulesExecution.BeforeDomainRules
+            },
+            ruleExecutor: executor);
+        Assert.Throws<ValidationRulesFailedException>(() => beforeDeserializer.Deserialize(
+            CreateWirePayload(schemaId, """{"name":"encoded"}"""),
+            Context));
+        await Assert.That(calls).IsEquivalentTo(["encoding"]);
+    }
+
+    [Test]
+    public async Task InlineRules_ResolveSchemaRegistryReferences()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        await registry.RegisterSchemaAsync(
+            "inline-address-value",
+            CreateSchema("""
+                {
+                  "$id": "https://example.test/address.json",
+                  "type": "object",
+                  "properties": {
+                    "postcode": {
+                      "type": "string",
+                      "confluent:rules": [{ "name": "postcode", "expr": "size(this) > 0" }]
+                    }
+                  }
+                }
+                """));
+        var root = CreateSchema(
+            """
+            {
+              "$id": "https://example.test/root.json",
+              "type": "object",
+              "properties": { "address": { "$ref": "address.json" } }
+            }
+            """,
+            [new SchemaReference
+            {
+                Name = "address.json",
+                Subject = "inline-address-value",
+                Version = 1
+            }]);
+        var validator = new StreamingJsonSchemaValidatorFactory(registry).GetOrCreate(root);
+
+        var exception = Assert.Throws<ValidationRulesFailedException>(() => validator.ValidateRules(
+            """{"address":{"postcode":""}}"""u8.ToArray(),
+            20,
+            failFast: false));
+
+        await Assert.That(exception.Message).Contains("$.address.postcode: postcode");
+    }
+
+    [Test]
+    public async Task Serializer_InlineRulesAreDisabledByDefault()
+    {
+        const string schemaText = """
+            { "confluent:rules": [{ "name": "unsupported", "expr": "this.all(x, x > 0)" }] }
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        var options = new JsonSchemaValidationOptions
+        {
+            ValidatorFactory = new StreamingJsonSchemaValidatorFactory(registry),
+            Mode = JsonSchemaValidationMode.None
+        };
+        await using var serializer = new JsonSchemaRegistrySerializer<NamePayload>(
+            registry,
+            schemaText,
+            jsonOptions: null,
+            validationOptions: options);
+        var buffer = new ArrayBufferWriter<byte>();
+
+        serializer.Serialize(new NamePayload("anything"), ref buffer, Context);
+    }
+
+    [Test]
+    public async Task InlineRules_ReportCachedCompilationErrorsAsViolations()
+    {
+        const string schemaText = """
+            { "confluent:rules": [{ "name": "unsupported", "expr": "this.all(x, x > 0)" }] }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
+
+        var exception = Assert.Throws<ValidationRulesFailedException>(() => validator.ValidateRules(
+            "[]"u8.ToArray(),
+            24,
+            failFast: false));
+
+        await Assert.That(exception.Violations.Count).IsEqualTo(1);
+        await Assert.That(exception.Violations[0].Cause).IsTypeOf<SchemaRegistryRuleException>();
+        await Assert.That(exception.Violations[0].Cause!.Message).Contains(
+            "Could not compile validation rule 'unsupported'");
+    }
+
     private static Schema CreateSchema(
         string schema,
         IReadOnlyList<SchemaReference>? references = null)
@@ -679,13 +1087,16 @@ public sealed class JsonSchemaValidationTests
         };
     }
 
-    private static SchemaRule CreateRule(string name, string type) =>
+    private static SchemaRule CreateRule(
+        string name,
+        string type,
+        SchemaRuleMode mode = SchemaRuleMode.Write) =>
         new()
         {
             Name = name,
             Type = type,
             Kind = SchemaRuleKind.Transform,
-            Mode = SchemaRuleMode.Write
+            Mode = mode
         };
 
     private static byte[] CreateWirePayload(int schemaId, string json)
@@ -698,6 +1109,7 @@ public sealed class JsonSchemaValidationTests
     }
 
     private sealed record ValidationPayload(int Id);
+    private sealed record NamePayload(string Name);
     private sealed record ReferencedPayload(AddressPayload Address);
     private sealed record AddressPayload(string Postcode);
 
@@ -739,7 +1151,11 @@ public sealed class JsonSchemaValidationTests
 
         public ReadOnlyMemory<byte> TransformDeserializedPayload(
             ReadOnlyMemory<byte> payload,
-            SchemaRegistryRuleHandlerContext context) => payload;
+            SchemaRegistryRuleHandlerContext context)
+        {
+            calls.Add(context.Rule.Name);
+            return replacement;
+        }
     }
 
     private sealed class QueueingHandler(params string[] responses) : HttpMessageHandler
