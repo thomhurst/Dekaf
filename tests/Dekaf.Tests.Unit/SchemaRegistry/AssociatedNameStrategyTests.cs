@@ -190,6 +190,81 @@ public sealed class AssociatedNameStrategyTests
     }
 
     [Test]
+    public async Task RefreshAsync_DoesNotJoinOlderNormalLookup()
+    {
+        using var client = new MockSchemaRegistryClient();
+        var staleResponse = new TaskCompletionSource<IReadOnlyList<Association>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        client.EnqueueAssociationLookup(staleResponse.Task);
+        client.EnqueueAssociationLookup(Task.FromResult<IReadOnlyList<Association>>(
+            [CreateAssociation("orders", "orders-v2")]));
+        var resolver = CreateResolver(client);
+
+        var normalLookup = resolver.GetSubjectNameAsync("orders", "Order", isKey: false);
+        await Assert.That(() => client.AssociationLookupCallCount)
+            .Eventually(count => count.IsEqualTo(1), TimeSpan.FromSeconds(5));
+        var refresh = resolver.RefreshAsync("orders", "Order", isKey: false);
+
+        await Assert.That(await refresh).IsEqualTo("orders-v2");
+        staleResponse.SetResult([CreateAssociation("orders", "orders-v1")]);
+        await Assert.That(await normalLookup).IsEqualTo("orders-v1");
+        await Assert.That(await resolver.GetSubjectNameAsync("orders", "Order", isKey: false))
+            .IsEqualTo("orders-v2");
+        await Assert.That(client.AssociationLookupCallCount).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task GetSubjectNameAsync_InternalTimeoutClearsPendingLookup()
+    {
+        using var client = new MockSchemaRegistryClient();
+        client.BlockNextAssociationLookup();
+        var resolver = CreateResolver(client, lookupTimeout: TimeSpan.FromMilliseconds(10));
+
+        _ = await Assert.ThrowsAsync<TimeoutException>(
+            () => resolver.GetSubjectNameAsync("orders", "Order", isKey: false).AsTask());
+        client.ReleaseBlockedAssociationLookup();
+
+        await AssociateAsync(client, "orders", "orders-recovered");
+        await Assert.That(await resolver.GetSubjectNameAsync("orders", "Order", isKey: false))
+            .IsEqualTo("orders-recovered");
+        await Assert.That(client.AssociationLookupCallCount).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task GenericSerializer_PrepareAsync_ResolvesAssociatedSubject()
+    {
+        using var client = new MockSchemaRegistryClient();
+        await AssociateAsync(client, "orders", "orders-associated-value");
+        await using var serializer = new SchemaRegistrySerializer<int>(
+            client,
+            static (_, _) => { },
+            static () => new Schema { SchemaType = SchemaType.Json, SchemaString = "{\"type\":\"integer\"}" },
+            SubjectNameStrategy.AssociatedName);
+
+        var resolved = await serializer.PrepareAsync("orders", 42);
+
+        await Assert.That(resolved.Subject).IsEqualTo("orders-associated-value");
+        await Assert.That(client.AssociationLookupCallCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task GenericDeserializer_AssociatedNameRejectsMissingAsyncPreparation()
+    {
+        using var client = new MockSchemaRegistryClient();
+
+        await Assert.That(() => new SchemaRegistryDeserializer<int>(
+                client,
+                static (_, _) => 0,
+                ownsClient: false,
+                config: new SchemaRegistryDeserializerConfig
+                {
+                    UseLatestVersion = true,
+                    SubjectNameStrategy = SubjectNameStrategy.AssociatedName
+                }))
+            .Throws<ArgumentException>();
+    }
+
+    [Test]
     public async Task Cache_EvictsOldestSuccessfulResolutionAtConfiguredBound()
     {
         using var client = new MockSchemaRegistryClient();
@@ -256,6 +331,10 @@ public sealed class AssociatedNameStrategyTests
         {
             FallbackStrategy = (AssociatedNameFallbackStrategy)int.MaxValue
         })).Throws<ArgumentOutOfRangeException>();
+        await Assert.That(() => new AssociatedNameStrategy(client, new AssociatedNameStrategyOptions
+        {
+            LookupTimeout = TimeSpan.Zero
+        })).Throws<ArgumentOutOfRangeException>();
         var resolver = CreateResolver(client, fallback: AssociatedNameFallbackStrategy.RecordName);
         await Assert.That(() =>
             {
@@ -281,13 +360,27 @@ public sealed class AssociatedNameStrategyTests
     private static AssociatedNameStrategy CreateResolver(
         ISchemaRegistryClient client,
         AssociatedNameFallbackStrategy fallback = AssociatedNameFallbackStrategy.TopicName,
-        int maxCachedSubjects = 1000) =>
+        int maxCachedSubjects = 1000,
+        TimeSpan? lookupTimeout = null) =>
         new(client, new AssociatedNameStrategyOptions
         {
             KafkaClusterId = ClusterId,
             FallbackStrategy = fallback,
-            MaxCachedSubjects = maxCachedSubjects
+            MaxCachedSubjects = maxCachedSubjects,
+            LookupTimeout = lookupTimeout ?? TimeSpan.FromSeconds(30)
         });
+
+    private static Association CreateAssociation(string topic, string subject) => new()
+    {
+        Subject = subject,
+        Guid = $"guid-{subject}",
+        ResourceName = topic,
+        ResourceNamespace = ClusterId,
+        ResourceId = ResourceId(topic),
+        ResourceType = "topic",
+        AssociationType = "value",
+        Lifecycle = "WEAK"
+    };
 
     private static Task<AssociationResponse> AssociateAsync(
         ISchemaRegistryClient client,

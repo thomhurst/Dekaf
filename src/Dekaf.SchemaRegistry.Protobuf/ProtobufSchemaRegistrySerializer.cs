@@ -32,6 +32,7 @@ public sealed class ProtobufSchemaRegistrySerializer<
 
     private readonly ISchemaRegistryClient _schemaRegistry;
     private readonly ProtobufSerializerConfig _config;
+    private readonly IAsyncSubjectNameStrategy? _asyncSubjectNameStrategy;
     private readonly bool _ownsClient;
     private readonly MessageDescriptor _descriptor;
     private readonly SubjectSchemaIdCache _subjectSchemaIdCache = new();
@@ -54,6 +55,11 @@ public sealed class ProtobufSchemaRegistrySerializer<
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _config = config ?? new ProtobufSerializerConfig();
+        if (_config.CustomSubjectNameStrategy is null
+            && _config.SubjectNameStrategy == SubjectNameStrategy.AssociatedName)
+        {
+            _asyncSubjectNameStrategy = new AssociatedNameStrategy(schemaRegistry);
+        }
         _ownsClient = ownsClient;
 
         // Get the message descriptor from the type
@@ -199,6 +205,9 @@ public sealed class ProtobufSchemaRegistrySerializer<
         bool isKey,
         CancellationToken cancellationToken)
     {
+        if (_asyncSubjectNameStrategy is not null)
+            return PrepareAssociatedCoreAsync(topic, isKey, cancellationToken);
+
         var subject = GetSubjectName(topic, isKey);
         var resolved = ResolveSchemaSharedAsync(
             subject,
@@ -234,6 +243,26 @@ public sealed class ProtobufSchemaRegistrySerializer<
                 value.SchemaId,
                 value.Schema!));
         }
+    }
+
+    private async ValueTask<ResolvedSchemaContext> PrepareAssociatedCoreAsync(
+        string topic,
+        bool isKey,
+        CancellationToken cancellationToken)
+    {
+        var subject = await _asyncSubjectNameStrategy!.GetSubjectNameAsync(
+            topic,
+            _descriptor.FullName,
+            isKey,
+            cancellationToken).ConfigureAwait(false);
+        var value = await ResolveSchemaSharedAsync(subject, topic, isKey, cancellationToken)
+            .ConfigureAwait(false);
+        return ToResolvedContext(_subjectSchemaIdCache.CacheEntry(
+            topic,
+            isKey,
+            subject,
+            value.SchemaId,
+            value.Schema!));
     }
 
     private ValueTask<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> ResolveSchemaSharedAsync(

@@ -55,6 +55,18 @@ public sealed class SchemaRegistryAssociationIntegrationTests(KafkaWithAssociati
             await Assert.That(created.Associations).Count().IsEqualTo(1);
             await Assert.That(found).Count().IsEqualTo(1);
             await Assert.That(found[0].Subject).IsEqualTo(subject);
+
+            await using var serializer = new SchemaRegistrySerializer<int>(
+                client,
+                static (_, _) => { },
+                static () => new Schema
+                {
+                    SchemaType = SchemaType.Json,
+                    SchemaString = "{\"type\":\"object\"}"
+                },
+                SubjectNameStrategy.AssociatedName);
+            var resolved = await serializer.PrepareAsync(resourceName, 42);
+            await Assert.That(resolved.Subject).IsEqualTo(subject);
         }
         finally
         {

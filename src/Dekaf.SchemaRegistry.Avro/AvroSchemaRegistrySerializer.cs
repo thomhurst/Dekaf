@@ -49,6 +49,7 @@ public sealed class AvroSchemaRegistrySerializer<
     private static readonly TimeSpan SchemaRegistryTimeout = TimeSpan.FromSeconds(30);
     private readonly ISchemaRegistryClient _schemaRegistry;
     private readonly AvroSerializerConfig _config;
+    private readonly IAsyncSubjectNameStrategy? _asyncSubjectNameStrategy;
     private readonly bool _ownsClient;
     private readonly SchemaResolutionCache<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> _schemaResolutionCache;
     private readonly SubjectSchemaIdCache _subjectSchemaIdCache = new();
@@ -85,6 +86,11 @@ public sealed class AvroSchemaRegistrySerializer<
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _config = config ?? new AvroSerializerConfig();
+        if (_config.CustomSubjectNameStrategy is null
+            && _config.SubjectNameStrategy == SubjectNameStrategy.AssociatedName)
+        {
+            _asyncSubjectNameStrategy = new AssociatedNameStrategy(schemaRegistry);
+        }
         ArgumentOutOfRangeException.ThrowIfLessThan(_config.MaxCachedSchemas, 1);
         _maxCachedSchemas = _config.MaxCachedSchemas;
         _maxOverflowLogicalSchemas = Math.Max(3, _maxCachedSchemas);
@@ -348,6 +354,9 @@ public sealed class AvroSchemaRegistrySerializer<
         SubjectSchemaIdCache cache,
         CancellationToken cancellationToken)
     {
+        if (_asyncSubjectNameStrategy is not null)
+            return PrepareAssociatedCoreAsync(topic, isKey, avroSchema, cache, cancellationToken);
+
         var subject = GetSubjectName(topic, isKey, avroSchema);
         var schema = CreateRegistrySchema(avroSchema);
         var resolved = ResolveSchemaAsync(subject, schema, cancellationToken);
@@ -371,6 +380,28 @@ public sealed class AvroSchemaRegistrySerializer<
             return ToResolvedContext(
                 cache.CacheEntry(topic, isKey, subject, value.SchemaId, value.Schema!));
         }
+    }
+
+    private async ValueTask<ResolvedSchemaContext> PrepareAssociatedCoreAsync(
+        string topic,
+        bool isKey,
+        AvroSchema avroSchema,
+        SubjectSchemaIdCache cache,
+        CancellationToken cancellationToken)
+    {
+        var subject = await _asyncSubjectNameStrategy!.GetSubjectNameAsync(
+            topic,
+            GetRecordName(avroSchema),
+            isKey,
+            cancellationToken).ConfigureAwait(false);
+        var schema = CreateRegistrySchema(avroSchema);
+        var value = await ResolveSchemaAsync(subject, schema, cancellationToken).ConfigureAwait(false);
+        return ToResolvedContext(cache.CacheEntry(
+            topic,
+            isKey,
+            subject,
+            value.SchemaId,
+            value.Schema!));
     }
 
     private static ResolvedSchemaContext ToResolvedContext(

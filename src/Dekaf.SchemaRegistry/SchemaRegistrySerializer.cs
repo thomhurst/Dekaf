@@ -41,6 +41,7 @@ public sealed class SchemaRegistrySerializer<T> :
     private readonly bool _schemaFactoryIgnoresSubject;
     private readonly SubjectNameStrategy _subjectNameStrategy;
     private readonly ISubjectNameStrategy? _customSubjectNameStrategy;
+    private readonly IAsyncSubjectNameStrategy? _asyncSubjectNameStrategy;
     private readonly bool _autoRegisterSchemas;
     private readonly bool _normalizeSchemas;
     private readonly bool _useLegacySubjectNames;
@@ -105,6 +106,7 @@ public sealed class SchemaRegistrySerializer<T> :
         _getSchema = getSchema ?? throw new ArgumentNullException(nameof(getSchema));
         _subjectSchemaCache = new SubjectSchemaCache();
         _subjectNameStrategy = subjectNameStrategy;
+        _asyncSubjectNameStrategy = CreateAsyncSubjectNameStrategy(schemaRegistry, subjectNameStrategy);
         _autoRegisterSchemas = autoRegisterSchemas;
         _normalizeSchemas = normalizeSchemas;
         _useLegacySubjectNames = useLegacySubjectNames;
@@ -157,6 +159,7 @@ public sealed class SchemaRegistrySerializer<T> :
         _getSchema = _ => getSchema();
         _schemaFactoryIgnoresSubject = true;
         _subjectNameStrategy = subjectNameStrategy;
+        _asyncSubjectNameStrategy = CreateAsyncSubjectNameStrategy(schemaRegistry, subjectNameStrategy);
         _autoRegisterSchemas = autoRegisterSchemas;
         _normalizeSchemas = normalizeSchemas;
         _useLegacySubjectNames = useLegacySubjectNames;
@@ -304,6 +307,9 @@ public sealed class SchemaRegistrySerializer<T> :
         bool isKey,
         CancellationToken cancellationToken)
     {
+        if (_asyncSubjectNameStrategy is not null)
+            return PrepareAssociatedCoreAsync(topic, isKey, cancellationToken);
+
         var resolved = ResolveSubjectAndSchema(topic, isKey);
         var resolution = ResolveSchemaAsync(
             resolved.Subject,
@@ -338,6 +344,57 @@ public sealed class SchemaRegistrySerializer<T> :
                 value.SchemaId,
                 value.Schema!));
         }
+    }
+
+    private async ValueTask<ResolvedSchemaContext> PrepareAssociatedCoreAsync(
+        string topic,
+        bool isKey,
+        CancellationToken cancellationToken)
+    {
+        var resolved = await ResolveAssociatedSubjectAndSchemaAsync(topic, isKey, cancellationToken)
+            .ConfigureAwait(false);
+        var value = await ResolveSchemaAsync(resolved.Subject, resolved.Schema, cancellationToken)
+            .ConfigureAwait(false);
+        return ToResolvedContext(_subjectSchemaIdCache.CacheEntry(
+            topic,
+            isKey,
+            resolved.Subject,
+            value.SchemaId,
+            value.Schema!));
+    }
+
+    private async ValueTask<ResolvedSubjectSchema> ResolveAssociatedSubjectAndSchemaAsync(
+        string topic,
+        bool isKey,
+        CancellationToken cancellationToken)
+    {
+        var fallbackRecordName = typeof(T).FullName ?? typeof(T).Name;
+        var subject = await _asyncSubjectNameStrategy!.GetSubjectNameAsync(
+            topic,
+            fallbackRecordName,
+            isKey,
+            cancellationToken).ConfigureAwait(false);
+
+        for (var attempt = 0; attempt < 4; attempt++)
+        {
+            var factorySchema = GetSchema(subject, fallbackRecordName);
+            var schema = factorySchema.Schema;
+            var recordName = factorySchema.RecordName;
+            var resolvedSubject = string.Equals(recordName, fallbackRecordName, StringComparison.Ordinal)
+                ? subject
+                : await _asyncSubjectNameStrategy.GetSubjectNameAsync(
+                    topic,
+                    recordName,
+                    isKey,
+                    cancellationToken).ConfigureAwait(false);
+
+            if (_schemaFactoryIgnoresSubject || string.Equals(resolvedSubject, subject, StringComparison.Ordinal))
+                return new ResolvedSubjectSchema(resolvedSubject, schema);
+
+            subject = resolvedSubject;
+        }
+
+        throw new InvalidOperationException("The schema callback did not resolve to a stable subject name.");
     }
 
     private ResolvedSubjectSchema ResolveSubjectAndSchema(string topic, bool isKey)
@@ -730,6 +787,13 @@ public sealed class SchemaRegistrySerializer<T> :
             isKey,
             _useLegacySubjectNames);
     }
+
+    private static IAsyncSubjectNameStrategy? CreateAsyncSubjectNameStrategy(
+        ISchemaRegistryClient schemaRegistry,
+        SubjectNameStrategy strategy) =>
+        strategy == SubjectNameStrategy.AssociatedName
+            ? new AssociatedNameStrategy(schemaRegistry)
+            : null;
 
     public ValueTask DisposeAsync()
     {

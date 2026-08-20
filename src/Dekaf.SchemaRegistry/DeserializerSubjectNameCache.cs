@@ -38,6 +38,12 @@ internal sealed class DeserializerSubjectNameCache
         ISubjectNameStrategy? customStrategy,
         bool useLegacySubjectNames)
     {
+        if (customStrategy is null && strategy == SubjectNameStrategy.AssociatedName)
+        {
+            throw new ArgumentException(
+                "AssociatedName requires a deserializer with asynchronous subject preparation.",
+                nameof(strategy));
+        }
         if (customStrategy is null && strategy == SubjectNameStrategy.TopicName)
             return null;
 

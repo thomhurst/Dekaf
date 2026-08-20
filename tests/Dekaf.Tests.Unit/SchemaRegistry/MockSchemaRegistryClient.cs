@@ -12,6 +12,7 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
     private readonly Dictionary<(Guid Guid, string? Format), Schema> _schemasByGuid = new();
     private readonly Dictionary<string, List<(int Version, int Id, Schema Schema)>> _schemasBySubject = new();
     private readonly Dictionary<(string Namespace, string Name), List<Association>> _associationsByResource = new();
+    private readonly Queue<Task<IReadOnlyList<Association>>> _associationLookupResponses = new();
     private TaskCompletionSource? _getSchemaEntered;
     private TaskCompletionSource? _getSchemaRelease;
     private TaskCompletionSource? _getOrRegisterSchemaEntered;
@@ -38,6 +39,9 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
         _associationLookupEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         _associationLookupRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
     }
+
+    public void EnqueueAssociationLookup(Task<IReadOnlyList<Association>> response) =>
+        _associationLookupResponses.Enqueue(response);
 
     public async Task WaitForBlockedAssociationLookupAsync(TimeSpan timeout)
     {
@@ -428,6 +432,8 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
             limit);
         cancellationToken.ThrowIfCancellationRequested();
         Interlocked.Increment(ref _associationLookupCallCount);
+        if (_associationLookupResponses.Count > 0)
+            return await _associationLookupResponses.Dequeue().WaitAsync(cancellationToken);
         if (_associationLookupEntered is { } entered && _associationLookupRelease is { } release)
         {
             entered.TrySetResult();

@@ -18,6 +18,8 @@ Dekaf.SchemaRegistry.AssociatedNameStrategyOptions.FallbackStrategy.get -> Dekaf
 Dekaf.SchemaRegistry.AssociatedNameStrategyOptions.FallbackStrategy.init -> void
 Dekaf.SchemaRegistry.AssociatedNameStrategyOptions.KafkaClusterId.get -> string?
 Dekaf.SchemaRegistry.AssociatedNameStrategyOptions.KafkaClusterId.init -> void
+Dekaf.SchemaRegistry.AssociatedNameStrategyOptions.LookupTimeout.get -> System.TimeSpan
+Dekaf.SchemaRegistry.AssociatedNameStrategyOptions.LookupTimeout.init -> void
 Dekaf.SchemaRegistry.AssociatedNameStrategyOptions.MaxCachedSubjects.get -> int
 Dekaf.SchemaRegistry.AssociatedNameStrategyOptions.MaxCachedSubjects.init -> void
 Dekaf.SchemaRegistry.IAsyncSubjectNameStrategy

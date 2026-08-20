@@ -53,6 +53,9 @@ public sealed class AssociatedNameStrategyOptions
 
     /// <summary>Maximum successful topic/component/record resolutions retained.</summary>
     public int MaxCachedSubjects { get; init; } = 1000;
+
+    /// <summary>Maximum duration of one shared Schema Registry association lookup.</summary>
+    public TimeSpan LookupTimeout { get; init; } = TimeSpan.FromSeconds(30);
 }
 
 /// <summary>
@@ -79,9 +82,10 @@ public sealed class AssociatedNameStrategy : IAsyncSubjectNameStrategy
     private readonly string _resourceNamespace;
     private readonly AssociatedNameFallbackStrategy _fallbackStrategy;
     private readonly int _maxCachedSubjects;
+    private readonly TimeSpan _lookupTimeout;
     private readonly ConcurrentDictionary<CacheKey, string> _cache = new();
-    private readonly Dictionary<CacheKey, Task<string>> _pending = [];
-    private readonly HashSet<Task<string>> _invalidatedPending = [];
+    private readonly Dictionary<CacheKey, PendingResolution> _pending = [];
+    private readonly HashSet<PendingResolution> _invalidatedPending = [];
     private readonly Dictionary<CacheKey, LinkedListNode<CacheKey>> _orderNodes = [];
     private readonly LinkedList<CacheKey> _order = [];
     private readonly object _gate = new();
@@ -98,10 +102,18 @@ public sealed class AssociatedNameStrategy : IAsyncSubjectNameStrategy
         if (!Enum.IsDefined(options.FallbackStrategy))
             throw new ArgumentOutOfRangeException(nameof(options), options.FallbackStrategy, "Unknown fallback strategy.");
         ArgumentOutOfRangeException.ThrowIfLessThan(options.MaxCachedSubjects, 1);
+        if (options.LookupTimeout <= TimeSpan.Zero
+            || options.LookupTimeout > TimeSpan.FromMilliseconds(int.MaxValue))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                "LookupTimeout must be greater than zero and no greater than Int32.MaxValue milliseconds.");
+        }
 
         _resourceNamespace = options.KafkaClusterId ?? NamespaceWildcard;
         _fallbackStrategy = options.FallbackStrategy;
         _maxCachedSubjects = options.MaxCachedSubjects;
+        _lookupTimeout = options.LookupTimeout;
     }
 
     /// <summary>Gets the number of successful resolutions currently cached.</summary>
@@ -174,23 +186,33 @@ public sealed class AssociatedNameStrategy : IAsyncSubjectNameStrategy
         CancellationToken cancellationToken)
     {
         Task<string> resolution;
-        TaskCompletionSource<string>? completion = null;
+        TaskCompletionSource<bool>? start = null;
         lock (_gate)
         {
             if (!forceRefresh && _cache.TryGetValue(key, out var cached))
                 return new ValueTask<string>(cached);
 
-            if (!_pending.TryGetValue(key, out resolution!))
+            if (!_pending.TryGetValue(key, out var pending)
+                || (forceRefresh && !pending.IsRefresh))
             {
-                completion = new TaskCompletionSource<string>(
+                if (pending is not null)
+                    _invalidatedPending.Add(pending);
+
+                start = new TaskCompletionSource<bool>(
                     TaskCreationOptions.RunContinuationsAsynchronously);
-                resolution = completion.Task;
-                _pending.Add(key, resolution);
+                pending = new PendingResolution(forceRefresh);
+                resolution = ResolveAndPublishAsync(key, pending, start.Task);
+                pending.Task = resolution;
+                _pending[key] = pending;
+                ObserveFault(resolution);
+            }
+            else
+            {
+                resolution = pending.Task;
             }
         }
 
-        if (completion is not null)
-            _ = ResolveAndPublishAsync(key, completion);
+        start?.TrySetResult(true);
 
         if (!cancellationToken.CanBeCanceled)
             return new ValueTask<string>(resolution);
@@ -198,37 +220,34 @@ public sealed class AssociatedNameStrategy : IAsyncSubjectNameStrategy
         return new ValueTask<string>(WaitWithCancellationAsync(resolution, cancellationToken));
     }
 
-    private async Task ResolveAndPublishAsync(
+    private async Task<string> ResolveAndPublishAsync(
         CacheKey key,
-        TaskCompletionSource<string> completion)
+        PendingResolution pending,
+        Task start)
     {
+        await start.ConfigureAwait(false);
         try
         {
             var subject = await LookupAsync(key).ConfigureAwait(false);
             lock (_gate)
             {
-                if (!_invalidatedPending.Contains(completion.Task))
+                if (!_invalidatedPending.Contains(pending))
                     Publish(key, subject);
             }
 
-            completion.TrySetResult(subject);
-        }
-        catch (Exception exception)
-        {
-            completion.TrySetException(exception);
-            _ = completion.Task.Exception;
+            return subject;
         }
         finally
         {
             lock (_gate)
             {
-                if (_pending.TryGetValue(key, out var pending) &&
-                    ReferenceEquals(pending, completion.Task))
+                if (_pending.TryGetValue(key, out var current)
+                    && ReferenceEquals(current, pending))
                 {
                     _pending.Remove(key);
                 }
 
-                _invalidatedPending.Remove(completion.Task);
+                _invalidatedPending.Remove(pending);
             }
         }
     }
@@ -238,12 +257,15 @@ public sealed class AssociatedNameStrategy : IAsyncSubjectNameStrategy
         IReadOnlyList<Association> associations;
         try
         {
-            associations = await _schemaRegistry.GetAssociationsByResourceNameAsync(
-                    key.Topic,
-                    _resourceNamespace,
-                    "topic",
-                    key.IsKey ? KeyAssociationType : ValueAssociationType,
-                    cancellationToken: CancellationToken.None)
+            associations = await SchemaRegistryOperationTimeout.ExecuteAsync(
+                    cancellationToken => _schemaRegistry.GetAssociationsByResourceNameAsync(
+                        key.Topic,
+                        _resourceNamespace,
+                        "topic",
+                        key.IsKey ? KeyAssociationType : ValueAssociationType,
+                        cancellationToken: cancellationToken),
+                    _lookupTimeout,
+                    $"Schema Registry association lookup timed out for topic '{key.Topic}'.")
                 .ConfigureAwait(false);
         }
         catch (SchemaRegistryException exception) when (IsNotFound(exception))
@@ -323,10 +345,25 @@ public sealed class AssociatedNameStrategy : IAsyncSubjectNameStrategy
         CancellationToken cancellationToken) =>
         await resolution.WaitAsync(cancellationToken).ConfigureAwait(false);
 
+    private static void ObserveFault(Task task)
+    {
+        _ = task.ContinueWith(
+            static completed => _ = completed.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously | TaskContinuationOptions.OnlyOnFaulted,
+            TaskScheduler.Default);
+    }
+
     private static bool IsNotFound(SchemaRegistryException exception) =>
         exception.ErrorCode == 404 || exception.ErrorCode is >= 40400 and < 40500;
 
     private static string ComponentName(bool isKey) => isKey ? "key" : "value";
 
     private readonly record struct CacheKey(string Topic, string? RecordType, bool IsKey);
+
+    private sealed class PendingResolution(bool isRefresh)
+    {
+        internal bool IsRefresh { get; } = isRefresh;
+        internal Task<string> Task { get; set; } = null!;
+    }
 }
