@@ -963,7 +963,7 @@ public sealed class JsonSchemaRegistrySerializer<T> :
                     cancellationToken).ConfigureAwait(false);
             var registeredSchema = _ruleExecutor is SchemaRegistryRuleExecutor
                 ? await _schemaRegistry.GetSchemaAsync(schemaId, subject, cancellationToken).ConfigureAwait(false)
-                : _validatorFactory is not null
+                : _validatorFactory is not null || _validationRulesFactory is not null
                     ? await _schemaRegistry.GetSchemaAsync(schemaId, cancellationToken).ConfigureAwait(false)
                     : schema;
             return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(schemaId, registeredSchema);
@@ -1414,19 +1414,23 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
             }
             else
             {
-                if (_validationRulesExecution == ValidationRulesExecution.BeforeDomainRules)
-                {
-                    _validationRulesFactory!
-                        .GetOrCreate(schema)
-                        .ValidateRules(payload, schemaId, _validationRulesFailFast);
-                }
-                var migration = _migrationRunner.Transform(
-                    payload,
-                    schemaId,
-                    subject,
-                    schema,
-                    context,
-                    SchemaRegistryPayloadFormat.Json);
+                var migration = _validationRulesExecution == ValidationRulesExecution.BeforeDomainRules
+                    ? _migrationRunner.TransformWithBeforeDomainValidation(
+                        payload,
+                        schemaId,
+                        subject,
+                        schema,
+                        context,
+                        SchemaRegistryPayloadFormat.Json,
+                        _validationRulesFactory!,
+                        _validationRulesFailFast)
+                    : _migrationRunner.Transform(
+                        payload,
+                        schemaId,
+                        subject,
+                        schema,
+                        context,
+                        SchemaRegistryPayloadFormat.Json);
                 payload = migration.Payload;
                 schema = migration.PayloadSchema;
                 schemaId = migration.PayloadSchemaId;

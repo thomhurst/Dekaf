@@ -121,7 +121,8 @@ public sealed class JsonSchemaValidationOptions
 
         if (ValidationRulesExecution == ValidationRulesExecution.Disabled)
             return null;
-        if (ruleExecutor is not null and not SchemaRegistryRuleExecutor)
+        if (ruleExecutor is not null and not SchemaRegistryRuleExecutor &&
+            !ReferenceEquals(ruleExecutor, SchemaRegistryMigrationRunner.MarkerRuleExecutor))
         {
             throw new NotSupportedException(
                 "Inline validation rules require SchemaRegistryRuleExecutor so domain and encoding rule boundaries are known.");

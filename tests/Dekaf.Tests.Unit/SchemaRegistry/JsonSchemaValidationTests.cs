@@ -400,6 +400,40 @@ public sealed class JsonSchemaValidationTests
     }
 
     [Test]
+    public async Task Serializer_AutoRegistrationWithRulesOnlyValidation_UsesIdOnlyLookup()
+    {
+        const string schemaText = """{ "type": "object", "required": ["id"] }""";
+        var schema = CreateSchema(schemaText);
+        using var registry = Substitute.For<ISchemaRegistryClient>();
+        registry.GetOrRegisterSchemaAsync(
+                "validation-value",
+                Arg.Any<Schema>(),
+                Arg.Any<CancellationToken>())
+            .Returns(42);
+        registry.GetSchemaAsync(42, Arg.Any<CancellationToken>())
+            .Returns(schema);
+        await using var serializer = new JsonSchemaRegistrySerializer<ValidationPayload>(
+            registry,
+            schemaText,
+            jsonOptions: null,
+            validationOptions: new JsonSchemaValidationOptions
+            {
+                ValidatorFactory = new StreamingJsonSchemaValidatorFactory(registry),
+                Mode = JsonSchemaValidationMode.None,
+                ValidationRulesExecution = ValidationRulesExecution.AfterDomainRules
+            });
+        var buffer = new ArrayBufferWriter<byte>();
+
+        serializer.Serialize(new ValidationPayload(7), ref buffer, Context);
+
+        await registry.Received(1).GetSchemaAsync(42, Arg.Any<CancellationToken>());
+        await registry.DidNotReceive().GetSchemaAsync(
+            42,
+            "validation-value",
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
     public async Task Serializer_AutoRegistrationWithCustomRules_UsesLocalSchema()
     {
         const string schemaText = """{ "type": "object", "required": ["id"] }""";
@@ -593,7 +627,8 @@ public sealed class JsonSchemaValidationTests
             validationOptions: new JsonSchemaValidationOptions
             {
                 ValidatorFactory = new StreamingJsonSchemaValidatorFactory(registry),
-                Mode = JsonSchemaValidationMode.Serialize
+                Mode = JsonSchemaValidationMode.None,
+                ValidationRulesExecution = ValidationRulesExecution.AfterDomainRules
             });
         var context = new SerializationContext
         {
@@ -1071,6 +1106,84 @@ public sealed class JsonSchemaValidationTests
         Assert.Throws<ValidationRulesFailedException>(() => beforeDeserializer.Deserialize(
             CreateWirePayload(schemaId, """{"name":"encoded"}"""),
             Context));
+        await Assert.That(calls).IsEquivalentTo(["encoding"]);
+    }
+
+    [Test]
+    public async Task Deserializer_LatestVersionRunsInlineRulesWithoutExplicitExecutor()
+    {
+        const string schemaText = """
+            {
+              "type": "object",
+              "confluent:rules": [{ "name": "validName", "expr": "this.name == 'ok'" }],
+              "properties": { "name": { "type": "string" } }
+            }
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        var schemaId = await registry.RegisterSchemaAsync(
+            "validation-value",
+            CreateSchema(schemaText));
+        await using var deserializer = new JsonSchemaRegistryDeserializer<NamePayload>(
+            registry,
+            jsonOptions: null,
+            validationOptions: new JsonSchemaValidationOptions
+            {
+                ValidatorFactory = new StreamingJsonSchemaValidatorFactory(registry),
+                Mode = JsonSchemaValidationMode.None,
+                ValidationRulesExecution = ValidationRulesExecution.BeforeDomainRules
+            },
+            config: new SchemaRegistryDeserializerConfig { UseLatestVersion = true });
+
+        var result = deserializer.Deserialize(
+            CreateWirePayload(schemaId, """{"name":"ok"}"""),
+            Context);
+
+        await Assert.That(result.Name).IsEqualTo("ok");
+    }
+
+    [Test]
+    public async Task Deserializer_LatestVersionRunsBeforeRulesAfterEncoding()
+    {
+        const string schemaText = """
+            {
+              "type": "object",
+              "confluent:rules": [{ "name": "validName", "expr": "this.name == 'ok'" }],
+              "properties": { "name": { "type": "string" } }
+            }
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        var schemaId = await registry.RegisterSchemaAsync(
+            "validation-value",
+            new Schema
+            {
+                SchemaType = SchemaType.Json,
+                SchemaString = schemaText,
+                RuleSet = new SchemaRuleSet
+                {
+                    EncodingRules = [CreateRule("encoding", "ENCODING", SchemaRuleMode.Read)]
+                }
+            });
+        var calls = new List<string>();
+        var executor = new SchemaRegistryRuleExecutor([
+            new ReplacingRuleHandler("ENCODING", """{"name":"ok"}"""u8.ToArray(), calls)
+        ]);
+        await using var deserializer = new JsonSchemaRegistryDeserializer<NamePayload>(
+            registry,
+            jsonOptions: null,
+            validationOptions: new JsonSchemaValidationOptions
+            {
+                ValidatorFactory = new StreamingJsonSchemaValidatorFactory(registry),
+                Mode = JsonSchemaValidationMode.None,
+                ValidationRulesExecution = ValidationRulesExecution.BeforeDomainRules
+            },
+            config: new SchemaRegistryDeserializerConfig { UseLatestVersion = true },
+            ruleExecutor: executor);
+
+        var result = deserializer.Deserialize(
+            CreateWirePayload(schemaId, "encoded"),
+            Context);
+
+        await Assert.That(result.Name).IsEqualTo("ok");
         await Assert.That(calls).IsEquivalentTo(["encoding"]);
     }
 
