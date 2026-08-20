@@ -77,6 +77,7 @@ public sealed class StreamingJsonSchemaValidatorFactory : IJsonSchemaValidatorFa
 internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJsonSchemaValidator
 {
     private const int MaxReferenceDepth = 128;
+    private const int InitialCompositionMatchCapacity = 32;
 
     public void Validate(ReadOnlySpan<byte> payload, int schemaId)
     {
@@ -126,15 +127,24 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         var path = new ValidationPathBuilder();
         List<ValidationRuleError>? violations = null;
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        WalkValidationRules(
-            ref reader,
-            payload,
-            root,
-            schemaId,
-            ref path,
-            now,
-            failFast,
-            ref violations);
+        var compositionMatches = new ValidationCompositionMatchCache();
+        try
+        {
+            WalkValidationRules(
+                ref reader,
+                payload,
+                root,
+                schemaId,
+                ref path,
+                now,
+                failFast,
+                ref violations,
+                ref compositionMatches);
+        }
+        finally
+        {
+            compositionMatches.Dispose();
+        }
         if (violations is not null)
             throw new ValidationRulesFailedException(violations);
     }
@@ -148,13 +158,11 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         long now,
         bool failFast,
         ref List<ValidationRuleError>? violations,
+        scoped ref ValidationCompositionMatchCache compositionMatches,
         int referenceDepth = 0)
     {
-        if (reader.TokenType == JsonTokenType.Null)
-            return true;
-
         var rules = node.ValidationRules;
-        if (rules.Length != 0)
+        if (reader.TokenType != JsonTokenType.Null && rules.Length != 0)
         {
             var value = GetCurrentValue(ref reader, payload);
             var memberCount = node.ValidationRuleMembers?.Count ?? 0;
@@ -214,6 +222,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
                     now,
                     failFast,
                     ref violations,
+                    ref compositionMatches,
                     referenceDepth + 1))
                 return false;
             if (!node.HasLocalValidationTraversal)
@@ -235,6 +244,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
                     now,
                     failFast,
                     ref violations,
+                    ref compositionMatches,
                     referenceDepth))
                 return false;
         }
@@ -244,11 +254,13 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
                 payload,
                 node.AnyOf,
                 oneOnly: false,
+                node.AnyOfRequiresCompositionMatchCache,
                 schemaId,
                 ref path,
                 now,
                 failFast,
                 ref violations,
+                ref compositionMatches,
                 referenceDepth))
             return false;
         if (node.HasOneOf && !WalkMatchingBranches(
@@ -256,20 +268,24 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
                 payload,
                 node.OneOf,
                 oneOnly: true,
+                node.OneOfRequiresCompositionMatchCache,
                 schemaId,
                 ref path,
                 now,
                 failFast,
                 ref violations,
+                ref compositionMatches,
                 referenceDepth))
             return false;
 
         return reader.TokenType switch
         {
             JsonTokenType.StartObject => WalkValidationObject(
-                ref reader, payload, node, schemaId, ref path, now, failFast, ref violations, referenceDepth),
+                ref reader, payload, node, schemaId, ref path, now, failFast, ref violations,
+                ref compositionMatches, referenceDepth),
             JsonTokenType.StartArray => WalkValidationArray(
-                ref reader, payload, node, schemaId, ref path, now, failFast, ref violations, referenceDepth),
+                ref reader, payload, node, schemaId, ref path, now, failFast, ref violations,
+                ref compositionMatches, referenceDepth),
             _ => true
         };
     }
@@ -279,42 +295,128 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         ReadOnlyMemory<byte> payload,
         CompiledSchemaNode[] branches,
         bool oneOnly,
+        bool requiresCompositionMatchCache,
         int schemaId,
         scoped ref ValidationPathBuilder path,
         long now,
         bool failFast,
         ref List<ValidationRuleError>? violations,
+        scoped ref ValidationCompositionMatchCache compositionMatches,
         int referenceDepth)
     {
-        var matchingBranch = -1;
-        for (var index = 0; index < branches.Length; index++)
+        if (!compositionMatches.HasPendingMatches && !requiresCompositionMatchCache)
         {
-            var branchReader = reader;
-            if (!MatchesValidationShape(ref branchReader, branches[index], referenceDepth))
-                continue;
-
-            if (oneOnly)
+            var directMatchingBranch = -1;
+            for (var index = 0; index < branches.Length; index++)
             {
-                if (matchingBranch >= 0)
-                    ThrowFailure(schemaId, "oneOf", path.ToString(), innerException: null);
-                matchingBranch = index;
-                continue;
+                var branchReader = reader;
+                if (!MatchesValidationShape(
+                        ref branchReader,
+                        branches[index],
+                        referenceDepth,
+                        ref compositionMatches))
+                    continue;
+
+                if (oneOnly)
+                {
+                    if (directMatchingBranch >= 0)
+                        ThrowFailure(schemaId, "oneOf", path.ToString(), innerException: null);
+                    directMatchingBranch = index;
+                    continue;
+                }
+
+                directMatchingBranch = index;
+                branchReader = reader;
+                if (!WalkValidationRules(
+                        ref branchReader,
+                        payload,
+                        branches[index],
+                        schemaId,
+                        ref path,
+                        now,
+                        failFast,
+                        ref violations,
+                        ref compositionMatches,
+                        referenceDepth))
+                    return false;
             }
 
-            matchingBranch = index;
+            if (!oneOnly)
+            {
+                if (directMatchingBranch < 0)
+                    ThrowFailure(schemaId, "anyOf", path.ToString(), innerException: null);
+                return true;
+            }
+            if (directMatchingBranch < 0)
+                ThrowFailure(schemaId, "oneOf", path.ToString(), innerException: null);
 
-            branchReader = reader;
-            if (!WalkValidationRules(
+            var directSelectedReader = reader;
+            return WalkValidationRules(
+                ref directSelectedReader,
+                payload,
+                branches[directMatchingBranch],
+                schemaId,
+                ref path,
+                now,
+                failFast,
+                ref violations,
+                ref compositionMatches,
+                referenceDepth);
+        }
+
+        if (!compositionMatches.HasPendingMatches)
+        {
+            compositionMatches.Reset();
+            for (var index = 0; index < branches.Length; index++)
+            {
+                var matchIndex = compositionMatches.BeginBranch(index);
+                var branchReader = reader;
+                var matched = MatchesValidationShapeAndRecordCompositionMatches(
                     ref branchReader,
-                    payload,
                     branches[index],
-                    schemaId,
-                    ref path,
-                    now,
-                    failFast,
-                    ref violations,
-                    referenceDepth))
-                return false;
+                    referenceDepth,
+                    ref compositionMatches);
+                compositionMatches.EndBranch(matchIndex, matched);
+            }
+            compositionMatches.BeginRead();
+        }
+
+        var matchingBranch = -1;
+        var selectedMatchIndex = -1;
+        var compositionEnd = compositionMatches.ReadIndex;
+        for (var index = 0; index < branches.Length; index++)
+        {
+            var match = compositionMatches.ReadBranch(index, out var matchIndex);
+            compositionEnd = match.EndIndex;
+            if (match.Matched)
+            {
+                if (oneOnly)
+                {
+                    if (matchingBranch >= 0)
+                        ThrowFailure(schemaId, "oneOf", path.ToString(), innerException: null);
+                    matchingBranch = index;
+                    selectedMatchIndex = matchIndex;
+                }
+                else
+                {
+                    matchingBranch = index;
+
+                    var branchReader = reader;
+                    if (!WalkValidationRules(
+                            ref branchReader,
+                            payload,
+                            branches[index],
+                            schemaId,
+                            ref path,
+                            now,
+                            failFast,
+                            ref violations,
+                            ref compositionMatches,
+                            referenceDepth))
+                        return false;
+                }
+            }
+            compositionMatches.SkipTo(match.EndIndex);
         }
 
         if (!oneOnly)
@@ -326,8 +428,9 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         if (matchingBranch < 0)
             ThrowFailure(schemaId, "oneOf", path.ToString(), innerException: null);
 
+        compositionMatches.SkipTo(selectedMatchIndex + 1);
         var selectedReader = reader;
-        return WalkValidationRules(
+        var completed = WalkValidationRules(
             ref selectedReader,
             payload,
             branches[matchingBranch],
@@ -336,21 +439,44 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
             now,
             failFast,
             ref violations,
+            ref compositionMatches,
             referenceDepth);
+        compositionMatches.SkipTo(compositionEnd);
+        return completed;
     }
 
     private static bool MatchesValidationShape(
         ref Utf8JsonReader reader,
         CompiledSchemaNode node,
-        int referenceDepth)
+        int referenceDepth,
+        scoped ref ValidationCompositionMatchCache compositionMatches)
     {
         var path = new JsonPathBuilder();
-        return ValidateNode(
+        return ValidateNodeCore(
             ref reader,
             node,
             ref path,
             schemaId: null,
             out _,
+            ref compositionMatches,
+            recordCompositionMatches: false,
+            referenceDepth);
+    }
+
+    private static bool MatchesValidationShapeAndRecordCompositionMatches(
+        ref Utf8JsonReader reader,
+        CompiledSchemaNode node,
+        int referenceDepth,
+        scoped ref ValidationCompositionMatchCache compositionMatches)
+    {
+        var path = new JsonPathBuilder();
+        return ValidateNodeAndRecordCompositionMatches(
+            ref reader,
+            node,
+            ref path,
+            schemaId: null,
+            out _,
+            ref compositionMatches,
             referenceDepth);
     }
 
@@ -363,6 +489,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         long now,
         bool failFast,
         ref List<ValidationRuleError>? violations,
+        scoped ref ValidationCompositionMatchCache compositionMatches,
         int referenceDepth)
     {
         while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
@@ -390,6 +517,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
                         now,
                         failFast,
                         ref violations,
+                        ref compositionMatches,
                         referenceDepth))
                     return false;
             }
@@ -411,6 +539,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         long now,
         bool failFast,
         ref List<ValidationRuleError>? violations,
+        scoped ref ValidationCompositionMatchCache compositionMatches,
         int referenceDepth)
     {
         var index = 0;
@@ -430,6 +559,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
                         now,
                         failFast,
                         ref violations,
+                        ref compositionMatches,
                         referenceDepth))
                     return false;
             }
@@ -461,6 +591,46 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         out JsonSchemaValidationException? failure,
         int referenceDepth = 0)
     {
+        var compositionMatches = new ValidationCompositionMatchCache();
+        return ValidateNodeCore(
+            ref reader,
+            node,
+            ref path,
+            schemaId,
+            out failure,
+            ref compositionMatches,
+            recordCompositionMatches: false,
+            referenceDepth);
+    }
+
+    private static bool ValidateNodeAndRecordCompositionMatches(
+        ref Utf8JsonReader reader,
+        CompiledSchemaNode node,
+        scoped ref JsonPathBuilder path,
+        int? schemaId,
+        out JsonSchemaValidationException? failure,
+        scoped ref ValidationCompositionMatchCache compositionMatches,
+        int referenceDepth) =>
+        ValidateNodeCore(
+            ref reader,
+            node,
+            ref path,
+            schemaId,
+            out failure,
+            ref compositionMatches,
+            recordCompositionMatches: true,
+            referenceDepth);
+
+    private static bool ValidateNodeCore(
+        ref Utf8JsonReader reader,
+        CompiledSchemaNode node,
+        scoped ref JsonPathBuilder path,
+        int? schemaId,
+        out JsonSchemaValidationException? failure,
+        scoped ref ValidationCompositionMatchCache compositionMatches,
+        bool recordCompositionMatches,
+        int referenceDepth)
+    {
         if (node.IsFalse)
             return Fail(schemaId, "$schema", ref path, out failure);
 
@@ -470,12 +640,14 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
                 return Fail(schemaId, "$ref", ref path, out failure);
 
             var referencedReader = reader;
-            if (!ValidateNode(
+            if (!ValidateNodeCore(
                     ref referencedReader,
                     node.Reference,
                     ref path,
                     schemaId,
                     out failure,
+                    ref compositionMatches,
+                    recordCompositionMatches,
                     referenceDepth + 1))
                 return false;
 
@@ -489,12 +661,14 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         for (var index = 0; index < node.AllOf.Length; index++)
         {
             var branchReader = reader;
-            if (!ValidateNode(
+            if (!ValidateNodeCore(
                     ref branchReader,
                     node.AllOf[index],
                     ref path,
                     schemaId,
                     out failure,
+                    ref compositionMatches,
+                    recordCompositionMatches,
                     referenceDepth))
                 return false;
         }
@@ -505,16 +679,24 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
             var pathMark = path.Length;
             for (var index = 0; index < node.AnyOf.Length; index++)
             {
+                var matchIndex = recordCompositionMatches
+                    ? compositionMatches.BeginBranch(index)
+                    : -1;
                 var branchReader = reader;
-                matched = ValidateNode(
+                var branchMatched = ValidateNodeCore(
                         ref branchReader,
                         node.AnyOf[index],
                         ref path,
                         schemaId: null,
                         out _,
+                        ref compositionMatches,
+                        recordCompositionMatches,
                         referenceDepth);
+                if (recordCompositionMatches)
+                    compositionMatches.EndBranch(matchIndex, branchMatched);
                 path.Truncate(pathMark);
-                if (matched)
+                matched |= branchMatched;
+                if (matched && !recordCompositionMatches)
                     break;
             }
             if (!matched)
@@ -527,14 +709,21 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
             var pathMark = path.Length;
             for (var index = 0; index < node.OneOf.Length; index++)
             {
+                var matchIndex = recordCompositionMatches
+                    ? compositionMatches.BeginBranch(index)
+                    : -1;
                 var branchReader = reader;
-                var matched = ValidateNode(
+                var matched = ValidateNodeCore(
                         ref branchReader,
                         node.OneOf[index],
                         ref path,
                         schemaId: null,
                         out _,
+                        ref compositionMatches,
+                        recordCompositionMatches,
                         referenceDepth);
+                if (recordCompositionMatches)
+                    compositionMatches.EndBranch(matchIndex, matched);
                 path.Truncate(pathMark);
                 if (matched && ++matches > 1)
                     break;
@@ -549,9 +738,25 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         switch (reader.TokenType)
         {
             case JsonTokenType.StartObject:
-                return ValidateObject(ref reader, node, ref path, schemaId, out failure);
+                return ValidateObject(
+                    ref reader,
+                    node,
+                    ref path,
+                    schemaId,
+                    out failure,
+                    ref compositionMatches,
+                    recordCompositionMatches,
+                    referenceDepth);
             case JsonTokenType.StartArray:
-                return ValidateArray(ref reader, node, ref path, schemaId, out failure);
+                return ValidateArray(
+                    ref reader,
+                    node,
+                    ref path,
+                    schemaId,
+                    out failure,
+                    ref compositionMatches,
+                    recordCompositionMatches,
+                    referenceDepth);
             case JsonTokenType.String:
                 return ValidateString(ref reader, node, ref path, schemaId, out failure);
             case JsonTokenType.Number:
@@ -567,7 +772,10 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         CompiledSchemaNode node,
         scoped ref JsonPathBuilder path,
         int? schemaId,
-        out JsonSchemaValidationException? failure)
+        out JsonSchemaValidationException? failure,
+        scoped ref ValidationCompositionMatchCache compositionMatches,
+        bool recordCompositionMatches,
+        int referenceDepth)
     {
         var requiredWordCount = (node.RequiredCount + 63) >> 6;
         Span<ulong> seenRequired = requiredWordCount == 0
@@ -627,7 +835,15 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
 
             if (propertySchema is not null)
             {
-                if (!ValidateNode(ref reader, propertySchema, ref path, schemaId, out failure))
+                if (!ValidateNodeCore(
+                        ref reader,
+                        propertySchema,
+                        ref path,
+                        schemaId,
+                        out failure,
+                        ref compositionMatches,
+                        recordCompositionMatches,
+                        referenceDepth))
                     return false;
             }
             else
@@ -647,7 +863,10 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         CompiledSchemaNode node,
         scoped ref JsonPathBuilder path,
         int? schemaId,
-        out JsonSchemaValidationException? failure)
+        out JsonSchemaValidationException? failure,
+        scoped ref ValidationCompositionMatchCache compositionMatches,
+        bool recordCompositionMatches,
+        int referenceDepth)
     {
         var index = 0;
         while (reader.Read())
@@ -670,7 +889,15 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
             path.AppendIndex(index);
             if (itemSchema is not null)
             {
-                if (!ValidateNode(ref reader, itemSchema, ref path, schemaId, out failure))
+                if (!ValidateNodeCore(
+                        ref reader,
+                        itemSchema,
+                        ref path,
+                        schemaId,
+                        out failure,
+                        ref compositionMatches,
+                        recordCompositionMatches,
+                        referenceDepth))
                     return false;
             }
             else
@@ -811,6 +1038,124 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         }
 
         return count;
+    }
+
+    private struct ValidationCompositionBranchMatch
+    {
+        internal int BranchIndex;
+        internal int EndIndex;
+        internal bool Matched;
+    }
+
+    [InlineArray(InitialCompositionMatchCapacity)]
+    private struct InitialValidationCompositionMatches
+    {
+        private ValidationCompositionBranchMatch _element0;
+    }
+
+    private struct ValidationCompositionMatchCache
+    {
+        private InitialValidationCompositionMatches _initialMatches;
+        private ValidationCompositionBranchMatch[]? _rentedMatches;
+        private int _count;
+        private int _readIndex;
+        private int _readEnd;
+
+        public ValidationCompositionMatchCache()
+        {
+            Unsafe.SkipInit(out _initialMatches);
+            _rentedMatches = null;
+            _count = 0;
+            _readIndex = 0;
+            _readEnd = 0;
+        }
+
+        internal readonly int ReadIndex => _readIndex;
+        internal readonly bool HasPendingMatches => _readIndex < _readEnd;
+
+        internal int BeginBranch(int branchIndex)
+        {
+            EnsureCapacity();
+            var matchIndex = _count++;
+            if (_rentedMatches is null)
+                _initialMatches[matchIndex].BranchIndex = branchIndex;
+            else
+                _rentedMatches[matchIndex].BranchIndex = branchIndex;
+            return matchIndex;
+        }
+
+        internal void EndBranch(int matchIndex, bool matched)
+        {
+            if (_rentedMatches is null)
+            {
+                _initialMatches[matchIndex].Matched = matched;
+                _initialMatches[matchIndex].EndIndex = _count;
+            }
+            else
+            {
+                _rentedMatches[matchIndex].Matched = matched;
+                _rentedMatches[matchIndex].EndIndex = _count;
+            }
+        }
+
+        internal void BeginRead()
+        {
+            _readIndex = 0;
+            _readEnd = _count;
+        }
+
+        internal ValidationCompositionBranchMatch ReadBranch(int expectedBranchIndex, out int matchIndex)
+        {
+            if ((uint)_readIndex >= (uint)_readEnd)
+                throw new InvalidOperationException("Cached composition matches were exhausted early.");
+
+            matchIndex = _readIndex++;
+            var match = _rentedMatches is null
+                ? _initialMatches[matchIndex]
+                : _rentedMatches[matchIndex];
+            if (match.BranchIndex != expectedBranchIndex)
+            {
+                throw new InvalidOperationException(
+                    $"Expected cached composition branch {expectedBranchIndex} but found {match.BranchIndex}.");
+            }
+            return match;
+        }
+
+        internal void SkipTo(int matchIndex) => _readIndex = matchIndex;
+
+        internal void Reset()
+        {
+            _count = 0;
+            _readIndex = 0;
+            _readEnd = 0;
+        }
+
+        internal void Dispose()
+        {
+            if (_rentedMatches is not null)
+                ArrayPool<ValidationCompositionBranchMatch>.Shared.Return(_rentedMatches);
+        }
+
+        private void EnsureCapacity()
+        {
+            var capacity = _rentedMatches?.Length ?? InitialCompositionMatchCapacity;
+            if (_count < capacity)
+                return;
+
+            var rentedMatches = ArrayPool<ValidationCompositionBranchMatch>.Shared.Rent(
+                capacity * 2);
+            if (_rentedMatches is null)
+            {
+                ReadOnlySpan<ValidationCompositionBranchMatch> initialMatches = _initialMatches;
+                initialMatches.CopyTo(rentedMatches);
+            }
+            else
+            {
+                _rentedMatches.AsSpan(0, _count).CopyTo(rentedMatches);
+                ArrayPool<ValidationCompositionBranchMatch>.Shared.Return(_rentedMatches);
+            }
+            _rentedMatches = rentedMatches;
+        }
     }
 
     private static bool Fail(
@@ -1129,7 +1474,10 @@ internal sealed class SchemaCompiler : IDisposable
                 depth + 1);
 
             if (dialect == SchemaDialect.Draft7)
+            {
+                node.ContainsCompositionTraversal = true;
                 return node;
+            }
         }
 
         node.ValidationRules = CompileValidationRules(schema, out var validationRuleMembers);
@@ -1153,10 +1501,29 @@ internal sealed class SchemaCompiler : IDisposable
         RejectUnsupportedAssertions(schema, pointer);
         node.HasLocalAssertions = HasLocalAssertions(node);
         node.HasLocalValidationTraversal = node.ValidationRules.Length != 0 ||
-            node.AllOf.Length != 0 || node.AnyOf.Length != 0 || node.OneOf.Length != 0 ||
+            node.AllOf.Length != 0 || node.HasAnyOf || node.HasOneOf ||
             node.Properties is not null || node.AdditionalProperties is not null ||
             node.Items is not null || node.PrefixItems.Length != 0;
+        node.AnyOfRequiresCompositionMatchCache = ContainsCompositionTraversal(node.AnyOf);
+        node.OneOfRequiresCompositionMatchCache = ContainsCompositionTraversal(node.OneOf);
+        node.ContainsCompositionTraversal = node.Reference is not null ||
+            node.HasAnyOf || node.HasOneOf ||
+            ContainsCompositionTraversal(node.AllOf) ||
+            node.Properties?.ContainsCompositionTraversal == true ||
+            node.AdditionalProperties?.ContainsCompositionTraversal == true ||
+            node.Items?.ContainsCompositionTraversal == true ||
+            ContainsCompositionTraversal(node.PrefixItems);
         return node;
+    }
+
+    private static bool ContainsCompositionTraversal(CompiledSchemaNode[] nodes)
+    {
+        for (var index = 0; index < nodes.Length; index++)
+        {
+            if (nodes[index].ContainsCompositionTraversal)
+                return true;
+        }
+        return false;
     }
 
     private CompiledSchemaNode[] CompileSchemaArray(
@@ -1698,8 +2065,11 @@ internal sealed class CompiledSchemaNode
     internal CompiledSchemaNode[] AllOf { get; set; } = [];
     internal bool HasAnyOf { get; set; }
     internal CompiledSchemaNode[] AnyOf { get; set; } = [];
+    internal bool AnyOfRequiresCompositionMatchCache { get; set; }
     internal bool HasOneOf { get; set; }
     internal CompiledSchemaNode[] OneOf { get; set; } = [];
+    internal bool OneOfRequiresCompositionMatchCache { get; set; }
+    internal bool ContainsCompositionTraversal { get; set; }
     internal bool HasLocalValidationTraversal { get; set; }
     internal CompiledPropertyTable? Properties { get; set; }
     internal int RequiredCount { get; set; }
@@ -2232,12 +2602,16 @@ internal sealed class CompiledPropertyTable
         _buckets = new int[capacity];
         for (var i = 0; i < _properties.Length; i++)
         {
+            ContainsCompositionTraversal |=
+                _properties[i].Schema?.ContainsCompositionTraversal == true;
             var bucket = (int)(_properties[i].Hash & (uint)(capacity - 1));
             while (_buckets[bucket] != 0)
                 bucket = (bucket + 1) & (capacity - 1);
             _buckets[bucket] = i + 1;
         }
     }
+
+    internal bool ContainsCompositionTraversal { get; }
 
     internal CompiledProperty? Find(ref Utf8JsonReader reader)
     {
