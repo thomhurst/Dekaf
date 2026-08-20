@@ -49,6 +49,16 @@ public sealed class AvroSerializerConfig
     public bool UseLatestVersion { get; init; }
 
     /// <summary>
+    /// Global Schema Registry ID to use instead of registering, looking up, or selecting the latest schema.
+    /// </summary>
+    public int? UseSchemaId { get; init; }
+
+    /// <summary>
+    /// Strategy used to carry the selected schema identity. The default writes the Confluent payload prefix.
+    /// </summary>
+    public SchemaIdSerializerStrategy SchemaIdStrategy { get; init; } = SchemaIdSerializerStrategy.Prefix;
+
+    /// <summary>
     /// Whether schema registration and lookup requests should include normalize=true.
     /// Default is false.
     /// </summary>
@@ -65,6 +75,11 @@ public sealed class AvroSerializerConfig
 /// </summary>
 public sealed class AvroDeserializerConfig
 {
+    /// <summary>
+    /// Strategy used to read the schema identity. The default accepts a GUID header and falls back to the payload prefix.
+    /// </summary>
+    public SchemaIdDeserializerStrategy SchemaIdStrategy { get; init; } = SchemaIdDeserializerStrategy.Dual;
+
     /// <summary>
     /// Whether to use the latest registered subject version as the reader schema and execute
     /// any migration rules between the writer and reader versions.

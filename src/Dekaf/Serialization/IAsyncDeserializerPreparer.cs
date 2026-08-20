@@ -29,3 +29,18 @@ public interface IAsyncDeserializerPreparer<T>
         SerializationContext context,
         CancellationToken cancellationToken = default);
 }
+
+internal interface IRecordHeaderAsyncDeserializerPreparer<T>
+{
+    bool TryDeserialize(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        in RecordHeaderRoutingLookup headers,
+        out T value);
+
+    ValueTask PrepareAsync(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        RecordHeaderRoutingLookup headers,
+        CancellationToken cancellationToken);
+}

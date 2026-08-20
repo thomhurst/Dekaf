@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Diagnostics;
 using System.Reflection;
 using System.Runtime.ExceptionServices;
@@ -38,7 +39,7 @@ public class KafkaProducerFastPathTests
         await using var producer = new KafkaProducer<string, string>(
             options,
             Serializers.String,
-            Serializers.String);
+            new RecordHeaderStringSerializer());
         await StopProducerBackgroundLoopsAsync(producer);
         AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(producer.RecordAccumulator);
         await using var pool = new ValueTaskSourcePool<RecordMetadata>();
@@ -68,8 +69,10 @@ public class KafkaProducerFastPathTests
         await Assert.That(readyBatch.RecordBatch.Records.Count).IsEqualTo(2);
         await Assert.That(GetKeyString(readyBatch.RecordBatch.Records[0])).IsEqualTo("inner");
         await Assert.That(GetValueString(readyBatch.RecordBatch.Records[0])).IsEqualTo("inner-value");
+        await Assert.That(GetHeaderValueString(readyBatch.RecordBatch.Records[0])).IsEqualTo("inner-value");
         await Assert.That(GetKeyString(readyBatch.RecordBatch.Records[1])).IsEqualTo("outer");
         await Assert.That(GetValueString(readyBatch.RecordBatch.Records[1])).IsEqualTo("outer-value");
+        await Assert.That(GetHeaderValueString(readyBatch.RecordBatch.Records[1])).IsEqualTo("outer-value");
 
         readyBatch.CompleteSend(baseOffset: 0, DateTimeOffset.UtcNow);
         _ = await innerTask;
@@ -783,6 +786,31 @@ public class KafkaProducerFastPathTests
 
     private static string GetValueString(Dekaf.Protocol.Records.Record record)
         => Encoding.UTF8.GetString(record.Value.Span);
+
+    private static string GetHeaderValueString(Dekaf.Protocol.Records.Record record)
+    {
+        var headers = record.Headers;
+        if (headers is null || record.HeaderCount != 1 || headers[0].Key != "identity")
+            throw new InvalidOperationException(
+                $"Expected one identity header; found {record.HeaderCount} ({headers?[0].Key ?? "none"}).");
+
+        return Encoding.UTF8.GetString(headers[0].Value.Span);
+    }
+
+    private sealed class RecordHeaderStringSerializer : ISerializer<string>, IRecordHeaderSerializer
+    {
+        public bool ProducesRecordHeaders => true;
+
+        public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
+            where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
+        {
+            context.Headers!.Add("identity", Encoding.UTF8.GetBytes(value));
+            Serializers.String.Serialize(value, ref destination, context);
+        }
+    }
 
     private sealed class ReentrantPartitioner : IPartitioner
     {

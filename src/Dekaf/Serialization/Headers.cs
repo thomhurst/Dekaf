@@ -162,6 +162,20 @@ public sealed class Headers : IEnumerable<Header>
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void Truncate(int count)
+    {
+        if ((uint)count > (uint)_headers.Count)
+            throw new ArgumentOutOfRangeException(nameof(count));
+
+        if (count == _headers.Count)
+            return;
+
+        _headers.RemoveRange(count, _headers.Count - count);
+        _deferredTraceparentIndex = _deferredTraceparentIndex < count ? _deferredTraceparentIndex : -1;
+        _deferredTracestateIndex = _deferredTracestateIndex < count ? _deferredTracestateIndex : -1;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void AddDeferredTraceContext(object activity, string? traceState)
     {
         if (_deferredTraceparentIndex >= 0 || _deferredTracestateIndex >= 0)

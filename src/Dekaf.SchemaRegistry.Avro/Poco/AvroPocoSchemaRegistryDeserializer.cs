@@ -1,4 +1,3 @@
-using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using Dekaf.SchemaRegistry.Avro;
 using Dekaf.Serialization;
@@ -10,13 +9,14 @@ namespace Dekaf.SchemaRegistry.Avro.Poco;
 
 /// <summary>Schema Registry deserializer backed by a generated POCO Avro codec.</summary>
 public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
-    : IDeserializer<T>, IAsyncDeserializerPreparer<T>, IAsyncDisposable
+    : IDeserializer<T>, IAsyncDeserializerPreparer<T>, IRecordHeaderAsyncDeserializerPreparer<T>,
+      IRecordHeaderDeserializer<T>, ICallerOwnedHeaderDeserializer<T>, IRecordHeaderRoutingProvider,
+      IAsyncDisposable
     where TCodec : struct, IAvroPocoCodec<T>
 {
-    private const byte MagicByte = 0;
-    private const int WireHeaderSize = 5;
     private const int GeneratedSubjectCacheSchemaId = 0;
     private const int MaxCachedPreparedRuleStates = 1024;
+    private const int MaxCachedGuidSchemas = 1024;
     internal const int MaxCachedPlans = 256;
     private static readonly TimeSpan RegistryTimeout = TimeSpan.FromSeconds(30);
 
@@ -25,6 +25,10 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
     private readonly bool _ownsClient;
     private readonly ConcurrentDictionary<int, AvroPocoReaderPlan> _plans = new();
     private readonly ConcurrentDictionary<int, ResolvedAvroSchema> _resolvedSchemas = new();
+    private readonly ConcurrentDictionary<GuidTopicKey, Lazy<Task<GuidResolvedSchema>>> _guidSchemaCache = new();
+    private readonly ConcurrentQueue<KeyValuePair<GuidTopicKey, Lazy<Task<GuidResolvedSchema>>>>
+        _guidSchemaEvictionQueue = new();
+    private int _cachedGuidSchemaCount;
     private readonly ConcurrentDictionary<int, PlanEntry> _inFlightPlans = new();
     private readonly ConcurrentQueue<KeyValuePair<int, AvroPocoReaderPlan>> _planEvictionQueue = new();
     private readonly ConcurrentDictionary<PreparedRuleKey, PreparedRuleState> _preparedRuleStates = new();
@@ -49,6 +53,16 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _config = config ?? new AvroDeserializerConfig();
+        if (_config.SchemaIdStrategy is not (
+            SchemaIdDeserializerStrategy.Dual
+            or SchemaIdDeserializerStrategy.Prefix
+            or SchemaIdDeserializerStrategy.Header))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(config),
+                _config.SchemaIdStrategy,
+                "Unknown schema identity strategy.");
+        }
         _ownsClient = ownsClient;
         _ruleExecutor = _config.RuleExecutor;
         if (!string.IsNullOrEmpty(_config.ReaderSchema))
@@ -106,13 +120,45 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
     ValueTask IAsyncDeserializerPreparer<T>.PrepareAsync(
         ReadOnlyMemory<byte> data,
         SerializationContext context,
+        CancellationToken cancellationToken) =>
+        PrepareCoreAsync(data, context, FindCallerIdentityHeader(context), cancellationToken);
+
+    ValueTask IRecordHeaderAsyncDeserializerPreparer<T>.PrepareAsync(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        RecordHeaderRoutingLookup headers,
+        CancellationToken cancellationToken) =>
+        PrepareCoreAsync(data, context, FindRoutedIdentityHeader(context, in headers), cancellationToken);
+
+    private ValueTask PrepareCoreAsync(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        Header? identityHeader,
         CancellationToken cancellationToken)
     {
-        var span = data.Span;
-        if (span.Length < WireHeaderSize || span[0] != MagicByte)
+        if (context is { IsNull: true, Component: SerializationComponent.Value })
             return default;
 
-        var schemaId = BinaryPrimitives.ReadInt32BigEndian(span.Slice(1, 4));
+        var identity = ReadIdentity(data, identityHeader, out _);
+        if (identity.SchemaGuid is { } schemaGuid)
+        {
+            return PrepareGuidAsync(
+                new GuidTopicKey(
+                    schemaGuid,
+                    context.Topic,
+                    context.Component == SerializationComponent.Key),
+                context,
+                cancellationToken);
+        }
+
+        return PrepareSchemaIdAsync(identity.SchemaId!.Value, context, cancellationToken);
+    }
+
+    private ValueTask PrepareSchemaIdAsync(
+        int schemaId,
+        SerializationContext context,
+        CancellationToken cancellationToken)
+    {
         if (_ruleExecutor is null)
         {
             return TryGetCachedPlan(schemaId, out _)
@@ -140,24 +186,51 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
     bool IAsyncDeserializerPreparer<T>.TryDeserialize(
         ReadOnlyMemory<byte> data,
         SerializationContext context,
+        out T value) =>
+        TryDeserializeCore(data, context, FindCallerIdentityHeader(context), out value);
+
+    bool IRecordHeaderAsyncDeserializerPreparer<T>.TryDeserialize(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        in RecordHeaderRoutingLookup headers,
+        out T value) =>
+        TryDeserializeCore(data, context, FindRoutedIdentityHeader(context, in headers), out value);
+
+    private bool TryDeserializeCore(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        Header? identityHeader,
         out T value)
     {
-        var span = data.Span;
-        if (span.Length < WireHeaderSize)
+        if (context is { IsNull: true, Component: SerializationComponent.Value })
         {
-            if (context is { IsNull: true, Component: SerializationComponent.Value })
-            {
-                value = default!;
-                return true;
-            }
-
-            throw new InvalidOperationException("Message too short to contain Schema Registry wire format.");
+            value = default!;
+            return true;
         }
 
-        if (span[0] != MagicByte)
-            throw new InvalidOperationException($"Unknown magic byte: {span[0]}. Expected 0x00.");
+        var identity = ReadIdentity(data, identityHeader, out var payloadOffset);
+        int schemaId;
+        if (identity.SchemaGuid is { } schemaGuid)
+        {
+            var key = new GuidTopicKey(
+                schemaGuid,
+                context.Topic,
+                context.Component == SerializationComponent.Key);
+            if (!_guidSchemaCache.TryGetValue(key, out var guidResolution)
+                || !guidResolution.IsValueCreated
+                || !guidResolution.Value.IsCompletedSuccessfully)
+            {
+                value = default!;
+                return false;
+            }
 
-        var schemaId = BinaryPrimitives.ReadInt32BigEndian(span.Slice(1, 4));
+            schemaId = guidResolution.Value.Result.SchemaId;
+        }
+        else
+        {
+            schemaId = identity.SchemaId!.Value;
+        }
+
         if (!TryGetCachedPlan(schemaId, out var plan))
         {
             value = default!;
@@ -189,7 +262,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
             }
 
             value = DeserializePreparedWithRules(
-                data.Slice(WireHeaderSize),
+                data[payloadOffset..],
                 schemaId,
                 context,
                 preparedState.Subject,
@@ -198,26 +271,9 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
             return true;
         }
 
-        var reader = new AvroValueReader(data.Span.Slice(WireHeaderSize));
+        var reader = new AvroValueReader(data.Span[payloadOffset..]);
         value = TCodec.Read(ref reader, plan);
         return true;
-    }
-
-    private bool TryGetCachedPlan(
-        ReadOnlyMemory<byte> data,
-        out int schemaId,
-        out AvroPocoReaderPlan plan)
-    {
-        var span = data.Span;
-        if (span.Length < WireHeaderSize || span[0] != MagicByte)
-        {
-            schemaId = default;
-            plan = null!;
-            return true;
-        }
-
-        schemaId = BinaryPrimitives.ReadInt32BigEndian(span.Slice(1, 4));
-        return TryGetCachedPlan(schemaId, out plan);
     }
 
     private bool TryGetCachedPlan(int schemaId, out AvroPocoReaderPlan plan)
@@ -239,21 +295,42 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
     }
 
     /// <inheritdoc />
-    public T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
+    public T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
+        DeserializeCore(data, context, FindCallerIdentityHeader(context));
+
+    T ICallerOwnedHeaderDeserializer<T>.DeserializeCallerOwned(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context) => Deserialize(data, context);
+
+    T IRecordHeaderDeserializer<T>.Deserialize(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        in RecordHeaderRoutingLookup headers) =>
+        DeserializeCore(data, context, FindRoutedIdentityHeader(context, in headers));
+
+    void IRecordHeaderRoutingProvider.CollectHeaderNames(List<string> names)
     {
-        var span = data.Span;
-        if (span.Length < WireHeaderSize)
-        {
-            if (context is { IsNull: true, Component: SerializationComponent.Value })
-                return default!;
-            throw new InvalidOperationException("Message too short to contain Schema Registry wire format.");
-        }
+        AddHeaderName(names, SchemaIdentityHeaderNames.Key);
+        AddHeaderName(names, SchemaIdentityHeaderNames.Value);
+    }
 
-        if (span[0] != MagicByte)
-            throw new InvalidOperationException($"Unknown magic byte: {span[0]}. Expected 0x00.");
+    private T DeserializeCore(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        Header? identityHeader)
+    {
+        if (context is { IsNull: true, Component: SerializationComponent.Value })
+            return default!;
 
-        var schemaId = BinaryPrimitives.ReadInt32BigEndian(span.Slice(1, 4));
-        var payload = data.Slice(WireHeaderSize);
+        var identity = ReadIdentity(data, identityHeader, out var payloadOffset);
+        var schemaId = identity.SchemaId
+            ?? GetGuidSchemaCached(
+                new GuidTopicKey(
+                    identity.SchemaGuid!.Value,
+                    context.Topic,
+                    context.Component == SerializationComponent.Key))
+                .SchemaId;
+        var payload = data[payloadOffset..];
         if (_ruleExecutor is null)
         {
             var directReader = new AvroValueReader(payload.Span);
@@ -741,6 +818,141 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
     private string GetSubjectName(string topic, bool isKey) =>
         _subjectNames?.GetSubjectName(GeneratedSubjectCacheSchemaId, null, topic, isKey, TCodec.FullName)
         ?? SubjectNameResolver.GetTopicSubjectName(topic, isKey);
+
+    private async ValueTask PrepareGuidAsync(
+        GuidTopicKey key,
+        SerializationContext context,
+        CancellationToken cancellationToken)
+    {
+        var resolved = await GetGuidSchemaAsync(key, cancellationToken).ConfigureAwait(false);
+        await PrepareSchemaIdAsync(resolved.SchemaId, context, cancellationToken).ConfigureAwait(false);
+    }
+
+    private GuidResolvedSchema GetGuidSchemaCached(GuidTopicKey key)
+    {
+        var task = GetOrAddGuidSchemaLazy(key).Value;
+        return task.IsCompletedSuccessfully
+            ? task.Result
+            : task.WaitAsync(RegistryTimeout).ConfigureAwait(false).GetAwaiter().GetResult();
+    }
+
+    private async Task<GuidResolvedSchema> GetGuidSchemaAsync(
+        GuidTopicKey key,
+        CancellationToken cancellationToken) =>
+        await GetOrAddGuidSchemaLazy(key).Value.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+    private Lazy<Task<GuidResolvedSchema>> GetOrAddGuidSchemaLazy(GuidTopicKey key)
+    {
+        if (_guidSchemaCache.TryGetValue(key, out var cached))
+            return cached;
+
+        return _guidSchemaCache.GetOrAdd(
+            key,
+            static (cacheKey, deserializer) => new Lazy<Task<GuidResolvedSchema>>(
+                () => deserializer.FetchGuidSchemaAsync(cacheKey)),
+            this);
+    }
+
+    private async Task<GuidResolvedSchema> FetchGuidSchemaAsync(GuidTopicKey key)
+    {
+        try
+        {
+            var unscopedSchema = await _schemaRegistry.GetSchemaByGuidAsync(
+                    key.SchemaGuid.ToString("D"),
+                    cancellationToken: CancellationToken.None)
+                .ConfigureAwait(false);
+            if (unscopedSchema.SchemaType != SchemaType.Avro)
+            {
+                throw new InvalidOperationException(
+                    $"Schema GUID {key.SchemaGuid:D} is {unscopedSchema.SchemaType}, not Avro.");
+            }
+            var subject = GetSubjectName(key.Topic, key.IsKey);
+            var registered = await _schemaRegistry.LookupSchemaAsync(
+                    subject,
+                    unscopedSchema,
+                    ignoreDeletedSchemas: true,
+                    cancellationToken: CancellationToken.None)
+                .ConfigureAwait(false);
+            if (!Guid.TryParse(registered.Guid, out var registeredGuid) || registeredGuid != key.SchemaGuid)
+            {
+                throw new InvalidDataException(
+                    $"Schema Registry returned a conflicting GUID for subject '{subject}'.");
+            }
+
+            var resolved = new GuidResolvedSchema(registered.Id);
+            BoundedSchemaIdentityCache.RecordSuccessfulResolution(
+                _guidSchemaCache,
+                _guidSchemaEvictionQueue,
+                key,
+                ref _cachedGuidSchemaCount,
+                MaxCachedGuidSchemas);
+            return resolved;
+        }
+        catch
+        {
+            _guidSchemaCache.TryRemove(key, out _);
+            throw;
+        }
+    }
+
+    private SchemaIdentity ReadIdentity(
+        ReadOnlyMemory<byte> data,
+        Header? identityHeader,
+        out int payloadOffset)
+    {
+        var identity = SchemaIdentityFraming.Read(
+            data.Span,
+            identityHeader,
+            _config.SchemaIdStrategy,
+            out payloadOffset,
+            out var trailingHeaderData);
+        if (!trailingHeaderData.IsEmpty)
+            throw new InvalidDataException("Avro schema identity headers cannot contain trailing data.");
+        return identity;
+    }
+
+    private Header? FindCallerIdentityHeader(SerializationContext context)
+    {
+        if (_config.SchemaIdStrategy == SchemaIdDeserializerStrategy.Prefix
+            || context.Headers is not { } headers)
+        {
+            return null;
+        }
+
+        var headerName = GetIdentityHeaderName(context.Component);
+        for (var index = headers.Count - 1; index >= 0; index--)
+        {
+            if (string.Equals(headers[index].Key, headerName, StringComparison.Ordinal))
+                return headers[index];
+        }
+
+        return null;
+    }
+
+    private Header? FindRoutedIdentityHeader(
+        SerializationContext context,
+        in RecordHeaderRoutingLookup headers) =>
+        _config.SchemaIdStrategy != SchemaIdDeserializerStrategy.Prefix
+        && headers.TryGetLast(GetIdentityHeaderName(context.Component), out var header)
+            ? header
+            : null;
+
+    private static void AddHeaderName(List<string> names, string name)
+    {
+        if (!names.Contains(name))
+            names.Add(name);
+    }
+
+    private static string GetIdentityHeaderName(SerializationComponent component) => component switch
+    {
+        SerializationComponent.Key => SchemaIdentityHeaderNames.Key,
+        SerializationComponent.Value => SchemaIdentityHeaderNames.Value,
+        _ => throw new ArgumentOutOfRangeException(nameof(component), component, "Unknown serialization component.")
+    };
+
+    private readonly record struct GuidTopicKey(Guid SchemaGuid, string Topic, bool IsKey);
+
+    private sealed record GuidResolvedSchema(int SchemaId);
 
     /// <inheritdoc />
     public ValueTask DisposeAsync()

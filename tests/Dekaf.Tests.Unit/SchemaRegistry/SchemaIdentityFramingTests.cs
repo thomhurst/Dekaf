@@ -1,5 +1,9 @@
 using Dekaf.SchemaRegistry;
 using Dekaf.Serialization;
+using System.Buffers;
+using System.Buffers.Binary;
+using System.Collections.Concurrent;
+using System.Text;
 
 namespace Dekaf.Tests.Unit.SchemaRegistry;
 
@@ -21,6 +25,150 @@ public sealed class SchemaIdentityFramingTests
 
         await Assert.That(prefixValue).IsEqualTo(0);
         await Assert.That(headerValue).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task JsonSerializerConfig_SchemaIdentityDefaultsMatchConfluent()
+    {
+        var config = new JsonSchemaSerializerConfig();
+
+        await Assert.That(config.UseSchemaId).IsNull();
+        await Assert.That(config.SchemaIdStrategy).IsEqualTo(SchemaIdSerializerStrategy.Prefix);
+        await Assert.That(config.AutoRegisterSchemas).IsTrue();
+        await Assert.That(config.UseLatestVersion).IsFalse();
+        await Assert.That(new SchemaRegistryDeserializerConfig().SchemaIdStrategy)
+            .IsEqualTo(SchemaIdDeserializerStrategy.Dual);
+    }
+
+    [Test]
+    public async Task JsonSerializer_UseSchemaId_TakesPrecedenceOverLatestAndRegistration()
+    {
+        const string schemaText = "{\"type\":\"string\"}";
+        using var registry = new MockSchemaRegistryClient();
+        var schema = new Schema { SchemaType = SchemaType.Json, SchemaString = schemaText };
+        var explicitId = await registry.RegisterSchemaAsync("json-explicit-value", schema);
+        _ = await registry.RegisterSchemaAsync("json-explicit-value", schema);
+        await using var serializer = new JsonSchemaRegistrySerializer<string>(
+            registry,
+            schemaText,
+            new JsonSchemaSerializerConfig
+            {
+                UseSchemaId = explicitId,
+                UseLatestVersion = true,
+                AutoRegisterSchemas = true
+            });
+        await serializer.PrepareAsync("json-explicit", "value");
+        var destination = new ArrayBufferWriter<byte>();
+        var context = new SerializationContext
+        {
+            Topic = "json-explicit",
+            Component = SerializationComponent.Value
+        };
+
+        serializer.Serialize("value", ref destination, context);
+
+        await Assert.That(BinaryPrimitives.ReadInt32BigEndian(destination.WrittenSpan[1..5])).IsEqualTo(explicitId);
+    }
+
+    [Test]
+    public void JsonSerializer_NegativeUseSchemaId_Throws()
+    {
+        using var registry = new MockSchemaRegistryClient();
+
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+        {
+            var serializer = new JsonSchemaRegistrySerializer<string>(
+                registry,
+                "{\"type\":\"string\"}",
+                new JsonSchemaSerializerConfig { UseSchemaId = -1 });
+            GC.KeepAlive(serializer);
+        });
+    }
+
+    [Test]
+    public async Task JsonSerializer_UseSchemaIdWithAvroSchema_Throws()
+    {
+        const string topic = "json-wrong-format";
+        using var registry = new MockSchemaRegistryClient();
+        var schemaId = await registry.RegisterSchemaAsync(
+            $"{topic}-value",
+            new Schema { SchemaType = SchemaType.Avro, SchemaString = "\"string\"" });
+        await using var serializer = new JsonSchemaRegistrySerializer<string>(
+            registry,
+            "{\"type\":\"string\"}",
+            new JsonSchemaSerializerConfig { UseSchemaId = schemaId });
+
+        await Assert.That(async () => await serializer.PrepareAsync(topic, "value"))
+            .Throws<InvalidOperationException>();
+    }
+
+    [Test]
+    public async Task BoundedIdentityCache_EvictsOldestExactEntry()
+    {
+        var cache = new ConcurrentDictionary<int, object>();
+        var evictionQueue = new ConcurrentQueue<KeyValuePair<int, object>>();
+        var cachedCount = 0;
+
+        for (var key = 1; key <= 3; key++)
+        {
+            cache[key] = new object();
+            BoundedSchemaIdentityCache.RecordSuccessfulResolution(
+                cache,
+                evictionQueue,
+                key,
+                ref cachedCount,
+                maxCachedEntries: 2);
+        }
+
+        await Assert.That(cachedCount).IsEqualTo(2);
+        await Assert.That(cache.ContainsKey(1)).IsFalse();
+        await Assert.That(cache.ContainsKey(2)).IsTrue();
+        await Assert.That(cache.ContainsKey(3)).IsTrue();
+    }
+
+    [Test]
+    public async Task JsonSerializer_HeaderStrategy_WritesExactGuidHeaderAndUnprefixedPayload()
+    {
+        const string schemaText = "{\"type\":\"string\"}";
+        using var registry = new MockSchemaRegistryClient();
+        var schema = new Schema { SchemaType = SchemaType.Json, SchemaString = schemaText };
+        var schemaId = await registry.RegisterSchemaAsync("json-header-value", schema);
+        await using var serializer = new JsonSchemaRegistrySerializer<string>(
+            registry,
+            schemaText,
+            new JsonSchemaSerializerConfig
+            {
+                AutoRegisterSchemas = false,
+                SchemaIdStrategy = SchemaIdSerializerStrategy.Header
+            });
+        await serializer.PrepareAsync("json-header", "value");
+        var destination = new ArrayBufferWriter<byte>();
+        var headers = new Headers();
+        var context = new SerializationContext
+        {
+            Topic = "json-header",
+            Component = SerializationComponent.Value,
+            Headers = headers
+        };
+
+        serializer.Serialize("value", ref destination, context);
+
+        var expectedGuid = new Guid(schemaId, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        var expectedFrame = SchemaIdentityFraming.CreateSchemaGuidFrame(expectedGuid);
+        await Assert.That(Encoding.UTF8.GetString(destination.WrittenSpan)).IsEqualTo("\"value\"");
+        await Assert.That(headers.Count).IsEqualTo(1);
+        await Assert.That(headers[0].Key).IsEqualTo(SchemaIdentityHeaderNames.Value);
+        await Assert.That(headers[0].Value.ToArray()).IsEquivalentTo(expectedFrame);
+
+        await using var deserializer = new JsonSchemaRegistryDeserializer<string>(
+            registry,
+            jsonOptions: null,
+            new SchemaRegistryDeserializerConfig
+            {
+                SchemaIdStrategy = SchemaIdDeserializerStrategy.Header
+            });
+        var result = deserializer.Deserialize(destination.WrittenMemory, context);
+        await Assert.That(result).IsEqualTo("value");
     }
 
     [Test]
@@ -176,12 +324,12 @@ public sealed class SchemaIdentityFramingTests
     }
 
     [Test]
-    public void ReadPrefix_UnknownMagicByte_ThrowsInvalidDataException() =>
-        Assert.Throws<InvalidDataException>(() => SchemaIdentityFraming.ReadPrefix([2, 0, 0, 0, 1], out _));
+    public void ReadPrefix_UnknownMagicByte_ThrowsInvalidOperationException() =>
+        Assert.Throws<InvalidOperationException>(() => SchemaIdentityFraming.ReadPrefix([2, 0, 0, 0, 1], out _));
 
     [Test]
-    public void ReadPrefix_GuidFrame_ThrowsInvalidDataException() =>
-        Assert.Throws<InvalidDataException>(() => SchemaIdentityFraming.ReadPrefix(GuidVector, out _));
+    public void ReadPrefix_GuidFrame_ThrowsInvalidOperationException() =>
+        Assert.Throws<InvalidOperationException>(() => SchemaIdentityFraming.ReadPrefix(GuidVector, out _));
 
     [Test]
     public void ReadPrefix_NegativeId_ThrowsInvalidDataException() =>
@@ -189,8 +337,8 @@ public sealed class SchemaIdentityFramingTests
             SchemaIdentityFraming.ReadPrefix([0, 0xff, 0xff, 0xff, 0xff], out _));
 
     [Test]
-    public void ReadPrefix_TruncatedIdentity_ThrowsInvalidDataException() =>
-        Assert.Throws<InvalidDataException>(() => SchemaIdentityFraming.ReadPrefix([0, 0, 0, 1], out _));
+    public void ReadPrefix_TruncatedIdentity_ThrowsInvalidOperationException() =>
+        Assert.Throws<InvalidOperationException>(() => SchemaIdentityFraming.ReadPrefix([0, 0, 0, 1], out _));
 
     [Test]
     public void ReadHeader_MissingHeader_ThrowsInvalidDataException() =>

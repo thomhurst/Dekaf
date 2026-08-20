@@ -10,6 +10,42 @@ namespace Dekaf.SchemaRegistry;
 /// </summary>
 public static class SchemaRegistryExtensions
 {
+    /// <summary>Configures JSON Schema Registry serialization with identity selection and framing.</summary>
+    [RequiresUnreferencedCode("JsonSerializerOptions-based JSON serialization uses reflection. Use the JsonTypeInfo<TValue> overload for NativeAOT.")]
+    [RequiresDynamicCode("JsonSerializerOptions-based JSON serialization may require runtime code generation. Use the JsonTypeInfo<TValue> overload for NativeAOT.")]
+    public static ProducerBuilder<TKey, TValue> UseJsonSchemaRegistry<TKey, TValue>(
+        this ProducerBuilder<TKey, TValue> builder,
+        ISchemaRegistryClient schemaRegistry,
+        string jsonSchema,
+        JsonSchemaSerializerConfig config,
+        JsonSerializerOptions? jsonOptions = null)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        var serializer = new JsonSchemaRegistrySerializer<TValue>(
+            schemaRegistry,
+            jsonSchema,
+            config,
+            jsonOptions);
+        return builder.WithValueSerializer(serializer);
+    }
+
+    /// <summary>Configures NativeAOT-safe JSON Schema Registry serialization with identity framing.</summary>
+    public static ProducerBuilder<TKey, TValue> UseJsonSchemaRegistry<TKey, TValue>(
+        this ProducerBuilder<TKey, TValue> builder,
+        ISchemaRegistryClient schemaRegistry,
+        string jsonSchema,
+        JsonTypeInfo<TValue> jsonTypeInfo,
+        JsonSchemaSerializerConfig config)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        var serializer = new JsonSchemaRegistrySerializer<TValue>(
+            schemaRegistry,
+            jsonSchema,
+            jsonTypeInfo,
+            config);
+        return builder.WithValueSerializer(serializer);
+    }
+
     /// <summary>
     /// Configures the producer to use JSON Schema Registry serialization for values.
     /// </summary>
@@ -189,6 +225,23 @@ public static class SchemaRegistryExtensions
         return builder.WithValueDeserializer(deserializer);
     }
 
+    /// <summary>Configures JSON Schema Registry deserialization with identity framing.</summary>
+    [RequiresUnreferencedCode("JsonSerializerOptions-based JSON deserialization uses reflection. Use the JsonTypeInfo<TValue> overload for NativeAOT.")]
+    [RequiresDynamicCode("JsonSerializerOptions-based JSON deserialization may require runtime code generation. Use the JsonTypeInfo<TValue> overload for NativeAOT.")]
+    public static ConsumerBuilder<TKey, TValue> UseJsonSchemaRegistry<TKey, TValue>(
+        this ConsumerBuilder<TKey, TValue> builder,
+        ISchemaRegistryClient schemaRegistry,
+        SchemaRegistryDeserializerConfig config,
+        JsonSerializerOptions? jsonOptions = null)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        var deserializer = new JsonSchemaRegistryDeserializer<TValue>(
+            schemaRegistry,
+            jsonOptions,
+            config);
+        return builder.WithValueDeserializer(deserializer);
+    }
+
     /// <summary>
     /// Configures JSON Schema Registry deserialization with payload validation.
     /// </summary>
@@ -287,6 +340,21 @@ public static class SchemaRegistryExtensions
             schemaRegistry,
             jsonTypeInfo);
 
+        return builder.WithValueDeserializer(deserializer);
+    }
+
+    /// <summary>Configures NativeAOT-safe JSON Schema Registry deserialization with identity framing.</summary>
+    public static ConsumerBuilder<TKey, TValue> UseJsonSchemaRegistry<TKey, TValue>(
+        this ConsumerBuilder<TKey, TValue> builder,
+        ISchemaRegistryClient schemaRegistry,
+        JsonTypeInfo<TValue> jsonTypeInfo,
+        SchemaRegistryDeserializerConfig config)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        var deserializer = new JsonSchemaRegistryDeserializer<TValue>(
+            schemaRegistry,
+            jsonTypeInfo,
+            config);
         return builder.WithValueDeserializer(deserializer);
     }
 
