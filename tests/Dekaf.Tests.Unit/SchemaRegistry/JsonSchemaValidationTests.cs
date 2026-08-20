@@ -165,6 +165,28 @@ public sealed class JsonSchemaValidationTests
     }
 
     [Test]
+    public void InlineRules_ApplyRefSiblingsAccordingToDialect()
+    {
+        const string siblingRule =
+            "\"confluent:rules\":[{\"name\":\"sibling\",\"expr\":\"false\"}]";
+        var explicitDraft7 = CreateFactory().GetOrCreate(CreateSchema(
+            """{"$schema":"http://json-schema.org/draft-07/schema#","definitions":{"s":{}},"$ref":"#/definitions/s",""" +
+            siblingRule + "}"));
+        var implicitDraft7 = CreateFactory().GetOrCreate(CreateSchema(
+            """{"definitions":{"s":{}},"$ref":"#/definitions/s",""" + siblingRule + "}"));
+        var draft202012 = CreateFactory().GetOrCreate(CreateSchema(
+            """{"$schema":"https://json-schema.org/draft/2020-12/schema","$defs":{"s":{}},"$ref":"#/$defs/s",""" +
+            siblingRule + "}"));
+
+        explicitDraft7.ValidateRules("1"u8.ToArray(), 35, failFast: false);
+        implicitDraft7.ValidateRules("1"u8.ToArray(), 35, failFast: false);
+        Assert.Throws<ValidationRulesFailedException>(() => draft202012.ValidateRules(
+            "1"u8.ToArray(),
+            36,
+            failFast: false));
+    }
+
+    [Test]
     public void Validator_ResolvesEmbeddedResourcesById()
     {
         var validator = CreateFactory().GetOrCreate(CreateSchema(
@@ -852,6 +874,30 @@ public sealed class JsonSchemaValidationTests
     }
 
     [Test]
+    public void InlineRules_CompareArbitraryPrecisionNumbersExactly()
+    {
+        const string schemaText = """
+            {
+              "type": "object",
+              "confluent:rules": [{
+                "name": "exact",
+                "expr": "this.precise == 0.1234567890123456789012345678901 && this.precise < this.next && this.huge == 1e1000 && this.huge > 9e999 && this.huge > 1 && this.negative < -1"
+              }]
+            }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
+
+        validator.ValidateRules(
+            """{"precise":0.1234567890123456789012345678901,"next":0.1234567890123456789012345678902,"huge":1e1000,"negative":-1e1000}"""u8.ToArray(),
+            23,
+            failFast: false);
+        Assert.Throws<ValidationRulesFailedException>(() => validator.ValidateRules(
+            """{"precise":0.1234567890123456789012345678902,"next":0.1234567890123456789012345678901,"huge":1e1000,"negative":-1e1000}"""u8.ToArray(),
+            23,
+            failFast: false));
+    }
+
+    [Test]
     public async Task InlineRules_EvaluateSiblingMemberRulesAgainstSharedValues()
     {
         const string schemaText = """
@@ -926,7 +972,7 @@ public sealed class JsonSchemaValidationTests
         var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
 
         validator.ValidateRules(
-            """{"left":{"id":1,"name":"a"},"right":{"name":"a","id":1.0},"values":[1,"\u0061"],"expected":[1.0,"a"]}"""u8.ToArray(),
+            """{"left":{"id":1e1000,"name":"a"},"right":{"name":"a","id":10e999},"values":[0.1234567890123456789012345678901,"\u0061"],"expected":[0.12345678901234567890123456789010,"a"]}"""u8.ToArray(),
             24,
             failFast: false);
         Assert.Throws<ValidationRulesFailedException>(() => validator.ValidateRules(

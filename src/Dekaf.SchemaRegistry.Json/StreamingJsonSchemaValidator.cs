@@ -1073,8 +1073,6 @@ internal sealed class SchemaCompiler : IDisposable
         if (schema.ValueKind != JsonValueKind.Object)
             throw new InvalidOperationException($"JSON Schema at '{pointer}' must be an object or boolean.");
 
-        node.ValidationRules = CompileValidationRules(schema, out var validationRuleMembers);
-        node.ValidationRuleMembers = validationRuleMembers;
         baseUri = GetEffectiveBaseUri(schema, baseUri);
         dialect = GetDialect(schema, dialect);
         if (schema.TryGetProperty("$ref", out var referenceElement))
@@ -1093,6 +1091,9 @@ internal sealed class SchemaCompiler : IDisposable
             if (dialect == SchemaDialect.Draft7)
                 return node;
         }
+
+        node.ValidationRules = CompileValidationRules(schema, out var validationRuleMembers);
+        node.ValidationRuleMembers = validationRuleMembers;
 
         node.Types = ParseTypes(schema);
         node.MinProperties = GetNonNegativeInt32(schema, "minProperties", 0);
