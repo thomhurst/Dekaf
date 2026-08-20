@@ -34,6 +34,8 @@ public sealed class InMemoryProducer<TKey, TValue> :
     IKafkaProducer<TKey, TValue>,
     IInMemoryTransactionRecoveryContext
 {
+    internal static Action? TransactionCompletionPublishedTestHook;
+
     private readonly InMemoryKafkaCluster _cluster;
     private readonly ISerializer<TKey> _keySerializer;
     private readonly ISerializer<TValue> _valueSerializer;
@@ -639,6 +641,8 @@ public sealed class InMemoryProducer<TKey, TValue> :
     {
         lock (_transactionGate)
         {
+            transaction.PublishCompleted();
+            Volatile.Read(ref TransactionCompletionPublishedTestHook)?.Invoke();
             if (ReferenceEquals(_activeTransaction, transaction))
                 Volatile.Write(ref _activeTransaction, null);
         }
@@ -1095,11 +1099,9 @@ public sealed class InMemoryProducer<TKey, TValue> :
                     PreparedState,
                     this);
                 _pendingOffsets.Clear();
-                SetStatePreservingMutationCount(TransactionLifecycleState.Completed);
             }
 
             _producer.CompleteTransaction(this);
-            SignalCompletionAttempt();
         }
 
         private void EnterMutation(string operation)
@@ -1276,16 +1278,15 @@ public sealed class InMemoryProducer<TKey, TValue> :
             }
         }
 
-        private void SignalCompletionAttempt()
+        internal void PublishCompleted()
         {
-            TaskCompletionSource? completion;
             lock (_completionGate)
             {
-                completion = _completionAttempt;
+                SetStatePreservingMutationCount(TransactionLifecycleState.Completed);
+                var completion = _completionAttempt;
                 _completionAttempt = null;
+                completion?.TrySetResult();
             }
-
-            completion?.TrySetResult();
         }
 
         private void MarkAbortable(AbortableTransactionException exception)

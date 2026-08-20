@@ -513,6 +513,52 @@ public sealed class InMemoryProducerFaultTests
     }
 
     [Test]
+    [NotInParallel]
+    public async Task ProducerDispose_WaitsUntilCompletedTransactionIsUnpublished()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        var transaction = producer.BeginTransaction();
+        var completionPublished = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        using var releaseCompletion = new ManualResetEventSlim();
+        Volatile.Write(
+            ref InMemoryProducer<string, string>.TransactionCompletionPublishedTestHook,
+            () =>
+            {
+                completionPublished.TrySetResult();
+                releaseCompletion.Wait();
+            });
+
+        try
+        {
+            var pendingCommit = Task.Run(() => transaction.CommitAsync().AsTask());
+            await completionPublished.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var disposeStarted = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var pendingDispose = Task.Run(() =>
+            {
+                disposeStarted.TrySetResult();
+                return producer.DisposeAsync().AsTask();
+            });
+            await disposeStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            await Assert.That(pendingDispose.IsCompleted).IsFalse();
+            releaseCompletion.Set();
+            await pendingCommit.WaitAsync(TimeSpan.FromSeconds(5));
+            await pendingDispose.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            Volatile.Write(
+                ref InMemoryProducer<string, string>.TransactionCompletionPublishedTestHook,
+                null);
+            releaseCompletion.Set();
+            await producer.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task TransactionProduce_AfterCompletion_ReturnsFaultedValueTask()
     {
         var producer = new InMemoryProducer<string, string>(new InMemoryKafkaCluster());
