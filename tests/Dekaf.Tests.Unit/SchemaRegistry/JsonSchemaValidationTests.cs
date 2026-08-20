@@ -936,6 +936,66 @@ public sealed class JsonSchemaValidationTests
     }
 
     [Test]
+    public void InlineRules_CompareDeepCollectionsInOneTraversal()
+    {
+        const string schemaText = """
+            {
+              "confluent:rules": [{ "name": "equal", "expr": "this.left == this.right" }]
+            }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
+
+        validator.ValidateRules(CreateDeepEqualityPayload(depth: 32, rightLeaf: 1), 24, failFast: false);
+        Assert.Throws<ValidationRulesFailedException>(() => validator.ValidateRules(
+            CreateDeepEqualityPayload(depth: 32, rightLeaf: 2),
+            24,
+            failFast: false));
+    }
+
+    [Test]
+    public async Task InlineRules_MissingMembersRequireHasGuard()
+    {
+        const string schemaText = """
+            {
+              "confluent:rules": [
+                { "name": "equal", "expr": "this.start == this.end" },
+                { "name": "not-equal", "expr": "this.name != 'forbidden'" },
+                { "name": "guarded", "expr": "!has(this.optional) || this.optional == 'present'" }
+              ]
+            }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
+
+        var exception = Assert.Throws<ValidationRulesFailedException>(() => validator.ValidateRules(
+            "{}"u8.ToArray(),
+            24,
+            failFast: false));
+
+        await Assert.That(exception.Violations.Select(static violation => violation.Rule.Name!))
+            .IsEquivalentTo(["equal", "not-equal"]);
+    }
+
+    [Test]
+    public async Task InlineRules_RejectEmptyMemberPathSegments()
+    {
+        foreach (var expression in new[] { "this.", "this..value", "this.value." })
+        {
+            var schemaText = $$"""
+                { "confluent:rules": [{ "name": "invalid", "expr": "{{expression}} == 1" }] }
+                """;
+            var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
+
+            var exception = Assert.Throws<ValidationRulesFailedException>(() => validator.ValidateRules(
+                "{}"u8.ToArray(),
+                24,
+                failFast: false));
+
+            await Assert.That(exception.Violations[0].Cause!.Message).Contains(
+                $"Unsupported CEL identifier '{expression}'");
+        }
+    }
+
+    [Test]
     public void InlineRules_RejectOpaqueCustomRuleExecutor()
     {
         using var registry = new MockSchemaRegistryClient();
@@ -1449,6 +1509,25 @@ public sealed class JsonSchemaValidationTests
             Kind = SchemaRuleKind.Transform,
             Mode = mode
         };
+
+    private static byte[] CreateDeepEqualityPayload(int depth, int rightLeaf)
+    {
+        var json = new StringBuilder(depth * 48);
+        json.Append("{\"left\":");
+        for (var index = 0; index < depth; index++)
+            json.Append("{\"value\":");
+        json.Append('1');
+        for (var index = 0; index < depth; index++)
+            json.Append(",\"tag\":1}");
+
+        json.Append(",\"right\":");
+        for (var index = 0; index < depth; index++)
+            json.Append("{\"tag\":1,\"value\":");
+        json.Append(rightLeaf);
+        json.Append('}', depth);
+        json.Append('}');
+        return Encoding.UTF8.GetBytes(json.ToString());
+    }
 
     private static byte[] CreateWirePayload(int schemaId, string json)
     {
