@@ -458,6 +458,7 @@ public class KafkaConnectionCapabilityHandshakeTests
     }
 
     [Test]
+    [NotInParallel]
     [Timeout(5_000)]
     public async Task ConnectAsync_Kip1242_WhenIdentityHandshakeTimesOut_ThrowsKafkaException(
         CancellationToken cancellationToken)
