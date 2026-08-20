@@ -152,6 +152,8 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(options);
+        if (!Enum.IsDefined(options.GroupMembershipOperation))
+            throw new ArgumentOutOfRangeException(nameof(options));
         MemberCommand? command = null;
         lock (_commandWriteGate)
         {
@@ -375,16 +377,16 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
     private async ValueTask ProcessCloseAsync(StreamsGroupCloseOptions options)
     {
         _heartbeatTimer.Change(Timeout.Infinite, Timeout.Infinite);
+        int? terminalEpoch = options.GroupMembershipOperation switch
+        {
+            StreamsGroupMembershipOperation.RemainInGroup => null,
+            StreamsGroupMembershipOperation.LeaveGroup => -1,
+            StreamsGroupMembershipOperation.Default => InstanceId is null ? -1 : -2,
+            _ => throw new ArgumentOutOfRangeException(nameof(options))
+        };
+        var retainMembership = terminalEpoch is null or -2;
         try
         {
-            int? terminalEpoch = options.GroupMembershipOperation switch
-            {
-                StreamsGroupMembershipOperation.RemainInGroup => null,
-                StreamsGroupMembershipOperation.LeaveGroup => -1,
-                StreamsGroupMembershipOperation.Default when InstanceId is not null => -2,
-                _ => -1
-            };
-
             if (_memberEpoch > 0 && terminalEpoch is not null)
             {
                 var request = new StreamsGroupHeartbeatRequest
@@ -406,6 +408,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
             var current = _snapshot;
             _snapshot = new StreamsGroupMemberSnapshot
             {
+                IsJoined = retainMembership && current.IsJoined,
                 IsClosed = true,
                 MemberId = current.MemberId,
                 MemberEpoch = current.MemberEpoch,

@@ -251,12 +251,13 @@ public sealed class StreamsGroupMemberTests
         await Assert.That(connection.HeartbeatRequests).Count().IsEqualTo(2);
     }
 
-    [Arguments(null, -1)]
-    [Arguments("instance-1", -2)]
+    [Arguments(null, -1, false)]
+    [Arguments("instance-1", -2, true)]
     [Test]
     public async Task CloseAsync_DefaultUsesMembershipSpecificTerminalEpoch(
         string? instanceId,
-        int expectedEpoch)
+        int expectedEpoch,
+        bool expectedJoined)
     {
         var connection = new ScriptedConnection();
         connection.EnqueueHeartbeat(Success(epoch: 1));
@@ -268,6 +269,7 @@ public sealed class StreamsGroupMemberTests
 
         await Assert.That(connection.HeartbeatRequests[1].MemberEpoch).IsEqualTo(expectedEpoch);
         await Assert.That(fixture.Member.Snapshot.IsClosed).IsTrue();
+        await Assert.That(fixture.Member.Snapshot.IsJoined).IsEqualTo(expectedJoined);
     }
 
     [Arguments(false)]
@@ -314,6 +316,27 @@ public sealed class StreamsGroupMemberTests
         });
 
         await Assert.That(connection.HeartbeatRequests).Count().IsEqualTo(1);
+        await Assert.That(fixture.Member.Snapshot.IsJoined).IsTrue();
+    }
+
+    [Test]
+    public async Task CloseAsync_InvalidMembershipOperationDoesNotLeaveOrClose()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1));
+        connection.EnqueueHeartbeat(Success(epoch: -1));
+        await using var fixture = CreateFixture(connection);
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(async () =>
+            await fixture.Member.CloseAsync(new StreamsGroupCloseOptions
+            {
+                GroupMembershipOperation = (StreamsGroupMembershipOperation)int.MaxValue
+            }));
+
+        await Assert.That(connection.HeartbeatRequests).Count().IsEqualTo(1);
+        await Assert.That(fixture.Member.Snapshot.IsClosed).IsFalse();
+        await Assert.That(fixture.Member.Snapshot.IsJoined).IsTrue();
     }
 
     [Test]
