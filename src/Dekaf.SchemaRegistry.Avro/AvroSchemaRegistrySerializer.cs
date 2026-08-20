@@ -40,7 +40,7 @@ public sealed class AvroSchemaRegistrySerializer<
     [DynamicallyAccessedMembers(
         DynamicallyAccessedMemberTypes.PublicFields |
         DynamicallyAccessedMemberTypes.PublicProperties)] T>
-    : ISerializer<T>, IAsyncSerializerPreparer<T>, IAsyncDisposable
+    : ISerializer<T>, IAsyncSerializerPreparer<T>, IAsyncSerializerPreparationAdmission<T>, IAsyncDisposable
 {
     private const byte MagicByte = 0x00;
     private const int WireHeaderSize = 5;
@@ -187,6 +187,26 @@ public sealed class AvroSchemaRegistrySerializer<
             _ = await preparation.ConfigureAwait(false);
     }
 
+    ValueTask<SerializerPreparationAdmission>
+        IAsyncSerializerPreparationAdmission<T>.PrepareForSerializationAsync(
+            T value,
+            SerializationContext context,
+            CancellationToken cancellationToken)
+    {
+        var preparation = PrepareAsync(
+            context.Topic,
+            value,
+            context.Component == SerializationComponent.Key,
+            cancellationToken);
+        return preparation.IsCompletedSuccessfully
+            ? new ValueTask<SerializerPreparationAdmission>(ToAdmission(preparation.Result))
+            : AwaitAdmissionAsync(preparation);
+
+        static async ValueTask<SerializerPreparationAdmission> AwaitAdmissionAsync(
+            ValueTask<ResolvedSchemaContext> pending) =>
+            ToAdmission(await pending.ConfigureAwait(false));
+    }
+
     /// <summary>
     /// Serializes the value to the output buffer using Avro binary encoding
     /// with Schema Registry wire format.
@@ -221,6 +241,50 @@ public sealed class AvroSchemaRegistrySerializer<
 
         SerializeWithRuleExecutor(value, ref destination, context, schemaEntry, schemaId, avroSchema, codecState);
     }
+
+    void IAsyncSerializerPreparationAdmission<T>.SerializePrepared<TWriter>(
+        T value,
+        ref TWriter destination,
+        SerializationContext context,
+        in SerializerPreparationAdmission admission)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        var avroSchema = GetSchemaForValue(value);
+        var schemaEntry = SubjectSchemaIdCache.FromAdmission(
+            context.Topic,
+            context.Component == SerializationComponent.Key,
+            admission);
+        SerializeCore(value, ref destination, context, schemaEntry, avroSchema);
+    }
+
+    // Keep the public Serialize body inline; routing it through this helper measured 5.5% slower.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void SerializeCore<TWriter>(
+        T value,
+        ref TWriter destination,
+        SerializationContext context,
+        SubjectSchemaIdCache.SubjectSchemaIdCacheEntry schemaEntry,
+        AvroSchema avroSchema)
+        where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+        , allows ref struct
+#endif
+    {
+        var schemaId = schemaEntry.SchemaId;
+
+        var codecState = AvroCodecThreadStateCache.Serialization ??= new AvroSerializationThreadState();
+        if (_config.RuleExecutor is null)
+        {
+            SerializeDirect(value, ref destination, schemaId, codecState);
+            return;
+        }
+
+        SerializeWithRuleExecutor(value, ref destination, context, schemaEntry, schemaId, avroSchema, codecState);
+    }
+
+    private static SerializerPreparationAdmission ToAdmission(
+        in ResolvedSchemaContext context) =>
+        new(context.Subject, context.SchemaId, context.Schema);
 
     private void SerializeDirect<TWriter>(
         T value,

@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
+using Dekaf.Serialization;
 
 namespace Dekaf.SchemaRegistry;
 
@@ -206,6 +207,16 @@ internal sealed class SubjectSchemaIdCache
         int schemaId,
         Schema schema) =>
         Cache(new SubjectSchemaIdCacheKey(topic, isKey), subject, schemaId, schema);
+
+    internal static SubjectSchemaIdCacheEntry FromAdmission(
+        string topic,
+        bool isKey,
+        in SerializerPreparationAdmission admission) =>
+        new(
+            new SubjectSchemaIdCacheKey(topic, isKey),
+            admission.Subject!,
+            admission.SchemaId,
+            (Schema)admission.Schema!);
 
     private SubjectSchemaIdCacheEntry Cache(
         SubjectSchemaIdCacheKey key,

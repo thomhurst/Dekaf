@@ -6256,15 +6256,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 }
                 else if (_keyDeserializerPreparer is { } keyPreparer)
                 {
-                    if (!keyPreparer.TryDeserialize(keyData, keyContext, out key))
+                    for (var preparationAttempt = 0;
+                         !keyPreparer.TryDeserialize(keyData, keyContext, out key);
+                         preparationAttempt++)
                     {
-                        await keyPreparer.PrepareAsync(keyData, keyContext, cancellationToken)
-                            .ConfigureAwait(false);
-                        if (!keyPreparer.TryDeserialize(keyData, keyContext, out key))
+                        if (preparationAttempt >= 2)
                         {
                             throw new InvalidOperationException(
                                 "Deserializer remained unprepared after PrepareAsync completed.");
                         }
+
+                        await keyPreparer.PrepareAsync(keyData, keyContext, cancellationToken)
+                            .ConfigureAwait(false);
                     }
                 }
                 else
@@ -6311,15 +6314,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
             else if (_valueDeserializerPreparer is { } valuePreparer)
             {
-                if (!valuePreparer.TryDeserialize(valueBytes, valueContext, out value))
+                for (var preparationAttempt = 0;
+                     !valuePreparer.TryDeserialize(valueBytes, valueContext, out value);
+                     preparationAttempt++)
                 {
-                    await valuePreparer.PrepareAsync(valueBytes, valueContext, cancellationToken)
-                        .ConfigureAwait(false);
-                    if (!valuePreparer.TryDeserialize(valueBytes, valueContext, out value))
+                    if (preparationAttempt >= 2)
                     {
                         throw new InvalidOperationException(
                             "Deserializer remained unprepared after PrepareAsync completed.");
                     }
+
+                    await valuePreparer.PrepareAsync(valueBytes, valueContext, cancellationToken)
+                        .ConfigureAwait(false);
                 }
             }
             else

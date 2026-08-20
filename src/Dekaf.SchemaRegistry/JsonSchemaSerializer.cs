@@ -26,6 +26,7 @@ namespace Dekaf.SchemaRegistry;
 public sealed class JsonSchemaRegistrySerializer<T> :
     ISerializer<T>,
     IAsyncSerializerPreparer<T>,
+    IAsyncSerializerPreparationAdmission<T>,
     IAsyncDisposable
 {
     private const byte MagicByte = 0x00;
@@ -545,6 +546,26 @@ public sealed class JsonSchemaRegistrySerializer<T> :
             _ = await preparation.ConfigureAwait(false);
     }
 
+    ValueTask<SerializerPreparationAdmission>
+        IAsyncSerializerPreparationAdmission<T>.PrepareForSerializationAsync(
+            T value,
+            SerializationContext context,
+            CancellationToken cancellationToken)
+    {
+        var preparation = PrepareAsync(
+            context.Topic,
+            value,
+            context.Component == SerializationComponent.Key,
+            cancellationToken);
+        return preparation.IsCompletedSuccessfully
+            ? new ValueTask<SerializerPreparationAdmission>(ToAdmission(preparation.Result))
+            : AwaitAdmissionAsync(preparation);
+
+        static async ValueTask<SerializerPreparationAdmission> AwaitAdmissionAsync(
+            ValueTask<ResolvedSchemaContext> pending) =>
+            ToAdmission(await pending.ConfigureAwait(false));
+    }
+
     public void Serialize<TWriter>(T value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>
 #if NET10_0_OR_GREATER
@@ -552,6 +573,109 @@ public sealed class JsonSchemaRegistrySerializer<T> :
 #endif
     {
         var schemaEntry = GetSchemaForContext(context.Topic, context.Component == SerializationComponent.Key);
+        var schemaId = schemaEntry.SchemaId;
+
+        var payloadBuffer = SchemaRegistryBuffers.PayloadBuffer ??= new ArrayBufferWriter<byte>(initialCapacity: 4096);
+        payloadBuffer.ResetWrittenCount();
+
+        var jsonWriter = t_jsonWriter;
+        if (jsonWriter is null)
+        {
+            jsonWriter = new Utf8JsonWriter(payloadBuffer);
+            t_jsonWriter = jsonWriter;
+        }
+        else
+        {
+            jsonWriter.Reset(payloadBuffer);
+        }
+
+        try
+        {
+            _serializePayload(jsonWriter, value);
+            jsonWriter.Flush();
+        }
+        catch
+        {
+            t_jsonWriter = null;
+            throw;
+        }
+
+        var payload = payloadBuffer.WrittenMemory;
+        var validator = _validatorFactory?.GetOrCreate(schemaEntry.Schema!);
+        if (_ruleExecutor is null)
+        {
+            validator?.Validate(payload.Span, schemaId);
+        }
+        else
+        {
+            var ruleContext = SchemaRegistryRuleContext.Rent(
+                context.Topic,
+                context.Component,
+                schemaId,
+                schemaEntry.Subject,
+                schemaEntry.Schema,
+                SchemaRegistryPayloadFormat.Json);
+            try
+            {
+                if (_ruleExecutor is SchemaRegistryRuleExecutor builtInRuleExecutor && validator is not null)
+                {
+                    payload = builtInRuleExecutor.TransformSerializedPayload(
+                        payload,
+                        ruleContext,
+                        validator,
+                        schemaId);
+                }
+                else
+                {
+                    validator?.Validate(payload.Span, schemaId);
+                    payload = _ruleExecutor.TransformSerializedPayload(payload, ruleContext);
+                }
+            }
+            finally
+            {
+                ruleContext.Return();
+            }
+        }
+
+        var totalSize = 1 + 4 + payload.Length;
+        var span = destination.GetSpan(totalSize);
+        span[0] = MagicByte;
+        BinaryPrimitives.WriteInt32BigEndian(span.Slice(1, 4), schemaId);
+        payload.Span.CopyTo(span.Slice(5));
+        destination.Advance(totalSize);
+
+        if (payloadBuffer.Capacity > 1024 * 1024)
+        {
+            SchemaRegistryBuffers.PayloadBuffer = null;
+            t_jsonWriter = null;
+        }
+    }
+
+    void IAsyncSerializerPreparationAdmission<T>.SerializePrepared<TWriter>(
+        T value,
+        ref TWriter destination,
+        SerializationContext context,
+        in SerializerPreparationAdmission admission)
+    {
+        var schemaEntry = SubjectSchemaIdCache.FromAdmission(
+            context.Topic,
+            context.Component == SerializationComponent.Key,
+            admission);
+        SerializeCore(value, ref destination, context, schemaEntry);
+    }
+
+    // Keep the public Serialize body inline; routing it through this helper measured 5.5% slower.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void SerializeCore<TWriter>(
+        T value,
+        ref TWriter destination,
+        SerializationContext context,
+        SubjectSchemaIdCache.SubjectSchemaIdCacheEntry schemaEntry)
+        where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+        , allows ref struct
+#endif
+    {
         var schemaId = schemaEntry.SchemaId;
 
         var payloadBuffer = SchemaRegistryBuffers.PayloadBuffer ??= new ArrayBufferWriter<byte>(initialCapacity: 4096);
@@ -632,6 +756,10 @@ public sealed class JsonSchemaRegistrySerializer<T> :
             t_jsonWriter = null;
         }
     }
+
+    private static SerializerPreparationAdmission ToAdmission(
+        in ResolvedSchemaContext context) =>
+        new(context.Subject, context.SchemaId, context.Schema);
 
     private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry GetSchemaForContext(string topic, bool isKey)
     {

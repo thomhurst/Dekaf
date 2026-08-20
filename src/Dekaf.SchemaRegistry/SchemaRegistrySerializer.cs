@@ -26,6 +26,7 @@ namespace Dekaf.SchemaRegistry;
 public sealed class SchemaRegistrySerializer<T> :
     ISerializer<T>,
     IAsyncSerializerPreparer<T>,
+    IAsyncSerializerPreparationAdmission<T>,
     IAsyncDisposable,
     IAssociatedNameCacheInvalidationTarget
 {
@@ -296,6 +297,26 @@ public sealed class SchemaRegistrySerializer<T> :
             _ = await preparation.ConfigureAwait(false);
     }
 
+    ValueTask<SerializerPreparationAdmission>
+        IAsyncSerializerPreparationAdmission<T>.PrepareForSerializationAsync(
+            T value,
+            SerializationContext context,
+            CancellationToken cancellationToken)
+    {
+        var preparation = PrepareAsync(
+            context.Topic,
+            value,
+            context.Component == SerializationComponent.Key,
+            cancellationToken);
+        return preparation.IsCompletedSuccessfully
+            ? new ValueTask<SerializerPreparationAdmission>(ToAdmission(preparation.Result))
+            : AwaitAdmissionAsync(preparation);
+
+        static async ValueTask<SerializerPreparationAdmission> AwaitAdmissionAsync(
+            ValueTask<ResolvedSchemaContext> pending) =>
+            ToAdmission(await pending.ConfigureAwait(false));
+    }
+
     public void Serialize<TWriter>(T value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>
 #if NET10_0_OR_GREATER
@@ -303,6 +324,67 @@ public sealed class SchemaRegistrySerializer<T> :
 #endif
     {
         var schemaEntry = GetSchemaForContext(context.Topic, context.Component == SerializationComponent.Key);
+        var schemaId = schemaEntry.SchemaId;
+
+        var payloadBuffer = SchemaRegistryBuffers.PayloadBuffer ??= new ArrayBufferWriter<byte>(initialCapacity: 4096);
+        payloadBuffer.ResetWrittenCount();
+        _serialize(value, payloadBuffer);
+        if (payloadBuffer.Capacity > 1024 * 1024)
+            SchemaRegistryBuffers.PayloadBuffer = null;
+
+        var payload = payloadBuffer.WrittenMemory;
+        if (_ruleExecutor is not null)
+        {
+            var ruleContext = SchemaRegistryRuleContext.Rent(
+                context.Topic,
+                context.Component,
+                schemaId,
+                schemaEntry.Subject,
+                schemaEntry.Schema,
+                SchemaRegistryPayloadFormat.Custom);
+            try
+            {
+                payload = _ruleExecutor.TransformSerializedPayload(payload, ruleContext);
+            }
+            finally
+            {
+                ruleContext.Return();
+            }
+        }
+
+        var totalSize = 1 + 4 + payload.Length;
+        var span = destination.GetSpan(totalSize);
+        span[0] = MagicByte;
+        BinaryPrimitives.WriteInt32BigEndian(span.Slice(1, 4), schemaId);
+        payload.Span.CopyTo(span.Slice(5));
+        destination.Advance(totalSize);
+    }
+
+    void IAsyncSerializerPreparationAdmission<T>.SerializePrepared<TWriter>(
+        T value,
+        ref TWriter destination,
+        SerializationContext context,
+        in SerializerPreparationAdmission admission)
+    {
+        var schemaEntry = SubjectSchemaIdCache.FromAdmission(
+            context.Topic,
+            context.Component == SerializationComponent.Key,
+            admission);
+        SerializeCore(value, ref destination, context, schemaEntry);
+    }
+
+    // Keep the public Serialize body inline; routing it through this helper measured 5.5% slower.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void SerializeCore<TWriter>(
+        T value,
+        ref TWriter destination,
+        SerializationContext context,
+        SubjectSchemaIdCache.SubjectSchemaIdCacheEntry schemaEntry)
+        where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+        , allows ref struct
+#endif
+    {
         var schemaId = schemaEntry.SchemaId;
 
         var payloadBuffer = SchemaRegistryBuffers.PayloadBuffer ??= new ArrayBufferWriter<byte>(initialCapacity: 4096);
@@ -342,6 +424,10 @@ public sealed class SchemaRegistrySerializer<T> :
 
         destination.Advance(totalSize);
     }
+
+    private static SerializerPreparationAdmission ToAdmission(
+        in ResolvedSchemaContext context) =>
+        new(context.Subject, context.SchemaId, context.Schema);
 
     private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry GetSchemaForContext(string topic, bool isKey) =>
         Volatile.Read(ref _subjectSchemaIdCache).GetOrAdd(

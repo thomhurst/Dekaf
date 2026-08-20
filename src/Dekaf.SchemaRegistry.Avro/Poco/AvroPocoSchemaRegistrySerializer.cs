@@ -11,7 +11,7 @@ namespace Dekaf.SchemaRegistry.Avro.Poco;
 
 /// <summary>Schema Registry serializer backed by a generated POCO Avro codec.</summary>
 public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
-    : ISerializer<T>, IAsyncSerializerPreparer<T>, IAsyncDisposable
+    : ISerializer<T>, IAsyncSerializerPreparer<T>, IAsyncSerializerPreparationAdmission<T>, IAsyncDisposable
     where TCodec : struct, IAvroPocoCodec<T>
 {
     private const byte MagicByte = 0;
@@ -179,6 +179,25 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         return AwaitPreparationAsync(preparation);
     }
 
+    ValueTask<SerializerPreparationAdmission>
+        IAsyncSerializerPreparationAdmission<T>.PrepareForSerializationAsync(
+            T value,
+            SerializationContext context,
+            CancellationToken cancellationToken)
+    {
+        var preparation = PrepareAsync(
+            context.Topic,
+            context.Component == SerializationComponent.Key,
+            cancellationToken);
+        return preparation.IsCompletedSuccessfully
+            ? new ValueTask<SerializerPreparationAdmission>(ToAdmission(preparation.Result))
+            : AwaitAdmissionAsync(preparation);
+
+        static async ValueTask<SerializerPreparationAdmission> AwaitAdmissionAsync(
+            ValueTask<ResolvedSchemaContext> pending) =>
+            ToAdmission(await pending.ConfigureAwait(false));
+    }
+
     /// <inheritdoc />
     public void Serialize<TWriter>(T value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>
@@ -212,6 +231,59 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
             _config.RuleExecutor!,
             _taggedFieldTransformers);
     }
+
+    void IAsyncSerializerPreparationAdmission<T>.SerializePrepared<TWriter>(
+        T value,
+        ref TWriter destination,
+        SerializationContext context,
+        in SerializerPreparationAdmission admission)
+    {
+        if (default(T) is null && value is null)
+            throw new ArgumentNullException(nameof(value));
+
+        var entry = SubjectSchemaIdCache.FromAdmission(
+            context.Topic,
+            context.Component == SerializationComponent.Key,
+            admission);
+        SerializeCore(value, ref destination, context, entry);
+    }
+
+    // Keep the public Serialize body inline; routing it through this helper measured 5.5% slower.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void SerializeCore<TWriter>(
+        T value,
+        ref TWriter destination,
+        SerializationContext context,
+        SubjectSchemaIdCache.SubjectSchemaIdCacheEntry entry)
+        where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+        , allows ref struct
+#endif
+    {
+        if (_config.RuleExecutor is null)
+        {
+            SerializeDirect(value, ref destination, entry.SchemaId);
+            return;
+        }
+
+        if (entry.Schema!.RuleSet is null)
+        {
+            SerializeWithRules(value, ref destination, context, entry, _config.RuleExecutor!);
+            return;
+        }
+
+        SerializeWithTaggedRules(
+            value,
+            ref destination,
+            context,
+            entry,
+            _config.RuleExecutor!,
+            _taggedFieldTransformers);
+    }
+
+    private static SerializerPreparationAdmission ToAdmission(
+        in ResolvedSchemaContext context) =>
+        new(context.Subject, context.SchemaId, context.Schema);
 
     private static async ValueTask AwaitPreparationAsync(ValueTask<ResolvedSchemaContext> preparation) =>
         _ = await preparation.ConfigureAwait(false);

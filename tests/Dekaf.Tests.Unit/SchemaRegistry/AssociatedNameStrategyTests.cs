@@ -303,15 +303,21 @@ public sealed class AssociatedNameStrategyTests
             Topic = "orders",
             Component = SerializationComponent.Value
         };
+        var admissionSerializer = (IAsyncSerializerPreparationAdmission<int>)serializer;
+        var admission = await admissionSerializer.PrepareForSerializationAsync(42, context);
 
         await ReplaceAssociationAsync(client, "orders", "orders-v2");
         resolver.ClearCache();
         Assert.Throws<InvalidOperationException>(() =>
             serializer.Serialize(42, ref destination, context));
+        var admittedDestination = new ArrayBufferWriter<byte>();
+        admissionSerializer.SerializePrepared(42, ref admittedDestination, context, in admission);
         var refreshed = await serializer.PrepareAsync("orders", 42);
         serializer.Serialize(42, ref destination, context);
 
         await Assert.That(destination.WrittenCount).IsEqualTo(5);
+        await Assert.That(BinaryPrimitives.ReadInt32BigEndian(admittedDestination.WrittenSpan.Slice(1)))
+            .IsEqualTo(prepared.SchemaId);
         await Assert.That(refreshed.Subject).IsEqualTo("orders-v2");
         await Assert.That(BinaryPrimitives.ReadInt32BigEndian(destination.WrittenSpan.Slice(1)))
             .IsEqualTo(refreshed.SchemaId)
@@ -355,14 +361,20 @@ public sealed class AssociatedNameStrategyTests
             Topic = "orders",
             Component = SerializationComponent.Value
         };
+        var admissionSerializer = (IAsyncSerializerPreparationAdmission<int>)serializer;
+        var admission = await admissionSerializer.PrepareForSerializationAsync(42, context);
 
         await ReplaceAssociationAsync(client, "orders", "json-v2");
         resolver.ClearCache();
         Assert.Throws<InvalidOperationException>(() =>
             serializer.Serialize(42, ref destination, context));
+        var admittedDestination = new ArrayBufferWriter<byte>();
+        admissionSerializer.SerializePrepared(42, ref admittedDestination, context, in admission);
         var refreshed = await serializer.PrepareAsync("orders", 42);
         serializer.Serialize(42, ref destination, context);
 
+        await Assert.That(BinaryPrimitives.ReadInt32BigEndian(admittedDestination.WrittenSpan.Slice(1)))
+            .IsEqualTo(prepared.SchemaId);
         await Assert.That(refreshed.Subject).IsEqualTo("json-v2");
         await Assert.That(BinaryPrimitives.ReadInt32BigEndian(destination.WrittenSpan.Slice(1)))
             .IsEqualTo(refreshed.SchemaId)
@@ -412,14 +424,21 @@ public sealed class AssociatedNameStrategyTests
             Topic = "orders",
             Component = SerializationComponent.Value
         };
+        var admissionSerializer =
+            (IAsyncSerializerPreparationAdmission<GenericRecord>)serializer;
+        var admission = await admissionSerializer.PrepareForSerializationAsync(value, context);
 
         await ReplaceAssociationAsync(client, "orders", "avro-v2");
         resolver.ClearCache();
         Assert.Throws<InvalidOperationException>(() =>
             serializer.Serialize(value, ref destination, context));
+        var admittedDestination = new ArrayBufferWriter<byte>();
+        admissionSerializer.SerializePrepared(value, ref admittedDestination, context, in admission);
         var refreshed = await serializer.PrepareAsync("orders", value);
         serializer.Serialize(value, ref destination, context);
 
+        await Assert.That(BinaryPrimitives.ReadInt32BigEndian(admittedDestination.WrittenSpan.Slice(1)))
+            .IsEqualTo(prepared.SchemaId);
         await Assert.That(refreshed.Subject).IsEqualTo("avro-v2");
         await Assert.That(BinaryPrimitives.ReadInt32BigEndian(destination.WrittenSpan.Slice(1)))
             .IsEqualTo(refreshed.SchemaId)
@@ -463,14 +482,21 @@ public sealed class AssociatedNameStrategyTests
             Topic = "orders",
             Component = SerializationComponent.Value
         };
+        var admissionSerializer =
+            (IAsyncSerializerPreparationAdmission<TestMessage>)serializer;
+        var admission = await admissionSerializer.PrepareForSerializationAsync(value, context);
 
         await ReplaceAssociationAsync(client, "orders", "protobuf-v2");
         resolver.ClearCache();
         Assert.Throws<InvalidOperationException>(() =>
             serializer.Serialize(value, ref destination, context));
+        var admittedDestination = new ArrayBufferWriter<byte>();
+        admissionSerializer.SerializePrepared(value, ref admittedDestination, context, in admission);
         var refreshed = await serializer.PrepareAsync("orders", value);
         serializer.Serialize(value, ref destination, context);
 
+        await Assert.That(BinaryPrimitives.ReadInt32BigEndian(admittedDestination.WrittenSpan.Slice(1)))
+            .IsEqualTo(prepared.SchemaId);
         await Assert.That(refreshed.Subject).IsEqualTo("protobuf-v2");
         await Assert.That(BinaryPrimitives.ReadInt32BigEndian(destination.WrittenSpan.Slice(1)))
             .IsEqualTo(refreshed.SchemaId)

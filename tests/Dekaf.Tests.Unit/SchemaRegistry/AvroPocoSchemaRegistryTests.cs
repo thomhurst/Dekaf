@@ -90,10 +90,6 @@ public sealed class AvroPocoSchemaRegistryTests
             Topic = "poco-orders",
             Component = SerializationComponent.Value
         };
-
-        await registry.DeleteAssociationsAsync("poco-orders", "topic", ["value"]);
-        await SetPocoAssociationAsync(registry, "poco-orders", "poco-v2");
-        strategy.ClearCache();
         var value = new PocoOrder
         {
             Id = 42,
@@ -104,11 +100,22 @@ public sealed class AvroPocoSchemaRegistryTests
             Address = new PocoAddress { City = "London", PostCode = "SW1" },
             Created = DateTime.UnixEpoch
         };
+        var admissionSerializer =
+            (IAsyncSerializerPreparationAdmission<PocoOrder>)serializer;
+        var admission = await admissionSerializer.PrepareForSerializationAsync(value, context);
+
+        await registry.DeleteAssociationsAsync("poco-orders", "topic", ["value"]);
+        await SetPocoAssociationAsync(registry, "poco-orders", "poco-v2");
+        strategy.ClearCache();
         Assert.Throws<InvalidOperationException>(() =>
             serializer.Serialize(value, ref destination, context));
+        var admittedDestination = new ArrayBufferWriter<byte>();
+        admissionSerializer.SerializePrepared(value, ref admittedDestination, context, in admission);
         var refreshed = await serializer.PrepareAsync("poco-orders");
         serializer.Serialize(value, ref destination, context);
 
+        await Assert.That(BinaryPrimitives.ReadInt32BigEndian(admittedDestination.WrittenSpan.Slice(1)))
+            .IsEqualTo(prepared.SchemaId);
         await Assert.That(BinaryPrimitives.ReadInt32BigEndian(destination.WrittenSpan.Slice(1)))
             .IsEqualTo(refreshed.SchemaId)
             .And.IsNotEqualTo(prepared.SchemaId);

@@ -15,6 +15,8 @@ public class AssociatedNameStrategyBenchmarks
     private AssociatedNameStrategy _strategy = null!;
     private SchemaRegistrySerializer<int> _serializer = null!;
     private JsonSchemaRegistrySerializer<int> _jsonSerializer = null!;
+    private IAsyncSerializerPreparationAdmission<int> _jsonAdmissionSerializer = null!;
+    private SerializerPreparationAdmission _jsonAdmission;
     private DeserializerSubjectNameCache _deserializerSubjects = null!;
     private ArrayBufferWriter<byte> _jsonDestination = null!;
     private SerializationContext _serializationContext;
@@ -37,6 +39,7 @@ public class AssociatedNameStrategyBenchmarks
             _client,
             _strategy,
             "{\"type\":\"integer\"}");
+        _jsonAdmissionSerializer = _jsonSerializer;
         _jsonDestination = new ArrayBufferWriter<byte>(16);
         _serializationContext = new SerializationContext
         {
@@ -48,6 +51,9 @@ public class AssociatedNameStrategyBenchmarks
             .GetResult();
         _ = _serializer.PrepareAsync(_topic, 42).GetAwaiter().GetResult();
         _ = _jsonSerializer.PrepareAsync(_topic, 42).GetAwaiter().GetResult();
+        _jsonAdmission = _jsonAdmissionSerializer.PrepareForSerializationAsync(42, _serializationContext)
+            .GetAwaiter()
+            .GetResult();
         _deserializerSubjects = DeserializerSubjectNameCache.Create(
             _client,
             new SchemaRegistryDeserializerConfig { AsyncSubjectNameStrategy = _strategy })!;
@@ -86,6 +92,17 @@ public class AssociatedNameStrategyBenchmarks
     {
         _jsonDestination.Clear();
         _jsonSerializer.Serialize(42, ref _jsonDestination, _serializationContext);
+    }
+
+    [Benchmark]
+    public void JsonSerializerAdmittedCached()
+    {
+        _jsonDestination.Clear();
+        _jsonAdmissionSerializer.SerializePrepared(
+            42,
+            ref _jsonDestination,
+            _serializationContext,
+            in _jsonAdmission);
     }
 
     [Benchmark]

@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Diagnostics;
 using System.Reflection;
 using BenchmarkDotNet.Attributes;
@@ -8,6 +9,7 @@ using Dekaf.Metadata;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Producer;
+using Dekaf.Serialization;
 
 namespace Dekaf.Benchmarks.Benchmarks.Client;
 
@@ -15,7 +17,7 @@ namespace Dekaf.Benchmarks.Benchmarks.Client;
 [Config(typeof(AllocationJobConfig))]
 public class TransactionalProduceAllocationBenchmarks
 {
-    private const int MessagesPerIteration = 1_000;
+    private const int MessagesPerIteration = 50_000;
 
     private sealed class AllocationJobConfig : ManualConfig
     {
@@ -25,7 +27,7 @@ public class TransactionalProduceAllocationBenchmarks
                 .WithStrategy(RunStrategy.Throughput)
                 .WithLaunchCount(1)
                 .WithWarmupCount(3)
-                .WithIterationCount(3)
+                .WithIterationCount(10)
                 .WithInvocationCount(MessagesPerIteration)
                 .WithUnrollFactor(1));
         }
@@ -41,6 +43,9 @@ public class TransactionalProduceAllocationBenchmarks
     private ActivityListener? _activityListener;
 
     [Params(false, true)]
+    public bool UsePreparedSerializer { get; set; }
+
+    [Params(false, true)]
     public bool TracingEnabled { get; set; }
 
     [GlobalSetup]
@@ -51,6 +56,7 @@ public class TransactionalProduceAllocationBenchmarks
             .WithTransactionalId("benchmark-transaction-allocation")
             .WithBufferMemory(ulong.MaxValue)
             .WithLinger(TimeSpan.Zero)
+            .WithValueSerializer(UsePreparedSerializer ? PreparedStringSerializer.Instance : Serializers.String)
             .Build();
         if (TracingEnabled)
         {
@@ -176,4 +182,41 @@ public class TransactionalProduceAllocationBenchmarks
     private static void SetField<T>(object target, string name, T value) =>
         target.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!
             .SetValue(target, value);
+
+    private sealed class PreparedStringSerializer :
+        ISerializer<string>,
+        IAsyncSerializerPreparationAdmission<string>
+    {
+        internal static readonly PreparedStringSerializer Instance = new();
+        private static readonly object PreparedSchema = new();
+
+        public ValueTask PrepareAsync(
+            string value,
+            SerializationContext context,
+            CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
+
+        public ValueTask<SerializerPreparationAdmission> PrepareForSerializationAsync(
+            string value,
+            SerializationContext context,
+            CancellationToken cancellationToken = default) =>
+            new(new SerializerPreparationAdmission("benchmark", 1, PreparedSchema));
+
+        public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
+            where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
+            => Serializers.String.Serialize(value, ref destination, context);
+
+        public void SerializePrepared<TWriter>(
+            string value,
+            ref TWriter destination,
+            SerializationContext context,
+            in SerializerPreparationAdmission admission)
+            where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
+            => Serializers.String.Serialize(value, ref destination, context);
+    }
 }

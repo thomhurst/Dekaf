@@ -3,7 +3,11 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Reflection;
 using Dekaf.Diagnostics;
+using Dekaf.Errors;
+using Dekaf.Metadata;
 using Dekaf.Producer;
+using Dekaf.Protocol;
+using Dekaf.Protocol.Messages;
 using Dekaf.Serialization;
 
 namespace Dekaf.Tests.Unit.Producer;
@@ -199,6 +203,28 @@ public class ProducerAsyncPreparerTests
         await Assert.That(producer.RecordAccumulator.BufferedBytes).IsEqualTo(0L);
     }
 
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task ProduceAsync_UsesExactPreparationAdmission(bool componentwise)
+    {
+        var valueSerializer = new AdmittedPreparingSerializer();
+        await using var producer = CreateProducer(Serializers.String, valueSerializer);
+        await ReadyProducerAsync(producer);
+        SeedProducerMetadata(producer);
+
+        await Assert.That(async () =>
+                await (componentwise
+                    ? producer.ProduceAsync(Topic, "k", "v")
+                    : producer.ProduceAsync(NewMessage())))
+            .Throws<AdmittedSerializationException>();
+
+        await Assert.That(valueSerializer.PrepareForSerializationCount).IsEqualTo(1);
+        await Assert.That(valueSerializer.SerializePreparedCount).IsEqualTo(1);
+        await Assert.That(valueSerializer.SerializeCount).IsEqualTo(0);
+        await Assert.That(valueSerializer.ObservedSchemaId).IsEqualTo(17);
+    }
+
     private static ProducerMessage<string, string> NewMessage() =>
         new() { Topic = Topic, Key = "k", Value = "v" };
 
@@ -252,6 +278,44 @@ public class ProducerAsyncPreparerTests
         SetField(producer, "_initialized", true);
     }
 
+    private static void SeedProducerMetadata(KafkaProducer<string, string> producer)
+    {
+        var metadataManager = GetField<MetadataManager>(producer, "_metadataManager");
+        metadataManager.Metadata.Update(new MetadataResponse
+        {
+            Brokers =
+            [
+                new BrokerMetadata
+                {
+                    NodeId = 0,
+                    Host = "localhost",
+                    Port = 9092
+                }
+            ],
+            ClusterId = "test-cluster",
+            ControllerId = 0,
+            Topics =
+            [
+                new TopicMetadata
+                {
+                    ErrorCode = ErrorCode.None,
+                    Name = Topic,
+                    Partitions =
+                    [
+                        new PartitionMetadata
+                        {
+                            ErrorCode = ErrorCode.None,
+                            PartitionIndex = 0,
+                            LeaderId = 0,
+                            ReplicaNodes = [0],
+                            IsrNodes = [0]
+                        }
+                    ]
+                }
+            ]
+        });
+    }
+
     private static T GetField<T>(object target, string name)
     {
         const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
@@ -279,4 +343,62 @@ public class ProducerAsyncPreparerTests
 #endif
             => Serializers.String.Serialize(value, ref destination, context);
     }
+
+    private sealed class AdmittedPreparingSerializer :
+        ISerializer<string>,
+        IAsyncSerializerPreparationAdmission<string>
+    {
+        private static readonly object PreparedSchema = new();
+
+        public int PrepareForSerializationCount { get; private set; }
+        public int SerializePreparedCount { get; private set; }
+        public int SerializeCount { get; private set; }
+        public int ObservedSchemaId { get; private set; }
+
+        public ValueTask PrepareAsync(
+            string value,
+            SerializationContext context,
+            CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("Producer must request an operation admission.");
+
+        public ValueTask<SerializerPreparationAdmission> PrepareForSerializationAsync(
+            string value,
+            SerializationContext context,
+            CancellationToken cancellationToken = default)
+        {
+            PrepareForSerializationCount++;
+            return new ValueTask<SerializerPreparationAdmission>(
+                new SerializerPreparationAdmission("subject-v1", 17, PreparedSchema));
+        }
+
+        public void Serialize<TWriter>(
+            string value,
+            ref TWriter destination,
+            SerializationContext context)
+            where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
+        {
+            SerializeCount++;
+            throw new InvalidOperationException("Invalidated cache path was used.");
+        }
+
+        public void SerializePrepared<TWriter>(
+            string value,
+            ref TWriter destination,
+            SerializationContext context,
+            in SerializerPreparationAdmission admission)
+            where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
+        {
+            SerializePreparedCount++;
+            ObservedSchemaId = admission.SchemaId;
+            throw new AdmittedSerializationException();
+        }
+    }
+
+    private sealed class AdmittedSerializationException : Exception;
 }

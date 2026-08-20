@@ -25,7 +25,7 @@ namespace Dekaf.SchemaRegistry.Protobuf;
 /// <typeparam name="T">The Protobuf message type to serialize.</typeparam>
 public sealed class ProtobufSchemaRegistrySerializer<
     [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>
-    : ISerializer<T>, IAsyncSerializerPreparer<T>, IAsyncDisposable
+    : ISerializer<T>, IAsyncSerializerPreparer<T>, IAsyncSerializerPreparationAdmission<T>, IAsyncDisposable
     where T : IMessage<T>
 {
     private const byte MagicByte = 0x00;
@@ -134,6 +134,26 @@ public sealed class ProtobufSchemaRegistrySerializer<
             _ = await preparation.ConfigureAwait(false);
     }
 
+    ValueTask<SerializerPreparationAdmission>
+        IAsyncSerializerPreparationAdmission<T>.PrepareForSerializationAsync(
+            T value,
+            SerializationContext context,
+            CancellationToken cancellationToken)
+    {
+        var preparation = PrepareAsync(
+            context.Topic,
+            value,
+            context.Component == SerializationComponent.Key,
+            cancellationToken);
+        return preparation.IsCompletedSuccessfully
+            ? new ValueTask<SerializerPreparationAdmission>(ToAdmission(preparation.Result))
+            : AwaitAdmissionAsync(preparation);
+
+        static async ValueTask<SerializerPreparationAdmission> AwaitAdmissionAsync(
+            ValueTask<ResolvedSchemaContext> pending) =>
+            ToAdmission(await pending.ConfigureAwait(false));
+    }
+
     /// <inheritdoc />
     public void Serialize<TWriter>(T value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>
@@ -144,6 +164,73 @@ public sealed class ProtobufSchemaRegistrySerializer<
         ArgumentNullException.ThrowIfNull(value);
 
         var schemaEntry = GetSchemaForContext(context.Topic, context.Component == SerializationComponent.Key);
+        var schemaId = schemaEntry.SchemaId;
+
+        var protoSize = value.CalculateSize();
+        ReadOnlyMemory<byte> transformedPayload = default;
+        if (_config.RuleExecutor is not null)
+        {
+            var ruleContext = SchemaRegistryRuleContext.Rent(
+                context.Topic,
+                context.Component,
+                schemaId,
+                schemaEntry.Subject,
+                schemaEntry.Schema,
+                SchemaRegistryPayloadFormat.Protobuf);
+            try
+            {
+                transformedPayload = _config.RuleExecutor.TransformSerializedPayload(value.ToByteArray(), ruleContext);
+            }
+            finally
+            {
+                ruleContext.Return();
+            }
+        }
+
+        var protobufPayloadLength = _config.RuleExecutor is null ? protoSize : transformedPayload.Length;
+        var totalSize = 1 + 4 + _encodedMessageIndexes.Length + protobufPayloadLength;
+        var span = destination.GetSpan(totalSize);
+        span[0] = MagicByte;
+        BinaryPrimitives.WriteInt32BigEndian(span.Slice(1, 4), schemaId);
+
+        var offset = 5;
+        _encodedMessageIndexes.CopyTo(span.Slice(offset));
+        offset += _encodedMessageIndexes.Length;
+
+        if (_config.RuleExecutor is null)
+            value.WriteTo(span.Slice(offset, protoSize));
+        else
+            transformedPayload.Span.CopyTo(span.Slice(offset, transformedPayload.Length));
+
+        destination.Advance(totalSize);
+    }
+
+    void IAsyncSerializerPreparationAdmission<T>.SerializePrepared<TWriter>(
+        T value,
+        ref TWriter destination,
+        SerializationContext context,
+        in SerializerPreparationAdmission admission)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        var schemaEntry = SubjectSchemaIdCache.FromAdmission(
+            context.Topic,
+            context.Component == SerializationComponent.Key,
+            admission);
+        SerializeCore(value, ref destination, context, schemaEntry);
+    }
+
+    // Keep the public Serialize body inline; routing it through this helper measured 5.5% slower.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void SerializeCore<TWriter>(
+        T value,
+        ref TWriter destination,
+        SerializationContext context,
+        SubjectSchemaIdCache.SubjectSchemaIdCacheEntry schemaEntry)
+        where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+        , allows ref struct
+#endif
+    {
         var schemaId = schemaEntry.SchemaId;
 
         var protoSize = value.CalculateSize();
@@ -190,6 +277,10 @@ public sealed class ProtobufSchemaRegistrySerializer<
 
         destination.Advance(totalSize);
     }
+
+    private static SerializerPreparationAdmission ToAdmission(
+        in ResolvedSchemaContext context) =>
+        new(context.Subject, context.SchemaId, context.Schema);
 
     private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry GetSchemaForContext(string topic, bool isKey)
     {
