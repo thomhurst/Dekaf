@@ -793,11 +793,13 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         var faultApplied = false;
         if (faultPlan is KafkaFaultPlan indexedPlan &&
             offsetList is null &&
-            indexedPlan.TryGetUnconditionalCommitScope(groupId, out var unconditionalScope))
+            indexedPlan.HasPotentialMatch(KafkaFaultOperation.Commit, groupId) &&
+            indexedPlan.TryApplyUnconditionalCommitFault(
+                groupId,
+                out var unconditionalApplication,
+                cancellationToken))
         {
-            await faultPlan.ApplyAsync(
-                unconditionalScope,
-                cancellationToken).ConfigureAwait(false);
+            await unconditionalApplication.ConfigureAwait(false);
             ThrowIfDisposed();
             faultApplied = true;
         }
@@ -806,22 +808,27 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         if (!faultApplied &&
             offsetList.Count == 0 &&
             faultPlan is KafkaFaultPlan emptyInputPlan &&
-            emptyInputPlan.TryGetUnconditionalCommitScope(groupId, out var emptyInputScope))
+            emptyInputPlan.HasPotentialMatch(KafkaFaultOperation.Commit, groupId) &&
+            emptyInputPlan.TryApplyUnconditionalCommitFault(
+                groupId,
+                out var emptyInputApplication,
+                cancellationToken))
         {
-            await faultPlan.ApplyAsync(
-                emptyInputScope,
-                cancellationToken).ConfigureAwait(false);
+            await emptyInputApplication.ConfigureAwait(false);
             ThrowIfDisposed();
             faultApplied = true;
         }
 
         if (!faultApplied && faultPlan is KafkaFaultPlan orderedPlan)
         {
-            if (orderedPlan.TryGetFirstMatchingCommitScope(groupId, offsetList, out var faultScope))
+            if (orderedPlan.HasPotentialMatch(KafkaFaultOperation.Commit, groupId) &&
+                orderedPlan.TryApplyFirstMatchingCommitFault(
+                    groupId,
+                    offsetList,
+                    out var faultApplication,
+                    cancellationToken))
             {
-                await faultPlan.ApplyAsync(
-                    faultScope,
-                    cancellationToken).ConfigureAwait(false);
+                await faultApplication.ConfigureAwait(false);
                 ThrowIfDisposed();
             }
         }
@@ -839,11 +846,12 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                     groupId);
             }
 
-            if (faultPlan.TryGetFirstMatchingFaultScope(candidateScopes, out var faultScope))
+            if (faultPlan.TryApplyFirstMatchingFault(
+                    candidateScopes,
+                    out var faultApplication,
+                    cancellationToken))
             {
-                await faultPlan.ApplyAsync(
-                    faultScope,
-                    cancellationToken).ConfigureAwait(false);
+                await faultApplication.ConfigureAwait(false);
                 ThrowIfDisposed();
             }
         }

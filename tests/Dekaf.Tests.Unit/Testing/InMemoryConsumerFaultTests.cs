@@ -403,6 +403,32 @@ public sealed class InMemoryConsumerFaultTests
     }
 
     [Test]
+    public async Task CommitAsync_ConcurrentCommitsReserveDistinctOrderedFaults()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        await using var firstConsumer = CreateConsumer(cluster, enableAutoOffsetStore: false);
+        await using var secondConsumer = CreateConsumer(cluster, enableAutoOffsetStore: false);
+        var firstPartition = new TopicPartitionOffset(Topic, 0, 1);
+        var secondPartition = new TopicPartitionOffset(Topic, 1, 1);
+        var firstBarrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, Topic, 0, GroupId));
+        var secondFailure = new InvalidOperationException("second partition");
+        cluster.FaultPlan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, Topic, 1, GroupId),
+            secondFailure);
+
+        var firstCommit = firstConsumer.CommitAsync([firstPartition, secondPartition]).AsTask();
+        await firstBarrier.WaitUntilEnteredAsync();
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            secondConsumer.CommitAsync([secondPartition]).AsTask());
+        await Assert.That(firstBarrier.Release()).IsTrue();
+        await firstCommit;
+
+        await Assert.That(actual).IsSameReferenceAs(secondFailure);
+        await Assert.That(cluster.FaultPlan.Count).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task CommitAsync_InjectedPlanPreservesStoredResourceBeforeGroupOrder()
     {
         var innerPlan = new KafkaFaultPlan();
@@ -866,6 +892,12 @@ public sealed class InMemoryConsumerFaultTests
         var actual = await Assert.ThrowsAsync<InvalidOperationException>(() => moveNext);
 
         await Assert.That(actual).IsSameReferenceAs(failure);
+        await Assert.That(consumer.GetPosition(Partition)).IsEqualTo(0);
+
+        var retry = await consumer.ConsumeOneAsync(TimeSpan.Zero);
+
+        await Assert.That(retry).IsNotNull();
+        await Assert.That(retry!.Value.Offset).IsEqualTo(0);
     }
 
     [Test]
@@ -1339,6 +1371,12 @@ public sealed class InMemoryConsumerFaultTests
             ReadOnlySpan<KafkaFaultScope> operationScopes,
             out KafkaFaultScope operationScope) =>
             inner.TryGetFirstMatchingFaultScope(operationScopes, out operationScope);
+
+        public bool TryApplyFirstMatchingFault(
+            ReadOnlySpan<KafkaFaultScope> operationScopes,
+            out ValueTask application,
+            CancellationToken cancellationToken = default) =>
+            inner.TryApplyFirstMatchingFault(operationScopes, out application, cancellationToken);
 
         public void Fail(KafkaFaultScope scope, Exception exception, int occurrenceCount = 1) =>
             inner.Fail(scope, exception, occurrenceCount);

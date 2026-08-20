@@ -13,6 +13,7 @@ public class InMemoryConsumerBenchmarks
     private const string GroupId = "benchmark-group";
     private const int SnapshotRecordCount = 256;
     private static readonly TopicPartitionOffset StoredOffset = new(Topic, 0, 1);
+    private static readonly IReadOnlyList<TopicPartitionOffset> ExplicitOffsets = [StoredOffset];
     private InMemoryConsumer<Ignore, Ignore> _consumer = null!;
     private InMemoryConsumer<Ignore, Ignore> _manualCommitFaultConsumer = null!;
     private InMemoryConsumer<Ignore, Ignore> _unrelatedFaultConsumer = null!;
@@ -259,6 +260,17 @@ public class InMemoryConsumerBenchmarks
     public void StoreOffsetUnrelatedFault() =>
         _unrelatedFaultConsumer.StoreOffset(StoredOffset);
 
+    [Benchmark]
+    [InvocationCount(131072)]
+    public void CommitExplicitNoFault()
+    {
+        var operation = _consumer.CommitAsync(ExplicitOffsets);
+        if (!operation.IsCompletedSuccessfully)
+            throw new InvalidOperationException("No-fault commit did not complete synchronously.");
+
+        operation.GetAwaiter().GetResult();
+    }
+
     private sealed class CompletedIgnoreDeserializer : IAsyncDeserializer<Ignore>
     {
         public ValueTask<Ignore> DeserializeAsync(
@@ -293,6 +305,12 @@ public class InMemoryConsumerBenchmarks
             ReadOnlySpan<KafkaFaultScope> operationScopes,
             out KafkaFaultScope operationScope) =>
             inner.TryGetFirstMatchingFaultScope(operationScopes, out operationScope);
+
+        public bool TryApplyFirstMatchingFault(
+            ReadOnlySpan<KafkaFaultScope> operationScopes,
+            out ValueTask application,
+            CancellationToken cancellationToken = default) =>
+            inner.TryApplyFirstMatchingFault(operationScopes, out application, cancellationToken);
 
         public void Fail(KafkaFaultScope scope, Exception exception, int occurrenceCount = 1) =>
             inner.Fail(scope, exception, occurrenceCount);
