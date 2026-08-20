@@ -41,6 +41,10 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private readonly HashSet<TopicPartition> _paused = [];
     private readonly Dictionary<TopicPartition, long> _positions = [];
     private readonly Dictionary<TopicPartition, TopicPartitionOffset> _storedOffsets = [];
+    private int _storedOffsetsVersion;
+    private int _committableOffsetsStoredVersion = -1;
+    private int _committableOffsetsGroupGeneration = -1;
+    private bool _hasCommittableStoredOffset;
     // In-doubt record under OffsetStoreTiming.AfterProcessing: delivered but not yet proven
     // processed. Staged for commit only when the next consume call or an explicit commit
     // proves it; an unwind (or close) leaves it unstaged so it is redelivered.
@@ -382,6 +386,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             _paused.Clear();
             _positions.Clear();
             _storedOffsets.Clear();
+            _storedOffsetsVersion++;
             _inDoubtNextOffset = -1;
             _consumerStateVersion++;
             UnregisterConsumerGroupMemberUnderLock();
@@ -511,14 +516,15 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                     yield break;
                 }
 
-                if (_cluster.FaultPlan.Count != 0)
+                var fetchScope = new KafkaFaultScope(
+                    KafkaFaultOperation.Fetch,
+                    partition.Topic,
+                    partition.Partition,
+                    _groupId);
+                if (HasMatchingFault(fetchScope))
                 {
                     await _cluster.FaultPlan.ApplyAsync(
-                        new KafkaFaultScope(
-                            KafkaFaultOperation.Fetch,
-                            partition.Topic,
-                            partition.Partition,
-                            _groupId),
+                        fetchScope,
                         cancellationToken).ConfigureAwait(false);
                     ThrowIfDisposed();
                 }
@@ -527,14 +533,15 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                     ? await ToConsumeResultAsync(partition, record, cancellationToken).ConfigureAwait(false)
                     : ToConsumeResult(partition, record);
 
-                if (_cluster.FaultPlan.Count != 0)
+                var consumeScope = new KafkaFaultScope(
+                    KafkaFaultOperation.Consume,
+                    partition.Topic,
+                    partition.Partition,
+                    _groupId);
+                if (HasMatchingFault(consumeScope))
                 {
                     await _cluster.FaultPlan.ApplyAsync(
-                        new KafkaFaultScope(
-                            KafkaFaultOperation.Consume,
-                            partition.Topic,
-                            partition.Partition,
-                            _groupId),
+                        consumeScope,
                         cancellationToken).ConfigureAwait(false);
                     ThrowIfDisposed();
                 }
@@ -593,7 +600,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (!_hasAsyncDeserializers && _cluster.FaultPlan.Count == 0)
+            if (!_hasAsyncDeserializers && !HasPotentialConsumerFault())
             {
                 if (TryConsumeOne(out var result))
                     return result;
@@ -812,18 +819,26 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
     private async ValueTask CloseAfterAutoCommitFaultAsync(ValueTask autoCommitFault)
     {
-        await autoCommitFault.ConfigureAwait(false);
-        await CompleteClose().ConfigureAwait(false);
+        var commitStoredOffsets = false;
+        try
+        {
+            await autoCommitFault.ConfigureAwait(false);
+            commitStoredOffsets = true;
+        }
+        finally
+        {
+            await CompleteClose(commitStoredOffsets).ConfigureAwait(false);
+        }
     }
 
-    private ValueTask CompleteClose()
+    private ValueTask CompleteClose(bool commitStoredOffsets = true)
     {
         lock (_gate)
         {
             if (_disposed)
                 return ValueTask.CompletedTask;
 
-            if (_options.OffsetCommitMode == OffsetCommitMode.Auto)
+            if (commitStoredOffsets && _options.OffsetCommitMode == OffsetCommitMode.Auto)
                 CommitStoredOffsets();
 
             // The in-memory cluster has no broker session timer. Always unregister on close so
@@ -955,6 +970,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             _paused.Clear();
             _positions.Clear();
             _storedOffsets.Clear();
+            _storedOffsetsVersion++;
             _inDoubtNextOffset = -1;
             _consumerStateVersion++;
             UnregisterConsumerGroupMemberUnderLock();
@@ -1000,7 +1016,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 _assignment.Remove(partition);
                 _paused.Remove(partition);
                 _positions.Remove(partition);
-                _storedOffsets.Remove(partition);
+                if (_storedOffsets.Remove(partition))
+                    _storedOffsetsVersion++;
                 DiscardInDoubtRecordUnderLock(partition);
             }
 
@@ -1194,14 +1211,15 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             if (!TrySelectRecord(ref previousRecordProven, out var partition, out var record, out var position))
                 return null;
 
-            if (_cluster.FaultPlan.Count != 0)
+            var fetchScope = new KafkaFaultScope(
+                KafkaFaultOperation.Fetch,
+                partition.Topic,
+                partition.Partition,
+                _groupId);
+            if (HasMatchingFault(fetchScope))
             {
                 await _cluster.FaultPlan.ApplyAsync(
-                    new KafkaFaultScope(
-                        KafkaFaultOperation.Fetch,
-                        partition.Topic,
-                        partition.Partition,
-                        _groupId),
+                    fetchScope,
                     cancellationToken).ConfigureAwait(false);
                 ThrowIfDisposed();
             }
@@ -1210,14 +1228,15 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 ? await ToConsumeResultAsync(partition, record, cancellationToken).ConfigureAwait(false)
                 : ToConsumeResult(partition, record);
 
-            if (_cluster.FaultPlan.Count != 0)
+            var consumeScope = new KafkaFaultScope(
+                KafkaFaultOperation.Consume,
+                partition.Topic,
+                partition.Partition,
+                _groupId);
+            if (HasMatchingFault(consumeScope))
             {
                 await _cluster.FaultPlan.ApplyAsync(
-                    new KafkaFaultScope(
-                        KafkaFaultOperation.Consume,
-                        partition.Topic,
-                        partition.Partition,
-                        _groupId),
+                    consumeScope,
                     cancellationToken).ConfigureAwait(false);
                 ThrowIfDisposed();
             }
@@ -1499,6 +1518,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         _paused.Clear();
         _positions.Clear();
         _storedOffsets.Clear();
+        _storedOffsetsVersion++;
         _inDoubtNextOffset = -1;
 
         foreach (var (partition, position) in nextPositions)
@@ -1564,9 +1584,19 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private ValueTask ApplyOnDeliveryAutoCommitFaultAsync(CancellationToken cancellationToken)
     {
         if (_options.OffsetCommitMode != OffsetCommitMode.Auto
-            || _options.OffsetStoreTiming != OffsetStoreTiming.OnDelivery)
+            || _options.OffsetStoreTiming != OffsetStoreTiming.OnDelivery
+            || !HasMatchingAutomaticCommitFault())
         {
             return ValueTask.CompletedTask;
+        }
+
+        if (!_options.EnableAutoOffsetStore)
+        {
+            lock (_gate)
+            {
+                if (!HasCommittableStoredOffsetUnderLock())
+                    return ValueTask.CompletedTask;
+            }
         }
 
         return ApplyAutomaticCommitFaultAsync(cancellationToken);
@@ -1575,16 +1605,19 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private ValueTask ApplyInDoubtAutoCommitFaultAsync(CancellationToken cancellationToken)
     {
         if (_options.OffsetCommitMode != OffsetCommitMode.Auto
-            || _cluster.FaultPlan.Count == 0)
+            || !HasMatchingAutomaticCommitFault())
         {
             return ValueTask.CompletedTask;
         }
 
-        bool hasInDoubtRecord;
+        bool willCommit;
         lock (_gate)
-            hasInDoubtRecord = _inDoubtNextOffset >= 0;
+        {
+            willCommit = _inDoubtNextOffset >= 0 &&
+                (_options.EnableAutoOffsetStore || HasCommittableStoredOffsetUnderLock());
+        }
 
-        return hasInDoubtRecord
+        return willCommit
             ? ApplyAutomaticCommitFaultAsync(cancellationToken)
             : ValueTask.CompletedTask;
     }
@@ -1592,23 +1625,23 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private ValueTask ApplyStoredAutoCommitFaultAsync(CancellationToken cancellationToken)
     {
         if (_options.OffsetCommitMode != OffsetCommitMode.Auto
-            || _cluster.FaultPlan.Count == 0)
+            || !HasMatchingAutomaticCommitFault())
         {
             return ValueTask.CompletedTask;
         }
 
-        bool hasStoredOffsets;
+        bool hasCommittableOffsets;
         lock (_gate)
-            hasStoredOffsets = _storedOffsets.Count != 0;
+            hasCommittableOffsets = HasCommittableStoredOffsetUnderLock();
 
-        return hasStoredOffsets
+        return hasCommittableOffsets
             ? ApplyAutomaticCommitFaultAsync(cancellationToken)
             : ValueTask.CompletedTask;
     }
 
     private ValueTask ApplyAutomaticCommitFaultAsync(CancellationToken cancellationToken)
     {
-        if (_groupId is null || _cluster.FaultPlan.Count == 0)
+        if (_groupId is null)
             return ValueTask.CompletedTask;
 
         return _cluster.FaultPlan.ApplyAsync(
@@ -1616,17 +1649,75 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             cancellationToken);
     }
 
+    private bool HasMatchingAutomaticCommitFault() =>
+        _groupId is not null && HasMatchingFault(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: _groupId));
+
+    private bool HasPotentialConsumerFault()
+    {
+        var faultPlan = _cluster.FaultPlan;
+        if (faultPlan is not KafkaFaultPlan indexedPlan)
+            return faultPlan.Count != 0;
+
+        return indexedPlan.HasPotentialMatch(KafkaFaultOperation.Fetch, _groupId) ||
+               indexedPlan.HasPotentialMatch(KafkaFaultOperation.Consume, _groupId) ||
+               indexedPlan.HasPotentialMatch(KafkaFaultOperation.Commit, _groupId);
+    }
+
+    private bool HasMatchingFault(in KafkaFaultScope operationScope)
+    {
+        var faultPlan = _cluster.FaultPlan;
+        return faultPlan is KafkaFaultPlan indexedPlan
+            ? indexedPlan.HasMatchingFault(operationScope)
+            : faultPlan.Count != 0;
+    }
+
+    private bool HasCommittableStoredOffsetUnderLock()
+    {
+        if (_groupId is null || _storedOffsets.Count == 0)
+            return false;
+
+        var groupGeneration = _memberId is null
+            ? -1
+            : _cluster.GetConsumerGroupGeneration(_groupId);
+        if (_committableOffsetsStoredVersion == _storedOffsetsVersion &&
+            _committableOffsetsGroupGeneration == groupGeneration)
+        {
+            return _hasCommittableStoredOffset;
+        }
+
+        var assignment = GetCurrentAssignmentUnderLock(out groupGeneration);
+        var hasCommittableOffset = false;
+        foreach (var partition in _storedOffsets.Keys)
+        {
+            if (!assignment.Contains(partition))
+                continue;
+
+            hasCommittableOffset = true;
+            break;
+        }
+
+        _committableOffsetsStoredVersion = _storedOffsetsVersion;
+        _committableOffsetsGroupGeneration = groupGeneration;
+        _hasCommittableStoredOffset = hasCommittableOffset;
+        return hasCommittableOffset;
+    }
+
     private void StoreOffsetUnderLock(TopicPartitionOffset offset)
     {
         var partition = new TopicPartition(offset.Topic, offset.Partition);
         _storedOffsets[partition] = offset;
+        _storedOffsetsVersion++;
     }
 
     private void StoreOffsetUnderLock(TopicPartition partition, long offset)
-        => _storedOffsets[partition] = new TopicPartitionOffset(
+    {
+        _storedOffsets[partition] = new TopicPartitionOffset(
             partition.Topic,
             partition.Partition,
             offset);
+        _storedOffsetsVersion++;
+    }
 
     private IReadOnlySet<TopicPartition> GetCurrentAssignmentUnderLock() =>
         GetCurrentAssignmentUnderLock(out _);

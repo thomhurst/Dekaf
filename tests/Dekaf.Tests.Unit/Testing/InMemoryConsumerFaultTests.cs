@@ -217,6 +217,88 @@ public sealed class InMemoryConsumerFaultTests
     }
 
     [Test]
+    public async Task AutoCommit_DoesNotConsumeCommitFaultWithoutStoredOffset()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync(Topic, "key", "value");
+        var consumer = CreateConsumer(
+            cluster,
+            enableAutoOffsetStore: false,
+            offsetCommitMode: OffsetCommitMode.Auto);
+        consumer.Subscribe(Topic);
+        var failure = new InvalidOperationException("commit failed");
+        cluster.FaultPlan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId),
+            failure);
+
+        var result = await consumer.ConsumeOneAsync(TimeSpan.Zero);
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(cluster.FaultPlan.Count).IsEqualTo(1);
+        await Assert.That(await consumer.GetCommittedOffsetAsync(Partition)).IsNull();
+
+        consumer.StoreOffset(result!.Value);
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            consumer.CommitAsync().AsTask());
+
+        await Assert.That(actual).IsSameReferenceAs(failure);
+    }
+
+    [Test]
+    public async Task AutoCommit_AfterProcessingDoesNotConsumeFaultWithoutStoredOffset()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync(Topic, "key", "value");
+        var consumer = CreateConsumer(
+            cluster,
+            enableAutoOffsetStore: false,
+            offsetCommitMode: OffsetCommitMode.Auto,
+            offsetStoreTiming: OffsetStoreTiming.AfterProcessing);
+        consumer.Subscribe(Topic);
+        var failure = new InvalidOperationException("commit failed");
+        cluster.FaultPlan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId),
+            failure);
+
+        var result = await consumer.ConsumeOneAsync(TimeSpan.Zero);
+        var next = await consumer.ConsumeOneAsync(TimeSpan.Zero);
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(next).IsNull();
+        await Assert.That(cluster.FaultPlan.Count).IsEqualTo(1);
+        consumer.StoreOffset(result!.Value);
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            consumer.CommitAsync().AsTask());
+        await Assert.That(actual).IsSameReferenceAs(failure);
+    }
+
+    [Test]
+    public async Task CloseAsync_AutoCommitFailureStillDisposesWithoutCommitting()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var consumer = CreateConsumer(
+            cluster,
+            enableAutoOffsetStore: false,
+            offsetCommitMode: OffsetCommitMode.Auto);
+        consumer.Subscribe(Topic);
+        consumer.StoreOffset(new TopicPartitionOffset(Topic, 0, 1));
+        var failure = new InvalidOperationException("commit failed");
+        cluster.FaultPlan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId),
+            failure);
+
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            consumer.CloseAsync().AsTask());
+
+        await Assert.That(actual).IsSameReferenceAs(failure);
+        await Assert.That(cluster.GetCommittedOffset(GroupId, Partition)).IsNull();
+        _ = await Assert.ThrowsAsync<ObjectDisposedException>(() =>
+            consumer.ConsumeOneAsync(TimeSpan.Zero).AsTask());
+    }
+
+    [Test]
     public async Task CommitAsync_FaultRunsBeforeFallbackInputEnumeration()
     {
         var (cluster, consumer) = await CreateConsumerWithRecordAsync();
@@ -234,7 +316,7 @@ public sealed class InMemoryConsumerFaultTests
     [Test]
     public async Task CommitAsync_ReadOnlyListUsesIndexedCommitPath()
     {
-        var (cluster, consumer) = await CreateConsumerWithRecordAsync();
+        var (_, consumer) = await CreateConsumerWithRecordAsync();
         var offsets = new IndexOnlyOffsets(new TopicPartitionOffset(Topic, 0, 1));
 
         await consumer.CommitAsync(offsets);
@@ -362,7 +444,8 @@ public sealed class InMemoryConsumerFaultTests
     private static InMemoryConsumer<string, string> CreateConsumer(
         InMemoryKafkaCluster cluster,
         bool enableAutoOffsetStore = true,
-        OffsetCommitMode offsetCommitMode = OffsetCommitMode.Manual) =>
+        OffsetCommitMode offsetCommitMode = OffsetCommitMode.Manual,
+        OffsetStoreTiming offsetStoreTiming = OffsetStoreTiming.OnDelivery) =>
         new(
             cluster,
             new InMemoryConsumerOptions
@@ -371,7 +454,7 @@ public sealed class InMemoryConsumerFaultTests
                 AutoOffsetReset = AutoOffsetReset.Earliest,
                 OffsetCommitMode = offsetCommitMode,
                 EnableAutoOffsetStore = enableAutoOffsetStore,
-                OffsetStoreTiming = OffsetStoreTiming.OnDelivery
+                OffsetStoreTiming = offsetStoreTiming
             });
 
     private static IEnumerable<TopicPartitionOffset> ThrowOnEnumeration()

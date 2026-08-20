@@ -268,6 +268,7 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
     private readonly object _gate = new();
     private readonly List<FaultEntry> _entries = [];
     private ProduceFaultIndex _produceFaultIndex = ProduceFaultIndex.Empty;
+    private FaultScopeIndex _scopeIndex = FaultScopeIndex.Empty;
     private int _count;
     private int _hasEntries;
 
@@ -299,6 +300,7 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
             Volatile.Write(ref _count, _entries.Count);
             Volatile.Write(ref _hasEntries, 1);
             PublishProduceFaultIndexUnderLock();
+            PublishScopeIndexUnderLock();
         }
     }
 
@@ -316,6 +318,7 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
             Volatile.Write(ref _count, _entries.Count);
             Volatile.Write(ref _hasEntries, 1);
             PublishProduceFaultIndexUnderLock();
+            PublishScopeIndexUnderLock();
         }
     }
 
@@ -332,6 +335,7 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
             Volatile.Write(ref _count, _entries.Count);
             Volatile.Write(ref _hasEntries, 1);
             PublishProduceFaultIndexUnderLock();
+            PublishScopeIndexUnderLock();
         }
 
         return barrier;
@@ -371,6 +375,7 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
                         if (_entries.Count == 0)
                             Volatile.Write(ref _hasEntries, 0);
                         PublishProduceFaultIndexUnderLock();
+                        PublishScopeIndexUnderLock();
                     }
                 }
 
@@ -420,7 +425,10 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
             if (_entries.Count == 0)
                 Volatile.Write(ref _hasEntries, 0);
             if (removed != 0)
+            {
                 PublishProduceFaultIndexUnderLock();
+                PublishScopeIndexUnderLock();
+            }
         }
 
         return removed;
@@ -441,6 +449,7 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
             Volatile.Write(ref _count, 0);
             Volatile.Write(ref _hasEntries, 0);
             Volatile.Write(ref _produceFaultIndex, ProduceFaultIndex.Empty);
+            Volatile.Write(ref _scopeIndex, FaultScopeIndex.Empty);
             return removed;
         }
     }
@@ -534,6 +543,76 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
             _ => false
         };
     }
+
+    internal bool HasPotentialMatch(KafkaFaultOperation operation, string? groupId) =>
+        Volatile.Read(ref _scopeIndex).HasPotentialMatch(operation, groupId);
+
+    internal bool HasMatchingFault(in KafkaFaultScope operationScope) =>
+        Volatile.Read(ref _scopeIndex).HasMatchingFault(operationScope);
+
+    private void PublishScopeIndexUnderLock() =>
+        Volatile.Write(ref _scopeIndex, new FaultScopeIndex(_entries));
+
+    private sealed class FaultScopeIndex
+    {
+        internal static readonly FaultScopeIndex Empty = new();
+
+        private readonly HashSet<OperationGroupKey> _operationGroups;
+        private readonly HashSet<ScopeKey> _scopes;
+
+        private FaultScopeIndex()
+        {
+            _operationGroups = [];
+            _scopes = [];
+        }
+
+        internal FaultScopeIndex(List<FaultEntry> entries)
+        {
+            _operationGroups = new HashSet<OperationGroupKey>(entries.Count);
+            _scopes = new HashSet<ScopeKey>(entries.Count);
+            for (var index = 0; index < entries.Count; index++)
+            {
+                var scope = entries[index].Scope;
+                _operationGroups.Add(new OperationGroupKey(scope.Operation, scope.GroupId));
+                _scopes.Add(new ScopeKey(
+                    scope.Operation,
+                    scope.Topic,
+                    scope.Partition,
+                    scope.GroupId));
+            }
+        }
+
+        internal bool HasPotentialMatch(KafkaFaultOperation operation, string? groupId) =>
+            _operationGroups.Contains(new OperationGroupKey(operation, null)) ||
+            (groupId is not null &&
+             _operationGroups.Contains(new OperationGroupKey(operation, groupId)));
+
+        internal bool HasMatchingFault(in KafkaFaultScope operationScope)
+        {
+            for (var selectors = 0; selectors < 8; selectors++)
+            {
+                var key = new ScopeKey(
+                    operationScope.Operation,
+                    (selectors & 1) == 0 ? null : operationScope.Topic,
+                    (selectors & 2) == 0 ? null : operationScope.Partition,
+                    (selectors & 4) == 0 ? null : operationScope.GroupId);
+                if (_scopes.Contains(key))
+                    return true;
+            }
+
+            return false;
+        }
+    }
+
+    private readonly record struct OperationGroupKey(
+        KafkaFaultOperation Operation,
+        string? GroupId);
+
+    private readonly record struct ScopeKey(
+        KafkaFaultOperation Operation,
+        string? Topic,
+        int? Partition,
+        string? GroupId);
 
     private sealed class FaultEntry
     {

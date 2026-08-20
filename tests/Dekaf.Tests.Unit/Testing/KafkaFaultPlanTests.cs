@@ -55,11 +55,48 @@ public sealed class KafkaFaultPlanTests
         var plan = new KafkaFaultPlan();
         var failure = new InvalidOperationException("wildcard");
         plan.Fail(new KafkaFaultScope(KafkaFaultOperation.Fetch), failure);
+        var concreteScope = new KafkaFaultScope(
+            KafkaFaultOperation.Fetch,
+            "orders",
+            4,
+            "billing");
 
-        await AssertFaultAsync(
-            plan,
-            new KafkaFaultScope(KafkaFaultOperation.Fetch, "orders", 4, "billing"),
-            failure);
+        await Assert.That(plan.HasMatchingFault(concreteScope)).IsTrue();
+        await AssertFaultAsync(plan, concreteScope, failure);
+        await Assert.That(plan.HasMatchingFault(concreteScope)).IsFalse();
+    }
+
+    [Test]
+    public async Task ScopeIndex_FiltersUnrelatedOperationsAndGroups()
+    {
+        var plan = new KafkaFaultPlan();
+        plan.FailPersistently(
+            new KafkaFaultScope(KafkaFaultOperation.Fetch, topic: "orders", groupId: "billing"),
+            new InvalidOperationException("fetch"));
+
+        await Assert.That(plan.HasPotentialMatch(KafkaFaultOperation.Admin, "billing")).IsFalse();
+        await Assert.That(plan.HasPotentialMatch(KafkaFaultOperation.Fetch, "other")).IsFalse();
+        await Assert.That(plan.HasPotentialMatch(KafkaFaultOperation.Fetch, "billing")).IsTrue();
+        await Assert.That(plan.HasMatchingFault(
+            new KafkaFaultScope(KafkaFaultOperation.Fetch, "payments", 0, "billing"))).IsFalse();
+        await Assert.That(plan.HasMatchingFault(
+            new KafkaFaultScope(KafkaFaultOperation.Fetch, "orders", 0, "billing"))).IsTrue();
+    }
+
+    [Test]
+    public async Task ScopeIndex_RemovesConsumedAndClearedRules()
+    {
+        var plan = new KafkaFaultPlan();
+        var scope = new KafkaFaultScope(KafkaFaultOperation.Fetch, groupId: "billing");
+        plan.Fail(scope, new InvalidOperationException("fetch"));
+
+        await Assert.That(plan.HasPotentialMatch(KafkaFaultOperation.Fetch, "billing")).IsTrue();
+        _ = await Assert.ThrowsAsync<InvalidOperationException>(() => plan.ApplyAsync(scope).AsTask());
+        await Assert.That(plan.HasPotentialMatch(KafkaFaultOperation.Fetch, "billing")).IsFalse();
+
+        plan.FailPersistently(scope, new InvalidOperationException("fetch"));
+        plan.Clear(scope);
+        await Assert.That(plan.HasMatchingFault(scope)).IsFalse();
     }
 
     [Test]
