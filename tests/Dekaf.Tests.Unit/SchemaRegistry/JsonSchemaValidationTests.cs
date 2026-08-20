@@ -848,6 +848,20 @@ public sealed class JsonSchemaValidationTests
     }
 
     [Test]
+    public void InlineRules_AcceptCelNumberGrammarBeyondJson()
+    {
+        const string schemaText = """
+            {
+              "type": "number",
+              "confluent:rules": [{ "name": "cel-numbers", "expr": "this == 5. && this < 5.e5 && this == 05" }]
+            }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
+
+        validator.ValidateRules("5"u8.ToArray(), 21, failFast: false);
+    }
+
+    [Test]
     public void InlineRules_PreserveLargeNumbersAndCountUnicodeScalars()
     {
         const string schemaText = """
@@ -881,14 +895,14 @@ public sealed class JsonSchemaValidationTests
               "type": "object",
               "confluent:rules": [{
                 "name": "exact",
-                "expr": "this.precise == 0.1234567890123456789012345678901 && this.precise < this.next && this.huge == 1e1000 && this.huge > 9e999 && this.huge > 1 && this.negative < -1"
+                "expr": "this.precise == 0.1234567890123456789012345678901 && this.precise < this.next && this.huge == 1e1000 && this.huge > 9e999 && this.huge > 1 && this.negative < -1 && this.overflowA < this.overflowB && this.underflowB < this.underflowA"
               }]
             }
             """;
         var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
 
         validator.ValidateRules(
-            """{"precise":0.1234567890123456789012345678901,"next":0.1234567890123456789012345678902,"huge":1e1000,"negative":-1e1000}"""u8.ToArray(),
+            """{"precise":0.1234567890123456789012345678901,"next":0.1234567890123456789012345678902,"huge":1e1000,"negative":-1e1000,"overflowA":1e9223372036854775808,"overflowB":1e9223372036854775809,"underflowA":1e-9223372036854775808,"underflowB":1e-9223372036854775809}"""u8.ToArray(),
             23,
             failFast: false);
         Assert.Throws<ValidationRulesFailedException>(() => validator.ValidateRules(
@@ -946,6 +960,15 @@ public sealed class JsonSchemaValidationTests
 
         await Assert.That(exception.Violations.Select(static violation => violation.Rule.Name!))
             .IsEquivalentTo(["a", "c"]);
+    }
+
+    [Test]
+    public void InlineRules_ResolveMemberPathsAtSupportedDepth()
+    {
+        var (schema, payload) = CreateDeepMemberRule(depth: 80);
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schema));
+
+        validator.ValidateRules(payload, 25, failFast: false);
     }
 
     [Test]
@@ -1573,6 +1596,26 @@ public sealed class JsonSchemaValidationTests
         json.Append('}', depth);
         json.Append('}');
         return Encoding.UTF8.GetBytes(json.ToString());
+    }
+
+    private static (string Schema, byte[] Payload) CreateDeepMemberRule(int depth)
+    {
+        var path = new StringBuilder("this");
+        var payload = new StringBuilder(depth * 12);
+        for (var index = 0; index < depth; index++)
+        {
+            path.Append(".child");
+            payload.Append("{\"child\":");
+        }
+        path.Append(".value");
+        payload.Append("{\"value\":1}");
+        payload.Append('}', depth);
+        var schema = $$"""
+            {
+              "confluent:rules": [{ "name": "deep", "expr": "{{path}} == 1" }]
+            }
+            """;
+        return (schema, Encoding.UTF8.GetBytes(payload.ToString()));
     }
 
     private static byte[] CreateWirePayload(int schemaId, string json)
