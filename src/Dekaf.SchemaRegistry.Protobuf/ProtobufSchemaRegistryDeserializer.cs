@@ -259,43 +259,11 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
     {
         try
         {
-            var unscopedSchema = await _schemaRegistry.GetSchemaByGuidAsync(
-                    key.SchemaGuid.ToString("D"),
-                    cancellationToken: CancellationToken.None)
+            var resolved = await SchemaRegistryOperationTimeout.ExecuteAsync(
+                    cancellationToken => FetchGuidSchemaCoreAsync(key, cancellationToken),
+                    SchemaRegistryTimeout,
+                    $"Schema GUID {key.SchemaGuid:D} resolution timed out.")
                 .ConfigureAwait(false);
-            if (unscopedSchema.SchemaType != SchemaType.Protobuf)
-            {
-                throw new InvalidOperationException(
-                    $"Schema with GUID {key.SchemaGuid:D} is not a Protobuf schema. Type: {unscopedSchema.SchemaType}");
-            }
-
-            var context = new SerializationContext
-            {
-                Topic = key.Topic,
-                Component = key.IsKey ? SerializationComponent.Key : SerializationComponent.Value
-            };
-            var subject = GetSubjectName(0, unscopedSchema, context);
-            var registered = await _schemaRegistry.LookupSchemaAsync(
-                    subject,
-                    unscopedSchema,
-                    ignoreDeletedSchemas: true,
-                    cancellationToken: CancellationToken.None)
-                .ConfigureAwait(false);
-            if (registered.Schema.SchemaType != SchemaType.Protobuf)
-            {
-                throw new InvalidOperationException(
-                    $"Schema with GUID {key.SchemaGuid:D} resolved to type {registered.Schema.SchemaType}; expected {SchemaType.Protobuf}.");
-            }
-            if (!Guid.TryParse(registered.Guid, out var registeredGuid) || registeredGuid != key.SchemaGuid)
-            {
-                throw new InvalidDataException(
-                    $"Schema Registry returned a conflicting GUID for subject '{subject}'.");
-            }
-
-            var resolved = new GuidResolvedSchema(
-                registered.Id,
-                subject,
-                registered.Schema);
             BoundedSchemaIdentityCache.RecordSuccessfulResolution(
                 _guidSchemaCache,
                 _guidSchemaEvictionQueue,
@@ -309,6 +277,49 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
             _guidSchemaCache.TryRemove(key, out _);
             throw;
         }
+    }
+
+    private async Task<GuidResolvedSchema> FetchGuidSchemaCoreAsync(
+        GuidTopicKey key,
+        CancellationToken cancellationToken)
+    {
+        var unscopedSchema = await _schemaRegistry.GetSchemaByGuidAsync(
+                key.SchemaGuid.ToString("D"),
+                cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+        if (unscopedSchema.SchemaType != SchemaType.Protobuf)
+        {
+            throw new InvalidOperationException(
+                $"Schema with GUID {key.SchemaGuid:D} is not a Protobuf schema. Type: {unscopedSchema.SchemaType}");
+        }
+
+        var context = new SerializationContext
+        {
+            Topic = key.Topic,
+            Component = key.IsKey ? SerializationComponent.Key : SerializationComponent.Value
+        };
+        var subject = GetSubjectName(0, unscopedSchema, context);
+        var registered = await _schemaRegistry.LookupSchemaAsync(
+                subject,
+                unscopedSchema,
+                ignoreDeletedSchemas: true,
+                cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+        if (registered.Schema.SchemaType != SchemaType.Protobuf)
+        {
+            throw new InvalidOperationException(
+                $"Schema with GUID {key.SchemaGuid:D} resolved to type {registered.Schema.SchemaType}; expected {SchemaType.Protobuf}.");
+        }
+        if (!Guid.TryParse(registered.Guid, out var registeredGuid) || registeredGuid != key.SchemaGuid)
+        {
+            throw new InvalidDataException(
+                $"Schema Registry returned a conflicting GUID for subject '{subject}'.");
+        }
+
+        return new GuidResolvedSchema(
+            registered.Id,
+            subject,
+            registered.Schema);
     }
 
     private static void ValidateSchemaIdStrategy(SchemaIdDeserializerStrategy strategy)

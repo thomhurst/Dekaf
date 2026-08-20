@@ -148,6 +148,47 @@ public class ProtobufSchemaIdentityTests
     }
 
     [Test]
+    public async Task Serialize_ExplicitId_AcceptsKnownTypeReferencesFromDifferentSkipSetting()
+    {
+        var registry = new MockSchemaRegistryClient();
+        var descriptor = Google.Protobuf.WellKnownTypes.Api.Descriptor.File;
+        var references = new SchemaReference[descriptor.Dependencies.Count];
+        for (var index = 0; index < descriptor.Dependencies.Count; index++)
+        {
+            var dependency = descriptor.Dependencies[index];
+            _ = await registry.RegisterSchemaAsync(dependency.Name, new Schema
+            {
+                SchemaType = SchemaType.Protobuf,
+                SchemaString = dependency.SerializedData.ToBase64()
+            });
+            references[index] = new SchemaReference
+            {
+                Name = dependency.Name,
+                Subject = dependency.Name,
+                Version = 1
+            };
+        }
+
+        var schemaId = await registry.RegisterSchemaAsync("identity-value", new Schema
+        {
+            SchemaType = SchemaType.Protobuf,
+            SchemaString = descriptor.SerializedData.ToBase64(),
+            References = references
+        });
+        var config = new ProtobufSerializerConfig { UseSchemaId = schemaId };
+        await using var serializer = new ProtobufSchemaRegistrySerializer<Google.Protobuf.WellKnownTypes.Api>(
+            registry,
+            config);
+        var destination = new ArrayBufferWriter<byte>();
+
+        serializer.Serialize(new Google.Protobuf.WellKnownTypes.Api(), ref destination, CreateContext());
+
+        await Assert.That(descriptor.Dependencies.Count).IsGreaterThan(0);
+        await Assert.That(BinaryPrimitives.ReadInt32BigEndian(destination.WrittenSpan[1..5]))
+            .IsEqualTo(schemaId);
+    }
+
+    [Test]
     public async Task Serialize_ExplicitId_RejectsDifferentNestedProtobufReferenceVersion()
     {
         var registry = new MockSchemaRegistryClient();
@@ -240,6 +281,7 @@ public class ProtobufSchemaIdentityTests
         await Assert.That(result.Id).IsEqualTo(message.Id);
         await Assert.That(result.Name).IsEqualTo(message.Name);
         await Assert.That(schemaId).IsEqualTo(registered.Id);
+        await Assert.That(registry.LastGetSchemaByGuidCancellationToken.CanBeCanceled).IsTrue();
     }
 
     [Test]
@@ -372,14 +414,14 @@ public class ProtobufSchemaIdentityTests
         registry.GetSchemaByGuidAsync(
                 identityGuid.ToString("D"),
                 null,
-                Arg.Any<CancellationToken>())
+                Arg.Is<CancellationToken>(static token => token.CanBeCanceled))
             .Returns(schema);
         registry.LookupSchemaAsync(
                 "identity-value",
                 schema,
                 true,
                 false,
-                Arg.Any<CancellationToken>())
+                Arg.Is<CancellationToken>(static token => token.CanBeCanceled))
             .Returns(new RegisteredSchema
             {
                 Id = 7,

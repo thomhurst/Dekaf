@@ -432,29 +432,16 @@ public sealed class ProtobufSchemaRegistrySerializer<
         CancellationToken cancellationToken)
     {
         var references = schema.References;
-        var expectedCount = 0;
-        for (var dependencyIndex = 0; dependencyIndex < descriptor.Dependencies.Count; dependencyIndex++)
-        {
-            if (!_config.SkipKnownTypes || !IsKnownType(descriptor.Dependencies[dependencyIndex].Name))
-                expectedCount++;
-        }
-
-        if ((references?.Count ?? 0) != expectedCount)
-        {
-            throw new InvalidOperationException(
-                $"Schema ID {schemaId} does not match the Protobuf reference graph for '{_descriptor.FullName}'.");
-        }
+        var referenceCount = references?.Count ?? 0;
+        var matchedReferenceCount = 0;
 
         for (var dependencyIndex = 0; dependencyIndex < descriptor.Dependencies.Count; dependencyIndex++)
         {
             var dependency = descriptor.Dependencies[dependencyIndex];
-            if (_config.SkipKnownTypes && IsKnownType(dependency.Name))
-                continue;
-
             SchemaReference? matchingReference = null;
-            for (var referenceIndex = 0; referenceIndex < references!.Count; referenceIndex++)
+            for (var referenceIndex = 0; referenceIndex < referenceCount; referenceIndex++)
             {
-                var candidate = references[referenceIndex];
+                var candidate = references![referenceIndex];
                 if (!string.Equals(candidate.Name, dependency.Name, StringComparison.Ordinal))
                     continue;
                 if (matchingReference is not null)
@@ -468,10 +455,14 @@ public sealed class ProtobufSchemaRegistrySerializer<
 
             if (matchingReference is null)
             {
+                if (IsKnownType(dependency.Name))
+                    continue;
+
                 throw new InvalidOperationException(
                     $"Schema ID {schemaId} is missing Protobuf reference '{dependency.Name}'.");
             }
 
+            matchedReferenceCount++;
             var key = new SchemaReferenceKey(matchingReference.Subject, matchingReference.Version);
             if (!resolvedReferences.TryGetValue(key, out var resolvedSchema))
             {
@@ -492,6 +483,12 @@ public sealed class ProtobufSchemaRegistrySerializer<
                     resolvedReferences,
                     cancellationToken)
                 .ConfigureAwait(false);
+        }
+
+        if (matchedReferenceCount != referenceCount)
+        {
+            throw new InvalidOperationException(
+                $"Schema ID {schemaId} does not match the Protobuf reference graph for '{_descriptor.FullName}'.");
         }
     }
 
