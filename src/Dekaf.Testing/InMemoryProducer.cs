@@ -26,6 +26,7 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
     private readonly long _producerId = Interlocked.Increment(ref s_nextProducerId);
     private InMemoryTransaction? _activeTransaction;
     private FatalTransactionException? _fatalTransactionException;
+    private bool _preparedRecoveryEnabled;
     private bool _disposed;
 
     public InMemoryProducer(InMemoryKafkaCluster cluster)
@@ -258,15 +259,15 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
     public ValueTask InitTransactionsAsync(CancellationToken cancellationToken = default) =>
         InitTransactionsAsync(keepPreparedTransaction: false, cancellationToken);
 
-    public ValueTask InitTransactionsAsync(bool keepPreparedTransaction, CancellationToken cancellationToken = default)
+    public async ValueTask InitTransactionsAsync(bool keepPreparedTransaction, CancellationToken cancellationToken = default)
     {
-        _ = keepPreparedTransaction;
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
         ThrowIfFatalTransactionError();
-        return ApplyFaultAsync(
+        await ApplyFaultAsync(
             new KafkaFaultScope(KafkaFaultOperation.InitializeTransactions),
-            cancellationToken);
+            cancellationToken).ConfigureAwait(false);
+        _preparedRecoveryEnabled = keepPreparedTransaction;
     }
 
     public async ValueTask CompletePreparedTransactionAsync(
@@ -278,20 +279,26 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
         ThrowIfDisposed();
         ThrowIfFatalTransactionError();
 
-        InMemoryTransaction transaction;
+        InMemoryTransaction? transaction;
         lock (_transactionGate)
+            transaction = _activeTransaction;
+
+        if (transaction is null || !transaction.IsPrepared || transaction.PreparedState != preparedState)
         {
-            transaction = _activeTransaction
-                ?? throw new InvalidOperationException("There is no active prepared transaction.");
+            if (!_preparedRecoveryEnabled ||
+                _cluster.GetPreparedTransaction(preparedState) is not InMemoryTransaction recovered)
+            {
+                throw new InvalidOperationException(
+                    "There is no matching active or recoverable prepared transaction.");
+            }
+
+            transaction = recovered;
         }
 
         if (!transaction.IsPrepared || transaction.PreparedState != preparedState)
             throw new InvalidOperationException("The prepared transaction state does not match the active transaction.");
 
-        if (committed)
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        else
-            await transaction.AbortAsync(cancellationToken).ConfigureAwait(false);
+        await transaction.CompletePreparedAsync(this, committed, cancellationToken).ConfigureAwait(false);
     }
 
     public ITopicProducer<TKey, TValue> ForTopic(string topic)
@@ -301,10 +308,19 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
         return new InMemoryTopicProducer(this, topic);
     }
 
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
+        if (_disposed)
+            return;
+
+        InMemoryTransaction? transaction;
+        lock (_transactionGate)
+            transaction = _activeTransaction;
+
+        if (transaction is { IsCompleted: false, IsPrepared: false })
+            await transaction.DisposeAsync().ConfigureAwait(false);
+
         _disposed = true;
-        return ValueTask.CompletedTask;
     }
 
     private ValueTask<RecordMetadata> ProduceCoreAsync(
@@ -323,6 +339,7 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
             headers,
             timestamp,
             KafkaFaultOperation.Produce,
+            transactionMarker: null,
             cancellationToken);
 
     private ValueTask<RecordMetadata> ProduceCoreAsync(
@@ -333,6 +350,7 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
         Headers? headers,
         DateTimeOffset timestamp,
         KafkaFaultOperation faultOperation,
+        InMemoryTransactionMarker? transactionMarker,
         CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(topic);
@@ -348,6 +366,7 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
                 headers,
                 timestamp,
                 faultOperation,
+                transactionMarker,
                 cancellationToken);
         }
 
@@ -364,7 +383,8 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
             headers?.ToList(),
             timestamp,
             cancellationToken,
-            faultOperation));
+            faultOperation,
+            transactionMarker));
     }
 
     private async ValueTask FireAndForgetCoreAsync(
@@ -399,6 +419,7 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
         Headers? headers,
         DateTimeOffset timestamp,
         KafkaFaultOperation faultOperation,
+        InMemoryTransactionMarker? transactionMarker,
         CancellationToken cancellationToken)
     {
         // Null components skip their serializer entirely, matching the synchronous path.
@@ -436,10 +457,12 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
             headers?.ToList(),
             timestamp,
             cancellationToken,
-            faultOperation)).ConfigureAwait(false);
+            faultOperation,
+            transactionMarker)).ConfigureAwait(false);
     }
 
     private ValueTask<RecordMetadata> ProduceTransactionAsync(
+        InMemoryTransaction transaction,
         ProducerMessage<TKey, TValue> message,
         CancellationToken cancellationToken)
     {
@@ -452,10 +475,12 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
             message.Headers,
             message.Timestamp ?? DateTimeOffset.UtcNow,
             KafkaFaultOperation.TransactionProduce,
+            transaction.TransactionMarker,
             cancellationToken);
     }
 
     private ValueTask<RecordMetadata> ProduceTransactionAsync(
+        InMemoryTransaction transaction,
         string topic,
         TKey? key,
         TValue value,
@@ -468,6 +493,7 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
             headers: null,
             DateTimeOffset.UtcNow,
             KafkaFaultOperation.TransactionProduce,
+            transaction.TransactionMarker,
             cancellationToken);
 
     private async ValueTask ApplyFaultAsync(KafkaFaultScope scope, CancellationToken cancellationToken)
@@ -579,14 +605,17 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
     private sealed class InMemoryTransaction : ITransaction<TKey, TValue>
     {
         private readonly InMemoryProducer<TKey, TValue> _producer;
-        private readonly Dictionary<string, List<TopicPartitionOffset>> _pendingOffsets = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, PendingGroupOffsets> _pendingOffsets = new(StringComparer.Ordinal);
         private bool _completed;
         private bool _prepared;
 
         public InMemoryTransaction(InMemoryProducer<TKey, TValue> producer)
         {
             _producer = producer;
+            TransactionMarker = InMemoryKafkaCluster.CreateTransactionMarker();
         }
+
+        public InMemoryTransactionMarker TransactionMarker { get; }
 
         public bool IsCompleted => _completed;
 
@@ -601,7 +630,7 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
             CancellationToken cancellationToken = default)
         {
             ThrowIfCannotMutate("Cannot produce");
-            return await _producer.ProduceTransactionAsync(message, cancellationToken).ConfigureAwait(false);
+            return await _producer.ProduceTransactionAsync(this, message, cancellationToken).ConfigureAwait(false);
         }
 
         public async ValueTask<RecordMetadata> ProduceAsync(
@@ -611,21 +640,18 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
             CancellationToken cancellationToken = default)
         {
             ThrowIfCannotMutate("Cannot produce");
-            return await _producer.ProduceTransactionAsync(topic, key, value, cancellationToken).ConfigureAwait(false);
+            return await _producer.ProduceTransactionAsync(this, topic, key, value, cancellationToken).ConfigureAwait(false);
         }
 
         public async ValueTask CommitAsync(CancellationToken cancellationToken = default)
         {
-            ThrowIfIncomplete("Cannot commit transaction");
+            ThrowIfCompleted("Cannot commit transaction");
 
             await _producer.ApplyFaultAsync(
                 new KafkaFaultScope(KafkaFaultOperation.CommitTransaction),
                 cancellationToken).ConfigureAwait(false);
 
-            foreach (var (groupId, offsets) in _pendingOffsets)
-                _producer._cluster.CommitOffsets(groupId, offsets);
-
-            Complete();
+            Complete(committed: true);
         }
 
         public ValueTask<PreparedTransactionState> PrepareAsync(CancellationToken cancellationToken = default)
@@ -633,19 +659,19 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
             cancellationToken.ThrowIfCancellationRequested();
             ThrowIfCannotMutate("Cannot prepare transaction");
             _prepared = true;
+            _producer._cluster.RegisterPreparedTransaction(PreparedState, this);
             return ValueTask.FromResult(PreparedState);
         }
 
         public async ValueTask AbortAsync(CancellationToken cancellationToken = default)
         {
-            ThrowIfIncomplete("Cannot abort transaction");
+            ThrowIfCompleted("Cannot abort transaction");
 
             await _producer.ApplyFaultAsync(
                 new KafkaFaultScope(KafkaFaultOperation.AbortTransaction),
                 cancellationToken).ConfigureAwait(false);
 
-            _pendingOffsets.Clear();
-            Complete();
+            Complete(committed: false);
         }
 
         public async ValueTask SendOffsetsToTransactionAsync(
@@ -664,22 +690,30 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
                     groupId: consumerGroupId),
                 cancellationToken).ConfigureAwait(false);
 
-            if (!_pendingOffsets.TryGetValue(consumerGroupId, out var pending))
-            {
-                pending = [];
-                _pendingOffsets.Add(consumerGroupId, pending);
-            }
-
-            pending.AddRange(snapshot);
+            var pending = GetOrAddPendingOffsets(consumerGroupId);
+            pending.Offsets.AddRange(snapshot);
         }
 
-        public ValueTask SendOffsetsToTransactionAsync(
+        public async ValueTask SendOffsetsToTransactionAsync(
             IEnumerable<TopicPartitionOffset> offsets,
             ConsumerGroupMetadata consumerGroupMetadata,
             CancellationToken cancellationToken = default)
         {
+            ArgumentNullException.ThrowIfNull(offsets);
             ArgumentNullException.ThrowIfNull(consumerGroupMetadata);
-            return SendOffsetsToTransactionAsync(offsets, consumerGroupMetadata.GroupId, cancellationToken);
+            ArgumentException.ThrowIfNullOrWhiteSpace(consumerGroupMetadata.GroupId);
+            ThrowIfCannotMutate("Cannot send offsets to transaction");
+            var snapshot = offsets.ToArray();
+
+            await _producer.ApplyFaultAsync(
+                new KafkaFaultScope(
+                    KafkaFaultOperation.SendOffsetsToTransaction,
+                    groupId: consumerGroupMetadata.GroupId),
+                cancellationToken).ConfigureAwait(false);
+
+            var pending = GetOrAddPendingOffsets(consumerGroupMetadata.GroupId);
+            pending.Metadata = consumerGroupMetadata;
+            pending.Offsets.AddRange(snapshot);
         }
 
         public async ValueTask DisposeAsync()
@@ -691,32 +725,76 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
             {
                 await AbortAsync().ConfigureAwait(false);
             }
-            catch (TransactionException)
+            catch (Exception)
             {
                 // Best-effort cleanup mirrors the production transaction adapter.
-                Complete();
+                Complete(committed: false);
             }
+        }
+
+        public async ValueTask CompletePreparedAsync(
+            InMemoryProducer<TKey, TValue> recoveringProducer,
+            bool committed,
+            CancellationToken cancellationToken)
+        {
+            ThrowIfCompleted("Cannot complete prepared transaction", allowDisposedProducer: true);
+            if (!_prepared)
+                throw new InvalidOperationException("Transaction is not prepared.");
+
+            await recoveringProducer.ApplyFaultAsync(
+                new KafkaFaultScope(
+                    committed
+                        ? KafkaFaultOperation.CommitTransaction
+                        : KafkaFaultOperation.AbortTransaction),
+                cancellationToken).ConfigureAwait(false);
+
+            Complete(committed);
         }
 
         private void ThrowIfCannotMutate(string operation)
         {
-            ThrowIfIncomplete(operation);
+            ThrowIfCompleted(operation);
             if (_prepared)
                 throw new InvalidOperationException("Transaction is prepared; only commit or abort is permitted.");
         }
 
-        private void ThrowIfIncomplete(string operation)
+        private void ThrowIfCompleted(string operation, bool allowDisposedProducer = false)
         {
-            _producer.ThrowIfDisposed();
+            if (!allowDisposedProducer)
+                _producer.ThrowIfDisposed();
             _producer.ThrowIfFatalTransactionError();
             if (_completed)
                 throw new InvalidOperationException($"{operation}: transaction is already completed.");
         }
 
-        private void Complete()
+        private PendingGroupOffsets GetOrAddPendingOffsets(string groupId)
         {
+            if (_pendingOffsets.TryGetValue(groupId, out var pending))
+                return pending;
+
+            pending = new PendingGroupOffsets();
+            _pendingOffsets.Add(groupId, pending);
+            return pending;
+        }
+
+        private void Complete(bool committed)
+        {
+            _producer._cluster.CompleteTransaction(
+                TransactionMarker,
+                committed,
+                _pendingOffsets.Select(static item =>
+                    (item.Key, item.Value.Metadata, (IReadOnlyList<TopicPartitionOffset>)item.Value.Offsets)),
+                PreparedState,
+                this);
+            _pendingOffsets.Clear();
             _completed = true;
             _producer.CompleteTransaction(this);
+        }
+
+        private sealed class PendingGroupOffsets
+        {
+            public List<TopicPartitionOffset> Offsets { get; } = [];
+            public ConsumerGroupMetadata? Metadata { get; set; }
         }
     }
 

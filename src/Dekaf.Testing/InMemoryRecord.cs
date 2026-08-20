@@ -17,4 +17,17 @@ public sealed record InMemoryRecord
     public IReadOnlyList<Header> Headers { get; init; } = Array.Empty<Header>();
     public required long TimestampMs { get; init; }
     public DateTimeOffset Timestamp => DateTimeOffset.FromUnixTimeMilliseconds(TimestampMs);
+    internal InMemoryTransactionMarker? Transaction { get; init; }
+}
+
+internal sealed class InMemoryTransactionMarker
+{
+    public InMemoryTransactionState State { get; set; } = InMemoryTransactionState.Ongoing;
+}
+
+internal enum InMemoryTransactionState : byte
+{
+    Ongoing,
+    Committed,
+    Aborted
 }

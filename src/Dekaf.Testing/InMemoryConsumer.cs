@@ -252,7 +252,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         : new ConsumerGroupMetadata
         {
             GroupId = _groupId,
-            GenerationId = 1,
+            GenerationId = _cluster.GetConsumerGroupGeneration(_groupId),
             MemberId = _memberId
         };
 

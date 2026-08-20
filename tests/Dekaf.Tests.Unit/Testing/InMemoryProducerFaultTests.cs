@@ -1,3 +1,4 @@
+using System.Text;
 using Dekaf.Consumer;
 using Dekaf.Errors;
 using Dekaf.Producer;
@@ -39,6 +40,25 @@ public sealed class InMemoryProducerFaultTests
         await Assert.That(otherPartition.Partition).IsEqualTo(0);
         await Assert.That(recovered.Partition).IsEqualTo(1);
         await Assert.That(cluster.ReadRecords("orders", 1)).Count().IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task Produce_PartitionScopedFaultMatchesResolvedRoundRobinPartition()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("orders", partitionCount: 2);
+        var producer = new InMemoryProducer<string, string>(cluster);
+        var failure = new InvalidOperationException("partition zero");
+        cluster.FaultPlan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.Produce, "orders", partition: 0),
+            failure);
+
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            producer.ProduceAsync("orders", key: null, "first").AsTask());
+        var recovered = await producer.ProduceAsync("orders", key: null, "second");
+
+        await Assert.That(actual).IsSameReferenceAs(failure);
+        await Assert.That(recovered.Partition).IsEqualTo(1);
     }
 
     [Test]
@@ -196,6 +216,90 @@ public sealed class InMemoryProducerFaultTests
     }
 
     [Test]
+    public async Task TransactionalRecords_AreVisibleOnlyAfterCommitAndNeverAfterAbort()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+
+        await using (var committed = producer.BeginTransaction())
+        {
+            _ = await committed.ProduceAsync("orders", "k", "committed");
+            await Assert.That(cluster.ReadRecords("orders")).IsEmpty();
+            await committed.CommitAsync();
+        }
+
+        await using (var aborted = producer.BeginTransaction())
+        {
+            _ = await aborted.ProduceAsync("orders", "k", "aborted");
+            await Assert.That(cluster.ReadRecords("orders")).Count().IsEqualTo(1);
+            await aborted.AbortAsync();
+        }
+
+        _ = await producer.ProduceAsync("orders", "k", "ordinary");
+        var visible = cluster.ReadRecords("orders");
+
+        await Assert.That(visible.Select(static record => Encoding.UTF8.GetString(record.Value)))
+            .IsEquivalentTo(["committed", "ordinary"]);
+        await Assert.That(visible.Select(static record => record.Offset))
+            .IsEquivalentTo([0L, 2L]);
+
+        var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest });
+        consumer.Subscribe("orders");
+        var first = await consumer.ConsumeOneAsync(TimeSpan.Zero);
+        var second = await consumer.ConsumeOneAsync(TimeSpan.Zero);
+
+        await Assert.That(first!.Value.Offset).IsEqualTo(0);
+        await Assert.That(second!.Value.Offset).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task TransactionDispose_AbortFaultIsBestEffortAndReleasesProducerSlot()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        var transaction = producer.BeginTransaction();
+        cluster.FaultPlan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.AbortTransaction),
+            new KafkaTimeoutException("abort timed out"));
+
+        await transaction.DisposeAsync();
+
+        await using var recovered = producer.BeginTransaction();
+        await recovered.AbortAsync();
+    }
+
+    [Test]
+    public async Task TransactionCommit_RejectsStaleConsumerGroupMetadataWithoutCommittingOffsets()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("orders");
+        var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions { GroupId = "billing" });
+        consumer.Subscribe("orders");
+        var metadata = consumer.ConsumerGroupMetadata!;
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await using var transaction = producer.BeginTransaction();
+        await transaction.SendOffsetsToTransactionAsync(
+            [new TopicPartitionOffset("orders", 0, 17)],
+            metadata);
+
+        var replacement = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions { GroupId = "billing" });
+        replacement.Subscribe("orders");
+
+        var failure = await Assert.ThrowsAsync<TransactionException>(
+            () => transaction.CommitAsync().AsTask());
+
+        await Assert.That(failure!.ErrorCode).IsEqualTo(ErrorCode.IllegalGeneration);
+        await Assert.That(cluster.GetCommittedOffset("billing", new TopicPartition("orders", 0))).IsNull();
+        await transaction.AbortAsync();
+    }
+
+    [Test]
     public async Task PreparedTransaction_ProducerCompletionSupportsCommitAndAbort()
     {
         var producer = new InMemoryProducer<string, string>(new InMemoryKafkaCluster());
@@ -215,6 +319,36 @@ public sealed class InMemoryProducerFaultTests
 
         await using var recovered = producer.BeginTransaction();
         await recovered.AbortAsync();
+    }
+
+    [Test]
+    public async Task PreparedTransaction_ReplacementProducerRecoversCommitAndAbort()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var original = new InMemoryProducer<string, string>(cluster);
+        var committedTransaction = original.BeginTransaction();
+        _ = await committedTransaction.ProduceAsync("orders", "k", "committed");
+        var committedState = await committedTransaction.PrepareAsync();
+        await original.DisposeAsync();
+
+        var replacement = new InMemoryProducer<string, string>(cluster);
+        await replacement.InitTransactionsAsync(keepPreparedTransaction: true);
+        await replacement.CompletePreparedTransactionAsync(committedState, committed: true);
+
+        var abortedTransaction = replacement.BeginTransaction();
+        _ = await abortedTransaction.ProduceAsync("orders", "k", "aborted");
+        var abortedState = await abortedTransaction.PrepareAsync();
+        await replacement.DisposeAsync();
+
+        var secondReplacement = new InMemoryProducer<string, string>(cluster);
+        await secondReplacement.InitTransactionsAsync(keepPreparedTransaction: true);
+        await secondReplacement.CompletePreparedTransactionAsync(abortedState, committed: false);
+
+        var visible = cluster.ReadRecords("orders");
+        await Assert.That(visible).Count().IsEqualTo(1);
+        await Assert.That(Encoding.UTF8.GetString(visible[0].Value)).IsEqualTo("committed");
+        await committedTransaction.DisposeAsync();
+        await abortedTransaction.DisposeAsync();
     }
 
     [Test]
