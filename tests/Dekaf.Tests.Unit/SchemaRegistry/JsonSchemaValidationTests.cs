@@ -1130,6 +1130,94 @@ public sealed class JsonSchemaValidationTests
     }
 
     [Test]
+    public void InlineRules_DuplicateDeclaredPropertiesUseFinalValue()
+    {
+        const string schemaText = """
+            {
+              "properties": {
+                "name": {
+                  "confluent:rules": [{ "name": "final-value", "expr": "this == 'ok'" }]
+                }
+              }
+            }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
+
+        validator.ValidateRules(
+            """{"name":"bad","name":"ok"}"""u8.ToArray(),
+            25,
+            failFast: false);
+        validator.ValidateRules(
+            """{"name":"bad","name":"ok"}"""u8.ToArray(),
+            25,
+            failFast: true);
+        validator.ValidateRules(
+            """{"name":"bad","\u006eame":"ok"}"""u8.ToArray(),
+            25,
+            failFast: false);
+        Assert.Throws<ValidationRulesFailedException>(() => validator.ValidateRules(
+            """{"name":"ok","name":"bad"}"""u8.ToArray(),
+            25,
+            failFast: false));
+        Assert.Throws<ValidationRulesFailedException>(() => validator.ValidateRules(
+            """{"name":"ok","name":"bad"}"""u8.ToArray(),
+            25,
+            failFast: true));
+    }
+
+    [Test]
+    public void InlineRules_DuplicatePropertiesUseFinalCompositionBranch()
+    {
+        const string schemaText = """
+            {
+              "properties": {
+                "value": {
+                  "oneOf": [
+                    {
+                      "type": "integer",
+                      "confluent:rules": [{ "name": "positive", "expr": "this > 0" }]
+                    },
+                    {
+                      "type": "string",
+                      "confluent:rules": [{ "name": "ok", "expr": "this == 'ok'" }]
+                    }
+                  ]
+                }
+              }
+            }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
+
+        validator.ValidateRules("""{"value":0,"value":"ok"}"""u8.ToArray(), 25, failFast: false);
+        validator.ValidateRules("""{"value":0,"value":"ok"}"""u8.ToArray(), 25, failFast: true);
+        Assert.Throws<ValidationRulesFailedException>(() => validator.ValidateRules(
+            """{"value":"ok","value":0}"""u8.ToArray(),
+            25,
+            failFast: false));
+    }
+
+    [Test]
+    public void InlineRules_SizeCountsUniqueMapKeys()
+    {
+        const string schemaText = """
+            {
+              "confluent:rules": [{
+                "name": "map-size",
+                "expr": "size(this) == 1 && this.a == 2"
+              }]
+            }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
+
+        validator.ValidateRules("""{"a":1,"a":2}"""u8.ToArray(), 25, failFast: false);
+        validator.ValidateRules("""{"a":1,"\u0061":2}"""u8.ToArray(), 25, failFast: false);
+        Assert.Throws<ValidationRulesFailedException>(() => validator.ValidateRules(
+            """{"a":1,"b":2}"""u8.ToArray(),
+            25,
+            failFast: false));
+    }
+
+    [Test]
     public void InlineRules_ResolveMemberPathsAtSupportedDepth()
     {
         var (schema, payload) = CreateDeepMemberRule(depth: 80);

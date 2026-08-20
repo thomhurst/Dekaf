@@ -108,6 +108,22 @@ public class JsonSchemaValidationBenchmarks
         }
         """;
 
+    private const string DuplicatePropertyInlineRulesJsonSchema = """
+        {
+          "properties": {
+            "name": {
+              "confluent:rules": [{ "name": "final-value", "expr": "this == 'ok'" }]
+            }
+          }
+        }
+        """;
+
+    private const string MapSizeInlineRulesJsonSchema = """
+        {
+          "confluent:rules": [{ "name": "map-size", "expr": "size(this) == 1" }]
+        }
+        """;
+
     private ArrayBufferWriter<byte> _disabledDestination = new(256);
     private ArrayBufferWriter<byte> _enabledDestination = new(256);
     private ArrayBufferWriter<byte> _inlineRulesDestination = new(256);
@@ -139,6 +155,10 @@ public class JsonSchemaValidationBenchmarks
     private ReadOnlyMemory<byte> _nestedMemberInlineRulesJsonPayload;
     private ReadOnlyMemory<byte> _duplicateNestedMemberInlineRulesJsonPayload;
     private IJsonSchemaValidator _nestedMemberInlineRulesValidator = null!;
+    private ReadOnlyMemory<byte> _duplicatePropertyInlineRulesJsonPayload;
+    private IJsonSchemaValidator _duplicatePropertyInlineRulesValidator = null!;
+    private ReadOnlyMemory<byte> _duplicateMapSizeInlineRulesJsonPayload;
+    private IJsonSchemaValidator _mapSizeInlineRulesValidator = null!;
     private ReadOnlyMemory<byte> _terminalPrefixInlineRulesJsonPayload;
     private IJsonSchemaValidator _terminalPrefixInlineRulesValidator = null!;
     private SerializationContext _context;
@@ -282,6 +302,27 @@ public class JsonSchemaValidationBenchmarks
             _duplicateNestedMemberInlineRulesJsonPayload,
             5,
             failFast: false);
+        _duplicatePropertyInlineRulesJsonPayload =
+            """{"name":"bad","name":"ok"}"""u8.ToArray();
+        _duplicatePropertyInlineRulesValidator = inlineRulesFactory.GetOrCreate(new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = DuplicatePropertyInlineRulesJsonSchema
+        });
+        _duplicatePropertyInlineRulesValidator.ValidateRules(
+            _duplicatePropertyInlineRulesJsonPayload,
+            9,
+            failFast: false);
+        _duplicateMapSizeInlineRulesJsonPayload = """{"a":1,"a":2}"""u8.ToArray();
+        _mapSizeInlineRulesValidator = inlineRulesFactory.GetOrCreate(new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = MapSizeInlineRulesJsonSchema
+        });
+        _mapSizeInlineRulesValidator.ValidateRules(
+            _duplicateMapSizeInlineRulesJsonPayload,
+            10,
+            failFast: false);
         var (terminalPrefixSchema, terminalPrefixPayload) = CreateTerminalPrefixRule(depth: 32);
         _terminalPrefixInlineRulesJsonPayload = terminalPrefixPayload;
         _terminalPrefixInlineRulesValidator = inlineRulesFactory.GetOrCreate(new Schema
@@ -394,6 +435,20 @@ public class JsonSchemaValidationBenchmarks
         _nestedMemberInlineRulesValidator.ValidateRules(
             _duplicateNestedMemberInlineRulesJsonPayload,
             5,
+            failFast: false);
+
+    [Benchmark]
+    public void ValidateDuplicatePropertyFailFastInlineRules() =>
+        _duplicatePropertyInlineRulesValidator.ValidateRules(
+            _duplicatePropertyInlineRulesJsonPayload,
+            9,
+            failFast: true);
+
+    [Benchmark]
+    public void ValidateDuplicateMapSizeInlineRules() =>
+        _mapSizeInlineRulesValidator.ValidateRules(
+            _duplicateMapSizeInlineRulesJsonPayload,
+            10,
             failFast: false);
 
     [Benchmark]
