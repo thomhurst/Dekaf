@@ -39,11 +39,11 @@ _SCENARIO_LABELS = {
         1,
     ),
     ("ProducerBenchmarks", "ProduceBatch"): (
-        "Produce — batches (acks=leader, non-idempotent; legacy)",
+        "Produce — batches (legacy: Dekaf acks=all/idempotent; Confluent acks=leader/non-idempotent)",
         2,
     ),
     ("ProducerBenchmarks", "FireAndForget"): (
-        "Produce — fire-and-forget (acks=leader, non-idempotent; legacy)",
+        "Produce — fire-and-forget (legacy: Dekaf acks=all/idempotent; Confluent acks=leader/non-idempotent)",
         3,
     ),
     ("ProducerBenchmarks", "ProduceBatchAllIdempotent"): (
@@ -601,7 +601,7 @@ def generate_document(
         "The charts use the representative high-load parameter set from the latest run and show its measured values. Multipliers in brackets are calculated from those displayed figures; the table below summarizes the broader cross-run range.",
         "",
         ":::note Reading producer results",
-        "The `linger=0` scenario is the matched client comparison. The `linger=5 ms` scenario intentionally measures each client's app-limited batching policy and should not be read as general producer throughput. In the legacy serial-awaited results below, Dekaf sends a sole record immediately while Confluent applies the configured linger; the old benchmark's unused `BatchSize` parameter also duplicated each payload result. The legacy batch and fire-and-forget results used leader acknowledgements without idempotence. The page will show the new matched controls after the next run from main.",
+        "The `linger=0` scenario is the matched client comparison. The `linger=5 ms` scenario intentionally measures each client's app-limited batching policy and should not be read as general producer throughput. In the legacy serial-awaited results below, Dekaf sends a sole record immediately while Confluent applies the configured linger; the old benchmark's unused `BatchSize` parameter also duplicated each payload result. In the legacy batch and fire-and-forget results, Dekaf used `acks=all` with idempotence while Confluent used `acks=leader` without idempotence. The page will show the new matched controls after the next run from main.",
         ":::",
         "",
         *format_comparison_charts(summaries, chart_metrics),
