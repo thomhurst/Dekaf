@@ -182,11 +182,18 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         }
 
         _commandAdmissionCancellation.Cancel();
-        if (!_commands.Writer.TryWrite(command) && _workerTask.IsCompleted)
+        if (!_commands.Writer.TryWrite(command))
         {
-            command.Completion.TrySetException(
-                Volatile.Read(ref _backgroundFailure) ??
-                new ObjectDisposedException(nameof(StreamsGroupMember)));
+            try
+            {
+                await _workerTask.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                ObserveFault(command.Completion.Task);
+                throw;
+            }
+            CompleteRejectedClose();
         }
 
         try
@@ -218,8 +225,15 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         finally
         {
             _heartbeatTimer.Dispose();
+            _commandAdmissionCancellation.Dispose();
+            _initializeLock.Dispose();
         }
     }
+
+    private void CompleteRejectedClose() =>
+        Volatile.Read(ref _closeCommand)?.Completion.TrySetException(
+            Volatile.Read(ref _backgroundFailure) ??
+            new ObjectDisposedException(nameof(StreamsGroupMember)));
 
     private async ValueTask<StreamsGroupHeartbeatResult> QueueOperationAsync(
         MemberCommand command,
@@ -229,7 +243,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         ThrowIfNotInitialized();
 
         var backgroundFailure = Volatile.Read(ref _backgroundFailure);
-        if (backgroundFailure is not null)
+        if (backgroundFailure is not null && command.Kind != MemberCommandKind.Join)
             throw CreateBackgroundFailureException(backgroundFailure);
 
         command.CancellationToken = cancellationToken;
@@ -330,7 +344,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
                     }
 
                     var backgroundFailure = Volatile.Read(ref _backgroundFailure);
-                    if (backgroundFailure is not null)
+                    if (backgroundFailure is not null && command.Kind != MemberCommandKind.Join)
                     {
                         command.Completion.TrySetException(
                             CreateBackgroundFailureException(backgroundFailure));
@@ -461,6 +475,8 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         }
 
         var result = ApplyResponse(response, createResult: true)!;
+        if (command.Kind == MemberCommandKind.Join)
+            Volatile.Write(ref _backgroundFailure, null);
         ScheduleHeartbeat();
         return result;
     }
@@ -550,113 +566,144 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         var unreleasedFailureCount = 0;
         long unreleasedStartedAt = -1;
         var attemptLimit = 5;
-        for (var attempt = 0; attempt < attemptLimit; attempt++)
+        var fencingObserved = false;
+        try
         {
-            if (_coordinatorId < 0)
-                await FindCoordinatorAsync(cancellationToken).ConfigureAwait(false);
-
-            StreamsGroupHeartbeatResponse response;
-            try
+            for (var attempt = 0; attempt < attemptLimit; attempt++)
             {
-                using var lease = await _connectionPool.LeaseConnectionAsync(_coordinatorId, cancellationToken)
-                    .ConfigureAwait(false);
-                var connection = lease.Connection;
-                if (!_metadataManager.HasApiKey(connection, ApiKey.StreamsGroupHeartbeat))
+                if (_coordinatorId < 0)
+                    await FindCoordinatorAsync(cancellationToken).ConfigureAwait(false);
+
+                StreamsGroupHeartbeatResponse response;
+                try
                 {
-                    throw new BrokerVersionException(
-                        "The target Kafka broker does not support StreamsGroupHeartbeat " +
-                        "(KIP-1071). Streams group membership requires Kafka 4.2 or later.");
+                    using var lease = await _connectionPool.LeaseConnectionAsync(_coordinatorId, cancellationToken)
+                        .ConfigureAwait(false);
+                    var connection = lease.Connection;
+                    if (!_metadataManager.HasApiKey(connection, ApiKey.StreamsGroupHeartbeat))
+                    {
+                        throw new BrokerVersionException(
+                            "The target Kafka broker does not support StreamsGroupHeartbeat " +
+                            "(KIP-1071). Streams group membership requires Kafka 4.2 or later.");
+                    }
+
+                    var version = _metadataManager.GetNegotiatedApiVersion(
+                        connection,
+                        ApiKey.StreamsGroupHeartbeat,
+                        StreamsGroupHeartbeatRequest.LowestSupportedVersion,
+                        StreamsGroupHeartbeatRequest.HighestSupportedVersion);
+                    response = await connection.SendAsync<StreamsGroupHeartbeatRequest, StreamsGroupHeartbeatResponse>(
+                        request,
+                        version,
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception exception) when (
+                    RetryHelper.IsRetriableRequestFailure(exception)
+                    && (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested))
+                {
+                    _coordinatorId = -1;
+                    if (attempt == attemptLimit - 1)
+                        throw;
+                    if (recoverFencing)
+                        request = CreateRecoveryRequest(recoveryJoinEpoch, shutdownApplication);
+                    await DelayForRetryAsync(attempt + 1, cancellationToken).ConfigureAwait(false);
+                    continue;
                 }
 
-                var version = _metadataManager.GetNegotiatedApiVersion(
-                    connection,
-                    ApiKey.StreamsGroupHeartbeat,
-                    StreamsGroupHeartbeatRequest.LowestSupportedVersion,
-                    StreamsGroupHeartbeatRequest.HighestSupportedVersion);
-                response = await connection.SendAsync<StreamsGroupHeartbeatRequest, StreamsGroupHeartbeatResponse>(
-                    request,
-                    version,
-                    cancellationToken).ConfigureAwait(false);
-            }
-            catch (Exception exception) when (
-                RetryHelper.IsRetriableRequestFailure(exception)
-                && (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested))
-            {
-                _coordinatorId = -1;
-                if (attempt == attemptLimit - 1)
-                    throw;
-                if (recoverFencing)
-                    request = CreateRecoveryRequest(recoveryJoinEpoch, shutdownApplication);
-                await DelayForRetryAsync(attempt + 1, cancellationToken).ConfigureAwait(false);
-                continue;
-            }
+                if (response.ErrorCode == ErrorCode.None)
+                    return response;
 
-            if (response.ErrorCode == ErrorCode.None)
-                return response;
+                if (response.ErrorCode == ErrorCode.UnsupportedVersion)
+                {
+                    throw new BrokerVersionException(
+                        "The broker rejected StreamsGroupHeartbeat although it advertised API 88. " +
+                        "Enable the Streams rebalance protocol (streams.version >= 1 and " +
+                        "group.coordinator.rebalance.protocols containing 'streams').");
+                }
 
-            if (response.ErrorCode == ErrorCode.UnsupportedVersion)
-            {
-                throw new BrokerVersionException(
-                    "The broker rejected StreamsGroupHeartbeat although it advertised API 88. " +
-                    "Enable the Streams rebalance protocol (streams.version >= 1 and " +
-                    "group.coordinator.rebalance.protocols containing 'streams').");
-            }
+                if (response.ErrorCode == ErrorCode.UnreleasedInstanceId
+                    && InstanceId is not null
+                    && request.MemberEpoch == 0)
+                {
+                    if (unreleasedStartedAt < 0)
+                        unreleasedStartedAt = Stopwatch.GetTimestamp();
+                    var elapsed = Stopwatch.GetElapsedTime(unreleasedStartedAt);
+                    if (elapsed >= _options.RebalanceTimeout)
+                        throw CreateGroupException(response);
 
-            if (response.ErrorCode == ErrorCode.UnreleasedInstanceId
-                && InstanceId is not null
-                && request.MemberEpoch == 0)
-            {
-                if (unreleasedStartedAt < 0)
-                    unreleasedStartedAt = Stopwatch.GetTimestamp();
-                var elapsed = Stopwatch.GetElapsedTime(unreleasedStartedAt);
-                if (elapsed >= _options.RebalanceTimeout)
-                    throw CreateGroupException(response);
+                    var remainingMs = Math.Max(
+                        1,
+                        (int)Math.Ceiling((_options.RebalanceTimeout - elapsed).TotalMilliseconds));
+                    var delayMs = Math.Min(
+                        remainingMs,
+                        Math.Max(1, ExponentialRetryBackoff.CalculateDelayMilliseconds(
+                            _retryBackoffMs,
+                            _retryBackoffMaxMs,
+                            ++unreleasedFailureCount)));
+                    await Task.Delay(delayMs, cancellationToken).ConfigureAwait(false);
+                    attempt--;
+                    continue;
+                }
 
-                var remainingMs = Math.Max(
-                    1,
-                    (int)Math.Ceiling((_options.RebalanceTimeout - elapsed).TotalMilliseconds));
-                var delayMs = Math.Min(
-                    remainingMs,
-                    Math.Max(1, ExponentialRetryBackoff.CalculateDelayMilliseconds(
-                        _retryBackoffMs,
-                        _retryBackoffMaxMs,
-                        ++unreleasedFailureCount)));
-                await Task.Delay(delayMs, cancellationToken).ConfigureAwait(false);
-                attempt--;
-                continue;
-            }
+                if (response.ErrorCode is ErrorCode.NotCoordinator
+                    or ErrorCode.CoordinatorNotAvailable
+                    or ErrorCode.CoordinatorLoadInProgress)
+                {
+                    if (response.ErrorCode != ErrorCode.CoordinatorLoadInProgress)
+                        _coordinatorId = -1;
+                    if (recoverFencing)
+                        request = CreateRecoveryRequest(recoveryJoinEpoch, shutdownApplication);
+                    await DelayForRetryAsync(attempt + 1, cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
 
-            if (response.ErrorCode is ErrorCode.NotCoordinator
-                or ErrorCode.CoordinatorNotAvailable
-                or ErrorCode.CoordinatorLoadInProgress)
-            {
-                if (response.ErrorCode != ErrorCode.CoordinatorLoadInProgress)
-                    _coordinatorId = -1;
-                if (recoverFencing)
-                    request = CreateRecoveryRequest(recoveryJoinEpoch, shutdownApplication);
-                await DelayForRetryAsync(attempt + 1, cancellationToken).ConfigureAwait(false);
-                continue;
+                if (recoverFencing
+                    && !fencedRecoveryAttempted
+                    && response.ErrorCode is ErrorCode.FencedMemberEpoch or ErrorCode.UnknownMemberId)
+                {
+                    fencingObserved = true;
+                    fencedRecoveryAttempted = true;
+                    attemptLimit++;
+                    recoveryJoinEpoch = InstanceId is null ? 0 : -2;
+                    _steadyRequestCache.Invalidate();
+                    request = CreateJoinRequest(recoveryJoinEpoch.Value, shutdownApplication);
+                    continue;
+                }
+
+                throw CreateGroupException(response);
             }
 
-            if (recoverFencing
-                && !fencedRecoveryAttempted
-                && response.ErrorCode is ErrorCode.FencedMemberEpoch or ErrorCode.UnknownMemberId)
-            {
-                fencedRecoveryAttempted = true;
-                attemptLimit++;
-                recoveryJoinEpoch = InstanceId is null ? 0 : -2;
-                _steadyRequestCache.Invalidate();
-                request = CreateJoinRequest(recoveryJoinEpoch.Value, shutdownApplication);
-                continue;
-            }
-
-            throw CreateGroupException(response);
+            throw new GroupException(
+                ErrorCode.CoordinatorNotAvailable,
+                $"StreamsGroupHeartbeat failed after {attemptLimit} coordinator attempts.")
+            { GroupId = GroupId };
         }
+        catch
+        {
+            if (fencingObserved)
+                MarkUnjoinedAfterFencing();
+            throw;
+        }
+    }
 
-        throw new GroupException(
-            ErrorCode.CoordinatorNotAvailable,
-            $"StreamsGroupHeartbeat failed after {attemptLimit} coordinator attempts.")
-        { GroupId = GroupId };
+    private void MarkUnjoinedAfterFencing()
+    {
+        _memberEpoch = 0;
+        _steadyRequestCache.Invalidate();
+        var current = _snapshot;
+        _snapshot = new StreamsGroupMemberSnapshot
+        {
+            IsJoined = false,
+            MemberId = current.MemberId,
+            MemberEpoch = 0,
+            Assignment = EmptyAssignment,
+            EndpointInformationEpoch = current.EndpointInformationEpoch,
+            PartitionsByUserEndpoint = [],
+            Status = current.Status,
+            HeartbeatInterval = current.HeartbeatInterval,
+            AcceptableRecoveryLag = current.AcceptableRecoveryLag,
+            TaskOffsetInterval = current.TaskOffsetInterval
+        };
     }
 
     private async ValueTask FindCoordinatorAsync(CancellationToken cancellationToken)
@@ -1017,21 +1064,24 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
             _endpointInformationEpoch,
             InstanceId);
 
-    private void QueueHeartbeat()
+    private bool QueueHeartbeat()
     {
-        if (Volatile.Read(ref _closeRequested) == 0 &&
-            !_commands.Writer.TryWrite(MemberCommand.Heartbeat))
+        if (Volatile.Read(ref _closeRequested) != 0)
+            return false;
+        if (_commands.Writer.TryWrite(MemberCommand.Heartbeat))
+            return true;
+
+        try
         {
-            try
-            {
-                if (Volatile.Read(ref _closeRequested) == 0)
-                    ScheduleHeartbeat();
-            }
-            catch (ObjectDisposedException) when (Volatile.Read(ref _disposed) != 0)
-            {
-                // DisposeAsync can release the timer after the callback's close check.
-            }
+            if (Volatile.Read(ref _closeRequested) == 0)
+                ScheduleHeartbeat();
         }
+        catch (ObjectDisposedException) when (Volatile.Read(ref _disposed) != 0)
+        {
+            // DisposeAsync can release the timer after the callback's close check.
+        }
+
+        return false;
     }
 
     private void ScheduleHeartbeat() =>

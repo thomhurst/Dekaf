@@ -1,4 +1,4 @@
-using System.Runtime.CompilerServices;
+using System.Reflection;
 using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
@@ -426,6 +426,33 @@ public sealed class StreamsGroupMemberTests
     }
 
     [Test]
+    public async Task CloseAsync_WhenWriterClosesBeforeWorkerStopsDoesNotHang()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1));
+        var pendingUpdate = new TaskCompletionSource<StreamsGroupHeartbeatResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.EnqueueHeartbeat(pendingUpdate.Task);
+        connection.EnqueueHeartbeat(Success(epoch: -1));
+        await using var fixture = CreateFixture(connection);
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+        StopHeartbeatTimer(fixture.Member);
+        var update = fixture.Member.UpdateAsync(new StreamsGroupMemberUpdate
+        {
+            ProcessId = "blocked"
+        }).AsTask();
+        await connection.SecondHeartbeatStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await Assert.That(CompleteCommandWriter(fixture.Member)).IsTrue();
+        await Assert.That(QueueHeartbeat(fixture.Member)).IsFalse();
+
+        var close = fixture.Member.CloseAsync().AsTask();
+        pendingUpdate.SetResult(Success(epoch: 2));
+
+        _ = await update;
+        await close.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Test]
     public async Task DisposeAsync_WaitsForInFlightHeartbeatWithoutDeadlock()
     {
         var connection = new ScriptedConnection();
@@ -496,8 +523,8 @@ public sealed class StreamsGroupMemberTests
         connection.EnqueueHeartbeat(Success(epoch: -1));
         await using var fixture = CreateFixture(connection);
         await fixture.Member.JoinAsync(CreateInitialUpdate());
-        HeartbeatTimer(fixture.Member).Change(Timeout.Infinite, Timeout.Infinite);
-        HeartbeatIntervalMs(fixture.Member) = 1;
+        StopHeartbeatTimer(fixture.Member);
+        SetHeartbeatIntervalMs(fixture.Member, 1);
         var activeUpdate = fixture.Member.UpdateAsync(new StreamsGroupMemberUpdate
         {
             ProcessId = "active"
@@ -512,7 +539,7 @@ public sealed class StreamsGroupMemberTests
                 cancellation.Token).AsTask();
         }
 
-        QueueHeartbeat(fixture.Member);
+        await Assert.That(QueueHeartbeat(fixture.Member)).IsFalse();
         cancellation.Cancel();
         blockedUpdate.SetException(new NotSupportedException("update failed"));
 
@@ -643,7 +670,7 @@ public sealed class StreamsGroupMemberTests
     }
 
     [Test]
-    public async Task UpdateAsync_WhenFencedRejoinFails_PreservesJoinedEpoch()
+    public async Task UpdateAsync_WhenFencedRejoinFailsMarksMemberUnjoined()
     {
         var connection = new ScriptedConnection();
         connection.EnqueueHeartbeat(Success(epoch: 1));
@@ -664,10 +691,45 @@ public sealed class StreamsGroupMemberTests
 
         await Assert.ThrowsAsync<GroupException>(async () =>
             await fixture.Member.UpdateAsync(new StreamsGroupMemberUpdate { ProcessId = "process-2" }));
-        var result = await fixture.Member.UpdateAsync(new StreamsGroupMemberUpdate { ProcessId = "process-3" });
+        var snapshot = fixture.Member.Snapshot;
+        await Assert.That(snapshot.IsJoined).IsFalse();
+        await Assert.That(snapshot.MemberEpoch).IsEqualTo(0);
+        await Assert.That(snapshot.Assignment.ActiveTasks).IsEmpty();
 
-        await Assert.That(connection.HeartbeatRequests[3].MemberEpoch).IsEqualTo(1);
+        var result = await fixture.Member.JoinAsync(CreateInitialUpdate());
+
+        await Assert.That(connection.HeartbeatRequests[3].MemberEpoch).IsEqualTo(0);
         await Assert.That(result.MemberEpoch).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task BackgroundHeartbeat_FencedRecoveryFailureAllowsExplicitRejoin()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1, heartbeatIntervalMs: 1));
+        connection.EnqueueHeartbeat(new StreamsGroupHeartbeatResponse
+        {
+            ErrorCode = ErrorCode.FencedMemberEpoch,
+            MemberId = "member-1"
+        });
+        connection.EnqueueHeartbeat(new StreamsGroupHeartbeatResponse
+        {
+            ErrorCode = ErrorCode.StreamsInvalidTopology,
+            ErrorMessage = "topology rejected",
+            MemberId = "member-1"
+        });
+        connection.EnqueueHeartbeat(Success(epoch: 2));
+        await using var fixture = CreateFixture(connection);
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+        await connection.ThirdHeartbeatStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await Assert.That(() => fixture.Member.Snapshot.IsJoined)
+            .Eventually(joined => joined.IsFalse(), TimeSpan.FromSeconds(5));
+
+        var result = await fixture.Member.JoinAsync(CreateInitialUpdate());
+
+        await Assert.That(connection.HeartbeatRequests[3].MemberEpoch).IsEqualTo(0);
+        await Assert.That(result.MemberEpoch).IsEqualTo(2);
+        await Assert.That(fixture.Member.Snapshot.IsJoined).IsTrue();
     }
 
     [Test]
@@ -910,14 +972,34 @@ public sealed class StreamsGroupMemberTests
             ActiveTasks = active
         };
 
-    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_heartbeatTimer")]
-    private static extern ref Timer HeartbeatTimer(StreamsGroupMember member);
+    private static readonly FieldInfo HeartbeatTimerField = GetMemberField("_heartbeatTimer");
+    private static readonly FieldInfo HeartbeatIntervalMsField = GetMemberField("_heartbeatIntervalMs");
+    private static readonly FieldInfo CommandsField = GetMemberField("_commands");
+    private static readonly MethodInfo QueueHeartbeatMethod = typeof(StreamsGroupMember).GetMethod(
+        "QueueHeartbeat",
+        BindingFlags.Instance | BindingFlags.NonPublic)!;
 
-    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_heartbeatIntervalMs")]
-    private static extern ref int HeartbeatIntervalMs(StreamsGroupMember member);
+    private static void StopHeartbeatTimer(StreamsGroupMember member) =>
+        ((Timer)HeartbeatTimerField.GetValue(member)!).Change(Timeout.Infinite, Timeout.Infinite);
 
-    [UnsafeAccessor(UnsafeAccessorKind.Method, Name = "QueueHeartbeat")]
-    private static extern void QueueHeartbeat(StreamsGroupMember member);
+    private static void SetHeartbeatIntervalMs(StreamsGroupMember member, int value) =>
+        HeartbeatIntervalMsField.SetValue(member, value);
+
+    private static bool QueueHeartbeat(StreamsGroupMember member) =>
+        (bool)QueueHeartbeatMethod.Invoke(member, null)!;
+
+    private static bool CompleteCommandWriter(StreamsGroupMember member)
+    {
+        var channel = CommandsField.GetValue(member)!;
+        var writerProperty = CommandsField.FieldType.GetProperty("Writer")!;
+        var writer = writerProperty.GetValue(channel)!;
+        var tryComplete = writerProperty.PropertyType.GetMethod("TryComplete")!;
+        return (bool)tryComplete.Invoke(writer, [null])!;
+    }
+
+    private static FieldInfo GetMemberField(string name) => typeof(StreamsGroupMember).GetField(
+        name,
+        BindingFlags.Instance | BindingFlags.NonPublic)!;
 
     private sealed class Fixture(
         StreamsGroupMember member,
