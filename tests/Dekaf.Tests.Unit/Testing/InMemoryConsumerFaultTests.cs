@@ -715,6 +715,30 @@ public sealed class InMemoryConsumerFaultTests
     }
 
     [Test]
+    public async Task Snapshot_FaultAddedAfterFirstRecordAppliesToNextRecord()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync(Topic, "key-0", "value-0");
+        await producer.ProduceAsync(Topic, "key-1", "value-1");
+        await using var consumer = CreateConsumer(cluster);
+        consumer.Subscribe(Topic);
+        await using var snapshot = consumer.ConsumeSnapshotAsync().GetAsyncEnumerator();
+
+        await Assert.That(await snapshot.MoveNextAsync()).IsTrue();
+        var failure = new InvalidOperationException("consume failed");
+        cluster.FaultPlan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.Consume, Topic, 0, GroupId),
+            failure);
+
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            snapshot.MoveNextAsync().AsTask());
+
+        await Assert.That(actual).IsSameReferenceAs(failure);
+        await Assert.That(cluster.FaultPlan.Count).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task AutoCommit_DoesNotConsumeCommitFaultWithoutStoredOffset()
     {
         var cluster = new InMemoryKafkaCluster();
@@ -831,6 +855,31 @@ public sealed class InMemoryConsumerFaultTests
 
         await Assert.That(next).IsNull();
         await Assert.That(await consumer.GetCommittedOffsetAsync(Partition)).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task ConsumeAsync_DisposedAfterYieldPreservesCommitFault()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync(Topic, "key", "value");
+        await using var consumer = CreateConsumer(
+            cluster,
+            enableAutoOffsetStore: true,
+            offsetCommitMode: OffsetCommitMode.Auto,
+            offsetStoreTiming: OffsetStoreTiming.AfterProcessing);
+        consumer.Subscribe(Topic);
+        cluster.FaultPlan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId),
+            new InvalidOperationException("commit failed"));
+        await using var records = consumer.ConsumeAsync().GetAsyncEnumerator();
+
+        await Assert.That(await records.MoveNextAsync()).IsTrue();
+        await consumer.CloseAsync();
+        _ = await Assert.ThrowsAsync<ObjectDisposedException>(() =>
+            records.MoveNextAsync().AsTask());
+
+        await Assert.That(cluster.FaultPlan.Count).IsEqualTo(1);
     }
 
     [Test]

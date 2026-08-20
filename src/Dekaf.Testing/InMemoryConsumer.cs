@@ -425,6 +425,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
                 // Resuming after the yield proves that the caller processed this record.
                 // Do this before the loop observes cancellation, matching KafkaConsumer.
+                ThrowIfDisposed();
                 await ApplyInDoubtAutoCommitFaultAsync(CancellationToken.None).ConfigureAwait(false);
                 ThrowIfDisposed();
                 lock (_gate)
@@ -614,6 +615,9 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                     continue;
 
                 yield return result;
+                // The caller can add fault rules while enumeration is suspended at the yield.
+                if (!applyRecordFaults)
+                    applyRecordFaults = HasPotentialConsumerFault();
             }
         }
         finally

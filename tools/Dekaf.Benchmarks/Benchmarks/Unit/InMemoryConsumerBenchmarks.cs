@@ -201,6 +201,9 @@ public class InMemoryConsumerBenchmarks
             count++;
         }
 
+        if (count != SnapshotRecordCount)
+            throw new InvalidOperationException("Snapshot benchmark consumed an unexpected record count.");
+
         return count;
     }
 
