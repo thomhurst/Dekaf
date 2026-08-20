@@ -187,7 +187,11 @@ internal sealed class SchemaRegistryMigrationRunner
                 readerContext.Return();
             }
 
-            return new MigrationResult(payload, plan.ReaderSchema, schemaId, writerSchema);
+            return new MigrationResult(
+                payload,
+                plan.ReaderSchema,
+                plan.ReaderSchema.Id,
+                plan.ReaderSchema.Schema);
         }
 
         var steps = plan.Steps;
@@ -330,11 +334,15 @@ internal sealed class SchemaRegistryMigrationRunner
 
             ValidateBeforeDomainRules(
                 payload,
-                schemaId,
-                writerSchema,
+                plan.ReaderSchema.Id,
+                plan.ReaderSchema.Schema,
                 validationRulesFactory,
                 validationRulesFailFast);
-            return new MigrationResult(payload, plan.ReaderSchema, schemaId, writerSchema);
+            return new MigrationResult(
+                payload,
+                plan.ReaderSchema,
+                plan.ReaderSchema.Id,
+                plan.ReaderSchema.Schema);
         }
 
         var steps = plan.Steps;
