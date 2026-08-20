@@ -158,6 +158,68 @@ public sealed class InMemoryConsumerFaultTests
     }
 
     [Test]
+    public async Task CommitAsync_InjectedPlanMatchesConcreteStoredOffset()
+    {
+        var innerPlan = new KafkaFaultPlan();
+        IKafkaFaultPlan faultPlan = new DelegatingFaultPlan(innerPlan);
+        var cluster = new InMemoryKafkaCluster(new InMemoryKafkaClusterOptions(), faultPlan);
+        cluster.CreateTopic(Topic);
+        var consumer = CreateConsumer(cluster, enableAutoOffsetStore: false);
+        consumer.Assign(Partition);
+        consumer.StoreOffset(new TopicPartitionOffset(Topic, 0, 1));
+        var failure = new InvalidOperationException("resource commit failed");
+        innerPlan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, Topic, 0, GroupId),
+            failure);
+
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            consumer.CommitAsync().AsTask());
+
+        await Assert.That(actual).IsSameReferenceAs(failure);
+        await Assert.That(await consumer.GetCommittedOffsetAsync(Partition)).IsNull();
+    }
+
+    [Test]
+    public async Task CommitAsync_InjectedPlanMatchesLaterExplicitOffset()
+    {
+        var innerPlan = new KafkaFaultPlan();
+        IKafkaFaultPlan faultPlan = new DelegatingFaultPlan(innerPlan);
+        var cluster = new InMemoryKafkaCluster(new InMemoryKafkaClusterOptions(), faultPlan);
+        var consumer = CreateConsumer(cluster, enableAutoOffsetStore: false);
+        var otherPartition = new TopicPartition(Topic, 1);
+        var failure = new InvalidOperationException("later resource commit failed");
+        innerPlan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, Topic, 1, GroupId),
+            failure);
+
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            consumer.CommitAsync(
+                [
+                    new TopicPartitionOffset(Topic, 0, 1),
+                    new TopicPartitionOffset(Topic, 1, 1)
+                ]).AsTask());
+
+        await Assert.That(actual).IsSameReferenceAs(failure);
+        await Assert.That(await consumer.GetCommittedOffsetAsync(otherPartition)).IsNull();
+    }
+
+    [Test]
+    public async Task CommitAsync_EmptyListConsumesGroupFault()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var consumer = CreateConsumer(cluster, enableAutoOffsetStore: false);
+        var failure = new InvalidOperationException("empty commit failed");
+        cluster.FaultPlan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId),
+            failure);
+
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            consumer.CommitAsync(Array.Empty<TopicPartitionOffset>()).AsTask());
+
+        await Assert.That(actual).IsSameReferenceAs(failure);
+    }
+
+    [Test]
     public async Task CommitAsync_ExplicitOffsetsConsumeResourceScopedFailure()
     {
         var (cluster, consumer) = await CreateConsumerWithRecordAsync();
@@ -737,6 +799,37 @@ public sealed class InMemoryConsumerFaultTests
             throw new InvalidOperationException("Indexed collection was enumerated.");
 
         System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    }
+
+    private sealed class DelegatingFaultPlan(KafkaFaultPlan inner) : IKafkaFaultPlan
+    {
+        public event Action<KafkaFaultObservation>? FaultConsumed
+        {
+            add => inner.FaultConsumed += value;
+            remove => inner.FaultConsumed -= value;
+        }
+
+        public int Count => inner.Count;
+
+        public bool HasMatchingFault(in KafkaFaultScope operationScope) =>
+            inner.HasMatchingFault(operationScope);
+
+        public void Fail(KafkaFaultScope scope, Exception exception, int occurrenceCount = 1) =>
+            inner.Fail(scope, exception, occurrenceCount);
+
+        public void FailPersistently(KafkaFaultScope scope, Exception exception) =>
+            inner.FailPersistently(scope, exception);
+
+        public KafkaFaultBarrier PauseNext(KafkaFaultScope scope) => inner.PauseNext(scope);
+
+        public ValueTask ApplyAsync(
+            KafkaFaultScope operationScope,
+            CancellationToken cancellationToken = default) =>
+            inner.ApplyAsync(operationScope, cancellationToken);
+
+        public int Clear(KafkaFaultScope scope) => inner.Clear(scope);
+
+        public int Clear() => inner.Clear();
     }
 
     private sealed class BlockingAsyncDeserializer : IAsyncDeserializer<string>

@@ -16,6 +16,15 @@ namespace Dekaf.Tests.Unit.Testing;
 public sealed class InMemoryKafkaClusterTests
 {
     [Test]
+    public async Task Constructor_NullOptionsUsesOptionsOverload()
+    {
+        var actual = Assert.Throws<ArgumentNullException>(() =>
+            _ = new InMemoryKafkaCluster(null!));
+
+        await Assert.That(actual.ParamName).IsEqualTo("options");
+    }
+
+    [Test]
     public async Task AdminFeatures_KeepSupportedAndFinalizedRangesIndependent()
     {
         var cluster = new InMemoryKafkaCluster(new InMemoryKafkaClusterOptions

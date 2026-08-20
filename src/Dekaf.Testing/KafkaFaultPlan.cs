@@ -246,6 +246,11 @@ public interface IKafkaFaultPlan
     int Count { get; }
 
     /// <summary>
+    /// Returns whether the supplied concrete operation scope matches a queued entry.
+    /// </summary>
+    bool HasMatchingFault(in KafkaFaultScope operationScope);
+
+    /// <summary>
     /// Appends a failure consumed by the next matching operations.
     /// </summary>
     void Fail(KafkaFaultScope scope, Exception exception, int occurrenceCount = 1);
@@ -567,7 +572,8 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
     internal bool HasPotentialMatch(KafkaFaultOperation operation, string? groupId) =>
         Volatile.Read(ref _scopeIndex).HasPotentialMatch(operation, groupId);
 
-    internal bool HasMatchingFault(in KafkaFaultScope operationScope) =>
+    /// <inheritdoc />
+    public bool HasMatchingFault(in KafkaFaultScope operationScope) =>
         Volatile.Read(ref _scopeIndex).HasMatchingFault(operationScope);
 
     internal bool TryGetFirstMatchingCommitScope(

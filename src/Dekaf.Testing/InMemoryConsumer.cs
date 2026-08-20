@@ -760,6 +760,18 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         }
 
         offsetList ??= offsets.ToArray();
+        if (!faultApplied &&
+            offsetList.Count == 0 &&
+            faultPlan is KafkaFaultPlan emptyInputPlan &&
+            emptyInputPlan.TryGetUnconditionalCommitScope(groupId, out var emptyInputScope))
+        {
+            await faultPlan.ApplyAsync(
+                emptyInputScope,
+                cancellationToken).ConfigureAwait(false);
+            ThrowIfDisposed();
+            faultApplied = true;
+        }
+
         if (!faultApplied && faultPlan is KafkaFaultPlan orderedPlan)
         {
             if (orderedPlan.TryGetFirstMatchingCommitScope(groupId, offsetList, out var faultScope))
@@ -1996,6 +2008,9 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
         if (_cluster.FaultPlan is KafkaFaultPlan indexedPlan)
         {
+            if (!indexedPlan.HasPotentialMatch(KafkaFaultOperation.Commit, _groupId))
+                return false;
+
             if (pendingOffset is { } onlyPending && _storedOffsets.Count == 0)
             {
                 faultScope = new KafkaFaultScope(
@@ -2099,12 +2114,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     }
 
     private bool HasMatchingFault(in KafkaFaultScope operationScope)
-    {
-        var faultPlan = _cluster.FaultPlan;
-        return faultPlan is KafkaFaultPlan indexedPlan
-            ? indexedPlan.HasMatchingFault(operationScope)
-            : faultPlan.Count != 0;
-    }
+        => _cluster.FaultPlan.HasMatchingFault(operationScope);
 
     private void StoreOffsetUnderLock(TopicPartitionOffset offset)
     {

@@ -14,6 +14,7 @@ public class InMemoryConsumerBenchmarks
     private static readonly TopicPartitionOffset StoredOffset = new(Topic, 0, 1);
     private InMemoryConsumer<Ignore, Ignore> _consumer = null!;
     private InMemoryConsumer<Ignore, Ignore> _unrelatedFaultConsumer = null!;
+    private InMemoryConsumer<Ignore, Ignore> _asyncAutoCommitConsumer = null!;
     private ConsumeResult<Ignore, Ignore>? _result;
 
     [GlobalSetup]
@@ -56,6 +57,24 @@ public class InMemoryConsumerBenchmarks
 
         _consumer.StoreOffset(StoredOffset);
         _unrelatedFaultConsumer.StoreOffset(StoredOffset);
+
+        var asyncAutoCommitCluster = new InMemoryKafkaCluster();
+        var asyncAutoCommitProducer = new InMemoryProducer<Ignore, Ignore>(asyncAutoCommitCluster);
+        asyncAutoCommitProducer.ProduceAsync(Topic, default, default).GetAwaiter().GetResult();
+        var completedDeserializer = new CompletedIgnoreDeserializer();
+        _asyncAutoCommitConsumer = new InMemoryConsumer<Ignore, Ignore>(
+            asyncAutoCommitCluster,
+            completedDeserializer,
+            completedDeserializer,
+            new InMemoryConsumerOptions
+            {
+                GroupId = GroupId,
+                AutoOffsetReset = AutoOffsetReset.Earliest,
+                EnableAutoOffsetStore = true,
+                OffsetCommitMode = OffsetCommitMode.Auto,
+                OffsetStoreTiming = OffsetStoreTiming.OnDelivery
+            });
+        _asyncAutoCommitConsumer.Subscribe(Topic);
     }
 
     [Benchmark]
@@ -83,6 +102,18 @@ public class InMemoryConsumerBenchmarks
     }
 
     [Benchmark]
+    [InvocationCount(131072)]
+    public void ConsumeOneAsyncAutoCommitNoFault()
+    {
+        _asyncAutoCommitConsumer.Seek(new TopicPartitionOffset(Topic, 0, 0));
+        var operation = _asyncAutoCommitConsumer.ConsumeOneAsync(TimeSpan.Zero);
+        if (!operation.IsCompletedSuccessfully)
+            throw new InvalidOperationException("Async auto-commit consume did not complete synchronously.");
+
+        _result = operation.Result;
+    }
+
+    [Benchmark]
     [InvocationCount(4194304)]
     public void StoreOffsetNoFault() => _consumer.StoreOffset(StoredOffset);
 
@@ -90,4 +121,13 @@ public class InMemoryConsumerBenchmarks
     [InvocationCount(4194304)]
     public void StoreOffsetUnrelatedFault() =>
         _unrelatedFaultConsumer.StoreOffset(StoredOffset);
+
+    private sealed class CompletedIgnoreDeserializer : IAsyncDeserializer<Ignore>
+    {
+        public ValueTask<Ignore> DeserializeAsync(
+            ReadOnlyMemory<byte> data,
+            SerializationContext context,
+            CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult(default(Ignore));
+    }
 }
