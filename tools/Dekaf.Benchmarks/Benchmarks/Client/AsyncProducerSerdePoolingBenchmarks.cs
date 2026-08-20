@@ -35,6 +35,7 @@ public class AsyncProducerSerdePoolingBenchmarks
     private Thread _drainerThread = null!;
     private DekafProducer.ProducerMessage<string, string> _messageWithoutHeaders = null!;
     private DekafProducer.ProducerMessage<string, string> _messageWithHeaders = null!;
+    private DekafProducer.ProducerMessage<string, string> _messageWithCapacityTightHeaders = null!;
     private string _value = null!;
 
     [GlobalSetup]
@@ -116,6 +117,22 @@ public class AsyncProducerSerdePoolingBenchmarks
                 .ConfigureAwait(false);
         }
     }
+
+    [IterationSetup(Target = nameof(FireAsync_CompletedSerializerWithCapacityTightHeaders))]
+    public void ResetCapacityTightHeaders()
+    {
+        _messageWithCapacityTightHeaders = new DekafProducer.ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Key = Keys[0],
+            Value = _value,
+            Headers = new Headers(1).Add("caller", "value")
+        };
+    }
+
+    [Benchmark]
+    public ValueTask FireAsync_CompletedSerializerWithCapacityTightHeaders() =>
+        _producer.FireAsync(_messageWithCapacityTightHeaders);
 
     [Benchmark(OperationsPerInvoke = Operations)]
     public async Task FireAsync_YieldingSerializer()

@@ -1,4 +1,4 @@
-using System.Buffers.Binary;
+using System.Collections.Concurrent;
 using Dekaf.Serialization;
 using Google.Protobuf;
 
@@ -6,7 +6,8 @@ namespace Dekaf.SchemaRegistry.Protobuf;
 
 /// <summary>
 /// Protobuf deserializer that integrates with Confluent Schema Registry.
-/// Wire format: [magic byte (0x00)] [schema ID (4 bytes)] [varint array indexes] [protobuf binary]
+/// Supports Confluent schema-ID prefix framing, GUID record-header framing, or dual detection.
+/// Protobuf message indexes remain adjacent to their selected identity frame.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -23,11 +24,13 @@ namespace Dekaf.SchemaRegistry.Protobuf;
 /// </para>
 /// </remarks>
 /// <typeparam name="T">The Protobuf message type to deserialize.</typeparam>
-public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisposable
+public sealed class ProtobufSchemaRegistryDeserializer<T>
+    : IDeserializer<T>, IRecordHeaderDeserializer<T>, ICallerOwnedHeaderDeserializer<T>,
+      IRecordHeaderRoutingProvider, IAsyncDisposable
     where T : IMessage<T>, IBufferMessage, new()
 {
-    private const byte MagicByte = 0x00;
     private static readonly TimeSpan SchemaRegistryTimeout = TimeSpan.FromSeconds(30);
+    private const int MaxCachedGuidSchemas = 1024;
     private static readonly string RecordName = new T().Descriptor.FullName;
 
     private readonly ISchemaRegistryClient _schemaRegistry;
@@ -37,6 +40,10 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IA
     private readonly MessageParser<T> _parser;
     private readonly DeserializerSubjectNameCache? _subjectNames;
     private readonly SchemaRegistryMigrationRunner? _migrationRunner;
+    private readonly ConcurrentDictionary<GuidTopicKey, Lazy<Task<GuidResolvedSchema>>> _guidSchemaCache = new();
+    private readonly ConcurrentQueue<KeyValuePair<GuidTopicKey, Lazy<Task<GuidResolvedSchema>>>>
+        _guidSchemaEvictionQueue = new();
+    private int _cachedGuidSchemaCount;
 
     /// <summary>
     /// Creates a new Protobuf Schema Registry deserializer.
@@ -51,6 +58,7 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IA
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _config = config ?? new ProtobufDeserializerConfig();
+        ValidateSchemaIdStrategy(_config.SchemaIdStrategy);
         _ruleExecutor = _config.RuleExecutor;
         _ownsClient = ownsClient;
         _parser = new MessageParser<T>(() => new T());
@@ -70,27 +78,67 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IA
     /// <inheritdoc />
     public T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
-        var span = data.Span;
-
-        if (span.Length < 5)
+        Header? identityHeader = null;
+        if (_config.SchemaIdStrategy != SchemaIdDeserializerStrategy.Prefix
+            && context.Headers is { } callerHeaders
+            && callerHeaders.TryGetLastSchemaIdentity(context.Component, out var header))
         {
-            if (context is { IsNull: true, Component: SerializationComponent.Value })
-                return default!;
-
-            throw new InvalidOperationException("Message too short to contain Schema Registry wire format");
+            identityHeader = header;
         }
 
-        // Verify magic byte
-        if (span[0] != MagicByte)
-            throw new InvalidOperationException($"Unknown magic byte: {span[0]}. Expected Schema Registry format (0x00).");
+        return DeserializeCore(data, context, identityHeader);
+    }
 
-        // Read schema ID (big-endian)
-        var schemaId = BinaryPrimitives.ReadInt32BigEndian(span.Slice(1, 4));
+    T ICallerOwnedHeaderDeserializer<T>.DeserializeCallerOwned(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context) => Deserialize(data, context);
+
+    T IRecordHeaderDeserializer<T>.Deserialize(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        in RecordHeaderRoutingLookup headers)
+    {
+        Header? identityHeader = headers.TryGetLast(GetIdentityHeaderName(context.Component), out var header)
+            ? header
+            : null;
+        return DeserializeCore(data, context, identityHeader);
+    }
+
+    void IRecordHeaderRoutingProvider.CollectHeaderNames(List<string> names)
+    {
+        AddHeaderName(names, SchemaIdentityHeaderNames.Key);
+        AddHeaderName(names, SchemaIdentityHeaderNames.Value);
+    }
+
+    private T DeserializeCore(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        Header? identityHeader)
+    {
+        if (context is { IsNull: true, Component: SerializationComponent.Value })
+            return default!;
+
+        var identity = SchemaIdentityFraming.Read(
+            data.Span,
+            identityHeader,
+            _config.SchemaIdStrategy,
+            out var payloadOffset,
+            out var headerMessageIndexes);
+        var schemaId = identity.SchemaId ?? -1;
+        var needsSchema = !_config.SkipSchemaValidation
+                          || _config.RuleExecutor is SchemaRegistryRuleExecutor
+                          || _migrationRunner is not null;
+        var guidSchema = identity.SchemaGuid is { } schemaGuid
+                         && (needsSchema || _ruleExecutor is not null)
+            ? GetGuidSchemaCached(schemaGuid, context)
+            : null;
+        if (guidSchema is not null)
+            schemaId = guidSchema.SchemaId;
 
         // Optionally validate the schema exists (with timeout to prevent indefinite hang)
-        Schema? schema = null;
+        Schema? schema = guidSchema?.Schema;
         string? ruleSubject = null;
-        if (!_config.SkipSchemaValidation || _config.RuleExecutor is SchemaRegistryRuleExecutor || _migrationRunner is not null)
+        if (needsSchema && guidSchema is null)
         {
             if (_config.RuleExecutor is not null && _subjectNames is null)
             {
@@ -109,27 +157,44 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IA
         }
 
         // Read the message indexes (varints)
-        var payloadMemory = data.Slice(5);
-        var payload = payloadMemory.Span;
-        var (indexCount, bytesRead) = ReadVarint(payload, _config.UseDeprecatedFormat);
+        var indexesMemory = identity.SchemaGuid.HasValue
+            ? headerMessageIndexes
+            : data[payloadOffset..];
+        var indexes = indexesMemory.Span;
+        var (indexCount, bytesRead) = ReadVarint(indexes, _config.UseDeprecatedFormat);
         if (indexCount < 0)
             throw new InvalidOperationException("Message index array length cannot be negative");
 
         // Skip past the index array
         for (var i = 0; i < indexCount; i++)
         {
-            var (index, indexBytesRead) = ReadVarint(payload.Slice(bytesRead), _config.UseDeprecatedFormat);
+            var (index, indexBytesRead) = ReadVarint(indexes[bytesRead..], _config.UseDeprecatedFormat);
             if (index < 0)
                 throw new InvalidOperationException("Message index cannot be negative");
             bytesRead += indexBytesRead;
         }
 
         // The rest is the protobuf message
-        var protobufData = payloadMemory.Slice(bytesRead);
+        ReadOnlyMemory<byte> protobufData;
+        if (identity.SchemaGuid.HasValue)
+        {
+            if (bytesRead != headerMessageIndexes.Length)
+            {
+                throw new InvalidDataException(
+                    "The Protobuf schema identity header contains trailing message-index data.");
+            }
+
+            protobufData = data[payloadOffset..];
+        }
+        else
+        {
+            protobufData = data[(payloadOffset + bytesRead)..];
+        }
+
         if (_ruleExecutor is not null)
         {
-            var subject = ruleSubject ?? GetSubjectName(schemaId, schema, context);
-            if (schema is not null && ruleSubject is null)
+            var subject = guidSchema?.Subject ?? ruleSubject ?? GetSubjectName(schemaId, schema, context);
+            if (guidSchema is null && schema is not null && ruleSubject is null)
                 schema = _schemaRegistry.GetSchemaSync(schemaId, subject, SchemaRegistryTimeout);
             if (_migrationRunner is null)
             {
@@ -166,6 +231,127 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IA
         // IBufferMessage constraint is enforced at compile time.
         return _parser.ParseFrom(protobufData.Span);
     }
+
+    private GuidResolvedSchema GetGuidSchemaCached(Guid schemaGuid, SerializationContext context)
+    {
+        var key = new GuidTopicKey(
+            schemaGuid,
+            context.Topic,
+            context.Component == SerializationComponent.Key);
+        if (!_guidSchemaCache.TryGetValue(key, out var lazy))
+        {
+            lazy = _guidSchemaCache.GetOrAdd(
+                key,
+                static (cacheKey, deserializer) => deserializer.CreateGuidSchemaLazy(cacheKey),
+                this);
+        }
+
+        var task = lazy.Value;
+        return task.IsCompletedSuccessfully
+            ? task.Result
+            : task.WaitAsync(SchemaRegistryTimeout).ConfigureAwait(false).GetAwaiter().GetResult();
+    }
+
+    private Lazy<Task<GuidResolvedSchema>> CreateGuidSchemaLazy(GuidTopicKey key) =>
+        new(() => FetchGuidSchemaAsync(key));
+
+    private async Task<GuidResolvedSchema> FetchGuidSchemaAsync(GuidTopicKey key)
+    {
+        try
+        {
+            var resolved = await SchemaRegistryOperationTimeout.ExecuteAsync(
+                    cancellationToken => FetchGuidSchemaCoreAsync(key, cancellationToken),
+                    SchemaRegistryTimeout,
+                    $"Schema GUID {key.SchemaGuid:D} resolution timed out.")
+                .ConfigureAwait(false);
+            BoundedSchemaIdentityCache.RecordSuccessfulResolution(
+                _guidSchemaCache,
+                _guidSchemaEvictionQueue,
+                key,
+                ref _cachedGuidSchemaCount,
+                MaxCachedGuidSchemas);
+            return resolved;
+        }
+        catch
+        {
+            _guidSchemaCache.TryRemove(key, out _);
+            throw;
+        }
+    }
+
+    private async Task<GuidResolvedSchema> FetchGuidSchemaCoreAsync(
+        GuidTopicKey key,
+        CancellationToken cancellationToken)
+    {
+        var unscopedSchema = await _schemaRegistry.GetSchemaByGuidAsync(
+                key.SchemaGuid.ToString("D"),
+                cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+        if (unscopedSchema.SchemaType != SchemaType.Protobuf)
+        {
+            throw new InvalidOperationException(
+                $"Schema with GUID {key.SchemaGuid:D} is not a Protobuf schema. Type: {unscopedSchema.SchemaType}");
+        }
+
+        if (_ruleExecutor is null && _migrationRunner is null)
+            return new GuidResolvedSchema(-1, null, unscopedSchema);
+
+        var context = new SerializationContext
+        {
+            Topic = key.Topic,
+            Component = key.IsKey ? SerializationComponent.Key : SerializationComponent.Value
+        };
+        var subject = GetSubjectName(0, unscopedSchema, context);
+        var registered = await _schemaRegistry.LookupSchemaAsync(
+                subject,
+                unscopedSchema,
+                ignoreDeletedSchemas: true,
+                cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+        if (registered.Schema.SchemaType != SchemaType.Protobuf)
+        {
+            throw new InvalidOperationException(
+                $"Schema with GUID {key.SchemaGuid:D} resolved to type {registered.Schema.SchemaType}; expected {SchemaType.Protobuf}.");
+        }
+        if (!Guid.TryParse(registered.Guid, out var registeredGuid) || registeredGuid != key.SchemaGuid)
+        {
+            throw new InvalidDataException(
+                $"Schema Registry returned a conflicting GUID for subject '{subject}'.");
+        }
+
+        return new GuidResolvedSchema(
+            registered.Id,
+            subject,
+            registered.Schema);
+    }
+
+    private static void ValidateSchemaIdStrategy(SchemaIdDeserializerStrategy strategy)
+    {
+        if (strategy is not (
+            SchemaIdDeserializerStrategy.Dual
+            or SchemaIdDeserializerStrategy.Prefix
+            or SchemaIdDeserializerStrategy.Header))
+        {
+            throw new ArgumentOutOfRangeException(nameof(strategy), strategy, "Unknown schema identity strategy.");
+        }
+    }
+
+    private static void AddHeaderName(List<string> names, string name)
+    {
+        if (!names.Contains(name))
+            names.Add(name);
+    }
+
+    private static string GetIdentityHeaderName(SerializationComponent component) => component switch
+    {
+        SerializationComponent.Key => SchemaIdentityHeaderNames.Key,
+        SerializationComponent.Value => SchemaIdentityHeaderNames.Value,
+        _ => throw new ArgumentOutOfRangeException(nameof(component), component, "Unknown serialization component.")
+    };
+
+    private readonly record struct GuidTopicKey(Guid SchemaGuid, string Topic, bool IsKey);
+
+    private sealed record GuidResolvedSchema(int SchemaId, string? Subject, Schema Schema);
 
     private string GetSubjectName(int schemaId, Schema? schema, SerializationContext context)
     {
