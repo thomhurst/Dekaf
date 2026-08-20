@@ -6,7 +6,7 @@ using Dekaf.Protocol.Messages;
 namespace Dekaf.Benchmarks.Benchmarks.Unit;
 
 /// <summary>
-/// Guards consumer Fetch v18 against wire-size or allocation regressions relative to v16.
+/// Guards legacy and current consumer Fetch serialization against allocation regressions.
 /// Replica-only v17/v18 tagged fields remain at their protocol defaults.
 /// </summary>
 [MemoryDiagnoser]
@@ -25,6 +25,7 @@ public class FetchRequestSerializationBenchmarks
         [
             new FetchRequestTopic
             {
+                Topic = "benchmark-topic",
                 TopicId = new Guid("00112233-4455-6677-8899-aabbccddeeff"),
                 Partitions =
                 [
@@ -42,7 +43,7 @@ public class FetchRequestSerializationBenchmarks
         RackId = string.Empty
     };
 
-    [Params((short)16, (short)18)]
+    [Params((short)6, (short)16, (short)18)]
     public short Version { get; set; }
 
     [Benchmark]

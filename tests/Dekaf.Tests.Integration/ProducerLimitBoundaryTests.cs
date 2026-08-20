@@ -32,11 +32,11 @@ public sealed class ProducerLimitBoundaryTests(KafkaTestContainer kafka) : Kafka
         oversizedPayload.AsSpan().Fill(0x2A);
         var sentinel = new byte[] { 0x7F };
 
-        await Assert.That(ProduceRequestSizeCalculator.GetSingleBatchRequestBodySize(
+        await Assert.That(ProduceRequestSizeCalculator.GetConservativeSingleBatchRequestBodySize(
             transactionalId: null,
             topic,
             GetEncodedBatchSize(exactPayload.Length))).IsEqualTo(BoundarySize);
-        await Assert.That(ProduceRequestSizeCalculator.GetSingleBatchRequestBodySize(
+        await Assert.That(ProduceRequestSizeCalculator.GetConservativeSingleBatchRequestBodySize(
             transactionalId: null,
             topic,
             GetEncodedBatchSize(oversizedPayload.Length))).IsEqualTo(BoundarySize + 1);

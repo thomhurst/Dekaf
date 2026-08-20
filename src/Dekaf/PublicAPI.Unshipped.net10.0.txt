@@ -3,6 +3,9 @@ Dekaf.Consumer.IConsumerCommittedOffsets (forwarded, contained in Dekaf.Abstract
 Dekaf.Consumer.IConsumerCommittedOffsets.GetCommittedOffsetsAsync(System.Collections.Generic.IReadOnlyCollection<Dekaf.TopicPartition>! partitions, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<Dekaf.TopicPartition, Dekaf.TopicPartitionOffset>!> (forwarded, contained in Dekaf.Abstractions)
 Dekaf.Consumer.KafkaConsumer<TKey, TValue>.GetCommittedOffsetsAsync(System.Collections.Generic.IReadOnlyCollection<Dekaf.TopicPartition>! partitions, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<Dekaf.TopicPartition, Dekaf.TopicPartitionOffset>!>
 static Dekaf.ConsumerFacetExtensions.GetCommittedOffsetsAsync<TKey, TValue>(this Dekaf.Consumer.IKafkaConsumer<TKey, TValue>! consumer, System.Collections.Generic.IReadOnlyCollection<Dekaf.TopicPartition>! partitions, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<Dekaf.TopicPartition, Dekaf.TopicPartitionOffset>!>
+static Dekaf.Protocol.Messages.MetadataRequest.GetRequestHeaderVersion(short version) -> short
+static Dekaf.Protocol.Messages.MetadataRequest.GetResponseHeaderVersion(short version) -> short
+static Dekaf.Protocol.Messages.MetadataRequest.IsFlexibleVersion(short version) -> bool
 Dekaf.Consumer.BoundedConsumerExtensions
 Dekaf.Consumer.IBoundedKafkaConsumer<TKey, TValue>
 Dekaf.Consumer.IBoundedKafkaConsumer<TKey, TValue>.ConsumeSnapshotAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Collections.Generic.IAsyncEnumerable<Dekaf.Consumer.ConsumeResult<TKey, TValue>>!
@@ -344,3 +347,9 @@ Dekaf.Streams.StreamsGroupTopology.Epoch.init -> void
 Dekaf.Streams.StreamsGroupTopology.StreamsGroupTopology() -> void
 Dekaf.Streams.StreamsGroupTopology.Subtopologies.get -> System.Collections.Generic.IReadOnlyList<Dekaf.Streams.StreamsGroupSubtopology!>!
 Dekaf.Streams.StreamsGroupTopology.Subtopologies.init -> void
+static Dekaf.Protocol.Messages.ProduceRequest.GetRequestHeaderVersion(short version) -> short
+static Dekaf.Protocol.Messages.ProduceRequest.GetResponseHeaderVersion(short version) -> short
+static Dekaf.Protocol.Messages.ProduceRequest.IsFlexibleVersion(short version) -> bool
+static Dekaf.Protocol.Messages.FetchRequest.GetRequestHeaderVersion(short version) -> short
+static Dekaf.Protocol.Messages.FetchRequest.GetResponseHeaderVersion(short version) -> short
+static Dekaf.Protocol.Messages.FetchRequest.IsFlexibleVersion(short version) -> bool

@@ -14,8 +14,11 @@ public sealed class FetchRequest : IKafkaRequest<FetchResponse>
     private static readonly FetchRequestPool s_pool = new();
 
     public static ApiKey ApiKey => ApiKey.Fetch;
-    public static short LowestSupportedVersion => 12;
+    public static short LowestSupportedVersion => 4;
     public static short HighestSupportedVersion => 18;
+    public static bool IsFlexibleVersion(short version) => version >= 12;
+    public static short GetRequestHeaderVersion(short version) => IsFlexibleVersion(version) ? (short)2 : (short)1;
+    public static short GetResponseHeaderVersion(short version) => IsFlexibleVersion(version) ? (short)1 : (short)0;
 
     /// <summary>
     /// Cluster ID (v12+).
@@ -124,24 +127,52 @@ public sealed class FetchRequest : IKafkaRequest<FetchResponse>
 
         writer.WriteInt32(MaxWaitMs);
         writer.WriteInt32(MinBytes);
-        writer.WriteInt32(MaxBytes);
-        writer.WriteInt8((sbyte)IsolationLevel);
-        writer.WriteInt32(SessionId);
-        writer.WriteInt32(SessionEpoch);
+        if (version >= 3)
+            writer.WriteInt32(MaxBytes);
+        if (version >= 4)
+            writer.WriteInt8((sbyte)IsolationLevel);
+        if (version >= 7)
+        {
+            writer.WriteInt32(SessionId);
+            writer.WriteInt32(SessionEpoch);
+        }
 
-        writer.WriteCompactArray(
-            Topics,
-            static (ref KafkaProtocolWriter w, FetchRequestTopic t, short v) => t.Write(ref w, v),
-            version);
+        if (IsFlexibleVersion(version))
+            writer.WriteCompactArray(
+                Topics,
+                static (ref KafkaProtocolWriter w, FetchRequestTopic t, short v) => t.Write(ref w, v),
+                version);
+        else
+            writer.WriteArray(
+                Topics,
+                static (ref KafkaProtocolWriter w, FetchRequestTopic t, short v) => t.Write(ref w, v),
+                version);
 
-        var forgottenTopics = ForgottenTopicsData ?? [];
-        writer.WriteCompactArray(
-            forgottenTopics,
-            static (ref KafkaProtocolWriter w, ForgottenTopic t, short v) => t.Write(ref w, v),
-            version);
+        if (version >= 7)
+        {
+            var forgottenTopics = ForgottenTopicsData ?? [];
+            if (IsFlexibleVersion(version))
+                writer.WriteCompactArray(
+                    forgottenTopics,
+                    static (ref KafkaProtocolWriter w, ForgottenTopic t, short v) => t.Write(ref w, v),
+                    version);
+            else
+                writer.WriteArray(
+                    forgottenTopics,
+                    static (ref KafkaProtocolWriter w, ForgottenTopic t, short v) => t.Write(ref w, v),
+                    version);
+        }
 
-        writer.WriteCompactString(RackId ?? string.Empty);
-        WriteTaggedFields(ref writer, version);
+        if (version >= 11)
+        {
+            if (IsFlexibleVersion(version))
+                writer.WriteCompactString(RackId ?? string.Empty);
+            else
+                writer.WriteString(RackId ?? string.Empty);
+        }
+
+        if (IsFlexibleVersion(version))
+            WriteTaggedFields(ref writer, version);
     }
 
     private void WriteTaggedFields(ref KafkaProtocolWriter writer, short version)
@@ -205,15 +236,25 @@ public sealed class FetchRequestTopic
         }
         else
         {
-            writer.WriteCompactString(Topic);
+            if (FetchRequest.IsFlexibleVersion(version))
+                writer.WriteCompactString(Topic);
+            else
+                writer.WriteString(Topic);
         }
 
-        writer.WriteCompactArray(
-            Partitions,
-            static (ref KafkaProtocolWriter w, FetchRequestPartition p, short v) => p.Write(ref w, v),
-            version);
+        if (FetchRequest.IsFlexibleVersion(version))
+            writer.WriteCompactArray(
+                Partitions,
+                static (ref KafkaProtocolWriter w, FetchRequestPartition p, short v) => p.Write(ref w, v),
+                version);
+        else
+            writer.WriteArray(
+                Partitions,
+                static (ref KafkaProtocolWriter w, FetchRequestPartition p, short v) => p.Write(ref w, v),
+                version);
 
-        writer.WriteEmptyTaggedFields();
+        if (FetchRequest.IsFlexibleVersion(version))
+            writer.WriteEmptyTaggedFields();
     }
 }
 
@@ -265,11 +306,17 @@ public sealed class FetchRequestPartition
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
         writer.WriteInt32(Partition);
-        writer.WriteInt32(CurrentLeaderEpoch);
+        if (version >= 9)
+            writer.WriteInt32(CurrentLeaderEpoch);
         writer.WriteInt64(FetchOffset);
-        writer.WriteInt32(LastFetchedEpoch);
-        writer.WriteInt64(LogStartOffset);
+        if (version >= 12)
+            writer.WriteInt32(LastFetchedEpoch);
+        if (version >= 5)
+            writer.WriteInt64(LogStartOffset);
         writer.WriteInt32(PartitionMaxBytes);
+
+        if (!FetchRequest.IsFlexibleVersion(version))
+            return;
 
         var hasReplicaDirectoryId = version >= 17 && ReplicaDirectoryId != Guid.Empty;
         var hasHighWatermark = version >= 18 && HighWatermark != long.MaxValue;
@@ -322,14 +369,23 @@ public sealed class ForgottenTopic
         }
         else
         {
-            writer.WriteCompactString(Topic);
+            if (FetchRequest.IsFlexibleVersion(version))
+                writer.WriteCompactString(Topic);
+            else
+                writer.WriteString(Topic);
         }
 
-        writer.WriteCompactArray(
-            Partitions,
-            (ref KafkaProtocolWriter w, int p) => w.WriteInt32(p));
+        if (FetchRequest.IsFlexibleVersion(version))
+            writer.WriteCompactArray(
+                Partitions,
+                static (ref KafkaProtocolWriter w, int p) => w.WriteInt32(p));
+        else
+            writer.WriteArray(
+                Partitions,
+                static (ref KafkaProtocolWriter w, int p) => w.WriteInt32(p));
 
-        writer.WriteEmptyTaggedFields();
+        if (FetchRequest.IsFlexibleVersion(version))
+            writer.WriteEmptyTaggedFields();
     }
 }
 
