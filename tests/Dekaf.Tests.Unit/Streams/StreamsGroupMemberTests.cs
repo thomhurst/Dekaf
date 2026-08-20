@@ -425,31 +425,26 @@ public sealed class StreamsGroupMemberTests
     {
         var connection = new ScriptedConnection();
         connection.EnqueueHeartbeat(Success(epoch: 1, heartbeatIntervalMs: 1));
-        connection.EnqueueHeartbeat(new StreamsGroupHeartbeatResponse
+        var pendingHeartbeat = new TaskCompletionSource<StreamsGroupHeartbeatResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.EnqueueHeartbeat(pendingHeartbeat.Task);
+        await using var fixture = CreateFixture(connection);
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+        await connection.SecondHeartbeatStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var update = fixture.Member.UpdateAsync(new StreamsGroupMemberUpdate
+        {
+            ProcessId = "process-2"
+        }).AsTask();
+        pendingHeartbeat.SetResult(new StreamsGroupHeartbeatResponse
         {
             ErrorCode = ErrorCode.GroupAuthorizationFailed,
             MemberId = "member-1"
         });
-        connection.EnqueueHeartbeat(Success(epoch: 2));
-        await using var fixture = CreateFixture(connection);
-        await fixture.Member.JoinAsync(CreateInitialUpdate());
-        await connection.SecondHeartbeatCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        GroupException? failure = null;
-        for (var attempt = 0; attempt < 2 && failure is null; attempt++)
-        {
-            try
-            {
-                await fixture.Member.UpdateAsync(new StreamsGroupMemberUpdate { ProcessId = "process-2" });
-            }
-            catch (GroupException exception)
-            {
-                failure = exception;
-            }
-        }
-
-        await Assert.That(failure).IsNotNull();
+        var failure = await Assert.ThrowsAsync<GroupException>(async () => await update);
         await Assert.That(failure!.ErrorCode).IsEqualTo(ErrorCode.GroupAuthorizationFailed);
+        await Assert.That(connection.HeartbeatRequests).Count().IsEqualTo(2);
     }
 
     [Test]
