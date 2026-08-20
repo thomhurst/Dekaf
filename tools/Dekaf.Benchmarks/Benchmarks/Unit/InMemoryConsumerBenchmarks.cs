@@ -11,11 +11,13 @@ public class InMemoryConsumerBenchmarks
 {
     private const string Topic = "in-memory-consumer";
     private const string GroupId = "benchmark-group";
+    private const int SnapshotRecordCount = 256;
     private static readonly TopicPartitionOffset StoredOffset = new(Topic, 0, 1);
     private InMemoryConsumer<Ignore, Ignore> _consumer = null!;
     private InMemoryConsumer<Ignore, Ignore> _manualCommitFaultConsumer = null!;
     private InMemoryConsumer<Ignore, Ignore> _unrelatedFaultConsumer = null!;
     private InMemoryConsumer<Ignore, Ignore> _asyncAutoCommitConsumer = null!;
+    private InMemoryConsumer<Ignore, Ignore> _snapshotConsumer = null!;
     private ConsumeResult<Ignore, Ignore>? _result;
 
     [GlobalSetup]
@@ -92,6 +94,22 @@ public class InMemoryConsumerBenchmarks
                 OffsetStoreTiming = OffsetStoreTiming.OnDelivery
             });
         _asyncAutoCommitConsumer.Subscribe(Topic);
+
+        var snapshotCluster = new InMemoryKafkaCluster();
+        var snapshotProducer = new InMemoryProducer<Ignore, Ignore>(snapshotCluster);
+        for (var i = 0; i < SnapshotRecordCount; i++)
+            snapshotProducer.ProduceAsync(Topic, default, default).GetAwaiter().GetResult();
+
+        _snapshotConsumer = new InMemoryConsumer<Ignore, Ignore>(
+            snapshotCluster,
+            new InMemoryConsumerOptions
+            {
+                GroupId = GroupId,
+                AutoOffsetReset = AutoOffsetReset.Earliest,
+                EnableAutoOffsetStore = false,
+                OffsetCommitMode = OffsetCommitMode.Manual
+            });
+        _snapshotConsumer.Subscribe(Topic);
     }
 
     [Benchmark]
@@ -145,9 +163,9 @@ public class InMemoryConsumerBenchmarks
     [Benchmark]
     public async Task<int> ConsumeSnapshotNoFault()
     {
-        _consumer.Seek(new TopicPartitionOffset(Topic, 0, 0));
+        _snapshotConsumer.Seek(new TopicPartitionOffset(Topic, 0, 0));
         var count = 0;
-        await foreach (var result in _consumer.ConsumeSnapshotAsync().ConfigureAwait(false))
+        await foreach (var result in _snapshotConsumer.ConsumeSnapshotAsync().ConfigureAwait(false))
         {
             _result = result;
             count++;
