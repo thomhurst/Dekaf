@@ -172,17 +172,20 @@ public sealed class AssociatedNameStrategy : IAsyncSubjectNameStrategy
         return ResolveSlow(new CacheKey(topic, recordType, isKey), forceRefresh: true, cancellationToken);
     }
 
-    /// <summary>Invalidates one exact topic/component/record resolution.</summary>
+    /// <summary>Invalidates all record-name aliases for one topic/component resolution.</summary>
     public bool Invalidate(string topic, string? recordType, bool isKey)
     {
         ValidateTopic(topic);
         var key = new CacheKey(topic, recordType, isKey);
         lock (_gate)
         {
-            if (_pending.TryGetValue(key, out var pending))
-                _invalidatedPending.Add(pending);
-            var removed = _cache.TryRemove(key, out _);
-            RemoveOrderNode(key);
+            foreach (var (pendingKey, pending) in _pending)
+            {
+                if (IsAlias(pendingKey, key))
+                    _invalidatedPending.Add(pending);
+            }
+
+            var removed = InvalidateCachedAliasesUnderLock(key);
             InvalidateDependentCaches();
             return removed;
         }
@@ -257,6 +260,8 @@ public sealed class AssociatedNameStrategy : IAsyncSubjectNameStrategy
             {
                 if (!_invalidatedPending.Contains(pending))
                 {
+                    if (pending.IsRefresh)
+                        InvalidateCachedAliasesUnderLock(key);
                     Publish(key, subject);
                     if (pending.IsRefresh)
                         InvalidateDependentCaches();
@@ -366,6 +371,31 @@ public sealed class AssociatedNameStrategy : IAsyncSubjectNameStrategy
 
         _order.Remove(node);
     }
+
+    private bool InvalidateCachedAliasesUnderLock(CacheKey key)
+    {
+        var removed = false;
+        var node = _order.First;
+        while (node is not null)
+        {
+            var next = node.Next;
+            if (IsAlias(node.Value, key))
+            {
+                _cache.TryRemove(node.Value, out _);
+                _orderNodes.Remove(node.Value);
+                _order.Remove(node);
+                removed = true;
+            }
+
+            node = next;
+        }
+
+        return removed;
+    }
+
+    private static bool IsAlias(in CacheKey candidate, in CacheKey key) =>
+        candidate.IsKey == key.IsKey &&
+        string.Equals(candidate.Topic, key.Topic, StringComparison.Ordinal);
 
     private void InvalidateDependentCaches()
     {

@@ -196,6 +196,48 @@ public sealed class AssociatedNameStrategyTests
     }
 
     [Test]
+    public async Task RefreshAsync_InvalidatesRecordNameAliases()
+    {
+        using var client = new MockSchemaRegistryClient();
+        await AssociateAsync(client, "orders", "orders-v1");
+        var resolver = CreateResolver(client);
+        await using var serializer = new SchemaRegistrySerializer<int>(
+            client,
+            static (_, _) => { },
+            resolver,
+            static _ => new Schema
+            {
+                SchemaType = SchemaType.Avro,
+                SchemaString = """{"type":"record","name":"OrderRecord","fields":[]}"""
+            });
+
+        var first = await serializer.PrepareAsync("orders", 42);
+        await ReplaceAssociationAsync(client, "orders", "orders-v2");
+        _ = await resolver.RefreshAsync("orders", typeof(int).FullName, isKey: false);
+        var refreshed = await serializer.PrepareAsync("orders", 42);
+
+        await Assert.That(first.Subject).IsEqualTo("orders-v1");
+        await Assert.That(refreshed.Subject).IsEqualTo("orders-v2");
+    }
+
+    [Test]
+    public async Task Invalidate_RemovesRecordNameAliases()
+    {
+        using var client = new MockSchemaRegistryClient();
+        await AssociateAsync(client, "orders", "orders-v1");
+        var resolver = CreateResolver(client);
+
+        await Assert.That(await resolver.GetSubjectNameAsync("orders", "OrderRecord", isKey: false))
+            .IsEqualTo("orders-v1");
+        await ReplaceAssociationAsync(client, "orders", "orders-v2");
+
+        await Assert.That(resolver.Invalidate("orders", typeof(int).FullName, isKey: false)).IsTrue();
+        await Assert.That(await resolver.GetSubjectNameAsync("orders", "OrderRecord", isKey: false))
+            .IsEqualTo("orders-v2");
+        await Assert.That(client.AssociationLookupCallCount).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task RefreshAsync_DoesNotJoinOlderNormalLookup()
     {
         using var client = new MockSchemaRegistryClient();
@@ -224,11 +266,18 @@ public sealed class AssociatedNameStrategyTests
     {
         using var client = new MockSchemaRegistryClient();
         client.BlockNextAssociationLookup();
-        var resolver = CreateResolver(client, lookupTimeout: TimeSpan.FromMilliseconds(10));
+        var resolver = CreateResolver(client, lookupTimeout: TimeSpan.FromMilliseconds(250));
 
-        _ = await Assert.ThrowsAsync<TimeoutException>(
-            () => resolver.GetSubjectNameAsync("orders", "Order", isKey: false).AsTask());
-        client.ReleaseBlockedAssociationLookup();
+        var lookup = resolver.GetSubjectNameAsync("orders", "Order", isKey: false);
+        await client.WaitForBlockedAssociationLookupAsync(TimeSpan.FromSeconds(5));
+        try
+        {
+            _ = await Assert.ThrowsAsync<TimeoutException>(() => lookup.AsTask());
+        }
+        finally
+        {
+            client.ReleaseBlockedAssociationLookup();
+        }
 
         await AssociateAsync(client, "orders", "orders-recovered");
         await Assert.That(await resolver.GetSubjectNameAsync("orders", "Order", isKey: false))

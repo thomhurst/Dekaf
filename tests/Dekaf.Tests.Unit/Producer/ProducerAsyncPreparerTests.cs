@@ -225,6 +225,58 @@ public class ProducerAsyncPreparerTests
         await Assert.That(valueSerializer.ObservedSchemaId).IsEqualTo(17);
     }
 
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task ProduceAsync_MixedAsyncSerializerUsesPreparationAdmission(bool componentwise)
+    {
+        var valueSerializer = new AdmittedPreparingSerializer();
+        await using var producer = CreateProducer(new CompletedAsyncSerializer(), valueSerializer);
+        await ReadyProducerAsync(producer);
+        SeedProducerMetadata(producer);
+
+        await Assert.That(async () =>
+                await (componentwise
+                    ? producer.ProduceAsync(Topic, "k", "v")
+                    : producer.ProduceAsync(NewMessage())))
+            .Throws<AdmittedSerializationException>();
+
+        await Assert.That(valueSerializer.PrepareForSerializationCount).IsEqualTo(1);
+        await Assert.That(valueSerializer.SerializePreparedCount).IsEqualTo(1);
+        await Assert.That(valueSerializer.SerializeCount).IsEqualTo(0);
+        await Assert.That(valueSerializer.ObservedSchemaId).IsEqualTo(17);
+    }
+
+    [Test]
+    [Arguments(0)]
+    [Arguments(1)]
+    [Arguments(2)]
+    public async Task FireAsync_UsesExactPreparationAdmission(int overload)
+    {
+        var valueSerializer = new AdmittedPreparingSerializer();
+        await using var producer = CreateProducer(Serializers.String, valueSerializer);
+        await ReadyProducerAsync(producer);
+        SeedProducerMetadata(producer);
+
+        switch (overload)
+        {
+            case 0:
+                await producer.FireAsync(NewMessage());
+                break;
+            case 1:
+                await producer.FireAsync(Topic, "k", "v");
+                break;
+            default:
+                await producer.FireAsync(NewMessage(), static (_, _) => { });
+                break;
+        }
+
+        await Assert.That(valueSerializer.PrepareForSerializationCount).IsEqualTo(1);
+        await Assert.That(valueSerializer.SerializePreparedCount).IsEqualTo(1);
+        await Assert.That(valueSerializer.SerializeCount).IsEqualTo(0);
+        await Assert.That(valueSerializer.ObservedSchemaId).IsEqualTo(17);
+    }
+
     private static ProducerMessage<string, string> NewMessage() =>
         new() { Topic = Topic, Key = "k", Value = "v" };
 
@@ -268,6 +320,22 @@ public class ProducerAsyncPreparerTests
 
         return new KafkaProducer<string, string>(options, keySerializer, valueSerializer);
     }
+
+    private static KafkaProducer<string, string> CreateProducer(
+        IAsyncSerializer<string> keySerializer,
+        ISerializer<string> valueSerializer) =>
+        (KafkaProducer<string, string>)Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithClientId("prepare-test-producer")
+            .WithBufferMemory(ulong.MaxValue)
+            .WithBatchSize(4096)
+            .WithLinger(TimeSpan.FromMilliseconds(10))
+            .WithRequestTimeout(TimeSpan.FromMilliseconds(500))
+            .WithDeliveryTimeout(TimeSpan.FromSeconds(1))
+            .WithCloseTimeout(TimeSpan.FromSeconds(1))
+            .WithKeySerializer(keySerializer)
+            .WithValueSerializer(valueSerializer)
+            .Build();
 
     // Stops the background loops (so nothing tries to reach a broker) and marks the producer
     // initialized, so ProduceAsync reaches the preparer gate instead of the not-initialized guard.
@@ -397,6 +465,19 @@ public class ProducerAsyncPreparerTests
             SerializePreparedCount++;
             ObservedSchemaId = admission.SchemaId;
             throw new AdmittedSerializationException();
+        }
+    }
+
+    private sealed class CompletedAsyncSerializer : IAsyncSerializer<string>
+    {
+        public ValueTask SerializeAsync(
+            string value,
+            IBufferWriter<byte> destination,
+            SerializationContext context,
+            CancellationToken cancellationToken = default)
+        {
+            destination.Write("key"u8);
+            return ValueTask.CompletedTask;
         }
     }
 
