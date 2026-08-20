@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Reflection;
+using System.Runtime.ExceptionServices;
 using Dekaf.Consumer;
 using Dekaf.Protocol.Records;
 
@@ -870,6 +871,8 @@ public class MpscFetchBufferTests
         var firstWrite = StartDedicatedWrite(buffer, first);
         Task<bool>? secondWrite = null;
         Task<bool>? waitForReadable = null;
+        Exception? firstWriteFailure = null;
+        Exception? secondWriteFailure = null;
         var firstWritten = false;
         try
         {
@@ -887,10 +890,32 @@ public class MpscFetchBufferTests
         finally
         {
             allowFirstCommit.Set();
-            firstWritten = await firstWrite.WaitAsync(TimeSpan.FromSeconds(5));
+            try
+            {
+                firstWritten = await firstWrite.WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            catch (Exception exception)
+            {
+                firstWriteFailure = exception;
+            }
+
             if (secondWrite is not null)
-                _ = await secondWrite.WaitAsync(TimeSpan.FromSeconds(5));
+            {
+                try
+                {
+                    _ = await secondWrite.WaitAsync(TimeSpan.FromSeconds(5));
+                }
+                catch (Exception exception)
+                {
+                    secondWriteFailure = exception;
+                }
+            }
         }
+
+        if (firstWriteFailure is not null)
+            ExceptionDispatchInfo.Capture(firstWriteFailure).Throw();
+        if (secondWriteFailure is not null)
+            ExceptionDispatchInfo.Capture(secondWriteFailure).Throw();
 
         await Assert.That(firstWritten).IsTrue();
         await Assert.That(await waitForReadable!).IsTrue();
