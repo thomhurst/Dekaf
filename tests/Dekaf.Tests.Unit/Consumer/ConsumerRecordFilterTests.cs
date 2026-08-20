@@ -163,6 +163,68 @@ public sealed class ConsumerRecordFilterTests
     }
 
     [Test]
+    public async Task ConsumeAsync_FilterCancellationPreventsAcceptedRecordDeserialization()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var filter = new CancellingFilter(cancellation, shouldDeserialize: true);
+        var keyDeserializer = new CountingStringDeserializer();
+        var valueDeserializer = new CountingStringDeserializer();
+        await using var consumer = CreateConsumer(
+            CreatePendingFetchData(CreateRecord(0, "key", "value")),
+            filter,
+            keyDeserializer,
+            valueDeserializer);
+        await using var records = consumer.ConsumeAsync(cancellation.Token).GetAsyncEnumerator();
+
+        await Assert.That(async () => await records.MoveNextAsync())
+            .Throws<OperationCanceledException>();
+
+        await Assert.That(keyDeserializer.Count).IsEqualTo(0);
+        await Assert.That(valueDeserializer.Count).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task ConsumeOneAsync_FilterCancellationPreventsAcceptedAsyncDeserialization()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var filter = new CancellingFilter(cancellation, shouldDeserialize: true);
+        var valueDeserializer = new CountingAsyncStringDeserializer();
+        await using var consumer = CreateConsumer(
+            CreatePendingFetchData(CreateRecord(0, "key", "value")),
+            filter,
+            Serializers.String,
+            Serializers.String,
+            valueDeserializer);
+
+        await Assert.That(async () =>
+                await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), cancellation.Token))
+            .Throws<OperationCanceledException>();
+
+        await Assert.That(valueDeserializer.Count).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task ConsumeOneAsync_FilterCancellationPreventsAcceptedRecordDeserialization()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var filter = new CancellingFilter(cancellation, shouldDeserialize: true);
+        var keyDeserializer = new CountingStringDeserializer();
+        var valueDeserializer = new CountingStringDeserializer();
+        await using var consumer = CreateConsumer(
+            CreatePendingFetchData(CreateRecord(0, "key", "value")),
+            filter,
+            keyDeserializer,
+            valueDeserializer);
+
+        await Assert.That(async () =>
+                await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), cancellation.Token))
+            .Throws<OperationCanceledException>();
+
+        await Assert.That(keyDeserializer.Count).IsEqualTo(0);
+        await Assert.That(valueDeserializer.Count).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task ConsumeAsync_FilterExceptionPropagatesWithoutAdvancingPosition()
     {
         var fetch = CreatePendingFetchData(CreateRecord(0, "key", "value"));
@@ -609,7 +671,9 @@ public sealed class ConsumerRecordFilterTests
         public bool ShouldDeserialize(scoped in ConsumerRecordFilterContext context) => throw exception;
     }
 
-    private sealed class CancellingFilter(CancellationTokenSource cancellation) : IConsumerRecordFilter
+    private sealed class CancellingFilter(
+        CancellationTokenSource cancellation,
+        bool shouldDeserialize = false) : IConsumerRecordFilter
     {
         public int CallCount { get; private set; }
 
@@ -617,7 +681,7 @@ public sealed class ConsumerRecordFilterTests
         {
             CallCount++;
             cancellation.Cancel();
-            return false;
+            return shouldDeserialize;
         }
     }
 

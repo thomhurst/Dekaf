@@ -2928,6 +2928,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                 runningFilter = true;
                                 var shouldDeserialize = recordFilter.ShouldDeserialize(in filterContext);
                                 runningFilter = false;
+                                cancellationToken.ThrowIfCancellationRequested();
 
                                 iterationStatus = GetRecordIterationStatus(
                                     topicPartition,
@@ -5775,6 +5776,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             var shouldDeserialize = recordFilter.ShouldDeserialize(in filterContext);
                             runningFilter = false;
                             pendingDisposed |= EndConsumeOneFetchUse(pending);
+                            cancellationToken.ThrowIfCancellationRequested();
                             if (pendingDisposed)
                                 break;
 
@@ -6089,6 +6091,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             BeginConsumeOneFetchUse(pending);
                             var shouldDeserialize = recordFilter.ShouldDeserialize(in filterContext);
                             pendingDisposed |= EndConsumeOneFetchUse(pending);
+                            cancellationToken.ThrowIfCancellationRequested();
                             if (pendingDisposed)
                                 break;
 

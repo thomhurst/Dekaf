@@ -44,6 +44,7 @@ public class ConsumeOneBufferedFastPathBenchmarks
     private const string Topic = "consume-one-fast-path";
     private const int Partition = 0;
     private static readonly TimeSpan PollTimeout = TimeSpan.FromSeconds(10);
+    private static readonly IConsumerRecordFilter PassAllFilter = new PassAllRecordFilter();
 
     private sealed class FastPathJobConfig : ManualConfig
     {
@@ -65,6 +66,7 @@ public class ConsumeOneBufferedFastPathBenchmarks
     private Record[][] _batchRecords = null!;
     private KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> _groupedConsumer = null!;
     private KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> _noGroupConsumer = null!;
+    private KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> _filteredConsumer = null!;
     private TaskCompletionSource _autoCommitSurrogate = null!;
 
     [GlobalSetup]
@@ -122,6 +124,19 @@ public class ConsumeOneBufferedFastPathBenchmarks
             Serializers.RawBytes,
             Serializers.RawBytes);
         BufferedConsumerHarness.InitializeForBufferedFastPath(_noGroupConsumer, Topic, Partition);
+
+        _filteredConsumer = new KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>(
+            new ConsumerOptions
+            {
+                BootstrapServers = ["localhost:9092"],
+                OffsetCommitMode = OffsetCommitMode.Manual,
+                QueuedMinMessages = 1,
+                FetchMaxWaitMs = 200,
+                RecordFilter = PassAllFilter,
+            },
+            Serializers.RawBytes,
+            Serializers.RawBytes);
+        BufferedConsumerHarness.InitializeForBufferedFastPath(_filteredConsumer, Topic, Partition);
     }
 
     [IterationSetup(Targets = [nameof(PollOne_Grouped_AutoCommit)])]
@@ -129,6 +144,9 @@ public class ConsumeOneBufferedFastPathBenchmarks
 
     [IterationSetup(Targets = [nameof(PollOne_NoGroup_ManualCommit)])]
     public void NoGroupIterationSetup() => ReseedPendingFetches(_noGroupConsumer);
+
+    [IterationSetup(Targets = [nameof(PollOne_FilterPassAll)])]
+    public void FilteredIterationSetup() => ReseedPendingFetches(_filteredConsumer);
 
     [BenchmarkCategory("PollOneFastPath")]
     [Benchmark(Baseline = true)]
@@ -140,20 +158,32 @@ public class ConsumeOneBufferedFastPathBenchmarks
     public ValueTask<ConsumeResult<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>?> PollOne_NoGroup_ManualCommit()
         => _noGroupConsumer.ConsumeOneAsync(PollTimeout);
 
+    [BenchmarkCategory("PollOneFilter")]
+    [Benchmark]
+    public ValueTask<ConsumeResult<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>?> PollOne_FilterPassAll()
+        => _filteredConsumer.ConsumeOneAsync(PollTimeout);
+
     [GlobalCleanup]
     public void Cleanup()
     {
         _autoCommitSurrogate.TrySetResult();
         BufferedConsumerHarness.DrainPendingFetches(_groupedConsumer);
         BufferedConsumerHarness.DrainPendingFetches(_noGroupConsumer);
+        BufferedConsumerHarness.DrainPendingFetches(_filteredConsumer);
         _groupedConsumer.DisposeAsync().AsTask().GetAwaiter().GetResult();
         _noGroupConsumer.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        _filteredConsumer.DisposeAsync().AsTask().GetAwaiter().GetResult();
     }
 
     private void ReseedPendingFetches(
         KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> consumer)
         => BufferedConsumerHarness.ReseedPendingFetches(
             consumer, Topic, Partition, _batchRecords, BatchCount, RecordsPerBatch);
+
+    private sealed class PassAllRecordFilter : IConsumerRecordFilter
+    {
+        public bool ShouldDeserialize(scoped in ConsumerRecordFilterContext context) => true;
+    }
 }
 
 /// <summary>Measures the allocation-free non-blocking miss path.</summary>
