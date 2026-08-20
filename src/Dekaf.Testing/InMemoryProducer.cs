@@ -8,10 +8,31 @@ using Dekaf.Telemetry;
 
 namespace Dekaf.Testing;
 
+internal interface IInMemoryPreparedTransaction
+{
+    bool IsCompleted { get; }
+    bool IsPrepared { get; }
+    PreparedTransactionState PreparedState { get; }
+
+    ValueTask CompletePreparedAsync(
+        IInMemoryTransactionRecoveryContext recoveryContext,
+        bool committed,
+        CancellationToken cancellationToken);
+}
+
+internal interface IInMemoryTransactionRecoveryContext
+{
+    void ThrowIfFatalTransactionError();
+    ValueTask ApplyFaultAsync(KafkaFaultScope scope, CancellationToken cancellationToken);
+    FatalTransactionException CaptureFatalTransactionException(FatalTransactionException exception);
+}
+
 /// <summary>
 /// In-memory <see cref="IKafkaProducer{TKey,TValue}"/> backed by an <see cref="InMemoryKafkaCluster"/>.
 /// </summary>
-public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
+public sealed class InMemoryProducer<TKey, TValue> :
+    IKafkaProducer<TKey, TValue>,
+    IInMemoryTransactionRecoveryContext
 {
     private readonly InMemoryKafkaCluster _cluster;
     private readonly ISerializer<TKey> _keySerializer;
@@ -288,7 +309,7 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
         ThrowIfDisposed();
         ThrowIfFatalTransactionError();
 
-        InMemoryTransaction transaction;
+        IInMemoryPreparedTransaction transaction;
         TaskCompletionSource recoveryCompletion;
         lock (_transactionGate)
         {
@@ -307,7 +328,7 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
             if (transaction is null || !transaction.IsPrepared || transaction.PreparedState != preparedState)
             {
                 if (!Volatile.Read(ref _preparedRecoveryEnabled) ||
-                    _cluster.GetPreparedTransaction(preparedState) is not InMemoryTransaction recovered)
+                    _cluster.GetPreparedTransaction(preparedState) is not { } recovered)
                 {
                     throw new InvalidOperationException(
                         "There is no matching active or recoverable prepared transaction.");
@@ -596,6 +617,18 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
     private FatalTransactionException CaptureFatalTransactionException(FatalTransactionException exception) =>
         Interlocked.CompareExchange(ref _fatalTransactionException, exception, null) ?? exception;
 
+    void IInMemoryTransactionRecoveryContext.ThrowIfFatalTransactionError() =>
+        ThrowIfFatalTransactionError();
+
+    ValueTask IInMemoryTransactionRecoveryContext.ApplyFaultAsync(
+        KafkaFaultScope scope,
+        CancellationToken cancellationToken) =>
+        ApplyFaultAsync(scope, cancellationToken);
+
+    FatalTransactionException IInMemoryTransactionRecoveryContext.CaptureFatalTransactionException(
+        FatalTransactionException exception) =>
+        CaptureFatalTransactionException(exception);
+
     private void ThrowIfFatalTransactionError()
     {
         if (Volatile.Read(ref _fatalTransactionException) is { } exception)
@@ -693,12 +726,16 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
         }
     }
 
-    private sealed class InMemoryTransaction : ITransaction<TKey, TValue>
+    private sealed class InMemoryTransaction :
+        ITransaction<TKey, TValue>,
+        IInMemoryPreparedTransaction
     {
         private const long MutationCountMask = uint.MaxValue;
         private readonly InMemoryProducer<TKey, TValue> _producer;
+        private readonly object _completionGate = new();
         private readonly object _pendingOffsetsGate = new();
         private readonly Dictionary<string, PendingGroupOffsets> _pendingOffsets = new(StringComparer.Ordinal);
+        private TaskCompletionSource? _completionAttempt;
         private long _lifecycle;
         private AbortableTransactionException? _abortableException;
         private bool _prepared;
@@ -740,12 +777,17 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
             {
                 MarkAbortable(exception);
                 ExitMutation();
-                throw;
+                return FaultedProduce(exception);
             }
-            catch
+            catch (OperationCanceledException exception)
             {
                 ExitMutation();
-                throw;
+                return CanceledProduce(exception, cancellationToken);
+            }
+            catch (Exception exception)
+            {
+                ExitMutation();
+                return FaultedProduce(exception);
             }
         }
 
@@ -771,14 +813,34 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
             {
                 MarkAbortable(exception);
                 ExitMutation();
-                throw;
+                return FaultedProduce(exception);
             }
-            catch
+            catch (OperationCanceledException exception)
             {
                 ExitMutation();
-                throw;
+                return CanceledProduce(exception, cancellationToken);
+            }
+            catch (Exception exception)
+            {
+                ExitMutation();
+                return FaultedProduce(exception);
             }
         }
+
+        private static ValueTask<RecordMetadata> CanceledProduce(
+            OperationCanceledException exception,
+            CancellationToken cancellationToken)
+        {
+            var canceledToken = exception.CancellationToken.IsCancellationRequested
+                ? exception.CancellationToken
+                : cancellationToken.IsCancellationRequested
+                    ? cancellationToken
+                    : new CancellationToken(canceled: true);
+            return new ValueTask<RecordMetadata>(Task.FromCanceled<RecordMetadata>(canceledToken));
+        }
+
+        private static ValueTask<RecordMetadata> FaultedProduce(Exception exception) =>
+            new(Task.FromException<RecordMetadata>(exception));
 
         private async ValueTask<RecordMetadata> CompleteProduceAsync(
             ValueTask<RecordMetadata> operation)
@@ -817,7 +879,7 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
             catch (AbortableTransactionException exception)
             {
                 _abortableException = exception;
-                Volatile.Write(ref _lifecycle, Pack(TransactionLifecycleState.Abortable));
+                RestoreAfterFailedCompletion(TransactionLifecycleState.Abortable);
                 throw;
             }
             catch
@@ -860,7 +922,7 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
             catch (AbortableTransactionException exception)
             {
                 _abortableException = exception;
-                Volatile.Write(ref _lifecycle, Pack(TransactionLifecycleState.Abortable));
+                RestoreAfterFailedCompletion(TransactionLifecycleState.Abortable);
                 throw;
             }
             catch
@@ -933,26 +995,34 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
 
         public async ValueTask DisposeAsync()
         {
-            if (IsCompleted || IsPrepared || Volatile.Read(ref _producer._disposed))
-                return;
+            while (!IsCompleted && !IsPrepared && !Volatile.Read(ref _producer._disposed))
+            {
+                // Fault plans accept arbitrary exceptions. Disposal is best-effort and must release the
+                // producer slot after any injected abort failure without a generic catch clause.
+                await AbortAsync().AsTask().ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+                if (TryEnterDisposalCompletion(out var ownedCompletion))
+                {
+                    Complete(committed: false);
+                    return;
+                }
 
-            // Fault plans accept arbitrary exceptions. Disposal is best-effort and must release the
-            // producer slot after any injected abort failure without a generic catch clause.
-            await AbortAsync().AsTask().ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
-            if (TryEnterDisposalCompletion())
-                Complete(committed: false);
+                if (ownedCompletion is null)
+                    return;
+
+                await ownedCompletion.ConfigureAwait(false);
+            }
         }
 
         public async ValueTask CompletePreparedAsync(
-            InMemoryProducer<TKey, TValue> recoveringProducer,
+            IInMemoryTransactionRecoveryContext recoveryContext,
             bool committed,
             CancellationToken cancellationToken)
         {
-            recoveringProducer.ThrowIfFatalTransactionError();
+            recoveryContext.ThrowIfFatalTransactionError();
             var previousState = EnterCompletion(
                 "Cannot complete prepared transaction",
                 allowAbortable: !committed,
-                recoveringProducer);
+                recoveryContext);
             if (previousState != TransactionLifecycleState.Prepared &&
                 previousState != TransactionLifecycleState.Abortable)
             {
@@ -962,7 +1032,7 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
 
             try
             {
-                await recoveringProducer.ApplyFaultAsync(
+                await recoveryContext.ApplyFaultAsync(
                     new KafkaFaultScope(
                         committed
                             ? KafkaFaultOperation.CommitTransaction
@@ -974,12 +1044,12 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
             catch (FatalTransactionException exception)
             {
                 RestoreAfterFailedCompletion(previousState);
-                throw recoveringProducer.CaptureFatalTransactionException(exception);
+                throw recoveryContext.CaptureFatalTransactionException(exception);
             }
             catch (AbortableTransactionException exception)
             {
                 _abortableException = exception;
-                Volatile.Write(ref _lifecycle, Pack(TransactionLifecycleState.Abortable));
+                RestoreAfterFailedCompletion(TransactionLifecycleState.Abortable);
                 throw;
             }
             catch
@@ -1029,6 +1099,7 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
             }
 
             _producer.CompleteTransaction(this);
+            SignalCompletionAttempt();
         }
 
         private void EnterMutation(string operation)
@@ -1115,61 +1186,106 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
         private TransactionLifecycleState EnterCompletion(
             string operation,
             bool allowAbortable,
-            InMemoryProducer<TKey, TValue>? operationProducer = null)
+            IInMemoryTransactionRecoveryContext? recoveryContext = null)
         {
-            var producer = operationProducer ?? _producer;
-            producer.ThrowIfDisposed();
-            producer.ThrowIfFatalTransactionError();
-
-            while (true)
+            if (recoveryContext is null)
             {
-                var lifecycle = Volatile.Read(ref _lifecycle);
-                var state = GetState(lifecycle);
-                if (state is not (TransactionLifecycleState.Active or TransactionLifecycleState.Prepared) &&
-                    !(allowAbortable && state == TransactionLifecycleState.Abortable))
-                {
-                    ThrowForState(operation, state);
-                }
+                _producer.ThrowIfDisposed();
+                _producer.ThrowIfFatalTransactionError();
+            }
+            else
+            {
+                recoveryContext.ThrowIfFatalTransactionError();
+            }
 
-                if ((lifecycle & MutationCountMask) != 0)
+            lock (_completionGate)
+            {
+                while (true)
                 {
-                    throw new InvalidOperationException(
-                        $"{operation} while transaction operations are in progress.");
-                }
+                    var lifecycle = Volatile.Read(ref _lifecycle);
+                    var state = GetState(lifecycle);
+                    if (state is not (TransactionLifecycleState.Active or TransactionLifecycleState.Prepared) &&
+                        !(allowAbortable && state == TransactionLifecycleState.Abortable))
+                    {
+                        ThrowForState(operation, state);
+                    }
 
-                if (Interlocked.CompareExchange(
-                        ref _lifecycle,
-                        Pack(TransactionLifecycleState.Completing),
-                        lifecycle) == lifecycle)
-                {
-                    return state;
+                    if ((lifecycle & MutationCountMask) != 0)
+                    {
+                        throw new InvalidOperationException(
+                            $"{operation} while transaction operations are in progress.");
+                    }
+
+                    if (Interlocked.CompareExchange(
+                            ref _lifecycle,
+                            Pack(TransactionLifecycleState.Completing),
+                            lifecycle) == lifecycle)
+                    {
+                        _completionAttempt = new TaskCompletionSource(
+                            TaskCreationOptions.RunContinuationsAsynchronously);
+                        return state;
+                    }
                 }
             }
         }
 
-        private void RestoreAfterFailedCompletion(TransactionLifecycleState state) =>
-            Interlocked.CompareExchange(
-                ref _lifecycle,
-                Pack(state),
-                Pack(TransactionLifecycleState.Completing));
-
-        private bool TryEnterDisposalCompletion()
+        private void RestoreAfterFailedCompletion(TransactionLifecycleState state)
         {
-            while (true)
+            TaskCompletionSource? completion;
+            lock (_completionGate)
             {
-                var lifecycle = Volatile.Read(ref _lifecycle);
-                var state = GetState(lifecycle);
-                if (state is not (TransactionLifecycleState.Active or TransactionLifecycleState.Abortable))
-                    return false;
+                Volatile.Write(ref _lifecycle, Pack(state));
+                completion = _completionAttempt;
+                _completionAttempt = null;
+            }
 
-                if (Interlocked.CompareExchange(
-                        ref _lifecycle,
-                        Pack(TransactionLifecycleState.Completing) | (lifecycle & MutationCountMask),
-                        lifecycle) == lifecycle)
+            completion?.TrySetResult();
+        }
+
+        private bool TryEnterDisposalCompletion(out Task? ownedCompletion)
+        {
+            lock (_completionGate)
+            {
+                while (true)
                 {
-                    return true;
+                    var lifecycle = Volatile.Read(ref _lifecycle);
+                    var state = GetState(lifecycle);
+                    if (state == TransactionLifecycleState.Completing)
+                    {
+                        ownedCompletion = _completionAttempt!.Task;
+                        return false;
+                    }
+
+                    if (state is not (TransactionLifecycleState.Active or TransactionLifecycleState.Abortable))
+                    {
+                        ownedCompletion = null;
+                        return false;
+                    }
+
+                    if (Interlocked.CompareExchange(
+                            ref _lifecycle,
+                            Pack(TransactionLifecycleState.Completing) | (lifecycle & MutationCountMask),
+                            lifecycle) == lifecycle)
+                    {
+                        _completionAttempt = new TaskCompletionSource(
+                            TaskCreationOptions.RunContinuationsAsynchronously);
+                        ownedCompletion = null;
+                        return true;
+                    }
                 }
             }
+        }
+
+        private void SignalCompletionAttempt()
+        {
+            TaskCompletionSource? completion;
+            lock (_completionGate)
+            {
+                completion = _completionAttempt;
+                _completionAttempt = null;
+            }
+
+            completion?.TrySetResult();
         }
 
         private void MarkAbortable(AbortableTransactionException exception)

@@ -21,7 +21,7 @@ public sealed class InMemoryKafkaCluster
     private readonly Dictionary<string, Dictionary<TopicPartition, Dictionary<long, ShareLeaseState>>> _shareLeases = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<TopicPartition, Dictionary<long, int>>> _shareDeliveryCounts = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Exception> _produceFailures = new(StringComparer.Ordinal);
-    private readonly Dictionary<PreparedTransactionState, object> _preparedTransactions = [];
+    private readonly Dictionary<PreparedTransactionState, IInMemoryPreparedTransaction> _preparedTransactions = [];
     private readonly Dictionary<InMemoryTransactionMarker, List<PartitionState>> _transactionPartitions = [];
     private readonly InMemoryKafkaClusterOptions _options;
     private TaskCompletionSource _recordsChanged = NewRecordsChangedSource();
@@ -224,14 +224,16 @@ public sealed class InMemoryKafkaCluster
 
     internal long AllocateProducerId() => Interlocked.Increment(ref _nextProducerId);
 
-    internal void RegisterPreparedTransaction(PreparedTransactionState state, object transaction)
+    internal void RegisterPreparedTransaction(
+        PreparedTransactionState state,
+        IInMemoryPreparedTransaction transaction)
     {
         ArgumentNullException.ThrowIfNull(transaction);
         lock (_gate)
             _preparedTransactions[state] = transaction;
     }
 
-    internal object? GetPreparedTransaction(PreparedTransactionState state)
+    internal IInMemoryPreparedTransaction? GetPreparedTransaction(PreparedTransactionState state)
     {
         lock (_gate)
             return _preparedTransactions.GetValueOrDefault(state);
@@ -245,7 +247,7 @@ public sealed class InMemoryKafkaCluster
             IReadOnlyList<ConsumerGroupMetadata> MetadataSnapshots,
             IReadOnlyList<TopicPartitionOffset> Offsets)> pendingOffsets,
         PreparedTransactionState preparedState,
-        object transaction)
+        IInMemoryPreparedTransaction transaction)
     {
         ArgumentNullException.ThrowIfNull(pendingOffsets);
         ArgumentNullException.ThrowIfNull(transactionMarker);

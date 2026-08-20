@@ -501,9 +501,11 @@ public sealed class InMemoryProducerFaultTests
         var pendingCommit = transaction.CommitAsync().AsTask();
 
         await barrier.WaitUntilEnteredAsync();
-        await producer.DisposeAsync();
+        var pendingDispose = producer.DisposeAsync().AsTask();
+        await Assert.That(pendingDispose.IsCompleted).IsFalse();
         await Assert.That(barrier.Release()).IsTrue();
         await pendingCommit;
+        await pendingDispose;
 
         var visible = cluster.ReadRecords("orders");
         await Assert.That(visible).Count().IsEqualTo(1);
@@ -516,6 +518,55 @@ public sealed class InMemoryProducerFaultTests
         var producer = new InMemoryProducer<string, string>(new InMemoryKafkaCluster());
         var transaction = producer.BeginTransaction();
         await transaction.AbortAsync();
+
+        var componentwiseOperation = transaction.ProduceAsync("orders", "k", "v");
+        var messageOperation = transaction.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = "orders",
+            Key = "k",
+            Value = "v"
+        });
+
+        await Assert.That(componentwiseOperation.IsCompleted).IsTrue();
+        await Assert.That(messageOperation.IsCompleted).IsTrue();
+        _ = await Assert.ThrowsAsync<InvalidOperationException>(() => componentwiseOperation.AsTask());
+        _ = await Assert.ThrowsAsync<InvalidOperationException>(() => messageOperation.AsTask());
+    }
+
+    [Test]
+    public async Task TransactionProduce_SynchronousCancellation_ReturnsCanceledValueTask()
+    {
+        var producer = new InMemoryProducer<string, string>(new InMemoryKafkaCluster());
+        await using var transaction = producer.BeginTransaction();
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        var componentwiseOperation = transaction.ProduceAsync(
+            "orders",
+            "k",
+            "v",
+            cancellation.Token);
+        var messageOperation = transaction.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = "orders",
+            Key = "k",
+            Value = "v"
+        }, cancellation.Token);
+
+        await Assert.That(componentwiseOperation.IsCompleted).IsTrue();
+        await Assert.That(messageOperation.IsCompleted).IsTrue();
+        await Assert.That(componentwiseOperation.AsTask().IsCanceled).IsTrue();
+        await Assert.That(messageOperation.AsTask().IsCanceled).IsTrue();
+    }
+
+    [Test]
+    public async Task TransactionProduce_SynchronousSerializationFailure_ReturnsFaultedValueTask()
+    {
+        var producer = new InMemoryProducer<string, string>(
+            new InMemoryKafkaCluster(),
+            Serializers.String,
+            ThrowingSerializer<string>.Instance);
+        await using var transaction = producer.BeginTransaction();
 
         var componentwiseOperation = transaction.ProduceAsync("orders", "k", "v");
         var messageOperation = transaction.ProduceAsync(new ProducerMessage<string, string>
@@ -983,6 +1034,26 @@ public sealed class InMemoryProducerFaultTests
     }
 
     [Test]
+    public async Task PreparedTransaction_ReplacementProducerSupportsDifferentGenericTypes()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var original = new InMemoryProducer<string, string>(cluster);
+        var transaction = original.BeginTransaction();
+        _ = await transaction.ProduceAsync("orders", "k", "committed");
+        var prepared = await transaction.PrepareAsync();
+        await original.DisposeAsync();
+
+        var replacement = new InMemoryProducer<int, int>(cluster);
+        await replacement.InitTransactionsAsync(keepPreparedTransaction: true);
+        await replacement.CompletePreparedTransactionAsync(prepared, committed: true);
+
+        var visible = cluster.ReadRecords("orders");
+        await Assert.That(visible).Count().IsEqualTo(1);
+        await Assert.That(Encoding.UTF8.GetString(visible[0].Value)).IsEqualTo("committed");
+        await transaction.DisposeAsync();
+    }
+
+    [Test]
     public async Task PreparedTransaction_RecoveryUsesReplacementProducerFatalState()
     {
         var cluster = new InMemoryKafkaCluster();
@@ -1068,5 +1139,20 @@ public sealed class InMemoryProducerFaultTests
             destination.GetSpan(1)[0] = 1;
             destination.Advance(1);
         }
+    }
+
+    private sealed class ThrowingSerializer<T> : ISerializer<T>
+    {
+        public static readonly ThrowingSerializer<T> Instance = new();
+
+        public void Serialize<TWriter>(
+            T value,
+            ref TWriter destination,
+            SerializationContext context)
+            where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
+            => throw new InvalidOperationException("Injected serialization failure.");
     }
 }
