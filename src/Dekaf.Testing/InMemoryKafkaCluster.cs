@@ -22,6 +22,7 @@ public sealed class InMemoryKafkaCluster
     private readonly Dictionary<string, Dictionary<TopicPartition, Dictionary<long, int>>> _shareDeliveryCounts = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Exception> _produceFailures = new(StringComparer.Ordinal);
     private readonly Dictionary<PreparedTransactionState, object> _preparedTransactions = [];
+    private readonly Dictionary<InMemoryTransactionMarker, List<PartitionState>> _transactionPartitions = [];
     private readonly InMemoryKafkaClusterOptions _options;
     private TaskCompletionSource _recordsChanged = NewRecordsChangedSource();
     private long _nextProducerId;
@@ -210,7 +211,7 @@ public sealed class InMemoryKafkaCluster
             var visible = new List<InMemoryRecord>(partitionState.Records.Count);
             foreach (var record in partitionState.Records)
             {
-                if (IsOngoingTransaction(record))
+                if (record.Offset >= partitionState.FirstUnstableOffset)
                     break;
                 if (IsRecordVisibleUnderLock(record))
                     visible.Add(CloneRecord(record));
@@ -266,6 +267,12 @@ public sealed class InMemoryKafkaCluster
             transactionMarker.State = committed
                 ? InMemoryTransactionState.Committed
                 : InMemoryTransactionState.Aborted;
+
+            if (_transactionPartitions.Remove(transactionMarker, out var transactionPartitions))
+            {
+                foreach (var partition in transactionPartitions)
+                    partition.CompleteTransaction(transactionMarker);
+            }
 
             if (preparedState.HasTransaction &&
                 _preparedTransactions.TryGetValue(preparedState, out var registered) &&
@@ -360,6 +367,17 @@ public sealed class InMemoryKafkaCluster
             };
 
             partitionState.Records.Add(record);
+            if (transactionMarker is not null &&
+                partitionState.RegisterTransaction(transactionMarker, offset))
+            {
+                if (!_transactionPartitions.TryGetValue(transactionMarker, out var transactionPartitions))
+                {
+                    transactionPartitions = [];
+                    _transactionPartitions.Add(transactionMarker, transactionPartitions);
+                }
+
+                transactionPartitions.Add(partitionState);
+            }
 
             metadata = new RecordMetadata
             {
@@ -743,7 +761,7 @@ public sealed class InMemoryKafkaCluster
         var partition = topic.Partitions[topicPartition.Partition];
         foreach (var candidate in partition.Records)
         {
-            if (IsOngoingTransaction(candidate))
+            if (candidate.Offset >= partition.FirstUnstableOffset)
             {
                 record = null!;
                 blockedByOngoingTransaction = true;
@@ -760,16 +778,13 @@ public sealed class InMemoryKafkaCluster
         }
 
         record = null!;
-        blockedByOngoingTransaction = false;
+        blockedByOngoingTransaction = partition.FirstUnstableOffset != long.MaxValue;
         return false;
     }
 
     private static bool IsRecordVisibleUnderLock(InMemoryRecord record) =>
         record.Transaction is not { } transaction ||
         transaction.State == InMemoryTransactionState.Committed;
-
-    private static bool IsOngoingTransaction(InMemoryRecord record) =>
-        record.Transaction?.State == InMemoryTransactionState.Ongoing;
 
     private void ValidateConsumerGroupMetadataUnderLock(
         string groupId,
@@ -783,7 +798,7 @@ public sealed class InMemoryKafkaCluster
             !_consumerGroupMembers.TryGetValue(groupId, out var members) ||
             !members.ContainsKey(metadata.MemberId))
         {
-            throw new TransactionException(
+            throw new FatalTransactionException(
                 ErrorCode.IllegalGeneration,
                 $"Consumer group metadata for '{groupId}' is no longer current.");
         }
@@ -1073,9 +1088,34 @@ public sealed class InMemoryKafkaCluster
 
     private sealed class PartitionState
     {
+        private readonly Dictionary<InMemoryTransactionMarker, long> _transactionOffsets = [];
+
         public List<InMemoryRecord> Records { get; } = [];
         public long LogStartOffset { get; set; }
         public long HighWatermark => Records.Count == 0 ? LogStartOffset : Records[^1].Offset + 1;
+        public long FirstUnstableOffset { get; private set; } = long.MaxValue;
+
+        public bool RegisterTransaction(InMemoryTransactionMarker transaction, long offset)
+        {
+            if (!_transactionOffsets.TryAdd(transaction, offset))
+                return false;
+
+            FirstUnstableOffset = Math.Min(FirstUnstableOffset, offset);
+            return true;
+        }
+
+        public void CompleteTransaction(InMemoryTransactionMarker transaction)
+        {
+            if (!_transactionOffsets.Remove(transaction, out var offset) ||
+                offset != FirstUnstableOffset)
+            {
+                return;
+            }
+
+            FirstUnstableOffset = long.MaxValue;
+            foreach (var remainingOffset in _transactionOffsets.Values)
+                FirstUnstableOffset = Math.Min(FirstUnstableOffset, remainingOffset);
+        }
     }
 
     private sealed class ShareLeaseState

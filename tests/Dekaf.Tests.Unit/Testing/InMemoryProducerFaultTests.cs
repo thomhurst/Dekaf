@@ -482,7 +482,7 @@ public sealed class InMemoryProducerFaultTests
             new InMemoryConsumerOptions { GroupId = "billing" });
         consumer.Subscribe("orders");
         var metadata = consumer.ConsumerGroupMetadata!;
-        var producer = new InMemoryProducer<string, string>(cluster);
+        await using var producer = new InMemoryProducer<string, string>(cluster);
         await using var transaction = producer.BeginTransaction();
         await transaction.SendOffsetsToTransactionAsync(
             [new TopicPartitionOffset("orders", 0, 17)],
@@ -493,12 +493,127 @@ public sealed class InMemoryProducerFaultTests
             new InMemoryConsumerOptions { GroupId = "billing" });
         replacement.Subscribe("orders");
 
-        var failure = await Assert.ThrowsAsync<TransactionException>(
+        var failure = await Assert.ThrowsAsync<FatalTransactionException>(
             () => transaction.CommitAsync().AsTask());
+        var poisoned = await Assert.ThrowsAsync<FatalTransactionException>(
+            () => producer.ProduceAsync("orders", "k", "v").AsTask());
 
         await Assert.That(failure!.ErrorCode).IsEqualTo(ErrorCode.IllegalGeneration);
+        await Assert.That(poisoned).IsSameReferenceAs(failure);
+        await Assert.That(() => producer.BeginTransaction()).Throws<FatalTransactionException>();
         await Assert.That(cluster.GetCommittedOffset("billing", new TopicPartition("orders", 0))).IsNull();
-        await transaction.AbortAsync();
+    }
+
+    [Test]
+    public async Task TransactionOffsets_ConcurrentStagingCommitsEveryOffset()
+    {
+        const int operationCount = 32;
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await using var transaction = producer.BeginTransaction();
+        var scope = new KafkaFaultScope(
+            KafkaFaultOperation.SendOffsetsToTransaction,
+            groupId: "billing");
+        var barriers = CreateOffsetBarriers(cluster, scope, operationCount);
+        var operations = StageOffsets(transaction, operationCount);
+        await WaitUntilEnteredAsync(barriers);
+        await ReleaseAsync(barriers);
+        await Task.WhenAll(operations);
+        await transaction.CommitAsync();
+        await AssertOffsetsCommittedAsync(cluster, operationCount);
+    }
+
+    private static KafkaFaultBarrier[] CreateOffsetBarriers(
+        InMemoryKafkaCluster cluster,
+        KafkaFaultScope scope,
+        int operationCount)
+    {
+        var barriers = new KafkaFaultBarrier[operationCount];
+        for (var index = 0; index < barriers.Length; index++)
+            barriers[index] = cluster.FaultPlan.PauseNext(scope);
+        return barriers;
+    }
+
+    private static Task[] StageOffsets(
+        ITransaction<string, string> transaction,
+        int operationCount)
+    {
+        var operations = new Task[operationCount];
+        for (var index = 0; index < operations.Length; index++)
+        {
+            operations[index] = transaction.SendOffsetsToTransactionAsync(
+                [new TopicPartitionOffset($"orders-{index}", 0, index + 1)],
+                "billing").AsTask();
+        }
+        return operations;
+    }
+
+    private static async Task WaitUntilEnteredAsync(KafkaFaultBarrier[] barriers)
+    {
+        for (var index = 0; index < barriers.Length; index++)
+            await barriers[index].WaitUntilEnteredAsync();
+    }
+
+    private static async Task ReleaseAsync(KafkaFaultBarrier[] barriers)
+    {
+        for (var index = 0; index < barriers.Length; index++)
+            await Assert.That(barriers[index].Release()).IsTrue();
+    }
+
+    private static async Task AssertOffsetsCommittedAsync(
+        InMemoryKafkaCluster cluster,
+        int operationCount)
+    {
+        for (var index = 0; index < operationCount; index++)
+        {
+            await Assert.That(cluster.GetCommittedOffset(
+                    "billing",
+                    new TopicPartition($"orders-{index}", 0)))
+                .IsEqualTo(index + 1);
+        }
+    }
+
+    [Test]
+    public async Task DeleteRecords_PreservesOpenTransactionBoundary()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("orders");
+        var firstTransactionalProducer = new InMemoryProducer<string, string>(cluster);
+        var secondTransactionalProducer = new InMemoryProducer<string, string>(cluster);
+        var ordinaryProducer = new InMemoryProducer<string, string>(cluster);
+        await using var firstTransaction = firstTransactionalProducer.BeginTransaction();
+        await using var secondTransaction = secondTransactionalProducer.BeginTransaction();
+        _ = await firstTransaction.ProduceAsync("orders", "k", "first-pending");
+        _ = await secondTransaction.ProduceAsync("orders", "k", "second-pending");
+        _ = await ordinaryProducer.ProduceAsync("orders", "k", "later");
+        await using var admin = new InMemoryAdminClient(cluster);
+        var topicPartition = new TopicPartition("orders", 0);
+
+        _ = await admin.DeleteRecordsAsync(new Dictionary<TopicPartition, long>
+        {
+            [topicPartition] = 2
+        });
+
+        await Assert.That(cluster.TryRead(
+            topicPartition,
+            2,
+            out _,
+            out var blockedByOngoingTransaction)).IsFalse();
+        await Assert.That(blockedByOngoingTransaction).IsTrue();
+
+        await firstTransaction.CommitAsync();
+
+        await Assert.That(cluster.TryRead(
+            topicPartition,
+            2,
+            out _,
+            out blockedByOngoingTransaction)).IsFalse();
+        await Assert.That(blockedByOngoingTransaction).IsTrue();
+
+        await secondTransaction.CommitAsync();
+
+        await Assert.That(cluster.TryRead(topicPartition, 2, out var visible)).IsTrue();
+        await Assert.That(Encoding.UTF8.GetString(visible.Value)).IsEqualTo("later");
     }
 
     [Test]

@@ -657,6 +657,7 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
     {
         private const long MutationCountMask = uint.MaxValue;
         private readonly InMemoryProducer<TKey, TValue> _producer;
+        private readonly object _pendingOffsetsGate = new();
         private readonly Dictionary<string, PendingGroupOffsets> _pendingOffsets = new(StringComparer.Ordinal);
         private long _lifecycle;
         private AbortableTransactionException? _abortableException;
@@ -732,6 +733,11 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
 
                 Complete(committed: true);
             }
+            catch (FatalTransactionException exception)
+            {
+                RestoreAfterFailedCompletion(previousState);
+                throw _producer.CaptureFatalTransactionException(exception);
+            }
             catch (AbortableTransactionException exception)
             {
                 _abortableException = exception;
@@ -805,9 +811,7 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
                         groupId: consumerGroupId),
                     cancellationToken).ConfigureAwait(false);
 
-                EnsureMutationActive("Cannot send offsets to transaction");
-                var pending = GetOrAddPendingOffsets(consumerGroupId);
-                pending.Offsets.AddRange(snapshot);
+                StageOffsets(consumerGroupId, snapshot, metadata: null);
             }
             catch (AbortableTransactionException exception)
             {
@@ -838,10 +842,7 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
                         groupId: consumerGroupMetadata.GroupId),
                     cancellationToken).ConfigureAwait(false);
 
-                EnsureMutationActive("Cannot send offsets to transaction");
-                var pending = GetOrAddPendingOffsets(consumerGroupMetadata.GroupId);
-                pending.Metadata = consumerGroupMetadata;
-                pending.Offsets.AddRange(snapshot);
+                StageOffsets(consumerGroupMetadata.GroupId, snapshot, consumerGroupMetadata);
             }
             catch (AbortableTransactionException exception)
             {
@@ -894,6 +895,11 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
 
                 Complete(committed);
             }
+            catch (FatalTransactionException exception)
+            {
+                RestoreAfterFailedCompletion(previousState);
+                throw recoveringProducer.CaptureFatalTransactionException(exception);
+            }
             catch (AbortableTransactionException exception)
             {
                 _abortableException = exception;
@@ -917,16 +923,35 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
             return pending;
         }
 
+        private void StageOffsets(
+            string groupId,
+            TopicPartitionOffset[] offsets,
+            ConsumerGroupMetadata? metadata)
+        {
+            lock (_pendingOffsetsGate)
+            {
+                EnsureMutationActive("Cannot send offsets to transaction");
+                var pending = GetOrAddPendingOffsets(groupId);
+                if (metadata is not null)
+                    pending.Metadata = metadata;
+                pending.Offsets.AddRange(offsets);
+            }
+        }
+
         private void Complete(bool committed)
         {
-            _producer._cluster.CompleteTransaction(
-                TransactionMarker,
-                committed,
-                _pendingOffsets.Select(static item => CreatePendingOffsets(item)),
-                PreparedState,
-                this);
-            _pendingOffsets.Clear();
-            SetStatePreservingMutationCount(TransactionLifecycleState.Completed);
+            lock (_pendingOffsetsGate)
+            {
+                _producer._cluster.CompleteTransaction(
+                    TransactionMarker,
+                    committed,
+                    _pendingOffsets.Select(static item => CreatePendingOffsets(item)),
+                    PreparedState,
+                    this);
+                _pendingOffsets.Clear();
+                SetStatePreservingMutationCount(TransactionLifecycleState.Completed);
+            }
+
             _producer.CompleteTransaction(this);
         }
 
