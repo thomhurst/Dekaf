@@ -13,6 +13,7 @@ public class InMemoryConsumerBenchmarks
     private const string GroupId = "benchmark-group";
     private static readonly TopicPartitionOffset StoredOffset = new(Topic, 0, 1);
     private InMemoryConsumer<Ignore, Ignore> _consumer = null!;
+    private InMemoryConsumer<Ignore, Ignore> _manualCommitFaultConsumer = null!;
     private InMemoryConsumer<Ignore, Ignore> _unrelatedFaultConsumer = null!;
     private InMemoryConsumer<Ignore, Ignore> _asyncAutoCommitConsumer = null!;
     private ConsumeResult<Ignore, Ignore>? _result;
@@ -33,6 +34,22 @@ public class InMemoryConsumerBenchmarks
                 OffsetCommitMode = OffsetCommitMode.Manual
             });
         _consumer.Subscribe(Topic);
+
+        var manualCommitFaultCluster = new InMemoryKafkaCluster();
+        var manualCommitFaultProducer = new InMemoryProducer<Ignore, Ignore>(manualCommitFaultCluster);
+        manualCommitFaultProducer.ProduceAsync(Topic, default, default).GetAwaiter().GetResult();
+        manualCommitFaultCluster.FaultPlan.FailPersistently(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId),
+            new InvalidOperationException("commit-only"));
+        _manualCommitFaultConsumer = new InMemoryConsumer<Ignore, Ignore>(
+            manualCommitFaultCluster,
+            new InMemoryConsumerOptions
+            {
+                GroupId = GroupId,
+                AutoOffsetReset = AutoOffsetReset.Earliest,
+                OffsetCommitMode = OffsetCommitMode.Manual
+            });
+        _manualCommitFaultConsumer.Subscribe(Topic);
 
         var unrelatedFaultCluster = new InMemoryKafkaCluster();
         var unrelatedFaultProducer = new InMemoryProducer<Ignore, Ignore>(unrelatedFaultCluster);
@@ -97,6 +114,18 @@ public class InMemoryConsumerBenchmarks
         var operation = _unrelatedFaultConsumer.ConsumeOneAsync(TimeSpan.Zero);
         if (!operation.IsCompletedSuccessfully)
             throw new InvalidOperationException("Unrelated-fault consume did not complete synchronously.");
+
+        _result = operation.Result;
+    }
+
+    [Benchmark]
+    [InvocationCount(262144)]
+    public void ConsumeOneManualCommitFault()
+    {
+        _manualCommitFaultConsumer.Seek(new TopicPartitionOffset(Topic, 0, 0));
+        var operation = _manualCommitFaultConsumer.ConsumeOneAsync(TimeSpan.Zero);
+        if (!operation.IsCompletedSuccessfully)
+            throw new InvalidOperationException("Manual commit fault consume did not complete synchronously.");
 
         _result = operation.Result;
     }

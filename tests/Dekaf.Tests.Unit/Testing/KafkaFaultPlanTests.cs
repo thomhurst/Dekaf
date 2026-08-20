@@ -108,7 +108,11 @@ public sealed class KafkaFaultPlanTests
             new KafkaFaultScope(KafkaFaultOperation.Fetch, "payments", 0, "billing"),
             new InvalidOperationException("fetch"));
 
-        var matched = plan.HasPotentialConsumerMatch("billing", assignment, out var version);
+        var matched = plan.HasPotentialConsumerMatch(
+            "billing",
+            assignment,
+            includeCommit: true,
+            out var version);
 
         await Assert.That(matched).IsFalse();
         await Assert.That(version).IsEqualTo(plan.ScopeVersion);
@@ -118,7 +122,11 @@ public sealed class KafkaFaultPlanTests
             new InvalidOperationException("consume"));
 
         await Assert.That(plan.ScopeVersion).IsGreaterThan(version);
-        await Assert.That(plan.HasPotentialConsumerMatch("billing", assignment, out _)).IsTrue();
+        await Assert.That(plan.HasPotentialConsumerMatch(
+            "billing",
+            assignment,
+            includeCommit: true,
+            out _)).IsTrue();
     }
 
     [Test]

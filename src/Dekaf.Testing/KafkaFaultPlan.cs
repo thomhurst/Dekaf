@@ -251,6 +251,21 @@ public interface IKafkaFaultPlan
     bool HasMatchingFault(in KafkaFaultScope operationScope);
 
     /// <summary>
+    /// Returns whether an operation can match a queued entry for the supplied group and resources.
+    /// </summary>
+    bool HasPotentialFault(
+        KafkaFaultOperation operation,
+        string? groupId,
+        IReadOnlySet<TopicPartition> resources);
+
+    /// <summary>
+    /// Selects the supplied concrete operation scope matched by the earliest queued entry.
+    /// </summary>
+    bool TryGetFirstMatchingFaultScope(
+        ReadOnlySpan<KafkaFaultScope> operationScopes,
+        out KafkaFaultScope operationScope);
+
+    /// <summary>
     /// Appends a failure consumed by the next matching operations.
     /// </summary>
     void Fail(KafkaFaultScope scope, Exception exception, int occurrenceCount = 1);
@@ -576,6 +591,24 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
     public bool HasMatchingFault(in KafkaFaultScope operationScope) =>
         Volatile.Read(ref _scopeIndex).HasMatchingFault(operationScope);
 
+    /// <inheritdoc />
+    public bool HasPotentialFault(
+        KafkaFaultOperation operation,
+        string? groupId,
+        IReadOnlySet<TopicPartition> resources)
+    {
+        ArgumentNullException.ThrowIfNull(resources);
+        return Volatile.Read(ref _scopeIndex).HasPotentialMatch(operation, groupId, resources);
+    }
+
+    /// <inheritdoc />
+    public bool TryGetFirstMatchingFaultScope(
+        ReadOnlySpan<KafkaFaultScope> operationScopes,
+        out KafkaFaultScope operationScope) =>
+        Volatile.Read(ref _scopeIndex).TryGetFirstMatchingFaultScope(
+            operationScopes,
+            out operationScope);
+
     internal bool TryGetFirstMatchingCommitScope(
         string groupId,
         IReadOnlyList<TopicPartitionOffset> offsets,
@@ -607,13 +640,15 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
 
     internal bool HasPotentialConsumerMatch(
         string? groupId,
-        HashSet<TopicPartition> assignment,
+        IReadOnlySet<TopicPartition> assignment,
+        bool includeCommit,
         out long scopeVersion)
     {
         var index = Volatile.Read(ref _scopeIndex);
         scopeVersion = index.Version;
         return index.HasPotentialMatch(KafkaFaultOperation.Fetch, groupId, assignment) ||
                index.HasPotentialMatch(KafkaFaultOperation.Consume, groupId, assignment) ||
+               includeCommit &&
                index.HasPotentialMatch(KafkaFaultOperation.Commit, groupId, assignment);
     }
 
@@ -675,7 +710,7 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
         internal bool HasPotentialMatch(
             KafkaFaultOperation operation,
             string? groupId,
-            HashSet<TopicPartition> assignment)
+            IReadOnlySet<TopicPartition> assignment)
         {
             if (!HasPotentialMatch(operation, groupId))
                 return false;
@@ -720,6 +755,33 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
                     return true;
             }
 
+            return false;
+        }
+
+        internal bool TryGetFirstMatchingFaultScope(
+            ReadOnlySpan<KafkaFaultScope> operationScopes,
+            out KafkaFaultScope operationScope)
+        {
+            for (var scopeIndex = 0; scopeIndex < _orderedScopes.Length; scopeIndex++)
+            {
+                var ruleScope = _orderedScopes[scopeIndex];
+                for (var operationIndex = 0; operationIndex < operationScopes.Length; operationIndex++)
+                {
+                    var candidate = operationScopes[operationIndex];
+                    if (ruleScope.Operation != candidate.Operation ||
+                        ruleScope.GroupId is not null && ruleScope.GroupId != candidate.GroupId ||
+                        ruleScope.Topic is not null && ruleScope.Topic != candidate.Topic ||
+                        ruleScope.Partition is not null && ruleScope.Partition != candidate.Partition)
+                    {
+                        continue;
+                    }
+
+                    operationScope = candidate;
+                    return true;
+                }
+            }
+
+            operationScope = default;
             return false;
         }
 

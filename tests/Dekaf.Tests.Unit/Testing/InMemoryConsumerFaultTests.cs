@@ -204,6 +204,53 @@ public sealed class InMemoryConsumerFaultTests
     }
 
     [Test]
+    public async Task CommitAsync_InjectedPlanPreservesResourceBeforeGroupOrder()
+    {
+        var innerPlan = new KafkaFaultPlan();
+        IKafkaFaultPlan faultPlan = new DelegatingFaultPlan(innerPlan);
+        var cluster = new InMemoryKafkaCluster(new InMemoryKafkaClusterOptions(), faultPlan);
+        var consumer = CreateConsumer(cluster, enableAutoOffsetStore: false);
+        var resourceFailure = new InvalidOperationException("resource commit failed");
+        innerPlan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, Topic, 0, GroupId),
+            resourceFailure);
+        innerPlan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId),
+            new InvalidOperationException("group commit failed"));
+
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            consumer.CommitAsync([new TopicPartitionOffset(Topic, 0, 1)]).AsTask());
+
+        await Assert.That(actual).IsSameReferenceAs(resourceFailure);
+        await Assert.That(innerPlan.Count).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task CommitAsync_InjectedPlanPreservesStoredResourceBeforeGroupOrder()
+    {
+        var innerPlan = new KafkaFaultPlan();
+        IKafkaFaultPlan faultPlan = new DelegatingFaultPlan(innerPlan);
+        var cluster = new InMemoryKafkaCluster(new InMemoryKafkaClusterOptions(), faultPlan);
+        cluster.CreateTopic(Topic);
+        var consumer = CreateConsumer(cluster, enableAutoOffsetStore: false);
+        consumer.Assign(Partition);
+        consumer.StoreOffset(new TopicPartitionOffset(Topic, 0, 1));
+        var resourceFailure = new InvalidOperationException("stored resource commit failed");
+        innerPlan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, Topic, 0, GroupId),
+            resourceFailure);
+        innerPlan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId),
+            new InvalidOperationException("stored group commit failed"));
+
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            consumer.CommitAsync().AsTask());
+
+        await Assert.That(actual).IsSameReferenceAs(resourceFailure);
+        await Assert.That(innerPlan.Count).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task CommitAsync_EmptyListConsumesGroupFault()
     {
         var cluster = new InMemoryKafkaCluster();
@@ -529,6 +576,30 @@ public sealed class InMemoryConsumerFaultTests
     }
 
     [Test]
+    public async Task ManualCommit_InjectedCommitFaultDoesNotEnterAsyncFaultPath()
+    {
+        var innerPlan = new KafkaFaultPlan();
+        var faultPlan = new DelegatingFaultPlan(innerPlan);
+        var cluster = new InMemoryKafkaCluster(new InMemoryKafkaClusterOptions(), faultPlan);
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync(Topic, "key", "value");
+        var consumer = CreateConsumer(
+            cluster,
+            enableAutoOffsetStore: true,
+            offsetCommitMode: OffsetCommitMode.Manual);
+        consumer.Subscribe(Topic);
+        innerPlan.FailPersistently(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId),
+            new InvalidOperationException("commit failed"));
+
+        var result = await consumer.ConsumeOneAsync(TimeSpan.Zero);
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(faultPlan.MatchingProbeCount).IsEqualTo(0);
+        await Assert.That(innerPlan.Count).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task AutoCommit_AfterProcessingConsumesResourceFaultOnNextPoll()
     {
         var cluster = new InMemoryKafkaCluster();
@@ -803,6 +874,8 @@ public sealed class InMemoryConsumerFaultTests
 
     private sealed class DelegatingFaultPlan(KafkaFaultPlan inner) : IKafkaFaultPlan
     {
+        public int MatchingProbeCount { get; private set; }
+
         public event Action<KafkaFaultObservation>? FaultConsumed
         {
             add => inner.FaultConsumed += value;
@@ -811,8 +884,22 @@ public sealed class InMemoryConsumerFaultTests
 
         public int Count => inner.Count;
 
-        public bool HasMatchingFault(in KafkaFaultScope operationScope) =>
-            inner.HasMatchingFault(operationScope);
+        public bool HasMatchingFault(in KafkaFaultScope operationScope)
+        {
+            MatchingProbeCount++;
+            return inner.HasMatchingFault(operationScope);
+        }
+
+        public bool HasPotentialFault(
+            KafkaFaultOperation operation,
+            string? groupId,
+            IReadOnlySet<TopicPartition> resources) =>
+            inner.HasPotentialFault(operation, groupId, resources);
+
+        public bool TryGetFirstMatchingFaultScope(
+            ReadOnlySpan<KafkaFaultScope> operationScopes,
+            out KafkaFaultScope operationScope) =>
+            inner.TryGetFirstMatchingFaultScope(operationScopes, out operationScope);
 
         public void Fail(KafkaFaultScope scope, Exception exception, int occurrenceCount = 1) =>
             inner.Fail(scope, exception, occurrenceCount);

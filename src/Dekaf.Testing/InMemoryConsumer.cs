@@ -782,36 +782,26 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 ThrowIfDisposed();
             }
         }
-        else if (!faultApplied)
+        else if (!faultApplied && faultPlan.Count != 0)
         {
-            var groupScope = new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: groupId);
-            if (HasMatchingFault(groupScope))
+            var candidateScopes = new KafkaFaultScope[offsetList.Count + 1];
+            candidateScopes[0] = new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: groupId);
+            for (var index = 0; index < offsetList.Count; index++)
+            {
+                var offset = offsetList[index];
+                candidateScopes[index + 1] = new KafkaFaultScope(
+                    KafkaFaultOperation.Commit,
+                    offset.Topic,
+                    offset.Partition,
+                    groupId);
+            }
+
+            if (faultPlan.TryGetFirstMatchingFaultScope(candidateScopes, out var faultScope))
             {
                 await faultPlan.ApplyAsync(
-                    groupScope,
+                    faultScope,
                     cancellationToken).ConfigureAwait(false);
                 ThrowIfDisposed();
-            }
-            else
-            {
-                var count = offsetList.Count;
-                for (var index = 0; index < count; index++)
-                {
-                    var offset = offsetList[index];
-                    var resourceScope = new KafkaFaultScope(
-                        KafkaFaultOperation.Commit,
-                        offset.Topic,
-                        offset.Partition,
-                        groupId);
-                    if (!HasMatchingFault(resourceScope))
-                        continue;
-
-                    await faultPlan.ApplyAsync(
-                        resourceScope,
-                        cancellationToken).ConfigureAwait(false);
-                    ThrowIfDisposed();
-                    break;
-                }
             }
         }
 
@@ -2033,63 +2023,53 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 out faultScope);
         }
 
-        var groupScope = new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: _groupId);
-        var hasGroupFault = HasMatchingFault(groupScope);
+        var faultPlan = _cluster.FaultPlan;
+        if (faultPlan.Count == 0)
+            return false;
+
+        var assignment = GetCurrentAssignmentUnderLock();
+        var resourceCount = pendingOffset is null ? 0 : 1;
+        foreach (var partition in _storedOffsets.Keys)
+        {
+            if (assignment.Contains(partition) && partition != pendingOffset)
+                resourceCount++;
+        }
+
+        if (resourceCount == 0)
+            return false;
+
+        var candidateScopes = new KafkaFaultScope[resourceCount + 1];
+        candidateScopes[0] = new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: _groupId);
+        var candidateIndex = 1;
         if (pendingOffset is { } pendingPartition)
         {
-            if (hasGroupFault)
-            {
-                faultScope = groupScope;
-                return true;
-            }
-
-            var pendingScope = new KafkaFaultScope(
+            candidateScopes[candidateIndex++] = new KafkaFaultScope(
                 KafkaFaultOperation.Commit,
                 pendingPartition.Topic,
                 pendingPartition.Partition,
                 _groupId);
-            if (HasMatchingFault(pendingScope))
-            {
-                faultScope = pendingScope;
-                return true;
-            }
         }
 
-        if (_storedOffsets.Count == 0)
-            return false;
-
-        var assignment = GetCurrentAssignmentUnderLock();
         foreach (var partition in _storedOffsets.Keys)
         {
-            if (!assignment.Contains(partition))
+            if (!assignment.Contains(partition) || partition == pendingOffset)
                 continue;
 
-            if (hasGroupFault)
-            {
-                faultScope = groupScope;
-                return true;
-            }
-
-            var storedScope = new KafkaFaultScope(
+            candidateScopes[candidateIndex++] = new KafkaFaultScope(
                 KafkaFaultOperation.Commit,
                 partition.Topic,
                 partition.Partition,
                 _groupId);
-            if (!HasMatchingFault(storedScope))
-                continue;
-
-            faultScope = storedScope;
-            return true;
         }
 
-        return false;
+        return faultPlan.TryGetFirstMatchingFaultScope(candidateScopes, out faultScope);
     }
 
     private bool HasPotentialConsumerFault()
     {
         var faultPlan = _cluster.FaultPlan;
         if (faultPlan is not KafkaFaultPlan indexedPlan)
-            return faultPlan.Count != 0;
+            return HasPotentialCustomConsumerFault(faultPlan);
 
         var scopeVersion = indexedPlan.ScopeVersion;
         var consumerStateVersion = Volatile.Read(ref _consumerStateVersion);
@@ -2105,11 +2085,26 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             var hasPotentialFault = indexedPlan.HasPotentialConsumerMatch(
                 _groupId,
                 _assignment,
+                _options.OffsetCommitMode == OffsetCommitMode.Auto,
                 out scopeVersion);
             Volatile.Write(ref _hasPotentialConsumerFault, hasPotentialFault);
             Volatile.Write(ref _potentialFaultConsumerStateVersion, consumerStateVersion);
             Volatile.Write(ref _potentialFaultScopeVersion, scopeVersion);
             return hasPotentialFault;
+        }
+    }
+
+    private bool HasPotentialCustomConsumerFault(IKafkaFaultPlan faultPlan)
+    {
+        if (faultPlan.Count == 0)
+            return false;
+
+        lock (_gate)
+        {
+            return faultPlan.HasPotentialFault(KafkaFaultOperation.Fetch, _groupId, _assignment) ||
+                   faultPlan.HasPotentialFault(KafkaFaultOperation.Consume, _groupId, _assignment) ||
+                   _options.OffsetCommitMode == OffsetCommitMode.Auto &&
+                   faultPlan.HasPotentialFault(KafkaFaultOperation.Commit, _groupId, _assignment);
         }
     }
 
