@@ -4,6 +4,9 @@ Dekaf.Testing.InMemoryConsumer<TKey, TValue>.ConsumeSnapshotAsync(System.Threadi
 Dekaf.Testing.InMemoryConsumer<TKey, TValue>.SeekToTailAsync(Dekaf.TopicPartition partition, int offsetCount, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.TopicPartitionOffset>
 Dekaf.Testing.InMemoryConsumer<TKey, TValue>.StoreOffsets(System.ReadOnlySpan<Dekaf.TopicPartitionOffset> offsets) -> void
 Dekaf.Testing.InMemoryConsumer<TKey, TValue>.StoreOffsets<TOffsets>(TOffsets offsets) -> void
+Dekaf.Testing.InMemoryKafkaCluster.FaultPlan.get -> Dekaf.Testing.IKafkaFaultPlan!
+Dekaf.Testing.InMemoryKafkaCluster.InMemoryKafkaCluster(Dekaf.Testing.IKafkaFaultPlan! faultPlan) -> void
+Dekaf.Testing.InMemoryKafkaCluster.InMemoryKafkaCluster(Dekaf.Testing.InMemoryKafkaClusterOptions! options, Dekaf.Testing.IKafkaFaultPlan! faultPlan) -> void
 Dekaf.Testing.InMemoryStreamsGroupMember
 Dekaf.Testing.InMemoryStreamsGroupMember.CloseAsync(Dekaf.Streams.StreamsGroupCloseOptions! options, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
 Dekaf.Testing.InMemoryStreamsGroupMember.CloseAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask

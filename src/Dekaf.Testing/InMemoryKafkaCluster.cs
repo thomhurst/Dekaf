@@ -24,19 +24,36 @@ public sealed class InMemoryKafkaCluster
     private TimeSpan _produceLatency;
 
     public InMemoryKafkaCluster()
-        : this(new InMemoryKafkaClusterOptions())
+        : this(new InMemoryKafkaClusterOptions(), new KafkaFaultPlan())
     {
     }
 
     public InMemoryKafkaCluster(InMemoryKafkaClusterOptions options)
+        : this(options, new KafkaFaultPlan())
+    {
+    }
+
+    public InMemoryKafkaCluster(IKafkaFaultPlan faultPlan)
+        : this(new InMemoryKafkaClusterOptions(), faultPlan)
+    {
+    }
+
+    public InMemoryKafkaCluster(InMemoryKafkaClusterOptions options, IKafkaFaultPlan faultPlan)
     {
         ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(faultPlan);
         ArgumentNullException.ThrowIfNull(options.SupportedFeatures);
         ArgumentOutOfRangeException.ThrowIfLessThan(options.DefaultPartitionCount, 1);
         _options = options;
+        FaultPlan = faultPlan;
     }
 
     public InMemoryKafkaClusterOptions Options => _options;
+
+    /// <summary>
+    /// Gets the deterministic fault plan consumed by in-memory client operations.
+    /// </summary>
+    public IKafkaFaultPlan FaultPlan { get; }
 
     public TimeSpan ProduceLatency
     {
@@ -199,7 +216,8 @@ public sealed class InMemoryKafkaCluster
         bool isValueNull,
         IReadOnlyList<Header>? headers,
         DateTimeOffset timestamp,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        KafkaFaultOperation faultOperation = KafkaFaultOperation.Produce)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(topic);
         ArgumentNullException.ThrowIfNull(key);
@@ -213,6 +231,10 @@ public sealed class InMemoryKafkaCluster
 
         if (failure is not null)
             throw failure;
+
+        await FaultPlan.ApplyAsync(
+            new KafkaFaultScope(faultOperation, topic, partition),
+            cancellationToken).ConfigureAwait(false);
 
         TaskCompletionSource signal;
         RecordMetadata metadata;
