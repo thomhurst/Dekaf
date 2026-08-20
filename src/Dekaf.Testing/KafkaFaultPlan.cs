@@ -269,6 +269,8 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
     private readonly List<FaultEntry> _entries = [];
     private int _hasEntries;
 
+    internal bool HasEntries => Volatile.Read(ref _hasEntries) != 0;
+
     /// <summary>
     /// Raised synchronously after a matching entry is consumed and before its action runs.
     /// </summary>

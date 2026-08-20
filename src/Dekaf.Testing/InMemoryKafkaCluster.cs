@@ -292,7 +292,7 @@ public sealed class InMemoryKafkaCluster
         signal.TrySetResult();
     }
 
-    internal async ValueTask<RecordMetadata> AppendAsync(
+    internal ValueTask<RecordMetadata> AppendAsync(
         string topic,
         int? partition,
         byte[] key,
@@ -308,8 +308,73 @@ public sealed class InMemoryKafkaCluster
         ArgumentException.ThrowIfNullOrWhiteSpace(topic);
         ArgumentNullException.ThrowIfNull(key);
         ArgumentNullException.ThrowIfNull(value);
+        cancellationToken.ThrowIfCancellationRequested();
 
-        var latency = GetProduceLatency(topic, out var failure);
+        TimeSpan latency;
+        Exception? failure;
+        TaskCompletionSource? signal = null;
+        RecordMetadata metadata = default;
+        var hasFaults = FaultPlan is not KafkaFaultPlan { HasEntries: false };
+        lock (_gate)
+        {
+            failure = _produceFailures.GetValueOrDefault(topic);
+            latency = _produceLatency;
+            if (latency == TimeSpan.Zero && failure is null && !hasFaults)
+            {
+                var state = GetOrAutoCreateTopic(topic);
+                var selectedPartition = SelectPartition(state, partition, key, isKeyNull);
+                metadata = AppendRecordUnderLock(
+                    topic,
+                    state,
+                    selectedPartition,
+                    key,
+                    isKeyNull,
+                    value,
+                    isValueNull,
+                    headers,
+                    timestamp,
+                    transactionMarker,
+                    out signal);
+            }
+        }
+
+        if (signal is not null)
+        {
+            signal.TrySetResult();
+            return new ValueTask<RecordMetadata>(metadata);
+        }
+
+        return AppendSlowAsync(
+            topic,
+            partition,
+            key,
+            isKeyNull,
+            value,
+            isValueNull,
+            headers,
+            timestamp,
+            faultOperation,
+            transactionMarker,
+            latency,
+            failure,
+            cancellationToken);
+    }
+
+    private async ValueTask<RecordMetadata> AppendSlowAsync(
+        string topic,
+        int? partition,
+        byte[] key,
+        bool isKeyNull,
+        byte[] value,
+        bool isValueNull,
+        IReadOnlyList<Header>? headers,
+        DateTimeOffset timestamp,
+        KafkaFaultOperation faultOperation,
+        InMemoryTransactionMarker? transactionMarker,
+        TimeSpan latency,
+        Exception? failure,
+        CancellationToken cancellationToken)
+    {
         if (latency > TimeSpan.Zero)
             await Task.Delay(latency, cancellationToken).ConfigureAwait(false);
 
@@ -334,12 +399,6 @@ public sealed class InMemoryKafkaCluster
         RecordMetadata metadata;
         lock (_gate)
         {
-            if (transactionMarker is { State: not InMemoryTransactionState.Ongoing })
-            {
-                throw new InvalidOperationException(
-                    "The in-memory transaction completed while the produce operation was paused.");
-            }
-
             if (!_topics.TryGetValue(topic, out var state) ||
                 !ReferenceEquals(state, selectedTopic) ||
                 (uint)selectedPartition >= (uint)state.Partitions.Count)
@@ -353,52 +412,84 @@ public sealed class InMemoryKafkaCluster
                 };
             }
 
-            var partitionState = state.Partitions[selectedPartition];
-            var offset = partitionState.HighWatermark;
-            var timestampMs = timestamp.ToUnixTimeMilliseconds();
-
-            var record = new InMemoryRecord
-            {
-                Topic = topic,
-                Partition = selectedPartition,
-                Offset = offset,
-                Key = key,
-                IsKeyNull = isKeyNull,
-                Value = value,
-                IsValueNull = isValueNull,
-                Headers = CopyHeaders(headers),
-                TimestampMs = timestampMs,
-                Transaction = transactionMarker
-            };
-
-            partitionState.Records.Add(record);
-            if (transactionMarker is not null &&
-                partitionState.RegisterTransaction(transactionMarker, offset))
-            {
-                if (!_transactionPartitions.TryGetValue(transactionMarker, out var transactionPartitions))
-                {
-                    transactionPartitions = [];
-                    _transactionPartitions.Add(transactionMarker, transactionPartitions);
-                }
-
-                transactionPartitions.Add(partitionState);
-            }
-
-            metadata = new RecordMetadata
-            {
-                Topic = topic,
-                Partition = selectedPartition,
-                Offset = offset,
-                Timestamp = timestamp,
-                KeySize = isKeyNull ? 0 : key.Length,
-                ValueSize = isValueNull ? 0 : value.Length
-            };
-
-            signal = _recordsChanged;
+            metadata = AppendRecordUnderLock(
+                topic,
+                state,
+                selectedPartition,
+                key,
+                isKeyNull,
+                value,
+                isValueNull,
+                headers,
+                timestamp,
+                transactionMarker,
+                out signal);
         }
 
         signal.TrySetResult();
         return metadata;
+    }
+
+    private RecordMetadata AppendRecordUnderLock(
+        string topic,
+        TopicState state,
+        int selectedPartition,
+        byte[] key,
+        bool isKeyNull,
+        byte[] value,
+        bool isValueNull,
+        IReadOnlyList<Header>? headers,
+        DateTimeOffset timestamp,
+        InMemoryTransactionMarker? transactionMarker,
+        out TaskCompletionSource signal)
+    {
+        if (transactionMarker is { State: not InMemoryTransactionState.Ongoing })
+        {
+            throw new InvalidOperationException(
+                "The in-memory transaction completed while the produce operation was paused.");
+        }
+
+        var partitionState = state.Partitions[selectedPartition];
+        var offset = partitionState.HighWatermark;
+        var timestampMs = timestamp.ToUnixTimeMilliseconds();
+
+        var record = new InMemoryRecord
+        {
+            Topic = topic,
+            Partition = selectedPartition,
+            Offset = offset,
+            Key = key,
+            IsKeyNull = isKeyNull,
+            Value = value,
+            IsValueNull = isValueNull,
+            Headers = CopyHeaders(headers),
+            TimestampMs = timestampMs,
+            Transaction = transactionMarker
+        };
+
+        partitionState.Records.Add(record);
+        if (transactionMarker is not null &&
+            partitionState.RegisterTransaction(transactionMarker, offset))
+        {
+            if (!_transactionPartitions.TryGetValue(transactionMarker, out var transactionPartitions))
+            {
+                transactionPartitions = [];
+                _transactionPartitions.Add(transactionMarker, transactionPartitions);
+            }
+
+            transactionPartitions.Add(partitionState);
+        }
+
+        signal = _recordsChanged;
+        return new RecordMetadata
+        {
+            Topic = topic,
+            Partition = selectedPartition,
+            Offset = offset,
+            Timestamp = timestamp,
+            KeySize = isKeyNull ? 0 : key.Length,
+            ValueSize = isValueNull ? 0 : value.Length
+        };
     }
 
     internal bool TryRead(TopicPartition topicPartition, long offset, out InMemoryRecord record) =>
@@ -726,15 +817,6 @@ public sealed class InMemoryKafkaCluster
                     IsInternal = topic.IsInternal
                 })
                 .ToArray();
-        }
-    }
-
-    private TimeSpan GetProduceLatency(string topic, out Exception? failure)
-    {
-        lock (_gate)
-        {
-            failure = _produceFailures.GetValueOrDefault(topic);
-            return _produceLatency;
         }
     }
 

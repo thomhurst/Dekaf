@@ -685,27 +685,34 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
             ? new PreparedTransactionState(_producer._producerId, 0)
             : PreparedTransactionState.Empty;
 
-        public async ValueTask<RecordMetadata> ProduceAsync(
+        public ValueTask<RecordMetadata> ProduceAsync(
             ProducerMessage<TKey, TValue> message,
             CancellationToken cancellationToken = default)
         {
             EnterMutation("Cannot produce");
             try
             {
-                return await _producer.ProduceTransactionAsync(this, message, cancellationToken).ConfigureAwait(false);
+                var operation = _producer.ProduceTransactionAsync(this, message, cancellationToken);
+                if (!operation.IsCompletedSuccessfully)
+                    return CompleteProduceAsync(operation);
+
+                ExitMutation();
+                return operation;
             }
             catch (AbortableTransactionException exception)
             {
                 MarkAbortable(exception);
+                ExitMutation();
                 throw;
             }
-            finally
+            catch
             {
                 ExitMutation();
+                throw;
             }
         }
 
-        public async ValueTask<RecordMetadata> ProduceAsync(
+        public ValueTask<RecordMetadata> ProduceAsync(
             string topic,
             TKey? key,
             TValue value,
@@ -714,7 +721,32 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
             EnterMutation("Cannot produce");
             try
             {
-                return await _producer.ProduceTransactionAsync(this, topic, key, value, cancellationToken).ConfigureAwait(false);
+                var operation = _producer.ProduceTransactionAsync(this, topic, key, value, cancellationToken);
+                if (!operation.IsCompletedSuccessfully)
+                    return CompleteProduceAsync(operation);
+
+                ExitMutation();
+                return operation;
+            }
+            catch (AbortableTransactionException exception)
+            {
+                MarkAbortable(exception);
+                ExitMutation();
+                throw;
+            }
+            catch
+            {
+                ExitMutation();
+                throw;
+            }
+        }
+
+        private async ValueTask<RecordMetadata> CompleteProduceAsync(
+            ValueTask<RecordMetadata> operation)
+        {
+            try
+            {
+                return await operation.ConfigureAwait(false);
             }
             catch (AbortableTransactionException exception)
             {

@@ -528,7 +528,8 @@ public sealed class ConsumerPauseResumeCacheTests
         finally
         {
             cancellationSource.Cancel();
-            await ((Task)consume).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+            Task consumeCleanup = consume;
+            await consumeCleanup.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
         }
     }
 

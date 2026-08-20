@@ -12,6 +12,23 @@ namespace Dekaf.Tests.Unit.Testing;
 public sealed class InMemoryProducerFaultTests
 {
     [Test]
+    public async Task Produce_EmptyPlanCompletesSynchronously()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("orders");
+        await using var producer = new InMemoryProducer<string, string>(cluster);
+
+        var produce = producer.ProduceAsync("orders", "k", "v");
+        await Assert.That(produce.IsCompletedSuccessfully).IsTrue();
+        _ = await produce;
+
+        await using var transaction = producer.BeginTransaction();
+        var transactionProduce = transaction.ProduceAsync("orders", "k", "v");
+        await Assert.That(transactionProduce.IsCompletedSuccessfully).IsTrue();
+        _ = await transactionProduce;
+    }
+
+    [Test]
     public async Task Produce_FaultsHonorScopeOccurrenceAndRetryBoundaries()
     {
         var plan = new KafkaFaultPlan();
