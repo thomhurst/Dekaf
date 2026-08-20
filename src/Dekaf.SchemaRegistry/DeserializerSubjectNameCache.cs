@@ -62,6 +62,25 @@ internal sealed class DeserializerSubjectNameCache
         return topicSubjects.GetSubjectName(this, schemaId, schema, topic, isKey, fallbackRecordName);
     }
 
+    internal string ResolveSubjectName(
+        Schema? schema,
+        string topic,
+        bool isKey,
+        string fallbackRecordName)
+    {
+        var recordName = schema is null
+            ? fallbackRecordName
+            : SubjectNameResolver.GetRecordName(schema, fallbackRecordName);
+        return _customStrategy is not null
+            ? _customStrategy.GetSubjectName(topic, recordName, isKey)
+            : SubjectNameResolver.GetSubjectName(
+                _strategy,
+                topic,
+                recordName,
+                isKey,
+                _useLegacySubjectNames);
+    }
+
     private string GetSubjectNameByValue(
         int schemaId,
         Schema? schema,
@@ -100,17 +119,7 @@ internal sealed class DeserializerSubjectNameCache
                 _subjects.TryRemove(evictedKey, out _);
             }
 
-            var recordName = schema is null
-                ? fallbackRecordName
-                : SubjectNameResolver.GetRecordName(schema, fallbackRecordName);
-            subject = _customStrategy is not null
-                ? _customStrategy.GetSubjectName(key.Topic, recordName, key.IsKey)
-                : SubjectNameResolver.GetSubjectName(
-                    _strategy,
-                    key.Topic,
-                    recordName,
-                    key.IsKey,
-                    _useLegacySubjectNames);
+            subject = ResolveSubjectName(schema, key.Topic, key.IsKey, fallbackRecordName);
 
             _subjects[key] = subject;
             _subjectOrder.Enqueue(key);

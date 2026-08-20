@@ -3,6 +3,7 @@ using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization.Metadata;
 using Dekaf.Serialization;
 
@@ -725,6 +726,7 @@ public sealed class JsonSchemaRegistrySerializer<T> :
                     cancellationToken)
                 .ConfigureAwait(false);
             ValidateSchemaFormat(schemaId, explicitSchema);
+            ValidateSelectedSchema(schemaId, explicitSchema, schema);
             return await CreateResolvedValueAsync(
                     subject,
                     schemaId,
@@ -782,6 +784,7 @@ public sealed class JsonSchemaRegistrySerializer<T> :
                 "latest",
                 cancellationToken)
             .ConfigureAwait(false);
+        ValidateSchemaFormat(registered.Id, registered.Schema);
         return await CreateResolvedValueAsync(
                 subject,
                 registered.Id,
@@ -813,6 +816,20 @@ public sealed class JsonSchemaRegistrySerializer<T> :
         {
             throw new InvalidOperationException(
                 $"Schema ID {schemaId} has format {schema.SchemaType}; expected {SchemaType.Json}.");
+        }
+    }
+
+    private static void ValidateSelectedSchema(
+        int schemaId,
+        Schema selectedSchema,
+        Schema configuredSchema)
+    {
+        if (!JsonNode.DeepEquals(
+                JsonNode.Parse(selectedSchema.SchemaString),
+                JsonNode.Parse(configuredSchema.SchemaString)))
+        {
+            throw new InvalidOperationException(
+                $"Schema ID {schemaId} does not match the configured JSON schema.");
         }
     }
 
@@ -1225,34 +1242,11 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
     {
         try
         {
-            var unscopedSchema = await _schemaRegistry.GetSchemaByGuidAsync(
-                    key.SchemaGuid.ToString("D"),
-                    cancellationToken: CancellationToken.None)
+            var resolved = await SchemaRegistryOperationTimeout.ExecuteAsync(
+                    cancellationToken => FetchGuidSchemaCoreAsync(key, cancellationToken),
+                    SchemaRegistryTimeout,
+                    $"Schema GUID {key.SchemaGuid:D} resolution timed out.")
                 .ConfigureAwait(false);
-            if (unscopedSchema.SchemaType != SchemaType.Json)
-            {
-                throw new InvalidOperationException(
-                    $"Schema with GUID {key.SchemaGuid:D} is not a JSON schema. Type: {unscopedSchema.SchemaType}");
-            }
-            var context = new SerializationContext
-            {
-                Topic = key.Topic,
-                Component = key.IsKey ? SerializationComponent.Key : SerializationComponent.Value
-            };
-            var subject = GetSubjectName(0, unscopedSchema, context);
-            var registered = await _schemaRegistry.LookupSchemaAsync(
-                    subject,
-                    unscopedSchema,
-                    ignoreDeletedSchemas: true,
-                    cancellationToken: CancellationToken.None)
-                .ConfigureAwait(false);
-            if (!Guid.TryParse(registered.Guid, out var registeredGuid) || registeredGuid != key.SchemaGuid)
-            {
-                throw new InvalidDataException(
-                    $"Schema Registry returned a conflicting GUID for subject '{subject}'.");
-            }
-
-            var resolved = new GuidResolvedSchema(registered.Id, subject, registered.Schema);
             BoundedSchemaIdentityCache.RecordSuccessfulResolution(
                 _guidSchemaCache,
                 _guidSchemaEvictionQueue,
@@ -1266,6 +1260,41 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
             _guidSchemaCache.TryRemove(key, out _);
             throw;
         }
+    }
+
+    private async Task<GuidResolvedSchema> FetchGuidSchemaCoreAsync(
+        GuidTopicKey key,
+        CancellationToken cancellationToken)
+    {
+        var unscopedSchema = await _schemaRegistry.GetSchemaByGuidAsync(
+                key.SchemaGuid.ToString("D"),
+                cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+        if (unscopedSchema.SchemaType != SchemaType.Json)
+        {
+            throw new InvalidOperationException(
+                $"Schema with GUID {key.SchemaGuid:D} is not a JSON schema. Type: {unscopedSchema.SchemaType}");
+        }
+        var context = new SerializationContext
+        {
+            Topic = key.Topic,
+            Component = key.IsKey ? SerializationComponent.Key : SerializationComponent.Value
+        };
+        var subject = GetUncachedSubjectName(unscopedSchema, context);
+        var registered = await _schemaRegistry.LookupSchemaAsync(
+                subject,
+                unscopedSchema,
+                ignoreDeletedSchemas: true,
+                cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+        if (!Guid.TryParse(registered.Guid, out var registeredGuid) || registeredGuid != key.SchemaGuid)
+        {
+            throw new InvalidDataException(
+                $"Schema Registry returned a conflicting GUID for subject '{subject}'.");
+        }
+
+        var resolved = new GuidResolvedSchema(registered.Id, subject, registered.Schema);
+        return resolved;
     }
 
     private static void ValidateSchemaIdStrategy(SchemaIdDeserializerStrategy strategy)
@@ -1305,6 +1334,13 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
                 context.Topic,
                 isKey,
                 FallbackRecordName)
+            ?? SubjectNameResolver.GetTopicSubjectName(context.Topic, isKey);
+    }
+
+    private string GetUncachedSubjectName(Schema schema, SerializationContext context)
+    {
+        var isKey = context.Component == SerializationComponent.Key;
+        return _subjectNames?.ResolveSubjectName(schema, context.Topic, isKey, FallbackRecordName)
             ?? SubjectNameResolver.GetTopicSubjectName(context.Topic, isKey);
     }
 

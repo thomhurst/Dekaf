@@ -309,39 +309,11 @@ public sealed class AvroSchemaRegistryDeserializer<
     {
         try
         {
-            var unscopedSchema = await _schemaRegistry.GetSchemaByGuidAsync(
-                    key.SchemaGuid.ToString("D"),
-                    cancellationToken: CancellationToken.None)
+            var resolved = await SchemaRegistryOperationTimeout.ExecuteAsync(
+                    cancellationToken => FetchGuidSchemaCoreAsync(key, cancellationToken),
+                    SchemaRegistryTimeout,
+                    $"Schema GUID {key.SchemaGuid:D} resolution timed out.")
                 .ConfigureAwait(false);
-            if (unscopedSchema.SchemaType != SchemaType.Avro)
-            {
-                throw new InvalidOperationException(
-                    $"Schema with GUID {key.SchemaGuid:D} is not an Avro schema. Type: {unscopedSchema.SchemaType}");
-            }
-
-            var context = new SerializationContext
-            {
-                Topic = key.Topic,
-                Component = key.IsKey ? SerializationComponent.Key : SerializationComponent.Value
-            };
-            var subject = GetSubjectName(0, unscopedSchema, context);
-            var registered = await _schemaRegistry.LookupSchemaAsync(
-                    subject,
-                    unscopedSchema,
-                    ignoreDeletedSchemas: true,
-                    cancellationToken: CancellationToken.None)
-                .ConfigureAwait(false);
-            if (!Guid.TryParse(registered.Guid, out var registeredGuid) || registeredGuid != key.SchemaGuid)
-            {
-                throw new InvalidDataException(
-                    $"Schema Registry returned a conflicting GUID for subject '{subject}'.");
-            }
-
-            var resolved = new GuidResolvedSchema(
-                registered.Id,
-                subject,
-                registered.Schema,
-                AvroSchema.Parse(registered.Schema.SchemaString));
             BoundedSchemaIdentityCache.RecordSuccessfulResolution(
                 _guidSchemaCache,
                 _guidSchemaEvictionQueue,
@@ -355,6 +327,46 @@ public sealed class AvroSchemaRegistryDeserializer<
             _guidSchemaCache.TryRemove(key, out _);
             throw;
         }
+    }
+
+    private async Task<GuidResolvedSchema> FetchGuidSchemaCoreAsync(
+        GuidTopicKey key,
+        CancellationToken cancellationToken)
+    {
+        var unscopedSchema = await _schemaRegistry.GetSchemaByGuidAsync(
+                key.SchemaGuid.ToString("D"),
+                cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+        if (unscopedSchema.SchemaType != SchemaType.Avro)
+        {
+            throw new InvalidOperationException(
+                $"Schema with GUID {key.SchemaGuid:D} is not an Avro schema. Type: {unscopedSchema.SchemaType}");
+        }
+
+        var context = new SerializationContext
+        {
+            Topic = key.Topic,
+            Component = key.IsKey ? SerializationComponent.Key : SerializationComponent.Value
+        };
+        var subject = GetUncachedSubjectName(unscopedSchema, context);
+        var registered = await _schemaRegistry.LookupSchemaAsync(
+                subject,
+                unscopedSchema,
+                ignoreDeletedSchemas: true,
+                cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+        if (!Guid.TryParse(registered.Guid, out var registeredGuid) || registeredGuid != key.SchemaGuid)
+        {
+            throw new InvalidDataException(
+                $"Schema Registry returned a conflicting GUID for subject '{subject}'.");
+        }
+
+        var resolved = new GuidResolvedSchema(
+            registered.Id,
+            subject,
+            registered.Schema,
+            AvroSchema.Parse(registered.Schema.SchemaString));
+        return resolved;
     }
 
     private static void AddHeaderName(List<string> names, string name)
@@ -387,6 +399,13 @@ public sealed class AvroSchemaRegistryDeserializer<
                 context.Topic,
                 isKey,
                 FallbackRecordName)
+            ?? SubjectNameResolver.GetTopicSubjectName(context.Topic, isKey);
+    }
+
+    private string GetUncachedSubjectName(Schema schema, SerializationContext context)
+    {
+        var isKey = context.Component == SerializationComponent.Key;
+        return _subjectNames?.ResolveSubjectName(schema, context.Topic, isKey, FallbackRecordName)
             ?? SubjectNameResolver.GetTopicSubjectName(context.Topic, isKey);
     }
 

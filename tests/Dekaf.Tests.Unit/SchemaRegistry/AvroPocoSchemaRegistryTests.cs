@@ -1367,13 +1367,15 @@ public sealed class AvroPocoSchemaRegistryTests
             registry,
             new AvroSerializerConfig
             {
-                SchemaIdStrategy = SchemaIdSerializerStrategy.Header
+                SchemaIdStrategy = SchemaIdSerializerStrategy.Header,
+                SubjectNameStrategy = SubjectNameStrategy.RecordName
             });
         await using var deserializer = PocoNullableStructRecord.CreateAvroDeserializer(
             registry,
             new AvroDeserializerConfig
             {
-                SchemaIdStrategy = SchemaIdDeserializerStrategy.Header
+                SchemaIdStrategy = SchemaIdDeserializerStrategy.Header,
+                SubjectNameStrategy = SubjectNameStrategy.RecordName
             });
         var headers = new Headers();
         var context = new SerializationContext
@@ -1389,12 +1391,18 @@ public sealed class AvroPocoSchemaRegistryTests
         };
 
         serializer.Serialize(expected, ref destination, context);
+        await Assert.That(() => deserializer.Deserialize(destination.WrittenMemory, context))
+            .Throws<InvalidOperationException>()
+            .WithMessageContaining("not cached");
+        await ((IAsyncDeserializerPreparer<PocoNullableStructRecord>)deserializer)
+            .PrepareAsync(destination.WrittenMemory, context);
         var actual = deserializer.Deserialize(destination.WrittenMemory, context);
 
         await Assert.That(destination.WrittenCount).IsLessThan(5);
         await Assert.That(headers.Count).IsEqualTo(1);
         await Assert.That(headers[0].Value.Length).IsEqualTo(17);
         await Assert.That(actual.Value).IsEqualTo(expected.Value);
+        await Assert.That(registry.LastGetSchemaByGuidCancellationToken.CanBeCanceled).IsTrue();
     }
 
     [Test]
