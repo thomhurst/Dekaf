@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Buffers.Text;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
@@ -424,7 +425,35 @@ internal readonly record struct ValidationCelValue(
 
     internal static ValidationCelValue FromBoolean(bool value) => value ? True : False;
     internal static ValidationCelValue FromNumber(decimal value) =>
-        new(ValidationCelValueKind.Number, default, false, value, null, default);
+        new(ValidationCelValueKind.Number, default, true, value, null, default);
+
+    internal static ValidationCelValue FromNumberLiteral(string text)
+    {
+        var utf8 = Encoding.UTF8.GetBytes(text);
+        try
+        {
+            var reader = new Utf8JsonReader(utf8);
+            if (reader.Read() && reader.TokenType == JsonTokenType.Number)
+            {
+                var hasDecimal = reader.TryGetDecimal(out var number);
+                if (!reader.Read())
+                {
+                    return new ValidationCelValue(
+                        ValidationCelValueKind.Number,
+                        default,
+                        hasDecimal,
+                        number,
+                        null,
+                        utf8);
+                }
+            }
+        }
+        catch (JsonException)
+        {
+        }
+
+        throw Unsupported($"Invalid CEL number '{text}'.");
+    }
 
     internal static ValidationCelValue FromString(string value) =>
         new(ValidationCelValueKind.String, default, false, 0, value, Encoding.UTF8.GetBytes(value));
@@ -441,7 +470,7 @@ internal readonly record struct ValidationCelValue(
             JsonTokenType.Null => Null,
             JsonTokenType.True => True,
             JsonTokenType.False => False,
-            JsonTokenType.Number => FromJsonNumber(ref reader),
+            JsonTokenType.Number => FromJsonNumber(json, ref reader),
             JsonTokenType.String => new ValidationCelValue(ValidationCelValueKind.String, json, false, 0, null, default),
             JsonTokenType.StartObject => new ValidationCelValue(ValidationCelValueKind.Object, json, false, 0, null, default),
             JsonTokenType.StartArray => new ValidationCelValue(ValidationCelValueKind.Array, json, false, 0, null, default),
@@ -449,11 +478,18 @@ internal readonly record struct ValidationCelValue(
         };
     }
 
-    private static ValidationCelValue FromJsonNumber(ref Utf8JsonReader reader)
+    private static ValidationCelValue FromJsonNumber(
+        ReadOnlyMemory<byte> json,
+        ref Utf8JsonReader reader)
     {
-        if (reader.TryGetDecimal(out var value))
-            return FromNumber(value);
-        throw Unsupported("CEL number is outside the supported decimal range.");
+        var hasDecimal = reader.TryGetDecimal(out var number);
+        return new ValidationCelValue(
+            ValidationCelValueKind.Number,
+            json,
+            hasDecimal,
+            number,
+            null,
+            default);
     }
 
     internal string GetString()
@@ -463,6 +499,160 @@ internal readonly record struct ValidationCelValue(
         var reader = new Utf8JsonReader(Json.Span);
         _ = reader.Read();
         return reader.GetString() ?? string.Empty;
+    }
+}
+
+internal readonly ref struct ValidationCelJsonNumber
+{
+    private readonly ReadOnlySpan<byte> _value;
+    private readonly int _firstDigit;
+    private readonly int _lastDigit;
+
+    internal ValidationCelJsonNumber(ReadOnlySpan<byte> value)
+    {
+        _value = value;
+        var mantissaStart = value[0] == (byte)'-' ? 1 : 0;
+        var mantissaEnd = value.Length;
+        var decimalPoint = -1;
+        var exponent = 0L;
+        var firstDigit = -1;
+        var lastDigit = -1;
+        var significantLength = 0;
+        var digitCount = 0;
+
+        for (var index = mantissaStart; index < value.Length; index++)
+        {
+            if (value[index] == (byte)'.')
+            {
+                decimalPoint = index;
+            }
+            else if (value[index] is (byte)'e' or (byte)'E')
+            {
+                mantissaEnd = index;
+                exponent = ParseExponent(value[(index + 1)..]);
+                break;
+            }
+            else if (value[index] != (byte)'0')
+            {
+                firstDigit = firstDigit < 0 ? index : firstDigit;
+                significantLength++;
+                digitCount = significantLength;
+                lastDigit = index;
+            }
+            else if (firstDigit >= 0)
+            {
+                significantLength++;
+            }
+        }
+
+        if (firstDigit < 0)
+        {
+            Sign = 0;
+            DigitCount = 0;
+            Exponent = 0;
+            _firstDigit = 0;
+            _lastDigit = -1;
+            return;
+        }
+
+        var fractionalDigits = decimalPoint < 0 ? 0 : mantissaEnd - decimalPoint - 1;
+        var trailingZeros = significantLength - digitCount;
+
+        Sign = mantissaStart == 0 ? 1 : -1;
+        DigitCount = digitCount;
+        Exponent = SaturatingAdd(SaturatingAdd(exponent, -fractionalDigits), trailingZeros);
+        _firstDigit = firstDigit;
+        _lastDigit = lastDigit;
+    }
+
+    private int Sign { get; }
+    private int DigitCount { get; }
+    private long Exponent { get; }
+
+    internal int CompareTo(ValidationCelJsonNumber other)
+    {
+        if (Sign != other.Sign)
+            return Sign.CompareTo(other.Sign);
+        if (Sign == 0)
+            return 0;
+
+        var comparison = SaturatingAdd(Exponent, DigitCount)
+            .CompareTo(SaturatingAdd(other.Exponent, other.DigitCount));
+        if (comparison == 0)
+        {
+            var digits = GetDigits();
+            var otherDigits = other.GetDigits();
+            var count = Math.Max(DigitCount, other.DigitCount);
+            for (var index = 0; index < count; index++)
+            {
+                var digit = index < DigitCount && digits.MoveNext() ? digits.Current : (byte)'0';
+                var otherDigit = index < other.DigitCount && otherDigits.MoveNext()
+                    ? otherDigits.Current
+                    : (byte)'0';
+                comparison = digit.CompareTo(otherDigit);
+                if (comparison != 0)
+                    break;
+            }
+        }
+
+        return Sign > 0 ? comparison : -comparison;
+    }
+
+    private DigitEnumerator GetDigits() => new(_value, _firstDigit, _lastDigit);
+
+    private static long ParseExponent(ReadOnlySpan<byte> value)
+    {
+        var negative = value[0] == (byte)'-';
+        var position = value[0] is (byte)'+' or (byte)'-' ? 1 : 0;
+        var result = 0L;
+        for (; position < value.Length; position++)
+        {
+            var digit = value[position] - (byte)'0';
+            if (result > (long.MaxValue - digit) / 10)
+                return negative ? long.MinValue : long.MaxValue;
+            result = (result * 10) + digit;
+        }
+
+        return negative ? -result : result;
+    }
+
+    private static long SaturatingAdd(long value, long addend)
+    {
+        if (addend > 0 && value > long.MaxValue - addend)
+            return long.MaxValue;
+        if (addend < 0 && value < long.MinValue - addend)
+            return long.MinValue;
+        return value + addend;
+    }
+
+    private ref struct DigitEnumerator
+    {
+        private readonly ReadOnlySpan<byte> _value;
+        private readonly int _last;
+        private int _position;
+
+        internal DigitEnumerator(ReadOnlySpan<byte> value, int first, int last)
+        {
+            _value = value;
+            _last = last;
+            _position = first - 1;
+            Current = 0;
+        }
+
+        internal byte Current { get; private set; }
+
+        internal bool MoveNext()
+        {
+            while (++_position <= _last)
+            {
+                if (_value[_position] == (byte)'.')
+                    continue;
+                Current = _value[_position];
+                return true;
+            }
+
+            return false;
+        }
     }
 }
 
@@ -545,7 +735,7 @@ internal sealed class ValidationCelBinaryNode(
         {
             ValidationCelValueKind.Null => true,
             ValidationCelValueKind.Boolean => left.Boolean == right.Boolean,
-            ValidationCelValueKind.Number => left.Number.Equals(right.Number),
+            ValidationCelValueKind.Number => CompareNumbers(left, right) == 0,
             ValidationCelValueKind.String => ValidationCelStrings.Evaluate(left, right, ValidationCelStringOperation.Equal),
             ValidationCelValueKind.Object or ValidationCelValueKind.Array =>
                 ValidationCelJsonEquality.AreEqual(left.Json.Span, right.Json.Span),
@@ -556,10 +746,48 @@ internal sealed class ValidationCelBinaryNode(
     private static int Compare(ValidationCelValue left, ValidationCelValue right)
     {
         if (left.Kind == ValidationCelValueKind.Number && right.Kind == ValidationCelValueKind.Number)
-            return left.Number.CompareTo(right.Number);
+            return CompareNumbers(left, right);
         if (left.Kind == ValidationCelValueKind.String && right.Kind == ValidationCelValueKind.String)
             return ValidationCelStrings.Compare(left, right);
         throw Unsupported("Comparison operands must have matching numeric or string types.");
+    }
+
+    private static int CompareNumbers(ValidationCelValue left, ValidationCelValue right)
+    {
+        // Number values reuse the Boolean slot to mark a successful decimal parse.
+        if (left.Boolean && right.Boolean)
+        {
+            var comparison = left.Number.CompareTo(right.Number);
+            if (comparison != 0 || !HasSourceText(left) && !HasSourceText(right))
+                return comparison;
+        }
+
+        return CompareExactNumbers(left, right);
+    }
+
+    private static int CompareExactNumbers(ValidationCelValue left, ValidationCelValue right)
+    {
+        Span<byte> leftBuffer = stackalloc byte[64];
+        Span<byte> rightBuffer = stackalloc byte[64];
+        var leftText = GetNumberText(left, leftBuffer);
+        var rightText = GetNumberText(right, rightBuffer);
+        return new ValidationCelJsonNumber(leftText).CompareTo(new ValidationCelJsonNumber(rightText));
+    }
+
+    private static bool HasSourceText(ValidationCelValue value) =>
+        !value.Json.IsEmpty || !value.Utf8Literal.IsEmpty;
+
+    private static ReadOnlySpan<byte> GetNumberText(
+        ValidationCelValue value,
+        Span<byte> buffer)
+    {
+        if (!value.Json.IsEmpty)
+            return value.Json.Span;
+        if (!value.Utf8Literal.IsEmpty)
+            return value.Utf8Literal.Span;
+        if (Utf8Formatter.TryFormat(value.Number, buffer, out var written))
+            return buffer[..written];
+        throw Unsupported("CEL number could not be formatted.");
     }
 }
 
@@ -761,9 +989,8 @@ internal static class ValidationCelJsonEquality
         ref Utf8JsonReader right)
     {
         var leftReader = ReadNode(node, left);
-        return leftReader.TryGetDecimal(out var leftValue) &&
-               right.TryGetDecimal(out var rightValue) &&
-               leftValue == rightValue;
+        return new ValidationCelJsonNumber(leftReader.ValueSpan)
+            .CompareTo(new ValidationCelJsonNumber(right.ValueSpan)) == 0;
     }
 
     private static bool StringEquals(
@@ -1273,7 +1500,7 @@ internal sealed class ValidationCelParser
             ValidationCelTokenKind.Null => new ValidationCelLiteralNode(ValidationCelValue.Null),
             ValidationCelTokenKind.String => new ValidationCelLiteralNode(ValidationCelValue.FromString(token.Text)),
             ValidationCelTokenKind.Number => new ValidationCelLiteralNode(
-                ValidationCelValue.FromNumber(ParseNumber(token.Text))),
+                ValidationCelValue.FromNumberLiteral(token.Text)),
             ValidationCelTokenKind.Identifier => ParseIdentifier(token.Text),
             ValidationCelTokenKind.LeftParen => ParseParenthesized(),
             _ => throw Unsupported($"Unexpected token '{token.Text}'.")
@@ -1360,13 +1587,6 @@ internal sealed class ValidationCelParser
             _memberPaths.Add(path);
         }
         return new ValidationCelThisNode(memberIndex);
-    }
-
-    private static decimal ParseNumber(string text)
-    {
-        if (decimal.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var value))
-            return value;
-        throw Unsupported($"Invalid CEL number '{text}'.");
     }
 
     private ValidationCelNode ParseParenthesized()
@@ -1569,10 +1789,19 @@ internal static class ValidationCelHelpers
             ? value.Boolean
             : throw Unsupported("CEL logical operators require boolean operands.");
 
-    internal static decimal RequireNumber(ValidationCelValue value) =>
-        value.Kind == ValidationCelValueKind.Number
-            ? value.Number
-            : throw Unsupported("CEL arithmetic operators require numeric operands.");
+    internal static decimal RequireNumber(ValidationCelValue value)
+    {
+        if (value.Kind != ValidationCelValueKind.Number)
+            throw Unsupported("CEL arithmetic operators require numeric operands.");
+        if (value.Json.IsEmpty && value.Utf8Literal.IsEmpty)
+            return value.Number;
+
+        var text = value.Json.IsEmpty ? value.Utf8Literal.Span : value.Json.Span;
+        var reader = new Utf8JsonReader(text);
+        if (reader.Read() && reader.TryGetDecimal(out var number))
+            return number;
+        throw Unsupported("CEL arithmetic operands must fit the decimal range.");
+    }
 
     internal static SchemaRegistryRuleException Unsupported(string message) =>
         new($"Unsupported CEL expression: {message}");
