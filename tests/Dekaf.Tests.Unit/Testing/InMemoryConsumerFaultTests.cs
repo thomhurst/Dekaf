@@ -78,6 +78,25 @@ public sealed class InMemoryConsumerFaultTests
     }
 
     [Test]
+    public async Task ConsumeOneAsync_UnrelatedSameGroupResourceCompletesSynchronously()
+    {
+        var (cluster, consumer) = await CreateConsumerWithRecordAsync();
+        cluster.FaultPlan.FailPersistently(
+            new KafkaFaultScope(
+                KafkaFaultOperation.Fetch,
+                topic: "payments",
+                partition: 0,
+                groupId: GroupId),
+            new InvalidOperationException("unrelated"));
+
+        var operation = consumer.ConsumeOneAsync(TimeSpan.Zero);
+
+        await Assert.That(operation.IsCompletedSuccessfully).IsTrue();
+        await Assert.That(operation.Result).IsNotNull();
+        await Assert.That(cluster.FaultPlan.Count).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task ConsumeOneAsync_FetchBarrierCancellationPreservesPosition()
     {
         var (cluster, consumer) = await CreateConsumerWithRecordAsync();
@@ -117,13 +136,13 @@ public sealed class InMemoryConsumerFaultTests
     }
 
     [Test]
-    public async Task CommitAsync_FailurePreservesStoredOffsetForRetry()
+    public async Task CommitAsync_ResourceScopedFailurePreservesStoredOffsetForRetry()
     {
         var (cluster, consumer) = await CreateConsumerWithRecordAsync(enableAutoOffsetStore: false);
         consumer.StoreOffset(new TopicPartitionOffset(Topic, 0, 1));
         var failure = new InvalidOperationException("commit failed");
         cluster.FaultPlan.Fail(
-            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId),
+            new KafkaFaultScope(KafkaFaultOperation.Commit, Topic, 0, GroupId),
             failure);
 
         var actual = await Assert.ThrowsAsync<Exception>(() => consumer.CommitAsync().AsTask());
@@ -132,6 +151,27 @@ public sealed class InMemoryConsumerFaultTests
         await Assert.That(await consumer.GetCommittedOffsetAsync(Partition)).IsNull();
 
         await consumer.CommitAsync();
+
+        await Assert.That(await consumer.GetCommittedOffsetAsync(Partition)).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task CommitAsync_ExplicitOffsetsConsumeResourceScopedFailure()
+    {
+        var (cluster, consumer) = await CreateConsumerWithRecordAsync();
+        TopicPartitionOffset[] offsets = [new(Topic, 0, 1)];
+        var failure = new InvalidOperationException("commit failed");
+        cluster.FaultPlan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, Topic, 0, GroupId),
+            failure);
+
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            consumer.CommitAsync(offsets).AsTask());
+
+        await Assert.That(actual).IsSameReferenceAs(failure);
+        await Assert.That(await consumer.GetCommittedOffsetAsync(Partition)).IsNull();
+
+        await consumer.CommitAsync(offsets);
 
         await Assert.That(await consumer.GetCommittedOffsetAsync(Partition)).IsEqualTo(1);
     }
@@ -246,32 +286,36 @@ public sealed class InMemoryConsumerFaultTests
     }
 
     [Test]
-    public async Task AutoCommit_AfterProcessingDoesNotConsumeFaultWithoutStoredOffset()
+    public async Task AutoCommit_AfterProcessingConsumesResourceFaultOnNextPoll()
     {
         var cluster = new InMemoryKafkaCluster();
         var producer = new InMemoryProducer<string, string>(cluster);
         await producer.ProduceAsync(Topic, "key", "value");
         var consumer = CreateConsumer(
             cluster,
-            enableAutoOffsetStore: false,
+            enableAutoOffsetStore: true,
             offsetCommitMode: OffsetCommitMode.Auto,
             offsetStoreTiming: OffsetStoreTiming.AfterProcessing);
         consumer.Subscribe(Topic);
         var failure = new InvalidOperationException("commit failed");
         cluster.FaultPlan.Fail(
-            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId),
+            new KafkaFaultScope(KafkaFaultOperation.Commit, Topic, 0, GroupId),
             failure);
 
         var result = await consumer.ConsumeOneAsync(TimeSpan.Zero);
-        var next = await consumer.ConsumeOneAsync(TimeSpan.Zero);
 
         await Assert.That(result).IsNotNull();
-        await Assert.That(next).IsNull();
         await Assert.That(cluster.FaultPlan.Count).IsEqualTo(1);
-        consumer.StoreOffset(result!.Value);
         var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            consumer.CommitAsync().AsTask());
+            consumer.ConsumeOneAsync(TimeSpan.Zero).AsTask());
+
         await Assert.That(actual).IsSameReferenceAs(failure);
+        await Assert.That(await consumer.GetCommittedOffsetAsync(Partition)).IsNull();
+
+        var next = await consumer.ConsumeOneAsync(TimeSpan.Zero);
+
+        await Assert.That(next).IsNull();
+        await Assert.That(await consumer.GetCommittedOffsetAsync(Partition)).IsEqualTo(1);
     }
 
     [Test]

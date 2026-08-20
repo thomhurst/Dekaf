@@ -10,6 +10,7 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 public class InMemoryConsumerBenchmarks
 {
     private const string Topic = "in-memory-consumer";
+    private const string GroupId = "benchmark-group";
     private InMemoryConsumer<Ignore, Ignore> _consumer = null!;
     private InMemoryConsumer<Ignore, Ignore> _unrelatedFaultConsumer = null!;
     private ConsumeResult<Ignore, Ignore>? _result;
@@ -24,6 +25,7 @@ public class InMemoryConsumerBenchmarks
             cluster,
             new InMemoryConsumerOptions
             {
+                GroupId = GroupId,
                 AutoOffsetReset = AutoOffsetReset.Earliest,
                 EnableAutoOffsetStore = false,
                 OffsetCommitMode = OffsetCommitMode.Manual
@@ -34,12 +36,17 @@ public class InMemoryConsumerBenchmarks
         var unrelatedFaultProducer = new InMemoryProducer<Ignore, Ignore>(unrelatedFaultCluster);
         unrelatedFaultProducer.ProduceAsync(Topic, default, default).GetAwaiter().GetResult();
         unrelatedFaultCluster.FaultPlan.FailPersistently(
-            new KafkaFaultScope(KafkaFaultOperation.Fetch, groupId: "other-group"),
+            new KafkaFaultScope(
+                KafkaFaultOperation.Fetch,
+                topic: "other-topic",
+                partition: 0,
+                groupId: GroupId),
             new InvalidOperationException("unrelated"));
         _unrelatedFaultConsumer = new InMemoryConsumer<Ignore, Ignore>(
             unrelatedFaultCluster,
             new InMemoryConsumerOptions
             {
+                GroupId = GroupId,
                 AutoOffsetReset = AutoOffsetReset.Earliest,
                 EnableAutoOffsetStore = false,
                 OffsetCommitMode = OffsetCommitMode.Manual

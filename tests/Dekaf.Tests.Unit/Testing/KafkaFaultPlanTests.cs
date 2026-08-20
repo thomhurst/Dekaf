@@ -84,6 +84,28 @@ public sealed class KafkaFaultPlanTests
     }
 
     [Test]
+    public async Task ScopeIndex_FiltersUnassignedResourcesAndPublishesVersion()
+    {
+        var plan = new KafkaFaultPlan();
+        var assignment = new HashSet<TopicPartition> { new("orders", 0) };
+        plan.FailPersistently(
+            new KafkaFaultScope(KafkaFaultOperation.Fetch, "payments", 0, "billing"),
+            new InvalidOperationException("fetch"));
+
+        var matched = plan.HasPotentialConsumerMatch("billing", assignment, out var version);
+
+        await Assert.That(matched).IsFalse();
+        await Assert.That(version).IsEqualTo(plan.ScopeVersion);
+
+        plan.FailPersistently(
+            new KafkaFaultScope(KafkaFaultOperation.Consume, "orders", 0, "billing"),
+            new InvalidOperationException("consume"));
+
+        await Assert.That(plan.ScopeVersion).IsGreaterThan(version);
+        await Assert.That(plan.HasPotentialConsumerMatch("billing", assignment, out _)).IsTrue();
+    }
+
+    [Test]
     public async Task ScopeIndex_RemovesConsumedAndClearedRules()
     {
         var plan = new KafkaFaultPlan();

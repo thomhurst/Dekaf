@@ -449,7 +449,7 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
             Volatile.Write(ref _count, 0);
             Volatile.Write(ref _hasEntries, 0);
             Volatile.Write(ref _produceFaultIndex, ProduceFaultIndex.Empty);
-            Volatile.Write(ref _scopeIndex, FaultScopeIndex.Empty);
+            PublishScopeIndexUnderLock();
             return removed;
         }
     }
@@ -544,14 +544,31 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
         };
     }
 
+    internal long ScopeVersion => Volatile.Read(ref _scopeIndex).Version;
+
     internal bool HasPotentialMatch(KafkaFaultOperation operation, string? groupId) =>
         Volatile.Read(ref _scopeIndex).HasPotentialMatch(operation, groupId);
 
     internal bool HasMatchingFault(in KafkaFaultScope operationScope) =>
         Volatile.Read(ref _scopeIndex).HasMatchingFault(operationScope);
 
-    private void PublishScopeIndexUnderLock() =>
-        Volatile.Write(ref _scopeIndex, new FaultScopeIndex(_entries));
+    internal bool HasPotentialConsumerMatch(
+        string? groupId,
+        HashSet<TopicPartition> assignment,
+        out long scopeVersion)
+    {
+        var index = Volatile.Read(ref _scopeIndex);
+        scopeVersion = index.Version;
+        return index.HasPotentialMatch(KafkaFaultOperation.Fetch, groupId, assignment) ||
+               index.HasPotentialMatch(KafkaFaultOperation.Consume, groupId, assignment) ||
+               index.HasPotentialMatch(KafkaFaultOperation.Commit, groupId, assignment);
+    }
+
+    private void PublishScopeIndexUnderLock()
+    {
+        var version = unchecked(Volatile.Read(ref _scopeIndex).Version + 1);
+        Volatile.Write(ref _scopeIndex, new FaultScopeIndex(_entries, version));
+    }
 
     private sealed class FaultScopeIndex
     {
@@ -566,8 +583,9 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
             _scopes = [];
         }
 
-        internal FaultScopeIndex(List<FaultEntry> entries)
+        internal FaultScopeIndex(List<FaultEntry> entries, long version)
         {
+            Version = version;
             _operationGroups = new HashSet<OperationGroupKey>(entries.Count);
             _scopes = new HashSet<ScopeKey>(entries.Count);
             for (var index = 0; index < entries.Count; index++)
@@ -582,10 +600,44 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
             }
         }
 
+        internal long Version { get; }
+
         internal bool HasPotentialMatch(KafkaFaultOperation operation, string? groupId) =>
             _operationGroups.Contains(new OperationGroupKey(operation, null)) ||
             (groupId is not null &&
              _operationGroups.Contains(new OperationGroupKey(operation, groupId)));
+
+        internal bool HasPotentialMatch(
+            KafkaFaultOperation operation,
+            string? groupId,
+            HashSet<TopicPartition> assignment)
+        {
+            if (!HasPotentialMatch(operation, groupId))
+                return false;
+
+            foreach (var scope in _scopes)
+            {
+                if (scope.Operation != operation ||
+                    scope.GroupId is not null && scope.GroupId != groupId)
+                {
+                    continue;
+                }
+
+                if (scope.Topic is null && scope.Partition is null)
+                    return true;
+
+                foreach (var assigned in assignment)
+                {
+                    if ((scope.Topic is null || scope.Topic == assigned.Topic) &&
+                        (scope.Partition is null || scope.Partition == assigned.Partition))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
 
         internal bool HasMatchingFault(in KafkaFaultScope operationScope)
         {
