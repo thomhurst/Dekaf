@@ -294,7 +294,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
     private sealed class SerializationHeadersPool : ObjectPool<Headers>
     {
-        internal SerializationHeadersPool(int maxPoolSize) : base(maxPoolSize) => PreWarm(1);
+        internal SerializationHeadersPool(int maxPoolSize) : base(maxPoolSize) => PreWarm(maxPoolSize);
 
         protected override Headers Create() => new(2);
 

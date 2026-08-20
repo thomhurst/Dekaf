@@ -1406,6 +1406,38 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    public async Task GeneratedCodec_GuidWarmup_AllowsSynchronousDeserialization()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        await using var serializer = PocoNullableStructRecord.CreateAvroSerializer(
+            registry,
+            new AvroSerializerConfig { SchemaIdStrategy = SchemaIdSerializerStrategy.Header });
+        await using var deserializer = PocoNullableStructRecord.CreateAvroDeserializer(
+            registry,
+            new AvroDeserializerConfig { SchemaIdStrategy = SchemaIdDeserializerStrategy.Header });
+        var headers = new Headers();
+        var context = new SerializationContext
+        {
+            Topic = "poco-guid-warmup",
+            Component = SerializationComponent.Value,
+            Headers = headers
+        };
+        var destination = new ArrayBufferWriter<byte>();
+        var expected = new PocoNullableStructRecord
+        {
+            Value = new PocoReadonlyRecord { Id = 42 }
+        };
+        var schemaId = await serializer.WarmupAsync(context.Topic);
+        serializer.Serialize(expected, ref destination, context);
+
+        await deserializer.WarmupAsync(new Guid(schemaId, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0), context);
+        var actual = deserializer.Deserialize(destination.WrittenMemory, context);
+
+        await Assert.That(actual.Value).IsEqualTo(expected.Value);
+        await Assert.That(registry.LastGetSchemaByGuidCancellationToken.CanBeCanceled).IsTrue();
+    }
+
+    [Test]
     public async Task GeneratedCodec_RulesPathLargePayloadAllocatesZeroAfterWarmup()
     {
         using var registry = new MockSchemaRegistryClient();

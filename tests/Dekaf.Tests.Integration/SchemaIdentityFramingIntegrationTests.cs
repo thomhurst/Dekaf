@@ -3,6 +3,8 @@ using Dekaf.Consumer;
 using Dekaf.Producer;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Avro;
+using Dekaf.SchemaRegistry.Avro.Poco;
+using Dekaf.Serialization;
 using AvroSchema = Avro.Schema;
 
 namespace Dekaf.Tests.Integration;
@@ -148,6 +150,63 @@ public sealed class SchemaIdentityFramingIntegrationTests(
         Assert.Fail("No JSON Schema Registry record was consumed.");
     }
 
+    [Test]
+    public async Task AvroPoco_GuidWarmup_AllowsSynchronousBatchConsumption()
+    {
+        var topic = await testInfra.CreateTestTopicAsync();
+        using var registry = CreateRegistryClient();
+        var context = new SerializationContext
+        {
+            Topic = topic,
+            Component = SerializationComponent.Value
+        };
+        await using var serializer = BatchIdentityRecord.CreateAvroSerializer(
+            registry,
+            new AvroSerializerConfig
+            {
+                SchemaIdStrategy = SchemaIdSerializerStrategy.Header
+            });
+        var schemaId = await serializer.WarmupAsync(topic);
+        var registered = await registry.GetSchemaBySubjectAsync(
+            $"{topic}-value",
+            "latest");
+        await Assert.That(registered.Id).IsEqualTo(schemaId);
+        var schemaGuid = Guid.Parse(registered.Guid!);
+        await using var deserializer = BatchIdentityRecord.CreateAvroDeserializer(
+            registry,
+            new AvroDeserializerConfig
+            {
+                SchemaIdStrategy = SchemaIdDeserializerStrategy.Header
+            });
+        await deserializer.WarmupAsync(schemaGuid, context);
+
+        await using var producer = await Kafka.CreateProducer<string, BatchIdentityRecord>()
+            .WithBootstrapServers(testInfra.BootstrapServers)
+            .WithValueSerializer(serializer)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        await producer.ProduceAsync(
+            topic,
+            "batch",
+            new BatchIdentityRecord { Id = 91, Name = "batch-guid" });
+
+        await using var consumer = await Kafka.CreateConsumer<string, BatchIdentityRecord>()
+            .WithBootstrapServers(testInfra.BootstrapServers)
+            .WithGroupId($"avro-poco-batch-header-{Guid.NewGuid():N}")
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithValueDeserializer(deserializer)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        consumer.Subscribe(topic);
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await using var batches = consumer.ConsumeBatchAsync(cancellation.Token).GetAsyncEnumerator();
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        var consumed = batches.Current.Single();
+        await Assert.That(consumed.Value.Id).IsEqualTo(91);
+        await Assert.That(consumed.Value.Name).IsEqualTo("batch-guid");
+    }
+
     private SchemaRegistryClient CreateRegistryClient() => new(new SchemaRegistryConfig
     {
         Url = testInfra.RegistryUrl
@@ -169,4 +228,14 @@ public sealed class SchemaIdentityFramingIntegrationTests(
         await Assert.That(identityHeader).IsNotNull();
         await Assert.That(identityHeader!.Value.Value.Length).IsEqualTo(17);
     }
+}
+
+[AvroRecord(Name = "BatchIdentityRecord", Namespace = "Dekaf.Tests")]
+internal sealed partial class BatchIdentityRecord
+{
+    [AvroField(Name = "id", Order = 0)]
+    public int Id { get; init; }
+
+    [AvroField(Name = "name", Order = 1)]
+    public required string Name { get; init; }
 }

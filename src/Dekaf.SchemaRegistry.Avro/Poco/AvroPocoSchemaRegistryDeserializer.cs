@@ -114,6 +114,23 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
             .ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Prepares a GUID-framed writer schema, its topic/component subject, and its evolution plan.
+    /// Call this before <c>ConsumeBatchAsync</c>, whose records are deserialized synchronously.
+    /// </summary>
+    public async Task WarmupAsync(
+        Guid schemaGuid,
+        SerializationContext context,
+        CancellationToken cancellationToken = default) =>
+        await PrepareGuidAsync(
+                new GuidTopicKey(
+                    schemaGuid,
+                    context.Topic,
+                    context.Component == SerializationComponent.Key),
+                context,
+                cancellationToken)
+            .ConfigureAwait(false);
+
     ValueTask IAsyncDeserializerPreparer<T>.PrepareAsync(
         ReadOnlyMemory<byte> data,
         SerializationContext context,

@@ -29,6 +29,8 @@ public class AsyncProducerSerdePoolingBenchmarks
 
     private DekafProducer.KafkaProducer<string, string> _producer = null!;
     private DekafProducer.KafkaProducer<string, string> _yieldingProducer = null!;
+    private DekafProducer.ObjectPool<Headers> _headerPool = null!;
+    private Headers[] _rentedHeaders = null!;
     private CancellationTokenSource _drainerCts = null!;
     private Thread _drainerThread = null!;
     private DekafProducer.ProducerMessage<string, string> _messageWithoutHeaders = null!;
@@ -62,6 +64,13 @@ public class AsyncProducerSerdePoolingBenchmarks
             Serializers.String,
             Serializers.String,
             asyncValueSerializer: new YieldingAsyncStringSerializer());
+        _headerPool = GetInstanceField<DekafProducer.ObjectPool<Headers>>(
+            _producer,
+            "_asyncSerializationHeadersPool");
+        _rentedHeaders = new Headers[Operations];
+        if (_headerPool.MaxPoolSize != Operations)
+            throw new InvalidOperationException("Async serialization header pool capacity mismatch.");
+        SaturateHeaderPool();
 
         await _producer.StopSenderLoopsForTestingAsync().ConfigureAwait(false);
         await _yieldingProducer.StopSenderLoopsForTestingAsync().ConfigureAwait(false);
@@ -128,6 +137,9 @@ public class AsyncProducerSerdePoolingBenchmarks
         await _yieldingProducer.DisposeAsync().ConfigureAwait(false);
     }
 
+    [Benchmark(OperationsPerInvoke = Operations)]
+    public void HeaderPool_SaturatedSupportedConcurrency() => SaturateHeaderPool();
+
     private static DekafProducer.ProducerOptions CreateOptions(string clientId) => new()
     {
         BootstrapServers = ["localhost:9092"],
@@ -139,8 +151,24 @@ public class AsyncProducerSerdePoolingBenchmarks
         DeliveryTimeoutMs = 1_000,
         CloseTimeoutMs = 1_000,
         EnableIdempotence = false,
+        ValueTaskSourcePoolSize = Operations,
         UnackedByteBudgetCapOverride = FixtureCapacityBytes
     };
+
+    private void SaturateHeaderPool()
+    {
+        for (var i = 0; i < _rentedHeaders.Length; i++)
+            _rentedHeaders[i] = _headerPool.Rent();
+
+        if (_headerPool.Misses != 0)
+            throw new InvalidOperationException("Async serialization header pool missed at supported concurrency.");
+
+        for (var i = 0; i < _rentedHeaders.Length; i++)
+        {
+            _headerPool.Return(_rentedHeaders[i]);
+            _rentedHeaders[i] = null!;
+        }
+    }
 
     private void DrainLoop(CancellationToken cancellationToken)
     {
