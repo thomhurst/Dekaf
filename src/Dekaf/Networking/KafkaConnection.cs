@@ -762,6 +762,21 @@ public sealed partial class KafkaConnection :
                         "negotiation is limited to one retry.");
                 }
             }
+
+            var capabilities = KafkaConnectionCapabilities.Create(response);
+            if (expectedIdentity is not null &&
+                capabilities.SupportsVersion(ApiKey.ApiVersions, ApiVersionsRequest.HighestSupportedVersion))
+            {
+                response = await SendAsyncCore<ApiVersionsRequest, ApiVersionsResponse>(
+                    request,
+                    ApiVersionsRequest.HighestSupportedVersion,
+                    requireReady: false,
+                    cancellationToken).ConfigureAwait(false);
+                ThrowIfRebootstrapRequired(response);
+                capabilities = KafkaConnectionCapabilities.Create(response);
+            }
+
+            return capabilities;
         }
         catch (TimeoutException ex)
         {
@@ -770,21 +785,6 @@ public sealed partial class KafkaConnection :
                 $"ApiVersions negotiation timed out for {_host}:{_port}",
                 ex);
         }
-
-        var capabilities = KafkaConnectionCapabilities.Create(response);
-        if (expectedIdentity is not null &&
-            capabilities.SupportsVersion(ApiKey.ApiVersions, ApiVersionsRequest.HighestSupportedVersion))
-        {
-            response = await SendAsyncCore<ApiVersionsRequest, ApiVersionsResponse>(
-                request,
-                ApiVersionsRequest.HighestSupportedVersion,
-                requireReady: false,
-                cancellationToken).ConfigureAwait(false);
-            ThrowIfRebootstrapRequired(response);
-            capabilities = KafkaConnectionCapabilities.Create(response);
-        }
-
-        return capabilities;
     }
 
     private void ThrowIfRebootstrapRequired(ApiVersionsResponse response)

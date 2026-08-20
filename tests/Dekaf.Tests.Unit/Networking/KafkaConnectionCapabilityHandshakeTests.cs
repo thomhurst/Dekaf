@@ -401,6 +401,63 @@ public class KafkaConnectionCapabilityHandshakeTests
 
     [Test]
     [Timeout(5_000)]
+    public async Task ConnectAsync_Kip1242_WhenIdentityHandshakeTimesOut_ThrowsKafkaException(
+        CancellationToken cancellationToken)
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        var identityRequestReceived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseServer = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var serverTask = Task.Run(async () =>
+        {
+            using var socket = await listener.AcceptSocketAsync(cancellationToken);
+            await using var stream = new NetworkStream(socket, ownsSocket: false);
+            var discoveryRequest = await ReadFrameAsync(stream, cancellationToken);
+            var discoveryCorrelationId = BinaryPrimitives.ReadInt32BigEndian(discoveryRequest.AsSpan(4));
+            await stream.WriteAsync(
+                BuildResponse(
+                    discoveryCorrelationId,
+                    ErrorCode.None,
+                    new ApiVersion(ApiKey.ApiVersions, 0, 5)),
+                cancellationToken);
+
+            _ = await ReadFrameAsync(stream, cancellationToken);
+            identityRequestReceived.TrySetResult();
+            await releaseServer.Task.WaitAsync(cancellationToken);
+        }, cancellationToken);
+
+        await using var connection = new KafkaConnection(
+            7,
+            "127.0.0.1",
+            port,
+            clientId: null,
+            options: new ConnectionOptions { RequestTimeout = TimeSpan.FromMilliseconds(50) },
+            logger: null,
+            ResponseBufferPool.Default,
+            metadataClusterIdentity: CreateExpectedIdentity());
+
+        try
+        {
+            var connectionTask = connection.ConnectAsync(cancellationToken).AsTask();
+            await identityRequestReceived.Task.WaitAsync(cancellationToken);
+            var exception = await Assert.That(async () => await connectionTask)
+                .Throws<KafkaException>();
+
+            await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.RequestTimedOut);
+            await Assert.That(connection.IsConnected).IsFalse();
+        }
+        finally
+        {
+            releaseServer.TrySetResult();
+        }
+
+        await serverTask;
+    }
+
+    [Test]
+    [Timeout(5_000)]
     public async Task ConnectAsync_Kip1242_BootstrapConnectionOmitsLearnedIdentity(
         CancellationToken cancellationToken)
     {
