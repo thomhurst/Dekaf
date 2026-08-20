@@ -441,6 +441,26 @@ public sealed class InMemoryKafkaCluster
         }
     }
 
+    internal IReadOnlyDictionary<TopicPartition, TopicPartitionOffset> GetCommittedOffsets(
+        string groupId,
+        IReadOnlyCollection<TopicPartition> partitions)
+    {
+        lock (_gate)
+        {
+            var result = new Dictionary<TopicPartition, TopicPartitionOffset>(partitions.Count);
+            if (!_consumerGroupOffsets.TryGetValue(groupId, out var offsets))
+                return result;
+
+            foreach (var partition in partitions)
+            {
+                if (offsets.TryGetValue(partition, out var offset))
+                    result[partition] = offset;
+            }
+
+            return result;
+        }
+    }
+
     internal void CommitOffsets(string groupId, IEnumerable<TopicPartitionOffset> offsets)
     {
         lock (_gate)
