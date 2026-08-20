@@ -285,6 +285,89 @@ public sealed class AssociatedNameStrategyTests
     }
 
     [Test]
+    public async Task DeserializerCache_ObservesAssociationCacheInvalidation()
+    {
+        using var client = new MockSchemaRegistryClient();
+        var schemaId = await client.RegisterSchemaAsync("schema-subject", new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = "{\"type\":\"integer\"}"
+        });
+        await AssociateAsync(client, "orders", "orders-v1");
+        var resolver = CreateResolver(client);
+        var subjects = DeserializerSubjectNameCache.Create(
+            client,
+            new SchemaRegistryDeserializerConfig { AsyncSubjectNameStrategy = resolver })!;
+
+        await subjects.PrepareAsync(
+            client,
+            schemaId,
+            "orders",
+            isKey: false,
+            typeof(int).FullName!,
+            CancellationToken.None);
+        var first = subjects.GetSubjectName(
+            schemaId,
+            schema: null,
+            "orders",
+            isKey: false,
+            typeof(int).FullName!);
+
+        await ReplaceAssociationAsync(client, "orders", "orders-v2");
+        _ = await resolver.RefreshAsync("orders", typeof(int).FullName, isKey: false);
+
+        await Assert.That(subjects.IsPrepared(schemaId, "orders", isKey: false)).IsFalse();
+        await subjects.PrepareAsync(
+            client,
+            schemaId,
+            "orders",
+            isKey: false,
+            typeof(int).FullName!,
+            CancellationToken.None);
+        var refreshed = subjects.GetSubjectName(
+            schemaId,
+            schema: null,
+            "orders",
+            isKey: false,
+            typeof(int).FullName!);
+
+        await Assert.That(first).IsEqualTo("orders-v1");
+        await Assert.That(refreshed).IsEqualTo("orders-v2");
+    }
+
+    [Test]
+    public async Task DeserializerCache_InvalidationDuringPreparationRetriesLookup()
+    {
+        using var client = new MockSchemaRegistryClient();
+        var schemaId = await client.RegisterSchemaAsync("schema-subject", new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = "{\"type\":\"integer\"}"
+        });
+        await AssociateAsync(client, "orders", "orders-v1");
+        client.BlockNextAssociationLookup();
+        var resolver = CreateResolver(client);
+        var subjects = DeserializerSubjectNameCache.Create(
+            client,
+            new SchemaRegistryDeserializerConfig { AsyncSubjectNameStrategy = resolver })!;
+        var preparation = subjects.PrepareAsync(
+            client,
+            schemaId,
+            "orders",
+            isKey: false,
+            typeof(int).FullName!,
+            CancellationToken.None);
+        await client.WaitForBlockedAssociationLookupAsync(TimeSpan.FromSeconds(5));
+
+        await Assert.That(resolver.Invalidate("orders", typeof(int).FullName, isKey: false)).IsFalse();
+        client.ReleaseBlockedAssociationLookup();
+        await preparation;
+
+        await Assert.That(subjects.IsPrepared(schemaId, "orders", isKey: false)).IsTrue();
+        await Assert.That(client.AssociationLookupCallCount).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task GenericDeserializer_AssociatedNamePreparesBeforeReadRules()
     {
         using var client = new MockSchemaRegistryClient();
@@ -432,6 +515,38 @@ public sealed class AssociatedNameStrategyTests
 
         _ = await resolver.GetSubjectNameAsync("orders", "Order", isKey: false);
         await Assert.That(client.AssociationLookupCallCount).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task Invalidate_DuringLookupStartsFreshLookupForNewCaller()
+    {
+        using var client = new MockSchemaRegistryClient();
+        var staleResponse = new TaskCompletionSource<IReadOnlyList<Association>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        client.EnqueueAssociationLookup(staleResponse.Task);
+        client.EnqueueAssociationLookup(Task.FromResult<IReadOnlyList<Association>>(
+            [CreateAssociation("orders", "orders-v2")]));
+        var resolver = CreateResolver(client);
+        var staleLookup = resolver.GetSubjectNameAsync("orders", "Order", isKey: false);
+        await Assert.That(() => client.AssociationLookupCallCount)
+            .Eventually(count => count.IsEqualTo(1), TimeSpan.FromSeconds(5));
+
+        await Assert.That(resolver.Invalidate("orders", "Order", isKey: false)).IsFalse();
+        var freshLookup = resolver.GetSubjectNameAsync("orders", "Order", isKey: false);
+        try
+        {
+            await Assert.That(() => client.AssociationLookupCallCount)
+                .Eventually(count => count.IsEqualTo(2), TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            staleResponse.TrySetResult([CreateAssociation("orders", "orders-v1")]);
+        }
+
+        await Assert.That(await staleLookup).IsEqualTo("orders-v1");
+        await Assert.That(await freshLookup).IsEqualTo("orders-v2");
+        await Assert.That(await resolver.GetSubjectNameAsync("orders", "Order", isKey: false))
+            .IsEqualTo("orders-v2");
     }
 
     [Test]

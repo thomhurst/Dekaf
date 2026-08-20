@@ -216,6 +216,7 @@ public sealed class AssociatedNameStrategy : IAsyncSubjectNameStrategy
                 return new ValueTask<string>(cached);
 
             if (!_pending.TryGetValue(key, out var pending)
+                || _invalidatedPending.Contains(pending)
                 || (forceRefresh && !pending.IsRefresh))
             {
                 if (pending is not null)
