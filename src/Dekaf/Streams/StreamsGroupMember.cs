@@ -365,15 +365,12 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
 
     private async ValueTask CompleteCloseAsync(MemberCommand command)
     {
-        try
-        {
-            await ProcessCloseAsync(command.CloseOptions!).ConfigureAwait(false);
-            command.Completion.TrySetResult(null);
-        }
-        catch (Exception exception)
-        {
-            command.Completion.TrySetException(exception);
-        }
+        await ProcessCloseAsync(command.CloseOptions!).AsTask().ContinueWith(
+            static (task, state) => CompleteCloseCommand(task, (MemberCommand)state!),
+            command,
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default).ConfigureAwait(false);
 
         _commands.Writer.TryComplete();
         var disposed = new ObjectDisposedException(nameof(StreamsGroupMember));
@@ -383,6 +380,25 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
                 continue;
             CompleteAbandonedCommand(pending, disposed);
         }
+    }
+
+    private static void CompleteCloseCommand(Task task, MemberCommand command)
+    {
+        if (task.Status == TaskStatus.RanToCompletion)
+        {
+            command.Completion.TrySetResult(null);
+            return;
+        }
+
+        if (task.IsCanceled)
+        {
+            command.Completion.TrySetCanceled();
+            return;
+        }
+
+        var aggregate = task.Exception!;
+        command.Completion.TrySetException(
+            aggregate.InnerExceptions.Count == 1 ? aggregate.InnerException! : aggregate);
     }
 
     private static void CompleteAbandonedCommand(
