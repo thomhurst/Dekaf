@@ -591,6 +591,22 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
+    [Arguments(PurgeOptions.Queue)]
+    [Arguments(PurgeOptions.InFlight)]
+    [Arguments(PurgeOptions.All)]
+    public async Task Producer_PurgeAsync_RejectsActiveTransaction(PurgeOptions options)
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await using var transaction = producer.BeginTransaction();
+
+        await producer.PurgeAsync(PurgeOptions.None);
+        var action = async () => await producer.PurgeAsync(options);
+
+        await Assert.That(action).Throws<InvalidOperationException>();
+    }
+
+    [Test]
     public async Task ShareConsumer_ReleaseDoesNotAdvanceOffset_AcceptDoes()
     {
         var cluster = new InMemoryKafkaCluster();

@@ -255,6 +255,17 @@ public sealed class InMemoryProducer<TKey, TValue> :
     {
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
+
+        if ((options & PurgeOptions.All) == PurgeOptions.None)
+            return ValueTask.CompletedTask;
+
+        if (Volatile.Read(ref _activeTransaction) is { IsCompleted: false } ||
+            Volatile.Read(ref _preparedRecoveryInProgress))
+        {
+            throw new InvalidOperationException(
+                "PurgeAsync cannot be called while a transaction is active. Commit or abort the transaction before purging buffered records.");
+        }
+
         return ValueTask.CompletedTask;
     }
 

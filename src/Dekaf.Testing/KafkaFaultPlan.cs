@@ -447,12 +447,8 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
 
     private void PublishProduceFaultIndexUnderLock()
     {
-        var allProduceTopics = false;
-        var allTransactionProduceTopics = false;
-        string? produceTopic = null;
-        string? transactionProduceTopic = null;
-        HashSet<string>? produceTopics = null;
-        HashSet<string>? transactionProduceTopics = null;
+        var produceScopes = new ProduceScopeBuilder();
+        var transactionProduceScopes = new ProduceScopeBuilder();
         for (var entryIndex = 0; entryIndex < _entries.Count; entryIndex++)
         {
             var scope = _entries[entryIndex].Scope;
@@ -462,18 +458,10 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
             switch (scope.Operation)
             {
                 case KafkaFaultOperation.Produce:
-                    AddProduceScope(
-                        scope.Topic,
-                        ref allProduceTopics,
-                        ref produceTopic,
-                        ref produceTopics);
+                    produceScopes.Add(scope.Topic);
                     break;
                 case KafkaFaultOperation.TransactionProduce:
-                    AddProduceScope(
-                        scope.Topic,
-                        ref allTransactionProduceTopics,
-                        ref transactionProduceTopic,
-                        ref transactionProduceTopics);
+                    transactionProduceScopes.Add(scope.Topic);
                     break;
             }
         }
@@ -481,43 +469,46 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
         Volatile.Write(
             ref _produceFaultIndex,
             new ProduceFaultIndex(
-                allProduceTopics,
-                produceTopic,
-                produceTopics,
-                allTransactionProduceTopics,
-                transactionProduceTopic,
-                transactionProduceTopics));
+                produceScopes.AllTopics,
+                produceScopes.SingleTopic,
+                produceScopes.Topics,
+                transactionProduceScopes.AllTopics,
+                transactionProduceScopes.SingleTopic,
+                transactionProduceScopes.Topics));
     }
 
-    private static void AddProduceScope(
-        string? topic,
-        ref bool allTopics,
-        ref string? singleTopic,
-        ref HashSet<string>? topics)
+    private struct ProduceScopeBuilder
     {
-        if (topic is null)
+        internal bool AllTopics;
+        internal string? SingleTopic;
+        internal HashSet<string>? Topics;
+
+        internal void Add(string? topic)
         {
-            allTopics = true;
-            return;
+            if (topic is null)
+            {
+                AllTopics = true;
+                return;
+            }
+
+            if (Topics is not null)
+            {
+                Topics.Add(topic);
+                return;
+            }
+
+            if (SingleTopic is null)
+            {
+                SingleTopic = topic;
+                return;
+            }
+
+            if (string.Equals(SingleTopic, topic, StringComparison.Ordinal))
+                return;
+
+            Topics = new HashSet<string>(StringComparer.Ordinal) { SingleTopic, topic };
+            SingleTopic = null;
         }
-
-        if (topics is not null)
-        {
-            topics.Add(topic);
-            return;
-        }
-
-        if (singleTopic is null)
-        {
-            singleTopic = topic;
-            return;
-        }
-
-        if (string.Equals(singleTopic, topic, StringComparison.Ordinal))
-            return;
-
-        topics = new HashSet<string>(StringComparer.Ordinal) { singleTopic, topic };
-        singleTopic = null;
     }
 
     private sealed class ProduceFaultIndex(
