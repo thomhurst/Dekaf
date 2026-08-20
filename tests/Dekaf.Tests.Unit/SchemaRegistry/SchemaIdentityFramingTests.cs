@@ -121,7 +121,7 @@ public sealed class SchemaIdentityFramingTests
     }
 
     [Test]
-    public async Task JsonSerializer_LookupWithAvroSchema_Throws()
+    public async Task JsonSerializer_LookupWithOnlyAvroSchema_ThrowsNotFound()
     {
         const string topic = "json-lookup-wrong-format";
         using var registry = new MockSchemaRegistryClient();
@@ -134,7 +134,8 @@ public sealed class SchemaIdentityFramingTests
             new JsonSchemaSerializerConfig { AutoRegisterSchemas = false });
 
         await Assert.That(async () => await serializer.PrepareAsync(topic, "value"))
-            .Throws<InvalidOperationException>();
+            .Throws<SchemaRegistryException>()
+            .WithMessageContaining("Schema not found");
     }
 
     [Test]

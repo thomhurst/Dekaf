@@ -448,9 +448,12 @@ public sealed class JsonSchemaValidationTests
         await using var serializer = new JsonSchemaRegistrySerializer<ReferencedPayload>(
             registry,
             rootSchema,
-            jsonOptions: null,
-            validationOptions: validation,
-            autoRegisterSchemas: false);
+            new JsonSchemaSerializerConfig
+            {
+                AutoRegisterSchemas = false,
+                UseLatestVersion = true
+            },
+            validation);
         var context = new SerializationContext
         {
             Topic = "registered-write",
@@ -488,13 +491,16 @@ public sealed class JsonSchemaValidationTests
         await using var serializer = new JsonSchemaRegistrySerializer<ReferencedPayload>(
             registry,
             rootSchema,
-            jsonOptions: null,
-            validationOptions: new JsonSchemaValidationOptions
+            new JsonSchemaSerializerConfig
+            {
+                AutoRegisterSchemas = false,
+                UseLatestVersion = true
+            },
+            new JsonSchemaValidationOptions
             {
                 ValidatorFactory = new StreamingJsonSchemaValidatorFactory(registry),
                 Mode = JsonSchemaValidationMode.Serialize
-            },
-            autoRegisterSchemas: false);
+            });
         var context = new SerializationContext
         {
             Topic = "registered-write",

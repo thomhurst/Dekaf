@@ -777,9 +777,11 @@ public sealed class JsonSchemaRegistrySerializer<T> :
                 .ConfigureAwait(false);
         }
 
-        var registered = await _schemaRegistry.GetSchemaBySubjectAsync(
+        var registered = await _schemaRegistry.LookupSchemaAsync(
                 subject,
-                "latest",
+                schema,
+                ignoreDeletedSchemas: true,
+                normalize: _normalizeSchemas,
                 cancellationToken)
             .ConfigureAwait(false);
         ValidateSchemaFormat(registered.Id, registered.Schema);
