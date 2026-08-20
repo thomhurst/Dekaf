@@ -998,15 +998,27 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         while (activePartitionIndex < partitions.Length)
         {
             var bound = partitions[activePartitionIndex];
-            if (_positions.TryGetValue(bound.Partition, out var position)
-                && position < bound.EndOffset
-                && _cluster.TryRead(bound.Partition, position, out var record)
-                && record.Offset < bound.EndOffset)
+            if (_positions.TryGetValue(bound.Partition, out var position) &&
+                position < bound.EndOffset)
             {
-                selectedPartition = bound.Partition;
-                selectedRecord = record;
-                selectedPosition = position;
-                return true;
+                if (_cluster.TryRead(
+                        bound.Partition,
+                        position,
+                        out var record,
+                        out var blockedByOngoingTransaction) &&
+                    record.Offset < bound.EndOffset)
+                {
+                    selectedPartition = bound.Partition;
+                    selectedRecord = record;
+                    selectedPosition = position;
+                    return true;
+                }
+
+                if (blockedByOngoingTransaction)
+                {
+                    activePartitionIndex++;
+                    continue;
+                }
             }
 
             if (!_positions.TryGetValue(bound.Partition, out position)

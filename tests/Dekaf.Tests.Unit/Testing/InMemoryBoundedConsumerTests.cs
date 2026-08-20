@@ -323,6 +323,32 @@ public sealed class InMemoryBoundedConsumerTests
     }
 
     [Test]
+    public async Task ConsumeSnapshotAsync_OngoingTransactionBeforePositionPreservesPosition()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var transactionalProducer = new InMemoryProducer<string, string>(cluster);
+        await using var transaction = transactionalProducer.BeginTransaction();
+        _ = await transaction.ProduceAsync("events", "key-0", "pending");
+        var producer = new InMemoryProducer<string, string>(cluster);
+        _ = await producer.ProduceAsync("events", "key-1", "after");
+        await using var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest });
+        var partition = new TopicPartition("events", 0);
+        consumer.Assign(partition);
+        consumer.Seek(new TopicPartitionOffset("events", 0, 1));
+
+        var snapshot = await CollectValuesAsync(consumer.ConsumeSnapshotAsync());
+
+        await Assert.That(snapshot).IsEmpty();
+        await Assert.That(consumer.GetPosition(partition)).IsEqualTo(1L);
+
+        await transaction.CommitAsync();
+        var resumed = await consumer.ConsumeOneAsync(TimeSpan.Zero);
+        await Assert.That(resumed!.Value.Value).IsEqualTo("after");
+    }
+
+    [Test]
     public async Task BoundedExtensions_ReachBuiltInCapabilityThroughInterface()
     {
         var cluster = new InMemoryKafkaCluster();

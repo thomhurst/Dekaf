@@ -314,7 +314,7 @@ public sealed class InMemoryProducerFaultTests
         var transaction = producer.BeginTransaction();
         cluster.FaultPlan.Fail(
             new KafkaFaultScope(KafkaFaultOperation.AbortTransaction),
-            new KafkaTimeoutException("abort timed out"));
+            new InvalidOperationException("injected abort failure"));
 
         await transaction.DisposeAsync();
 
@@ -430,6 +430,44 @@ public sealed class InMemoryProducerFaultTests
         await Assert.That(Encoding.UTF8.GetString(visible[0].Value)).IsEqualTo("committed");
         await committedTransaction.DisposeAsync();
         await abortedTransaction.DisposeAsync();
+    }
+
+    [Test]
+    public async Task PreparedTransaction_DisposingHandlePreservesRecoveryState()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        var transaction = producer.BeginTransaction();
+        _ = await transaction.ProduceAsync("orders", "k", "prepared");
+        var prepared = await transaction.PrepareAsync();
+
+        await transaction.DisposeAsync();
+        await producer.CompletePreparedTransactionAsync(prepared, committed: true);
+
+        await Assert.That(cluster.ReadRecords("orders")).Count().IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task PreparedTransaction_RecoveryRejectsAnotherActiveTransaction()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var original = new InMemoryProducer<string, string>(cluster);
+        var preparedTransaction = original.BeginTransaction();
+        _ = await preparedTransaction.ProduceAsync("orders", "k", "prepared");
+        var prepared = await preparedTransaction.PrepareAsync();
+        await original.DisposeAsync();
+
+        var replacement = new InMemoryProducer<string, string>(cluster);
+        await replacement.InitTransactionsAsync(keepPreparedTransaction: true);
+        var activeTransaction = replacement.BeginTransaction();
+
+        await Assert.That(async () =>
+                await replacement.CompletePreparedTransactionAsync(prepared, committed: true))
+            .Throws<InvalidOperationException>();
+
+        await activeTransaction.AbortAsync();
+        await replacement.CompletePreparedTransactionAsync(prepared, committed: true);
+        await Assert.That(cluster.ReadRecords("orders")).Count().IsEqualTo(1);
     }
 
     [Test]

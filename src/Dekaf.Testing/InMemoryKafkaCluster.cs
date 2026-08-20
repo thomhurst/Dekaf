@@ -372,11 +372,22 @@ public sealed class InMemoryKafkaCluster
         return metadata;
     }
 
-    internal bool TryRead(TopicPartition topicPartition, long offset, out InMemoryRecord record)
+    internal bool TryRead(TopicPartition topicPartition, long offset, out InMemoryRecord record) =>
+        TryRead(topicPartition, offset, out record, out _);
+
+    internal bool TryRead(
+        TopicPartition topicPartition,
+        long offset,
+        out InMemoryRecord record,
+        out bool blockedByOngoingTransaction)
     {
         lock (_gate)
         {
-            if (!TryReadRecordUnderLock(topicPartition, offset, out var candidate))
+            if (!TryReadRecordUnderLock(
+                    topicPartition,
+                    offset,
+                    out var candidate,
+                    out blockedByOngoingTransaction))
             {
                 record = null!;
                 return false;
@@ -400,7 +411,7 @@ public sealed class InMemoryKafkaCluster
 
         lock (_gate)
         {
-            if (!TryReadRecordUnderLock(topicPartition, offset, out var candidate))
+            if (!TryReadRecordUnderLock(topicPartition, offset, out var candidate, out _))
             {
                 record = null!;
                 deliveryCount = 0;
@@ -709,30 +720,41 @@ public sealed class InMemoryKafkaCluster
         return EnsureTopic(name, _options.DefaultPartitionCount, configs: null);
     }
 
-    private bool TryReadRecordUnderLock(TopicPartition topicPartition, long offset, out InMemoryRecord record)
+    private bool TryReadRecordUnderLock(
+        TopicPartition topicPartition,
+        long offset,
+        out InMemoryRecord record,
+        out bool blockedByOngoingTransaction)
     {
         if (!_topics.TryGetValue(topicPartition.Topic, out var topic) ||
             (uint)topicPartition.Partition >= (uint)topic.Partitions.Count)
         {
             record = null!;
+            blockedByOngoingTransaction = false;
             return false;
         }
 
         var partition = topic.Partitions[topicPartition.Partition];
         foreach (var candidate in partition.Records)
         {
+            if (IsOngoingTransaction(candidate))
+            {
+                record = null!;
+                blockedByOngoingTransaction = true;
+                return false;
+            }
             if (candidate.Offset < offset)
                 continue;
             if (IsRecordVisibleUnderLock(candidate))
             {
                 record = candidate;
+                blockedByOngoingTransaction = false;
                 return true;
             }
-            if (IsOngoingTransaction(candidate))
-                break;
         }
 
         record = null!;
+        blockedByOngoingTransaction = false;
         return false;
     }
 

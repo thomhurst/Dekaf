@@ -283,6 +283,13 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
         lock (_transactionGate)
             transaction = _activeTransaction;
 
+        if (transaction is { IsCompleted: false } &&
+            (!transaction.IsPrepared || transaction.PreparedState != preparedState))
+        {
+            throw new InvalidOperationException(
+                "Cannot recover a prepared transaction while another transaction is active.");
+        }
+
         if (transaction is null || !transaction.IsPrepared || transaction.PreparedState != preparedState)
         {
             if (!_preparedRecoveryEnabled ||
@@ -718,18 +725,14 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
 
         public async ValueTask DisposeAsync()
         {
-            if (_completed || _producer._disposed)
+            if (_completed || _prepared || _producer._disposed)
                 return;
 
-            try
-            {
-                await AbortAsync().ConfigureAwait(false);
-            }
-            catch (Exception)
-            {
-                // Fault plans accept arbitrary exceptions; disposal must release the slot for all of them.
+            // Fault plans accept arbitrary exceptions. Disposal is best-effort and must release the
+            // producer slot after any injected abort failure without a generic catch clause.
+            await AbortAsync().AsTask().ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+            if (!_completed)
                 Complete(committed: false);
-            }
         }
 
         public async ValueTask CompletePreparedAsync(
