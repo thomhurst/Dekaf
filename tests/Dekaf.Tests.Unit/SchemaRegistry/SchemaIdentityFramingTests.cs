@@ -103,6 +103,75 @@ public sealed class SchemaIdentityFramingTests
     }
 
     [Test]
+    public async Task JsonSerializer_UseSchemaIdWithDifferentJsonSchema_Throws()
+    {
+        const string topic = "json-wrong-schema";
+        using var registry = new MockSchemaRegistryClient();
+        var schemaId = await registry.RegisterSchemaAsync(
+            $"{topic}-value",
+            new Schema { SchemaType = SchemaType.Json, SchemaString = "{\"type\":\"integer\"}" });
+        await using var serializer = new JsonSchemaRegistrySerializer<string>(
+            registry,
+            "{\"type\":\"string\"}",
+            new JsonSchemaSerializerConfig { UseSchemaId = schemaId });
+
+        await Assert.That(async () => await serializer.PrepareAsync(topic, "value"))
+            .Throws<InvalidOperationException>()
+            .WithMessageContaining("does not match");
+    }
+
+    [Test]
+    public async Task JsonSerializer_LookupWithAvroSchema_Throws()
+    {
+        const string topic = "json-lookup-wrong-format";
+        using var registry = new MockSchemaRegistryClient();
+        _ = await registry.RegisterSchemaAsync(
+            $"{topic}-value",
+            new Schema { SchemaType = SchemaType.Avro, SchemaString = "\"string\"" });
+        await using var serializer = new JsonSchemaRegistrySerializer<string>(
+            registry,
+            "{\"type\":\"string\"}",
+            new JsonSchemaSerializerConfig { AutoRegisterSchemas = false });
+
+        await Assert.That(async () => await serializer.PrepareAsync(topic, "value"))
+            .Throws<InvalidOperationException>();
+    }
+
+    [Test]
+    public async Task JsonDeserializer_GuidSubjectsUseEachSchemaRecordName()
+    {
+        const string topic = "json-guid-record-name";
+        const string firstSchemaText = "{\"type\":\"string\",\"title\":\"FirstRecord\"}";
+        const string secondSchemaText = "{\"type\":\"string\",\"title\":\"SecondRecord\"}";
+        using var registry = new MockSchemaRegistryClient();
+        var firstId = await registry.RegisterSchemaAsync(
+            "FirstRecord",
+            new Schema { SchemaType = SchemaType.Json, SchemaString = firstSchemaText });
+        var secondId = await registry.RegisterSchemaAsync(
+            "SecondRecord",
+            new Schema { SchemaType = SchemaType.Json, SchemaString = secondSchemaText });
+        await using var deserializer = new JsonSchemaRegistryDeserializer<string>(
+            registry,
+            jsonOptions: null,
+            new SchemaRegistryDeserializerConfig
+            {
+                SchemaIdStrategy = SchemaIdDeserializerStrategy.Header,
+                SubjectNameStrategy = SubjectNameStrategy.RecordName
+            });
+
+        var first = deserializer.Deserialize(
+            Encoding.UTF8.GetBytes("\"first\""),
+            CreateGuidHeaderContext(topic, firstId));
+        var second = deserializer.Deserialize(
+            Encoding.UTF8.GetBytes("\"second\""),
+            CreateGuidHeaderContext(topic, secondId));
+
+        await Assert.That(first).IsEqualTo("first");
+        await Assert.That(second).IsEqualTo("second");
+        await Assert.That(registry.LastGetSchemaByGuidCancellationToken.CanBeCanceled).IsTrue();
+    }
+
+    [Test]
     public async Task BoundedIdentityCache_EvictsOldestExactEntry()
     {
         var cache = new ConcurrentDictionary<int, object>();
@@ -404,4 +473,17 @@ public sealed class SchemaIdentityFramingTests
                 useSchemaId: -1,
                 useLatestVersion: false,
                 autoRegisterSchemas: false));
+
+    private static SerializationContext CreateGuidHeaderContext(string topic, int schemaId)
+    {
+        var guid = new Guid(schemaId, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        return new SerializationContext
+        {
+            Topic = topic,
+            Component = SerializationComponent.Value,
+            Headers = new Headers(1).Add(
+                SchemaIdentityHeaderNames.Value,
+                SchemaIdentityFraming.CreateSchemaGuidFrame(guid))
+        };
+    }
 }

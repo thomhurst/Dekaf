@@ -209,7 +209,10 @@ public class KafkaProducerFastPathTests
         await Assert.That(() => producer.RecordAccumulator.BufferedBytes)
             .Eventually(bytes => bytes.IsGreaterThan(0), TimeSpan.FromSeconds(5));
 
-        var readyBatch = CompleteCurrentBatch(producer.RecordAccumulator, new TopicPartition(Topic, 0));
+        var topicPartition = new TopicPartition(Topic, 0);
+        await Assert.That(() => HasCurrentOrSealedBatch(producer.RecordAccumulator, topicPartition))
+            .Eventually(found => found.IsTrue(), TimeSpan.FromSeconds(5));
+        var readyBatch = CompleteCurrentBatch(producer.RecordAccumulator, topicPartition);
         readyBatch.CompleteSend(baseOffset: 7, DateTimeOffset.UtcNow);
         _ = await produceTask;
 
@@ -799,6 +802,23 @@ public class KafkaProducerFastPathTests
         throw new InvalidOperationException("Partition deque did not contain a current or sealed batch.");
     }
 
+    private static bool HasCurrentOrSealedBatch(
+        RecordAccumulator accumulator,
+        TopicPartition topicPartition)
+    {
+        var deques = GetInstanceField<object>(accumulator, "_partitionDeques");
+        var tryGetValueMethod = deques.GetType().GetMethod("TryGetValue");
+        var parameters = new object[] { topicPartition, null! };
+        if (!(bool)tryGetValueMethod!.Invoke(deques, parameters)!)
+            return false;
+
+        var partitionDeque = parameters[1]!;
+        if (GetInstanceField<object?>(partitionDeque, "CurrentBatch") is not null)
+            return true;
+
+        return partitionDeque.GetType().GetMethod("PeekFirst")!.Invoke(partitionDeque, null) is ReadyBatch;
+    }
+
     private static int GetSlowPathAppendCount(
         RecordAccumulator accumulator,
         TopicPartition topicPartition)
@@ -842,8 +862,11 @@ public class KafkaProducerFastPathTests
     {
         var headers = record.Headers;
         if (headers is null || record.HeaderCount != 1 || headers[0].Key != "identity")
+        {
+            var foundKey = headers is { Length: > 0 } ? headers[0].Key : "none";
             throw new InvalidOperationException(
-                $"Expected one identity header; found {record.HeaderCount} ({headers?[0].Key ?? "none"}).");
+                $"Expected one identity header; found {record.HeaderCount} ({foundKey}).");
+        }
 
         return Encoding.UTF8.GetString(headers[0].Value.Span);
     }

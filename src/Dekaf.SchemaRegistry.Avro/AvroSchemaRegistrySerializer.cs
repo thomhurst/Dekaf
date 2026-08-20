@@ -5,6 +5,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using Avro.Generic;
 using Avro.Specific;
+using Dekaf.SchemaRegistry.Avro.Poco;
 using Dekaf.Serialization;
 using AvroSchema = Avro.Schema;
 using RegistrySchema = Dekaf.SchemaRegistry.Schema;
@@ -535,6 +536,13 @@ public sealed class AvroSchemaRegistrySerializer<
                     $"Schema ID {schemaId} has format {explicitSchema.SchemaType}; expected {SchemaType.Avro}.");
             }
 
+            await ValidateSelectedSchemaAsync(
+                    explicitSchema,
+                    registrySchema,
+                    schemaId,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
             return await CreateResolvedValueAsync(
                     subject,
                     schemaId,
@@ -621,6 +629,30 @@ public sealed class AvroSchemaRegistrySerializer<
             SchemaType = SchemaType.Avro,
             SchemaString = avroSchema.ToString()
         };
+    }
+
+    private async Task ValidateSelectedSchemaAsync(
+        RegistrySchema selectedSchema,
+        RegistrySchema writerSchema,
+        int schemaId,
+        CancellationToken cancellationToken)
+    {
+        var names = selectedSchema.References is { Count: > 0 }
+            ? await AvroSchemaReferenceResolver.ResolveAsync(
+                    _schemaRegistry,
+                    selectedSchema,
+                    cancellationToken)
+                .ConfigureAwait(false)
+            : null;
+        var selected = names is null
+            ? AvroSchema.Parse(selectedSchema.SchemaString)
+            : AvroSchema.Parse(selectedSchema.SchemaString, names);
+        var writer = AvroSchema.Parse(writerSchema.SchemaString);
+        if (!writer.Equals(selected))
+        {
+            throw new InvalidOperationException(
+                $"Schema ID {schemaId} does not match the Avro writer schema.");
+        }
     }
 
     private static AvroSchema GetSchemaFromValue(T value) =>

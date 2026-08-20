@@ -80,13 +80,10 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
                 RegistryTimeout);
         }
 
-        if (_ruleExecutor is not null)
-        {
-            _subjectNames = DeserializerSubjectNameCache.Create(
-                _config.SubjectNameStrategy,
-                _config.CustomSubjectNameStrategy,
-                _config.UseLegacySubjectNames);
-        }
+        _subjectNames = DeserializerSubjectNameCache.Create(
+            _config.SubjectNameStrategy,
+            _config.CustomSubjectNameStrategy,
+            _config.UseLegacySubjectNames);
 
         _canUseSynchronousRuleCache = _migrationRunner is null && schemaRegistry is ISchemaRegistryCache;
     }
@@ -323,13 +320,11 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
             return default!;
 
         var identity = ReadIdentity(data, identityHeader, out var payloadOffset);
-        var schemaId = identity.SchemaId
-            ?? GetGuidSchemaCached(
-                new GuidTopicKey(
-                    identity.SchemaGuid!.Value,
-                    context.Topic,
-                    context.Component == SerializationComponent.Key))
-                .SchemaId;
+        var schemaId = identity.SchemaId ?? GetResolvedGuidSchemaId(
+            new GuidTopicKey(
+                identity.SchemaGuid!.Value,
+                context.Topic,
+                context.Component == SerializationComponent.Key));
         var payload = data[payloadOffset..];
         if (_ruleExecutor is null)
         {
@@ -828,12 +823,17 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         await PrepareSchemaIdAsync(resolved.SchemaId, context, cancellationToken).ConfigureAwait(false);
     }
 
-    private GuidResolvedSchema GetGuidSchemaCached(GuidTopicKey key)
+    private int GetResolvedGuidSchemaId(GuidTopicKey key)
     {
-        var task = GetOrAddGuidSchemaLazy(key).Value;
-        return task.IsCompletedSuccessfully
-            ? task.Result
-            : task.WaitAsync(RegistryTimeout).ConfigureAwait(false).GetAwaiter().GetResult();
+        if (_guidSchemaCache.TryGetValue(key, out var lazy)
+            && lazy.IsValueCreated
+            && lazy.Value.IsCompletedSuccessfully)
+        {
+            return lazy.Value.Result.SchemaId;
+        }
+
+        throw new InvalidOperationException(
+            $"Schema GUID {key.SchemaGuid:D} is not cached. Consume through an asynchronous consumer API or call WarmupAsync first.");
     }
 
     private async Task<GuidResolvedSchema> GetGuidSchemaAsync(
@@ -857,29 +857,11 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
     {
         try
         {
-            var unscopedSchema = await _schemaRegistry.GetSchemaByGuidAsync(
-                    key.SchemaGuid.ToString("D"),
-                    cancellationToken: CancellationToken.None)
+            var resolved = await SchemaRegistryOperationTimeout.ExecuteAsync(
+                    cancellationToken => FetchGuidSchemaCoreAsync(key, cancellationToken),
+                    RegistryTimeout,
+                    $"Schema GUID {key.SchemaGuid:D} resolution timed out.")
                 .ConfigureAwait(false);
-            if (unscopedSchema.SchemaType != SchemaType.Avro)
-            {
-                throw new InvalidOperationException(
-                    $"Schema GUID {key.SchemaGuid:D} is {unscopedSchema.SchemaType}, not Avro.");
-            }
-            var subject = GetSubjectName(key.Topic, key.IsKey);
-            var registered = await _schemaRegistry.LookupSchemaAsync(
-                    subject,
-                    unscopedSchema,
-                    ignoreDeletedSchemas: true,
-                    cancellationToken: CancellationToken.None)
-                .ConfigureAwait(false);
-            if (!Guid.TryParse(registered.Guid, out var registeredGuid) || registeredGuid != key.SchemaGuid)
-            {
-                throw new InvalidDataException(
-                    $"Schema Registry returned a conflicting GUID for subject '{subject}'.");
-            }
-
-            var resolved = new GuidResolvedSchema(registered.Id);
             BoundedSchemaIdentityCache.RecordSuccessfulResolution(
                 _guidSchemaCache,
                 _guidSchemaEvictionQueue,
@@ -893,6 +875,36 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
             _guidSchemaCache.TryRemove(key, out _);
             throw;
         }
+    }
+
+    private async Task<GuidResolvedSchema> FetchGuidSchemaCoreAsync(
+        GuidTopicKey key,
+        CancellationToken cancellationToken)
+    {
+        var unscopedSchema = await _schemaRegistry.GetSchemaByGuidAsync(
+                key.SchemaGuid.ToString("D"),
+                cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+        if (unscopedSchema.SchemaType != SchemaType.Avro)
+        {
+            throw new InvalidOperationException(
+                $"Schema GUID {key.SchemaGuid:D} is {unscopedSchema.SchemaType}, not Avro.");
+        }
+        var subject = GetSubjectName(key.Topic, key.IsKey);
+        var registered = await _schemaRegistry.LookupSchemaAsync(
+                subject,
+                unscopedSchema,
+                ignoreDeletedSchemas: true,
+                cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+        if (!Guid.TryParse(registered.Guid, out var registeredGuid) || registeredGuid != key.SchemaGuid)
+        {
+            throw new InvalidDataException(
+                $"Schema Registry returned a conflicting GUID for subject '{subject}'.");
+        }
+
+        var resolved = new GuidResolvedSchema(registered.Id);
+        return resolved;
     }
 
     private SchemaIdentity ReadIdentity(
