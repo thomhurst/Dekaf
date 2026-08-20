@@ -11,6 +11,7 @@ public class AssociatedNameStrategyBenchmarks
     private string _recordType = null!;
     private SchemaRegistryClient _client = null!;
     private AssociatedNameStrategy _strategy = null!;
+    private SchemaRegistrySerializer<int> _serializer = null!;
     private DeserializerSubjectNameCache _deserializerSubjects = null!;
 
     [GlobalSetup]
@@ -22,9 +23,15 @@ public class AssociatedNameStrategyBenchmarks
             new SchemaRegistryConfig { Url = "http://association-benchmark.invalid" },
             new AssociationHandler());
         _strategy = new AssociatedNameStrategy(_client);
+        _serializer = new SchemaRegistrySerializer<int>(
+            _client,
+            static (_, _) => { },
+            static () => new Schema { SchemaType = SchemaType.Json, SchemaString = "{\"type\":\"integer\"}" },
+            _strategy);
         _ = _strategy.GetSubjectNameAsync(_topic, _recordType, isKey: false)
             .GetAwaiter()
             .GetResult();
+        _ = _serializer.PrepareAsync(_topic, 42).GetAwaiter().GetResult();
         _deserializerSubjects = DeserializerSubjectNameCache.Create(
             _client,
             new SchemaRegistryDeserializerConfig { AsyncSubjectNameStrategy = _strategy })!;
@@ -40,7 +47,11 @@ public class AssociatedNameStrategyBenchmarks
     }
 
     [GlobalCleanup]
-    public void Cleanup() => _client.Dispose();
+    public async Task Cleanup()
+    {
+        await _serializer.DisposeAsync().ConfigureAwait(false);
+        _client.Dispose();
+    }
 
     [Benchmark(Baseline = true)]
     public string TopicName() => SubjectNameResolver.GetTopicSubjectName(_topic, isKey: false);
@@ -48,6 +59,10 @@ public class AssociatedNameStrategyBenchmarks
     [Benchmark]
     public ValueTask<string> AssociatedNameCached() =>
         _strategy.GetSubjectNameAsync(_topic, _recordType, isKey: false);
+
+    [Benchmark]
+    public ValueTask<ResolvedSchemaContext> SerializerAssociatedNameCached() =>
+        _serializer.PrepareAsync(_topic, 42);
 
     [Benchmark]
     public string DeserializerAssociatedNameCached() =>
@@ -64,9 +79,12 @@ public class AssociatedNameStrategyBenchmarks
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-            var content = request.RequestUri!.AbsolutePath.Contains("/schemas/ids/", StringComparison.Ordinal)
-                ? """{"schemaType":"JSON","schema":"{\"type\":\"integer\"}"}"""
-                : """
+            var path = request.RequestUri!.AbsolutePath;
+            var content = path.Contains("/subjects/", StringComparison.Ordinal)
+                ? """{"subject":"benchmark-associated-value","version":1,"id":1,"schemaType":"JSON","schema":"{\"type\":\"integer\"}"}"""
+                : path.Contains("/schemas/ids/", StringComparison.Ordinal)
+                    ? """{"schemaType":"JSON","schema":"{\"type\":\"integer\"}"}"""
+                    : """
                   [{"subject":"benchmark-associated-value","guid":"benchmark-guid","resourceName":"benchmark-orders","resourceNamespace":"-","resourceId":"benchmark-orders","resourceType":"topic","associationType":"value","lifecycle":"WEAK","frozen":false}]
                   """;
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)

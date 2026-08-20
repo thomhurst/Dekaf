@@ -31,6 +31,26 @@ internal sealed class SubjectSchemaIdCache
 
     internal int CachedEntryCount => Volatile.Read(ref _cacheCount);
 
+    internal void Clear()
+    {
+        _cache.Clear();
+        Volatile.Write(ref _last, null);
+        Volatile.Write(ref _overflowFirst, null);
+        Volatile.Write(ref _overflowSecond, null);
+        Volatile.Write(ref _overflowThird, null);
+        Volatile.Write(ref _overflowFourth, null);
+        Volatile.Write(ref _overflowFifth, null);
+        Volatile.Write(ref _overflowSixth, null);
+        Volatile.Write(ref _overflowSeventh, null);
+        Volatile.Write(ref _overflowEighth, null);
+        Volatile.Write(ref _overflowNinth, null);
+        for (var index = 0; index < _turnover.Length; index++)
+            Volatile.Write(ref _turnover[index], new TurnoverEntry());
+        Volatile.Write(ref _cacheCount, 0);
+        Volatile.Write(ref _turnoverCount, 0);
+        Volatile.Write(ref _turnoverCursor, -1);
+    }
+
     internal SubjectSchemaIdCacheEntry GetOrAdd<TState>(
         string topic,
         bool isKey,

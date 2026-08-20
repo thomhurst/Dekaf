@@ -90,6 +90,8 @@ public sealed class AssociatedNameStrategy : IAsyncSubjectNameStrategy
     private readonly LinkedList<CacheKey> _order = [];
     private readonly object _gate = new();
 
+    internal event Action? CacheInvalidated;
+
     /// <summary>Creates an association-backed subject-name strategy.</summary>
     public AssociatedNameStrategy(
         ISchemaRegistryClient schemaRegistry,
@@ -162,6 +164,7 @@ public sealed class AssociatedNameStrategy : IAsyncSubjectNameStrategy
                 _invalidatedPending.Add(pending);
             var removed = _cache.TryRemove(key, out _);
             RemoveOrderNode(key);
+            NotifyCacheInvalidated();
             return removed;
         }
     }
@@ -176,6 +179,7 @@ public sealed class AssociatedNameStrategy : IAsyncSubjectNameStrategy
             _cache.Clear();
             _order.Clear();
             _orderNodes.Clear();
+            NotifyCacheInvalidated();
         }
     }
 
@@ -232,7 +236,11 @@ public sealed class AssociatedNameStrategy : IAsyncSubjectNameStrategy
             lock (_gate)
             {
                 if (!_invalidatedPending.Contains(pending))
+                {
                     Publish(key, subject);
+                    if (pending.IsRefresh)
+                        NotifyCacheInvalidated();
+                }
             }
 
             return subject;
@@ -336,6 +344,8 @@ public sealed class AssociatedNameStrategy : IAsyncSubjectNameStrategy
 
         _order.Remove(node);
     }
+
+    private void NotifyCacheInvalidated() => CacheInvalidated?.Invoke();
 
     private static void ValidateTopic(string topic) =>
         ArgumentException.ThrowIfNullOrWhiteSpace(topic);

@@ -295,6 +295,38 @@ public sealed class AssociatedNameStrategyTests
     }
 
     [Test]
+    public async Task GenericSerializer_PrepareAsync_ObservesAssociationCacheInvalidation()
+    {
+        using var client = new MockSchemaRegistryClient();
+        await AssociateAsync(client, "orders", "orders-v1");
+        var resolver = CreateResolver(client);
+        await using var serializer = new SchemaRegistrySerializer<int>(
+            client,
+            static (_, _) => { },
+            static () => new Schema { SchemaType = SchemaType.Json, SchemaString = "{\"type\":\"integer\"}" },
+            resolver);
+
+        var first = await serializer.PrepareAsync("orders", 42);
+
+        await ReplaceAssociationAsync(client, "orders", "orders-v2");
+        _ = await resolver.RefreshAsync("orders", typeof(int).FullName, isKey: false);
+        var refreshed = await serializer.PrepareAsync("orders", 42);
+
+        await ReplaceAssociationAsync(client, "orders", "orders-v3");
+        await Assert.That(resolver.Invalidate("orders", typeof(int).FullName, isKey: false)).IsTrue();
+        var invalidated = await serializer.PrepareAsync("orders", 42);
+
+        await ReplaceAssociationAsync(client, "orders", "orders-v4");
+        resolver.ClearCache();
+        var cleared = await serializer.PrepareAsync("orders", 42);
+
+        await Assert.That(first.Subject).IsEqualTo("orders-v1");
+        await Assert.That(refreshed.Subject).IsEqualTo("orders-v2");
+        await Assert.That(invalidated.Subject).IsEqualTo("orders-v3");
+        await Assert.That(cleared.Subject).IsEqualTo("orders-v4");
+    }
+
+    [Test]
     public async Task GenericDeserializer_SynchronousStrategyDisablesPreparationPath()
     {
         using var client = new MockSchemaRegistryClient();
@@ -472,6 +504,15 @@ public sealed class AssociatedNameStrategyTests
             MaxCachedSubjects = maxCachedSubjects,
             LookupTimeout = lookupTimeout ?? TimeSpan.FromSeconds(30)
         });
+
+    private static async Task ReplaceAssociationAsync(
+        MockSchemaRegistryClient client,
+        string topic,
+        string subject)
+    {
+        await client.DeleteAssociationsAsync(ResourceId(topic), "topic", ["value"]);
+        await AssociateAsync(client, topic, subject);
+    }
 
     private static Association CreateAssociation(string topic, string subject) => new()
     {
