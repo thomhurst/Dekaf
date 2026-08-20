@@ -106,15 +106,13 @@ public class ProducerSingleBenchmarks
         {
             await _dekafProducer.FlushAsync(cts.Token).ConfigureAwait(false);
         }
-        catch
+        finally
         {
-            // Ignore flush errors during cleanup
+            _confluentProducer.Flush(TimeSpan.FromSeconds(60));
+            await _dekafProducer.DisposeAsync().ConfigureAwait(false);
+            _confluentProducer.Dispose();
+            await _kafka.DisposeAsync().ConfigureAwait(false);
         }
-
-        _confluentProducer.Flush(TimeSpan.FromSeconds(60));
-        await _dekafProducer.DisposeAsync().ConfigureAwait(false);
-        _confluentProducer.Dispose();
-        await _kafka.DisposeAsync().ConfigureAwait(false);
     }
 
     [BenchmarkCategory("SingleProduceNoLinger")]
