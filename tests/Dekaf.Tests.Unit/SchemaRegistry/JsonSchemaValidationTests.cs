@@ -855,7 +855,43 @@ public sealed class JsonSchemaValidationTests
             () => validator.Validate("""{"current":true,"a":true,"b":true}"""u8, 22));
 
         await Assert.That(anyOf.Keyword).IsEqualTo("anyOf");
+        await Assert.That(anyOf.JsonPath).IsEqualTo("$");
         await Assert.That(oneOf.Keyword).IsEqualTo("oneOf");
+        await Assert.That(oneOf.JsonPath).IsEqualTo("$");
+    }
+
+    [Test]
+    [Arguments("anyOf")]
+    [Arguments("oneOf")]
+    public async Task Validator_EmptyCompositionRejectsEveryInstance(string keyword)
+    {
+        var validator = CreateFactory().GetOrCreate(CreateSchema($$"""{"{{keyword}}":[]}"""));
+
+        var exception = Assert.Throws<JsonSchemaValidationException>(
+            () => validator.Validate("{}"u8, 22));
+
+        await Assert.That(exception.Keyword).IsEqualTo(keyword);
+        await Assert.That(exception.JsonPath).IsEqualTo("$");
+    }
+
+    [Test]
+    public async Task Validator_CompositionProbeFailureRestoresParentPath()
+    {
+        const string schemaText = """
+            {
+              "anyOf": [
+                { "properties": { "nested": { "required": ["legacy"] } } },
+                { "properties": { "nested": { "required": ["current"] } } }
+              ]
+            }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
+
+        var exception = Assert.Throws<JsonSchemaValidationException>(
+            () => validator.Validate("""{"nested":{}}"""u8, 22));
+
+        await Assert.That(exception.Keyword).IsEqualTo("anyOf");
+        await Assert.That(exception.JsonPath).IsEqualTo("$");
     }
 
     [Test]
@@ -1073,6 +1109,75 @@ public sealed class JsonSchemaValidationTests
         await Assert.That(exception.Violations[0].Cause).IsTypeOf<SchemaRegistryRuleException>();
         await Assert.That(exception.Violations[0].Cause!.Message).Contains(
             "Could not compile validation rule 'unsupported'");
+    }
+
+    [Test]
+    public async Task InlineRules_RejectMethodCallsOnIdentifiersThatOnlyEndWithThisMember()
+    {
+        const string schemaText = """
+            { "confluent:rules": [{ "name": "invalid", "expr": "thisx.startsWith('x')" }] }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
+
+        var exception = Assert.Throws<ValidationRulesFailedException>(() => validator.ValidateRules(
+            "\"x\""u8.ToArray(),
+            24,
+            failFast: false));
+
+        await Assert.That(exception.Violations[0].Cause!.Message).Contains(
+            "Unsupported CEL function 'thisx.startsWith'");
+    }
+
+    [Test]
+    public async Task Deserializer_IncompleteMigrationValidatesAgainstPayloadSchema()
+    {
+        const string writerSchemaText = """
+            { "type": "object", "properties": { "id": { "type": "integer" } }, "required": ["id"] }
+            """;
+        const string readerSchemaText = """
+            { "type": "object", "properties": { "latest": { "type": "string" } }, "required": ["latest"] }
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        var writerSchemaId = await registry.RegisterSchemaAsync(
+            "validation-value",
+            CreateSchema(writerSchemaText));
+        await registry.RegisterSchemaAsync(
+            "validation-value",
+            new Schema
+            {
+                SchemaType = SchemaType.Json,
+                SchemaString = readerSchemaText,
+                RuleSet = new SchemaRuleSet
+                {
+                    MigrationRules =
+                    [
+                        new SchemaRule
+                        {
+                            Name = "unavailable",
+                            Type = "MISSING",
+                            Kind = SchemaRuleKind.Transform,
+                            Mode = SchemaRuleMode.Upgrade,
+                            OnFailure = "NONE"
+                        }
+                    ]
+                }
+            });
+        await using var deserializer = new JsonSchemaRegistryDeserializer<ValidationPayload>(
+            registry,
+            jsonOptions: null,
+            validationOptions: new JsonSchemaValidationOptions
+            {
+                ValidatorFactory = new StreamingJsonSchemaValidatorFactory(registry),
+                Mode = JsonSchemaValidationMode.Deserialize
+            },
+            config: new SchemaRegistryDeserializerConfig { UseLatestVersion = true },
+            ruleExecutor: new SchemaRegistryRuleExecutor([]));
+
+        var result = deserializer.Deserialize(
+            CreateWirePayload(writerSchemaId, """{"id":7}"""),
+            Context);
+
+        await Assert.That(result.Id).IsEqualTo(7);
     }
 
     private static Schema CreateSchema(

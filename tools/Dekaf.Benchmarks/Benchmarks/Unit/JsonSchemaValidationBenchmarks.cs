@@ -43,6 +43,31 @@ public class JsonSchemaValidationBenchmarks
         }
         """;
 
+    private const string NestedInlineRulesJsonSchema = """
+        {
+          "properties": { "child": {
+            "properties": { "child": {
+              "properties": { "child": {
+                "properties": { "child": {
+                  "properties": { "child": {
+                    "properties": { "child": {
+                      "properties": { "child": {
+                        "properties": { "child": {
+                          "properties": { "value": {
+                            "type": "integer",
+                            "confluent:rules": [{ "name": "positive", "expr": "this > 0" }]
+                          } }
+                        } }
+                      } }
+                    } }
+                  } }
+                } }
+              } }
+            } }
+          } }
+        }
+        """;
+
     private ArrayBufferWriter<byte> _disabledDestination = new(256);
     private ArrayBufferWriter<byte> _enabledDestination = new(256);
     private ArrayBufferWriter<byte> _inlineRulesDestination = new(256);
@@ -60,6 +85,8 @@ public class JsonSchemaValidationBenchmarks
     private ReadOnlyMemory<byte> _inlineRulesWirePayload;
     private ReadOnlyMemory<byte> _inlineRulesJsonPayload;
     private IJsonSchemaValidator _inlineRulesValidator = null!;
+    private ReadOnlyMemory<byte> _nestedInlineRulesJsonPayload;
+    private IJsonSchemaValidator _nestedInlineRulesValidator = null!;
     private SerializationContext _context;
     private int _alternateSchemaIndex;
 
@@ -130,6 +157,15 @@ public class JsonSchemaValidationBenchmarks
         _inlineRulesJsonPayload = _inlineRulesWirePayload[5..];
         _inlineRulesValidator = inlineRulesFactory.GetOrCreate(inlineRulesRegistry.GetSchema(1));
         _inlineRulesValidator.ValidateRules(_inlineRulesJsonPayload, 1, failFast: false);
+        _nestedInlineRulesJsonPayload =
+            """{"child":{"child":{"child":{"child":{"child":{"child":{"child":{"child":{"value":7}}}}}}}}}"""u8
+                .ToArray();
+        _nestedInlineRulesValidator = inlineRulesFactory.GetOrCreate(new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = NestedInlineRulesJsonSchema
+        });
+        _nestedInlineRulesValidator.ValidateRules(_nestedInlineRulesJsonPayload, 2, failFast: false);
         _inlineRulesDestination.Clear();
         _ = _disabledDeserializer.Deserialize(_wirePayload, _context);
         _ = _enabledDeserializer.Deserialize(_wirePayload, _context);
@@ -185,6 +221,10 @@ public class JsonSchemaValidationBenchmarks
     [Benchmark]
     public void ValidateInlineRules() =>
         _inlineRulesValidator.ValidateRules(_inlineRulesJsonPayload, 1, failFast: false);
+
+    [Benchmark]
+    public void ValidateNestedInlineRules() =>
+        _nestedInlineRulesValidator.ValidateRules(_nestedInlineRulesJsonPayload, 2, failFast: false);
 
     [Benchmark]
     public BenchmarkPayload DeserializeValidationEnabledAlternatingSchemas()

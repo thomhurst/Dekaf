@@ -758,6 +758,7 @@ internal sealed class ValidationCelParser
     private ValidationCelNode ParseIdentifier(string identifier)
     {
         if (_current.Kind == ValidationCelTokenKind.LeftParen &&
+            identifier.StartsWith("this.", StringComparison.Ordinal) &&
             identifier.LastIndexOf('.') is > 3 and var methodSeparator)
         {
             var method = identifier[(methodSeparator + 1)..];
