@@ -1235,6 +1235,54 @@ public sealed class JsonSchemaValidationTests
     }
 
     [Test]
+    [Arguments("anyOf")]
+    [Arguments("oneOf")]
+    public void InlineRules_AggregateCompositionUsesFinalDuplicatePropertyValue(string keyword)
+    {
+        var schemaText = $$"""
+            {
+              "{{keyword}}": [
+                {
+                  "properties": {
+                    "value": {
+                      "type": "integer",
+                      "confluent:rules": [{ "name": "positive", "expr": "this > 0" }]
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "value": {
+                      "type": "string",
+                      "confluent:rules": [{ "name": "ok", "expr": "this == 'ok'" }]
+                    }
+                  }
+                }
+              ]
+            }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
+
+        validator.ValidateRules(
+            """{"value":1,"value":"ok"}"""u8.ToArray(),
+            25,
+            failFast: false);
+    }
+
+    [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public void InlineRules_AggregateManyDuplicatePropertiesUseFinalValues(bool declaredProperties)
+    {
+        var (schemaText, payload) = CreateManyDuplicateRuleCase(
+            propertyCount: 16,
+            declaredProperties);
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
+
+        validator.ValidateRules(payload, 25, failFast: false);
+    }
+
+    [Test]
     public void InlineRules_SizeCountsUniqueMapKeys()
     {
         const string schemaText = """
@@ -1691,6 +1739,47 @@ public sealed class JsonSchemaValidationTests
     }
 
     [Test]
+    public async Task Deserializer_LatestVersionMarkerValidatesWriterRulesBeforeDomainBoundary()
+    {
+        const string writerSchemaText = """
+            {
+              "confluent:rules": [{ "name": "writer", "expr": "this.id == 7" }]
+            }
+            """;
+        const string readerSchemaText = """
+            {
+              "confluent:rules": [{ "name": "reader", "expr": "this.latest == 'ok'" }]
+            }
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        var writerSchemaId = await registry.RegisterSchemaAsync(
+            "validation-value",
+            CreateSchema(writerSchemaText));
+        _ = await registry.RegisterSchemaAsync(
+            "validation-value",
+            CreateSchema(readerSchemaText));
+        await using var deserializer = new JsonSchemaRegistryDeserializer<ValidationPayload>(
+            registry,
+            jsonOptions: null,
+            validationOptions: new JsonSchemaValidationOptions
+            {
+                ValidatorFactory = new StreamingJsonSchemaValidatorFactory(registry),
+                Mode = JsonSchemaValidationMode.None,
+                ValidationRulesExecution = ValidationRulesExecution.BeforeDomainRules
+            },
+            config: new SchemaRegistryDeserializerConfig { UseLatestVersion = true });
+
+        var result = deserializer.Deserialize(
+            CreateWirePayload(writerSchemaId, """{"id":7}"""),
+            Context);
+
+        await Assert.That(result.Id).IsEqualTo(7);
+        Assert.Throws<ValidationRulesFailedException>(() => deserializer.Deserialize(
+            CreateWirePayload(writerSchemaId, """{"id":6}"""),
+            Context));
+    }
+
+    [Test]
     public async Task Deserializer_LatestVersionRunsBeforeRulesAfterEncoding()
     {
         const string schemaText = """
@@ -1950,6 +2039,73 @@ public sealed class JsonSchemaValidationTests
         await Assert.That(Encoding.UTF8.GetString(result.Payload.Span)).IsEqualTo("""{"latest":"ok"}""");
     }
 
+    [Test]
+    [Arguments("ok", false)]
+    [Arguments("bad", true)]
+    public async Task MigrationRunner_ValidatesTransformedPayloadAgainstReaderRules(
+        string latest,
+        bool shouldFail)
+    {
+        const string writerSchemaText = """
+            {
+              "confluent:rules": [{ "name": "writer", "expr": "this.id == 7" }]
+            }
+            """;
+        const string readerSchemaText = """
+            {
+              "confluent:rules": [{ "name": "reader", "expr": "this.latest == 'ok'" }]
+            }
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        var writerSchema = CreateSchema(writerSchemaText);
+        var writerSchemaId = await registry.RegisterSchemaAsync("validation-value", writerSchema);
+        var readerSchema = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = readerSchemaText,
+            RuleSet = new SchemaRuleSet
+            {
+                MigrationRules =
+                [
+                    new SchemaRule
+                    {
+                        Name = "upgrade",
+                        Type = "MIGRATE",
+                        Kind = SchemaRuleKind.Transform,
+                        Mode = SchemaRuleMode.Upgrade
+                    }
+                ]
+            }
+        };
+        _ = await registry.RegisterSchemaAsync("validation-value", readerSchema);
+        var calls = new List<string>();
+        var runner = new SchemaRegistryMigrationRunner(
+            registry,
+            new SchemaRegistryRuleExecutor([
+                new ReplacingRuleHandler(
+                    "MIGRATE",
+                    Encoding.UTF8.GetBytes($$"""{"latest":"{{latest}}"}"""),
+                    calls)
+            ]),
+            TimeSpan.FromSeconds(1));
+
+        void Transform() => runner.TransformWithBeforeDomainValidation(
+                """{"id":7}"""u8.ToArray(),
+                writerSchemaId,
+                "validation-value",
+                writerSchema,
+                Context,
+                SchemaRegistryPayloadFormat.Json,
+                new StreamingJsonSchemaValidatorFactory(registry),
+                validationRulesFailFast: false);
+
+        if (shouldFail)
+            Assert.Throws<ValidationRulesFailedException>(Transform);
+        else
+            Transform();
+        await Assert.That(calls).IsEquivalentTo(["upgrade"]);
+    }
+
     private static Schema CreateSchema(
         string schema,
         IReadOnlyList<SchemaReference>? references = null)
@@ -1991,6 +2147,40 @@ public sealed class JsonSchemaValidationTests
         json.Append('}', depth);
         json.Append('}');
         return Encoding.UTF8.GetBytes(json.ToString());
+    }
+
+    private static (string Schema, byte[] Payload) CreateManyDuplicateRuleCase(
+        int propertyCount,
+        bool declaredProperties)
+    {
+        var schema = new StringBuilder(propertyCount * 96);
+        var payload = new StringBuilder(propertyCount * 20);
+        schema.Append(declaredProperties
+            ? "{\"properties\":{"
+            : "{\"additionalProperties\":{\"confluent:rules\":[{\"name\":\"value\",\"expr\":\"this == 1\"}]}}");
+        payload.Append('{');
+        for (var index = 0; index < propertyCount; index++)
+        {
+            if (index != 0)
+            {
+                if (declaredProperties)
+                    schema.Append(',');
+                payload.Append(',');
+            }
+            if (declaredProperties)
+            {
+                schema.Append("\"p").Append(index)
+                    .Append("\":{\"confluent:rules\":[{\"name\":\"p").Append(index)
+                    .Append("\",\"expr\":\"this == 1\"}]}");
+            }
+            payload.Append("\"p").Append(index).Append("\":0");
+        }
+        if (declaredProperties)
+            schema.Append("}}");
+        for (var index = 0; index < propertyCount; index++)
+            payload.Append(",\"p").Append(index).Append("\":1");
+        payload.Append('}');
+        return (schema.ToString(), Encoding.UTF8.GetBytes(payload.ToString()));
     }
 
     private static (string Schema, byte[] Payload) CreateDeepMemberRule(int depth)

@@ -78,6 +78,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
 {
     private const int MaxReferenceDepth = 128;
     private const int InitialCompositionMatchCapacity = 32;
+    private const int MaxAggregatePropertyLookahead = 8;
 
     public void Validate(ReadOnlySpan<byte> payload, int schemaId)
     {
@@ -127,7 +128,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         var path = new ValidationPathBuilder();
         List<ValidationRuleError>? violations = null;
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        var compositionMatches = new ValidationCompositionMatchCache(payload.Span, failFast);
+        var compositionMatches = new ValidationCompositionMatchCache(payload.Span);
         try
         {
             WalkValidationRules(
@@ -182,6 +183,8 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
                         var result = compiledRule.Evaluate(value, now, memberValues);
                         if (result.Kind == ValidationResultKind.Boolean ? !result.Boolean : result.String!.Length != 0)
                         {
+                            if (!compositionMatches.CollectViolations)
+                                return false;
                             (violations ??= []).Add(new ValidationRuleError(
                                 compiledRule.Rule,
                                 path.ToString(),
@@ -192,6 +195,8 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
                     }
                     catch (SchemaRegistryRuleException exception)
                     {
+                        if (!compositionMatches.CollectViolations)
+                            return false;
                         (violations ??= []).Add(new ValidationRuleError(
                             compiledRule.Rule,
                             path.ToString(),
@@ -344,6 +349,12 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
                         ref branchReader,
                         branches[index],
                         referenceDepth,
+                        ref compositionMatches) &&
+                    !MatchesValidationShapeLastPropertyWins(
+                        ref branchReader,
+                        ref reader,
+                        branches[index],
+                        referenceDepth,
                         ref compositionMatches))
                     continue;
 
@@ -493,6 +504,35 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
             referenceDepth);
     }
 
+    private static bool MatchesValidationShapeLastPropertyWins(
+        ref Utf8JsonReader reader,
+        ref Utf8JsonReader originalReader,
+        CompiledSchemaNode node,
+        int referenceDepth,
+        scoped ref ValidationCompositionMatchCache compositionMatches)
+    {
+        reader = originalReader;
+        var path = new JsonPathBuilder();
+        var lastPropertyWins = compositionMatches.LastPropertyWins;
+        compositionMatches.LastPropertyWins = true;
+        try
+        {
+            return ValidateNodeCore(
+                ref reader,
+                node,
+                ref path,
+                schemaId: null,
+                out _,
+                ref compositionMatches,
+                recordCompositionMatches: false,
+                referenceDepth);
+        }
+        finally
+        {
+            compositionMatches.LastPropertyWins = lastPropertyWins;
+        }
+    }
+
     private static bool MatchesValidationShapeAndRecordCompositionMatches(
         ref Utf8JsonReader reader,
         CompiledSchemaNode node,
@@ -500,14 +540,23 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         scoped ref ValidationCompositionMatchCache compositionMatches)
     {
         var path = new JsonPathBuilder();
-        return ValidateNodeAndRecordCompositionMatches(
-            ref reader,
-            node,
-            ref path,
-            schemaId: null,
-            out _,
-            ref compositionMatches,
-            referenceDepth);
+        var lastPropertyWins = compositionMatches.LastPropertyWins;
+        compositionMatches.LastPropertyWins = true;
+        try
+        {
+            return ValidateNodeAndRecordCompositionMatches(
+                ref reader,
+                node,
+                ref path,
+                schemaId: null,
+                out _,
+                ref compositionMatches,
+                referenceDepth);
+        }
+        finally
+        {
+            compositionMatches.LastPropertyWins = lastPropertyWins;
+        }
     }
 
     private static bool WalkValidationObject(
@@ -521,59 +570,146 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         scoped ref ValidationCompositionMatchCache compositionMatches,
         int referenceDepth)
     {
-        while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
+        var objectReader = reader;
+        JsonObjectPropertyIndex finalProperties = default;
+        var hasFinalProperties = false;
+        try
         {
-            if (reader.TokenType != JsonTokenType.PropertyName)
-                return true;
-            var property = node.Properties?.Find(ref reader);
-            var additionalPropertyTokenStart = property is null
-                ? checked((int)reader.TokenStartIndex)
-                : -1;
-            var pathMark = path.Length;
-            if (property is not null)
-                path.AppendProperty(property.Name);
-            else if (node.AdditionalProperties is not null)
-                path.AppendMapKey(ref reader);
-            if (!reader.Read())
-                return true;
-
-            var child = property?.IsDeclared == true ? property.Schema : node.AdditionalProperties;
-            if (child is not null)
+            while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
             {
-                var violationCount = violations?.Count ?? 0;
-                if (!WalkValidationRules(
-                        ref reader,
-                        payload,
-                        child,
-                        schemaId,
-                        ref path,
-                        now,
-                        failFast: false,
-                        ref violations,
-                        ref compositionMatches,
-                        referenceDepth))
-                    return false;
-                if (violations is not null &&
-                    violations.Count != violationCount &&
-                    (property is not null
-                        ? HasLaterDeclaredProperty(ref reader, property, node.Properties!)
-                        : HasLaterAdditionalProperty(
-                            ref reader,
-                            additionalPropertyTokenStart,
-                            payload.Span)))
+                if (reader.TokenType != JsonTokenType.PropertyName)
+                    return true;
+                if (hasFinalProperties && !finalProperties.IsLast(ref reader, payload.Span))
                 {
-                    violations.RemoveRange(violationCount, violations.Count - violationCount);
-                    if (violations.Count == 0)
-                        violations = null;
+                    if (!reader.Read())
+                        return true;
+                    reader.Skip();
+                    continue;
                 }
+
+                var pathMark = path.Length;
+                var propertyReader = reader;
+                var property = node.Properties?.Find(ref reader);
+                if (property is not null)
+                    path.AppendProperty(property.Name);
+                else if (node.AdditionalProperties is not null)
+                    path.AppendMapKey(ref reader);
+                if (!reader.Read())
+                    return true;
+
+                var child = property?.IsDeclared == true ? property.Schema : node.AdditionalProperties;
+                if (child is not null)
+                {
+                    var validationReader = reader;
+                    var validationPathMark = path.Length;
+                    var compositionCheckpoint = compositionMatches.CaptureCheckpoint();
+                    compositionMatches.CollectViolations = false;
+                    var isValid = WalkValidationRules(
+                            ref validationReader,
+                            payload,
+                            child,
+                            schemaId,
+                            ref path,
+                            now,
+                            failFast: true,
+                            ref violations,
+                            ref compositionMatches,
+                            referenceDepth);
+                    path.Truncate(validationPathMark);
+                    if (isValid)
+                    {
+                        compositionMatches.CollectViolations = compositionCheckpoint.CollectViolations;
+                        reader = validationReader;
+                    }
+                    else
+                    {
+                        compositionMatches.Restore(compositionCheckpoint);
+                        var valueEndReader = reader;
+                        valueEndReader.Skip();
+                        var collectCurrentViolations = true;
+                        if (!hasFinalProperties)
+                        {
+                            var lookahead = FindLaterProperty(
+                                ref valueEndReader,
+                                ref propertyReader,
+                                property,
+                                node.Properties,
+                                payload.Span);
+                            collectCurrentViolations = lookahead == AggregatePropertyLookahead.NotFound;
+                            if (lookahead == AggregatePropertyLookahead.LimitReached)
+                            {
+                                finalProperties = new JsonObjectPropertyIndex();
+                                finalProperties.Build(ref objectReader, payload.Span);
+                                hasFinalProperties = true;
+                                collectCurrentViolations = finalProperties.IsLast(
+                                    ref propertyReader,
+                                    payload.Span);
+                            }
+                        }
+
+                        if (collectCurrentViolations)
+                        {
+                            if (!WalkValidationRules(
+                                    ref reader,
+                                    payload,
+                                    child,
+                                    schemaId,
+                                    ref path,
+                                    now,
+                                    failFast: false,
+                                    ref violations,
+                                    ref compositionMatches,
+                                    referenceDepth))
+                                return false;
+                        }
+                        else
+                        {
+                            reader = valueEndReader;
+                        }
+                    }
+                }
+                else
+                {
+                    reader.Skip();
+                }
+                path.Truncate(pathMark);
             }
-            else
-            {
-                reader.Skip();
-            }
-            path.Truncate(pathMark);
+            return true;
         }
-        return true;
+        finally
+        {
+            if (hasFinalProperties)
+                finalProperties.Dispose();
+        }
+    }
+
+    private static AggregatePropertyLookahead FindLaterProperty(
+        ref Utf8JsonReader reader,
+        ref Utf8JsonReader propertyReader,
+        CompiledProperty? property,
+        CompiledPropertyTable? properties,
+        ReadOnlySpan<byte> source)
+    {
+        var scan = reader;
+        for (var inspected = 0; scan.Read() && scan.TokenType != JsonTokenType.EndObject; inspected++)
+        {
+            if (scan.TokenType != JsonTokenType.PropertyName)
+                return AggregatePropertyLookahead.NotFound;
+
+            var matches = property is not null
+                ? ReferenceEquals(property, properties!.Find(ref scan))
+                : JsonObjectPropertyIndex.NamesEqual(source, ref propertyReader, ref scan);
+            if (matches)
+                return AggregatePropertyLookahead.Found;
+            if (inspected + 1 >= MaxAggregatePropertyLookahead)
+                return AggregatePropertyLookahead.LimitReached;
+
+            if (!scan.Read())
+                return AggregatePropertyLookahead.NotFound;
+            scan.Skip();
+        }
+
+        return AggregatePropertyLookahead.NotFound;
     }
 
     private static bool WalkValidationObjectFailFast(
@@ -640,52 +776,6 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         {
             finalProperties.Dispose();
         }
-    }
-
-    private static bool HasLaterDeclaredProperty(
-        ref Utf8JsonReader reader,
-        CompiledProperty property,
-        CompiledPropertyTable properties)
-    {
-        var scan = reader;
-        while (scan.Read() && scan.TokenType != JsonTokenType.EndObject)
-        {
-            if (scan.TokenType != JsonTokenType.PropertyName)
-                return false;
-
-            if (ReferenceEquals(property, properties.Find(ref scan)))
-                return true;
-
-            if (!scan.Read())
-                return false;
-            scan.Skip();
-        }
-        return false;
-    }
-
-    private static bool HasLaterAdditionalProperty(
-        ref Utf8JsonReader reader,
-        int propertyTokenStart,
-        ReadOnlySpan<byte> source)
-    {
-        var propertyNameReader = new Utf8JsonReader(
-            source[propertyTokenStart..],
-            ValidationCelJsonReader.Options);
-        _ = propertyNameReader.Read();
-        var scan = reader;
-        while (scan.Read() && scan.TokenType != JsonTokenType.EndObject)
-        {
-            if (scan.TokenType != JsonTokenType.PropertyName)
-                return false;
-
-            if (JsonObjectPropertyIndex.NamesEqual(source, ref propertyNameReader, ref scan))
-                return true;
-
-            if (!scan.Read())
-                return false;
-            scan.Skip();
-        }
-        return false;
     }
 
     private static bool WalkValidationArray(
@@ -1228,6 +1318,21 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         internal bool Matched;
     }
 
+    private readonly record struct ValidationCompositionMatchCheckpoint(
+        ValidationCompositionBranchMatch[]? RentedMatches,
+        int Count,
+        int ReadIndex,
+        int ReadEnd,
+        bool LastPropertyWins,
+        bool CollectViolations);
+
+    private enum AggregatePropertyLookahead : byte
+    {
+        NotFound,
+        Found,
+        LimitReached
+    }
+
     [InlineArray(InitialCompositionMatchCapacity)]
     private struct InitialValidationCompositionMatches
     {
@@ -1252,12 +1357,38 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
             _readIndex = 0;
             _readEnd = 0;
             LastPropertyWins = lastPropertyWins;
+            CollectViolations = true;
         }
 
         internal readonly ReadOnlySpan<byte> Source => _source;
-        internal readonly bool LastPropertyWins { get; }
+        internal bool LastPropertyWins { get; set; }
+        internal bool CollectViolations { get; set; }
         internal readonly int ReadIndex => _readIndex;
         internal readonly bool HasPendingMatches => _readIndex < _readEnd;
+
+        internal readonly ValidationCompositionMatchCheckpoint CaptureCheckpoint() => new(
+            _rentedMatches,
+            _count,
+            _readIndex,
+            _readEnd,
+            LastPropertyWins,
+            CollectViolations);
+
+        internal void Restore(ValidationCompositionMatchCheckpoint checkpoint)
+        {
+            if (_rentedMatches is not null &&
+                !ReferenceEquals(_rentedMatches, checkpoint.RentedMatches))
+            {
+                ArrayPool<ValidationCompositionBranchMatch>.Shared.Return(_rentedMatches);
+            }
+
+            _rentedMatches = checkpoint.RentedMatches;
+            _count = checkpoint.Count;
+            _readIndex = checkpoint.ReadIndex;
+            _readEnd = checkpoint.ReadEnd;
+            LastPropertyWins = checkpoint.LastPropertyWins;
+            CollectViolations = checkpoint.CollectViolations;
+        }
 
         internal int BeginBranch(int branchIndex)
         {

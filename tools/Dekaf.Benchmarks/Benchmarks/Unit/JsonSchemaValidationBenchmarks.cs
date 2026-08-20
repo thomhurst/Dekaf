@@ -156,6 +156,9 @@ public class JsonSchemaValidationBenchmarks
     private IJsonSchemaValidator _siblingInlineRulesValidator = null!;
     private ReadOnlyMemory<byte> _nestedMemberInlineRulesJsonPayload;
     private ReadOnlyMemory<byte> _duplicateNestedMemberInlineRulesJsonPayload;
+    private ReadOnlyMemory<byte> _manyDuplicateNestedMemberInlineRulesJsonPayload;
+    private ReadOnlyMemory<byte> _manyDistinctDuplicateInlineRulesJsonPayload;
+    private IJsonSchemaValidator _manyDistinctDuplicateInlineRulesValidator = null!;
     private IJsonSchemaValidator _nestedMemberInlineRulesValidator = null!;
     private ReadOnlyMemory<byte> _duplicatePropertyInlineRulesJsonPayload;
     private IJsonSchemaValidator _duplicatePropertyInlineRulesValidator = null!;
@@ -315,6 +318,24 @@ public class JsonSchemaValidationBenchmarks
             _duplicateNestedMemberInlineRulesJsonPayload,
             5,
             failFast: false);
+        _manyDuplicateNestedMemberInlineRulesJsonPayload =
+            CreateDuplicateNestedMemberPayload(duplicateCount: 32);
+        _nestedMemberInlineRulesValidator.ValidateRules(
+            _manyDuplicateNestedMemberInlineRulesJsonPayload,
+            5,
+            failFast: false);
+        var (manyDistinctDuplicateSchema, manyDistinctDuplicatePayload) =
+            CreateManyDistinctDuplicatePropertiesRule(propertyCount: 32);
+        _manyDistinctDuplicateInlineRulesJsonPayload = manyDistinctDuplicatePayload;
+        _manyDistinctDuplicateInlineRulesValidator = inlineRulesFactory.GetOrCreate(new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = manyDistinctDuplicateSchema
+        });
+        _manyDistinctDuplicateInlineRulesValidator.ValidateRules(
+            _manyDistinctDuplicateInlineRulesJsonPayload,
+            11,
+            failFast: false);
         _duplicatePropertyInlineRulesJsonPayload =
             """{"name":"bad","name":"ok"}"""u8.ToArray();
         _duplicatePropertyInlineRulesValidator = inlineRulesFactory.GetOrCreate(new Schema
@@ -458,6 +479,20 @@ public class JsonSchemaValidationBenchmarks
             failFast: false);
 
     [Benchmark]
+    public void ValidateManyDuplicateNestedMemberInlineRules() =>
+        _nestedMemberInlineRulesValidator.ValidateRules(
+            _manyDuplicateNestedMemberInlineRulesJsonPayload,
+            5,
+            failFast: false);
+
+    [Benchmark]
+    public void ValidateManyDistinctDuplicateInlineRules() =>
+        _manyDistinctDuplicateInlineRulesValidator.ValidateRules(
+            _manyDistinctDuplicateInlineRulesJsonPayload,
+            11,
+            failFast: false);
+
+    [Benchmark]
     public void ValidateDuplicatePropertyFailFastInlineRules() =>
         _duplicatePropertyInlineRulesValidator.ValidateRules(
             _duplicatePropertyInlineRulesJsonPayload,
@@ -502,6 +537,42 @@ public class JsonSchemaValidationBenchmarks
         AppendNestedValue(json, depth);
         json.Append(",\"values\":[],\"expected\":[]}");
         return Encoding.UTF8.GetBytes(json.ToString());
+    }
+
+    private static byte[] CreateDuplicateNestedMemberPayload(int duplicateCount)
+    {
+        const string invalid = "\"details\":{\"a\":0,\"b\":0,\"c\":0,\"d\":0,\"e\":0,\"f\":0,\"g\":0,\"h\":0},";
+        var json = new StringBuilder(duplicateCount * invalid.Length + 80);
+        json.Append('{');
+        for (var index = 0; index < duplicateCount; index++)
+            json.Append(invalid);
+        json.Append("\"details\":{\"a\":1,\"b\":2,\"c\":3,\"d\":4,\"e\":5,\"f\":6,\"g\":7,\"h\":8}}");
+        return Encoding.UTF8.GetBytes(json.ToString());
+    }
+
+    private static (string Schema, byte[] Payload) CreateManyDistinctDuplicatePropertiesRule(int propertyCount)
+    {
+        var schema = new StringBuilder(propertyCount * 96);
+        var payload = new StringBuilder(propertyCount * 20);
+        schema.Append("{\"properties\":{");
+        payload.Append('{');
+        for (var index = 0; index < propertyCount; index++)
+        {
+            if (index != 0)
+            {
+                schema.Append(',');
+                payload.Append(',');
+            }
+            schema.Append("\"p").Append(index)
+                .Append("\":{\"confluent:rules\":[{\"name\":\"p").Append(index)
+                .Append("\",\"expr\":\"this == 1\"}]}");
+            payload.Append("\"p").Append(index).Append("\":0");
+        }
+        schema.Append("}}");
+        for (var index = 0; index < propertyCount; index++)
+            payload.Append(",\"p").Append(index).Append("\":1");
+        payload.Append('}');
+        return (schema.ToString(), Encoding.UTF8.GetBytes(payload.ToString()));
     }
 
     private static void AppendNestedValue(StringBuilder json, int depth)

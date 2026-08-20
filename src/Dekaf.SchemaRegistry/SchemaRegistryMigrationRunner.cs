@@ -304,7 +304,7 @@ internal sealed class SchemaRegistryMigrationRunner
                     $"Migration rules require {nameof(SchemaRegistryRuleExecutor)}.");
             }
 
-            if (_ruleExecutor is null)
+            if (_ruleExecutor is null || ReferenceEquals(_ruleExecutor, MarkerRuleExecutor))
             {
                 ValidateBeforeDomainRules(
                     payload,
@@ -384,8 +384,9 @@ internal sealed class SchemaRegistryMigrationRunner
 
         var payloadSchemaId = schemaId;
         var payloadSchema = writerSchema;
-        if (steps.Length != 0 &&
-            !TransformMigrationSteps(
+        if (steps.Length != 0)
+        {
+            var migrationComplete = TransformMigrationSteps(
                 ref payload,
                 ref payloadSchemaId,
                 ref payloadSchema,
@@ -394,9 +395,19 @@ internal sealed class SchemaRegistryMigrationRunner
                 serializationContext,
                 payloadFormat,
                 taggedFieldTransformers,
-                steps))
-        {
-            return new MigrationResult(payload, plan.ReaderSchema, payloadSchemaId, payloadSchema);
+                steps);
+            if (migrationComplete || payloadSchemaId != schemaId)
+            {
+                ValidateBeforeDomainRules(
+                    payload,
+                    payloadSchemaId,
+                    payloadSchema,
+                    validationRulesFactory,
+                    validationRulesFailFast);
+            }
+
+            if (!migrationComplete)
+                return new MigrationResult(payload, plan.ReaderSchema, payloadSchemaId, payloadSchema);
         }
 
         if (!plan.IsMigrationChainComplete)
