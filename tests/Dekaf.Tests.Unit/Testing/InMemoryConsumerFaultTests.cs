@@ -257,6 +257,50 @@ public sealed class InMemoryConsumerFaultTests
     }
 
     [Test]
+    [Arguments(KafkaFaultOperation.Fetch)]
+    [Arguments(KafkaFaultOperation.Consume)]
+    public async Task ConsumeOneAsync_GroupOwnershipChangeDuringFaultBarrierReselectsRecord(
+        KafkaFaultOperation operation)
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic(Topic, partitionCount: 2);
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Partition = 0,
+            Key = "key",
+            Value = "zero"
+        });
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Partition = 1,
+            Key = "key",
+            Value = "one"
+        });
+        await using var first = CreateConsumer(cluster, memberId: "z-member");
+        first.Subscribe(Topic);
+        var barrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(operation, Topic, 0, GroupId));
+
+        var firstConsume = first.ConsumeOneAsync(Timeout.InfiniteTimeSpan).AsTask();
+        await barrier.WaitUntilEnteredAsync();
+        await using var second = CreateConsumer(cluster, memberId: "a-member");
+        second.Subscribe(Topic);
+        await Assert.That(barrier.Release()).IsTrue();
+
+        var firstResult = await firstConsume.WaitAsync(TimeSpan.FromSeconds(5));
+        var secondResult = await second.ConsumeOneAsync(TimeSpan.Zero);
+
+        await Assert.That(firstResult).IsNotNull();
+        await Assert.That(firstResult!.Value.Partition).IsEqualTo(1);
+        await Assert.That(secondResult).IsNotNull();
+        await Assert.That(secondResult!.Value.Partition).IsEqualTo(0);
+        await Assert.That(first.GetPosition(new TopicPartition(Topic, 0))).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task ConsumeSnapshotAsync_EmptyCustomPlanSkipsRecordProbes()
     {
         var innerPlan = new KafkaFaultPlan();
@@ -467,6 +511,32 @@ public sealed class InMemoryConsumerFaultTests
 
         await Assert.That(actual).IsSameReferenceAs(secondFailure);
         await Assert.That(cluster.FaultPlan.Count).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task CommitAsync_BarrierCommitsExactCapturedOffsets()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic(Topic, partitionCount: 2);
+        await using var consumer = CreateConsumer(cluster, enableAutoOffsetStore: false);
+        var secondPartition = new TopicPartition(Topic, 1);
+        consumer.Assign(Partition, secondPartition);
+        consumer.StoreOffsets([
+            new TopicPartitionOffset(Topic, 0, 1),
+            new TopicPartitionOffset(Topic, 1, 1)
+        ]);
+        var barrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, Topic, 0, GroupId));
+
+        var commit = consumer.CommitAsync().AsTask();
+        await barrier.WaitUntilEnteredAsync();
+        consumer.IncrementalUnassign([Partition]);
+        consumer.StoreOffset(new TopicPartitionOffset(Topic, 1, 9));
+        await Assert.That(barrier.Release()).IsTrue();
+        await commit;
+
+        await Assert.That(cluster.GetCommittedOffset(GroupId, Partition)).IsEqualTo(1);
+        await Assert.That(cluster.GetCommittedOffset(GroupId, secondPartition)).IsEqualTo(1);
     }
 
     [Test]
@@ -1592,7 +1662,8 @@ public sealed class InMemoryConsumerFaultTests
         bool enableAutoOffsetStore = true,
         OffsetCommitMode offsetCommitMode = OffsetCommitMode.Manual,
         OffsetStoreTiming offsetStoreTiming = OffsetStoreTiming.OnDelivery,
-        string groupId = GroupId) =>
+        string groupId = GroupId,
+        string? memberId = null) =>
         new(
             cluster,
             new InMemoryConsumerOptions
@@ -1601,7 +1672,8 @@ public sealed class InMemoryConsumerFaultTests
                 AutoOffsetReset = AutoOffsetReset.Earliest,
                 OffsetCommitMode = offsetCommitMode,
                 EnableAutoOffsetStore = enableAutoOffsetStore,
-                OffsetStoreTiming = offsetStoreTiming
+                OffsetStoreTiming = offsetStoreTiming,
+                MemberId = memberId
             });
 
     private static InMemoryConsumer<string, string> CreateAsyncConsumer(

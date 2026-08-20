@@ -30,6 +30,10 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         bool ResumePartition,
         TaskCompletionSource Completion);
 
+    private readonly record struct ConsumerSelectionVersion(
+        int ConsumerState,
+        int ConsumerGroupGeneration);
+
     private readonly object _gate = new();
     private readonly InMemoryKafkaCluster _cluster;
     private readonly IDeserializer<TKey> _keyDeserializer;
@@ -571,7 +575,9 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                     await _cluster.FaultPlan.ApplyAsync(
                         fetchScope,
                         cancellationToken).ConfigureAwait(false);
-                    ThrowIfDisposed();
+                    ThrowIfSnapshotStateChanged(
+                        consumerStateVersion,
+                        consumerGroupGeneration);
                 }
 
                 ConsumeResult<TKey, TValue> result;
@@ -599,7 +605,9 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                     await _cluster.FaultPlan.ApplyAsync(
                         consumeScope,
                         cancellationToken).ConfigureAwait(false);
-                    ThrowIfDisposed();
+                    ThrowIfSnapshotStateChanged(
+                        consumerStateVersion,
+                        consumerGroupGeneration);
                 }
 
                 if (!TryPrepareSnapshotOnDeliveryAutoCommitFault(
@@ -758,18 +766,29 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     {
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
-        _ = GetCommitGroupId();
+        var groupId = GetCommitGroupId();
 
+        TopicPartitionOffset? inDoubtRecord;
+        TopicPartitionOffset[] offsets;
+        int consumerStateVersion;
         bool hasFaultApplication;
         ValueTask faultApplication;
         lock (_gate)
         {
-            var inDoubtOffset = _options.EnableAutoOffsetStore && _inDoubtNextOffset >= 0
-                ? _inDoubtPartition
-                : (TopicPartition?)null;
-            hasFaultApplication = TryApplyMatchingCommitFaultUnderLock(
-                inDoubtOffset,
-                requireInDoubtRecord: false,
+            consumerStateVersion = _consumerStateVersion;
+            inDoubtRecord = _inDoubtNextOffset >= 0
+                ? new TopicPartitionOffset(
+                    _inDoubtPartition.Topic,
+                    _inDoubtPartition.Partition,
+                    _inDoubtNextOffset)
+                : null;
+            var inDoubtCommitOffset = _options.EnableAutoOffsetStore
+                ? inDoubtRecord
+                : null;
+            offsets = CaptureCommitOffsetsUnderLock(inDoubtCommitOffset);
+            hasFaultApplication = TryApplyMatchingCapturedCommitFault(
+                groupId,
+                offsets,
                 cancellationToken,
                 out faultApplication);
         }
@@ -782,10 +801,21 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
         lock (_gate)
         {
-            // Explicit commit: the caller vouches for everything delivered so far,
-            // including the in-doubt record still being processed.
-            ProveInDoubtRecordUnderLock(commitAutomatically: false);
-            CommitStoredOffsets();
+            ThrowIfDisposed();
+            if (_consumerStateVersion == consumerStateVersion &&
+                inDoubtRecord is { } capturedInDoubt &&
+                _inDoubtNextOffset == capturedInDoubt.Offset &&
+                _inDoubtPartition.Topic == capturedInDoubt.Topic &&
+                _inDoubtPartition.Partition == capturedInDoubt.Partition)
+            {
+                // Explicit commit proves the record that was in doubt when this call began.
+                if (_options.EnableAutoOffsetStore)
+                    StoreOffsetUnderLock(capturedInDoubt);
+                _inDoubtNextOffset = -1;
+            }
+
+            if (offsets.Length != 0)
+                _cluster.CommitOffsets(groupId, offsets);
         }
     }
 
@@ -1316,7 +1346,11 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         var previousRecordProven = false;
         while (true)
         {
-            if (!TrySelectRecord(ref previousRecordProven, out var partition, out var record, out var position))
+            if (!TrySelectRecord(
+                    ref previousRecordProven,
+                    out var partition,
+                    out var record,
+                    out var position))
             {
                 result = default;
                 return false;
@@ -1476,6 +1510,18 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         ThrowSnapshotStateChanged();
     }
 
+    private void ThrowIfSnapshotStateChanged(
+        int consumerStateVersion,
+        int consumerGroupGeneration)
+    {
+        lock (_gate)
+        {
+            ThrowIfSnapshotStateChangedUnderLock(
+                consumerStateVersion,
+                consumerGroupGeneration);
+        }
+    }
+
     [DoesNotReturn]
     private static void ThrowSnapshotStateChanged() =>
         throw new InvalidOperationException(
@@ -1494,7 +1540,12 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         var previousRecordProven = false;
         while (true)
         {
-            if (!TrySelectRecord(ref previousRecordProven, out var partition, out var record, out var position))
+            if (!TrySelectRecordWithVersion(
+                    ref previousRecordProven,
+                    out var partition,
+                    out var record,
+                    out var position,
+                    out var selectionVersion))
                 return null;
 
             var fetchScope = new KafkaFaultScope(
@@ -1508,6 +1559,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                     fetchScope,
                     cancellationToken).ConfigureAwait(false);
                 ThrowIfDisposed();
+                if (!IsRecordSelectionCurrent(partition, position, in selectionVersion))
+                    continue;
             }
 
             var selectedResult = _hasAsyncDeserializers
@@ -1525,6 +1578,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                     consumeScope,
                     cancellationToken).ConfigureAwait(false);
                 ThrowIfDisposed();
+                if (!IsRecordSelectionCurrent(partition, position, in selectionVersion))
+                    continue;
             }
 
             if (!TryPrepareOnDeliveryAutoCommitFault(
@@ -1547,7 +1602,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             }
 
             var positionAdvanced = hasAutoCommitReservation
-                ? TryAdvanceReservedPosition(partition, record, position)
+                ? TryAdvanceReservedPosition(partition, record, position, in selectionVersion)
                 : TryAdvancePosition(partition, record, position);
             if (!positionAdvanced)
                 continue;
@@ -1604,12 +1659,70 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         return false;
     }
 
+    private bool TrySelectRecordWithVersion(
+        ref bool previousRecordProven,
+        out TopicPartition selectedPartition,
+        out InMemoryRecord selectedRecord,
+        out long selectedPosition,
+        out ConsumerSelectionVersion selectionVersion)
+    {
+        lock (_gate)
+        {
+            if (!previousRecordProven)
+            {
+                // A new consume call proves the previously delivered record was processed
+                // (poll contract) — stage it before selecting the next one.
+                ProveInDoubtRecordUnderLock();
+                if (IsInDoubtAutoCommitAdvancementPendingUnderLock())
+                {
+                    selectedPartition = default;
+                    selectedRecord = null!;
+                    selectedPosition = -1;
+                    selectionVersion = default;
+                    return false;
+                }
+
+                previousRecordProven = true;
+            }
+
+            var assignment = GetCurrentAssignmentUnderLock(out var consumerGroupGeneration);
+            selectionVersion = new ConsumerSelectionVersion(
+                _consumerStateVersion,
+                consumerGroupGeneration);
+            foreach (var partition in assignment.OrderBy(item => item.Topic, StringComparer.Ordinal).ThenBy(item => item.Partition))
+            {
+                if (_paused.Contains(partition))
+                    continue;
+
+                if (!_positions.TryGetValue(partition, out var position))
+                    continue;
+
+                if (!_cluster.TryRead(partition, position, out var record))
+                    continue;
+
+                selectedPartition = partition;
+                selectedRecord = record;
+                selectedPosition = position;
+                return true;
+            }
+        }
+
+        selectedPartition = default;
+        selectedRecord = null!;
+        selectedPosition = -1;
+        selectionVersion = default;
+        return false;
+    }
+
     /// <summary>
     /// Publishes a delivered record's offset state. Returns false when the position moved while
     /// user deserializers ran, in which case the caller must reselect instead of publishing a
     /// stale result.
     /// </summary>
-    private bool TryAdvancePosition(TopicPartition partition, InMemoryRecord record, long expectedPosition)
+    private bool TryAdvancePosition(
+        TopicPartition partition,
+        InMemoryRecord record,
+        long expectedPosition)
     {
         lock (_gate)
         {
@@ -1619,8 +1732,11 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 return false;
             }
 
-            if (!_positions.TryGetValue(partition, out var currentPosition) || currentPosition != expectedPosition)
+            if (!_positions.TryGetValue(partition, out var currentPosition) ||
+                currentPosition != expectedPosition)
+            {
                 return false;
+            }
 
             _positions[partition] = record.Offset + 1;
             if (_options.OffsetStoreTiming == OffsetStoreTiming.OnDelivery)
@@ -1643,7 +1759,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private bool TryAdvanceReservedPosition(
         TopicPartition partition,
         InMemoryRecord record,
-        long expectedPosition)
+        long expectedPosition,
+        in ConsumerSelectionVersion selectionVersion)
     {
         lock (_gate)
         {
@@ -1656,7 +1773,10 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
             try
             {
-                if (!_positions.TryGetValue(partition, out var currentPosition) || currentPosition != expectedPosition)
+                if (!IsRecordSelectionCurrentUnderLock(
+                        partition,
+                        expectedPosition,
+                        in selectionVersion))
                     return false;
 
                 AdvancePositionUnderLock(partition, record);
@@ -1667,6 +1787,38 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 ClearPendingAutoCommitAdvancementUnderLock(partition, expectedPosition);
             }
         }
+    }
+
+    private bool IsRecordSelectionCurrent(
+        TopicPartition partition,
+        long expectedPosition,
+        in ConsumerSelectionVersion selectionVersion)
+    {
+        lock (_gate)
+        {
+            return IsRecordSelectionCurrentUnderLock(
+                partition,
+                expectedPosition,
+                in selectionVersion);
+        }
+    }
+
+    private bool IsRecordSelectionCurrentUnderLock(
+        TopicPartition partition,
+        long expectedPosition,
+        in ConsumerSelectionVersion selectionVersion)
+    {
+        ThrowIfDisposed();
+        if (_consumerStateVersion != selectionVersion.ConsumerState ||
+            selectionVersion.ConsumerGroupGeneration >= 0 &&
+            _groupId is not null &&
+            _cluster.GetConsumerGroupGeneration(_groupId) != selectionVersion.ConsumerGroupGeneration)
+        {
+            return false;
+        }
+
+        return _positions.TryGetValue(partition, out var currentPosition) &&
+               currentPosition == expectedPosition;
     }
 
     private void AdvancePositionUnderLock(TopicPartition partition, InMemoryRecord record)
@@ -1998,6 +2150,80 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private void CommitStoredOffsets()
         => CommitOffsetsFrom(_storedOffsets);
 
+    private TopicPartitionOffset[] CaptureCommitOffsetsUnderLock(
+        TopicPartitionOffset? inDoubtOffset)
+    {
+        var assignment = GetCurrentAssignmentUnderLock();
+        var inDoubtPartition = inDoubtOffset is { } pending
+            ? new TopicPartition(pending.Topic, pending.Partition)
+            : (TopicPartition?)null;
+        var includeInDoubt = inDoubtPartition is { } pendingPartition &&
+                             assignment.Contains(pendingPartition);
+        var count = includeInDoubt ? 1 : 0;
+        foreach (var partition in _storedOffsets.Keys)
+        {
+            if (partition != inDoubtPartition && assignment.Contains(partition))
+                count++;
+        }
+
+        if (count == 0)
+            return [];
+
+        var offsets = new TopicPartitionOffset[count];
+        var index = 0;
+        if (includeInDoubt && inDoubtOffset is { } capturedInDoubt)
+            offsets[index++] = capturedInDoubt;
+        foreach (var (partition, offset) in _storedOffsets)
+        {
+            if (partition != inDoubtPartition && assignment.Contains(partition))
+                offsets[index++] = offset;
+        }
+
+        return offsets;
+    }
+
+    private bool TryApplyMatchingCapturedCommitFault(
+        string groupId,
+        IReadOnlyList<TopicPartitionOffset> offsets,
+        CancellationToken cancellationToken,
+        out ValueTask faultApplication)
+    {
+        faultApplication = ValueTask.CompletedTask;
+        if (offsets.Count == 0)
+            return false;
+
+        var faultPlan = _cluster.FaultPlan;
+        if (faultPlan is KafkaFaultPlan indexedPlan)
+        {
+            return indexedPlan.HasPotentialMatch(KafkaFaultOperation.Commit, groupId) &&
+                   indexedPlan.TryApplyFirstMatchingCommitFault(
+                       groupId,
+                       offsets,
+                       out faultApplication,
+                       cancellationToken);
+        }
+
+        if (faultPlan.Count == 0)
+            return false;
+
+        var candidateScopes = new KafkaFaultScope[offsets.Count + 1];
+        candidateScopes[0] = new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: groupId);
+        for (var index = 0; index < offsets.Count; index++)
+        {
+            var offset = offsets[index];
+            candidateScopes[index + 1] = new KafkaFaultScope(
+                KafkaFaultOperation.Commit,
+                offset.Topic,
+                offset.Partition,
+                groupId);
+        }
+
+        return faultPlan.TryApplyFirstMatchingFault(
+            candidateScopes,
+            out faultApplication,
+            cancellationToken);
+    }
+
     private void CommitOffsetsFrom(Dictionary<TopicPartition, TopicPartitionOffset> positions)
     {
         if (_groupId is null)
@@ -2173,6 +2399,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         ValueTask faultApplication;
         lock (_gate)
         {
+            ThrowIfDisposed();
             if (_inDoubtNextOffset < 0)
                 return ValueTask.CompletedTask;
 
