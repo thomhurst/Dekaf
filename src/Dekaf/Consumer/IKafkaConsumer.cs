@@ -315,6 +315,26 @@ public interface IConsumerPositions
 }
 
 /// <summary>
+/// Bulk committed-offset lookup capability for a Kafka consumer.
+/// </summary>
+public interface IConsumerCommittedOffsets
+{
+    /// <summary>
+    /// Gets the committed offsets for the requested partitions in one coordinator request.
+    /// </summary>
+    /// <remarks>
+    /// The returned values include committed leader epochs. Partitions without a committed
+    /// offset are absent from the returned dictionary.
+    /// </remarks>
+    /// <exception cref="KafkaTimeoutException">
+    /// The operation exceeds <see cref="ConsumerOptions.DefaultApiTimeoutMs"/>.
+    /// </exception>
+    ValueTask<IReadOnlyDictionary<TopicPartition, TopicPartitionOffset>> GetCommittedOffsetsAsync(
+        IReadOnlyCollection<TopicPartition> partitions,
+        CancellationToken cancellationToken = default);
+}
+
+/// <summary>
 /// Assignment and pause/resume operations for a Kafka consumer.
 /// </summary>
 public interface IConsumerPartitions

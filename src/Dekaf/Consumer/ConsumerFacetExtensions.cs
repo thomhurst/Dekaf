@@ -62,6 +62,29 @@ public static class ConsumerFacetExtensions
     }
 
     /// <summary>
+    /// Gets committed offsets and leader epochs for the requested partitions in one request.
+    /// Partitions without a committed offset are absent from the returned dictionary.
+    /// </summary>
+    /// <exception cref="NotSupportedException">
+    /// The consumer implementation does not support bulk committed-offset lookup.
+    /// </exception>
+    public static ValueTask<IReadOnlyDictionary<TopicPartition, TopicPartitionOffset>> GetCommittedOffsetsAsync<TKey, TValue>(
+        this IKafkaConsumer<TKey, TValue> consumer,
+        IReadOnlyCollection<TopicPartition> partitions,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(consumer);
+        ArgumentNullException.ThrowIfNull(partitions);
+        if (consumer is not IConsumerCommittedOffsets committedOffsets)
+        {
+            throw new NotSupportedException(
+                "The consumer does not support bulk committed-offset lookup");
+        }
+
+        return committedOffsets.GetCommittedOffsetsAsync(partitions, cancellationToken);
+    }
+
+    /// <summary>
     /// Gets the current position for a partition.
     /// </summary>
     public static long? GetPosition<TKey, TValue>(
