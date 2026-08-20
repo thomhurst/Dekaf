@@ -16,10 +16,11 @@ public sealed class SchemaIdentityFramingTests
     [Test]
     public async Task SerializerStrategy_DefaultMatchesConfluentPrefix()
     {
-        var values = Enum.GetValues<SchemaIdSerializerStrategy>();
+        var prefixValue = (int)SchemaIdSerializerStrategy.Prefix;
+        var headerValue = (int)SchemaIdSerializerStrategy.Header;
 
-        await Assert.That(values[0]).IsEqualTo(SchemaIdSerializerStrategy.Prefix);
-        await Assert.That(values[1]).IsEqualTo(SchemaIdSerializerStrategy.Header);
+        await Assert.That(prefixValue).IsEqualTo(0);
+        await Assert.That(headerValue).IsEqualTo(1);
     }
 
     [Test]
