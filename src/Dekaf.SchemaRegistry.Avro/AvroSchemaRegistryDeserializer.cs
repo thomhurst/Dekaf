@@ -5,6 +5,7 @@ using System.Runtime.InteropServices;
 using Avro.Generic;
 using Avro.IO;
 using Avro.Specific;
+using Dekaf.SchemaRegistry.Avro.Poco;
 using Dekaf.Serialization;
 using AvroSchema = Avro.Schema;
 
@@ -361,11 +362,21 @@ public sealed class AvroSchemaRegistryDeserializer<
                 $"Schema Registry returned a conflicting GUID for subject '{subject}'.");
         }
 
+        var names = registered.Schema.References is { Count: > 0 }
+            ? await AvroSchemaReferenceResolver.ResolveAsync(
+                    _schemaRegistry,
+                    registered.Schema,
+                    cancellationToken)
+                .ConfigureAwait(false)
+            : null;
+        var writerSchema = names is null
+            ? AvroSchema.Parse(registered.Schema.SchemaString)
+            : AvroSchema.Parse(registered.Schema.SchemaString, names);
         var resolved = new GuidResolvedSchema(
             registered.Id,
             subject,
             registered.Schema,
-            AvroSchema.Parse(registered.Schema.SchemaString));
+            writerSchema);
         return resolved;
     }
 

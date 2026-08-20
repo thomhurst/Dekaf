@@ -287,8 +287,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         // After serialization, data is copied to a right-sized pooled buffer for the batch.
         // This trades a small copy for eliminating buffer allocation overhead.
         public byte[]? KeySerializationBuffer;
-        // A second slot keeps nested custom-partitioner production allocation-free after warmup.
-        public byte[]? SpareKeySerializationBuffer;
+        // Retains one key buffer per custom-partitioner recursion depth. Recursive partitioners
+        // grow this stack only when reaching a new high-water depth, then reuse every buffer.
+        public Stack<byte[]>? SpareKeySerializationBuffers;
         public byte[]? ValueSerializationBuffer;
         public Headers?[]? SerializationHeaderWorkspaces;
         public int SerializationHeaderWorkspaceDepth;
@@ -5486,10 +5487,9 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     {
         retainedBuffer = cache.KeySerializationBuffer;
         cache.KeySerializationBuffer = null;
-        if (retainedBuffer is null && cache.SpareKeySerializationBuffer is { } reentrantBuffer)
+        if (retainedBuffer is null && cache.SpareKeySerializationBuffers is { Count: > 0 } reentrantBuffers)
         {
-            retainedBuffer = reentrantBuffer;
-            cache.SpareKeySerializationBuffer = null;
+            retainedBuffer = reentrantBuffers.Pop();
         }
 
         var writer = new ReusableBufferWriter(ref retainedBuffer, DefaultKeyBufferSize);
@@ -5508,8 +5508,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         }
         catch
         {
-            cache.KeySerializationBuffer = retainedBuffer;
-            retainedBuffer = null;
+            RestoreCustomPartitionerKeyBuffer(cache, ref retainedBuffer);
             throw;
         }
     }
@@ -5523,7 +5522,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             return;
 
         if (cache.KeySerializationBuffer is { } reentrantBuffer)
-            cache.SpareKeySerializationBuffer ??= reentrantBuffer;
+            (cache.SpareKeySerializationBuffers ??= new Stack<byte[]>()).Push(reentrantBuffer);
 
         cache.KeySerializationBuffer = retainedBuffer;
         retainedBuffer = null;

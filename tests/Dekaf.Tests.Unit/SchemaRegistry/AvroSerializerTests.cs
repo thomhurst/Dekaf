@@ -404,6 +404,77 @@ public sealed class AvroSerializerTests
     }
 
     [Test]
+    [Arguments(SchemaIdDeserializerStrategy.Header)]
+    [Arguments(SchemaIdDeserializerStrategy.Dual)]
+    public async Task GuidStrategy_ReferencedGenericRecord_ResolvesWriterReferences(
+        SchemaIdDeserializerStrategy strategy)
+    {
+        const string addressSchemaJson =
+            """
+            {"type":"record","name":"Address","namespace":"test","fields":[{"name":"city","type":"string"}]}
+            """;
+        const string rootSchemaJson =
+            """
+            {"type":"record","name":"ReferencedRoot","namespace":"test","fields":[{"name":"address","type":"test.Address"}]}
+            """;
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        _ = await schemaRegistry.RegisterSchemaAsync(
+            "address-value",
+            new RegistrySchema
+            {
+                SchemaType = SchemaType.Avro,
+                SchemaString = addressSchemaJson
+            });
+        var rootSchemaId = await schemaRegistry.RegisterSchemaAsync(
+            "avro-reference-value",
+            new RegistrySchema
+            {
+                SchemaType = SchemaType.Avro,
+                SchemaString = rootSchemaJson,
+                References =
+                [
+                    new SchemaReference
+                    {
+                        Name = "test.Address",
+                        Subject = "address-value",
+                        Version = 1
+                    }
+                ]
+            });
+        var names = new Avro.SchemaNames();
+        var addressSchema = (Avro.RecordSchema)AvroSchema.Parse(addressSchemaJson, names);
+        var rootSchema = (Avro.RecordSchema)AvroSchema.Parse(rootSchemaJson, names);
+        var address = new GenericRecord(addressSchema);
+        address.Add("city", "London");
+        var record = new GenericRecord(rootSchema);
+        record.Add("address", address);
+        var headers = new Headers
+        {
+            new(
+                SchemaIdentityHeaderNames.Value,
+                SchemaIdentityFraming.CreateSchemaGuidFrame(
+                    new Guid(rootSchemaId, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)))
+        };
+        var context = new SerializationContext
+        {
+            Topic = "avro-reference",
+            Component = SerializationComponent.Value,
+            Headers = headers
+        };
+        await using var deserializer = new AvroSchemaRegistryDeserializer<GenericRecord>(
+            schemaRegistry,
+            new AvroDeserializerConfig
+            {
+                SchemaIdStrategy = strategy
+            });
+
+        var result = deserializer.Deserialize(SerializeAvroRecord(record, rootSchema), context);
+
+        var resolvedAddress = (GenericRecord)result["address"];
+        await Assert.That(resolvedAddress["city"].ToString()).IsEqualTo("London");
+    }
+
+    [Test]
     public async Task Serializer_DirectPath_RetainsPayloadSizeHighWaterMark()
     {
         using var schemaRegistry = new MockSchemaRegistryClient();

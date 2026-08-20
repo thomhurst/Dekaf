@@ -125,6 +125,54 @@ public class KafkaProducerFastPathTests
     }
 
     [Test]
+    public async Task FireAsync_RecordHeaderSerializerNestedPartitionerReentry_PreservesEveryKeyAndValue()
+    {
+        var partitioner = new NestedReentrantPartitioner();
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 4096,
+            LingerMs = 10,
+            RequestTimeoutMs = 500,
+            DeliveryTimeoutMs = 1000,
+            CloseTimeoutMs = 1000,
+            CustomPartitioner = partitioner
+        };
+
+        await using var producer = new KafkaProducer<string, string>(
+            options,
+            Serializers.String,
+            new RecordHeaderStringSerializer());
+        await StopProducerBackgroundLoopsAsync(producer);
+        SeedProducerMetadata(producer);
+        SetInstanceField(producer, "_initialized", true);
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(producer.RecordAccumulator);
+
+        partitioner.OnPartition = depth =>
+        {
+            var innerProduce = producer.FireAsync(Topic, $"inner-{depth}", $"inner-value-{depth}");
+            if (!innerProduce.IsCompletedSuccessfully)
+                throw new InvalidOperationException("Expected the nested reentrant hot path to complete synchronously.");
+        };
+
+        await producer.FireAsync(Topic, "outer", "outer-value");
+
+        var readyBatch = CompleteCurrentBatch(producer.RecordAccumulator, new TopicPartition(Topic, 0));
+        await Assert.That(readyBatch.RecordBatch.Records.Count).IsEqualTo(3);
+        await Assert.That(GetKeyString(readyBatch.RecordBatch.Records[0])).IsEqualTo("inner-2");
+        await Assert.That(GetValueString(readyBatch.RecordBatch.Records[0])).IsEqualTo("inner-value-2");
+        await Assert.That(GetHeaderValueString(readyBatch.RecordBatch.Records[0])).IsEqualTo("inner-value-2");
+        await Assert.That(GetKeyString(readyBatch.RecordBatch.Records[1])).IsEqualTo("inner-1");
+        await Assert.That(GetValueString(readyBatch.RecordBatch.Records[1])).IsEqualTo("inner-value-1");
+        await Assert.That(GetHeaderValueString(readyBatch.RecordBatch.Records[1])).IsEqualTo("inner-value-1");
+        await Assert.That(GetKeyString(readyBatch.RecordBatch.Records[2])).IsEqualTo("outer");
+        await Assert.That(GetValueString(readyBatch.RecordBatch.Records[2])).IsEqualTo("outer-value");
+        await Assert.That(GetHeaderValueString(readyBatch.RecordBatch.Records[2])).IsEqualTo("outer-value");
+    }
+
+    [Test]
     public async Task FireAsync_RecordHeaderBatchAwareCustomPartitioner_TracksPartitionCount()
     {
         var options = new ProducerOptions
@@ -1007,6 +1055,32 @@ public class KafkaProducerFastPathTests
             {
                 _hasReentered = true;
                 OnFirstPartition?.Invoke();
+            }
+
+            return 0;
+        }
+    }
+
+    private sealed class NestedReentrantPartitioner : IPartitioner
+    {
+        private const int MaximumDepth = 2;
+        private int _depth;
+
+        public Action<int>? OnPartition { get; set; }
+
+        public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
+        {
+            if (_depth == MaximumDepth)
+                return 0;
+
+            var depth = ++_depth;
+            try
+            {
+                OnPartition?.Invoke(depth);
+            }
+            finally
+            {
+                _depth--;
             }
 
             return 0;
