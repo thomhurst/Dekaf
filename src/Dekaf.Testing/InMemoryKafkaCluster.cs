@@ -316,12 +316,13 @@ public sealed class InMemoryKafkaCluster
         Exception? failure;
         TaskCompletionSource? signal = null;
         RecordMetadata metadata = default;
-        var hasFaults = FaultPlan is not KafkaFaultPlan { HasEntries: false };
+        var hasMatchingFault = FaultPlan is not KafkaFaultPlan indexedPlan ||
+                               indexedPlan.HasPotentialProduceMatch(faultOperation, topic);
         lock (_gate)
         {
             failure = _produceFailures.GetValueOrDefault(topic);
             latency = _produceLatency;
-            if (latency == TimeSpan.Zero && failure is null && !hasFaults)
+            if (latency == TimeSpan.Zero && failure is null && !hasMatchingFault)
             {
                 var state = GetOrAutoCreateTopic(topic);
                 var selectedPartition = SelectPartition(state, partition, key, isKeyNull);

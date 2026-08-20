@@ -29,6 +29,33 @@ public sealed class InMemoryProducerFaultTests
     }
 
     [Test]
+    public async Task Produce_UnrelatedPersistentFaultsRemainOnFastPath()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("orders");
+        cluster.FaultPlan.FailPersistently(
+            new KafkaFaultScope(KafkaFaultOperation.Fetch, "orders", partition: 0),
+            new InvalidOperationException("consumer only"));
+        cluster.FaultPlan.FailPersistently(
+            new KafkaFaultScope(KafkaFaultOperation.Produce, "other-topic"),
+            new InvalidOperationException("other topic"));
+        cluster.FaultPlan.FailPersistently(
+            new KafkaFaultScope(KafkaFaultOperation.TransactionProduce, "other-topic"),
+            new InvalidOperationException("other transaction topic"));
+        await using var producer = new InMemoryProducer<string, string>(cluster);
+
+        var produce = producer.ProduceAsync("orders", "k", "v");
+        await using var transaction = producer.BeginTransaction();
+        var transactionProduce = transaction.ProduceAsync("orders", "k", "v");
+
+        await Assert.That(produce.IsCompletedSuccessfully).IsTrue();
+        await Assert.That(transactionProduce.IsCompletedSuccessfully).IsTrue();
+        await Assert.That((await produce).Offset).IsEqualTo(0);
+        await Assert.That((await transactionProduce).Offset).IsEqualTo(1);
+        await Assert.That(cluster.FaultPlan.Count).IsEqualTo(3);
+    }
+
+    [Test]
     public async Task Produce_FaultsHonorScopeOccurrenceAndRetryBoundaries()
     {
         var plan = new KafkaFaultPlan();
@@ -513,7 +540,6 @@ public sealed class InMemoryProducerFaultTests
     }
 
     [Test]
-    [NotInParallel]
     public async Task ProducerDispose_WaitsUntilCompletedTransactionIsUnpublished()
     {
         var cluster = new InMemoryKafkaCluster();
@@ -523,7 +549,7 @@ public sealed class InMemoryProducerFaultTests
             TaskCreationOptions.RunContinuationsAsynchronously);
         using var releaseCompletion = new ManualResetEventSlim();
         Volatile.Write(
-            ref InMemoryProducer<string, string>.TransactionCompletionPublishedTestHook,
+            ref producer.TransactionCompletionPublishedTestHook,
             () =>
             {
                 completionPublished.TrySetResult();
@@ -551,7 +577,7 @@ public sealed class InMemoryProducerFaultTests
         finally
         {
             Volatile.Write(
-                ref InMemoryProducer<string, string>.TransactionCompletionPublishedTestHook,
+                ref producer.TransactionCompletionPublishedTestHook,
                 null);
             releaseCompletion.Set();
             await producer.DisposeAsync();

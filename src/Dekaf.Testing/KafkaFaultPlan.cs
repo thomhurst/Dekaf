@@ -267,9 +267,11 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
 {
     private readonly object _gate = new();
     private readonly List<FaultEntry> _entries = [];
+    private ProduceFaultIndex _produceFaultIndex = ProduceFaultIndex.Empty;
     private int _hasEntries;
 
-    internal bool HasEntries => Volatile.Read(ref _hasEntries) != 0;
+    internal bool HasPotentialProduceMatch(KafkaFaultOperation operation, string topic) =>
+        Volatile.Read(ref _produceFaultIndex).Matches(operation, topic);
 
     /// <summary>
     /// Raised synchronously after a matching entry is consumed and before its action runs.
@@ -301,6 +303,7 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
         {
             _entries.Add(FaultEntry.Failure(scope, exception, occurrenceCount, isPersistent: false));
             Volatile.Write(ref _hasEntries, 1);
+            PublishProduceFaultIndexUnderLock();
         }
     }
 
@@ -316,6 +319,7 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
         {
             _entries.Add(FaultEntry.Failure(scope, exception, remainingOccurrences: 0, isPersistent: true));
             Volatile.Write(ref _hasEntries, 1);
+            PublishProduceFaultIndexUnderLock();
         }
     }
 
@@ -330,6 +334,7 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
         {
             _entries.Add(FaultEntry.Pause(scope, barrier));
             Volatile.Write(ref _hasEntries, 1);
+            PublishProduceFaultIndexUnderLock();
         }
 
         return barrier;
@@ -367,6 +372,7 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
                         _entries.RemoveAt(i);
                         if (_entries.Count == 0)
                             Volatile.Write(ref _hasEntries, 0);
+                        PublishProduceFaultIndexUnderLock();
                     }
                 }
 
@@ -414,6 +420,8 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
 
             if (_entries.Count == 0)
                 Volatile.Write(ref _hasEntries, 0);
+            if (removed != 0)
+                PublishProduceFaultIndexUnderLock();
         }
 
         return removed;
@@ -432,8 +440,108 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
 
             _entries.Clear();
             Volatile.Write(ref _hasEntries, 0);
+            Volatile.Write(ref _produceFaultIndex, ProduceFaultIndex.Empty);
             return removed;
         }
+    }
+
+    private void PublishProduceFaultIndexUnderLock()
+    {
+        var allProduceTopics = false;
+        var allTransactionProduceTopics = false;
+        string? produceTopic = null;
+        string? transactionProduceTopic = null;
+        HashSet<string>? produceTopics = null;
+        HashSet<string>? transactionProduceTopics = null;
+        for (var entryIndex = 0; entryIndex < _entries.Count; entryIndex++)
+        {
+            var scope = _entries[entryIndex].Scope;
+            if (scope.GroupId is not null)
+                continue;
+
+            switch (scope.Operation)
+            {
+                case KafkaFaultOperation.Produce:
+                    AddProduceScope(
+                        scope.Topic,
+                        ref allProduceTopics,
+                        ref produceTopic,
+                        ref produceTopics);
+                    break;
+                case KafkaFaultOperation.TransactionProduce:
+                    AddProduceScope(
+                        scope.Topic,
+                        ref allTransactionProduceTopics,
+                        ref transactionProduceTopic,
+                        ref transactionProduceTopics);
+                    break;
+            }
+        }
+
+        Volatile.Write(
+            ref _produceFaultIndex,
+            new ProduceFaultIndex(
+                allProduceTopics,
+                produceTopic,
+                produceTopics,
+                allTransactionProduceTopics,
+                transactionProduceTopic,
+                transactionProduceTopics));
+    }
+
+    private static void AddProduceScope(
+        string? topic,
+        ref bool allTopics,
+        ref string? singleTopic,
+        ref HashSet<string>? topics)
+    {
+        if (topic is null)
+        {
+            allTopics = true;
+            return;
+        }
+
+        if (topics is not null)
+        {
+            topics.Add(topic);
+            return;
+        }
+
+        if (singleTopic is null)
+        {
+            singleTopic = topic;
+            return;
+        }
+
+        if (string.Equals(singleTopic, topic, StringComparison.Ordinal))
+            return;
+
+        topics = new HashSet<string>(StringComparer.Ordinal) { singleTopic, topic };
+        singleTopic = null;
+    }
+
+    private sealed class ProduceFaultIndex(
+        bool allProduceTopics,
+        string? produceTopic,
+        HashSet<string>? produceTopics,
+        bool allTransactionProduceTopics,
+        string? transactionProduceTopic,
+        HashSet<string>? transactionProduceTopics)
+    {
+        public static ProduceFaultIndex Empty { get; } = new(false, null, null, false, null, null);
+
+        public bool Matches(KafkaFaultOperation operation, string topic) => operation switch
+        {
+            KafkaFaultOperation.Produce =>
+                allProduceTopics ||
+                string.Equals(produceTopic, topic, StringComparison.Ordinal) ||
+                produceTopics is not null && produceTopics.Contains(topic),
+            KafkaFaultOperation.TransactionProduce =>
+                allTransactionProduceTopics ||
+                string.Equals(transactionProduceTopic, topic, StringComparison.Ordinal) ||
+                transactionProduceTopics is not null && transactionProduceTopics.Contains(topic),
+            _ => false
+        };
     }
 
     private sealed class FaultEntry

@@ -34,7 +34,7 @@ public sealed class InMemoryProducer<TKey, TValue> :
     IKafkaProducer<TKey, TValue>,
     IInMemoryTransactionRecoveryContext
 {
-    internal static Action? TransactionCompletionPublishedTestHook;
+    internal Action? TransactionCompletionPublishedTestHook;
 
     private readonly InMemoryKafkaCluster _cluster;
     private readonly ISerializer<TKey> _keySerializer;
