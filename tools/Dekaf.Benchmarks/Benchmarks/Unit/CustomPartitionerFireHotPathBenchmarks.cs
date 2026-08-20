@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Reflection;
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Engines;
@@ -46,7 +47,7 @@ public class CustomPartitionerFireHotPathBenchmarks
                 CustomPartitioner = FirstPartitioner.Instance,
             },
             Serializers.String,
-            Serializers.String);
+            RecordHeaderStringSerializer.Instance);
 
         await _producer.StopSenderLoopsForTestingAsync().ConfigureAwait(false);
         SeedMetadata(_producer);
@@ -180,5 +181,19 @@ public class CustomPartitionerFireHotPathBenchmarks
         internal static readonly FirstPartitioner Instance = new();
 
         public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount) => 0;
+    }
+
+    private sealed class RecordHeaderStringSerializer : ISerializer<string>, IRecordHeaderSerializer
+    {
+        internal static readonly RecordHeaderStringSerializer Instance = new();
+
+        public bool ProducesRecordHeaders => true;
+
+        public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
+            where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
+            => Serializers.String.Serialize(value, ref destination, context);
     }
 }
