@@ -29,8 +29,16 @@ public class SchemaIdentityFramingBenchmarks
     }
 
     [Benchmark(Baseline = true)]
-    public SchemaIdentity ExistingInlinePrefixRead() =>
-        new(BinaryPrimitives.ReadInt32BigEndian(_idPrefix.AsSpan(1, 4)));
+    public SchemaIdentity ExistingValidatedInlinePrefixRead()
+    {
+        var span = _idPrefix.AsSpan();
+        if (span.Length < SchemaIdentityFraming.SchemaIdFrameSize)
+            throw new InvalidOperationException("Message too short to contain Schema Registry wire format");
+        if (span[0] != SchemaIdentityFraming.SchemaIdMagicByte)
+            throw new InvalidOperationException("Unknown Schema Registry magic byte");
+
+        return new SchemaIdentity(BinaryPrimitives.ReadInt32BigEndian(span[1..]));
+    }
 
     [Benchmark]
     public SchemaIdentity SharedPrefixRead() => SchemaIdentityFraming.ReadPrefix(_idPrefix, out _);

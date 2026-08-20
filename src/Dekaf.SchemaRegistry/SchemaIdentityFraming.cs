@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using Dekaf.Serialization;
 
@@ -132,17 +133,14 @@ internal static class SchemaIdentityFraming
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static SchemaIdentity ReadPrefix(ReadOnlySpan<byte> payload, out int payloadOffset)
     {
-        if (payload.Length >= SchemaIdFrameSize && payload[0] == SchemaIdMagicByte)
-        {
-            var schemaId = BinaryPrimitives.ReadInt32BigEndian(payload[1..SchemaIdFrameSize]);
-            if (schemaId >= 0)
-            {
-                payloadOffset = SchemaIdFrameSize;
-                return new SchemaIdentity(schemaId);
-            }
-        }
+        if (payload.Length < SchemaIdFrameSize)
+            ThrowTruncatedSchemaIdPrefix();
+        if (payload[0] != SchemaIdMagicByte)
+            ThrowUnknownPrefixMagicByte(payload[0]);
 
-        return ReadPrefixSlow(payload, out payloadOffset);
+        var schemaId = BinaryPrimitives.ReadInt32BigEndian(payload[1..]);
+        payloadOffset = SchemaIdFrameSize;
+        return new SchemaIdentity(schemaId);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -208,13 +206,15 @@ internal static class SchemaIdentityFraming
         return ReadHeaderValueSlow(value, out trailingHeaderData);
     }
 
+    [DoesNotReturn]
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static SchemaIdentity ReadPrefixSlow(ReadOnlySpan<byte> payload, out int payloadOffset)
-    {
-        var parsed = ReadIdentity(payload);
-        payloadOffset = parsed.BytesConsumed;
-        return parsed.Identity;
-    }
+    private static void ThrowTruncatedSchemaIdPrefix() =>
+        throw new InvalidDataException("The Schema Registry ID frame is truncated.");
+
+    [DoesNotReturn]
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void ThrowUnknownPrefixMagicByte(byte magicByte) =>
+        throw new InvalidDataException($"Unknown Schema Registry prefix magic byte: {magicByte}.");
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static SchemaIdentity ReadHeaderValueSlow(

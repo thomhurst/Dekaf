@@ -38,17 +38,18 @@ public sealed class SchemaIdentityFramingTests
     }
 
     [Test]
-    public async Task GuidIdentity_MatchesConfluentNetworkOrderVector()
+    public async Task GuidHeaderIdentity_MatchesConfluentNetworkOrderVector()
     {
         var destination = new byte[SchemaIdentityFraming.SchemaGuidFrameSize];
 
         var written = SchemaIdentityFraming.WriteSchemaGuid(destination, SchemaGuid);
-        var parsed = SchemaIdentityFraming.ReadPrefix(destination, out var payloadOffset);
+        var identityHeader = new Header(SchemaIdentityHeaderNames.Value, destination);
+        var parsed = SchemaIdentityFraming.ReadHeader(in identityHeader, out var trailingHeaderData);
 
         await Assert.That(written).IsEqualTo(17);
         await Assert.That(destination).IsEquivalentTo(GuidVector);
         await Assert.That(parsed).IsEqualTo(new SchemaIdentity(SchemaGuid));
-        await Assert.That(payloadOffset).IsEqualTo(17);
+        await Assert.That(trailingHeaderData.IsEmpty).IsTrue();
     }
 
     [Test]
@@ -159,6 +160,15 @@ public sealed class SchemaIdentityFramingTests
     [Test]
     public void ReadPrefix_UnknownMagicByte_ThrowsInvalidDataException() =>
         Assert.Throws<InvalidDataException>(() => SchemaIdentityFraming.ReadPrefix([2, 0, 0, 0, 1], out _));
+
+    [Test]
+    public void ReadPrefix_GuidFrame_ThrowsInvalidDataException() =>
+        Assert.Throws<InvalidDataException>(() => SchemaIdentityFraming.ReadPrefix(GuidVector, out _));
+
+    [Test]
+    public void ReadPrefix_NegativeId_ThrowsArgumentOutOfRangeException() =>
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            SchemaIdentityFraming.ReadPrefix([0, 0xff, 0xff, 0xff, 0xff], out _));
 
     [Test]
     public void ReadPrefix_TruncatedIdentity_ThrowsInvalidDataException() =>
