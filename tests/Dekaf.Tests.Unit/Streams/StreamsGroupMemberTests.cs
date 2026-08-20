@@ -107,6 +107,25 @@ public sealed class StreamsGroupMemberTests
     }
 
     [Test]
+    public async Task UpdateAsync_WhenStaticMemberFenced_RejoinsWithStaticEpoch()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1));
+        connection.EnqueueHeartbeat(new StreamsGroupHeartbeatResponse
+        {
+            ErrorCode = ErrorCode.FencedMemberEpoch,
+            MemberId = "member-1"
+        });
+        connection.EnqueueHeartbeat(Success(epoch: 2));
+        await using var fixture = CreateFixture(connection, instanceId: "instance-1");
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+
+        await fixture.Member.UpdateAsync(new StreamsGroupMemberUpdate { ProcessId = "process-2" });
+
+        await Assert.That(connection.HeartbeatRequests[2].MemberEpoch).IsEqualTo(-2);
+    }
+
+    [Test]
     public async Task ReportTaskOffsetsAsync_SendsCurrentAndEndOffsets()
     {
         var connection = new ScriptedConnection();
@@ -251,6 +270,36 @@ public sealed class StreamsGroupMemberTests
         await Assert.That(fixture.Member.Snapshot.IsClosed).IsTrue();
     }
 
+    [Arguments(false)]
+    [Arguments(true)]
+    [Test]
+    public async Task CloseAsync_RetryPreservesTerminalEpoch(bool transportFailure)
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1));
+        if (transportFailure)
+        {
+            connection.EnqueueHeartbeat(Task.FromException<StreamsGroupHeartbeatResponse>(
+                new IOException("connection lost")));
+        }
+        else
+        {
+            connection.EnqueueHeartbeat(new StreamsGroupHeartbeatResponse
+            {
+                ErrorCode = ErrorCode.NotCoordinator,
+                MemberId = "member-1"
+            });
+        }
+        connection.EnqueueHeartbeat(Success(epoch: -1));
+        await using var fixture = CreateFixture(connection);
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+
+        await fixture.Member.CloseAsync();
+
+        await Assert.That(connection.HeartbeatRequests[1].MemberEpoch).IsEqualTo(-1);
+        await Assert.That(connection.HeartbeatRequests[2].MemberEpoch).IsEqualTo(-1);
+    }
+
     [Test]
     public async Task CloseAsync_RemainInGroupSendsNoTerminalHeartbeat()
     {
@@ -310,12 +359,15 @@ public sealed class StreamsGroupMemberTests
     {
         var connection = new ScriptedConnection();
         connection.EnqueueHeartbeat(Success(epoch: 1, heartbeatIntervalMs: 1));
-        connection.EnqueueHeartbeat(Success(epoch: 1, heartbeatIntervalMs: 60_000));
+        var pendingHeartbeat = new TaskCompletionSource<StreamsGroupHeartbeatResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.EnqueueHeartbeat(pendingHeartbeat.Task);
         await using var fixture = CreateFixture(connection);
         await fixture.Member.JoinAsync(CreateInitialUpdate());
         var joinedSnapshot = fixture.Member.Snapshot;
 
-        await connection.SecondHeartbeatCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await connection.SecondHeartbeatStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        pendingHeartbeat.SetResult(Success(epoch: 1, heartbeatIntervalMs: 60_000));
         await Assert.That(() => fixture.Member.Snapshot.HeartbeatInterval)
             .Eventually(interval => interval.IsEqualTo(TimeSpan.FromSeconds(60)), TimeSpan.FromSeconds(5));
 
@@ -366,6 +418,86 @@ public sealed class StreamsGroupMemberTests
         var result = await update;
 
         await Assert.That(result.MemberEpoch).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task BackgroundHeartbeat_PermanentProtocolFailureBlocksForegroundOperation()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1, heartbeatIntervalMs: 1));
+        connection.EnqueueHeartbeat(new StreamsGroupHeartbeatResponse
+        {
+            ErrorCode = ErrorCode.GroupAuthorizationFailed,
+            MemberId = "member-1"
+        });
+        connection.EnqueueHeartbeat(Success(epoch: 2));
+        await using var fixture = CreateFixture(connection);
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+        await connection.SecondHeartbeatCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        GroupException? failure = null;
+        for (var attempt = 0; attempt < 2 && failure is null; attempt++)
+        {
+            try
+            {
+                await fixture.Member.UpdateAsync(new StreamsGroupMemberUpdate { ProcessId = "process-2" });
+            }
+            catch (GroupException exception)
+            {
+                failure = exception;
+            }
+        }
+
+        await Assert.That(failure).IsNotNull();
+        await Assert.That(failure!.ErrorCode).IsEqualTo(ErrorCode.GroupAuthorizationFailed);
+    }
+
+    [Test]
+    public async Task UpdateAsync_FailedTopologyChangePreservesJoinedEpoch()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1));
+        connection.EnqueueHeartbeat(new StreamsGroupHeartbeatResponse
+        {
+            ErrorCode = ErrorCode.StreamsInvalidTopology,
+            ErrorMessage = "topology rejected",
+            MemberId = "member-1"
+        });
+        connection.EnqueueHeartbeat(Success(epoch: 2));
+        await using var fixture = CreateFixture(connection);
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+
+        await Assert.ThrowsAsync<GroupException>(async () =>
+            await fixture.Member.UpdateAsync(CreateInitialUpdate(topologyEpoch: 2)));
+
+        await Assert.That(fixture.Member.Snapshot.MemberEpoch).IsEqualTo(1);
+        var result = await fixture.Member.UpdateAsync(new StreamsGroupMemberUpdate
+        {
+            ProcessId = "process-2"
+        });
+        await Assert.That(connection.HeartbeatRequests[2].MemberEpoch).IsEqualTo(1);
+        await Assert.That(result.MemberEpoch).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task UpdateAsync_TopologyChangeRetryRemainsJoinShaped()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1));
+        connection.EnqueueHeartbeat(new StreamsGroupHeartbeatResponse
+        {
+            ErrorCode = ErrorCode.NotCoordinator,
+            MemberId = "member-1"
+        });
+        connection.EnqueueHeartbeat(Success(epoch: 2));
+        await using var fixture = CreateFixture(connection);
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+
+        await fixture.Member.UpdateAsync(CreateInitialUpdate(topologyEpoch: 2));
+
+        var retry = connection.HeartbeatRequests[2];
+        await Assert.That(retry.MemberEpoch).IsEqualTo(0);
+        await Assert.That(retry.Topology!.Epoch).IsEqualTo(2);
     }
 
     [Test]
