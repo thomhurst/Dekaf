@@ -596,14 +596,35 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         SchemaRegistryRuleContext context,
         IJsonSchemaValidator validator,
         int schemaId)
+        => TransformSerializedPayload(
+            payload,
+            context,
+            validator,
+            schemaId,
+            validationRules: null,
+            ValidationRulesExecution.Disabled,
+            validationRulesFailFast: false);
+
+    internal ReadOnlyMemory<byte> TransformSerializedPayload(
+        ReadOnlyMemory<byte> payload,
+        SchemaRegistryRuleContext context,
+        IJsonSchemaValidator? validator,
+        int schemaId,
+        IJsonSchemaValidator? validationRules,
+        ValidationRulesExecution validationRulesExecution,
+        bool validationRulesFailFast)
     {
         ArgumentNullException.ThrowIfNull(context);
-        ArgumentNullException.ThrowIfNull(validator);
+
+        if (validationRulesExecution == ValidationRulesExecution.BeforeDomainRules)
+            validationRules!.ValidateRules(payload, schemaId, validationRulesFailFast);
 
         var ruleSet = context.Schema?.RuleSet;
         if (ruleSet is null || !ruleSet.HasDomainOrEncodingRules)
         {
-            validator.Validate(payload.Span, schemaId);
+            validator?.Validate(payload.Span, schemaId);
+            if (validationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+                validationRules!.ValidateRules(payload, schemaId, validationRulesFailFast);
             return payload;
         }
 
@@ -612,7 +633,9 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
             case null or "" or "ALL" or "CLIENT":
                 break;
             case "GATEWAY" or "SERVER" or "NONE":
-                validator.Validate(payload.Span, schemaId);
+                validator?.Validate(payload.Span, schemaId);
+                if (validationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+                    validationRules!.ValidateRules(payload, schemaId, validationRulesFailFast);
                 return payload;
             case { } enabledEnvironment:
                 throw new SchemaRegistryRuleException(
@@ -629,7 +652,9 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
                 start: 0,
                 count: plan.WriteDomainStepCount,
                 SchemaRegistryRuleDirection.Write);
-            validator.Validate(payload.Span, schemaId);
+            validator?.Validate(payload.Span, schemaId);
+            if (validationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+                validationRules!.ValidateRules(payload, schemaId, validationRulesFailFast);
             return ApplyRules(
                 payload,
                 context,
@@ -640,7 +665,9 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         }
 
         payload = ApplyRules(payload, context, ruleSet.DomainRules, SchemaRegistryRuleDirection.Write);
-        validator.Validate(payload.Span, schemaId);
+        validator?.Validate(payload.Span, schemaId);
+        if (validationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+            validationRules!.ValidateRules(payload, schemaId, validationRulesFailFast);
         return ApplyRules(payload, context, ruleSet.EncodingRules, SchemaRegistryRuleDirection.Write);
     }
 
@@ -649,6 +676,23 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         ReadOnlyMemory<byte> payload,
         SchemaRegistryRuleContext context)
         => ApplyRules(payload, context, SchemaRegistryRuleDirection.Read);
+
+    internal ReadOnlyMemory<byte> TransformDeserializedPayload(
+        ReadOnlyMemory<byte> payload,
+        SchemaRegistryRuleContext context,
+        IJsonSchemaValidator validationRules,
+        int schemaId,
+        ValidationRulesExecution validationRulesExecution,
+        bool validationRulesFailFast)
+    {
+        payload = TransformDeserializedEncodingPayload(payload, context);
+        if (validationRulesExecution == ValidationRulesExecution.BeforeDomainRules)
+            validationRules.ValidateRules(payload, schemaId, validationRulesFailFast);
+        payload = TransformDeserializedDomainPayload(payload, context);
+        if (validationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+            validationRules.ValidateRules(payload, schemaId, validationRulesFailFast);
+        return payload;
+    }
 
     internal ReadOnlyMemory<byte> TransformDeserializedEncodingPayload(
         ReadOnlyMemory<byte> payload,
