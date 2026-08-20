@@ -219,6 +219,29 @@ Dekaf.SchemaRegistry.ISchemaRegistryClient.GetAssociationsByResourceNameAsync(st
 Dekaf.SchemaRegistry.SchemaRegistryClient.CreateAssociationAsync(Dekaf.SchemaRegistry.AssociationCreateOrUpdateRequest! request, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Dekaf.SchemaRegistry.AssociationResponse!>!
 Dekaf.SchemaRegistry.SchemaRegistryClient.DeleteAssociationsAsync(string! resourceId, string? resourceType = null, System.Collections.Generic.IReadOnlyList<string!>? associationTypes = null, bool cascadeLifecycle = false, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task!
 Dekaf.SchemaRegistry.SchemaRegistryClient.GetAssociationsByResourceNameAsync(string! resourceName, string! resourceNamespace = "-", string? resourceType = null, System.Collections.Generic.IReadOnlyList<string!>? associationTypes = null, string? lifecycle = null, int offset = 0, int limit = -1, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<System.Collections.Generic.IReadOnlyList<Dekaf.SchemaRegistry.Association!>!>!
+const Dekaf.SchemaRegistry.SchemaIdentityHeaderNames.Key = "__key_schema_id" -> string!
+const Dekaf.SchemaRegistry.SchemaIdentityHeaderNames.Value = "__value_schema_id" -> string!
+Dekaf.SchemaRegistry.SchemaIdDeserializerStrategy
+Dekaf.SchemaRegistry.SchemaIdDeserializerStrategy.Dual = 0 -> Dekaf.SchemaRegistry.SchemaIdDeserializerStrategy
+Dekaf.SchemaRegistry.SchemaIdDeserializerStrategy.Header = 2 -> Dekaf.SchemaRegistry.SchemaIdDeserializerStrategy
+Dekaf.SchemaRegistry.SchemaIdDeserializerStrategy.Prefix = 1 -> Dekaf.SchemaRegistry.SchemaIdDeserializerStrategy
+Dekaf.SchemaRegistry.SchemaIdSerializerStrategy
+Dekaf.SchemaRegistry.SchemaIdSerializerStrategy.Header = 1 -> Dekaf.SchemaRegistry.SchemaIdSerializerStrategy
+Dekaf.SchemaRegistry.SchemaIdSerializerStrategy.Prefix = 0 -> Dekaf.SchemaRegistry.SchemaIdSerializerStrategy
+Dekaf.SchemaRegistry.SchemaIdentity
+Dekaf.SchemaRegistry.SchemaIdentity.Equals(Dekaf.SchemaRegistry.SchemaIdentity other) -> bool
+Dekaf.SchemaRegistry.SchemaIdentity.SchemaGuid.get -> System.Guid?
+Dekaf.SchemaRegistry.SchemaIdentity.SchemaId.get -> int?
+Dekaf.SchemaRegistry.SchemaIdentity.SchemaIdentity() -> void
+Dekaf.SchemaRegistry.SchemaIdentity.SchemaIdentity(System.Guid schemaGuid) -> void
+Dekaf.SchemaRegistry.SchemaIdentity.SchemaIdentity(int schemaId) -> void
+Dekaf.SchemaRegistry.SchemaIdentity.SchemaIdentity(int schemaId, System.Guid schemaGuid) -> void
+Dekaf.SchemaRegistry.SchemaIdentityHeaderNames
+override Dekaf.SchemaRegistry.SchemaIdentity.GetHashCode() -> int
+static Dekaf.SchemaRegistry.SchemaIdentity.operator !=(Dekaf.SchemaRegistry.SchemaIdentity left, Dekaf.SchemaRegistry.SchemaIdentity right) -> bool
+static Dekaf.SchemaRegistry.SchemaIdentity.operator ==(Dekaf.SchemaRegistry.SchemaIdentity left, Dekaf.SchemaRegistry.SchemaIdentity right) -> bool
+~override Dekaf.SchemaRegistry.SchemaIdentity.Equals(object obj) -> bool
+~override Dekaf.SchemaRegistry.SchemaIdentity.ToString() -> string
 Dekaf.SchemaRegistry.ISchemaRegistryCache.TryGetCachedSchema(System.Guid guid, string? format, out Dekaf.SchemaRegistry.Schema! schema) -> bool
 Dekaf.SchemaRegistry.ISchemaRegistryClient.GetSchemaByGuidAsync(string! guid, string? format = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Dekaf.SchemaRegistry.Schema!>!
 Dekaf.SchemaRegistry.RegisteredSchema.Guid.get -> string?

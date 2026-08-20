@@ -414,7 +414,7 @@ public class ProduceResponseTests
         second.ReturnToPool();
     }
 
-    [Test]
+    [Test, NotInParallel]
     public async Task FetchResponseRead_LegacySpanPathAllocatesZeroBytesAfterWarmup()
     {
         for (var i = 0; i < 64; i++)
