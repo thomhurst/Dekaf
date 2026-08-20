@@ -229,6 +229,15 @@ internal readonly record struct ValidationCelContext(
     long NowUnixMilliseconds,
     ReadOnlyMemory<byte>[]? MemberValues);
 
+internal static class ValidationCelJsonReader
+{
+    internal static JsonReaderOptions Options { get; } = new()
+    {
+        CommentHandling = JsonCommentHandling.Disallow,
+        MaxDepth = 128
+    };
+}
+
 internal sealed class ValidationCelMemberTable
 {
     private readonly MemberNode _root;
@@ -246,7 +255,7 @@ internal sealed class ValidationCelMemberTable
 
     internal void Resolve(ReadOnlyMemory<byte> json, ReadOnlyMemory<byte>[] values)
     {
-        var reader = new Utf8JsonReader(json.Span);
+        var reader = new Utf8JsonReader(json.Span, ValidationCelJsonReader.Options);
         if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject)
             return;
 
@@ -276,15 +285,6 @@ internal sealed class ValidationCelMemberTable
                 if (!reader.Read())
                     return;
                 var start = checked((int)reader.TokenStartIndex);
-                if (index >= 0 && _valueIndexes[index] >= 0)
-                {
-                    var end = reader;
-                    end.Skip();
-                    values[_valueIndexes[index]] = json.Slice(
-                        start,
-                        checked((int)end.BytesConsumed) - start);
-                }
-
                 if (index >= 0 && _children[index] is { } child &&
                     reader.TokenType == JsonTokenType.StartObject)
                 {
@@ -293,6 +293,13 @@ internal sealed class ValidationCelMemberTable
                 else
                 {
                     reader.Skip();
+                }
+
+                if (index >= 0 && _valueIndexes[index] >= 0)
+                {
+                    values[_valueIndexes[index]] = json.Slice(
+                        start,
+                        checked((int)reader.BytesConsumed) - start);
                 }
             }
         }
@@ -429,31 +436,55 @@ internal readonly record struct ValidationCelValue(
 
     internal static ValidationCelValue FromNumberLiteral(string text)
     {
+        if (!IsNumberLiteral(text))
+            throw Unsupported($"Invalid CEL number '{text}'.");
+
         var utf8 = Encoding.UTF8.GetBytes(text);
-        try
+        var hasDecimal = decimal.TryParse(
+            text,
+            NumberStyles.Float,
+            CultureInfo.InvariantCulture,
+            out var number);
+        return new ValidationCelValue(
+            ValidationCelValueKind.Number,
+            default,
+            hasDecimal,
+            number,
+            null,
+            utf8);
+    }
+
+    private static bool IsNumberLiteral(ReadOnlySpan<char> text)
+    {
+        var position = 0;
+        while (position < text.Length && IsAsciiDigit(text[position]))
+            position++;
+        if (position == 0)
+            return false;
+
+        if (position < text.Length && text[position] == '.')
         {
-            var reader = new Utf8JsonReader(utf8);
-            if (reader.Read() && reader.TokenType == JsonTokenType.Number)
-            {
-                var hasDecimal = reader.TryGetDecimal(out var number);
-                if (!reader.Read())
-                {
-                    return new ValidationCelValue(
-                        ValidationCelValueKind.Number,
-                        default,
-                        hasDecimal,
-                        number,
-                        null,
-                        utf8);
-                }
-            }
-        }
-        catch (JsonException)
-        {
+            position++;
+            while (position < text.Length && IsAsciiDigit(text[position]))
+                position++;
         }
 
-        throw Unsupported($"Invalid CEL number '{text}'.");
+        if (position < text.Length && text[position] is 'e' or 'E')
+        {
+            position++;
+            if (position < text.Length && text[position] is '+' or '-')
+                position++;
+            var exponentStart = position;
+            while (position < text.Length && IsAsciiDigit(text[position]))
+                position++;
+            if (position == exponentStart)
+                return false;
+        }
+
+        return position == text.Length;
     }
+
+    private static bool IsAsciiDigit(char value) => value is >= '0' and <= '9';
 
     internal static ValidationCelValue FromString(string value) =>
         new(ValidationCelValueKind.String, default, false, 0, value, Encoding.UTF8.GetBytes(value));
@@ -462,7 +493,7 @@ internal readonly record struct ValidationCelValue(
     {
         if (json.IsEmpty)
             return Missing;
-        var reader = new Utf8JsonReader(json.Span);
+        var reader = new Utf8JsonReader(json.Span, ValidationCelJsonReader.Options);
         if (!reader.Read())
             return Missing;
         return reader.TokenType switch
@@ -496,7 +527,7 @@ internal readonly record struct ValidationCelValue(
     {
         if (Literal is not null)
             return Literal;
-        var reader = new Utf8JsonReader(Json.Span);
+        var reader = new Utf8JsonReader(Json.Span, ValidationCelJsonReader.Options);
         _ = reader.Read();
         return reader.GetString() ?? string.Empty;
     }
@@ -505,6 +536,10 @@ internal readonly record struct ValidationCelValue(
 internal readonly ref struct ValidationCelJsonNumber
 {
     private readonly ReadOnlySpan<byte> _value;
+    private readonly ReadOnlySpan<byte> _exponentDigits;
+    private readonly bool _exponentNegative;
+    private readonly long _exponentValue;
+    private readonly bool _exponentFitsInt64;
     private readonly int _firstDigit;
     private readonly int _lastDigit;
 
@@ -514,7 +549,8 @@ internal readonly ref struct ValidationCelJsonNumber
         var mantissaStart = value[0] == (byte)'-' ? 1 : 0;
         var mantissaEnd = value.Length;
         var decimalPoint = -1;
-        var exponent = 0L;
+        var exponentDigits = default(ReadOnlySpan<byte>);
+        var exponentNegative = false;
         var firstDigit = -1;
         var lastDigit = -1;
         var significantLength = 0;
@@ -529,7 +565,13 @@ internal readonly ref struct ValidationCelJsonNumber
             else if (value[index] is (byte)'e' or (byte)'E')
             {
                 mantissaEnd = index;
-                exponent = ParseExponent(value[(index + 1)..]);
+                var exponentStart = index + 1;
+                exponentNegative = value[exponentStart] == (byte)'-';
+                if (value[exponentStart] is (byte)'+' or (byte)'-')
+                    exponentStart++;
+                while (exponentStart < value.Length && value[exponentStart] == (byte)'0')
+                    exponentStart++;
+                exponentDigits = value[exponentStart..];
                 break;
             }
             else if (value[index] != (byte)'0')
@@ -549,7 +591,11 @@ internal readonly ref struct ValidationCelJsonNumber
         {
             Sign = 0;
             DigitCount = 0;
-            Exponent = 0;
+            ExponentAdjustment = 0;
+            _exponentDigits = default;
+            _exponentNegative = false;
+            _exponentValue = 0;
+            _exponentFitsInt64 = true;
             _firstDigit = 0;
             _lastDigit = -1;
             return;
@@ -560,14 +606,20 @@ internal readonly ref struct ValidationCelJsonNumber
 
         Sign = mantissaStart == 0 ? 1 : -1;
         DigitCount = digitCount;
-        Exponent = SaturatingAdd(SaturatingAdd(exponent, -fractionalDigits), trailingZeros);
+        ExponentAdjustment = (long)trailingZeros - fractionalDigits;
+        _exponentDigits = exponentDigits;
+        _exponentNegative = exponentNegative;
+        _exponentFitsInt64 = TryParseExponent(
+            exponentDigits,
+            exponentNegative,
+            out _exponentValue);
         _firstDigit = firstDigit;
         _lastDigit = lastDigit;
     }
 
     private int Sign { get; }
     private int DigitCount { get; }
-    private long Exponent { get; }
+    private long ExponentAdjustment { get; }
 
     internal int CompareTo(ValidationCelJsonNumber other)
     {
@@ -576,8 +628,7 @@ internal readonly ref struct ValidationCelJsonNumber
         if (Sign == 0)
             return 0;
 
-        var comparison = SaturatingAdd(Exponent, DigitCount)
-            .CompareTo(SaturatingAdd(other.Exponent, other.DigitCount));
+        var comparison = CompareAdjustedExponents(other);
         if (comparison == 0)
         {
             var digits = GetDigits();
@@ -600,29 +651,195 @@ internal readonly ref struct ValidationCelJsonNumber
 
     private DigitEnumerator GetDigits() => new(_value, _firstDigit, _lastDigit);
 
-    private static long ParseExponent(ReadOnlySpan<byte> value)
+    private int CompareAdjustedExponents(ValidationCelJsonNumber other)
     {
-        var negative = value[0] == (byte)'-';
-        var position = value[0] is (byte)'+' or (byte)'-' ? 1 : 0;
-        var result = 0L;
-        for (; position < value.Length; position++)
+        if (_exponentFitsInt64 && other._exponentFitsInt64)
         {
-            var digit = value[position] - (byte)'0';
-            if (result > (long.MaxValue - digit) / 10)
-                return negative ? long.MinValue : long.MaxValue;
-            result = (result * 10) + digit;
+            return (_exponentValue + ExponentAdjustment + DigitCount)
+                .CompareTo(other._exponentValue + other.ExponentAdjustment + other.DigitCount);
         }
 
-        return negative ? -result : result;
+        var leftCapacity = Math.Max(_exponentDigits.Length, 20) + 1;
+        var rightCapacity = Math.Max(other._exponentDigits.Length, 20) + 1;
+        byte[]? rentedLeft = null;
+        byte[]? rentedRight = null;
+        Span<byte> left = leftCapacity <= 256
+            ? stackalloc byte[leftCapacity]
+            : (rentedLeft = ArrayPool<byte>.Shared.Rent(leftCapacity));
+        Span<byte> right = rightCapacity <= 256
+            ? stackalloc byte[rightCapacity]
+            : (rentedRight = ArrayPool<byte>.Shared.Rent(rightCapacity));
+        try
+        {
+            var leftLength = WriteAdjustedExponent(
+                _exponentDigits,
+                _exponentNegative,
+                ExponentAdjustment + DigitCount,
+                left,
+                out var leftSign);
+            var rightLength = WriteAdjustedExponent(
+                other._exponentDigits,
+                other._exponentNegative,
+                other.ExponentAdjustment + other.DigitCount,
+                right,
+                out var rightSign);
+            if (leftSign != rightSign)
+                return leftSign.CompareTo(rightSign);
+            if (leftSign == 0)
+                return 0;
+
+            var comparison = leftLength.CompareTo(rightLength);
+            if (comparison == 0)
+                comparison = left[..leftLength].SequenceCompareTo(right[..rightLength]);
+            return leftSign > 0 ? comparison : -comparison;
+        }
+        finally
+        {
+            if (rentedRight is not null)
+                ArrayPool<byte>.Shared.Return(rentedRight);
+            if (rentedLeft is not null)
+                ArrayPool<byte>.Shared.Return(rentedLeft);
+        }
     }
 
-    private static long SaturatingAdd(long value, long addend)
+    private static bool TryParseExponent(
+        ReadOnlySpan<byte> magnitude,
+        bool negative,
+        out long value)
     {
-        if (addend > 0 && value > long.MaxValue - addend)
-            return long.MaxValue;
-        if (addend < 0 && value < long.MinValue - addend)
-            return long.MinValue;
-        return value + addend;
+        if (magnitude.Length > 18)
+        {
+            value = 0;
+            return false;
+        }
+
+        value = 0;
+        for (var index = 0; index < magnitude.Length; index++)
+            value = (value * 10) + magnitude[index] - (byte)'0';
+        if (negative)
+            value = -value;
+        return true;
+    }
+
+    private static int WriteAdjustedExponent(
+        ReadOnlySpan<byte> magnitude,
+        bool negative,
+        long adjustment,
+        Span<byte> destination,
+        out int sign)
+    {
+        if (magnitude.IsEmpty)
+            return WriteInt64(adjustment, destination, out sign);
+        if (adjustment == 0)
+        {
+            magnitude.CopyTo(destination);
+            sign = negative ? -1 : 1;
+            return magnitude.Length;
+        }
+
+        var adjustmentNegative = adjustment < 0;
+        var adjustmentMagnitude = adjustmentNegative
+            ? (ulong)(-(adjustment + 1)) + 1
+            : (ulong)adjustment;
+        if (negative == adjustmentNegative)
+        {
+            sign = negative ? -1 : 1;
+            return AddMagnitude(magnitude, adjustmentMagnitude, destination);
+        }
+
+        Span<byte> adjustmentText = stackalloc byte[20];
+        _ = Utf8Formatter.TryFormat(adjustmentMagnitude, adjustmentText, out var adjustmentLength);
+        var comparison = magnitude.Length.CompareTo(adjustmentLength);
+        if (comparison == 0)
+            comparison = magnitude.SequenceCompareTo(adjustmentText[..adjustmentLength]);
+        if (comparison == 0)
+        {
+            sign = 0;
+            return 0;
+        }
+        if (comparison > 0)
+        {
+            sign = negative ? -1 : 1;
+            return SubtractMagnitude(magnitude, adjustmentMagnitude, destination);
+        }
+
+        var rawMagnitude = ParseMagnitude(magnitude);
+        sign = adjustmentNegative ? -1 : 1;
+        _ = Utf8Formatter.TryFormat(adjustmentMagnitude - rawMagnitude, destination, out var written);
+        return written;
+    }
+
+    private static int WriteInt64(long value, Span<byte> destination, out int sign)
+    {
+        if (value == 0)
+        {
+            sign = 0;
+            return 0;
+        }
+
+        sign = value < 0 ? -1 : 1;
+        var magnitude = value < 0 ? (ulong)(-(value + 1)) + 1 : (ulong)value;
+        _ = Utf8Formatter.TryFormat(magnitude, destination, out var written);
+        return written;
+    }
+
+    private static int AddMagnitude(
+        ReadOnlySpan<byte> magnitude,
+        ulong addend,
+        Span<byte> destination)
+    {
+        var source = magnitude.Length - 1;
+        var write = destination.Length;
+        while (source >= 0 || addend != 0)
+        {
+            var sum = source >= 0 ? magnitude[source--] - (byte)'0' : 0;
+            sum += (int)(addend % 10);
+            addend /= 10;
+            if (sum >= 10)
+            {
+                sum -= 10;
+                addend++;
+            }
+            destination[--write] = (byte)('0' + sum);
+        }
+
+        var length = destination.Length - write;
+        destination[write..].CopyTo(destination);
+        return length;
+    }
+
+    private static int SubtractMagnitude(
+        ReadOnlySpan<byte> magnitude,
+        ulong subtrahend,
+        Span<byte> destination)
+    {
+        magnitude.CopyTo(destination);
+        for (var position = magnitude.Length - 1; position >= 0; position--)
+        {
+            var difference = destination[position] - (byte)'0' - (int)(subtrahend % 10);
+            subtrahend /= 10;
+            if (difference < 0)
+            {
+                difference += 10;
+                subtrahend++;
+            }
+            destination[position] = (byte)('0' + difference);
+        }
+
+        var start = 0;
+        while (destination[start] == (byte)'0')
+            start++;
+        var length = magnitude.Length - start;
+        destination.Slice(start, length).CopyTo(destination);
+        return length;
+    }
+
+    private static ulong ParseMagnitude(ReadOnlySpan<byte> magnitude)
+    {
+        var value = 0UL;
+        for (var index = 0; index < magnitude.Length; index++)
+            value = (value * 10) + magnitude[index] - (byte)'0';
+        return value;
     }
 
     private ref struct DigitEnumerator
@@ -822,7 +1039,7 @@ internal static class ValidationCelJsonEquality
             buckets.Fill(-1);
             FillObjectBuckets(nodes, buckets);
 
-            var rightReader = new Utf8JsonReader(right);
+            var rightReader = new Utf8JsonReader(right, ValidationCelJsonReader.Options);
             return rightReader.Read() &&
                    NodesEqual(0, left, nodes, buckets, ref rightReader) &&
                    !rightReader.Read();
@@ -838,7 +1055,7 @@ internal static class ValidationCelJsonEquality
 
     private static int CountValues(ReadOnlySpan<byte> json)
     {
-        var reader = new Utf8JsonReader(json);
+        var reader = new Utf8JsonReader(json, ValidationCelJsonReader.Options);
         var count = 0;
         while (reader.Read())
         {
@@ -850,7 +1067,7 @@ internal static class ValidationCelJsonEquality
 
     private static int BuildIndex(ReadOnlySpan<byte> json, Span<EqualityNode> nodes)
     {
-        var reader = new Utf8JsonReader(json);
+        var reader = new Utf8JsonReader(json, ValidationCelJsonReader.Options);
         var nodeCount = 0;
         var parentIndex = -1;
         var nameStart = 0;
@@ -1004,7 +1221,9 @@ internal static class ValidationCelJsonEquality
 
     private static Utf8JsonReader ReadNode(EqualityNode node, ReadOnlySpan<byte> source)
     {
-        var reader = new Utf8JsonReader(source.Slice(node.ValueStart, node.ValueLength));
+        var reader = new Utf8JsonReader(
+            source.Slice(node.ValueStart, node.ValueLength),
+            ValidationCelJsonReader.Options);
         _ = reader.Read();
         return reader;
     }
@@ -1095,7 +1314,9 @@ internal static class ValidationCelJsonEquality
         var name = source.Slice(node.NameStart, node.NameLength);
         if (!node.NameEscaped)
             return right.ValueTextEquals(name);
-        var reader = new Utf8JsonReader(source.Slice(node.NameStart - 1, node.NameLength + 2));
+        var reader = new Utf8JsonReader(
+            source.Slice(node.NameStart - 1, node.NameLength + 2),
+            ValidationCelJsonReader.Options);
         _ = reader.Read();
         return StringsEqual(ref reader, ref right);
     }
@@ -1224,7 +1445,7 @@ internal sealed class ValidationCelFunctionNode(
         if (value.Kind is not (ValidationCelValueKind.Array or ValidationCelValueKind.Object))
             throw Unsupported("CEL function 'size' requires a string, list, or map.");
 
-        var reader = new Utf8JsonReader(value.Json.Span);
+        var reader = new Utf8JsonReader(value.Json.Span, ValidationCelJsonReader.Options);
         _ = reader.Read();
         var count = 0;
         if (value.Kind == ValidationCelValueKind.Array)
@@ -1361,7 +1582,7 @@ internal static class ValidationCelStrings
             return destination[..value.Utf8Literal.Length];
         }
 
-        var reader = new Utf8JsonReader(value.Json.Span);
+        var reader = new Utf8JsonReader(value.Json.Span, ValidationCelJsonReader.Options);
         _ = reader.Read();
         var written = reader.CopyString(destination);
         return destination[..written];
@@ -1793,13 +2014,8 @@ internal static class ValidationCelHelpers
     {
         if (value.Kind != ValidationCelValueKind.Number)
             throw Unsupported("CEL arithmetic operators require numeric operands.");
-        if (value.Json.IsEmpty && value.Utf8Literal.IsEmpty)
+        if (value.Boolean)
             return value.Number;
-
-        var text = value.Json.IsEmpty ? value.Utf8Literal.Span : value.Json.Span;
-        var reader = new Utf8JsonReader(text);
-        if (reader.Read() && reader.TryGetDecimal(out var number))
-            return number;
         throw Unsupported("CEL arithmetic operands must fit the decimal range.");
     }
 

@@ -134,6 +134,8 @@ public class JsonSchemaValidationBenchmarks
     private IJsonSchemaValidator _siblingInlineRulesValidator = null!;
     private ReadOnlyMemory<byte> _nestedMemberInlineRulesJsonPayload;
     private IJsonSchemaValidator _nestedMemberInlineRulesValidator = null!;
+    private ReadOnlyMemory<byte> _terminalPrefixInlineRulesJsonPayload;
+    private IJsonSchemaValidator _terminalPrefixInlineRulesValidator = null!;
     private SerializationContext _context;
     private int _alternateSchemaIndex;
 
@@ -246,6 +248,17 @@ public class JsonSchemaValidationBenchmarks
             _nestedMemberInlineRulesJsonPayload,
             5,
             failFast: false);
+        var (terminalPrefixSchema, terminalPrefixPayload) = CreateTerminalPrefixRule(depth: 32);
+        _terminalPrefixInlineRulesJsonPayload = terminalPrefixPayload;
+        _terminalPrefixInlineRulesValidator = inlineRulesFactory.GetOrCreate(new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = terminalPrefixSchema
+        });
+        _terminalPrefixInlineRulesValidator.ValidateRules(
+            _terminalPrefixInlineRulesJsonPayload,
+            6,
+            failFast: false);
         _inlineRulesDestination.Clear();
         _ = _disabledDeserializer.Deserialize(_wirePayload, _context);
         _ = _enabledDeserializer.Deserialize(_wirePayload, _context);
@@ -329,6 +342,13 @@ public class JsonSchemaValidationBenchmarks
             failFast: false);
 
     [Benchmark]
+    public void ValidateTerminalPrefixInlineRules() =>
+        _terminalPrefixInlineRulesValidator.ValidateRules(
+            _terminalPrefixInlineRulesJsonPayload,
+            6,
+            failFast: false);
+
+    [Benchmark]
     public BenchmarkPayload DeserializeValidationEnabledAlternatingSchemas()
     {
         var payload = (_alternateSchemaIndex++ & 1) == 0
@@ -360,6 +380,29 @@ public class JsonSchemaValidationBenchmarks
             json.Append("{\"value\":");
         json.Append('1');
         json.Append('}', depth);
+    }
+
+    private static (string Schema, byte[] Payload) CreateTerminalPrefixRule(int depth)
+    {
+        var expression = new StringBuilder(depth * depth * 4);
+        var path = new StringBuilder("this");
+        var payload = new StringBuilder(depth * 12);
+        for (var index = 0; index < depth; index++)
+        {
+            path.Append(".child");
+            if (expression.Length != 0)
+                expression.Append(" && ");
+            expression.Append(path).Append(" != null");
+            payload.Append("{\"child\":");
+        }
+        payload.Append("{}");
+        payload.Append('}', depth);
+        var schema = $$"""
+            {
+              "confluent:rules": [{ "name": "prefixes", "expr": "{{expression}}" }]
+            }
+            """;
+        return (schema, Encoding.UTF8.GetBytes(payload.ToString()));
     }
 
     private sealed class BenchmarkSchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistryCache
