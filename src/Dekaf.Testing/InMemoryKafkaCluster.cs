@@ -322,6 +322,12 @@ public sealed class InMemoryKafkaCluster
         RecordMetadata metadata;
         lock (_gate)
         {
+            if (transactionMarker is { State: not InMemoryTransactionState.Ongoing })
+            {
+                throw new InvalidOperationException(
+                    "The in-memory transaction completed while the produce operation was paused.");
+            }
+
             if (!_topics.TryGetValue(topic, out var state) ||
                 !ReferenceEquals(state, selectedTopic) ||
                 (uint)selectedPartition >= (uint)state.Partitions.Count)

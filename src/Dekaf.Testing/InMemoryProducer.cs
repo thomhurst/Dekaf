@@ -26,6 +26,8 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
     private InMemoryTransaction? _activeTransaction;
     private FatalTransactionException? _fatalTransactionException;
     private bool _preparedRecoveryEnabled;
+    private bool _preparedRecoveryInProgress;
+    private bool _disposeStarted;
     private bool _disposed;
 
     public InMemoryProducer(InMemoryKafkaCluster cluster)
@@ -244,15 +246,19 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
 
     public ITransaction<TKey, TValue> BeginTransaction()
     {
-        ThrowIfDisposed();
         ThrowIfFatalTransactionError();
 
         lock (_transactionGate)
         {
+            ThrowIfDisposingOrDisposed();
+            if (_preparedRecoveryInProgress)
+                throw new InvalidOperationException("A prepared transaction recovery is already in progress.");
             if (_activeTransaction is { IsCompleted: false })
                 throw new InvalidOperationException("A transaction is already active.");
 
-            return _activeTransaction = new InMemoryTransaction(this);
+            var transaction = new InMemoryTransaction(this);
+            Volatile.Write(ref _activeTransaction, transaction);
+            return transaction;
         }
     }
 
@@ -267,7 +273,7 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
         await ApplyFaultAsync(
             new KafkaFaultScope(KafkaFaultOperation.InitializeTransactions),
             cancellationToken).ConfigureAwait(false);
-        _preparedRecoveryEnabled = keepPreparedTransaction;
+        Volatile.Write(ref _preparedRecoveryEnabled, keepPreparedTransaction);
     }
 
     public async ValueTask CompletePreparedTransactionAsync(
@@ -279,33 +285,48 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
         ThrowIfDisposed();
         ThrowIfFatalTransactionError();
 
-        InMemoryTransaction? transaction;
+        InMemoryTransaction transaction;
         lock (_transactionGate)
-            transaction = _activeTransaction;
-
-        if (transaction is { IsCompleted: false } &&
-            (!transaction.IsPrepared || transaction.PreparedState != preparedState))
         {
-            throw new InvalidOperationException(
-                "Cannot recover a prepared transaction while another transaction is active.");
-        }
+            ThrowIfDisposingOrDisposed();
+            if (_preparedRecoveryInProgress)
+                throw new InvalidOperationException("A prepared transaction recovery is already in progress.");
 
-        if (transaction is null || !transaction.IsPrepared || transaction.PreparedState != preparedState)
-        {
-            if (!_preparedRecoveryEnabled ||
-                _cluster.GetPreparedTransaction(preparedState) is not InMemoryTransaction recovered)
+            transaction = _activeTransaction!;
+            if (transaction is { IsCompleted: false } &&
+                (!transaction.IsPrepared || transaction.PreparedState != preparedState))
             {
                 throw new InvalidOperationException(
-                    "There is no matching active or recoverable prepared transaction.");
+                    "Cannot recover a prepared transaction while another transaction is active.");
             }
 
-            transaction = recovered;
+            if (transaction is null || !transaction.IsPrepared || transaction.PreparedState != preparedState)
+            {
+                if (!Volatile.Read(ref _preparedRecoveryEnabled) ||
+                    _cluster.GetPreparedTransaction(preparedState) is not InMemoryTransaction recovered)
+                {
+                    throw new InvalidOperationException(
+                        "There is no matching active or recoverable prepared transaction.");
+                }
+
+                transaction = recovered;
+            }
+
+            if (!transaction.IsPrepared || transaction.PreparedState != preparedState)
+                throw new InvalidOperationException("The prepared transaction state does not match the active transaction.");
+
+            Volatile.Write(ref _preparedRecoveryInProgress, true);
         }
 
-        if (!transaction.IsPrepared || transaction.PreparedState != preparedState)
-            throw new InvalidOperationException("The prepared transaction state does not match the active transaction.");
-
-        await transaction.CompletePreparedAsync(this, committed, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await transaction.CompletePreparedAsync(this, committed, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            lock (_transactionGate)
+                Volatile.Write(ref _preparedRecoveryInProgress, false);
+        }
     }
 
     public ITopicProducer<TKey, TValue> ForTopic(string topic)
@@ -317,17 +338,20 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
 
     public async ValueTask DisposeAsync()
     {
-        if (_disposed)
-            return;
-
         InMemoryTransaction? transaction;
         lock (_transactionGate)
+        {
+            if (_disposeStarted)
+                return;
+
+            Volatile.Write(ref _disposeStarted, true);
             transaction = _activeTransaction;
+        }
 
         if (transaction is { IsCompleted: false, IsPrepared: false })
             await transaction.DisposeAsync().ConfigureAwait(false);
 
-        _disposed = true;
+        Volatile.Write(ref _disposed, true);
     }
 
     private ValueTask<RecordMetadata> ProduceCoreAsync(
@@ -362,6 +386,8 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(topic);
         ThrowIfFatalTransactionError();
+        if (transactionMarker is null)
+            ThrowIfTransactionActive();
 
         if (_hasAsyncSerializers)
         {
@@ -541,7 +567,7 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
         lock (_transactionGate)
         {
             if (ReferenceEquals(_activeTransaction, transaction))
-                _activeTransaction = null;
+                Volatile.Write(ref _activeTransaction, null);
         }
     }
 
@@ -606,14 +632,34 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
 
     private void ThrowIfDisposed()
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed), this);
+    }
+
+    private void ThrowIfDisposingOrDisposed()
+    {
+        ObjectDisposedException.ThrowIf(
+            Volatile.Read(ref _disposeStarted) || Volatile.Read(ref _disposed),
+            this);
+    }
+
+    private void ThrowIfTransactionActive()
+    {
+        ThrowIfDisposingOrDisposed();
+        if (Volatile.Read(ref _activeTransaction) is { IsCompleted: false } ||
+            Volatile.Read(ref _preparedRecoveryInProgress))
+        {
+            throw new InvalidOperationException(
+                "Cannot produce outside the active transaction; use the transaction handle.");
+        }
     }
 
     private sealed class InMemoryTransaction : ITransaction<TKey, TValue>
     {
+        private const long MutationCountMask = uint.MaxValue;
         private readonly InMemoryProducer<TKey, TValue> _producer;
         private readonly Dictionary<string, PendingGroupOffsets> _pendingOffsets = new(StringComparer.Ordinal);
-        private bool _completed;
+        private long _lifecycle;
+        private AbortableTransactionException? _abortableException;
         private bool _prepared;
 
         public InMemoryTransaction(InMemoryProducer<TKey, TValue> producer)
@@ -624,11 +670,12 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
 
         public InMemoryTransactionMarker TransactionMarker { get; }
 
-        public bool IsCompleted => _completed;
+        public bool IsCompleted => GetState(Volatile.Read(ref _lifecycle)) == TransactionLifecycleState.Completed;
 
-        public bool IsPrepared => _prepared;
+        public bool IsPrepared => Volatile.Read(ref _prepared) ||
+            GetState(Volatile.Read(ref _lifecycle)) == TransactionLifecycleState.Preparing;
 
-        public PreparedTransactionState PreparedState => _prepared
+        public PreparedTransactionState PreparedState => Volatile.Read(ref _prepared)
             ? new PreparedTransactionState(_producer._producerId, 0)
             : PreparedTransactionState.Empty;
 
@@ -636,8 +683,20 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
             ProducerMessage<TKey, TValue> message,
             CancellationToken cancellationToken = default)
         {
-            ThrowIfCannotMutate("Cannot produce");
-            return await _producer.ProduceTransactionAsync(this, message, cancellationToken).ConfigureAwait(false);
+            EnterMutation("Cannot produce");
+            try
+            {
+                return await _producer.ProduceTransactionAsync(this, message, cancellationToken).ConfigureAwait(false);
+            }
+            catch (AbortableTransactionException exception)
+            {
+                MarkAbortable(exception);
+                throw;
+            }
+            finally
+            {
+                ExitMutation();
+            }
         }
 
         public async ValueTask<RecordMetadata> ProduceAsync(
@@ -646,39 +705,87 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
             TValue value,
             CancellationToken cancellationToken = default)
         {
-            ThrowIfCannotMutate("Cannot produce");
-            return await _producer.ProduceTransactionAsync(this, topic, key, value, cancellationToken).ConfigureAwait(false);
+            EnterMutation("Cannot produce");
+            try
+            {
+                return await _producer.ProduceTransactionAsync(this, topic, key, value, cancellationToken).ConfigureAwait(false);
+            }
+            catch (AbortableTransactionException exception)
+            {
+                MarkAbortable(exception);
+                throw;
+            }
+            finally
+            {
+                ExitMutation();
+            }
         }
 
         public async ValueTask CommitAsync(CancellationToken cancellationToken = default)
         {
-            ThrowIfCompleted("Cannot commit transaction");
+            var previousState = EnterCompletion("Cannot commit transaction", allowAbortable: false);
+            try
+            {
+                await _producer.ApplyFaultAsync(
+                    new KafkaFaultScope(KafkaFaultOperation.CommitTransaction),
+                    cancellationToken).ConfigureAwait(false);
 
-            await _producer.ApplyFaultAsync(
-                new KafkaFaultScope(KafkaFaultOperation.CommitTransaction),
-                cancellationToken).ConfigureAwait(false);
-
-            Complete(committed: true);
+                Complete(committed: true);
+            }
+            catch (AbortableTransactionException exception)
+            {
+                _abortableException = exception;
+                Volatile.Write(ref _lifecycle, Pack(TransactionLifecycleState.Abortable));
+                throw;
+            }
+            catch
+            {
+                RestoreAfterFailedCompletion(previousState);
+                throw;
+            }
         }
 
         public ValueTask<PreparedTransactionState> PrepareAsync(CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            ThrowIfCannotMutate("Cannot prepare transaction");
-            _prepared = true;
-            _producer._cluster.RegisterPreparedTransaction(PreparedState, this);
-            return ValueTask.FromResult(PreparedState);
+            TransitionToPrepared();
+            try
+            {
+                Volatile.Write(ref _prepared, true);
+                _producer._cluster.RegisterPreparedTransaction(PreparedState, this);
+                Volatile.Write(ref _lifecycle, Pack(TransactionLifecycleState.Prepared));
+                return ValueTask.FromResult(PreparedState);
+            }
+            catch
+            {
+                Volatile.Write(ref _prepared, false);
+                Volatile.Write(ref _lifecycle, Pack(TransactionLifecycleState.Active));
+                throw;
+            }
         }
 
         public async ValueTask AbortAsync(CancellationToken cancellationToken = default)
         {
-            ThrowIfCompleted("Cannot abort transaction");
+            var previousState = EnterCompletion("Cannot abort transaction", allowAbortable: true);
+            try
+            {
+                await _producer.ApplyFaultAsync(
+                    new KafkaFaultScope(KafkaFaultOperation.AbortTransaction),
+                    cancellationToken).ConfigureAwait(false);
 
-            await _producer.ApplyFaultAsync(
-                new KafkaFaultScope(KafkaFaultOperation.AbortTransaction),
-                cancellationToken).ConfigureAwait(false);
-
-            Complete(committed: false);
+                Complete(committed: false);
+            }
+            catch (AbortableTransactionException exception)
+            {
+                _abortableException = exception;
+                Volatile.Write(ref _lifecycle, Pack(TransactionLifecycleState.Abortable));
+                throw;
+            }
+            catch
+            {
+                RestoreAfterFailedCompletion(previousState);
+                throw;
+            }
         }
 
         public async ValueTask SendOffsetsToTransactionAsync(
@@ -688,17 +795,29 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
         {
             ArgumentNullException.ThrowIfNull(offsets);
             ArgumentException.ThrowIfNullOrWhiteSpace(consumerGroupId);
-            ThrowIfCannotMutate("Cannot send offsets to transaction");
             var snapshot = offsets.ToArray();
+            EnterMutation("Cannot send offsets to transaction");
+            try
+            {
+                await _producer.ApplyFaultAsync(
+                    new KafkaFaultScope(
+                        KafkaFaultOperation.SendOffsetsToTransaction,
+                        groupId: consumerGroupId),
+                    cancellationToken).ConfigureAwait(false);
 
-            await _producer.ApplyFaultAsync(
-                new KafkaFaultScope(
-                    KafkaFaultOperation.SendOffsetsToTransaction,
-                    groupId: consumerGroupId),
-                cancellationToken).ConfigureAwait(false);
-
-            var pending = GetOrAddPendingOffsets(consumerGroupId);
-            pending.Offsets.AddRange(snapshot);
+                EnsureMutationActive("Cannot send offsets to transaction");
+                var pending = GetOrAddPendingOffsets(consumerGroupId);
+                pending.Offsets.AddRange(snapshot);
+            }
+            catch (AbortableTransactionException exception)
+            {
+                MarkAbortable(exception);
+                throw;
+            }
+            finally
+            {
+                ExitMutation();
+            }
         }
 
         public async ValueTask SendOffsetsToTransactionAsync(
@@ -709,29 +828,41 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
             ArgumentNullException.ThrowIfNull(offsets);
             ArgumentNullException.ThrowIfNull(consumerGroupMetadata);
             ArgumentException.ThrowIfNullOrWhiteSpace(consumerGroupMetadata.GroupId);
-            ThrowIfCannotMutate("Cannot send offsets to transaction");
             var snapshot = offsets.ToArray();
+            EnterMutation("Cannot send offsets to transaction");
+            try
+            {
+                await _producer.ApplyFaultAsync(
+                    new KafkaFaultScope(
+                        KafkaFaultOperation.SendOffsetsToTransaction,
+                        groupId: consumerGroupMetadata.GroupId),
+                    cancellationToken).ConfigureAwait(false);
 
-            await _producer.ApplyFaultAsync(
-                new KafkaFaultScope(
-                    KafkaFaultOperation.SendOffsetsToTransaction,
-                    groupId: consumerGroupMetadata.GroupId),
-                cancellationToken).ConfigureAwait(false);
-
-            var pending = GetOrAddPendingOffsets(consumerGroupMetadata.GroupId);
-            pending.Metadata = consumerGroupMetadata;
-            pending.Offsets.AddRange(snapshot);
+                EnsureMutationActive("Cannot send offsets to transaction");
+                var pending = GetOrAddPendingOffsets(consumerGroupMetadata.GroupId);
+                pending.Metadata = consumerGroupMetadata;
+                pending.Offsets.AddRange(snapshot);
+            }
+            catch (AbortableTransactionException exception)
+            {
+                MarkAbortable(exception);
+                throw;
+            }
+            finally
+            {
+                ExitMutation();
+            }
         }
 
         public async ValueTask DisposeAsync()
         {
-            if (_completed || _prepared || _producer._disposed)
+            if (IsCompleted || IsPrepared || Volatile.Read(ref _producer._disposed))
                 return;
 
             // Fault plans accept arbitrary exceptions. Disposal is best-effort and must release the
             // producer slot after any injected abort failure without a generic catch clause.
             await AbortAsync().AsTask().ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
-            if (!_completed)
+            if (!IsCompleted)
                 Complete(committed: false);
         }
 
@@ -741,34 +872,39 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
             CancellationToken cancellationToken)
         {
             recoveringProducer.ThrowIfFatalTransactionError();
-            if (_completed)
-                throw new InvalidOperationException("Cannot complete prepared transaction: transaction is already completed.");
-            if (!_prepared)
+            var previousState = EnterCompletion(
+                "Cannot complete prepared transaction",
+                allowAbortable: !committed,
+                recoveringProducer);
+            if (previousState != TransactionLifecycleState.Prepared &&
+                previousState != TransactionLifecycleState.Abortable)
+            {
+                RestoreAfterFailedCompletion(previousState);
                 throw new InvalidOperationException("Transaction is not prepared.");
+            }
 
-            await recoveringProducer.ApplyFaultAsync(
-                new KafkaFaultScope(
-                    committed
-                        ? KafkaFaultOperation.CommitTransaction
-                        : KafkaFaultOperation.AbortTransaction),
-                cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await recoveringProducer.ApplyFaultAsync(
+                    new KafkaFaultScope(
+                        committed
+                            ? KafkaFaultOperation.CommitTransaction
+                            : KafkaFaultOperation.AbortTransaction),
+                    cancellationToken).ConfigureAwait(false);
 
-            Complete(committed);
-        }
-
-        private void ThrowIfCannotMutate(string operation)
-        {
-            ThrowIfCompleted(operation);
-            if (_prepared)
-                throw new InvalidOperationException("Transaction is prepared; only commit or abort is permitted.");
-        }
-
-        private void ThrowIfCompleted(string operation)
-        {
-            _producer.ThrowIfDisposed();
-            _producer.ThrowIfFatalTransactionError();
-            if (_completed)
-                throw new InvalidOperationException($"{operation}: transaction is already completed.");
+                Complete(committed);
+            }
+            catch (AbortableTransactionException exception)
+            {
+                _abortableException = exception;
+                Volatile.Write(ref _lifecycle, Pack(TransactionLifecycleState.Abortable));
+                throw;
+            }
+            catch
+            {
+                RestoreAfterFailedCompletion(previousState);
+                throw;
+            }
         }
 
         private PendingGroupOffsets GetOrAddPendingOffsets(string groupId)
@@ -790,9 +926,160 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
                 PreparedState,
                 this);
             _pendingOffsets.Clear();
-            _completed = true;
+            SetStatePreservingMutationCount(TransactionLifecycleState.Completed);
             _producer.CompleteTransaction(this);
         }
+
+        private void EnterMutation(string operation)
+        {
+            _producer.ThrowIfDisposingOrDisposed();
+            _producer.ThrowIfFatalTransactionError();
+
+            while (true)
+            {
+                var lifecycle = Volatile.Read(ref _lifecycle);
+                var state = GetState(lifecycle);
+                if (state != TransactionLifecycleState.Active)
+                    ThrowForState(operation, state);
+                if ((uint)lifecycle == uint.MaxValue)
+                    throw new InvalidOperationException($"{operation}: too many concurrent transaction operations.");
+
+                if (Interlocked.CompareExchange(ref _lifecycle, lifecycle + 1, lifecycle) == lifecycle)
+                    return;
+            }
+        }
+
+        private void ExitMutation() => Interlocked.Decrement(ref _lifecycle);
+
+        private void TransitionToPrepared()
+        {
+            _producer.ThrowIfDisposingOrDisposed();
+            _producer.ThrowIfFatalTransactionError();
+
+            while (true)
+            {
+                var lifecycle = Volatile.Read(ref _lifecycle);
+                var state = GetState(lifecycle);
+                if (state != TransactionLifecycleState.Active)
+                    ThrowForState("Cannot prepare transaction", state);
+                if ((lifecycle & MutationCountMask) != 0)
+                {
+                    throw new InvalidOperationException(
+                        "Cannot prepare transaction while transaction operations are in progress.");
+                }
+
+                if (Interlocked.CompareExchange(
+                        ref _lifecycle,
+                        Pack(TransactionLifecycleState.Preparing),
+                        lifecycle) == lifecycle)
+                {
+                    return;
+                }
+            }
+        }
+
+        private void EnsureMutationActive(string operation)
+        {
+            var state = GetState(Volatile.Read(ref _lifecycle));
+            if (state != TransactionLifecycleState.Active)
+                ThrowForState(operation, state);
+        }
+
+        private TransactionLifecycleState EnterCompletion(
+            string operation,
+            bool allowAbortable,
+            InMemoryProducer<TKey, TValue>? operationProducer = null)
+        {
+            var producer = operationProducer ?? _producer;
+            producer.ThrowIfDisposed();
+            producer.ThrowIfFatalTransactionError();
+
+            while (true)
+            {
+                var lifecycle = Volatile.Read(ref _lifecycle);
+                var state = GetState(lifecycle);
+                if (state is not (TransactionLifecycleState.Active or TransactionLifecycleState.Prepared) &&
+                    !(allowAbortable && state == TransactionLifecycleState.Abortable))
+                {
+                    ThrowForState(operation, state);
+                }
+
+                if ((lifecycle & MutationCountMask) != 0)
+                {
+                    throw new InvalidOperationException(
+                        $"{operation} while transaction operations are in progress.");
+                }
+
+                if (Interlocked.CompareExchange(
+                        ref _lifecycle,
+                        Pack(TransactionLifecycleState.Completing),
+                        lifecycle) == lifecycle)
+                {
+                    return state;
+                }
+            }
+        }
+
+        private void RestoreAfterFailedCompletion(TransactionLifecycleState state) =>
+            Interlocked.CompareExchange(
+                ref _lifecycle,
+                Pack(state),
+                Pack(TransactionLifecycleState.Completing));
+
+        private void MarkAbortable(AbortableTransactionException exception)
+        {
+            _abortableException = exception;
+            while (true)
+            {
+                var lifecycle = Volatile.Read(ref _lifecycle);
+                if (GetState(lifecycle) != TransactionLifecycleState.Active)
+                    return;
+
+                var abortable = Pack(TransactionLifecycleState.Abortable) | (lifecycle & MutationCountMask);
+                if (Interlocked.CompareExchange(ref _lifecycle, abortable, lifecycle) == lifecycle)
+                    return;
+            }
+        }
+
+        private void SetStatePreservingMutationCount(TransactionLifecycleState state)
+        {
+            while (true)
+            {
+                var lifecycle = Volatile.Read(ref _lifecycle);
+                if (GetState(lifecycle) == state)
+                    return;
+
+                var updated = Pack(state) | (lifecycle & MutationCountMask);
+                if (Interlocked.CompareExchange(ref _lifecycle, updated, lifecycle) == lifecycle)
+                    return;
+            }
+        }
+
+        private void ThrowForState(string operation, TransactionLifecycleState state)
+        {
+            if (state == TransactionLifecycleState.Abortable && _abortableException is { } exception)
+                throw exception;
+
+            throw new InvalidOperationException(state switch
+            {
+                TransactionLifecycleState.Prepared =>
+                    $"{operation}: transaction is prepared; only commit or abort is permitted.",
+                TransactionLifecycleState.Preparing =>
+                    $"{operation}: transaction preparation is already in progress.",
+                TransactionLifecycleState.Completing =>
+                    $"{operation}: transaction completion is already in progress.",
+                TransactionLifecycleState.Completed =>
+                    $"{operation}: transaction is already completed.",
+                TransactionLifecycleState.Abortable =>
+                    $"{operation}: transaction has an abortable error and must be aborted.",
+                _ => $"{operation}: transaction is not active."
+            });
+        }
+
+        private static long Pack(TransactionLifecycleState state) => (long)state << 32;
+
+        private static TransactionLifecycleState GetState(long lifecycle) =>
+            (TransactionLifecycleState)(lifecycle >> 32);
 
         private static (
             string GroupId,
@@ -805,6 +1092,16 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
         {
             public List<TopicPartitionOffset> Offsets { get; } = [];
             public ConsumerGroupMetadata? Metadata { get; set; }
+        }
+
+        private enum TransactionLifecycleState : byte
+        {
+            Active,
+            Preparing,
+            Prepared,
+            Abortable,
+            Completing,
+            Completed
         }
     }
 

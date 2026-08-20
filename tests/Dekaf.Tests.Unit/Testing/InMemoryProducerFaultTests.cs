@@ -204,6 +204,85 @@ public sealed class InMemoryProducerFaultTests
     }
 
     [Test]
+    public async Task TransactionProduce_AbortableFailureRequiresAbortBeforeReuse()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        var abortable = new AbortableTransactionException(
+            ErrorCode.TransactionAbortable,
+            "abort required");
+        cluster.FaultPlan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.TransactionProduce, "orders"),
+            abortable);
+        var transaction = producer.BeginTransaction();
+
+        var initial = await Assert.ThrowsAsync<AbortableTransactionException>(() =>
+            transaction.ProduceAsync("orders", "k", "v").AsTask());
+        var produce = await Assert.ThrowsAsync<AbortableTransactionException>(() =>
+            transaction.ProduceAsync("orders", "k", "retry").AsTask());
+        var offsets = await Assert.ThrowsAsync<AbortableTransactionException>(() =>
+            transaction.SendOffsetsToTransactionAsync(
+                [new TopicPartitionOffset("orders", 0, 1)],
+                "billing").AsTask());
+        var prepare = await Assert.ThrowsAsync<AbortableTransactionException>(() =>
+            transaction.PrepareAsync().AsTask());
+        var commit = await Assert.ThrowsAsync<AbortableTransactionException>(() =>
+            transaction.CommitAsync().AsTask());
+
+        await Assert.That(initial).IsSameReferenceAs(abortable);
+        await Assert.That(produce).IsSameReferenceAs(abortable);
+        await Assert.That(offsets).IsSameReferenceAs(abortable);
+        await Assert.That(prepare).IsSameReferenceAs(abortable);
+        await Assert.That(commit).IsSameReferenceAs(abortable);
+
+        await transaction.AbortAsync();
+        await using var recovered = producer.BeginTransaction();
+        await recovered.AbortAsync();
+    }
+
+    [Test]
+    public async Task TransactionProduce_PausedMutationRejectsCommitUntilAppendCompletes()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        var transaction = producer.BeginTransaction();
+        var barrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.TransactionProduce, "orders"));
+
+        var pendingProduce = transaction.ProduceAsync("orders", "k", "v").AsTask();
+        await barrier.WaitUntilEnteredAsync();
+        _ = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            transaction.CommitAsync().AsTask());
+        await Assert.That(barrier.Release()).IsTrue();
+        _ = await pendingProduce;
+        await transaction.CommitAsync();
+
+        await Assert.That(cluster.ReadRecords("orders")).Count().IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task TransactionOffsets_PausedMutationRejectsAbortUntilMutationCompletes()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        var transaction = producer.BeginTransaction();
+        var barrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.SendOffsetsToTransaction, groupId: "billing"));
+
+        var pendingOffsets = transaction.SendOffsetsToTransactionAsync(
+            [new TopicPartitionOffset("orders", 0, 17)],
+            "billing").AsTask();
+        await barrier.WaitUntilEnteredAsync();
+        _ = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            transaction.AbortAsync().AsTask());
+        await Assert.That(barrier.Release()).IsTrue();
+        await pendingOffsets;
+        await transaction.AbortAsync();
+
+        await Assert.That(cluster.GetCommittedOffset("billing", new TopicPartition("orders", 0))).IsNull();
+    }
+
+    [Test]
     public async Task TransactionOperations_FailBeforeMutationAndRecoverWithoutDelays()
     {
         var plan = new KafkaFaultPlan();
@@ -287,6 +366,21 @@ public sealed class InMemoryProducerFaultTests
     }
 
     [Test]
+    public async Task ProducerProduce_RejectsSendOutsideActiveTransaction()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        var transaction = producer.BeginTransaction();
+
+        _ = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            producer.ProduceAsync("orders", "k", "outside").AsTask());
+        await transaction.AbortAsync();
+        var metadata = await producer.ProduceAsync("orders", "k", "after");
+
+        await Assert.That(metadata.Offset).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task ReadRecords_StopsAtOngoingTransactionBoundary()
     {
         var cluster = new InMemoryKafkaCluster();
@@ -320,6 +414,62 @@ public sealed class InMemoryProducerFaultTests
 
         await using var recovered = producer.BeginTransaction();
         await recovered.AbortAsync();
+    }
+
+    [Test]
+    public async Task ProducerDispose_ClaimsLifecycleBeforeAwaitingTransactionAbort()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        _ = producer.BeginTransaction();
+        var barrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.AbortTransaction));
+
+        var pendingDispose = producer.DisposeAsync().AsTask();
+        await barrier.WaitUntilEnteredAsync();
+        await Assert.That(() => producer.BeginTransaction()).Throws<ObjectDisposedException>();
+        await Assert.That(barrier.Release()).IsTrue();
+        await pendingDispose;
+        _ = await Assert.ThrowsAsync<ObjectDisposedException>(() =>
+            producer.ProduceAsync("orders", "k", "v").AsTask());
+    }
+
+    [Test]
+    public async Task ProducerDispose_PreventsPausedOffsetsFromMutatingCompletedTransaction()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        var transaction = producer.BeginTransaction();
+        var barrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.SendOffsetsToTransaction, groupId: "billing"));
+        var pendingOffsets = transaction.SendOffsetsToTransactionAsync(
+            [new TopicPartitionOffset("orders", 0, 17)],
+            "billing").AsTask();
+
+        await barrier.WaitUntilEnteredAsync();
+        await producer.DisposeAsync();
+        await Assert.That(barrier.Release()).IsTrue();
+        _ = await Assert.ThrowsAsync<InvalidOperationException>(() => pendingOffsets);
+
+        await Assert.That(cluster.GetCommittedOffset("billing", new TopicPartition("orders", 0))).IsNull();
+    }
+
+    [Test]
+    public async Task ProducerDispose_PreventsPausedProduceFromAppendingAfterAbort()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        var transaction = producer.BeginTransaction();
+        var barrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.TransactionProduce, "orders"));
+        var pendingProduce = transaction.ProduceAsync("orders", "k", "v").AsTask();
+
+        await barrier.WaitUntilEnteredAsync();
+        await producer.DisposeAsync();
+        await Assert.That(barrier.Release()).IsTrue();
+        _ = await Assert.ThrowsAsync<InvalidOperationException>(() => pendingProduce);
+
+        await Assert.That(cluster.ReadRecords("orders")).IsEmpty();
     }
 
     [Test]
@@ -467,6 +617,34 @@ public sealed class InMemoryProducerFaultTests
 
         await activeTransaction.AbortAsync();
         await replacement.CompletePreparedTransactionAsync(prepared, committed: true);
+        await Assert.That(cluster.ReadRecords("orders")).Count().IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task PreparedTransaction_RecoveryClaimsLifecycleBeforeAwaitingCompletion()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var original = new InMemoryProducer<string, string>(cluster);
+        var transaction = original.BeginTransaction();
+        _ = await transaction.ProduceAsync("orders", "k", "prepared");
+        var prepared = await transaction.PrepareAsync();
+        await original.DisposeAsync();
+
+        var replacement = new InMemoryProducer<string, string>(cluster);
+        await replacement.InitTransactionsAsync(keepPreparedTransaction: true);
+        var barrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.CommitTransaction));
+        var pendingRecovery = replacement
+            .CompletePreparedTransactionAsync(prepared, committed: true)
+            .AsTask();
+
+        await barrier.WaitUntilEnteredAsync();
+        await Assert.That(() => replacement.BeginTransaction()).Throws<InvalidOperationException>();
+        await Assert.That(barrier.Release()).IsTrue();
+        await pendingRecovery;
+
+        await using var recovered = replacement.BeginTransaction();
+        await recovered.AbortAsync();
         await Assert.That(cluster.ReadRecords("orders")).Count().IsEqualTo(1);
     }
 
