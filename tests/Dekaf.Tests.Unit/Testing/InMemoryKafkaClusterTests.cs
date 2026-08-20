@@ -663,6 +663,25 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task Admin_DescribeReplicaLogDirs_DoesNotCreateMissingTopic(bool autoCreateTopics)
+    {
+        var cluster = new InMemoryKafkaCluster(new InMemoryKafkaClusterOptions
+        {
+            AutoCreateTopics = autoCreateTopics
+        });
+        var admin = new InMemoryAdminClient(cluster);
+        var missing = new TopicPartitionReplica("missing", 0, 0);
+
+        var result = await admin.DescribeReplicaLogDirsAsync([missing]);
+
+        await Assert.That(result[missing].CurrentReplicaLogDir).IsNull();
+        await Assert.That(result[missing].CurrentReplicaOffsetLag).IsEqualTo(-1);
+        await Assert.That(cluster.ListTopics()).IsEmpty();
+    }
+
+    [Test]
     public async Task Producer_PurgeAsync_IsNoOpForInMemoryProducer()
     {
         var cluster = new InMemoryKafkaCluster();

@@ -977,7 +977,7 @@ public sealed class InMemoryAdminClient : IAdminClient
             ValidateTopicPartition(replica.TopicPartition);
             ArgumentOutOfRangeException.ThrowIfNegative(replica.BrokerId);
 
-            var exists = replica.BrokerId == 0 && _cluster.GetTopicPartitions(replica.Topic).Contains(replica.TopicPartition);
+            var exists = replica.BrokerId == 0 && _cluster.ContainsTopicPartition(replica.TopicPartition);
             result[replica] = new DescribeReplicaLogDirResultInfo
             {
                 TopicPartitionReplica = replica,

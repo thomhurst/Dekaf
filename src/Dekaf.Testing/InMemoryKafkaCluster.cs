@@ -129,6 +129,15 @@ public sealed class InMemoryKafkaCluster
         }
     }
 
+    internal bool ContainsTopicPartition(TopicPartition topicPartition)
+    {
+        lock (_gate)
+        {
+            return _topics.TryGetValue(topicPartition.Topic, out var topic)
+                && (uint)topicPartition.Partition < (uint)topic.Partitions.Count;
+        }
+    }
+
     internal int RegisterConsumerGroupMember(
         string groupId,
         string memberId,
