@@ -140,24 +140,24 @@ internal sealed class CompiledValidationRule
     private static ReadOnlyMemory<byte>[]? t_memberValues;
 
     private readonly ValidationCelNode? _expression;
-    private readonly ValidationCelMemberTable? _members;
     private readonly string? _compilationError;
 
     private CompiledValidationRule(
         ValidationRule rule,
         ValidationCelNode? expression,
-        ValidationCelMemberTable? members = null,
         string? compilationError = null)
     {
         Rule = rule;
         _expression = expression;
-        _members = members;
         _compilationError = compilationError;
     }
 
     internal ValidationRule Rule { get; }
 
-    internal static CompiledValidationRule Compile(ValidationRule rule)
+    internal static CompiledValidationRule Compile(
+        ValidationRule rule,
+        Dictionary<string, int> memberIndexes,
+        List<byte[]> memberNames)
     {
         ArgumentNullException.ThrowIfNull(rule);
         if (string.IsNullOrWhiteSpace(rule.Expr))
@@ -165,41 +165,34 @@ internal sealed class CompiledValidationRule
             return new CompiledValidationRule(
                 rule,
                 expression: null,
-                members: null,
                 compilationError: $"Validation rule '{rule.Name ?? "unnamed"}' has no expression.");
         }
 
         try
         {
-            var parser = new ValidationCelParser(rule.Expr);
+            var parser = new ValidationCelParser(rule.Expr, memberIndexes, memberNames);
             var expression = parser.Parse();
-            return new CompiledValidationRule(rule, expression, parser.CreateMemberTable());
+            return new CompiledValidationRule(rule, expression);
         }
-        catch (Exception exception)
+        catch (SchemaRegistryRuleException exception)
         {
             return new CompiledValidationRule(
                 rule,
                 expression: null,
-                members: null,
                 compilationError: $"Could not compile validation rule '{rule.Name ?? "unnamed"}': {exception.Message}");
         }
     }
 
-    internal ValidationResult Evaluate(ReadOnlyMemory<byte> value, long nowUnixMilliseconds)
+    internal ValidationResult Evaluate(
+        ReadOnlyMemory<byte> value,
+        long nowUnixMilliseconds,
+        ReadOnlyMemory<byte>[]? memberValues)
     {
         if (_compilationError is not null)
             throw new SchemaRegistryRuleException(_compilationError);
 
-        var memberCount = _members?.Count ?? 0;
-        ReadOnlyMemory<byte>[]? memberValues = null;
         try
         {
-            memberValues = memberCount == 0
-                ? null
-                : GetMemberValues(memberCount);
-            if (memberValues is not null)
-                _members!.Resolve(value, memberValues);
-
             var result = _expression!.Evaluate(new ValidationCelContext(value, nowUnixMilliseconds, memberValues));
             return result.Kind switch
             {
@@ -219,14 +212,9 @@ internal sealed class CompiledValidationRule
                 $"Could not evaluate validation rule '{Rule.Name ?? "unnamed"}'.",
                 exception);
         }
-        finally
-        {
-            if (memberValues is not null)
-                Array.Clear(memberValues, 0, memberCount);
-        }
     }
 
-    private static ReadOnlyMemory<byte>[] GetMemberValues(int count)
+    internal static ReadOnlyMemory<byte>[] GetMemberValues(int count)
     {
         var values = t_memberValues;
         if (values is null || values.Length < count)
@@ -763,13 +751,13 @@ internal static class ValidationCelJsonEquality
         int valueLength,
         bool nameEscaped)
     {
-        internal uint Hash = hash;
-        internal int NameStart = nameStart;
-        internal int NameLength = nameLength;
-        internal int ValueStart = valueStart;
-        internal int ValueLength = valueLength;
-        internal bool NameEscaped = nameEscaped;
-        internal bool Occupied = true;
+        internal readonly uint Hash = hash;
+        internal readonly int NameStart = nameStart;
+        internal readonly int NameLength = nameLength;
+        internal readonly int ValueStart = valueStart;
+        internal readonly int ValueLength = valueLength;
+        internal readonly bool NameEscaped = nameEscaped;
+        internal readonly bool Occupied = true;
         internal bool Matched;
     }
 }
@@ -1017,14 +1005,19 @@ internal readonly record struct ValidationCelToken(ValidationCelTokenKind Kind, 
 internal sealed class ValidationCelParser
 {
     private readonly string _expression;
-    private readonly Dictionary<string, int> _memberIndexes = new(StringComparer.Ordinal);
-    private readonly List<byte[]> _memberNames = [];
+    private readonly Dictionary<string, int> _memberIndexes;
+    private readonly List<byte[]> _memberNames;
     private int _position;
     private ValidationCelToken _current;
 
-    internal ValidationCelParser(string expression)
+    internal ValidationCelParser(
+        string expression,
+        Dictionary<string, int> memberIndexes,
+        List<byte[]> memberNames)
     {
         _expression = expression;
+        _memberIndexes = memberIndexes;
+        _memberNames = memberNames;
         _current = ReadNextToken();
     }
 
@@ -1034,9 +1027,6 @@ internal sealed class ValidationCelParser
         Expect(ValidationCelTokenKind.End);
         return result;
     }
-
-    internal ValidationCelMemberTable? CreateMemberTable() =>
-        _memberNames.Count == 0 ? null : new ValidationCelMemberTable([.. _memberNames]);
 
     private ValidationCelNode ParseConditional()
     {

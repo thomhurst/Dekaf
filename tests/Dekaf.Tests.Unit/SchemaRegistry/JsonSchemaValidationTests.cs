@@ -852,6 +852,39 @@ public sealed class JsonSchemaValidationTests
     }
 
     [Test]
+    public async Task InlineRules_EvaluateSiblingMemberRulesAgainstSharedValues()
+    {
+        const string schemaText = """
+            {
+              "confluent:rules": [
+                { "name": "a", "expr": "this.a == 1" },
+                { "name": "b", "expr": "this.b == 2" },
+                { "name": "c", "expr": "this.c == 3" }
+              ]
+            }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
+
+        validator.ValidateRules("""{"a":1,"b":2,"c":3}"""u8.ToArray(), 24, failFast: false);
+        var exception = Assert.Throws<ValidationRulesFailedException>(() => validator.ValidateRules(
+            """{"a":0,"b":2,"c":0}"""u8.ToArray(),
+            24,
+            failFast: false));
+
+        await Assert.That(exception.Violations.Select(static violation => violation.Rule.Name!))
+            .IsEquivalentTo(["a", "c"]);
+    }
+
+    [Test]
+    public void InlineRules_RejectMalformedDeclarations()
+    {
+        Assert.Throws<InvalidOperationException>(() => CreateFactory().GetOrCreate(CreateSchema(
+            """{ "confluent:rules": {} }""")));
+        Assert.Throws<InvalidOperationException>(() => CreateFactory().GetOrCreate(CreateSchema(
+            """{ "confluent:rules": [true] }""")));
+    }
+
+    [Test]
     public void InlineRules_CompareCollectionsStructurally()
     {
         const string schemaText = """

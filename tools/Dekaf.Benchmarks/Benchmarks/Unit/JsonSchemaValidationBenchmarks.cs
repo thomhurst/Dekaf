@@ -77,6 +77,21 @@ public class JsonSchemaValidationBenchmarks
         }
         """;
 
+    private const string SiblingInlineRulesJsonSchema = """
+        {
+          "confluent:rules": [
+            { "name": "a", "expr": "this.a > 0" },
+            { "name": "b", "expr": "this.b > 0" },
+            { "name": "c", "expr": "this.c > 0" },
+            { "name": "d", "expr": "this.d > 0" },
+            { "name": "e", "expr": "this.e > 0" },
+            { "name": "f", "expr": "this.f > 0" },
+            { "name": "g", "expr": "this.g > 0" },
+            { "name": "h", "expr": "this.h > 0" }
+          ]
+        }
+        """;
+
     private ArrayBufferWriter<byte> _disabledDestination = new(256);
     private ArrayBufferWriter<byte> _enabledDestination = new(256);
     private ArrayBufferWriter<byte> _inlineRulesDestination = new(256);
@@ -98,6 +113,8 @@ public class JsonSchemaValidationBenchmarks
     private IJsonSchemaValidator _nestedInlineRulesValidator = null!;
     private ReadOnlyMemory<byte> _structuralEqualityJsonPayload;
     private IJsonSchemaValidator _structuralEqualityValidator = null!;
+    private ReadOnlyMemory<byte> _siblingInlineRulesJsonPayload;
+    private IJsonSchemaValidator _siblingInlineRulesValidator = null!;
     private SerializationContext _context;
     private int _alternateSchemaIndex;
 
@@ -186,6 +203,14 @@ public class JsonSchemaValidationBenchmarks
             SchemaString = StructuralEqualityJsonSchema
         });
         _structuralEqualityValidator.ValidateRules(_structuralEqualityJsonPayload, 3, failFast: false);
+        _siblingInlineRulesJsonPayload =
+            """{"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8}"""u8.ToArray();
+        _siblingInlineRulesValidator = inlineRulesFactory.GetOrCreate(new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = SiblingInlineRulesJsonSchema
+        });
+        _siblingInlineRulesValidator.ValidateRules(_siblingInlineRulesJsonPayload, 4, failFast: false);
         _inlineRulesDestination.Clear();
         _ = _disabledDeserializer.Deserialize(_wirePayload, _context);
         _ = _enabledDeserializer.Deserialize(_wirePayload, _context);
@@ -249,6 +274,10 @@ public class JsonSchemaValidationBenchmarks
     [Benchmark]
     public void ValidateStructuralEquality() =>
         _structuralEqualityValidator.ValidateRules(_structuralEqualityJsonPayload, 3, failFast: false);
+
+    [Benchmark]
+    public void ValidateSiblingInlineRules() =>
+        _siblingInlineRulesValidator.ValidateRules(_siblingInlineRulesJsonPayload, 4, failFast: false);
 
     [Benchmark]
     public BenchmarkPayload DeserializeValidationEnabledAlternatingSchemas()
