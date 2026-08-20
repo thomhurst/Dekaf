@@ -80,17 +80,10 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
     {
         Header? identityHeader = null;
         if (_config.SchemaIdStrategy != SchemaIdDeserializerStrategy.Prefix
-            && context.Headers is { } callerHeaders)
+            && context.Headers is { } callerHeaders
+            && callerHeaders.TryGetLastSchemaIdentity(context.Component, out var header))
         {
-            var headerName = GetIdentityHeaderName(context.Component);
-            for (var index = callerHeaders.Count - 1; index >= 0; index--)
-            {
-                if (string.Equals(callerHeaders[index].Key, headerName, StringComparison.Ordinal))
-                {
-                    identityHeader = callerHeaders[index];
-                    break;
-                }
-            }
+            identityHeader = header;
         }
 
         return DeserializeCore(data, context, identityHeader);

@@ -12,9 +12,14 @@ namespace Dekaf.Serialization;
 /// </summary>
 public sealed class Headers : IEnumerable<Header>
 {
+    // Keep synchronized with SchemaIdentityHeaderNames in Dekaf.SchemaRegistry.
+    private const string KeySchemaIdentityHeader = "__key_schema_id";
+    private const string ValueSchemaIdentityHeader = "__value_schema_id";
     private readonly List<Header> _headers;
     private int _deferredTraceparentIndex = -1;
     private int _deferredTracestateIndex = -1;
+    private int _keySchemaIdentityIndex = -1;
+    private int _valueSchemaIdentityIndex = -1;
 
     /// <summary>
     /// Creates an empty headers collection.
@@ -38,6 +43,7 @@ public sealed class Headers : IEnumerable<Header>
     public Headers(IEnumerable<Header> headers)
     {
         _headers = [.. headers];
+        InitializeSchemaIdentityIndexes();
     }
 
     /// <summary>
@@ -174,6 +180,8 @@ public sealed class Headers : IEnumerable<Header>
         _headers.Clear();
         _deferredTraceparentIndex = -1;
         _deferredTracestateIndex = -1;
+        _keySchemaIdentityIndex = -1;
+        _valueSchemaIdentityIndex = -1;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -188,6 +196,14 @@ public sealed class Headers : IEnumerable<Header>
         _headers.RemoveRange(count, _headers.Count - count);
         _deferredTraceparentIndex = _deferredTraceparentIndex < count ? _deferredTraceparentIndex : -1;
         _deferredTracestateIndex = _deferredTracestateIndex < count ? _deferredTracestateIndex : -1;
+        _keySchemaIdentityIndex = GetRetainedSchemaIdentityIndex(
+            _keySchemaIdentityIndex,
+            count,
+            KeySchemaIdentityHeader);
+        _valueSchemaIdentityIndex = GetRetainedSchemaIdentityIndex(
+            _valueSchemaIdentityIndex,
+            count,
+            ValueSchemaIdentityHeader);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -217,11 +233,11 @@ public sealed class Headers : IEnumerable<Header>
         _deferredTracestateIndex = -1;
 
         if ((uint)tracestateIndex < (uint)_headers.Count)
-            _headers.RemoveAt(tracestateIndex);
+            RemoveAt(tracestateIndex);
 
         if ((uint)traceparentIndex < (uint)_headers.Count
             && _headers[traceparentIndex].HasDeferredTraceparent)
-            _headers.RemoveAt(traceparentIndex);
+            RemoveAt(traceparentIndex);
     }
 
     private void RemoveAt(int index)
@@ -229,6 +245,14 @@ public sealed class Headers : IEnumerable<Header>
         _headers.RemoveAt(index);
         _deferredTraceparentIndex = AdjustTrackedIndex(_deferredTraceparentIndex, index);
         _deferredTracestateIndex = AdjustTrackedIndex(_deferredTracestateIndex, index);
+        _keySchemaIdentityIndex = AdjustSchemaIdentityIndex(
+            _keySchemaIdentityIndex,
+            index,
+            KeySchemaIdentityHeader);
+        _valueSchemaIdentityIndex = AdjustSchemaIdentityIndex(
+            _valueSchemaIdentityIndex,
+            index,
+            ValueSchemaIdentityHeader);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -238,9 +262,16 @@ public sealed class Headers : IEnumerable<Header>
         if (traceparentIndex < 0)
         {
             _headers.Add(header);
+            TrackSchemaIdentityCandidate(header.Key, _headers.Count - 1);
             return;
         }
 
+        AddHeaderBeforeDeferredTraceContext(header, traceparentIndex);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void AddHeaderBeforeDeferredTraceContext(Header header, int traceparentIndex)
+    {
         var traceparent = _headers[traceparentIndex];
         var tracestateIndex = _deferredTracestateIndex;
         if (tracestateIndex < 0)
@@ -248,15 +279,99 @@ public sealed class Headers : IEnumerable<Header>
             _headers.Add(traceparent);
             _headers[traceparentIndex] = header;
             _deferredTraceparentIndex = traceparentIndex + 1;
-            return;
+        }
+        else
+        {
+            var tracestate = _headers[tracestateIndex];
+            _headers.Add(tracestate);
+            _headers[traceparentIndex] = header;
+            _headers[tracestateIndex] = traceparent;
+            _deferredTraceparentIndex = traceparentIndex + 1;
+            _deferredTracestateIndex = tracestateIndex + 1;
         }
 
-        var tracestate = _headers[tracestateIndex];
-        _headers.Add(tracestate);
-        _headers[traceparentIndex] = header;
-        _headers[tracestateIndex] = traceparent;
-        _deferredTraceparentIndex = traceparentIndex + 1;
-        _deferredTracestateIndex = tracestateIndex + 1;
+        TrackSchemaIdentityCandidate(header.Key, traceparentIndex);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal bool TryGetLastSchemaIdentity(SerializationComponent component, out Header header)
+    {
+        var index = component switch
+        {
+            SerializationComponent.Key => _keySchemaIdentityIndex,
+            SerializationComponent.Value => _valueSchemaIdentityIndex,
+            _ => throw new ArgumentOutOfRangeException(nameof(component), component, "Unknown serialization component.")
+        };
+
+        if ((uint)index < (uint)_headers.Count)
+        {
+            header = _headers[index];
+            return true;
+        }
+
+        header = default;
+        return false;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void TrackSchemaIdentityCandidate(string? key, int index)
+    {
+        if (key is null)
+            return;
+
+        if (key.Length == KeySchemaIdentityHeader.Length
+            && string.Equals(key, KeySchemaIdentityHeader, StringComparison.Ordinal))
+        {
+            _keySchemaIdentityIndex = index;
+        }
+        else if (key.Length == ValueSchemaIdentityHeader.Length
+                 && string.Equals(key, ValueSchemaIdentityHeader, StringComparison.Ordinal))
+        {
+            _valueSchemaIdentityIndex = index;
+        }
+    }
+
+    private void InitializeSchemaIdentityIndexes()
+    {
+        for (var index = _headers.Count - 1; index >= 0; index--)
+        {
+            var key = _headers[index].Key;
+            if (_keySchemaIdentityIndex < 0
+                && string.Equals(key, KeySchemaIdentityHeader, StringComparison.Ordinal))
+            {
+                _keySchemaIdentityIndex = index;
+            }
+            else if (_valueSchemaIdentityIndex < 0
+                     && string.Equals(key, ValueSchemaIdentityHeader, StringComparison.Ordinal))
+            {
+                _valueSchemaIdentityIndex = index;
+            }
+
+            if (_keySchemaIdentityIndex >= 0 && _valueSchemaIdentityIndex >= 0)
+                return;
+        }
+    }
+
+    private int AdjustSchemaIdentityIndex(int trackedIndex, int removedIndex, string key)
+    {
+        if (trackedIndex != removedIndex)
+            return trackedIndex > removedIndex ? trackedIndex - 1 : trackedIndex;
+
+        return FindLastSchemaIdentityIndex(key, _headers.Count);
+    }
+
+    private int GetRetainedSchemaIdentityIndex(int trackedIndex, int count, string key) =>
+        trackedIndex < count ? trackedIndex : FindLastSchemaIdentityIndex(key, count);
+
+    private int FindLastSchemaIdentityIndex(string key, int count)
+    {
+        for (var index = count - 1; index >= 0; index--)
+        {
+            if (string.Equals(_headers[index].Key, key, StringComparison.Ordinal))
+                return index;
+        }
+
+        return -1;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

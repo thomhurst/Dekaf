@@ -21,6 +21,8 @@ public class SchemaIdentityFramingBenchmarks
     private byte[] _guidFrame = null!;
     private Header _identityHeader;
     private RecordHeaderRoutingLookup _routingLookup;
+    private readonly Headers _ordinaryHeaders = new(1);
+    private Headers _callerOwnedHeaders = null!;
 
     [GlobalSetup]
     public void Setup()
@@ -34,6 +36,7 @@ public class SchemaIdentityFramingBenchmarks
         multiHeaders[32] = new Header(
             SchemaIdentityHeaderNames.Value,
             [.. _guidFrame, 0]);
+        _callerOwnedHeaders = new Headers(multiHeaders);
 
         var routingPlan = RecordHeaderRoutingPlan.Create<byte, byte>(
             null,
@@ -89,9 +92,30 @@ public class SchemaIdentityFramingBenchmarks
     }
 
     [Benchmark]
+    public SchemaIdentity CallerOwnedProtobufHeaderReadWith32NoiseHeaders()
+    {
+        if (!_callerOwnedHeaders.TryGetLastSchemaIdentity(SerializationComponent.Value, out var identityHeader))
+            throw new InvalidOperationException("The caller-owned schema identity header was not found.");
+
+        var identity = SchemaIdentityFraming.ReadHeader(in identityHeader, out var messageIndexes);
+        if (messageIndexes.Length != 1 || messageIndexes.Span[0] != 0)
+            throw new InvalidDataException("The Protobuf message-index vector is invalid.");
+
+        return identity;
+    }
+
+    [Benchmark]
     public Header CreateHeader() => SchemaIdentityFraming.CreateSchemaGuidHeader(
         SerializationComponent.Value,
         _guidFrame);
+
+    [Benchmark]
+    public int AddAndClearOrdinaryHeader()
+    {
+        _ordinaryHeaders.Clear();
+        _ordinaryHeaders.Add(new Header("ordinary", _guidFrame));
+        return _ordinaryHeaders.Count;
+    }
 
     private sealed class IdentityRoutingDeserializer : IDeserializer<byte>, IRecordHeaderRoutingProvider
     {

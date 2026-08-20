@@ -28,6 +28,21 @@ public class HeadersTests
         await Assert.That(headers.Count).IsEqualTo(2);
     }
 
+    [Test]
+    public async Task Constructor_FromCollection_IndexesLastSchemaIdentity()
+    {
+        var headers = new Headers([
+            new Header("__value_schema_id", "first"u8.ToArray()),
+            new Header("noise", ReadOnlyMemory<byte>.Empty),
+            new Header("__value_schema_id", "last"u8.ToArray())
+        ]);
+
+        var found = headers.TryGetLastSchemaIdentity(SerializationComponent.Value, out var header);
+
+        await Assert.That(found).IsTrue();
+        await Assert.That(header.GetValueAsString()).IsEqualTo("last");
+    }
+
     #endregion
 
     #region Factory Tests
@@ -89,6 +104,71 @@ public class HeadersTests
 
         await Assert.That(headers.Count).IsEqualTo(traceState is null ? 2 : 3);
         await Assert.That(headers.CountWithoutDeferredTraceContext).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task TryGetLastSchemaIdentity_DuplicateHeaders_ReturnsLastPerComponent()
+    {
+        var headers = new Headers()
+            .Add("__key_schema_id", "old-key")
+            .Add("__value_schema_id", "value")
+            .Add("__key_schema_id", "new-key");
+
+        var foundKey = headers.TryGetLastSchemaIdentity(SerializationComponent.Key, out var keyHeader);
+        var foundValue = headers.TryGetLastSchemaIdentity(SerializationComponent.Value, out var valueHeader);
+
+        await Assert.That(foundKey).IsTrue();
+        await Assert.That(keyHeader.GetValueAsString()).IsEqualTo("new-key");
+        await Assert.That(foundValue).IsTrue();
+        await Assert.That(valueHeader.GetValueAsString()).IsEqualTo("value");
+    }
+
+    [Test]
+    public async Task TryGetLastSchemaIdentity_AfterOrdinaryRemoval_PreservesShiftedIndex()
+    {
+        var headers = new Headers()
+            .Add("noise", "value")
+            .Add("__value_schema_id", "identity");
+
+        headers.Remove("noise");
+
+        var found = headers.TryGetLastSchemaIdentity(SerializationComponent.Value, out var header);
+        await Assert.That(found).IsTrue();
+        await Assert.That(header.GetValueAsString()).IsEqualTo("identity");
+    }
+
+    [Test]
+    public async Task TryGetLastSchemaIdentity_AfterTruncate_FallsBackToPreviousIdentity()
+    {
+        var headers = new Headers()
+            .Add("__value_schema_id", "first")
+            .Add("noise", "value")
+            .Add("__value_schema_id", "last");
+
+        headers.Truncate(2);
+
+        var found = headers.TryGetLastSchemaIdentity(SerializationComponent.Value, out var header);
+        await Assert.That(found).IsTrue();
+        await Assert.That(header.GetValueAsString()).IsEqualTo("first");
+    }
+
+    [Arguments(null)]
+    [Arguments("vendor=value")]
+    [Test]
+    public async Task TryGetLastSchemaIdentity_AddedAfterDeferredTraceContext_UsesInsertedIndex(string? traceState)
+    {
+        var headers = new Headers();
+        headers.AddDeferredTraceContext(new object(), traceState);
+        headers.Add("__value_schema_id", "identity");
+
+        var foundBeforeRemoval = headers.TryGetLastSchemaIdentity(SerializationComponent.Value, out var beforeRemoval);
+        headers.RemoveDeferredTraceContext();
+        var foundAfterRemoval = headers.TryGetLastSchemaIdentity(SerializationComponent.Value, out var afterRemoval);
+
+        await Assert.That(foundBeforeRemoval).IsTrue();
+        await Assert.That(beforeRemoval.GetValueAsString()).IsEqualTo("identity");
+        await Assert.That(foundAfterRemoval).IsTrue();
+        await Assert.That(afterRemoval.GetValueAsString()).IsEqualTo("identity");
     }
 
     [Test]
@@ -273,6 +353,18 @@ public class HeadersTests
     }
 
     [Test]
+    public async Task Remove_SchemaIdentity_RemovesTrackedHeader()
+    {
+        var headers = new Headers()
+            .Add("__value_schema_id", "first")
+            .Add("__value_schema_id", "last");
+
+        headers.Remove("__value_schema_id");
+
+        await Assert.That(headers.TryGetLastSchemaIdentity(SerializationComponent.Value, out _)).IsFalse();
+    }
+
+    [Test]
     public async Task Remove_NonExistentKey_DoesNothing()
     {
         var headers = new Headers();
@@ -301,6 +393,7 @@ public class HeadersTests
         headers.Add("key2", "value2");
         headers.Clear();
         await Assert.That(headers.Count).IsEqualTo(0);
+        await Assert.That(headers.TryGetLastSchemaIdentity(SerializationComponent.Value, out _)).IsFalse();
     }
 
     #endregion
