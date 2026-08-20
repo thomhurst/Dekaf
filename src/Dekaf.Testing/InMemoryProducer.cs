@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Runtime.CompilerServices;
 using Dekaf.Consumer;
 using Dekaf.Errors;
 using Dekaf.Producer;
@@ -27,6 +28,7 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
     private FatalTransactionException? _fatalTransactionException;
     private bool _preparedRecoveryEnabled;
     private bool _preparedRecoveryInProgress;
+    private TaskCompletionSource? _preparedRecoveryCompletion;
     private bool _disposeStarted;
     private bool _disposed;
 
@@ -286,6 +288,7 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
         ThrowIfFatalTransactionError();
 
         InMemoryTransaction transaction;
+        TaskCompletionSource recoveryCompletion;
         lock (_transactionGate)
         {
             ThrowIfDisposingOrDisposed();
@@ -316,6 +319,8 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
                 throw new InvalidOperationException("The prepared transaction state does not match the active transaction.");
 
             Volatile.Write(ref _preparedRecoveryInProgress, true);
+            recoveryCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _preparedRecoveryCompletion = recoveryCompletion;
         }
 
         try
@@ -325,7 +330,11 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
         finally
         {
             lock (_transactionGate)
+            {
                 Volatile.Write(ref _preparedRecoveryInProgress, false);
+                recoveryCompletion.TrySetResult();
+                _preparedRecoveryCompletion = null;
+            }
         }
     }
 
@@ -339,6 +348,7 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
     public async ValueTask DisposeAsync()
     {
         InMemoryTransaction? transaction;
+        Task? preparedRecovery;
         lock (_transactionGate)
         {
             if (_disposeStarted)
@@ -346,7 +356,11 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
 
             Volatile.Write(ref _disposeStarted, true);
             transaction = _activeTransaction;
+            preparedRecovery = _preparedRecoveryCompletion?.Task;
         }
+
+        if (preparedRecovery is not null)
+            await preparedRecovery.ConfigureAwait(false);
 
         if (transaction is { IsCompleted: false, IsPrepared: false })
             await transaction.DisposeAsync().ConfigureAwait(false);
@@ -689,7 +703,9 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
             ProducerMessage<TKey, TValue> message,
             CancellationToken cancellationToken = default)
         {
-            EnterMutation("Cannot produce");
+            if (!TryEnterMutation("Cannot produce", out var admissionException))
+                return ValueTask.FromException<RecordMetadata>(admissionException);
+
             try
             {
                 var operation = _producer.ProduceTransactionAsync(this, message, cancellationToken);
@@ -718,7 +734,9 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
             TValue value,
             CancellationToken cancellationToken = default)
         {
-            EnterMutation("Cannot produce");
+            if (!TryEnterMutation("Cannot produce", out var admissionException))
+                return ValueTask.FromException<RecordMetadata>(admissionException);
+
             try
             {
                 var operation = _producer.ProduceTransactionAsync(this, topic, key, value, cancellationToken);
@@ -900,7 +918,7 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
             // Fault plans accept arbitrary exceptions. Disposal is best-effort and must release the
             // producer slot after any injected abort failure without a generic catch clause.
             await AbortAsync().AsTask().ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
-            if (!IsCompleted)
+            if (TryEnterDisposalCompletion())
                 Complete(committed: false);
         }
 
@@ -994,20 +1012,46 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
 
         private void EnterMutation(string operation)
         {
-            _producer.ThrowIfDisposingOrDisposed();
-            _producer.ThrowIfFatalTransactionError();
+            if (!TryEnterMutation(operation, out var exception))
+                throw exception;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private bool TryEnterMutation(string operation, out Exception exception)
+        {
+            if (Volatile.Read(ref _producer._disposeStarted) || Volatile.Read(ref _producer._disposed))
+            {
+                exception = new ObjectDisposedException(_producer.GetType().FullName);
+                return false;
+            }
+
+            if (Volatile.Read(ref _producer._fatalTransactionException) is { } fatalException)
+            {
+                exception = fatalException;
+                return false;
+            }
 
             while (true)
             {
                 var lifecycle = Volatile.Read(ref _lifecycle);
                 var state = GetState(lifecycle);
                 if (state != TransactionLifecycleState.Active)
-                    ThrowForState(operation, state);
+                {
+                    exception = ExceptionForState(operation, state);
+                    return false;
+                }
                 if ((uint)lifecycle == uint.MaxValue)
-                    throw new InvalidOperationException($"{operation}: too many concurrent transaction operations.");
+                {
+                    exception = new InvalidOperationException(
+                        $"{operation}: too many concurrent transaction operations.");
+                    return false;
+                }
 
                 if (Interlocked.CompareExchange(ref _lifecycle, lifecycle + 1, lifecycle) == lifecycle)
-                    return;
+                {
+                    exception = null!;
+                    return true;
+                }
             }
         }
 
@@ -1088,6 +1132,25 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
                 Pack(state),
                 Pack(TransactionLifecycleState.Completing));
 
+        private bool TryEnterDisposalCompletion()
+        {
+            while (true)
+            {
+                var lifecycle = Volatile.Read(ref _lifecycle);
+                var state = GetState(lifecycle);
+                if (state is not (TransactionLifecycleState.Active or TransactionLifecycleState.Abortable))
+                    return false;
+
+                if (Interlocked.CompareExchange(
+                        ref _lifecycle,
+                        Pack(TransactionLifecycleState.Completing) | (lifecycle & MutationCountMask),
+                        lifecycle) == lifecycle)
+                {
+                    return true;
+                }
+            }
+        }
+
         private void MarkAbortable(AbortableTransactionException exception)
         {
             _abortableException = exception;
@@ -1118,11 +1181,14 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
         }
 
         private void ThrowForState(string operation, TransactionLifecycleState state)
+            => throw ExceptionForState(operation, state);
+
+        private Exception ExceptionForState(string operation, TransactionLifecycleState state)
         {
             if (state == TransactionLifecycleState.Abortable && _abortableException is { } exception)
-                throw exception;
+                return exception;
 
-            throw new InvalidOperationException(state switch
+            return new InvalidOperationException(state switch
             {
                 TransactionLifecycleState.Prepared =>
                     $"{operation}: transaction is prepared; only commit or abort is permitted.",

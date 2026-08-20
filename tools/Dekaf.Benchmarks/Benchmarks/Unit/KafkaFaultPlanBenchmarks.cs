@@ -52,7 +52,7 @@ public class KafkaFaultPlanBenchmarks
         _producer.ProduceAsync("orders", Key, Value);
 
     [Benchmark]
-    [InvocationCount(131072)]
+    [InvocationCount(1048576)]
     public ValueTask<RecordMetadata> ProduceTransactionEmptyPlan() =>
         _transaction.ProduceAsync("orders", Key, Value);
 }
