@@ -476,7 +476,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
 
             response = await SendWithRecoveryAsync(
                     request,
-                    CancellationToken.None,
+                    command.CancellationToken,
                     recoveryJoinEpoch: recoveryJoinEpoch)
                 .ConfigureAwait(false);
         }
