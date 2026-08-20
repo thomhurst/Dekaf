@@ -43,6 +43,16 @@ public sealed class PartitionedConsumerRuntimeTests
     }
 
     [Test]
+    public async Task GetCommittedOffsetsAsync_LegacyConsumer_ThrowsNotSupportedException()
+    {
+        IKafkaConsumer<string, string> consumer = new TestConsumer();
+
+        Action act = () => _ = consumer.GetCommittedOffsetsAsync([]);
+
+        await Assert.That(act).Throws<NotSupportedException>();
+    }
+
+    [Test]
     public async Task RunPartitionedAsync_RoutesAssignedPartitionsInOrderAndConcurrently()
     {
         var firstPartition = new TopicPartition("topic-a", 0);

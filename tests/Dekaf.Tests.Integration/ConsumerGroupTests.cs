@@ -532,6 +532,64 @@ public class ConsumerGroupTests(KafkaTestContainer kafka) : KafkaIntegrationTest
     }
 
     [Test]
+    public async Task ConsumerGroup_BulkOffsetFetch_ReturnsLeaderEpochAndOmitsUncommittedPartition()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2);
+        var groupId = $"test-group-{Guid.NewGuid():N}";
+        var committedPartition = new TopicPartition(topic, 0);
+        var uncommittedPartition = new TopicPartition(topic, 1);
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = topic,
+            Partition = committedPartition.Partition,
+            Key = "key",
+            Value = "value"
+        }, CancellationToken.None);
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-consumer")
+            .WithGroupId(groupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithOffsetCommitMode(OffsetCommitMode.Manual)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        consumer.Subscribe(topic);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var consumed = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
+        await Assert.That(consumed).IsNotNull();
+        await Assert.That(consumed!.Value.LeaderEpoch).IsNotNull();
+        await consumer.CommitAsync(
+        [
+            new TopicPartitionOffset(
+                consumed.Value.Topic,
+                consumed.Value.Partition,
+                consumed.Value.Offset + 1,
+                consumed.Value.LeaderEpoch!.Value)
+            {
+                Metadata = "bulk-checkpoint"
+            }
+        ]);
+
+        var offsets = await consumer.GetCommittedOffsetsAsync(
+            [committedPartition, uncommittedPartition],
+            cts.Token);
+
+        await Assert.That(offsets).Count().IsEqualTo(1);
+        await Assert.That(offsets[committedPartition].Offset).IsEqualTo(consumed.Value.Offset + 1);
+        await Assert.That(offsets[committedPartition].LeaderEpoch).IsEqualTo(consumed.Value.LeaderEpoch.Value);
+        await Assert.That(offsets[committedPartition].Metadata).IsEqualTo("bulk-checkpoint");
+        await Assert.That(offsets).DoesNotContainKey(uncommittedPartition);
+    }
+
+    [Test]
     public async Task ConsumerGroup_Position_ReturnsCurrentOffset()
     {
         // Arrange

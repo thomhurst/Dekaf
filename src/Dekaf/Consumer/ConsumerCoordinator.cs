@@ -1216,7 +1216,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                                             topic.Name,
                                             partition.PartitionIndex,
                                             partition.CommittedOffset,
-                                            partition.CommittedLeaderEpoch);
+                                            partition.CommittedLeaderEpoch)
+                                        {
+                                            Metadata = partition.Metadata
+                                        };
                                 }
                             }
                         }
@@ -1267,7 +1270,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                                                 topicName,
                                                 partition.PartitionIndex,
                                                 partition.CommittedOffset,
-                                                partition.CommittedLeaderEpoch);
+                                                partition.CommittedLeaderEpoch)
+                                            {
+                                                Metadata = partition.Metadata
+                                            };
                                     }
                                 }
                             }

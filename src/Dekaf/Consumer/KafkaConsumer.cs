@@ -1131,6 +1131,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     IBoundedKafkaConsumer<TKey, TValue>,
     IConsumerGroupLiveness,
     IConsumerPositions,
+    IConsumerCommittedOffsets,
     IConsumerPartitions,
     IConsumerOffsets,
     IConsumerRebalanceEventSource,
@@ -1288,7 +1289,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private readonly ConcurrentDictionary<TopicPartition, TopicPartitionOffset> _pendingRebalanceSeeks = new();
     // Last consumed record-batch leader epoch, sent as FetchRequest.LastFetchedEpoch.
     private readonly ConcurrentDictionary<TopicPartition, int> _lastConsumedLeaderEpochs = new();
-    private readonly ConcurrentDictionary<TopicPartition, long> _committed = new();
+    // OffsetFetch snapshots must not replace commits that complete after the request starts.
+    private readonly ConcurrentDictionary<TopicPartition, CommittedOffsetCacheEntry> _committed = new();
+    private long _committedOffsetGeneration;
     private readonly ConcurrentDictionary<TopicPartition, WatermarkOffsets> _watermarks = new(); // Cached watermark offsets from fetch responses
 
 
@@ -1496,6 +1499,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         int ReplicaId,
         DateTimeOffset MetadataLastRefreshed,
         long ExpiresAtTimestamp);
+
+    private readonly record struct CommittedOffsetCacheEntry(long Offset, long Generation);
 
     public KafkaConsumer(
         ConsumerOptions options,
@@ -4776,7 +4781,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private void MarkOffsetCommitted(TopicPartition partition, long committedOffset)
     {
-        _committed[partition] = committedOffset;
+        _ = TryCacheCommittedOffset(
+            partition,
+            committedOffset,
+            Interlocked.Increment(ref _committedOffsetGeneration));
         ClearDirtyStoredOffsetIfCommitted(partition, committedOffset);
     }
 
@@ -6622,25 +6630,22 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     public async ValueTask<long?> GetCommittedOffsetAsync(TopicPartition partition, CancellationToken cancellationToken = default)
     {
-        if (_committed.TryGetValue(partition, out var offset))
-            return offset;
+        if (_committed.TryGetValue(partition, out var cached))
+            return cached.Offset;
 
         if (_coordinator is null)
             return null;
 
+        var cacheGeneration = Interlocked.Increment(ref _committedOffsetGeneration);
         using var apiTimeout = new ApiTimeoutScope(_options.DefaultApiTimeoutMs, cancellationToken);
         try
         {
             var offsets = await _coordinator.FetchOffsetsAsync([partition], apiTimeout.Token).ConfigureAwait(false);
             if (offsets.TryGetValue(partition, out var committedOffset))
             {
-                offset = committedOffset.Offset;
-                _committed[partition] = offset;
-                if (committedOffset.LeaderEpoch >= 0)
-                    SetLastConsumedLeaderEpoch(partition, committedOffset.LeaderEpoch);
-                else
-                    ClearLastConsumedLeaderEpoch(partition);
-                return offset;
+                if (TryCacheCommittedOffset(partition, committedOffset.Offset, cacheGeneration))
+                    TrySeedLeaderEpochFromCommittedLookup(partition, committedOffset.LeaderEpoch);
+                return committedOffset.Offset;
             }
         }
         catch (OperationCanceledException ex) when (apiTimeout.DefaultTimeoutExpired)
@@ -6649,6 +6654,76 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         return null;
+    }
+
+    public async ValueTask<IReadOnlyDictionary<TopicPartition, TopicPartitionOffset>> GetCommittedOffsetsAsync(
+        IReadOnlyCollection<TopicPartition> partitions,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(partitions);
+
+        if (partitions.Count == 0 || _coordinator is null)
+            return new Dictionary<TopicPartition, TopicPartitionOffset>();
+
+        var cacheGeneration = Interlocked.Increment(ref _committedOffsetGeneration);
+        using var apiTimeout = new ApiTimeoutScope(_options.DefaultApiTimeoutMs, cancellationToken);
+        try
+        {
+            var offsets = await _coordinator.FetchOffsetsAsync(partitions, apiTimeout.Token).ConfigureAwait(false);
+            foreach (var partition in partitions)
+            {
+                if (offsets.TryGetValue(partition, out var committedOffset))
+                {
+                    if (TryCacheCommittedOffset(partition, committedOffset.Offset, cacheGeneration))
+                        TrySeedLeaderEpochFromCommittedLookup(partition, committedOffset.LeaderEpoch);
+                }
+                else
+                    RemoveCachedCommittedOffset(partition, cacheGeneration);
+            }
+
+            return offsets;
+        }
+        catch (OperationCanceledException ex) when (apiTimeout.DefaultTimeoutExpired)
+        {
+            throw apiTimeout.CreateTimeoutException(nameof(GetCommittedOffsetsAsync), ex);
+        }
+    }
+
+    // Fetch candidates carry their request-start generation. A later commit has a newer
+    // generation and wins the dictionary CAS regardless of continuation scheduling.
+    private bool TryCacheCommittedOffset(
+        TopicPartition partition,
+        long committedOffset,
+        long generation)
+    {
+        var candidate = new CommittedOffsetCacheEntry(committedOffset, generation);
+        var published = _committed.AddOrUpdate(
+            partition,
+            static (_, candidate) => candidate,
+            static (_, current, candidate) =>
+                current.Generation > candidate.Generation ? current : candidate,
+            candidate);
+        return published.Generation == generation;
+    }
+
+    private void TrySeedLeaderEpochFromCommittedLookup(TopicPartition partition, int leaderEpoch)
+    {
+        if (leaderEpoch < 0 || _fetchPositions.ContainsKey(partition))
+            return;
+
+        _lastConsumedLeaderEpochs.TryAdd(partition, leaderEpoch);
+    }
+
+    private void RemoveCachedCommittedOffset(TopicPartition partition, long generation)
+    {
+        while (_committed.TryGetValue(partition, out var cached))
+        {
+            if (cached.Generation > generation ||
+                _committed.TryRemove(new KeyValuePair<TopicPartition, CommittedOffsetCacheEntry>(partition, cached)))
+            {
+                return;
+            }
+        }
     }
 
     public long? GetPosition(TopicPartition partition)
@@ -8342,6 +8417,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         CancellationToken cancellationToken)
     {
         var coordinator = _coordinator!;
+        var cacheGeneration = Interlocked.Increment(ref _committedOffsetGeneration);
         List<TopicPartition>? initializedNewPartitions = null;
         try
         {
@@ -8361,7 +8437,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     else
                         ClearLastConsumedLeaderEpoch(partition);
                     _fetchPositions[partition] = committedOffset.Offset;
-                    _committed[partition] = committedOffset.Offset;
+                    _ = TryCacheCommittedOffset(partition, committedOffset.Offset, cacheGeneration);
                 }
                 else
                 {
