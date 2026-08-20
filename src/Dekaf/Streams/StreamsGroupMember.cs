@@ -294,6 +294,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
             throw new InvalidOperationException("The Streams group member has already joined.");
 
         StreamsGroupHeartbeatRequest request;
+        int? recoveryJoinEpoch = command.Kind == MemberCommandKind.Join ? 0 : null;
         switch (command.Kind)
         {
             case MemberCommandKind.Join:
@@ -306,8 +307,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
                 request = update.Topology is null
                     ? CreateDeltaRequest(update)
                     : CreateJoinRequest();
-                if (update.Topology is not null)
-                    _memberEpoch = 0;
+                recoveryJoinEpoch = update.Topology is not null ? 0 : null;
                 break;
             case MemberCommandKind.ReportOffsets:
                 _taskOffsets = MapTaskOffsets(command.OffsetReport!.TaskOffsets);
@@ -318,7 +318,11 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
                 throw new InvalidOperationException($"Unsupported command {command.Kind}.");
         }
 
-        var response = await SendWithRecoveryAsync(request, CancellationToken.None).ConfigureAwait(false);
+        var response = await SendWithRecoveryAsync(
+                request,
+                CancellationToken.None,
+                recoveryJoinEpoch: recoveryJoinEpoch)
+            .ConfigureAwait(false);
         var result = ApplyResponse(response, createResult: true)!;
         ScheduleHeartbeat();
         return result;
@@ -399,6 +403,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
     private async ValueTask<StreamsGroupHeartbeatResponse> SendWithRecoveryAsync(
         StreamsGroupHeartbeatRequest request,
         CancellationToken cancellationToken,
+        int? recoveryJoinEpoch = null,
         bool recoverFencing = true)
     {
         var fencedRecoveryAttempted = false;
@@ -439,7 +444,8 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
                 _coordinatorId = -1;
                 if (attempt == 4)
                     throw;
-                request = _memberEpoch <= 0 ? CreateJoinRequest() : CreateFullRequest();
+                if (recoverFencing)
+                    request = CreateRecoveryRequest(recoveryJoinEpoch);
                 await DelayForRetryAsync(attempt + 1, cancellationToken).ConfigureAwait(false);
                 continue;
             }
@@ -485,7 +491,8 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
             {
                 if (response.ErrorCode != ErrorCode.CoordinatorLoadInProgress)
                     _coordinatorId = -1;
-                request = _memberEpoch <= 0 ? CreateJoinRequest() : CreateFullRequest();
+                if (recoverFencing)
+                    request = CreateRecoveryRequest(recoveryJoinEpoch);
                 await DelayForRetryAsync(attempt + 1, cancellationToken).ConfigureAwait(false);
                 continue;
             }
@@ -495,9 +502,10 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
                 && response.ErrorCode is ErrorCode.FencedMemberEpoch or ErrorCode.UnknownMemberId)
             {
                 fencedRecoveryAttempted = true;
-                _memberEpoch = 0;
+                recoveryJoinEpoch = InstanceId is null ? 0 : -2;
+                _memberEpoch = recoveryJoinEpoch.Value;
                 _steadyRequestCache.Invalidate();
-                request = CreateJoinRequest();
+                request = CreateJoinRequest(recoveryJoinEpoch.Value);
                 continue;
             }
 
@@ -611,10 +619,8 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
     private static bool IsFatalHeartbeatFailure(Exception? exception) => exception switch
     {
         BrokerVersionException => true,
-        GroupException { ErrorCode: ErrorCode.StreamsInvalidTopology
-            or ErrorCode.StreamsInvalidTopologyEpoch
-            or ErrorCode.StreamsTopologyFenced
-            or ErrorCode.UnreleasedInstanceId } => true,
+        GroupException { ErrorCode: ErrorCode.UnknownServerError } => false,
+        GroupException { ErrorCode: { } errorCode } => !errorCode.IsRetriable(),
         _ => false
     };
 
@@ -756,11 +762,11 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         _steadyRequestCache.Invalidate();
     }
 
-    private StreamsGroupHeartbeatRequest CreateJoinRequest() => new()
+    private StreamsGroupHeartbeatRequest CreateJoinRequest(int memberEpoch = 0) => new()
     {
         GroupId = GroupId,
         MemberId = _memberId,
-        MemberEpoch = 0,
+        MemberEpoch = memberEpoch,
         EndpointInformationEpoch = _endpointInformationEpoch,
         InstanceId = InstanceId,
         RackId = _options.RackId,
@@ -775,6 +781,11 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         TaskOffsets = _taskOffsets,
         TaskEndOffsets = _taskEndOffsets
     };
+
+    private StreamsGroupHeartbeatRequest CreateRecoveryRequest(int? recoveryJoinEpoch) =>
+        recoveryJoinEpoch is not null || _memberEpoch <= 0
+            ? CreateJoinRequest(recoveryJoinEpoch ?? _memberEpoch)
+            : CreateFullRequest();
 
     private StreamsGroupHeartbeatRequest CreateDeltaRequest(StreamsGroupMemberUpdate update) => new()
     {
