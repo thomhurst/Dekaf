@@ -525,16 +525,21 @@ public sealed class ProtobufSchemaRegistrySerializer<
                 cancellationToken)
             .ConfigureAwait(false);
         if (_schemaIdStrategy == SchemaIdSerializerStrategy.Header)
-            CacheIdentityHeaderFrame(resolved.Schema!, resolved.SchemaId);
+            CacheIdentityHeaderFrame(resolved.Schema!, resolved.SchemaId, resolved.SchemaGuidFrame);
 
         return resolved;
     }
 
-    private void CacheIdentityHeaderFrame(Schema schema, int schemaId)
+    private void CacheIdentityHeaderFrame(Schema schema, int schemaId, byte[]? encodedGuid)
     {
-        var encodedGuid = SchemaGuidFrameCache.Get(schema, schemaId);
+        if (encodedGuid is null)
+        {
+            throw new InvalidDataException(
+                $"Schema Registry GUID framing is unavailable for schema ID {schemaId}.");
+        }
+
         var frame = GC.AllocateUninitializedArray<byte>(encodedGuid.Length + _encodedMessageIndexes.Length);
-        encodedGuid.Span.CopyTo(frame);
+        encodedGuid.AsSpan().CopyTo(frame);
         _encodedMessageIndexes.CopyTo(frame.AsSpan(encodedGuid.Length));
         _identityHeaderFrames.AddOrUpdate(schema, new IdentityHeaderFrame(frame));
     }
