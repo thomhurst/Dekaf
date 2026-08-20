@@ -767,13 +767,14 @@ public sealed partial class KafkaConnection :
             if (expectedIdentity is not null &&
                 capabilities.SupportsVersion(ApiKey.ApiVersions, ApiVersionsRequest.HighestSupportedVersion))
             {
-                response = await SendAsyncCore<ApiVersionsRequest, ApiVersionsResponse>(
+                var identityResponse = await SendAsyncCore<ApiVersionsRequest, ApiVersionsResponse>(
                     request,
                     ApiVersionsRequest.HighestSupportedVersion,
                     requireReady: false,
                     cancellationToken).ConfigureAwait(false);
-                ThrowIfRebootstrapRequired(response);
-                capabilities = KafkaConnectionCapabilities.Create(response);
+                ThrowIfRebootstrapRequired(identityResponse);
+                if (identityResponse.ErrorCode == ErrorCode.None)
+                    capabilities = KafkaConnectionCapabilities.Create(identityResponse);
             }
 
             return capabilities;

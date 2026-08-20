@@ -350,12 +350,9 @@ public struct ProduceResponseTopicData
         }
         else
         {
-            var nameBytes = ProduceRequest.IsFlexibleVersion(version)
-                ? reader.ReadCompactStringBytes()
-                : reader.ReadStringBytes();
-            Name = nameBytes is null
-                ? string.Empty
-                : TopicNameInternCache.Intern(nameBytes.Value);
+            Name = (ProduceRequest.IsFlexibleVersion(version)
+                ? TopicNameInternCache.ReadCompact(ref reader)
+                : TopicNameInternCache.Read(ref reader)) ?? string.Empty;
             TopicId = Guid.Empty;
         }
 

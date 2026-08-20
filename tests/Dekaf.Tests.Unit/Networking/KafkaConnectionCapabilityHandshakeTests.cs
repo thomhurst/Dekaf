@@ -401,6 +401,64 @@ public class KafkaConnectionCapabilityHandshakeTests
 
     [Test]
     [Timeout(5_000)]
+    public async Task ConnectAsync_Kip1242_ErrorResponseRetainsDiscoveryCapabilities(
+        CancellationToken cancellationToken)
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        var releaseServer = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var serverTask = Task.Run(async () =>
+        {
+            using var socket = await listener.AcceptSocketAsync(cancellationToken);
+            await using var stream = new NetworkStream(socket, ownsSocket: false);
+            var discoveryRequest = await ReadFrameAsync(stream, cancellationToken);
+            var discoveryCorrelationId = BinaryPrimitives.ReadInt32BigEndian(discoveryRequest.AsSpan(4));
+            await stream.WriteAsync(
+                BuildResponse(
+                    discoveryCorrelationId,
+                    ErrorCode.None,
+                    new ApiVersion(ApiKey.ApiVersions, 0, 5),
+                    new ApiVersion(ApiKey.Metadata, 9, 12)),
+                cancellationToken);
+
+            var identityRequest = await ReadFrameAsync(stream, cancellationToken);
+            var identityCorrelationId = BinaryPrimitives.ReadInt32BigEndian(identityRequest.AsSpan(4));
+            await stream.WriteAsync(
+                BuildResponse(identityCorrelationId, ErrorCode.InvalidRequest),
+                cancellationToken);
+            await releaseServer.Task.WaitAsync(cancellationToken);
+        }, cancellationToken);
+
+        await using var connection = new KafkaConnection(
+            7,
+            "127.0.0.1",
+            port,
+            clientId: null,
+            options: null,
+            logger: null,
+            ResponseBufferPool.Default,
+            metadataClusterIdentity: CreateExpectedIdentity());
+
+        try
+        {
+            await connection.ConnectAsync(cancellationToken);
+            var capabilities = ((IKafkaCapabilityProvider)connection).Capabilities;
+
+            await Assert.That(capabilities.NegotiateVersion(ApiKey.Metadata, 9, 13))
+                .IsEqualTo((short)12);
+        }
+        finally
+        {
+            releaseServer.TrySetResult();
+        }
+
+        await serverTask;
+    }
+
+    [Test]
+    [Timeout(5_000)]
     public async Task ConnectAsync_Kip1242_WhenIdentityHandshakeTimesOut_ThrowsKafkaException(
         CancellationToken cancellationToken)
     {

@@ -27,9 +27,21 @@ public class FetchResponseParsingBenchmarks
     [Benchmark]
     public int ParseLegacyV6() => ParseAndReturn();
 
+    [Benchmark]
+    public int ParseLegacyV6FromSpan() => ParseAndReturnFromSpan();
+
     private int ParseAndReturn()
     {
         var reader = new KafkaProtocolReader(_response.AsMemory());
+        var response = (FetchResponse)FetchResponse.Read(ref reader, version: 6);
+        var topicCount = response.Responses.Count;
+        response.ReturnToPool();
+        return topicCount;
+    }
+
+    private int ParseAndReturnFromSpan()
+    {
+        var reader = new KafkaProtocolReader(_response.AsSpan());
         var response = (FetchResponse)FetchResponse.Read(ref reader, version: 6);
         var topicCount = response.Responses.Count;
         response.ReturnToPool();

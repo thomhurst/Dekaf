@@ -6,6 +6,19 @@ namespace Dekaf.Tests.Unit.Protocol;
 
 public class ProduceResponseTests
 {
+    private static readonly byte[] LegacyFetchResponse = Convert.FromHexString(
+        "00000000" + // ThrottleTimeMs
+        "00000001" + // Topics
+        "0005746F706963" + // Topic
+        "00000001" + // Partitions
+        "00000000" + // PartitionIndex
+        "0000" + // ErrorCode
+        "000000000000002A" + // HighWatermark
+        "000000000000002A" + // LastStableOffset
+        "0000000000000000" + // LogStartOffset
+        "FFFFFFFF" + // AbortedTransactions
+        "00000000"); // Records
+
     [Test]
     public async Task Read_V13_UsesTopicIdInsteadOfName()
     {
@@ -399,6 +412,31 @@ public class ProduceResponseTests
 
         first.ReturnToPool();
         second.ReturnToPool();
+    }
+
+    [Test]
+    public async Task FetchResponseRead_LegacySpanPathAllocatesZeroBytesAfterWarmup()
+    {
+        for (var i = 0; i < 64; i++)
+            _ = ParseLegacyFetchResponseFromSpan();
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        var topicCount = 0;
+        for (var i = 0; i < 16; i++)
+            topicCount += ParseLegacyFetchResponseFromSpan();
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        await Assert.That(topicCount).IsEqualTo(16);
+        await Assert.That(allocated).IsEqualTo(0);
+    }
+
+    private static int ParseLegacyFetchResponseFromSpan()
+    {
+        var reader = new KafkaProtocolReader(LegacyFetchResponse.AsSpan());
+        var response = (FetchResponse)FetchResponse.Read(ref reader, version: 6);
+        var topicCount = response.Responses.Count;
+        response.ReturnToPool();
+        return topicCount;
     }
 
     private static ProduceResponse ReadProduceResponse(string topicName)

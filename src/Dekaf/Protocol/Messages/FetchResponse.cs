@@ -286,19 +286,10 @@ public sealed class FetchResponseTopic
         }
         else
         {
-            if (FetchRequest.IsFlexibleVersion(version))
-            {
-                var topicBytes = reader.ReadCompactStringBytes();
-                // Intern topic names to reuse string instances across fetch cycles
-                if (topicBytes is not null)
-                    topic = TopicNameInternCache.Intern(topicBytes.Value);
-            }
-            else
-            {
-                var topicBytes = reader.ReadStringBytes();
-                if (topicBytes is not null)
-                    topic = TopicNameInternCache.Intern(topicBytes.Value);
-            }
+            // Intern topic names to reuse string instances across fetch cycles.
+            topic = FetchRequest.IsFlexibleVersion(version)
+                ? TopicNameInternCache.ReadCompact(ref reader)
+                : TopicNameInternCache.Read(ref reader);
         }
 
         // Use pooled list to avoid per-topic array allocation
