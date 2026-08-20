@@ -61,7 +61,7 @@ for category in "${categories[@]}"; do
     Producer|Compression)
       args+=(--maximum-parallel-tests 4)
       ;;
-    NetworkPartition|ShareConsumer|ShareConsumerAdmin|Serialization)
+    EventHubs|NetworkPartition|ShareConsumer|ShareConsumerAdmin|Serialization)
       args+=(--maximum-parallel-tests 1)
       ;;
   esac

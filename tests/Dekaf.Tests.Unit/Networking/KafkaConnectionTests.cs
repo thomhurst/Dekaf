@@ -113,6 +113,8 @@ public sealed class KafkaConnectionTests
     }
 
     [Test]
+    [Arguments(CompressionType.None, (short)7)]
+    [Arguments(CompressionType.Gzip, (short)7)]
     [Arguments(CompressionType.None, (short)12)]
     [Arguments(CompressionType.Gzip, (short)12)]
     [Arguments(CompressionType.None, (short)13)]

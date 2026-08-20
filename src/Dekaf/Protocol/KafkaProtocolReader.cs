@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
 using System.Text;
+using Dekaf.Internal;
 
 namespace Dekaf.Protocol;
 
@@ -580,6 +581,12 @@ public ref struct KafkaProtocolReader
         return ReadStringContent(length);
     }
 
+    internal string? ReadInternedString(Utf8StringInternCache cache)
+    {
+        var length = ReadInt16();
+        return length < 0 ? null : ReadInternedStringContent(cache, length);
+    }
+
     /// <summary>
     /// Reads a compact string with unsigned varint length prefix (flexible format).
     /// Length is encoded as length + 1 (0 means null).
@@ -614,6 +621,52 @@ public ref struct KafkaProtocolReader
             return null;
 
         return ReadMemorySlice(length);
+    }
+
+    internal string? ReadCompactInternedString(Utf8StringInternCache cache)
+    {
+        var length = ReadUnsignedVarInt() - 1;
+        return length < 0 ? null : ReadInternedStringContent(cache, length);
+    }
+
+    private string ReadInternedStringContent(Utf8StringInternCache cache, int length)
+    {
+        if (length == 0)
+            return string.Empty;
+
+        ValidateReadableLength(length);
+        if (_isContiguous)
+        {
+            var result = cache.Intern(_span.Slice(_position, length));
+            _position += length;
+            return result;
+        }
+
+        return ReadInternedStringContentSlow(cache, length);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private string ReadInternedStringContentSlow(Utf8StringInternCache cache, int length)
+    {
+        if (_reader.UnreadSpan.Length >= length)
+        {
+            var result = cache.Intern(_reader.UnreadSpan[..length]);
+            _reader.Advance(length);
+            return result;
+        }
+
+        var buffer = ArrayPool<byte>.Shared.Rent(length);
+        try
+        {
+            if (!_reader.TryCopyTo(buffer.AsSpan(0, length)))
+                ThrowInsufficientData();
+            _reader.Advance(length);
+            return cache.Intern(buffer.AsSpan(0, length));
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
     }
 
     /// <summary>
