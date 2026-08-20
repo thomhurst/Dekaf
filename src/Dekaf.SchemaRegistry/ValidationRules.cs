@@ -157,7 +157,7 @@ internal sealed class CompiledValidationRule
     internal static CompiledValidationRule Compile(
         ValidationRule rule,
         Dictionary<string, int> memberIndexes,
-        List<byte[]> memberNames)
+        List<byte[][]> memberPaths)
     {
         ArgumentNullException.ThrowIfNull(rule);
         if (string.IsNullOrWhiteSpace(rule.Expr))
@@ -170,7 +170,7 @@ internal sealed class CompiledValidationRule
 
         try
         {
-            var parser = new ValidationCelParser(rule.Expr, memberIndexes, memberNames);
+            var parser = new ValidationCelParser(rule.Expr, memberIndexes, memberPaths);
             var expression = parser.Parse();
             return new CompiledValidationRule(rule, expression);
         }
@@ -228,12 +228,20 @@ internal readonly record struct ValidationCelContext(
     long NowUnixMilliseconds,
     ReadOnlyMemory<byte>[]? MemberValues);
 
-internal sealed class ValidationCelMemberTable(byte[][] names)
+internal sealed class ValidationCelMemberTable
 {
-    private readonly byte[][] _names = names;
-    private readonly int[] _buckets = CreateBuckets(names);
+    private readonly MemberNode _root;
 
-    internal int Count => _names.Length;
+    internal ValidationCelMemberTable(byte[][][] paths)
+    {
+        Count = paths.Length;
+        var root = new MemberNodeBuilder();
+        for (var index = 0; index < paths.Length; index++)
+            root.Add(paths[index], index, depth: 0);
+        _root = root.Build();
+    }
+
+    internal int Count { get; }
 
     internal void Resolve(ReadOnlyMemory<byte> json, ReadOnlyMemory<byte>[] values)
     {
@@ -241,55 +249,127 @@ internal sealed class ValidationCelMemberTable(byte[][] names)
         if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject)
             return;
 
-        while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
+        _root.Resolve(ref reader, json, values);
+    }
+
+    private sealed class MemberNode(
+        byte[][] names,
+        int[] valueIndexes,
+        MemberNode?[] children)
+    {
+        private readonly byte[][] _names = names;
+        private readonly int[] _valueIndexes = valueIndexes;
+        private readonly MemberNode?[] _children = children;
+        private readonly int[] _buckets = CreateBuckets(names);
+
+        internal void Resolve(
+            ref Utf8JsonReader reader,
+            ReadOnlyMemory<byte> json,
+            ReadOnlyMemory<byte>[] values)
         {
-            if (reader.TokenType != JsonTokenType.PropertyName)
-                return;
-            var index = Find(ref reader);
-            if (!reader.Read())
-                return;
-            var start = checked((int)reader.TokenStartIndex);
-            if (index >= 0)
+            while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
             {
-                var end = reader;
-                end.Skip();
-                values[index] = json.Slice(start, checked((int)end.BytesConsumed) - start);
+                if (reader.TokenType != JsonTokenType.PropertyName)
+                    return;
+                var index = Find(ref reader);
+                if (!reader.Read())
+                    return;
+                var start = checked((int)reader.TokenStartIndex);
+                if (index >= 0 && _valueIndexes[index] >= 0)
+                {
+                    var end = reader;
+                    end.Skip();
+                    values[_valueIndexes[index]] = json.Slice(
+                        start,
+                        checked((int)end.BytesConsumed) - start);
+                }
+
+                if (index >= 0 && _children[index] is { } child &&
+                    reader.TokenType == JsonTokenType.StartObject)
+                {
+                    child.Resolve(ref reader, json, values);
+                }
+                else
+                {
+                    reader.Skip();
+                }
             }
-            reader.Skip();
+        }
+
+        private int Find(ref Utf8JsonReader reader)
+        {
+            var maximumLength = reader.ValueSpan.Length;
+            byte[]? rented = null;
+            Span<byte> decoded = reader.ValueIsEscaped
+                ? maximumLength <= 256
+                    ? stackalloc byte[maximumLength]
+                    : (rented = ArrayPool<byte>.Shared.Rent(maximumLength))
+                : default;
+            try
+            {
+                var name = reader.ValueIsEscaped
+                    ? decoded[..reader.CopyString(decoded)]
+                    : reader.ValueSpan;
+                var hash = Hash(name);
+                var bucket = (int)(hash & (uint)(_buckets.Length - 1));
+                while (true)
+                {
+                    var stored = _buckets[bucket];
+                    if (stored == 0)
+                        return -1;
+                    var index = stored - 1;
+                    if (name.SequenceEqual(_names[index]))
+                        return index;
+                    bucket = (bucket + 1) & (_buckets.Length - 1);
+                }
+            }
+            finally
+            {
+                if (rented is not null)
+                    ArrayPool<byte>.Shared.Return(rented);
+            }
         }
     }
 
-    private int Find(ref Utf8JsonReader reader)
+    private sealed class MemberNodeBuilder
     {
-        var maximumLength = reader.ValueSpan.Length;
-        byte[]? rented = null;
-        Span<byte> decoded = reader.ValueIsEscaped
-            ? maximumLength <= 256
-                ? stackalloc byte[maximumLength]
-                : (rented = ArrayPool<byte>.Shared.Rent(maximumLength))
-            : default;
-        try
+        private readonly List<byte[]> _names = [];
+        private readonly List<int> _valueIndexes = [];
+        private readonly List<MemberNodeBuilder?> _children = [];
+
+        internal void Add(byte[][] path, int valueIndex, int depth)
         {
-            var name = reader.ValueIsEscaped
-                ? decoded[..reader.CopyString(decoded)]
-                : reader.ValueSpan;
-            var hash = Hash(name);
-            var bucket = (int)(hash & (uint)(_buckets.Length - 1));
-            while (true)
+            var memberIndex = FindOrAdd(path[depth]);
+            if (depth == path.Length - 1)
             {
-                var stored = _buckets[bucket];
-                if (stored == 0)
-                    return -1;
-                var index = stored - 1;
-                if (name.SequenceEqual(_names[index]))
-                    return index;
-                bucket = (bucket + 1) & (_buckets.Length - 1);
+                _valueIndexes[memberIndex] = valueIndex;
+                return;
             }
+
+            var child = _children[memberIndex] ??= new MemberNodeBuilder();
+            child.Add(path, valueIndex, depth + 1);
         }
-        finally
+
+        internal MemberNode Build()
         {
-            if (rented is not null)
-                ArrayPool<byte>.Shared.Return(rented);
+            var children = new MemberNode?[_children.Count];
+            for (var index = 0; index < children.Length; index++)
+                children[index] = _children[index]?.Build();
+            return new MemberNode([.. _names], [.. _valueIndexes], children);
+        }
+
+        private int FindOrAdd(byte[] name)
+        {
+            for (var index = 0; index < _names.Count; index++)
+            {
+                if (name.AsSpan().SequenceEqual(_names[index]))
+                    return index;
+            }
+
+            _names.Add(name);
+            _valueIndexes.Add(-1);
+            _children.Add(null);
+            return _names.Count - 1;
         }
     }
 
@@ -396,56 +476,10 @@ internal sealed class ValidationCelLiteralNode(ValidationCelValue value) : Valid
     internal override ValidationCelValue Evaluate(ValidationCelContext context) => value;
 }
 
-internal sealed class ValidationCelThisNode(byte[][] path, int memberIndex) : ValidationCelNode
+internal sealed class ValidationCelThisNode(int memberIndex) : ValidationCelNode
 {
-    internal override ValidationCelValue Evaluate(ValidationCelContext context)
-    {
-        var value = ValidationCelValue.FromJson(
-            path.Length == 0 ? context.This : context.MemberValues![memberIndex]);
-        for (var index = 1; index < path.Length; index++)
-        {
-            if (value.Kind != ValidationCelValueKind.Object || !TryGetProperty(value.Json, path[index], out var property))
-                return ValidationCelValue.Missing;
-            value = ValidationCelValue.FromJson(property);
-        }
-
-        return value;
-    }
-
-    private static bool TryGetProperty(
-        ReadOnlyMemory<byte> json,
-        ReadOnlySpan<byte> propertyName,
-        out ReadOnlyMemory<byte> value)
-    {
-        var reader = new Utf8JsonReader(json.Span);
-        if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject)
-        {
-            value = default;
-            return false;
-        }
-
-        while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
-        {
-            if (reader.TokenType != JsonTokenType.PropertyName)
-                break;
-            var matches = reader.ValueTextEquals(propertyName);
-            if (!reader.Read())
-                break;
-            var start = checked((int)reader.TokenStartIndex);
-            if (matches)
-            {
-                var endReader = reader;
-                endReader.Skip();
-                value = json.Slice(start, checked((int)endReader.BytesConsumed) - start);
-                return true;
-            }
-
-            reader.Skip();
-        }
-
-        value = default;
-        return false;
-    }
+    internal override ValidationCelValue Evaluate(ValidationCelContext context) =>
+        ValidationCelValue.FromJson(memberIndex < 0 ? context.This : context.MemberValues![memberIndex]);
 }
 
 internal sealed class ValidationCelNowNode : ValidationCelNode
@@ -1006,18 +1040,18 @@ internal sealed class ValidationCelParser
 {
     private readonly string _expression;
     private readonly Dictionary<string, int> _memberIndexes;
-    private readonly List<byte[]> _memberNames;
+    private readonly List<byte[][]> _memberPaths;
     private int _position;
     private ValidationCelToken _current;
 
     internal ValidationCelParser(
         string expression,
         Dictionary<string, int> memberIndexes,
-        List<byte[]> memberNames)
+        List<byte[][]> memberPaths)
     {
         _expression = expression;
         _memberIndexes = memberIndexes;
-        _memberNames = memberNames;
+        _memberPaths = memberPaths;
         _current = ReadNextToken();
     }
 
@@ -1174,19 +1208,20 @@ internal sealed class ValidationCelParser
     private ValidationCelThisNode CreateThisNode(string identifier)
     {
         if (identifier.Length == 4)
-            return new ValidationCelThisNode([], -1);
+            return new ValidationCelThisNode(-1);
 
-        var segments = identifier[5..].Split('.');
+        var memberPath = identifier[5..];
+        var segments = memberPath.Split('.');
         var path = new byte[segments.Length][];
         for (var index = 0; index < segments.Length; index++)
             path[index] = Encoding.UTF8.GetBytes(segments[index]);
-        if (!_memberIndexes.TryGetValue(segments[0], out var memberIndex))
+        if (!_memberIndexes.TryGetValue(memberPath, out var memberIndex))
         {
-            memberIndex = _memberNames.Count;
-            _memberIndexes.Add(segments[0], memberIndex);
-            _memberNames.Add(path[0]);
+            memberIndex = _memberPaths.Count;
+            _memberIndexes.Add(memberPath, memberIndex);
+            _memberPaths.Add(path);
         }
-        return new ValidationCelThisNode(path, memberIndex);
+        return new ValidationCelThisNode(memberIndex);
     }
 
     private static decimal ParseNumber(string text)

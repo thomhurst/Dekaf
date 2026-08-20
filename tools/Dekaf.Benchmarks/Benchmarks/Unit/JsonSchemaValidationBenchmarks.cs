@@ -92,6 +92,21 @@ public class JsonSchemaValidationBenchmarks
         }
         """;
 
+    private const string NestedMemberInlineRulesJsonSchema = """
+        {
+          "confluent:rules": [
+            { "name": "a", "expr": "this.details.a > 0" },
+            { "name": "b", "expr": "this.details.b > 0" },
+            { "name": "c", "expr": "this.details.c > 0" },
+            { "name": "d", "expr": "this.details.d > 0" },
+            { "name": "e", "expr": "this.details.e > 0" },
+            { "name": "f", "expr": "this.details.f > 0" },
+            { "name": "g", "expr": "this.details.g > 0" },
+            { "name": "h", "expr": "this.details.h > 0" }
+          ]
+        }
+        """;
+
     private ArrayBufferWriter<byte> _disabledDestination = new(256);
     private ArrayBufferWriter<byte> _enabledDestination = new(256);
     private ArrayBufferWriter<byte> _inlineRulesDestination = new(256);
@@ -115,6 +130,8 @@ public class JsonSchemaValidationBenchmarks
     private IJsonSchemaValidator _structuralEqualityValidator = null!;
     private ReadOnlyMemory<byte> _siblingInlineRulesJsonPayload;
     private IJsonSchemaValidator _siblingInlineRulesValidator = null!;
+    private ReadOnlyMemory<byte> _nestedMemberInlineRulesJsonPayload;
+    private IJsonSchemaValidator _nestedMemberInlineRulesValidator = null!;
     private SerializationContext _context;
     private int _alternateSchemaIndex;
 
@@ -211,6 +228,17 @@ public class JsonSchemaValidationBenchmarks
             SchemaString = SiblingInlineRulesJsonSchema
         });
         _siblingInlineRulesValidator.ValidateRules(_siblingInlineRulesJsonPayload, 4, failFast: false);
+        _nestedMemberInlineRulesJsonPayload =
+            """{"details":{"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8}}"""u8.ToArray();
+        _nestedMemberInlineRulesValidator = inlineRulesFactory.GetOrCreate(new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = NestedMemberInlineRulesJsonSchema
+        });
+        _nestedMemberInlineRulesValidator.ValidateRules(
+            _nestedMemberInlineRulesJsonPayload,
+            5,
+            failFast: false);
         _inlineRulesDestination.Clear();
         _ = _disabledDeserializer.Deserialize(_wirePayload, _context);
         _ = _enabledDeserializer.Deserialize(_wirePayload, _context);
@@ -278,6 +306,13 @@ public class JsonSchemaValidationBenchmarks
     [Benchmark]
     public void ValidateSiblingInlineRules() =>
         _siblingInlineRulesValidator.ValidateRules(_siblingInlineRulesJsonPayload, 4, failFast: false);
+
+    [Benchmark]
+    public void ValidateNestedMemberInlineRules() =>
+        _nestedMemberInlineRulesValidator.ValidateRules(
+            _nestedMemberInlineRulesJsonPayload,
+            5,
+            failFast: false);
 
     [Benchmark]
     public BenchmarkPayload DeserializeValidationEnabledAlternatingSchemas()
