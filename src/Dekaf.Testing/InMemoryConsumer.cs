@@ -308,14 +308,13 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     {
         ArgumentNullException.ThrowIfNull(topics);
         ThrowIfDisposed();
+        ApplyGroupTransitionFaults();
 
         var topicPartitions = topics
             .Where(topic => !string.IsNullOrWhiteSpace(topic))
             .Distinct(StringComparer.Ordinal)
             .SelectMany(topic => _cluster.GetTopicPartitions(topic))
             .ToArray();
-
-        ApplyGroupTransitionFaults();
 
         lock (_gate)
         {
@@ -372,7 +371,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     public void Unsubscribe()
     {
         ThrowIfDisposed();
-        ApplySynchronousFault(new KafkaFaultScope(KafkaFaultOperation.Rebalance, groupId: _groupId));
+        if (_groupId is not null)
+            ApplySynchronousFault(new KafkaFaultScope(KafkaFaultOperation.Rebalance, groupId: _groupId));
 
         lock (_gate)
         {
@@ -400,6 +400,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
                 // Resuming after the yield proves that the caller processed this record.
                 // Do this before the loop observes cancellation, matching KafkaConsumer.
+                await ApplyInDoubtAutoCommitFaultAsync(CancellationToken.None).ConfigureAwait(false);
+                ThrowIfDisposed();
                 lock (_gate)
                 {
                     ProveInDoubtRecordUnderLock();
@@ -466,6 +468,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                await ApplyInDoubtAutoCommitFaultAsync(cancellationToken).ConfigureAwait(false);
 
                 TopicPartition partition;
                 InMemoryRecord record;
@@ -485,8 +488,6 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                             out record,
                             out position))
                     {
-                        if (_options.OffsetCommitMode == OffsetCommitMode.Auto)
-                            CommitStoredOffsets();
                         complete = true;
                     }
                     else
@@ -496,28 +497,49 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 }
 
                 if (complete)
-                    yield break;
+                {
+                    await ApplyStoredAutoCommitFaultAsync(cancellationToken).ConfigureAwait(false);
+                    lock (_gate)
+                    {
+                        ThrowIfSnapshotStateChangedUnderLock(
+                            consumerStateVersion,
+                            consumerGroupGeneration);
+                        if (_options.OffsetCommitMode == OffsetCommitMode.Auto)
+                            CommitStoredOffsets();
+                    }
 
-                await _cluster.FaultPlan.ApplyAsync(
-                    new KafkaFaultScope(
-                        KafkaFaultOperation.Fetch,
-                        partition.Topic,
-                        partition.Partition,
-                        _groupId),
-                    cancellationToken).ConfigureAwait(false);
-                ThrowIfDisposed();
+                    yield break;
+                }
+
+                if (_cluster.FaultPlan.Count != 0)
+                {
+                    await _cluster.FaultPlan.ApplyAsync(
+                        new KafkaFaultScope(
+                            KafkaFaultOperation.Fetch,
+                            partition.Topic,
+                            partition.Partition,
+                            _groupId),
+                        cancellationToken).ConfigureAwait(false);
+                    ThrowIfDisposed();
+                }
 
                 var result = _hasAsyncDeserializers
                     ? await ToConsumeResultAsync(partition, record, cancellationToken).ConfigureAwait(false)
                     : ToConsumeResult(partition, record);
 
-                await _cluster.FaultPlan.ApplyAsync(
-                    new KafkaFaultScope(
-                        KafkaFaultOperation.Consume,
-                        partition.Topic,
-                        partition.Partition,
-                        _groupId),
-                    cancellationToken).ConfigureAwait(false);
+                if (_cluster.FaultPlan.Count != 0)
+                {
+                    await _cluster.FaultPlan.ApplyAsync(
+                        new KafkaFaultScope(
+                            KafkaFaultOperation.Consume,
+                            partition.Topic,
+                            partition.Partition,
+                            _groupId),
+                        cancellationToken).ConfigureAwait(false);
+                    ThrowIfDisposed();
+                }
+
+                await ApplyOnDeliveryAutoCommitFaultAsync(cancellationToken).ConfigureAwait(false);
                 ThrowIfDisposed();
 
                 if (!TryAdvanceSnapshotPosition(
@@ -571,8 +593,15 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (await TryConsumeOneAsync(cancellationToken).ConfigureAwait(false) is { } result)
-                return result;
+            if (!_hasAsyncDeserializers && _cluster.FaultPlan.Count == 0)
+            {
+                if (TryConsumeOne(out var result))
+                    return result;
+            }
+            else if (await TryConsumeOneAsync(cancellationToken).ConfigureAwait(false) is { } asyncResult)
+            {
+                return asyncResult;
+            }
 
             if (deadline is null)
             {
@@ -644,7 +673,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         {
             // Explicit commit: the caller vouches for everything delivered so far,
             // including the in-doubt record still being processed.
-            ProveInDoubtRecordUnderLock();
+            ProveInDoubtRecordUnderLock(commitAutomatically: false);
             CommitStoredOffsets();
         }
     }
@@ -657,14 +686,16 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
         var groupId = GetCommitGroupId();
-        var offsetArray = offsets.ToArray();
 
         await _cluster.FaultPlan.ApplyAsync(
             new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: groupId),
             cancellationToken).ConfigureAwait(false);
         ThrowIfDisposed();
 
-        _cluster.CommitOffsets(groupId, offsetArray);
+        if (offsets is IReadOnlyList<TopicPartitionOffset> offsetList)
+            _cluster.CommitOffsets(groupId, offsetList);
+        else
+            _cluster.CommitOffsets(groupId, offsets);
     }
 
     private string GetCommitGroupId() => _groupId
@@ -771,6 +802,22 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         if (_disposed)
             return ValueTask.CompletedTask;
 
+        var autoCommitFault = ApplyStoredAutoCommitFaultAsync(cancellationToken);
+        if (!autoCommitFault.IsCompletedSuccessfully)
+            return CloseAfterAutoCommitFaultAsync(autoCommitFault);
+
+        autoCommitFault.GetAwaiter().GetResult();
+        return CompleteClose();
+    }
+
+    private async ValueTask CloseAfterAutoCommitFaultAsync(ValueTask autoCommitFault)
+    {
+        await autoCommitFault.ConfigureAwait(false);
+        await CompleteClose().ConfigureAwait(false);
+    }
+
+    private ValueTask CompleteClose()
+    {
         lock (_gate)
         {
             if (_disposed)
@@ -888,7 +935,6 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     {
         ArgumentNullException.ThrowIfNull(partitions);
         ThrowIfDisposed();
-        ApplyGroupTransitionFaults();
 
         lock (_gate)
         {
@@ -902,7 +948,6 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     public void Unassign()
     {
         ThrowIfDisposed();
-        ApplySynchronousFault(new KafkaFaultScope(KafkaFaultOperation.Rebalance, groupId: _groupId));
 
         lock (_gate)
         {
@@ -920,13 +965,11 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     {
         ArgumentNullException.ThrowIfNull(partitions);
         ThrowIfDisposed();
-        var partitionArray = partitions.ToArray();
-        ApplyGroupTransitionFaults();
 
         lock (_gate)
         {
             var changed = false;
-            foreach (var offset in partitionArray)
+            foreach (var offset in partitions)
             {
                 changed = true;
                 var partition = new TopicPartition(offset.Topic, offset.Partition);
@@ -947,13 +990,11 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     {
         ArgumentNullException.ThrowIfNull(partitions);
         ThrowIfDisposed();
-        var partitionArray = partitions.ToArray();
-        ApplySynchronousFault(new KafkaFaultScope(KafkaFaultOperation.Rebalance, groupId: _groupId));
 
         lock (_gate)
         {
             var changed = false;
-            foreach (var partition in partitionArray)
+            foreach (var partition in partitions)
             {
                 changed = true;
                 _assignment.Remove(partition);
@@ -1028,6 +1069,29 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
         return ValueTask.FromResult(_cluster.GetWatermarks(topicPartition));
+    }
+
+    private bool TryConsumeOne(out ConsumeResult<TKey, TValue> result)
+    {
+        var previousRecordProven = false;
+        while (true)
+        {
+            if (!TrySelectRecord(ref previousRecordProven, out var partition, out var record, out var position))
+            {
+                result = default;
+                return false;
+            }
+
+            // Run user deserializers before advancing any delivery or commit state. A failure
+            // leaves the selected offset untouched so the next consume retries the record.
+            var selectedResult = ToConsumeResult(partition, record);
+
+            if (!TryAdvancePosition(partition, record, position))
+                continue;
+
+            result = selectedResult;
+            return true;
+        }
     }
 
     private bool TrySelectSnapshotRecordUnderLock(
@@ -1115,37 +1179,50 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             "The consumer assignment or pause state changed while a snapshot enumeration was active.");
 
     /// <summary>
-    /// Shared consume path for synchronous and asynchronous deserializers. Faults run before
-    /// position advancement so a retry sees the same record.
+    /// Consume path used when fault injection is active or a component has an
+    /// <see cref="IAsyncDeserializer{T}"/>. Faults run before position advancement so a retry
+    /// sees the same record.
     /// </summary>
     private async ValueTask<ConsumeResult<TKey, TValue>?> TryConsumeOneAsync(CancellationToken cancellationToken)
     {
+        await ApplyInDoubtAutoCommitFaultAsync(cancellationToken).ConfigureAwait(false);
+        ThrowIfDisposed();
+
         var previousRecordProven = false;
         while (true)
         {
             if (!TrySelectRecord(ref previousRecordProven, out var partition, out var record, out var position))
                 return null;
 
-            await _cluster.FaultPlan.ApplyAsync(
-                new KafkaFaultScope(
-                    KafkaFaultOperation.Fetch,
-                    partition.Topic,
-                    partition.Partition,
-                    _groupId),
-                cancellationToken).ConfigureAwait(false);
-            ThrowIfDisposed();
+            if (_cluster.FaultPlan.Count != 0)
+            {
+                await _cluster.FaultPlan.ApplyAsync(
+                    new KafkaFaultScope(
+                        KafkaFaultOperation.Fetch,
+                        partition.Topic,
+                        partition.Partition,
+                        _groupId),
+                    cancellationToken).ConfigureAwait(false);
+                ThrowIfDisposed();
+            }
 
             var selectedResult = _hasAsyncDeserializers
                 ? await ToConsumeResultAsync(partition, record, cancellationToken).ConfigureAwait(false)
                 : ToConsumeResult(partition, record);
 
-            await _cluster.FaultPlan.ApplyAsync(
-                new KafkaFaultScope(
-                    KafkaFaultOperation.Consume,
-                    partition.Topic,
-                    partition.Partition,
-                    _groupId),
-                cancellationToken).ConfigureAwait(false);
+            if (_cluster.FaultPlan.Count != 0)
+            {
+                await _cluster.FaultPlan.ApplyAsync(
+                    new KafkaFaultScope(
+                        KafkaFaultOperation.Consume,
+                        partition.Topic,
+                        partition.Partition,
+                        _groupId),
+                    cancellationToken).ConfigureAwait(false);
+                ThrowIfDisposed();
+            }
+
+            await ApplyOnDeliveryAutoCommitFaultAsync(cancellationToken).ConfigureAwait(false);
             ThrowIfDisposed();
 
             if (!TryAdvancePosition(partition, record, position))
@@ -1262,7 +1339,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     /// Stages (and under Auto mode commits) the in-doubt record's offset. Called when the
     /// application demonstrably moved past it: a subsequent consume call or explicit commit.
     /// </summary>
-    private void ProveInDoubtRecordUnderLock()
+    private void ProveInDoubtRecordUnderLock(bool commitAutomatically = true)
     {
         if (_inDoubtNextOffset < 0)
             return;
@@ -1272,7 +1349,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
         _inDoubtNextOffset = -1;
 
-        if (_options.OffsetCommitMode == OffsetCommitMode.Auto)
+        if (commitAutomatically && _options.OffsetCommitMode == OffsetCommitMode.Auto)
             CommitStoredOffsets();
     }
 
@@ -1478,8 +1555,65 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             .Select(static item => item.Value)
             .ToArray();
 
-        if (offsets.Length > 0)
-            _cluster.CommitOffsets(_groupId, offsets);
+        if (offsets.Length == 0)
+            return;
+
+        _cluster.CommitOffsets(_groupId, offsets);
+    }
+
+    private ValueTask ApplyOnDeliveryAutoCommitFaultAsync(CancellationToken cancellationToken)
+    {
+        if (_options.OffsetCommitMode != OffsetCommitMode.Auto
+            || _options.OffsetStoreTiming != OffsetStoreTiming.OnDelivery)
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        return ApplyAutomaticCommitFaultAsync(cancellationToken);
+    }
+
+    private ValueTask ApplyInDoubtAutoCommitFaultAsync(CancellationToken cancellationToken)
+    {
+        if (_options.OffsetCommitMode != OffsetCommitMode.Auto
+            || _cluster.FaultPlan.Count == 0)
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        bool hasInDoubtRecord;
+        lock (_gate)
+            hasInDoubtRecord = _inDoubtNextOffset >= 0;
+
+        return hasInDoubtRecord
+            ? ApplyAutomaticCommitFaultAsync(cancellationToken)
+            : ValueTask.CompletedTask;
+    }
+
+    private ValueTask ApplyStoredAutoCommitFaultAsync(CancellationToken cancellationToken)
+    {
+        if (_options.OffsetCommitMode != OffsetCommitMode.Auto
+            || _cluster.FaultPlan.Count == 0)
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        bool hasStoredOffsets;
+        lock (_gate)
+            hasStoredOffsets = _storedOffsets.Count != 0;
+
+        return hasStoredOffsets
+            ? ApplyAutomaticCommitFaultAsync(cancellationToken)
+            : ValueTask.CompletedTask;
+    }
+
+    private ValueTask ApplyAutomaticCommitFaultAsync(CancellationToken cancellationToken)
+    {
+        if (_groupId is null || _cluster.FaultPlan.Count == 0)
+            return ValueTask.CompletedTask;
+
+        return _cluster.FaultPlan.ApplyAsync(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: _groupId),
+            cancellationToken);
     }
 
     private void StoreOffsetUnderLock(TopicPartitionOffset offset)
@@ -1547,12 +1681,11 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
     private void ApplyGroupTransitionFaults()
     {
-        if (_groupId is not null)
-        {
-            ApplySynchronousFault(new KafkaFaultScope(KafkaFaultOperation.JoinGroup, groupId: _groupId));
-            ApplySynchronousFault(new KafkaFaultScope(KafkaFaultOperation.SyncGroup, groupId: _groupId));
-        }
+        if (_groupId is null)
+            return;
 
+        ApplySynchronousFault(new KafkaFaultScope(KafkaFaultOperation.JoinGroup, groupId: _groupId));
+        ApplySynchronousFault(new KafkaFaultScope(KafkaFaultOperation.SyncGroup, groupId: _groupId));
         ApplySynchronousFault(new KafkaFaultScope(KafkaFaultOperation.Rebalance, groupId: _groupId));
     }
 

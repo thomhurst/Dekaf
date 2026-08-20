@@ -764,6 +764,19 @@ public sealed class InMemoryKafkaCluster
             CommitOffsetsUnderLock(groupId, offsets);
     }
 
+    internal void CommitOffsets(string groupId, IReadOnlyList<TopicPartitionOffset> offsets)
+    {
+        lock (_gate)
+        {
+            var groupOffsets = GetOrCreateGroupOffsetsUnderLock(groupId);
+            for (var index = 0; index < offsets.Count; index++)
+            {
+                var offset = offsets[index];
+                groupOffsets[new TopicPartition(offset.Topic, offset.Partition)] = offset;
+            }
+        }
+    }
+
     internal IReadOnlyDictionary<TopicPartition, long> GetGroupOffsets(string groupId)
     {
         lock (_gate)
@@ -983,14 +996,20 @@ public sealed class InMemoryKafkaCluster
 
     private void CommitOffsetsUnderLock(string groupId, IEnumerable<TopicPartitionOffset> offsets)
     {
-        if (!_consumerGroupOffsets.TryGetValue(groupId, out var groupOffsets))
-        {
-            groupOffsets = [];
-            _consumerGroupOffsets[groupId] = groupOffsets;
-        }
+        var groupOffsets = GetOrCreateGroupOffsetsUnderLock(groupId);
 
         foreach (var offset in offsets)
             groupOffsets[new TopicPartition(offset.Topic, offset.Partition)] = offset;
+    }
+
+    private Dictionary<TopicPartition, TopicPartitionOffset> GetOrCreateGroupOffsetsUnderLock(string groupId)
+    {
+        if (_consumerGroupOffsets.TryGetValue(groupId, out var groupOffsets))
+            return groupOffsets;
+
+        groupOffsets = [];
+        _consumerGroupOffsets[groupId] = groupOffsets;
+        return groupOffsets;
     }
 
     private Dictionary<long, ShareLeaseState>? GetShareLeasePartition(

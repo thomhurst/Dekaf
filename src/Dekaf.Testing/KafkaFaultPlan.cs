@@ -268,6 +268,7 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
     private readonly object _gate = new();
     private readonly List<FaultEntry> _entries = [];
     private ProduceFaultIndex _produceFaultIndex = ProduceFaultIndex.Empty;
+    private int _count;
     private int _hasEntries;
 
     internal bool HasPotentialProduceMatch(KafkaFaultOperation operation, string topic) =>
@@ -281,14 +282,7 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
     /// <summary>
     /// Gets the number of queued entries. A next-N failure is one entry.
     /// </summary>
-    public int Count
-    {
-        get
-        {
-            lock (_gate)
-                return _entries.Count;
-        }
-    }
+    public int Count => Volatile.Read(ref _count);
 
     /// <summary>
     /// Appends a failure consumed by the next matching operations.
@@ -302,6 +296,7 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
         lock (_gate)
         {
             _entries.Add(FaultEntry.Failure(scope, exception, occurrenceCount, isPersistent: false));
+            Volatile.Write(ref _count, _entries.Count);
             Volatile.Write(ref _hasEntries, 1);
             PublishProduceFaultIndexUnderLock();
         }
@@ -318,6 +313,7 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
         lock (_gate)
         {
             _entries.Add(FaultEntry.Failure(scope, exception, remainingOccurrences: 0, isPersistent: true));
+            Volatile.Write(ref _count, _entries.Count);
             Volatile.Write(ref _hasEntries, 1);
             PublishProduceFaultIndexUnderLock();
         }
@@ -333,6 +329,7 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
         lock (_gate)
         {
             _entries.Add(FaultEntry.Pause(scope, barrier));
+            Volatile.Write(ref _count, _entries.Count);
             Volatile.Write(ref _hasEntries, 1);
             PublishProduceFaultIndexUnderLock();
         }
@@ -370,6 +367,7 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
                     if (candidate.RemainingOccurrences == 0)
                     {
                         _entries.RemoveAt(i);
+                        Volatile.Write(ref _count, _entries.Count);
                         if (_entries.Count == 0)
                             Volatile.Write(ref _hasEntries, 0);
                         PublishProduceFaultIndexUnderLock();
@@ -418,6 +416,7 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
                 removed++;
             }
 
+            Volatile.Write(ref _count, _entries.Count);
             if (_entries.Count == 0)
                 Volatile.Write(ref _hasEntries, 0);
             if (removed != 0)
@@ -439,6 +438,7 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
                 _entries[i].Barrier?.ClearBeforeEntry();
 
             _entries.Clear();
+            Volatile.Write(ref _count, 0);
             Volatile.Write(ref _hasEntries, 0);
             Volatile.Write(ref _produceFaultIndex, ProduceFaultIndex.Empty);
             return removed;

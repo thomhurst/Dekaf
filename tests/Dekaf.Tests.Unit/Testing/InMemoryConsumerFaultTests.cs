@@ -159,6 +159,90 @@ public sealed class InMemoryConsumerFaultTests
     }
 
     [Test]
+    public async Task AutoCommit_FailurePreservesPositionAndOffsetForRetry()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync(Topic, "key", "value");
+        var consumer = CreateConsumer(
+            cluster,
+            enableAutoOffsetStore: true,
+            offsetCommitMode: OffsetCommitMode.Auto);
+        consumer.Subscribe(Topic);
+        var failure = new InvalidOperationException("auto commit failed");
+        cluster.FaultPlan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId),
+            failure);
+
+        var actual = await Assert.ThrowsAsync<Exception>(
+            () => consumer.ConsumeOneAsync(TimeSpan.Zero).AsTask());
+
+        await Assert.That(actual).IsSameReferenceAs(failure);
+        await Assert.That(consumer.GetPosition(Partition)).IsEqualTo(0);
+        await Assert.That(await consumer.GetCommittedOffsetAsync(Partition)).IsNull();
+
+        var result = await consumer.ConsumeOneAsync(TimeSpan.Zero);
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(consumer.GetPosition(Partition)).IsEqualTo(1);
+        await Assert.That(await consumer.GetCommittedOffsetAsync(Partition)).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task AutoCommit_BarrierRunsBeforePositionMutation()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync(Topic, "key", "value");
+        var consumer = CreateConsumer(
+            cluster,
+            enableAutoOffsetStore: true,
+            offsetCommitMode: OffsetCommitMode.Auto);
+        consumer.Subscribe(Topic);
+        var barrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId));
+
+        var operation = consumer.ConsumeOneAsync(Timeout.InfiniteTimeSpan).AsTask();
+        await barrier.WaitUntilEnteredAsync();
+
+        await Assert.That(consumer.GetPosition(Partition)).IsEqualTo(0);
+        await Assert.That(await consumer.GetCommittedOffsetAsync(Partition)).IsNull();
+        await Assert.That(barrier.Release()).IsTrue();
+
+        var result = await operation;
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(consumer.GetPosition(Partition)).IsEqualTo(1);
+        await Assert.That(await consumer.GetCommittedOffsetAsync(Partition)).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task CommitAsync_FaultRunsBeforeFallbackInputEnumeration()
+    {
+        var (cluster, consumer) = await CreateConsumerWithRecordAsync();
+        var failure = new InvalidOperationException("commit failed");
+        cluster.FaultPlan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId),
+            failure);
+
+        var actual = await Assert.ThrowsAsync<Exception>(
+            () => consumer.CommitAsync(ThrowOnEnumeration()).AsTask());
+
+        await Assert.That(actual).IsSameReferenceAs(failure);
+    }
+
+    [Test]
+    public async Task CommitAsync_ReadOnlyListUsesIndexedCommitPath()
+    {
+        var (cluster, consumer) = await CreateConsumerWithRecordAsync();
+        var offsets = new IndexOnlyOffsets(new TopicPartitionOffset(Topic, 0, 1));
+
+        await consumer.CommitAsync(offsets);
+
+        await Assert.That(await consumer.GetCommittedOffsetAsync(Partition)).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task StoreOffset_FailureDoesNotMutateStoredOffsets()
     {
         var (cluster, consumer) = await CreateConsumerWithRecordAsync(enableAutoOffsetStore: false);
@@ -209,6 +293,47 @@ public sealed class InMemoryConsumerFaultTests
     }
 
     [Test]
+    public async Task Subscribe_GroupTransitionFailureDoesNotAutoCreateTopic()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var consumer = CreateConsumer(cluster);
+        var failure = new InvalidOperationException("join failed");
+        cluster.FaultPlan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.JoinGroup, groupId: GroupId),
+            failure);
+
+        var actual = Assert.Throws<InvalidOperationException>(() => consumer.Subscribe("missing"));
+
+        await Assert.That(actual).IsSameReferenceAs(failure);
+        await Assert.That(cluster.ListTopics()).IsEmpty();
+    }
+
+    [Test]
+    public async Task ManualAssignment_DoesNotConsumeGroupTransitionFaults()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic(Topic);
+        var consumer = CreateConsumer(cluster);
+        var failure = new InvalidOperationException("group transition");
+        cluster.FaultPlan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.JoinGroup, groupId: GroupId),
+            failure);
+        cluster.FaultPlan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.SyncGroup, groupId: GroupId),
+            failure);
+        cluster.FaultPlan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.Rebalance),
+            failure);
+
+        consumer.Assign(Partition);
+        consumer.IncrementalAssign([new TopicPartitionOffset(Topic, 0, 0)]);
+        consumer.IncrementalUnassign([Partition]);
+        consumer.Unassign();
+
+        await Assert.That(cluster.FaultPlan.Count).IsEqualTo(3);
+    }
+
+    [Test]
     public async Task FaultSelectors_DoNotConsumeRuleForDifferentGroup()
     {
         var (cluster, consumer) = await CreateConsumerWithRecordAsync();
@@ -236,15 +361,38 @@ public sealed class InMemoryConsumerFaultTests
 
     private static InMemoryConsumer<string, string> CreateConsumer(
         InMemoryKafkaCluster cluster,
-        bool enableAutoOffsetStore = true) =>
+        bool enableAutoOffsetStore = true,
+        OffsetCommitMode offsetCommitMode = OffsetCommitMode.Manual) =>
         new(
             cluster,
             new InMemoryConsumerOptions
             {
                 GroupId = GroupId,
                 AutoOffsetReset = AutoOffsetReset.Earliest,
-                OffsetCommitMode = OffsetCommitMode.Manual,
+                OffsetCommitMode = offsetCommitMode,
                 EnableAutoOffsetStore = enableAutoOffsetStore,
                 OffsetStoreTiming = OffsetStoreTiming.OnDelivery
             });
+
+    private static IEnumerable<TopicPartitionOffset> ThrowOnEnumeration()
+    {
+        throw new InvalidOperationException("Offsets were enumerated before the fault ran.");
+#pragma warning disable CS0162
+        yield break;
+#pragma warning restore CS0162
+    }
+
+    private sealed class IndexOnlyOffsets(TopicPartitionOffset offset) : IReadOnlyList<TopicPartitionOffset>
+    {
+        public int Count => 1;
+
+        public TopicPartitionOffset this[int index] => index == 0
+            ? offset
+            : throw new ArgumentOutOfRangeException(nameof(index));
+
+        public IEnumerator<TopicPartitionOffset> GetEnumerator() =>
+            throw new InvalidOperationException("Indexed collection was enumerated.");
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    }
 }
