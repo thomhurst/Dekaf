@@ -913,6 +913,45 @@ public sealed class JsonSchemaValidationTests
     }
 
     [Test]
+    [Arguments("anyOf")]
+    [Arguments("oneOf")]
+    public async Task InlineRules_CompositionsRejectNullWhenNoBranchMatches(string keyword)
+    {
+        var validator = CreateFactory().GetOrCreate(CreateSchema(
+            $$"""{ "{{keyword}}": [{ "type": "string" }] }"""));
+
+        var exception = Assert.Throws<JsonSchemaValidationException>(() => validator.ValidateRules(
+            "null"u8.ToArray(),
+            19,
+            failFast: false));
+
+        await Assert.That(exception.SchemaId).IsEqualTo(19);
+        await Assert.That(exception.Keyword).IsEqualTo(keyword);
+    }
+
+    [Test]
+    [Arguments("anyOf")]
+    [Arguments("oneOf")]
+    public async Task InlineRules_EmptyCompositionBesideReferenceRejectsEveryInstance(string keyword)
+    {
+        var validator = CreateFactory().GetOrCreate(CreateSchema($$"""
+            {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "$defs": { "base": { "type": "object" } },
+              "$ref": "#/$defs/base",
+              "{{keyword}}": []
+            }
+            """));
+
+        var exception = Assert.Throws<JsonSchemaValidationException>(() => validator.ValidateRules(
+            "{}"u8.ToArray(),
+            19,
+            failFast: false));
+
+        await Assert.That(exception.Keyword).IsEqualTo(keyword);
+    }
+
+    [Test]
     public void InlineRules_ParseAdjacentArithmeticOperators()
     {
         const string schemaText = """

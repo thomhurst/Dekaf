@@ -127,6 +127,10 @@ public class JsonSchemaValidationBenchmarks
     private IJsonSchemaValidator _inlineRulesValidator = null!;
     private ReadOnlyMemory<byte> _nestedInlineRulesJsonPayload;
     private IJsonSchemaValidator _nestedInlineRulesValidator = null!;
+    private ReadOnlyMemory<byte> _nestedCompositionInlineRulesJsonPayload;
+    private IJsonSchemaValidator _nestedCompositionInlineRulesValidator = null!;
+    private ReadOnlyMemory<byte> _shallowCompositionInlineRulesJsonPayload;
+    private IJsonSchemaValidator _shallowCompositionInlineRulesValidator = null!;
     private ReadOnlyMemory<byte> _structuralEqualityJsonPayload;
     private ReadOnlyMemory<byte> _deepStructuralEqualityJsonPayload;
     private IJsonSchemaValidator _structuralEqualityValidator = null!;
@@ -216,6 +220,28 @@ public class JsonSchemaValidationBenchmarks
             SchemaString = NestedInlineRulesJsonSchema
         });
         _nestedInlineRulesValidator.ValidateRules(_nestedInlineRulesJsonPayload, 2, failFast: false);
+        var (nestedCompositionSchema, nestedCompositionPayload) = CreateNestedCompositionRule(depth: 12);
+        _nestedCompositionInlineRulesJsonPayload = nestedCompositionPayload;
+        _nestedCompositionInlineRulesValidator = inlineRulesFactory.GetOrCreate(new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = nestedCompositionSchema
+        });
+        _nestedCompositionInlineRulesValidator.ValidateRules(
+            _nestedCompositionInlineRulesJsonPayload,
+            7,
+            failFast: false);
+        var (shallowCompositionSchema, shallowCompositionPayload) = CreateNestedCompositionRule(depth: 1);
+        _shallowCompositionInlineRulesJsonPayload = shallowCompositionPayload;
+        _shallowCompositionInlineRulesValidator = inlineRulesFactory.GetOrCreate(new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = shallowCompositionSchema
+        });
+        _shallowCompositionInlineRulesValidator.ValidateRules(
+            _shallowCompositionInlineRulesJsonPayload,
+            8,
+            failFast: false);
         _structuralEqualityJsonPayload =
             """{"left":{"id":1,"name":"bench"},"right":{"name":"bench","id":1.0},"values":[1,"a"],"expected":[1.0,"\u0061"]}"""u8
                 .ToArray();
@@ -328,6 +354,20 @@ public class JsonSchemaValidationBenchmarks
         _nestedInlineRulesValidator.ValidateRules(_nestedInlineRulesJsonPayload, 2, failFast: false);
 
     [Benchmark]
+    public void ValidateNestedCompositionInlineRules() =>
+        _nestedCompositionInlineRulesValidator.ValidateRules(
+            _nestedCompositionInlineRulesJsonPayload,
+            7,
+            failFast: false);
+
+    [Benchmark]
+    public void ValidateShallowCompositionInlineRules() =>
+        _shallowCompositionInlineRulesValidator.ValidateRules(
+            _shallowCompositionInlineRulesJsonPayload,
+            8,
+            failFast: false);
+
+    [Benchmark]
     public void ValidateStructuralEquality() =>
         _structuralEqualityValidator.ValidateRules(_structuralEqualityJsonPayload, 3, failFast: false);
 
@@ -418,6 +458,25 @@ public class JsonSchemaValidationBenchmarks
             }
             """;
         return (schema, Encoding.UTF8.GetBytes(payload.ToString()));
+    }
+
+    private static (string Schema, byte[] Payload) CreateNestedCompositionRule(int depth)
+    {
+        var schema = new StringBuilder(depth * 96);
+        var payload = new StringBuilder(depth * 12);
+        for (var index = 0; index < depth; index++)
+        {
+            schema.Append(
+                "{\"anyOf\":[{\"type\":\"object\",\"required\":[\"child\"],\"properties\":{\"child\":");
+            payload.Append("{\"child\":");
+        }
+        schema.Append(
+            "{\"type\":\"integer\",\"confluent:rules\":[{\"name\":\"positive\",\"expr\":\"this > 0\"}]}");
+        for (var index = 0; index < depth; index++)
+            schema.Append("}}]}");
+        payload.Append('1');
+        payload.Append('}', depth);
+        return (schema.ToString(), Encoding.UTF8.GetBytes(payload.ToString()));
     }
 
     private sealed class BenchmarkSchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistryCache
