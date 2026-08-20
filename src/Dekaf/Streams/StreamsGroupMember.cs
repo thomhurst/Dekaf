@@ -534,6 +534,12 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
                     .ConfigureAwait(false);
             }
         }
+        catch (GroupException exception)
+            when (exception.ErrorCode is ErrorCode.FencedMemberEpoch or ErrorCode.UnknownMemberId)
+        {
+            retainMembership = false;
+            throw;
+        }
         finally
         {
             _memberEpoch = 0;
@@ -930,13 +936,21 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
     {
         _endpointInformationEpoch = update.EndpointInformationEpoch;
         if (update.Topology is not null)
+        {
             _topology = MapTopology(update.Topology);
-        if (update.ActiveTasks is not null)
-            _activeTasks = MapTaskSets(update.ActiveTasks);
-        if (update.StandbyTasks is not null)
-            _standbyTasks = MapTaskSets(update.StandbyTasks);
-        if (update.WarmupTasks is not null)
-            _warmupTasks = MapTaskSets(update.WarmupTasks);
+            _activeTasks = [];
+            _standbyTasks = [];
+            _warmupTasks = [];
+        }
+        else
+        {
+            if (update.ActiveTasks is not null)
+                _activeTasks = MapTaskSets(update.ActiveTasks);
+            if (update.StandbyTasks is not null)
+                _standbyTasks = MapTaskSets(update.StandbyTasks);
+            if (update.WarmupTasks is not null)
+                _warmupTasks = MapTaskSets(update.WarmupTasks);
+        }
         if (update.ProcessId is not null)
             _processId = update.ProcessId;
         if (update.UserEndpoint is not null)
