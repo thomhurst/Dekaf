@@ -569,9 +569,20 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                     ThrowIfDisposed();
                 }
 
-                var result = _hasAsyncDeserializers
-                    ? await ToConsumeResultAsync(partition, record, cancellationToken).ConfigureAwait(false)
-                    : ToConsumeResult(partition, record);
+                ConsumeResult<TKey, TValue> result;
+                if (_hasAsyncDeserializers)
+                {
+                    result = await ToConsumeResultAsync(
+                        partition,
+                        record,
+                        cancellationToken).ConfigureAwait(false);
+                    if (!applyRecordFaults)
+                        applyRecordFaults = HasPotentialConsumerFault();
+                }
+                else
+                {
+                    result = ToConsumeResult(partition, record);
+                }
 
                 var consumeScope = new KafkaFaultScope(
                     KafkaFaultOperation.Consume,
@@ -624,8 +635,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
                 yield return result;
                 // The caller can add fault rules while enumeration is suspended at the yield.
-                if (!applyRecordFaults)
-                    applyRecordFaults = HasPotentialConsumerFault();
+                applyRecordFaults = HasPotentialConsumerFault();
             }
         }
         finally

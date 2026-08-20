@@ -827,7 +827,7 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
                     continue;
 
                 if (scope.Topic is not null || scope.Partition is not null)
-                    break;
+                    continue;
 
                 operationScope = new KafkaFaultScope(
                     KafkaFaultOperation.Commit,

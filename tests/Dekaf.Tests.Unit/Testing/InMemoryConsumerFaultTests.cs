@@ -374,6 +374,26 @@ public sealed class InMemoryConsumerFaultTests
     }
 
     [Test]
+    public async Task CommitAsync_EmptyListSkipsResourceFaultBeforeGroupFault()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var consumer = CreateConsumer(cluster, enableAutoOffsetStore: false);
+        cluster.FaultPlan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, Topic, 0, GroupId),
+            new InvalidOperationException("resource commit failed"));
+        var groupFailure = new InvalidOperationException("group commit failed");
+        cluster.FaultPlan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId),
+            groupFailure);
+
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            consumer.CommitAsync(Array.Empty<TopicPartitionOffset>()).AsTask());
+
+        await Assert.That(actual).IsSameReferenceAs(groupFailure);
+        await Assert.That(cluster.FaultPlan.Count).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task CommitAsync_ExplicitOffsetsConsumeResourceScopedFailure()
     {
         var (cluster, consumer) = await CreateConsumerWithRecordAsync();
@@ -737,6 +757,56 @@ public sealed class InMemoryConsumerFaultTests
 
         await Assert.That(actual).IsSameReferenceAs(failure);
         await Assert.That(cluster.FaultPlan.Count).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Snapshot_FaultAddedDuringDeserializationAppliesToCurrentRecord()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync(Topic, "key", "value");
+        var deserializer = new BlockingAsyncDeserializer();
+        await using var consumer = CreateAsyncConsumer(cluster, deserializer);
+        consumer.Subscribe(Topic);
+        await using var snapshot = consumer.ConsumeSnapshotAsync().GetAsyncEnumerator();
+
+        var moveNext = snapshot.MoveNextAsync().AsTask();
+        await deserializer.WaitUntilEnteredAsync();
+        var failure = new InvalidOperationException("consume failed");
+        cluster.FaultPlan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.Consume, Topic, 0, GroupId),
+            failure);
+        deserializer.Release();
+
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() => moveNext);
+
+        await Assert.That(actual).IsSameReferenceAs(failure);
+    }
+
+    [Test]
+    public async Task Snapshot_StopsProbingAfterOneShotFaultIsConsumed()
+    {
+        var innerPlan = new KafkaFaultPlan();
+        var faultPlan = new DelegatingFaultPlan(innerPlan);
+        var cluster = new InMemoryKafkaCluster(new InMemoryKafkaClusterOptions(), faultPlan);
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync(Topic, "key-0", "value-0");
+        await producer.ProduceAsync(Topic, "key-1", "value-1");
+        await using var consumer = CreateConsumer(cluster);
+        consumer.Subscribe(Topic);
+        var barrier = innerPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.Consume, Topic, 0, GroupId));
+        await using var snapshot = consumer.ConsumeSnapshotAsync().GetAsyncEnumerator();
+
+        var firstMove = snapshot.MoveNextAsync().AsTask();
+        await barrier.WaitUntilEnteredAsync();
+        await Assert.That(barrier.Release()).IsTrue();
+        await Assert.That(await firstMove).IsTrue();
+        var probesAfterFault = faultPlan.MatchingProbeCount;
+
+        await Assert.That(await snapshot.MoveNextAsync()).IsTrue();
+
+        await Assert.That(faultPlan.MatchingProbeCount).IsEqualTo(probesAfterFault);
     }
 
     [Test]
