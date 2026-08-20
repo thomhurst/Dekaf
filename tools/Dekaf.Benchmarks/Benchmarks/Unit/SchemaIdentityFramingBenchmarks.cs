@@ -20,12 +20,31 @@ public class SchemaIdentityFramingBenchmarks
     private readonly byte[] _idPrefix = [0, 0, 0, 0, 42, 7, 8];
     private byte[] _guidFrame = null!;
     private Header _identityHeader;
+    private RecordHeaderRoutingLookup _routingLookup;
 
     [GlobalSetup]
     public void Setup()
     {
         _guidFrame = SchemaIdentityFraming.CreateSchemaGuidFrame(SchemaGuid);
         _identityHeader = new Header(SchemaIdentityHeaderNames.Value, _guidFrame);
+
+        var multiHeaders = new Header[33];
+        for (var index = 0; index < 32; index++)
+            multiHeaders[index] = new Header($"noise-{index}", ReadOnlyMemory<byte>.Empty);
+        multiHeaders[32] = new Header(
+            SchemaIdentityHeaderNames.Value,
+            [.. _guidFrame, 0]);
+
+        var routingPlan = RecordHeaderRoutingPlan.Create<byte, byte>(
+            null,
+            IdentityRoutingDeserializer.Instance)!;
+        _routingLookup = new RecordHeaderRoutingLookup(
+            routingPlan,
+            multiHeaders,
+            multiHeaders.Length,
+            firstIndex: 0,
+            secondIndex: 33,
+            routedHeaderTailOffset: RecordHeaderRoutingPlan.FullyIndexedWithoutTail);
     }
 
     [Benchmark(Baseline = true)]
@@ -57,9 +76,35 @@ public class SchemaIdentityFramingBenchmarks
         out _);
 
     [Benchmark]
+    public SchemaIdentity RoutedProtobufHeaderReadWith32NoiseHeaders()
+    {
+        if (!_routingLookup.TryGetLast(SchemaIdentityHeaderNames.Value, out var identityHeader))
+            throw new InvalidOperationException("The routed schema identity header was not found.");
+
+        var identity = SchemaIdentityFraming.ReadHeader(in identityHeader, out var messageIndexes);
+        if (messageIndexes.Length != 1 || messageIndexes.Span[0] != 0)
+            throw new InvalidDataException("The Protobuf message-index vector is invalid.");
+
+        return identity;
+    }
+
+    [Benchmark]
     public Header CreateHeader() => SchemaIdentityFraming.CreateSchemaGuidHeader(
         SerializationComponent.Value,
         _guidFrame);
+
+    private sealed class IdentityRoutingDeserializer : IDeserializer<byte>, IRecordHeaderRoutingProvider
+    {
+        internal static readonly IdentityRoutingDeserializer Instance = new();
+
+        public byte Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) => 0;
+
+        public void CollectHeaderNames(List<string> names)
+        {
+            names.Add(SchemaIdentityHeaderNames.Key);
+            names.Add(SchemaIdentityHeaderNames.Value);
+        }
+    }
 
     private sealed class FramingConfig : ManualConfig
     {

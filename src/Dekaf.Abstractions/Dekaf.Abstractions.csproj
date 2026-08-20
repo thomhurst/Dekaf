@@ -23,6 +23,7 @@
     <InternalsVisibleTo Include="Dekaf.Testing" />
     <InternalsVisibleTo Include="Dekaf.SchemaRegistry" />
     <InternalsVisibleTo Include="Dekaf.SchemaRegistry.Avro" />
+    <InternalsVisibleTo Include="Dekaf.SchemaRegistry.Protobuf" />
     <InternalsVisibleTo Include="Dekaf.Serialization.Routing" />
   </ItemGroup>
 

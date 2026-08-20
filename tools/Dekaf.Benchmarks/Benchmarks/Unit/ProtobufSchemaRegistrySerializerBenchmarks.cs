@@ -17,26 +17,44 @@ public class ProtobufSchemaRegistrySerializerBenchmarks
 {
     private readonly ArrayBufferWriter<byte> _destination = new(256);
     private ProtobufSchemaRegistrySerializer<StringValue> _serializer = null!;
+    private ProtobufSchemaRegistrySerializer<StringValue> _headerSerializer = null!;
     private StringValue _value = null!;
     private SerializationContext _context;
+    private SerializationContext _headerContext;
 
     [GlobalSetup]
     public void Setup()
     {
         _serializer = new ProtobufSchemaRegistrySerializer<StringValue>(new BenchmarkSchemaRegistryClient());
+        _headerSerializer = new ProtobufSchemaRegistrySerializer<StringValue>(
+            new BenchmarkSchemaRegistryClient(),
+            new ProtobufSerializerConfig { SchemaIdStrategy = SchemaIdSerializerStrategy.Header });
         _value = new StringValue { Value = "protobuf-benchmark" };
         _context = new SerializationContext
         {
             Topic = "protobuf-benchmark",
             Component = SerializationComponent.Value
         };
+        _headerContext = new SerializationContext
+        {
+            Topic = "protobuf-benchmark",
+            Component = SerializationComponent.Value,
+            Headers = new Headers(1)
+        };
 
         var destination = _destination;
         _serializer.Serialize(_value, ref destination, _context);
+        destination.Clear();
+        _headerSerializer.Serialize(_value, ref destination, _headerContext);
+        _headerContext.Headers!.Clear();
     }
 
     [GlobalCleanup]
-    public ValueTask Cleanup() => _serializer.DisposeAsync();
+    public async ValueTask Cleanup()
+    {
+        await _serializer.DisposeAsync().ConfigureAwait(false);
+        await _headerSerializer.DisposeAsync().ConfigureAwait(false);
+    }
 
     [Benchmark]
     public void SerializeCached()
@@ -44,6 +62,15 @@ public class ProtobufSchemaRegistrySerializerBenchmarks
         _destination.Clear();
         var destination = _destination;
         _serializer.Serialize(_value, ref destination, _context);
+    }
+
+    [Benchmark]
+    public void SerializeCachedHeader()
+    {
+        _destination.Clear();
+        _headerContext.Headers!.Clear();
+        var destination = _destination;
+        _headerSerializer.Serialize(_value, ref destination, _headerContext);
     }
 
     [Benchmark]
@@ -63,6 +90,20 @@ public class ProtobufSchemaRegistrySerializerBenchmarks
             string subject,
             string version = "latest",
             CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task<RegisteredSchema> LookupSchemaAsync(
+            string subject,
+            Schema schema,
+            bool ignoreDeletedSchemas = true,
+            bool normalize = false,
+            CancellationToken cancellationToken = default) => Task.FromResult(new RegisteredSchema
+            {
+                Id = 1,
+                Guid = "89791762-2336-4186-9674-299b90a802e2",
+                Subject = subject,
+                Version = 1,
+                Schema = schema
+            });
 
         public Task<int> GetOrRegisterSchemaAsync(
             string subject,

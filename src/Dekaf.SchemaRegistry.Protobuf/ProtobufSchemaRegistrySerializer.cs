@@ -1,6 +1,6 @@
 using System.Buffers;
-using System.Buffers.Binary;
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
 using Dekaf.Serialization;
 using Google.Protobuf;
 using Google.Protobuf.Reflection;
@@ -9,7 +9,9 @@ namespace Dekaf.SchemaRegistry.Protobuf;
 
 /// <summary>
 /// Protobuf serializer that integrates with Confluent Schema Registry.
-/// Wire format: [magic byte (0x00)] [schema ID (4 bytes)] [varint array indexes] [protobuf binary]
+/// Prefix framing writes [magic byte (0x00)] [schema ID (4 bytes)] [varint array indexes]
+/// [protobuf binary]. Header framing writes the GUID and message indexes to the schema-identity
+/// record header and leaves the payload as raw Protobuf binary.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -24,14 +26,15 @@ namespace Dekaf.SchemaRegistry.Protobuf;
 /// <typeparam name="T">The Protobuf message type to serialize.</typeparam>
 public sealed class ProtobufSchemaRegistrySerializer<
     [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>
-    : ISerializer<T>, IAsyncSerializerPreparer<T>, IAsyncDisposable
+    : ISerializer<T>, IAsyncSerializerPreparer<T>, IRecordHeaderSerializer, IAsyncDisposable
     where T : IMessage<T>
 {
-    private const byte MagicByte = 0x00;
     private static readonly TimeSpan SchemaRegistryTimeout = TimeSpan.FromSeconds(30);
 
     private readonly ISchemaRegistryClient _schemaRegistry;
     private readonly ProtobufSerializerConfig _config;
+    private readonly SchemaIdSerializerStrategy _schemaIdStrategy;
+    private readonly SchemaSelectionMode _schemaSelectionMode;
     private readonly bool _ownsClient;
     private readonly MessageDescriptor _descriptor;
     private readonly SubjectSchemaIdCache _subjectSchemaIdCache = new();
@@ -40,6 +43,10 @@ public sealed class ProtobufSchemaRegistrySerializer<
     private readonly SchemaResolutionCache<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> _schemaResolutionCache = new();
     private readonly SchemaResolutionCache<RegisteredDependency> _referenceResolutionCache = new();
     private readonly Schema _resolutionIdentitySchema;
+    private readonly ConditionalWeakTable<Schema, IdentityHeaderFrame> _identityHeaderFrames = new();
+
+    bool IRecordHeaderSerializer.ProducesRecordHeaders =>
+        _schemaIdStrategy == SchemaIdSerializerStrategy.Header;
 
     /// <summary>
     /// Creates a new Protobuf Schema Registry serializer.
@@ -54,6 +61,13 @@ public sealed class ProtobufSchemaRegistrySerializer<
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _config = config ?? new ProtobufSerializerConfig();
+        _schemaIdStrategy = _config.SchemaIdStrategy;
+        _schemaSelectionMode = SchemaRegistrySerializerConfigValidator.ValidateAndResolve(
+            _config.UseSchemaId,
+            _config.UseLatestVersion,
+            _config.AutoRegisterSchemas);
+        if (_schemaIdStrategy is not (SchemaIdSerializerStrategy.Prefix or SchemaIdSerializerStrategy.Header))
+            throw new ArgumentOutOfRangeException(nameof(config), _schemaIdStrategy, "Unknown schema identity strategy.");
         _ownsClient = ownsClient;
 
         // Get the message descriptor from the type
@@ -146,26 +160,27 @@ public sealed class ProtobufSchemaRegistrySerializer<
             }
         }
 
-        // Total size: magic byte + schema ID + indexes + message
         var protobufPayloadLength = _config.RuleExecutor is null ? protoSize : transformedPayload.Length;
-        var totalSize = 1 + 4 + _encodedMessageIndexes.Length + protobufPayloadLength;
+        var payloadOffset = _schemaIdStrategy == SchemaIdSerializerStrategy.Prefix
+            ? SchemaIdentityFraming.SchemaIdFrameSize + _encodedMessageIndexes.Length
+            : 0;
+        var totalSize = payloadOffset + protobufPayloadLength;
         var span = destination.GetSpan(totalSize);
 
-        // Write magic byte
-        span[0] = MagicByte;
-
-        // Write schema ID (big-endian)
-        BinaryPrimitives.WriteInt32BigEndian(span.Slice(1, 4), schemaId);
-
-        var offset = 5;
-        _encodedMessageIndexes.CopyTo(span.Slice(offset));
-        offset += _encodedMessageIndexes.Length;
+        if (_schemaIdStrategy == SchemaIdSerializerStrategy.Prefix)
+        {
+            SchemaIdentityFraming.WriteSchemaId(span, schemaId);
+            _encodedMessageIndexes.CopyTo(span[SchemaIdentityFraming.SchemaIdFrameSize..]);
+        }
 
         // Write the protobuf message
         if (_config.RuleExecutor is null)
-            value.WriteTo(span.Slice(offset, protoSize));
+            value.WriteTo(span.Slice(payloadOffset, protoSize));
         else
-            transformedPayload.Span.CopyTo(span.Slice(offset, transformedPayload.Length));
+            transformedPayload.Span.CopyTo(span.Slice(payloadOffset, transformedPayload.Length));
+
+        if (_schemaIdStrategy == SchemaIdSerializerStrategy.Header)
+            WriteIdentityHeader(context, in schemaEntry);
 
         destination.Advance(totalSize);
     }
@@ -270,7 +285,7 @@ public sealed class ProtobufSchemaRegistrySerializer<
 
     private SchemaResolutionScope GetSchemaResolutionScope(string topic, bool isKey) =>
         _config.UseSchemaReferences &&
-        !_config.UseLatestVersion &&
+        _schemaSelectionMode is SchemaSelectionMode.AutoRegister or SchemaSelectionMode.Lookup &&
         _config.CustomReferenceSubjectNameStrategy is not null
             ? new SchemaResolutionScope(topic, isKey)
             : default;
@@ -290,12 +305,47 @@ public sealed class ProtobufSchemaRegistrySerializer<
         bool isKey,
         CancellationToken cancellationToken)
     {
-        if (_config.UseLatestVersion)
+        if (_schemaSelectionMode == SchemaSelectionMode.ExplicitId)
+        {
+            var schemaId = _config.UseSchemaId!.Value;
+            var explicitSchema = await _schemaRegistry.GetSchemaAsync(
+                    schemaId,
+                    subject,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            if (explicitSchema.SchemaType != SchemaType.Protobuf)
+            {
+                throw new InvalidOperationException(
+                    $"Schema ID {schemaId} has format {explicitSchema.SchemaType}; expected {SchemaType.Protobuf}.");
+            }
+
+            return await CreateResolvedValueAsync(
+                    subject,
+                    schemaId,
+                    explicitSchema,
+                    registeredSchema: null,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        if (_schemaSelectionMode == SchemaSelectionMode.Latest)
         {
             var latest = await _schemaRegistry.GetSchemaBySubjectAsync(
                 subject,
                 cancellationToken: cancellationToken).ConfigureAwait(false);
-            return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(latest.Id, latest.Schema);
+            if (latest.Schema.SchemaType != SchemaType.Protobuf)
+            {
+                throw new InvalidOperationException(
+                    $"Schema ID {latest.Id} has format {latest.Schema.SchemaType}; expected {SchemaType.Protobuf}.");
+            }
+
+            return await CreateResolvedValueAsync(
+                    subject,
+                    latest.Id,
+                    latest.Schema,
+                    latest,
+                    cancellationToken)
+                .ConfigureAwait(false);
         }
 
         IReadOnlyList<SchemaReference>? references = null;
@@ -315,7 +365,7 @@ public sealed class ProtobufSchemaRegistrySerializer<
             References = references
         };
 
-        if (_config.AutoRegisterSchemas)
+        if (_schemaSelectionMode == SchemaSelectionMode.AutoRegister)
         {
             var id = _config.NormalizeSchemas
                 ? await _schemaRegistry.GetOrRegisterSchemaAsync(
@@ -330,7 +380,13 @@ public sealed class ProtobufSchemaRegistrySerializer<
             var executionSchema = _config.RuleExecutor is SchemaRegistryRuleExecutor
                 ? await _schemaRegistry.GetSchemaAsync(id, subject, cancellationToken).ConfigureAwait(false)
                 : schema;
-            return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(id, executionSchema);
+            return await CreateResolvedValueAsync(
+                    subject,
+                    id,
+                    executionSchema,
+                    registeredSchema: null,
+                    cancellationToken)
+                .ConfigureAwait(false);
         }
 
         var registered = await _schemaRegistry.LookupSchemaAsync(
@@ -339,7 +395,65 @@ public sealed class ProtobufSchemaRegistrySerializer<
             ignoreDeletedSchemas: true,
             normalize: _config.NormalizeSchemas,
             cancellationToken).ConfigureAwait(false);
-        return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(registered.Id, registered.Schema);
+        return await CreateResolvedValueAsync(
+                subject,
+                registered.Id,
+                registered.Schema,
+                registered,
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private async Task<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> CreateResolvedValueAsync(
+        string subject,
+        int schemaId,
+        Schema schema,
+        RegisteredSchema? registeredSchema,
+        CancellationToken cancellationToken)
+    {
+        var resolved = await SchemaIdentityResolution.CreateSerializerValueAsync(
+                _schemaRegistry,
+                subject,
+                schemaId,
+                schema,
+                _schemaIdStrategy,
+                _config.NormalizeSchemas,
+                registeredSchema,
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (_schemaIdStrategy == SchemaIdSerializerStrategy.Header)
+            CacheIdentityHeaderFrame(resolved.Schema!, resolved.SchemaId);
+
+        return resolved;
+    }
+
+    private void CacheIdentityHeaderFrame(Schema schema, int schemaId)
+    {
+        var encodedGuid = SchemaGuidFrameCache.Get(schema, schemaId);
+        var frame = GC.AllocateUninitializedArray<byte>(encodedGuid.Length + _encodedMessageIndexes.Length);
+        encodedGuid.Span.CopyTo(frame);
+        _encodedMessageIndexes.CopyTo(frame.AsSpan(encodedGuid.Length));
+        _identityHeaderFrames.AddOrUpdate(schema, new IdentityHeaderFrame(frame));
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void WriteIdentityHeader(
+        SerializationContext context,
+        in SubjectSchemaIdCache.SubjectSchemaIdCacheEntry schemaEntry)
+    {
+        if (context.Headers is not { } headers)
+        {
+            throw new InvalidOperationException(
+                "Header schema identity framing requires a record Headers collection.");
+        }
+
+        if (!_identityHeaderFrames.TryGetValue(schemaEntry.Schema!, out var frame))
+        {
+            throw new InvalidDataException(
+                $"Schema Registry GUID framing is unavailable for schema ID {schemaEntry.SchemaId}.");
+        }
+
+        headers.Add(SchemaIdentityFraming.CreateSchemaGuidHeader(context.Component, frame.Value));
     }
 
     private string GetSubjectName(string topic, bool isKey)
@@ -566,6 +680,11 @@ public sealed class ProtobufSchemaRegistrySerializer<
     }
 
     private readonly record struct RegisteredDependency(string Subject, int Version);
+
+    private sealed class IdentityHeaderFrame(ReadOnlyMemory<byte> value)
+    {
+        internal ReadOnlyMemory<byte> Value { get; } = value;
+    }
 
     private static int[] CalculateMessageIndexes(MessageDescriptor descriptor)
     {
