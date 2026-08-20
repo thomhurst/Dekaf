@@ -127,7 +127,7 @@ public sealed class InMemoryKafkaCluster
         }
     }
 
-    internal void RegisterConsumerGroupMember(
+    internal int RegisterConsumerGroupMember(
         string groupId,
         string memberId,
         IEnumerable<TopicPartition> subscribedPartitions)
@@ -147,7 +147,9 @@ public sealed class InMemoryKafkaCluster
             }
 
             members[memberId] = partitions;
-            _consumerGroupGenerations[groupId] = _consumerGroupGenerations.GetValueOrDefault(groupId) + 1;
+            var generation = _consumerGroupGenerations.GetValueOrDefault(groupId) + 1;
+            _consumerGroupGenerations[groupId] = generation;
+            return generation;
         }
     }
 

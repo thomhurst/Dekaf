@@ -541,7 +541,12 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
         }
     }
 
-    private async ValueTask<T> ObserveFatalAsync<T>(ValueTask<T> operation)
+    private ValueTask<T> ObserveFatalAsync<T>(ValueTask<T> operation) =>
+        operation.IsCompletedSuccessfully
+            ? operation
+            : ObserveFatalSlowAsync(operation);
+
+    private async ValueTask<T> ObserveFatalSlowAsync<T>(ValueTask<T> operation)
     {
         try
         {

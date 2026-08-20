@@ -50,6 +50,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private bool _snapshotActive;
     private readonly string? _groupId;
     private readonly string? _memberId;
+    private int _consumerGroupGeneration = -1;
     private string? _subscriptionPattern;
     private bool _disposed;
 
@@ -247,14 +248,23 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
     public string? MemberId => _memberId;
 
-    public ConsumerGroupMetadata? ConsumerGroupMetadata => _groupId is null || _memberId is null
-        ? null
-        : new ConsumerGroupMetadata
+    public ConsumerGroupMetadata? ConsumerGroupMetadata
+    {
+        get
         {
-            GroupId = _groupId,
-            GenerationId = _cluster.GetConsumerGroupGeneration(_groupId),
-            MemberId = _memberId
-        };
+            lock (_gate)
+            {
+                return _groupId is null || _memberId is null || _consumerGroupGeneration < 0
+                    ? null
+                    : new ConsumerGroupMetadata
+                    {
+                        GroupId = _groupId,
+                        GenerationId = _consumerGroupGeneration,
+                        MemberId = _memberId
+                    };
+            }
+        }
+    }
 
     public IConsumerPositions Positions => this;
 
@@ -1425,7 +1435,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
     private IReadOnlySet<TopicPartition> GetCurrentAssignmentUnderLock(out int consumerGroupGeneration)
     {
-        if (_groupId is null || _memberId is null)
+        if (_groupId is null || _memberId is null || _consumerGroupGeneration < 0)
         {
             consumerGroupGeneration = -1;
             return _assignment;
@@ -1435,6 +1445,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             _groupId,
             _memberId,
             out consumerGroupGeneration);
+        _consumerGroupGeneration = consumerGroupGeneration;
         return owned.Where(_assignment.Contains).ToHashSet();
     }
 
@@ -1443,7 +1454,10 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         if (_groupId is null || _memberId is null)
             return;
 
-        _cluster.RegisterConsumerGroupMember(_groupId, _memberId, _assignment);
+        _consumerGroupGeneration = _cluster.RegisterConsumerGroupMember(
+            _groupId,
+            _memberId,
+            _assignment);
     }
 
     private void UnregisterConsumerGroupMemberUnderLock()
@@ -1452,6 +1466,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             return;
 
         _cluster.UnregisterConsumerGroupMember(_groupId, _memberId);
+        _consumerGroupGeneration = -1;
     }
 
     private void ThrowIfDisposed()

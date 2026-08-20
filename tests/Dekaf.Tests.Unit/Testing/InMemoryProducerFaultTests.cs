@@ -568,6 +568,28 @@ public sealed class InMemoryProducerFaultTests
     }
 
     [Test]
+    public async Task ConsumerGroupMetadata_DoesNotAdoptReplacementGenerationWithReusedMemberId()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("orders");
+        var options = new InMemoryConsumerOptions
+        {
+            GroupId = "billing",
+            MemberId = "billing-worker"
+        };
+        var staleConsumer = new InMemoryConsumer<string, string>(cluster, options);
+        staleConsumer.Subscribe("orders");
+        var staleGeneration = staleConsumer.ConsumerGroupMetadata!.GenerationId;
+        await staleConsumer.DisposeAsync();
+
+        await using var replacement = new InMemoryConsumer<string, string>(cluster, options);
+        replacement.Subscribe("orders");
+
+        await Assert.That(staleConsumer.ConsumerGroupMetadata).IsNull();
+        await Assert.That(replacement.ConsumerGroupMetadata!.GenerationId).IsGreaterThan(staleGeneration);
+    }
+
+    [Test]
     public async Task TransactionOffsets_ConcurrentStagingCommitsEveryOffset()
     {
         const int operationCount = 32;
