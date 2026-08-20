@@ -164,7 +164,8 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         if (!Enum.IsDefined(options.GroupMembershipOperation))
             throw new ArgumentOutOfRangeException(nameof(options));
         cancellationToken.ThrowIfCancellationRequested();
-        MemberCommand? command = null;
+        MemberCommand command;
+        var enqueueClose = false;
         lock (_commandWriteGate)
         {
             if (Volatile.Read(ref _closeRequested) == 0)
@@ -172,28 +173,30 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
                 Volatile.Write(ref _closeRequested, 1);
                 command = MemberCommand.Close(options);
                 Volatile.Write(ref _closeCommand, command);
+                enqueueClose = true;
+            }
+            else
+            {
+                command = Volatile.Read(ref _closeCommand)!;
             }
         }
 
-        if (command is null)
+        if (enqueueClose)
         {
-            await _workerTask.WaitAsync(cancellationToken).ConfigureAwait(false);
-            return;
-        }
-
-        _commandAdmissionCancellation.Cancel();
-        if (!_commands.Writer.TryWrite(command))
-        {
-            try
+            _commandAdmissionCancellation.Cancel();
+            if (!_commands.Writer.TryWrite(command))
             {
-                await _workerTask.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    await _workerTask.WaitAsync(cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    ObserveFault(command.Completion.Task);
+                    throw;
+                }
+                CompleteRejectedClose();
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                ObserveFault(command.Completion.Task);
-                throw;
-            }
-            CompleteRejectedClose();
         }
 
         try

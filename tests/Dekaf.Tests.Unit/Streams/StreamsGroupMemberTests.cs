@@ -914,6 +914,27 @@ public sealed class StreamsGroupMemberTests
     }
 
     [Test]
+    public async Task CloseAsync_ConcurrentCallersObserveTerminalHeartbeatFailure()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1));
+        var terminalHeartbeat = new TaskCompletionSource<StreamsGroupHeartbeatResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.EnqueueHeartbeat(terminalHeartbeat.Task);
+        await using var fixture = CreateFixture(connection);
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+
+        var firstClose = fixture.Member.CloseAsync().AsTask();
+        await connection.SecondHeartbeatStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var secondClose = fixture.Member.CloseAsync().AsTask();
+        terminalHeartbeat.SetException(new NotSupportedException("terminal heartbeat failed"));
+
+        _ = await Assert.ThrowsAsync<NotSupportedException>(() => firstClose);
+        _ = await Assert.ThrowsAsync<NotSupportedException>(() => secondClose);
+        await Assert.That(fixture.Member.Snapshot.IsClosed).IsTrue();
+    }
+
+    [Test]
     public async Task CloseAsync_WhenCallerCancelsObservesLaterTerminalFailure()
     {
         var connection = new ScriptedConnection();
@@ -1077,10 +1098,13 @@ public sealed class StreamsGroupMemberTests
 
         public async ValueTask DisposeAsync()
         {
-            await Member.CloseAsync(new StreamsGroupCloseOptions
+            if (!Member.Snapshot.IsClosed)
             {
-                GroupMembershipOperation = StreamsGroupMembershipOperation.RemainInGroup
-            });
+                await Member.CloseAsync(new StreamsGroupCloseOptions
+                {
+                    GroupMembershipOperation = StreamsGroupMembershipOperation.RemainInGroup
+                });
+            }
             await Member.DisposeAsync();
             await metadataManager.DisposeAsync();
         }
