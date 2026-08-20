@@ -890,26 +890,10 @@ public class MpscFetchBufferTests
         finally
         {
             allowFirstCommit.Set();
-            try
-            {
-                firstWritten = await firstWrite.WaitAsync(TimeSpan.FromSeconds(5));
-            }
-            catch (Exception exception)
-            {
-                firstWriteFailure = exception;
-            }
+            (firstWritten, firstWriteFailure) = await ObserveDedicatedWriteAsync(firstWrite);
 
             if (secondWrite is not null)
-            {
-                try
-                {
-                    _ = await secondWrite.WaitAsync(TimeSpan.FromSeconds(5));
-                }
-                catch (Exception exception)
-                {
-                    secondWriteFailure = exception;
-                }
-            }
+                (_, secondWriteFailure) = await ObserveDedicatedWriteAsync(secondWrite);
         }
 
         if (firstWriteFailure is not null)
@@ -935,6 +919,18 @@ public class MpscFetchBufferTests
             CancellationToken.None,
             TaskCreationOptions.LongRunning,
             TaskScheduler.Default);
+
+    private static async Task<(bool Result, Exception? Failure)> ObserveDedicatedWriteAsync(
+        Task<bool> write)
+    {
+        var wait = write.WaitAsync(TimeSpan.FromSeconds(5));
+        Task observation = wait;
+        await observation.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+
+        return wait.IsCompletedSuccessfully
+            ? (wait.GetAwaiter().GetResult(), null)
+            : (false, wait.Exception?.InnerException ?? new TaskCanceledException(wait));
+    }
 
     #endregion
 
