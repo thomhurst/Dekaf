@@ -27,6 +27,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
     private readonly record struct PendingAutoCommitAdvancement(
         long Position,
+        bool ResumePartition,
         TaskCompletionSource Completion);
 
     private readonly object _gate = new();
@@ -699,6 +700,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             if (deadline is null)
             {
                 await _cluster.WaitForRecordsAsync(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+                ThrowIfDisposed();
                 continue;
             }
 
@@ -709,6 +711,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             try
             {
                 await _cluster.WaitForRecordsAsync(remaining, cancellationToken).ConfigureAwait(false);
+                ThrowIfDisposed();
             }
             catch (TimeoutException)
             {
@@ -1061,6 +1064,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             }
         }
 
+        _cluster.SignalRecordsChanged();
         return ValueTask.CompletedTask;
     }
 
@@ -1338,6 +1342,15 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         out long selectedPosition,
         out bool pendingAutoCommitAdvancement)
     {
+        if (IsInDoubtAutoCommitAdvancementPendingUnderLock())
+        {
+            selectedPartition = _inDoubtPartition;
+            selectedRecord = null!;
+            selectedPosition = -1;
+            pendingAutoCommitAdvancement = true;
+            return false;
+        }
+
         while (activePartitionIndex < partitions.Length)
         {
             var bound = partitions[activePartitionIndex];
@@ -1556,6 +1569,14 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 // A new consume call proves the previously delivered record was processed
                 // (poll contract) — stage it before selecting the next one.
                 ProveInDoubtRecordUnderLock();
+                if (IsInDoubtAutoCommitAdvancementPendingUnderLock())
+                {
+                    selectedPartition = default;
+                    selectedRecord = null!;
+                    selectedPosition = -1;
+                    return false;
+                }
+
                 previousRecordProven = true;
             }
 
@@ -1767,6 +1788,9 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         if (_inDoubtNextOffset < 0)
             return;
 
+        if (IsInDoubtAutoCommitAdvancementPendingUnderLock())
+            return;
+
         if (_options.EnableAutoOffsetStore)
             StoreOffsetUnderLock(_inDoubtPartition, _inDoubtNextOffset);
 
@@ -1775,6 +1799,12 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         if (commitAutomatically && _options.OffsetCommitMode == OffsetCommitMode.Auto)
             CommitStoredOffsets();
     }
+
+    private bool IsInDoubtAutoCommitAdvancementPendingUnderLock() =>
+        _inDoubtNextOffset >= 0 &&
+        _pendingAutoCommitAdvancements is not null &&
+        _pendingAutoCommitAdvancements.TryGetValue(_inDoubtPartition, out var pending) &&
+        pending.Position == _inDoubtNextOffset;
 
     private void DiscardInDoubtRecordUnderLock(TopicPartition partition)
     {
@@ -2069,6 +2099,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
             (_pendingAutoCommitAdvancements ??= [])[partition] = new PendingAutoCommitAdvancement(
                 expectedPosition,
+                ResumePartition: true,
                 new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously));
             hasReservation = true;
         }
@@ -2114,7 +2145,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         }
 
         _pendingAutoCommitAdvancements.Remove(partition);
-        _paused.Remove(partition);
+        if (pending.ResumePartition)
+            _paused.Remove(partition);
         if (_pendingAutoCommitAdvancements.Count == 0)
             _pendingAutoCommitAdvancements = null;
 
@@ -2136,11 +2168,25 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         if (_options.OffsetCommitMode != OffsetCommitMode.Auto)
             return ValueTask.CompletedTask;
 
+        TopicPartition inDoubtPartition;
+        long inDoubtNextOffset;
         ValueTask faultApplication;
         lock (_gate)
         {
-            var inDoubtOffset = _options.EnableAutoOffsetStore && _inDoubtNextOffset >= 0
-                ? _inDoubtPartition
+            if (_inDoubtNextOffset < 0)
+                return ValueTask.CompletedTask;
+
+            inDoubtPartition = _inDoubtPartition;
+            inDoubtNextOffset = _inDoubtNextOffset;
+            if (_pendingAutoCommitAdvancements is not null &&
+                _pendingAutoCommitAdvancements.TryGetValue(inDoubtPartition, out var pending) &&
+                pending.Position == inDoubtNextOffset)
+            {
+                return new ValueTask(pending.Completion.Task.WaitAsync(cancellationToken));
+            }
+
+            var inDoubtOffset = _options.EnableAutoOffsetStore
+                ? inDoubtPartition
                 : (TopicPartition?)null;
             if (!TryApplyMatchingCommitFaultUnderLock(
                     inDoubtOffset,
@@ -2150,9 +2196,33 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             {
                 return ValueTask.CompletedTask;
             }
+
+            var resumePartition = _paused.Add(inDoubtPartition);
+            (_pendingAutoCommitAdvancements ??= [])[inDoubtPartition] = new PendingAutoCommitAdvancement(
+                inDoubtNextOffset,
+                resumePartition,
+                new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously));
         }
 
-        return faultApplication;
+        return ApplyInDoubtAutoCommitFaultAndClearAsync(
+            faultApplication,
+            inDoubtPartition,
+            inDoubtNextOffset);
+    }
+
+    private async ValueTask ApplyInDoubtAutoCommitFaultAndClearAsync(
+        ValueTask faultApplication,
+        TopicPartition partition,
+        long expectedPosition)
+    {
+        try
+        {
+            await faultApplication.ConfigureAwait(false);
+        }
+        finally
+        {
+            ClearPendingAutoCommitAdvancement(partition, expectedPosition);
+        }
     }
 
     private ValueTask ApplyStoredAutoCommitFaultAsync(CancellationToken cancellationToken)

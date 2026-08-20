@@ -827,15 +827,15 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
     {
         foreach (var partition in storedOffsets.Keys)
         {
-            if (!assignment.Contains(partition) || !MatchesCommitResource(ruleScope, partition))
-                continue;
-
-            operationScope = new KafkaFaultScope(
-                KafkaFaultOperation.Commit,
-                partition.Topic,
-                partition.Partition,
-                groupId);
-            return true;
+            if (assignment.Contains(partition) && MatchesCommitResource(ruleScope, partition))
+            {
+                operationScope = new KafkaFaultScope(
+                    KafkaFaultOperation.Commit,
+                    partition.Topic,
+                    partition.Partition,
+                    groupId);
+                return true;
+            }
         }
 
         operationScope = default;

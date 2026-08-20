@@ -749,6 +749,33 @@ public sealed class InMemoryConsumerFaultTests
     }
 
     [Test]
+    public async Task CloseAsync_WakesInfiniteConsumeWaitingBehindAutoCommitReservation()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync(Topic, "key", "value");
+        var consumer = CreateConsumer(
+            cluster,
+            enableAutoOffsetStore: true,
+            offsetCommitMode: OffsetCommitMode.Auto);
+        consumer.Subscribe(Topic);
+        var barrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId));
+
+        var reservedConsume = consumer.ConsumeOneAsync(Timeout.InfiniteTimeSpan).AsTask();
+        await barrier.WaitUntilEnteredAsync();
+        var waitingConsume = consumer.ConsumeOneAsync(Timeout.InfiniteTimeSpan).AsTask();
+        await Assert.That(waitingConsume.IsCompleted).IsFalse();
+
+        await consumer.CloseAsync();
+
+        _ = await Assert.ThrowsAsync<ObjectDisposedException>(() =>
+            waitingConsume.WaitAsync(TimeSpan.FromSeconds(5)));
+        await Assert.That(barrier.Release()).IsTrue();
+        _ = await Assert.ThrowsAsync<ObjectDisposedException>(() => reservedConsume);
+    }
+
+    [Test]
     public async Task AutoCommitAdvancementWaitHook_IsReusableAndCloseCompletesIt()
     {
         var consumer = CreateConsumer(new InMemoryKafkaCluster());
@@ -1235,6 +1262,65 @@ public sealed class InMemoryConsumerFaultTests
         var next = await consumer.ConsumeOneAsync(TimeSpan.Zero);
 
         await Assert.That(next).IsNull();
+        await Assert.That(await consumer.GetCommittedOffsetAsync(Partition)).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task AutoCommit_AfterProcessingBarrierReservesInDoubtAdvancement()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync(Topic, "key-0", "value-0");
+        await producer.ProduceAsync(Topic, "key-1", "value-1");
+        await using var consumer = CreateConsumer(
+            cluster,
+            enableAutoOffsetStore: true,
+            offsetCommitMode: OffsetCommitMode.Auto,
+            offsetStoreTiming: OffsetStoreTiming.AfterProcessing);
+        consumer.Subscribe(Topic);
+        _ = await consumer.ConsumeOneAsync(TimeSpan.Zero);
+        var barrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId));
+
+        var reservedConsume = consumer.ConsumeOneAsync(Timeout.InfiniteTimeSpan).AsTask();
+        await barrier.WaitUntilEnteredAsync();
+        var concurrentResult = await consumer.ConsumeOneAsync(TimeSpan.Zero);
+
+        await Assert.That(concurrentResult).IsNull();
+        await Assert.That(consumer.GetPosition(Partition)).IsEqualTo(1);
+        await Assert.That(await consumer.GetCommittedOffsetAsync(Partition)).IsNull();
+        await Assert.That(barrier.Release()).IsTrue();
+
+        var result = await reservedConsume;
+        await Assert.That(result).IsNotNull();
+        await Assert.That(result!.Value.Key).IsEqualTo("key-1");
+        await Assert.That(consumer.GetPosition(Partition)).IsEqualTo(2);
+        await Assert.That(await consumer.GetCommittedOffsetAsync(Partition)).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task AutoCommit_AfterProcessingBarrierPreservesCallerPause()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync(Topic, "key", "value");
+        await using var consumer = CreateConsumer(
+            cluster,
+            enableAutoOffsetStore: true,
+            offsetCommitMode: OffsetCommitMode.Auto,
+            offsetStoreTiming: OffsetStoreTiming.AfterProcessing);
+        consumer.Subscribe(Topic);
+        _ = await consumer.ConsumeOneAsync(TimeSpan.Zero);
+        consumer.Pause(Partition);
+        var barrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId));
+
+        var operation = consumer.ConsumeOneAsync(TimeSpan.Zero).AsTask();
+        await barrier.WaitUntilEnteredAsync();
+        await Assert.That(barrier.Release()).IsTrue();
+
+        await Assert.That(await operation).IsNull();
+        await Assert.That(consumer.Paused).Contains(Partition);
         await Assert.That(await consumer.GetCommittedOffsetAsync(Partition)).IsEqualTo(1);
     }
 
