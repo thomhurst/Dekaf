@@ -112,10 +112,12 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         await _initializeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            ThrowIfClosed();
             if (_initialized)
                 return;
 
             await _metadataManager.InitializeAsync(cancellationToken).ConfigureAwait(false);
+            ThrowIfClosed();
             _initialized = true;
         }
         finally
@@ -201,6 +203,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
 
         try
         {
+            await WaitForInitializationDrainAsync(cancellationToken).ConfigureAwait(false);
             await command.Completion.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -209,6 +212,12 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
             throw;
         }
         await _workerTask.WaitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async ValueTask WaitForInitializationDrainAsync(CancellationToken cancellationToken)
+    {
+        await _initializeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        _initializeLock.Release();
     }
 
     public async ValueTask DisposeAsync()
