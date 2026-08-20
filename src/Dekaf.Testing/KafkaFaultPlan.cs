@@ -267,6 +267,7 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
 {
     private readonly object _gate = new();
     private readonly List<FaultEntry> _entries = [];
+    private int _hasEntries;
 
     /// <summary>
     /// Raised synchronously after a matching entry is consumed and before its action runs.
@@ -295,7 +296,10 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
         ArgumentOutOfRangeException.ThrowIfLessThan(occurrenceCount, 1);
 
         lock (_gate)
+        {
             _entries.Add(FaultEntry.Failure(scope, exception, occurrenceCount, isPersistent: false));
+            Volatile.Write(ref _hasEntries, 1);
+        }
     }
 
     /// <summary>
@@ -307,7 +311,10 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
         ArgumentNullException.ThrowIfNull(exception);
 
         lock (_gate)
+        {
             _entries.Add(FaultEntry.Failure(scope, exception, remainingOccurrences: 0, isPersistent: true));
+            Volatile.Write(ref _hasEntries, 1);
+        }
     }
 
     /// <summary>
@@ -318,7 +325,10 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
         scope.Validate();
         var barrier = new KafkaFaultBarrier();
         lock (_gate)
+        {
             _entries.Add(FaultEntry.Pause(scope, barrier));
+            Volatile.Write(ref _hasEntries, 1);
+        }
 
         return barrier;
     }
@@ -332,6 +342,8 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
     {
         operationScope.Validate();
         cancellationToken.ThrowIfCancellationRequested();
+        if (Volatile.Read(ref _hasEntries) == 0)
+            return ValueTask.CompletedTask;
 
         FaultEntry? entry = null;
         KafkaFaultObservation observation = default;
@@ -349,7 +361,11 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
                 {
                     candidate.RemainingOccurrences--;
                     if (candidate.RemainingOccurrences == 0)
+                    {
                         _entries.RemoveAt(i);
+                        if (_entries.Count == 0)
+                            Volatile.Write(ref _hasEntries, 0);
+                    }
                 }
 
                 observation = new KafkaFaultObservation(
@@ -393,6 +409,9 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
                 entry.Barrier?.ClearBeforeEntry();
                 removed++;
             }
+
+            if (_entries.Count == 0)
+                Volatile.Write(ref _hasEntries, 0);
         }
 
         return removed;
@@ -410,6 +429,7 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
                 _entries[i].Barrier?.ClearBeforeEntry();
 
             _entries.Clear();
+            Volatile.Write(ref _hasEntries, 0);
             return removed;
         }
     }

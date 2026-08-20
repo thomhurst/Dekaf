@@ -933,7 +933,7 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
                 EnsureMutationActive("Cannot send offsets to transaction");
                 var pending = GetOrAddPendingOffsets(groupId);
                 if (metadata is not null)
-                    pending.Metadata = metadata;
+                    pending.MetadataSnapshots.Add(metadata);
                 pending.Offsets.AddRange(offsets);
             }
         }
@@ -1108,15 +1108,15 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
 
         private static (
             string GroupId,
-            ConsumerGroupMetadata? Metadata,
+            IReadOnlyList<ConsumerGroupMetadata> MetadataSnapshots,
             IReadOnlyList<TopicPartitionOffset> Offsets) CreatePendingOffsets(
                 KeyValuePair<string, PendingGroupOffsets> item) =>
-            (item.Key, item.Value.Metadata, item.Value.Offsets);
+            (item.Key, item.Value.MetadataSnapshots, item.Value.Offsets);
 
         private sealed class PendingGroupOffsets
         {
             public List<TopicPartitionOffset> Offsets { get; } = [];
-            public ConsumerGroupMetadata? Metadata { get; set; }
+            public List<ConsumerGroupMetadata> MetadataSnapshots { get; } = [];
         }
 
         private enum TransactionLifecycleState : byte

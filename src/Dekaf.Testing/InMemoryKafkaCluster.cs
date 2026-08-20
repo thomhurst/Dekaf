@@ -166,10 +166,7 @@ public sealed class InMemoryKafkaCluster
 
             _consumerGroupGenerations[groupId] = _consumerGroupGenerations.GetValueOrDefault(groupId) + 1;
             if (members.Count == 0)
-            {
                 _consumerGroupMembers.Remove(groupId);
-                _consumerGroupGenerations.Remove(groupId);
-            }
         }
     }
 
@@ -241,7 +238,10 @@ public sealed class InMemoryKafkaCluster
     internal void CompleteTransaction(
         InMemoryTransactionMarker transactionMarker,
         bool committed,
-        IEnumerable<(string GroupId, ConsumerGroupMetadata? Metadata, IReadOnlyList<TopicPartitionOffset> Offsets)> pendingOffsets,
+        IEnumerable<(
+            string GroupId,
+            IReadOnlyList<ConsumerGroupMetadata> MetadataSnapshots,
+            IReadOnlyList<TopicPartitionOffset> Offsets)> pendingOffsets,
         PreparedTransactionState preparedState,
         object transaction)
     {
@@ -257,8 +257,11 @@ public sealed class InMemoryKafkaCluster
 
             if (committed)
             {
-                foreach (var (groupId, metadata, _) in pendingOffsets)
-                    ValidateConsumerGroupMetadataUnderLock(groupId, metadata);
+                foreach (var (groupId, metadataSnapshots, _) in pendingOffsets)
+                {
+                    for (var i = 0; i < metadataSnapshots.Count; i++)
+                        ValidateConsumerGroupMetadataUnderLock(groupId, metadataSnapshots[i]);
+                }
 
                 foreach (var (groupId, _, offsets) in pendingOffsets)
                     CommitOffsetsUnderLock(groupId, offsets);

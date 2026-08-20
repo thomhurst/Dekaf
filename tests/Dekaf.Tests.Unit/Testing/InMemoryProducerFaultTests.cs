@@ -505,6 +505,69 @@ public sealed class InMemoryProducerFaultTests
     }
 
     [Test]
+    public async Task TransactionCommit_ValidatesMetadataFromEveryStagedOffsetSend()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("orders");
+        await using var firstConsumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions { GroupId = "billing" });
+        firstConsumer.Subscribe("orders");
+        var staleMetadata = firstConsumer.ConsumerGroupMetadata!;
+        await using var producer = new InMemoryProducer<string, string>(cluster);
+        await using var transaction = producer.BeginTransaction();
+        await transaction.SendOffsetsToTransactionAsync(
+            [new TopicPartitionOffset("orders", 0, 17)],
+            staleMetadata);
+        await using var secondConsumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions { GroupId = "billing" });
+        secondConsumer.Subscribe("orders");
+        await transaction.SendOffsetsToTransactionAsync(
+            [new TopicPartitionOffset("orders", 1, 23)],
+            secondConsumer.ConsumerGroupMetadata!);
+
+        var failure = await Assert.ThrowsAsync<FatalTransactionException>(
+            () => transaction.CommitAsync().AsTask());
+
+        await Assert.That(failure!.ErrorCode).IsEqualTo(ErrorCode.IllegalGeneration);
+        await Assert.That(cluster.GetCommittedOffset("billing", new TopicPartition("orders", 0))).IsNull();
+        await Assert.That(cluster.GetCommittedOffset("billing", new TopicPartition("orders", 1))).IsNull();
+    }
+
+    [Test]
+    public async Task TransactionCommit_RejectsMetadataFromRecreatedGroupWithReusedMemberId()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("orders");
+        var options = new InMemoryConsumerOptions
+        {
+            GroupId = "billing",
+            MemberId = "billing-worker"
+        };
+        var firstConsumer = new InMemoryConsumer<string, string>(cluster, options);
+        firstConsumer.Subscribe("orders");
+        var staleMetadata = firstConsumer.ConsumerGroupMetadata!;
+        await firstConsumer.DisposeAsync();
+        await using var replacement = new InMemoryConsumer<string, string>(cluster, options);
+        replacement.Subscribe("orders");
+        var currentMetadata = replacement.ConsumerGroupMetadata!;
+        await using var producer = new InMemoryProducer<string, string>(cluster);
+        await using var transaction = producer.BeginTransaction();
+        await transaction.SendOffsetsToTransactionAsync(
+            [new TopicPartitionOffset("orders", 0, 17)],
+            staleMetadata);
+
+        var failure = await Assert.ThrowsAsync<FatalTransactionException>(
+            () => transaction.CommitAsync().AsTask());
+
+        await Assert.That(currentMetadata.MemberId).IsEqualTo(staleMetadata.MemberId);
+        await Assert.That(currentMetadata.GenerationId).IsGreaterThan(staleMetadata.GenerationId);
+        await Assert.That(failure!.ErrorCode).IsEqualTo(ErrorCode.IllegalGeneration);
+        await Assert.That(cluster.GetCommittedOffset("billing", new TopicPartition("orders", 0))).IsNull();
+    }
+
+    [Test]
     public async Task TransactionOffsets_ConcurrentStagingCommitsEveryOffset()
     {
         const int operationCount = 32;
