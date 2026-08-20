@@ -598,14 +598,15 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                         partition,
                         record,
                         cancellationToken).ConfigureAwait(false);
-                    applyRecordFaults = HasPotentialConsumerFault(
-                        consumerStateVersion,
-                        consumerGroupGeneration);
                 }
                 else
                 {
                     result = ToConsumeResult(partition, record);
                 }
+
+                applyRecordFaults = HasPotentialConsumerFault(
+                    consumerStateVersion,
+                    consumerGroupGeneration);
 
                 var consumeScope = new KafkaFaultScope(
                     KafkaFaultOperation.Consume,

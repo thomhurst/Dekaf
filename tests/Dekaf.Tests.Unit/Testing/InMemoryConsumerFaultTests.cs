@@ -1048,6 +1048,45 @@ public sealed class InMemoryConsumerFaultTests
     }
 
     [Test]
+    public async Task Snapshot_GroupChangeDuringSynchronousDeserializationPreservesConsumeFault()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync(Topic, "key", "value");
+        await using var joiningConsumer = CreateConsumer(cluster);
+        var deserializer = new CallbackOnceDeserializer(() => joiningConsumer.Subscribe(Topic));
+        await using var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            deserializer,
+            deserializer,
+            new InMemoryConsumerOptions
+            {
+                GroupId = GroupId,
+                AutoOffsetReset = AutoOffsetReset.Earliest,
+                OffsetCommitMode = OffsetCommitMode.Auto,
+                EnableAutoOffsetStore = true,
+                OffsetStoreTiming = OffsetStoreTiming.OnDelivery
+            });
+        consumer.Subscribe(Topic);
+        var failure = new InvalidOperationException("record fault failed");
+        var faultScope = new KafkaFaultScope(
+            KafkaFaultOperation.Consume,
+            Topic,
+            0,
+            GroupId);
+        cluster.FaultPlan.Fail(faultScope, failure);
+        await using var snapshot = consumer.ConsumeSnapshotAsync().GetAsyncEnumerator();
+
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            snapshot.MoveNextAsync().AsTask());
+
+        await Assert.That(actual).IsNotSameReferenceAs(failure);
+        await Assert.That(actual!.Message).Contains("snapshot enumeration");
+        await Assert.That(cluster.FaultPlan.Count).IsEqualTo(1);
+        await Assert.That(cluster.FaultPlan.Clear(faultScope)).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task SnapshotCompletion_BarrierCommitsExactCapturedOffsets()
     {
         var cluster = new InMemoryKafkaCluster();
@@ -1851,6 +1890,19 @@ public sealed class InMemoryConsumerFaultTests
         public Task WaitUntilEnteredAsync() => _entered.Task;
 
         public void Release() => _release.TrySetResult();
+    }
+
+    private sealed class CallbackOnceDeserializer(Action callback) : IDeserializer<string>
+    {
+        private int _invokeCallback = 1;
+
+        public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
+        {
+            if (Interlocked.Exchange(ref _invokeCallback, 0) != 0)
+                callback();
+
+            return Encoding.UTF8.GetString(data.Span);
+        }
     }
 
     private sealed class FirstCallBlockingAsyncDeserializer : IAsyncDeserializer<string>
