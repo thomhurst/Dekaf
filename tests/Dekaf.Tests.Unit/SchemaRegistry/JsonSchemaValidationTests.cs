@@ -913,6 +913,44 @@ public sealed class JsonSchemaValidationTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task InlineRules_NestedAllOfPreservesLeafFailure(bool failFast)
+    {
+        const string schemaText = """
+            {
+              "allOf": [{
+                "type": "object",
+                "properties": {
+                  "child": {
+                    "allOf": [{
+                      "type": "object",
+                      "properties": {
+                        "child": {
+                          "allOf": [{
+                            "type": "integer",
+                            "confluent:rules": [{ "name": "positive", "expr": "this > 0" }]
+                          }]
+                        }
+                      }
+                    }]
+                  }
+                }
+              }]
+            }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
+
+        var exception = Assert.Throws<ValidationRulesFailedException>(() => validator.ValidateRules(
+            """{"child":{"child":-1}}"""u8.ToArray(),
+            19,
+            failFast));
+
+        await Assert.That(exception.Violations).Count().IsEqualTo(1);
+        await Assert.That(exception.Violations[0].FieldPath).IsEqualTo("$.child.child");
+    }
+
+    [Test]
     [Arguments("anyOf")]
     [Arguments("oneOf")]
     public async Task InlineRules_CompositionsRejectNullWhenNoBranchMatches(string keyword)
