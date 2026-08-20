@@ -19,7 +19,7 @@ public sealed class InMemoryKafkaClusterTests
     public async Task Constructor_NullOptionsUsesOptionsOverload()
     {
         var actual = Assert.Throws<ArgumentNullException>(() =>
-            _ = new InMemoryKafkaCluster(null!));
+            _ = new InMemoryKafkaCluster((InMemoryKafkaClusterOptions)null!));
 
         await Assert.That(actual.ParamName).IsEqualTo("options");
     }
@@ -876,18 +876,18 @@ public sealed class InMemoryKafkaClusterTests
     public async Task ConsumerGroupGeneration_IsScopedAndMonotonic()
     {
         var cluster = new InMemoryKafkaCluster();
-        cluster.RegisterConsumerGroupMember("tracked", "a", []);
+        cluster.RegisterConsumerGroupMember("tracked", "a", [], out var trackedRegistrationId);
         var initialGeneration = cluster.GetConsumerGroupGeneration("tracked");
 
-        cluster.RegisterConsumerGroupMember("unrelated", "b", []);
-        cluster.UnregisterConsumerGroupMember("unrelated", "b");
+        cluster.RegisterConsumerGroupMember("unrelated", "b", [], out var unrelatedRegistrationId);
+        cluster.UnregisterConsumerGroupMember("unrelated", "b", unrelatedRegistrationId);
 
         await Assert.That(cluster.GetConsumerGroupGeneration("tracked"))
             .IsEqualTo(initialGeneration);
 
-        cluster.UnregisterConsumerGroupMember("tracked", "a");
+        cluster.UnregisterConsumerGroupMember("tracked", "a", trackedRegistrationId);
         await Assert.That(cluster.GetConsumerGroupGeneration("tracked")).IsEqualTo(0);
-        cluster.RegisterConsumerGroupMember("tracked", "c", []);
+        cluster.RegisterConsumerGroupMember("tracked", "c", [], out _);
 
         await Assert.That(cluster.GetConsumerGroupGeneration("tracked"))
             .IsGreaterThan(initialGeneration);

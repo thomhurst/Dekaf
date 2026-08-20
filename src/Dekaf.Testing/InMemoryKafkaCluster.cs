@@ -42,6 +42,11 @@ public sealed class InMemoryKafkaCluster
     {
     }
 
+    public InMemoryKafkaCluster(IKafkaFaultPlan faultPlan)
+        : this(new InMemoryKafkaClusterOptions(), faultPlan)
+    {
+    }
+
     public InMemoryKafkaCluster(InMemoryKafkaClusterOptions options, IKafkaFaultPlan faultPlan)
     {
         ArgumentNullException.ThrowIfNull(options);

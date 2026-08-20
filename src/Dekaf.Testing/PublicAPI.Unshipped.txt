@@ -7,6 +7,7 @@ Dekaf.Testing.InMemoryConsumer<TKey, TValue>.StoreOffsets<TOffsets>(TOffsets off
 Dekaf.Testing.InMemoryConsumerOptions.IsolationLevel.get -> Dekaf.Protocol.Messages.IsolationLevel
 Dekaf.Testing.InMemoryConsumerOptions.IsolationLevel.init -> void
 Dekaf.Testing.InMemoryKafkaCluster.FaultPlan.get -> Dekaf.Testing.IKafkaFaultPlan!
+Dekaf.Testing.InMemoryKafkaCluster.InMemoryKafkaCluster(Dekaf.Testing.IKafkaFaultPlan! faultPlan) -> void
 Dekaf.Testing.InMemoryKafkaCluster.InMemoryKafkaCluster(Dekaf.Testing.InMemoryKafkaClusterOptions! options, Dekaf.Testing.IKafkaFaultPlan! faultPlan) -> void
 Dekaf.Testing.InMemoryStreamsGroupMember
 Dekaf.Testing.InMemoryStreamsGroupMember.CloseAsync(Dekaf.Streams.StreamsGroupCloseOptions! options, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
