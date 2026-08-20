@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Buffers.Binary;
 using Avro.Generic;
 using Dekaf.SchemaRegistry;
@@ -285,6 +286,34 @@ public sealed class AssociatedNameStrategyTests
     }
 
     [Test]
+    public async Task GenericSerializer_InvalidationAfterPreparationPreservesSerializeHandoff()
+    {
+        using var client = new MockSchemaRegistryClient();
+        await AssociateAsync(client, "orders", "orders-v1");
+        var resolver = CreateResolver(client);
+        await using var serializer = new SchemaRegistrySerializer<int>(
+            client,
+            static (_, _) => { },
+            resolver,
+            static () => new Schema { SchemaType = SchemaType.Json, SchemaString = "{\"type\":\"integer\"}" });
+        var prepared = await serializer.PrepareAsync("orders", 42);
+        var destination = new ArrayBufferWriter<byte>();
+        var context = new SerializationContext
+        {
+            Topic = "orders",
+            Component = SerializationComponent.Value
+        };
+
+        resolver.ClearCache();
+        resolver.ClearCache();
+        serializer.Serialize(42, ref destination, context);
+
+        await Assert.That(destination.WrittenCount).IsEqualTo(5);
+        await Assert.That(BinaryPrimitives.ReadInt32BigEndian(destination.WrittenSpan.Slice(1)))
+            .IsEqualTo(prepared.SchemaId);
+    }
+
+    [Test]
     public async Task JsonSerializer_PrepareAsync_ObservesAssociationCacheInvalidation()
     {
         using var client = new MockSchemaRegistryClient();
@@ -411,8 +440,13 @@ public sealed class AssociatedNameStrategyTests
             SchemaString = "{\"type\":\"integer\"}"
         });
         client.AddSchemaSubject(schemaId, "orders-v1");
+        client.AddSchemaSubject(schemaId, "orders-v2");
         await AssociateAsync(client, "orders", "orders-v1");
-        client.BlockNextAssociationLookup();
+        var staleResponse = new TaskCompletionSource<IReadOnlyList<Association>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        client.EnqueueAssociationLookup(staleResponse.Task);
+        client.EnqueueAssociationLookup(Task.FromResult<IReadOnlyList<Association>>(
+            [CreateAssociation("orders", "orders-v2")]));
         var resolver = CreateResolver(client);
         var subjects = DeserializerSubjectNameCache.Create(
             client,
@@ -424,13 +458,20 @@ public sealed class AssociatedNameStrategyTests
             isKey: false,
             typeof(int).FullName!,
             CancellationToken.None);
-        await client.WaitForBlockedAssociationLookupAsync(TimeSpan.FromSeconds(5));
+        await Assert.That(() => client.AssociationLookupCallCount)
+            .Eventually(count => count.IsEqualTo(1), TimeSpan.FromSeconds(5));
 
         await Assert.That(resolver.Invalidate("orders", typeof(int).FullName, isKey: false)).IsFalse();
-        client.ReleaseBlockedAssociationLookup();
+        staleResponse.SetResult([CreateAssociation("orders", "orders-v1")]);
         await preparation;
 
         await Assert.That(subjects.IsPrepared(schemaId, "orders", isKey: false)).IsTrue();
+        await Assert.That(subjects.GetSubjectName(
+            schemaId,
+            schema: null,
+            "orders",
+            isKey: false,
+            typeof(int).FullName!)).IsEqualTo("orders-v2");
         await Assert.That(client.AssociationLookupCallCount).IsEqualTo(2);
     }
 
@@ -474,6 +515,45 @@ public sealed class AssociatedNameStrategyTests
         await Assert.That(value).IsEqualTo(42);
         await Assert.That(executor.Subject).IsEqualTo(subject);
         await Assert.That(client.AssociationLookupCallCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task GenericDeserializer_InvalidationAfterAdmissionUsesPreparedSubject()
+    {
+        using var client = new MockSchemaRegistryClient();
+        const string subject = "orders-associated-value";
+        var schemaId = await client.RegisterSchemaAsync(subject, new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = """{"type":"integer"}"""
+        });
+        await AssociateAsync(client, "orders", subject);
+        var resolver = CreateResolver(client);
+        await using var deserializer = new SchemaRegistryDeserializer<int>(
+            client,
+            static (_, _) => 42,
+            ownsClient: false,
+            new CapturingRuleExecutor(),
+            new SchemaRegistryDeserializerConfig { AsyncSubjectNameStrategy = resolver });
+        var preparer = (IAsyncDeserializerPreparer<int>)deserializer;
+        var context = new SerializationContext
+        {
+            Topic = "orders",
+            Component = SerializationComponent.Value
+        };
+        var data = new byte[5];
+        BinaryPrimitives.WriteInt32BigEndian(data.AsSpan(1), schemaId);
+        await preparer.PrepareAsync(data, context);
+        client.BeforeTryGetCachedSchema = () =>
+        {
+            client.BeforeTryGetCachedSchema = null;
+            resolver.ClearCache();
+        };
+
+        var deserialized = preparer.TryDeserialize(data, context, out var value);
+
+        await Assert.That(deserialized).IsTrue();
+        await Assert.That(value).IsEqualTo(42);
     }
 
     [Test]

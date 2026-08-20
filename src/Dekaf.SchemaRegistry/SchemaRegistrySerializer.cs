@@ -54,6 +54,7 @@ public sealed class SchemaRegistrySerializer<T> :
     private readonly SchemaResolutionCache<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> _schemaResolutionCache = new();
     private readonly SubjectSchemaCache? _subjectSchemaCache;
     private SubjectSchemaIdCache _subjectSchemaIdCache = new();
+    private SubjectSchemaIdCache? _previousSubjectSchemaIdCache;
 
     /// <summary>
     /// Creates a new Schema Registry serializer.
@@ -343,12 +344,21 @@ public sealed class SchemaRegistrySerializer<T> :
         destination.Advance(totalSize);
     }
 
-    private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry GetSchemaForContext(string topic, bool isKey)
-        => Volatile.Read(ref _subjectSchemaIdCache).GetOrAdd(
+    private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry GetSchemaForContext(string topic, bool isKey) =>
+        Volatile.Read(ref _subjectSchemaIdCache).GetOrAdd(
             topic,
             isKey,
             this,
-            static (serializer, topic, isKey) => serializer.ResolveSchema(topic, isKey));
+            static (serializer, topic, isKey) => serializer.ResolveSchemaForContext(topic, isKey));
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry ResolveSchemaForContext(string topic, bool isKey)
+    {
+        var previous = Volatile.Read(ref _previousSubjectSchemaIdCache);
+        return previous is not null && previous.TryGet(topic, isKey, out var cached)
+            ? cached
+            : ResolveSchema(topic, isKey);
+    }
 
     private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry ResolveSchema(string topic, bool isKey)
     {
@@ -420,12 +430,14 @@ public sealed class SchemaRegistrySerializer<T> :
                 .ConfigureAwait(false);
             if (ReferenceEquals(cache, Volatile.Read(ref _subjectSchemaIdCache)))
             {
-                return ToResolvedContext(cache.CacheEntry(
+                var preparedEntry = cache.CacheEntry(
                     topic,
                     isKey,
                     resolved.Subject,
                     value.SchemaId,
-                    value.Schema!));
+                    value.Schema!);
+                if (ReferenceEquals(cache, Volatile.Read(ref _subjectSchemaIdCache)))
+                    return ToResolvedContext(preparedEntry);
             }
 
             cache = Volatile.Read(ref _subjectSchemaIdCache);
@@ -875,8 +887,13 @@ public sealed class SchemaRegistrySerializer<T> :
             strategy.RegisterCacheInvalidationTarget(this);
     }
 
-    void IAssociatedNameCacheInvalidationTarget.InvalidateAssociatedNameCache() =>
+    void IAssociatedNameCacheInvalidationTarget.InvalidateAssociatedNameCache()
+    {
+        var current = Volatile.Read(ref _subjectSchemaIdCache);
+        if (current.CachedEntryCount != 0)
+            Volatile.Write(ref _previousSubjectSchemaIdCache, current);
         Volatile.Write(ref _subjectSchemaIdCache, new SubjectSchemaIdCache());
+    }
 
     public ValueTask DisposeAsync()
     {
@@ -1006,19 +1023,27 @@ public sealed class SchemaRegistryDeserializer<T> :
         SerializationContext context,
         out T value)
     {
+        string? preparedSubject = null;
         if (_ruleExecutor is not null
-            && _subjectNames is { RequiresPreparation: true }
-            && DeserializerSubjectNameCache.TryReadSchemaId(data, out var schemaId)
-            && !_subjectNames.IsPrepared(
-                schemaId,
-                context.Topic,
-                context.Component == SerializationComponent.Key))
+            && _subjectNames is { RequiresPreparation: true } subjectNames
+            && DeserializerSubjectNameCache.TryReadSchemaId(data, out var schemaId))
         {
-            value = default!;
-            return false;
+            if (!subjectNames.TryGetPreparedSubject(
+                    schemaId,
+                    context.Topic,
+                    context.Component == SerializationComponent.Key,
+                    out var prepared))
+            {
+                value = default!;
+                return false;
+            }
+
+            preparedSubject = prepared.Subject;
         }
 
-        value = Deserialize(data, context);
+        value = preparedSubject is null
+            ? Deserialize(data, context)
+            : DeserializePrepared(data, context, preparedSubject);
         return true;
     }
 
@@ -1086,6 +1111,56 @@ public sealed class SchemaRegistryDeserializer<T> :
         else
         {
             schema = _schemaRegistry.GetSchemaSync(schemaId, SchemaRegistryTimeout);
+        }
+
+        return _deserialize(payload, schema);
+    }
+
+    private T DeserializePrepared(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        string subject)
+    {
+        var span = data.Span;
+
+        if (span.Length < 5)
+            throw new InvalidOperationException("Message too short to contain Schema Registry wire format");
+
+        if (span[0] != MagicByte)
+            throw new InvalidOperationException($"Unknown magic byte: {span[0]}. Expected Schema Registry format.");
+
+        var schemaId = BinaryPrimitives.ReadInt32BigEndian(span.Slice(1, 4));
+        var payload = data.Slice(5);
+        var schema = _schemaRegistry.GetSchemaSync(schemaId, subject, SchemaRegistryTimeout);
+        if (_migrationRunner is null)
+        {
+            var ruleContext = SchemaRegistryRuleContext.Rent(
+                context.Topic,
+                context.Component,
+                schemaId,
+                subject,
+                schema,
+                SchemaRegistryPayloadFormat.Custom);
+            try
+            {
+                payload = _ruleExecutor!.TransformDeserializedPayload(payload, ruleContext);
+            }
+            finally
+            {
+                ruleContext.Return();
+            }
+        }
+        else
+        {
+            var migration = _migrationRunner.Transform(
+                payload,
+                schemaId,
+                subject,
+                schema,
+                context,
+                SchemaRegistryPayloadFormat.Custom);
+            payload = migration.Payload;
+            schema = migration.ReaderSchema.Schema;
         }
 
         return _deserialize(payload, schema);

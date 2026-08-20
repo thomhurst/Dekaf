@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
 using Dekaf.Serialization;
 using Google.Protobuf;
 using Google.Protobuf.Reflection;
@@ -24,10 +25,7 @@ namespace Dekaf.SchemaRegistry.Protobuf;
 /// <typeparam name="T">The Protobuf message type to serialize.</typeparam>
 public sealed class ProtobufSchemaRegistrySerializer<
     [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>
-    : ISerializer<T>,
-    IAsyncSerializerPreparer<T>,
-    IAsyncDisposable,
-    IAssociatedNameCacheInvalidationTarget
+    : ISerializer<T>, IAsyncSerializerPreparer<T>, IAsyncDisposable
     where T : IMessage<T>
 {
     private const byte MagicByte = 0x00;
@@ -39,12 +37,13 @@ public sealed class ProtobufSchemaRegistrySerializer<
     private readonly IAsyncSubjectNameStrategy? _asyncSubjectNameStrategy;
     private readonly bool _ownsClient;
     private readonly MessageDescriptor _descriptor;
-    private SubjectSchemaIdCache _subjectSchemaIdCache = new();
+    private readonly SubjectSchemaIdCache _subjectSchemaIdCache = new();
     private readonly string _schemaString;
     private readonly byte[] _encodedMessageIndexes;
     private readonly SchemaResolutionCache<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> _schemaResolutionCache = new();
     private readonly SchemaResolutionCache<RegisteredDependency> _referenceResolutionCache = new();
     private readonly Schema _resolutionIdentitySchema;
+    private SubjectSchemaIdCache? _associatedSubjectSchemaIdCache;
 
     /// <summary>
     /// Creates a new Protobuf Schema Registry serializer.
@@ -83,7 +82,14 @@ public sealed class ProtobufSchemaRegistrySerializer<
         _encodedMessageIndexes = VarintEncoder.EncodeMessageIndexes(
             CalculateMessageIndexes(_descriptor),
             _config.UseDeprecatedFormat);
-        RegisterAssociatedNameInvalidation();
+        if (_asyncSubjectNameStrategy is not null)
+            _associatedSubjectSchemaIdCache = new SubjectSchemaIdCache();
+
+        if (_asyncSubjectNameStrategy is AssociatedNameStrategy associatedNameStrategy)
+            AssociatedNameCacheInvalidationTargetRegistration.Register(
+                this,
+                associatedNameStrategy,
+                InvalidateAssociatedSubjectSchemaCache);
     }
 
     /// <summary>
@@ -97,11 +103,10 @@ public sealed class ProtobufSchemaRegistrySerializer<
     {
         ArgumentNullException.ThrowIfNull(value);
 
-        var cache = Volatile.Read(ref _subjectSchemaIdCache);
-        if (cache.TryGet(topic, isKey, out var cached))
+        if (_subjectSchemaIdCache.TryGet(topic, isKey, out var cached))
             return new ValueTask<ResolvedSchemaContext>(ToResolvedContext(cached));
 
-        return PrepareCoreAsync(topic, isKey, cache, cancellationToken);
+        return PrepareCoreAsync(topic, isKey, cancellationToken);
     }
 
     /// <inheritdoc />
@@ -184,13 +189,30 @@ public sealed class ProtobufSchemaRegistrySerializer<
         destination.Advance(totalSize);
     }
 
-    private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry GetSchemaForContext(string topic, bool isKey) =>
-        Volatile.Read(ref _subjectSchemaIdCache).GetOrAdd(
+    private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry GetSchemaForContext(string topic, bool isKey)
+    {
+        if (_subjectSchemaIdCache.TryGet(topic, isKey, out var cached))
+            return cached;
+
+        return GetSchemaForContextSlow(topic, isKey);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry GetSchemaForContextSlow(string topic, bool isKey)
+    {
+        var cache = _asyncSubjectNameStrategy is null
+            ? _subjectSchemaIdCache
+            : Volatile.Read(ref _associatedSubjectSchemaIdCache)!;
+        if (cache.TryGet(topic, isKey, out var cached))
+            return cached;
+
+        return cache.GetOrAdd(
             topic,
             isKey,
             this,
             static (serializer, resolvedTopic, resolvedIsKey) =>
                 serializer.ResolveSchemaSync(resolvedTopic, resolvedIsKey));
+    }
 
     private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry ResolveSchemaSync(string topic, bool isKey)
     {
@@ -211,12 +233,22 @@ public sealed class ProtobufSchemaRegistrySerializer<
     private ValueTask<ResolvedSchemaContext> PrepareCoreAsync(
         string topic,
         bool isKey,
-        SubjectSchemaIdCache cache,
         CancellationToken cancellationToken)
     {
         if (_asyncSubjectNameStrategy is not null)
-            return PrepareAssociatedCoreAsync(topic, isKey, cache, cancellationToken);
+        {
+            var cache = Volatile.Read(ref _associatedSubjectSchemaIdCache)!;
+            if (cache.TryGet(topic, isKey, out var cached))
+                return new ValueTask<ResolvedSchemaContext>(ToResolvedContext(cached));
 
+            return PrepareAssociatedCoreAsync(
+                topic,
+                isKey,
+                cache,
+                cancellationToken);
+        }
+
+        var standardCache = _subjectSchemaIdCache;
         var subject = GetSubjectName(topic, isKey);
         var resolved = ResolveSchemaSharedAsync(
             subject,
@@ -227,7 +259,7 @@ public sealed class ProtobufSchemaRegistrySerializer<
         {
             var value = resolved.Result;
             return new ValueTask<ResolvedSchemaContext>(ToResolvedContext(
-                cache.CacheEntry(
+                standardCache.CacheEntry(
                     topic,
                     isKey,
                     subject,
@@ -235,7 +267,7 @@ public sealed class ProtobufSchemaRegistrySerializer<
                     value.Schema!)));
         }
 
-        return AwaitSchemaAsync(topic, isKey, subject, cache, resolved);
+        return AwaitSchemaAsync(topic, isKey, subject, standardCache, resolved);
 
         static async ValueTask<ResolvedSchemaContext> AwaitSchemaAsync(
             string topic,
@@ -269,19 +301,21 @@ public sealed class ProtobufSchemaRegistrySerializer<
                 cancellationToken).ConfigureAwait(false);
             var value = await ResolveSchemaSharedAsync(subject, topic, isKey, cancellationToken)
                 .ConfigureAwait(false);
-            if (ReferenceEquals(cache, Volatile.Read(ref _subjectSchemaIdCache)))
+            if (ReferenceEquals(cache, Volatile.Read(ref _associatedSubjectSchemaIdCache)))
             {
-                return ToResolvedContext(cache.CacheEntry(
+                var cached = cache.CacheEntry(
                     topic,
                     isKey,
                     subject,
                     value.SchemaId,
-                    value.Schema!));
+                    value.Schema!);
+                if (ReferenceEquals(cache, Volatile.Read(ref _associatedSubjectSchemaIdCache)))
+                    return ToResolvedContext(cached);
             }
 
-            cache = Volatile.Read(ref _subjectSchemaIdCache);
-            if (cache.TryGet(topic, isKey, out var cached))
-                return ToResolvedContext(cached);
+            cache = Volatile.Read(ref _associatedSubjectSchemaIdCache)!;
+            if (cache.TryGet(topic, isKey, out var current))
+                return ToResolvedContext(current);
         }
 
         throw new InvalidOperationException(
@@ -660,19 +694,13 @@ public sealed class ProtobufSchemaRegistrySerializer<
     }
 
     /// <inheritdoc />
-    private void RegisterAssociatedNameInvalidation()
-    {
-        if (_asyncSubjectNameStrategy is AssociatedNameStrategy strategy)
-            strategy.RegisterCacheInvalidationTarget(this);
-    }
-
-    void IAssociatedNameCacheInvalidationTarget.InvalidateAssociatedNameCache() =>
-        Volatile.Write(ref _subjectSchemaIdCache, new SubjectSchemaIdCache());
-
     public ValueTask DisposeAsync()
     {
         if (_ownsClient)
             _schemaRegistry.Dispose();
         return ValueTask.CompletedTask;
     }
+
+    private void InvalidateAssociatedSubjectSchemaCache() =>
+        Volatile.Write(ref _associatedSubjectSchemaIdCache, new SubjectSchemaIdCache());
 }

@@ -28,6 +28,7 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
     public int GetOrRegisterSchemaCallCount { get; private set; }
     public CancellationToken LastGetOrRegisterSchemaCancellationToken { get; private set; }
     public int TryGetCachedSchemaCallCount { get; private set; }
+    internal Action? BeforeTryGetCachedSchema { get; set; }
     public int GetSchemaFailuresRemaining { get; set; }
     public int GetOrRegisterSchemaFailuresRemaining { get; set; }
     public int AssociationLookupCallCount => Volatile.Read(ref _associationLookupCallCount);
@@ -223,6 +224,7 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
     public bool TryGetCachedSchema(int id, out Schema schema)
     {
         ThrowIfDisposed();
+        BeforeTryGetCachedSchema?.Invoke();
         TryGetCachedSchemaCallCount++;
         return _schemasById.TryGetValue(id, out schema!);
     }

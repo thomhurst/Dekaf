@@ -413,3 +413,21 @@ internal interface IAssociatedNameCacheInvalidationTarget
 {
     void InvalidateAssociatedNameCache();
 }
+
+internal sealed class DelegatingAssociatedNameCacheInvalidationTarget(Action invalidate) :
+    IAssociatedNameCacheInvalidationTarget
+{
+    void IAssociatedNameCacheInvalidationTarget.InvalidateAssociatedNameCache() => invalidate();
+}
+
+internal static class AssociatedNameCacheInvalidationTargetRegistration
+{
+    private static readonly ConditionalWeakTable<object, DelegatingAssociatedNameCacheInvalidationTarget> Targets = new();
+
+    internal static void Register(object owner, AssociatedNameStrategy strategy, Action invalidate)
+    {
+        var target = new DelegatingAssociatedNameCacheInvalidationTarget(invalidate);
+        Targets.Add(owner, target);
+        strategy.RegisterCacheInvalidationTarget(target);
+    }
+}

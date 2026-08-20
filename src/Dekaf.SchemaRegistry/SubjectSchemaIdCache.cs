@@ -67,6 +67,15 @@ internal sealed class SubjectSchemaIdCache
         out SubjectSchemaIdCacheEntry entry) =>
         TryGetCached(new SubjectSchemaIdCacheKey(topic, isKey), out entry);
 
+    // Avro serialization benefits from expanding this outer lookup; forcing the
+    // same expansion on every serializer regresses their measured fast paths.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal bool TryGetInline(
+        string topic,
+        bool isKey,
+        out SubjectSchemaIdCacheEntry entry) =>
+        TryGetCached(new SubjectSchemaIdCacheKey(topic, isKey), out entry);
+
     // Preserve the four-slot fast path before the dictionary. Keep the secondary
     // and turnover tiers out of this method so common-path code size stays fixed.
     private bool TryGetCached(in SubjectSchemaIdCacheKey key, out SubjectSchemaIdCacheEntry entry)
