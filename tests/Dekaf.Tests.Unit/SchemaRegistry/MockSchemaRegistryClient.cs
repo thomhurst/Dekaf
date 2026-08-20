@@ -142,6 +142,18 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
         return Task.FromResult(id);
     }
 
+    internal void AddSchemaSubject(int id, string subject)
+    {
+        var schema = _schemasById[id];
+        if (!_schemasBySubject.TryGetValue(subject, out var list))
+        {
+            list = [];
+            _schemasBySubject[subject] = list;
+        }
+
+        list.Add((list.Count + 1, id, schema));
+    }
+
     public async Task<Schema> GetSchemaAsync(int id, CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();

@@ -261,8 +261,8 @@ public sealed class AssociatedNameStrategyTests
         await using var serializer = new SchemaRegistrySerializer<int>(
             client,
             static (_, _) => { },
-            static () => new Schema { SchemaType = SchemaType.Json, SchemaString = "{\"type\":\"integer\"}" },
-            resolver);
+            resolver,
+            static () => new Schema { SchemaType = SchemaType.Json, SchemaString = "{\"type\":\"integer\"}" });
 
         var first = await serializer.PrepareAsync("orders", 42);
 
@@ -285,6 +285,69 @@ public sealed class AssociatedNameStrategyTests
     }
 
     [Test]
+    public async Task JsonSerializer_PrepareAsync_ObservesAssociationCacheInvalidation()
+    {
+        using var client = new MockSchemaRegistryClient();
+        await AssociateAsync(client, "orders", "json-v1");
+        var resolver = CreateResolver(client);
+        await using var serializer = new JsonSchemaRegistrySerializer<int>(
+            client,
+            resolver,
+            """{"type":"integer"}""");
+
+        var first = await serializer.PrepareAsync("orders", 42);
+        await ReplaceAssociationAsync(client, "orders", "json-v2");
+        resolver.ClearCache();
+        var second = await serializer.PrepareAsync("orders", 42);
+
+        await Assert.That(first.Subject).IsEqualTo("json-v1");
+        await Assert.That(second.Subject).IsEqualTo("json-v2");
+    }
+
+    [Test]
+    public async Task AvroSerializer_PrepareAsync_ObservesAssociationCacheInvalidation()
+    {
+        using var client = new MockSchemaRegistryClient();
+        await AssociateAsync(client, "orders", "avro-v1");
+        var resolver = CreateResolver(client);
+        var schema = (global::Avro.RecordSchema)global::Avro.Schema.Parse(
+            """{"type":"record","name":"Order","fields":[{"name":"id","type":"int"}]}""");
+        var value = new GenericRecord(schema);
+        value.Add("id", 42);
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(
+            client,
+            new AvroSerializerConfig { AsyncSubjectNameStrategy = resolver });
+
+        var first = await serializer.PrepareAsync("orders", value);
+        await ReplaceAssociationAsync(client, "orders", "avro-v2");
+        resolver.ClearCache();
+        var second = await serializer.PrepareAsync("orders", value);
+
+        await Assert.That(first.Subject).IsEqualTo("avro-v1");
+        await Assert.That(second.Subject).IsEqualTo("avro-v2");
+    }
+
+    [Test]
+    public async Task ProtobufSerializer_PrepareAsync_ObservesAssociationCacheInvalidation()
+    {
+        using var client = new MockSchemaRegistryClient();
+        await AssociateAsync(client, "orders", "protobuf-v1");
+        var resolver = CreateResolver(client);
+        var value = new TestMessage { Id = 42 };
+        await using var serializer = new ProtobufSchemaRegistrySerializer<TestMessage>(
+            client,
+            new ProtobufSerializerConfig { AsyncSubjectNameStrategy = resolver });
+
+        var first = await serializer.PrepareAsync("orders", value);
+        await ReplaceAssociationAsync(client, "orders", "protobuf-v2");
+        resolver.ClearCache();
+        var second = await serializer.PrepareAsync("orders", value);
+
+        await Assert.That(first.Subject).IsEqualTo("protobuf-v1");
+        await Assert.That(second.Subject).IsEqualTo("protobuf-v2");
+    }
+
+    [Test]
     public async Task DeserializerCache_ObservesAssociationCacheInvalidation()
     {
         using var client = new MockSchemaRegistryClient();
@@ -293,6 +356,8 @@ public sealed class AssociatedNameStrategyTests
             SchemaType = SchemaType.Json,
             SchemaString = "{\"type\":\"integer\"}"
         });
+        client.AddSchemaSubject(schemaId, "orders-v1");
+        client.AddSchemaSubject(schemaId, "orders-v2");
         await AssociateAsync(client, "orders", "orders-v1");
         var resolver = CreateResolver(client);
         var subjects = DeserializerSubjectNameCache.Create(
@@ -306,6 +371,7 @@ public sealed class AssociatedNameStrategyTests
             isKey: false,
             typeof(int).FullName!,
             CancellationToken.None);
+        await Assert.That(client.GetSchemaCallCount).IsEqualTo(2);
         var first = subjects.GetSubjectName(
             schemaId,
             schema: null,
@@ -344,6 +410,7 @@ public sealed class AssociatedNameStrategyTests
             SchemaType = SchemaType.Json,
             SchemaString = "{\"type\":\"integer\"}"
         });
+        client.AddSchemaSubject(schemaId, "orders-v1");
         await AssociateAsync(client, "orders", "orders-v1");
         client.BlockNextAssociationLookup();
         var resolver = CreateResolver(client);
@@ -469,12 +536,12 @@ public sealed class AssociatedNameStrategyTests
         await using var serializer = new SchemaRegistrySerializer<int>(
             client,
             static (_, _) => { },
+            strategy,
             static () => new Schema
             {
                 SchemaType = SchemaType.Json,
                 SchemaString = """{"type":"integer"}"""
-            },
-            strategy);
+            });
 
         var resolved = await serializer.PrepareAsync("orders", 42);
 

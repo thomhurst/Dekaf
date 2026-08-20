@@ -76,6 +76,28 @@ public sealed class ConsumeOneFastPathTests
     }
 
     [Test]
+    public async Task ConsumeOneAsync_PreparerNotRequired_UsesSynchronousDecoder()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20, CreateRecord(0, "a", "one"))
+        ]);
+        var deserializer = new PreparationNotRequiredStringDeserializer();
+        await using var consumer = CreateInitializedConsumerWithDeserializers(
+            fetch,
+            valueDeserializer: deserializer);
+        MarkManualAssignmentCurrent(consumer);
+
+        var consume = consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), CancellationToken.None);
+
+        await Assert.That(consume.IsCompletedSuccessfully).IsTrue();
+        var result = await consume;
+        await Assert.That(result).IsNotNull();
+        await Assert.That(result!.Value.Value).IsEqualTo("one");
+        await Assert.That(deserializer.PrepareCallCount).IsEqualTo(0);
+    }
+
+    [Test]
     [NotInParallel("ActivityListener")]
     public async Task ConsumeOneAsync_ColdDeserializerPreparation_CreatesOneConsumeActivity()
     {
@@ -1262,6 +1284,34 @@ public sealed class ConsumeOneFastPathTests
         }
 
         public void ReleasePreparation() => _release.TrySetResult();
+    }
+
+    private sealed class PreparationNotRequiredStringDeserializer
+        : IDeserializer<string>, IAsyncDeserializerPreparer<string>
+    {
+        public bool RequiresPreparation => false;
+        public int PrepareCallCount { get; private set; }
+
+        public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
+            Encoding.UTF8.GetString(data.Span);
+
+        public bool TryDeserialize(
+            ReadOnlyMemory<byte> data,
+            SerializationContext context,
+            out string value)
+        {
+            value = Deserialize(data, context);
+            return true;
+        }
+
+        public ValueTask PrepareAsync(
+            ReadOnlyMemory<byte> data,
+            SerializationContext context,
+            CancellationToken cancellationToken = default)
+        {
+            PrepareCallCount++;
+            throw new InvalidOperationException("Preparation must not be called.");
+        }
     }
 
     private static ActivityListener CreateConsumeActivityListener(

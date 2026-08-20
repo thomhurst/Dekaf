@@ -11,13 +11,17 @@ namespace Dekaf.SchemaRegistry.Avro.Poco;
 
 /// <summary>Schema Registry serializer backed by a generated POCO Avro codec.</summary>
 public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
-    : ISerializer<T>, IAsyncSerializerPreparer<T>, IAsyncDisposable
+    : ISerializer<T>,
+    IAsyncSerializerPreparer<T>,
+    IAsyncDisposable,
+    IAssociatedNameCacheInvalidationTarget
     where TCodec : struct, IAvroPocoCodec<T>
 {
     private const byte MagicByte = 0;
     private const int WireHeaderSize = 5;
     private const int InitialPayloadSize = 256;
     private const int MaxRetainedPayloadSize = 1024 * 1024;
+    private const int MaxAssociatedNameInvalidationRetries = 4;
     private const byte StableRetainedPayloadPattern = 0;
     private const byte StableOversizedPayloadPattern = 2;
     private const byte OversizedThenRetainedPayloadPattern = 3;
@@ -38,7 +42,7 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
     private readonly IAsyncSubjectNameStrategy? _asyncSubjectNameStrategy;
     private readonly bool _ownsClient;
     private readonly RegistrySchema _schema;
-    private readonly SubjectSchemaIdCache _subjectCache = new();
+    private SubjectSchemaIdCache _subjectCache = new();
     private readonly SchemaResolutionCache<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> _resolutionCache = new();
     private readonly AvroTaggedFieldTransformerProvider _taggedFieldTransformers = new();
     private AvroPocoSerializerBufferState? _primaryRuleBuffer;
@@ -65,6 +69,7 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
             SchemaType = SchemaType.Avro,
             SchemaString = TCodec.SchemaJson
         };
+        RegisterAssociatedNameInvalidation();
     }
 
     /// <summary>Prepares one topic/component and returns its Schema Registry ID.</summary>
@@ -83,11 +88,12 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         bool isKey = false,
         CancellationToken cancellationToken = default)
     {
-        if (_subjectCache.TryGet(topic, isKey, out var cached))
+        var cache = Volatile.Read(ref _subjectCache);
+        if (cache.TryGet(topic, isKey, out var cached))
             return new ValueTask<ResolvedSchemaContext>(ToResolvedContext(cached));
 
         if (_asyncSubjectNameStrategy is not null)
-            return PrepareAssociatedCoreAsync(topic, isKey, cancellationToken);
+            return PrepareAssociatedCoreAsync(topic, isKey, cache, cancellationToken);
 
         var subject = GetSubjectName(topic, isKey);
         var resolution = ResolveSchemaAsync(subject, cancellationToken);
@@ -95,30 +101,44 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         {
             var value = resolution.Result;
             return new ValueTask<ResolvedSchemaContext>(ToResolvedContext(
-                _subjectCache.CacheEntry(topic, isKey, subject, value.SchemaId, value.Schema!)));
+                cache.CacheEntry(topic, isKey, subject, value.SchemaId, value.Schema!)));
         }
 
-        return AwaitResolutionAsync(topic, isKey, subject, resolution);
+        return AwaitResolutionAsync(topic, isKey, subject, cache, resolution);
     }
 
     private async ValueTask<ResolvedSchemaContext> PrepareAssociatedCoreAsync(
         string topic,
         bool isKey,
+        SubjectSchemaIdCache cache,
         CancellationToken cancellationToken)
     {
-        var subject = await _asyncSubjectNameStrategy!.GetSubjectNameAsync(
-                topic,
-                TCodec.FullName,
-                isKey,
-                cancellationToken)
-            .ConfigureAwait(false);
-        var value = await ResolveSchemaAsync(subject, cancellationToken).ConfigureAwait(false);
-        return ToResolvedContext(_subjectCache.CacheEntry(
-            topic,
-            isKey,
-            subject,
-            value.SchemaId,
-            value.Schema!));
+        for (var attempt = 0; attempt < MaxAssociatedNameInvalidationRetries; attempt++)
+        {
+            var subject = await _asyncSubjectNameStrategy!.GetSubjectNameAsync(
+                    topic,
+                    TCodec.FullName,
+                    isKey,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            var value = await ResolveSchemaAsync(subject, cancellationToken).ConfigureAwait(false);
+            if (ReferenceEquals(cache, Volatile.Read(ref _subjectCache)))
+            {
+                return ToResolvedContext(cache.CacheEntry(
+                    topic,
+                    isKey,
+                    subject,
+                    value.SchemaId,
+                    value.Schema!));
+            }
+
+            cache = Volatile.Read(ref _subjectCache);
+            if (cache.TryGet(topic, isKey, out var cached))
+                return ToResolvedContext(cached);
+        }
+
+        throw new InvalidOperationException(
+            "Associated-name cache changed repeatedly while preparing the generated Avro serializer.");
     }
 
     /// <inheritdoc />
@@ -177,15 +197,16 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
     private static async ValueTask AwaitPreparationAsync(ValueTask<ResolvedSchemaContext> preparation) =>
         _ = await preparation.ConfigureAwait(false);
 
-    private async ValueTask<ResolvedSchemaContext> AwaitResolutionAsync(
+    private static async ValueTask<ResolvedSchemaContext> AwaitResolutionAsync(
         string topic,
         bool isKey,
         string subject,
+        SubjectSchemaIdCache cache,
         ValueTask<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> resolution)
     {
         var value = await resolution.ConfigureAwait(false);
         return ToResolvedContext(
-            _subjectCache.CacheEntry(topic, isKey, subject, value.SchemaId, value.Schema!));
+            cache.CacheEntry(topic, isKey, subject, value.SchemaId, value.Schema!));
     }
 
     private static ResolvedSchemaContext ToResolvedContext(SubjectSchemaIdCache.SubjectSchemaIdCacheEntry entry) =>
@@ -423,7 +444,7 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
     }
 
     private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry GetSchemaForContext(string topic, bool isKey) =>
-        _subjectCache.GetOrAdd(
+        Volatile.Read(ref _subjectCache).GetOrAdd(
             topic,
             isKey,
             this,
@@ -665,6 +686,15 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         state.RuleBuffer = buffer;
 
     /// <inheritdoc />
+    private void RegisterAssociatedNameInvalidation()
+    {
+        if (_asyncSubjectNameStrategy is AssociatedNameStrategy strategy)
+            strategy.RegisterCacheInvalidationTarget(this);
+    }
+
+    void IAssociatedNameCacheInvalidationTarget.InvalidateAssociatedNameCache() =>
+        Volatile.Write(ref _subjectCache, new SubjectSchemaIdCache());
+
     public ValueTask DisposeAsync()
     {
         if (_ownsClient)

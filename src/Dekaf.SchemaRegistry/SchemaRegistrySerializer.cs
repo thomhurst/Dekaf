@@ -30,6 +30,7 @@ public sealed class SchemaRegistrySerializer<T> :
     IAssociatedNameCacheInvalidationTarget
 {
     private const byte MagicByte = 0x00;
+    private const int MaxAssociatedNameInvalidationRetries = 4;
 
     /// <summary>
     /// Default timeout for Schema Registry operations (30 seconds).
@@ -208,8 +209,8 @@ public sealed class SchemaRegistrySerializer<T> :
     public SchemaRegistrySerializer(
         ISchemaRegistryClient schemaRegistry,
         Action<T, IBufferWriter<byte>> serialize,
-        Func<string, Schema> getSchema,
         IAsyncSubjectNameStrategy asyncSubjectNameStrategy,
+        Func<string, Schema> getSchema,
         bool autoRegisterSchemas = true,
         bool ownsClient = false,
         ISchemaRegistryRuleExecutor? ruleExecutor = null,
@@ -235,8 +236,8 @@ public sealed class SchemaRegistrySerializer<T> :
     public SchemaRegistrySerializer(
         ISchemaRegistryClient schemaRegistry,
         Action<T, IBufferWriter<byte>> serialize,
-        Func<Schema> getSchema,
         IAsyncSubjectNameStrategy asyncSubjectNameStrategy,
+        Func<Schema> getSchema,
         bool autoRegisterSchemas = true,
         bool ownsClient = false,
         ISchemaRegistryRuleExecutor? ruleExecutor = null,
@@ -411,34 +412,29 @@ public sealed class SchemaRegistrySerializer<T> :
         SubjectSchemaIdCache cache,
         CancellationToken cancellationToken)
     {
-        var resolved = await ResolveAssociatedSubjectAndSchemaAsync(topic, isKey, cancellationToken)
-            .ConfigureAwait(false);
-        var value = await ResolveSchemaAsync(resolved.Subject, resolved.Schema, cancellationToken)
-            .ConfigureAwait(false);
-        if (!ReferenceEquals(cache, Volatile.Read(ref _subjectSchemaIdCache)))
+        for (var attempt = 0; attempt < MaxAssociatedNameInvalidationRetries; attempt++)
         {
-            return await PrepareAfterInvalidationAsync(topic, isKey, cancellationToken)
+            var resolved = await ResolveAssociatedSubjectAndSchemaAsync(topic, isKey, cancellationToken)
                 .ConfigureAwait(false);
+            var value = await ResolveSchemaAsync(resolved.Subject, resolved.Schema, cancellationToken)
+                .ConfigureAwait(false);
+            if (ReferenceEquals(cache, Volatile.Read(ref _subjectSchemaIdCache)))
+            {
+                return ToResolvedContext(cache.CacheEntry(
+                    topic,
+                    isKey,
+                    resolved.Subject,
+                    value.SchemaId,
+                    value.Schema!));
+            }
+
+            cache = Volatile.Read(ref _subjectSchemaIdCache);
+            if (cache.TryGet(topic, isKey, out var cached))
+                return ToResolvedContext(cached);
         }
 
-        return ToResolvedContext(cache.CacheEntry(
-            topic,
-            isKey,
-            resolved.Subject,
-            value.SchemaId,
-            value.Schema!));
-    }
-
-    private ValueTask<ResolvedSchemaContext> PrepareAfterInvalidationAsync(
-        string topic,
-        bool isKey,
-        CancellationToken cancellationToken)
-    {
-        var cache = Volatile.Read(ref _subjectSchemaIdCache);
-        if (cache.TryGet(topic, isKey, out var cached))
-            return new ValueTask<ResolvedSchemaContext>(ToResolvedContext(cached));
-
-        return PrepareAssociatedCoreAsync(topic, isKey, cache, cancellationToken);
+        throw new InvalidOperationException(
+            "Associated-name cache changed repeatedly while preparing the serializer.");
     }
 
     private async ValueTask<ResolvedSubjectSchema> ResolveAssociatedSubjectAndSchemaAsync(

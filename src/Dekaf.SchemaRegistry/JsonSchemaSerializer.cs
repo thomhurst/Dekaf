@@ -25,9 +25,11 @@ namespace Dekaf.SchemaRegistry;
 public sealed class JsonSchemaRegistrySerializer<T> :
     ISerializer<T>,
     IAsyncSerializerPreparer<T>,
-    IAsyncDisposable
+    IAsyncDisposable,
+    IAssociatedNameCacheInvalidationTarget
 {
     private const byte MagicByte = 0x00;
+    private const int MaxAssociatedNameInvalidationRetries = 4;
     private static readonly TimeSpan SchemaRegistryTimeout = TimeSpan.FromSeconds(30);
 
     [ThreadStatic]
@@ -52,7 +54,7 @@ public sealed class JsonSchemaRegistrySerializer<T> :
     private readonly IJsonSchemaValidatorFactory? _validatorFactory;
 
     private readonly SchemaResolutionCache<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> _schemaCache = new();
-    private readonly SubjectSchemaIdCache _subjectSchemaIdCache = new();
+    private SubjectSchemaIdCache _subjectSchemaIdCache = new();
 
     /// <summary>
     /// Creates a new JSON Schema Registry serializer.
@@ -152,6 +154,7 @@ public sealed class JsonSchemaRegistrySerializer<T> :
             SchemaString = jsonSchema
         };
         _recordName = SubjectNameResolver.GetRecordName(_schema, typeof(T).FullName ?? typeof(T).Name);
+        RegisterAssociatedNameInvalidation();
     }
 
     /// <summary>
@@ -246,6 +249,7 @@ public sealed class JsonSchemaRegistrySerializer<T> :
             SchemaString = jsonSchema
         };
         _recordName = SubjectNameResolver.GetRecordName(_schema, typeof(T).FullName ?? typeof(T).Name);
+        RegisterAssociatedNameInvalidation();
     }
 
     /// <summary>
@@ -314,6 +318,7 @@ public sealed class JsonSchemaRegistrySerializer<T> :
             SchemaString = jsonSchema
         };
         _recordName = SubjectNameResolver.GetRecordName(_schema, typeof(T).FullName ?? typeof(T).Name);
+        RegisterAssociatedNameInvalidation();
     }
 
     /// <summary>
@@ -378,6 +383,7 @@ public sealed class JsonSchemaRegistrySerializer<T> :
             SchemaString = jsonSchema
         };
         _recordName = SubjectNameResolver.GetRecordName(_schema, typeof(T).FullName ?? typeof(T).Name);
+        RegisterAssociatedNameInvalidation();
     }
 
     /// <summary>
@@ -387,8 +393,8 @@ public sealed class JsonSchemaRegistrySerializer<T> :
     [RequiresDynamicCode("JsonSerializerOptions-based JSON serialization may require runtime code generation. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
     public JsonSchemaRegistrySerializer(
         ISchemaRegistryClient schemaRegistry,
-        string jsonSchema,
         IAsyncSubjectNameStrategy asyncSubjectNameStrategy,
+        string jsonSchema,
         JsonSerializerOptions? jsonOptions = null,
         bool autoRegisterSchemas = true,
         bool ownsClient = false,
@@ -410,6 +416,37 @@ public sealed class JsonSchemaRegistrySerializer<T> :
             SchemaString = jsonSchema
         };
         _recordName = SubjectNameResolver.GetRecordName(_schema, typeof(T).FullName ?? typeof(T).Name);
+        RegisterAssociatedNameInvalidation();
+    }
+
+    /// <summary>
+    /// Creates a new JSON Schema Registry serializer with an asynchronous subject-name strategy
+    /// and optional payload validation.
+    /// </summary>
+    [RequiresUnreferencedCode("JsonSerializerOptions-based JSON serialization uses reflection. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
+    [RequiresDynamicCode("JsonSerializerOptions-based JSON serialization may require runtime code generation. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
+    public JsonSchemaRegistrySerializer(
+        ISchemaRegistryClient schemaRegistry,
+        IAsyncSubjectNameStrategy asyncSubjectNameStrategy,
+        string jsonSchema,
+        JsonSerializerOptions? jsonOptions,
+        JsonSchemaValidationOptions validationOptions,
+        bool autoRegisterSchemas = true,
+        bool ownsClient = false,
+        ISchemaRegistryRuleExecutor? ruleExecutor = null,
+        bool normalizeSchemas = false)
+        : this(
+            schemaRegistry,
+            asyncSubjectNameStrategy,
+            jsonSchema,
+            jsonOptions,
+            autoRegisterSchemas,
+            ownsClient,
+            ruleExecutor,
+            normalizeSchemas)
+    {
+        ArgumentNullException.ThrowIfNull(validationOptions);
+        _validatorFactory = validationOptions.GetSerializerFactory();
     }
 
     /// <summary>
@@ -418,8 +455,8 @@ public sealed class JsonSchemaRegistrySerializer<T> :
     /// </summary>
     public JsonSchemaRegistrySerializer(
         ISchemaRegistryClient schemaRegistry,
-        string jsonSchema,
         IAsyncSubjectNameStrategy asyncSubjectNameStrategy,
+        string jsonSchema,
         JsonTypeInfo<T> jsonTypeInfo,
         bool autoRegisterSchemas = true,
         bool ownsClient = false,
@@ -441,6 +478,35 @@ public sealed class JsonSchemaRegistrySerializer<T> :
             SchemaString = jsonSchema
         };
         _recordName = SubjectNameResolver.GetRecordName(_schema, typeof(T).FullName ?? typeof(T).Name);
+        RegisterAssociatedNameInvalidation();
+    }
+
+    /// <summary>
+    /// Creates a NativeAOT-safe JSON Schema Registry serializer with an asynchronous
+    /// subject-name strategy and optional payload validation.
+    /// </summary>
+    public JsonSchemaRegistrySerializer(
+        ISchemaRegistryClient schemaRegistry,
+        IAsyncSubjectNameStrategy asyncSubjectNameStrategy,
+        string jsonSchema,
+        JsonTypeInfo<T> jsonTypeInfo,
+        JsonSchemaValidationOptions validationOptions,
+        bool autoRegisterSchemas = true,
+        bool ownsClient = false,
+        ISchemaRegistryRuleExecutor? ruleExecutor = null,
+        bool normalizeSchemas = false)
+        : this(
+            schemaRegistry,
+            asyncSubjectNameStrategy,
+            jsonSchema,
+            jsonTypeInfo,
+            autoRegisterSchemas,
+            ownsClient,
+            ruleExecutor,
+            normalizeSchemas)
+    {
+        ArgumentNullException.ThrowIfNull(validationOptions);
+        _validatorFactory = validationOptions.GetSerializerFactory();
     }
 
     /// <summary>
@@ -452,10 +518,11 @@ public sealed class JsonSchemaRegistrySerializer<T> :
         bool isKey = false,
         CancellationToken cancellationToken = default)
     {
-        if (_subjectSchemaIdCache.TryGet(topic, isKey, out var cached))
+        var cache = Volatile.Read(ref _subjectSchemaIdCache);
+        if (cache.TryGet(topic, isKey, out var cached))
             return new ValueTask<ResolvedSchemaContext>(ToResolvedContext(cached));
 
-        return PrepareCoreAsync(topic, isKey, cancellationToken);
+        return PrepareCoreAsync(topic, isKey, cache, cancellationToken);
     }
 
     /// <inheritdoc />
@@ -570,7 +637,7 @@ public sealed class JsonSchemaRegistrySerializer<T> :
     }
 
     private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry GetSchemaForContext(string topic, bool isKey)
-        => _subjectSchemaIdCache.GetOrAdd(
+        => Volatile.Read(ref _subjectSchemaIdCache).GetOrAdd(
             topic,
             isKey,
             this,
@@ -589,10 +656,11 @@ public sealed class JsonSchemaRegistrySerializer<T> :
     private ValueTask<ResolvedSchemaContext> PrepareCoreAsync(
         string topic,
         bool isKey,
+        SubjectSchemaIdCache cache,
         CancellationToken cancellationToken)
     {
         if (_asyncSubjectNameStrategy is not null)
-            return PrepareAssociatedCoreAsync(topic, isKey, cancellationToken);
+            return PrepareAssociatedCoreAsync(topic, isKey, cache, cancellationToken);
 
         var subject = GetSubjectName(topic, isKey);
         var resolved = _schemaCache.ResolveAsync(
@@ -606,20 +674,20 @@ public sealed class JsonSchemaRegistrySerializer<T> :
         {
             var value = resolved.Result;
             return new ValueTask<ResolvedSchemaContext>(ToResolvedContext(
-                _subjectSchemaIdCache.CacheEntry(topic, isKey, subject, value.SchemaId, value.Schema!)));
+                cache.CacheEntry(topic, isKey, subject, value.SchemaId, value.Schema!)));
         }
 
-        return AwaitSchemaAsync(this, topic, isKey, subject, resolved);
+        return AwaitSchemaAsync(topic, isKey, subject, cache, resolved);
 
         static async ValueTask<ResolvedSchemaContext> AwaitSchemaAsync(
-            JsonSchemaRegistrySerializer<T> serializer,
             string topic,
             bool isKey,
             string subject,
+            SubjectSchemaIdCache cache,
             ValueTask<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> resolved)
         {
             var value = await resolved.ConfigureAwait(false);
-            return ToResolvedContext(serializer._subjectSchemaIdCache.CacheEntry(
+            return ToResolvedContext(cache.CacheEntry(
                 topic,
                 isKey,
                 subject,
@@ -631,26 +699,40 @@ public sealed class JsonSchemaRegistrySerializer<T> :
     private async ValueTask<ResolvedSchemaContext> PrepareAssociatedCoreAsync(
         string topic,
         bool isKey,
+        SubjectSchemaIdCache cache,
         CancellationToken cancellationToken)
     {
-        var subject = await _asyncSubjectNameStrategy!.GetSubjectNameAsync(
-            topic,
-            _recordName,
-            isKey,
-            cancellationToken).ConfigureAwait(false);
-        var value = await _schemaCache.ResolveAsync(
-            subject,
-            _schema,
-            this,
-            static (serializer, resolvedSubject, schema) =>
-                serializer.FetchSchemaWithTimeoutAsync(resolvedSubject, schema),
-            cancellationToken).ConfigureAwait(false);
-        return ToResolvedContext(_subjectSchemaIdCache.CacheEntry(
-            topic,
-            isKey,
-            subject,
-            value.SchemaId,
-            value.Schema!));
+        for (var attempt = 0; attempt < MaxAssociatedNameInvalidationRetries; attempt++)
+        {
+            var subject = await _asyncSubjectNameStrategy!.GetSubjectNameAsync(
+                topic,
+                _recordName,
+                isKey,
+                cancellationToken).ConfigureAwait(false);
+            var value = await _schemaCache.ResolveAsync(
+                subject,
+                _schema,
+                this,
+                static (serializer, resolvedSubject, schema) =>
+                    serializer.FetchSchemaWithTimeoutAsync(resolvedSubject, schema),
+                cancellationToken).ConfigureAwait(false);
+            if (ReferenceEquals(cache, Volatile.Read(ref _subjectSchemaIdCache)))
+            {
+                return ToResolvedContext(cache.CacheEntry(
+                    topic,
+                    isKey,
+                    subject,
+                    value.SchemaId,
+                    value.Schema!));
+            }
+
+            cache = Volatile.Read(ref _subjectSchemaIdCache);
+            if (cache.TryGet(topic, isKey, out var cached))
+                return ToResolvedContext(cached);
+        }
+
+        throw new InvalidOperationException(
+            "Associated-name cache changed repeatedly while preparing the JSON serializer.");
     }
 
     private Task<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> FetchSchemaWithTimeoutAsync(
@@ -720,6 +802,15 @@ public sealed class JsonSchemaRegistrySerializer<T> :
         strategy == SubjectNameStrategy.AssociatedName
             ? new AssociatedNameStrategy(schemaRegistry)
             : null;
+
+    private void RegisterAssociatedNameInvalidation()
+    {
+        if (_asyncSubjectNameStrategy is AssociatedNameStrategy strategy)
+            strategy.RegisterCacheInvalidationTarget(this);
+    }
+
+    void IAssociatedNameCacheInvalidationTarget.InvalidateAssociatedNameCache() =>
+        Volatile.Write(ref _subjectSchemaIdCache, new SubjectSchemaIdCache());
 
     public ValueTask DisposeAsync()
     {

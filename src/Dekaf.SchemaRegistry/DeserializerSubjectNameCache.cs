@@ -7,6 +7,7 @@ namespace Dekaf.SchemaRegistry;
 internal sealed class DeserializerSubjectNameCache : IAssociatedNameCacheInvalidationTarget
 {
     private const int MaxCachedSubjectCount = 1024;
+    private const int MaxAssociatedNameInvalidationRetries = 4;
 
     private readonly SubjectNameStrategy _strategy;
     private readonly ISubjectNameStrategy? _customStrategy;
@@ -16,6 +17,7 @@ internal sealed class DeserializerSubjectNameCache : IAssociatedNameCacheInvalid
     private ConcurrentDictionary<CacheKey, string> _subjects = new();
     private Queue<CacheKey> _subjectOrder = new(MaxCachedSubjectCount);
     private readonly object _subjectsLock = new();
+    private int _generation;
 
     private DeserializerSubjectNameCache(
         SubjectNameStrategy strategy,
@@ -100,6 +102,8 @@ internal sealed class DeserializerSubjectNameCache : IAssociatedNameCacheInvalid
     }
 
     internal bool RequiresPreparation => _asyncStrategy is not null;
+
+    internal int Generation => Volatile.Read(ref _generation);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static bool TryReadSchemaId(ReadOnlyMemory<byte> data, out int schemaId)
@@ -186,43 +190,30 @@ internal sealed class DeserializerSubjectNameCache : IAssociatedNameCacheInvalid
         string fallbackRecordName,
         CancellationToken cancellationToken)
     {
-        if (!ReferenceEquals(subjects, Volatile.Read(ref _subjects)))
+        for (var attempt = 0; attempt < MaxAssociatedNameInvalidationRetries; attempt++)
         {
-            await PrepareAfterInvalidationAsync(
-                    schemaRegistry,
-                    schemaId,
-                    key,
+            if (!ReferenceEquals(subjects, Volatile.Read(ref _subjects)))
+                subjects = Volatile.Read(ref _subjects);
+
+            if (subjects.TryGetValue(key, out _))
+                return;
+
+            var schema = await schemaRegistry.GetSchemaAsync(schemaId, cancellationToken).ConfigureAwait(false);
+            var recordName = SubjectNameResolver.GetRecordName(schema, fallbackRecordName);
+            var subject = await _asyncStrategy!.GetSubjectNameAsync(
                     topic,
+                    recordName,
                     isKey,
-                    fallbackRecordName,
                     cancellationToken)
                 .ConfigureAwait(false);
-            return;
-        }
-
-        if (subjects.TryGetValue(key, out _))
-            return;
-
-        var schema = await schemaRegistry.GetSchemaAsync(schemaId, cancellationToken).ConfigureAwait(false);
-        var recordName = SubjectNameResolver.GetRecordName(schema, fallbackRecordName);
-        var subject = await _asyncStrategy!.GetSubjectNameAsync(
-                topic,
-                recordName,
-                isKey,
-                cancellationToken)
-            .ConfigureAwait(false);
-        if (!AddPreparedSubject(subjects, key, subject))
-        {
-            await PrepareAfterInvalidationAsync(
-                    schemaRegistry,
-                    schemaId,
-                    key,
-                    topic,
-                    isKey,
-                    fallbackRecordName,
-                    cancellationToken)
+            _ = await schemaRegistry.GetSchemaAsync(schemaId, subject, cancellationToken)
                 .ConfigureAwait(false);
+            if (AddPreparedSubject(subjects, key, subject))
+                return;
         }
+
+        throw new InvalidOperationException(
+            "Associated-name cache changed repeatedly while preparing the deserializer.");
     }
 
     private bool AddPreparedSubject(
@@ -248,30 +239,6 @@ internal sealed class DeserializerSubjectNameCache : IAssociatedNameCacheInvalid
             _subjectOrder.Enqueue(key);
             return true;
         }
-    }
-
-    private ValueTask PrepareAfterInvalidationAsync(
-        ISchemaRegistryClient schemaRegistry,
-        int schemaId,
-        CacheKey key,
-        string topic,
-        bool isKey,
-        string fallbackRecordName,
-        CancellationToken cancellationToken)
-    {
-        var subjects = Volatile.Read(ref _subjects);
-        if (subjects.TryGetValue(key, out _))
-            return default;
-
-        return PrepareSlowAsync(
-            schemaRegistry,
-            schemaId,
-            subjects,
-            key,
-            topic,
-            isKey,
-            fallbackRecordName,
-            cancellationToken);
     }
 
     private string GetSubjectNameByValue(
@@ -336,6 +303,7 @@ internal sealed class DeserializerSubjectNameCache : IAssociatedNameCacheInvalid
     {
         lock (_subjectsLock)
         {
+            Interlocked.Increment(ref _generation);
             Volatile.Write(ref _subjects, new ConcurrentDictionary<CacheKey, string>());
             _subjectOrder = new Queue<CacheKey>(MaxCachedSubjectCount);
         }

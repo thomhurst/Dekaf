@@ -55,6 +55,47 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    public async Task GeneratedSerializer_PrepareAsync_ObservesAssociationCacheInvalidation()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        await SetPocoAssociationAsync(registry, "poco-orders", "poco-v1");
+        var strategy = new Dekaf.SchemaRegistry.AssociatedNameStrategy(registry);
+        await using var serializer = PocoOrder.CreateAvroSerializer(
+            registry,
+            new AvroSerializerConfig { AsyncSubjectNameStrategy = strategy });
+
+        var first = await serializer.PrepareAsync("poco-orders");
+        await registry.DeleteAssociationsAsync("poco-orders", "topic", ["value"]);
+        await SetPocoAssociationAsync(registry, "poco-orders", "poco-v2");
+        strategy.ClearCache();
+        var second = await serializer.PrepareAsync("poco-orders");
+
+        await Assert.That(first.Subject).IsEqualTo("poco-v1");
+        await Assert.That(second.Subject).IsEqualTo("poco-v2");
+    }
+
+    private static Task<Dekaf.SchemaRegistry.AssociationResponse> SetPocoAssociationAsync(
+        Dekaf.SchemaRegistry.ISchemaRegistryClient registry,
+        string topic,
+        string subject) =>
+        registry.CreateAssociationAsync(new Dekaf.SchemaRegistry.AssociationCreateOrUpdateRequest
+        {
+            ResourceName = topic,
+            ResourceNamespace = Dekaf.SchemaRegistry.AssociatedNameStrategy.NamespaceWildcard,
+            ResourceId = topic,
+            ResourceType = "topic",
+            Associations =
+            [
+                new Dekaf.SchemaRegistry.AssociationCreateOrUpdateInfo
+                {
+                    Subject = subject,
+                    AssociationType = "value",
+                    Lifecycle = "WEAK"
+                }
+            ]
+        });
+
+    [Test]
     public async Task GeneratedCodec_RoundTripsSupportedShapes()
     {
         using var registry = new MockSchemaRegistryClient();

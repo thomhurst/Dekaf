@@ -317,6 +317,56 @@ public sealed class JsonSchemaValidationTests
     }
 
     [Test]
+    public async Task Serializer_AsyncStrategyOptionsOverload_AppliesValidation()
+    {
+        const string incompatibleSchema =
+            """{ "type": "object", "properties": { "id": { "type": "string" } }, "required": ["id"] }""";
+        using var registry = new MockSchemaRegistryClient();
+        var strategy = new FixedAsyncSubjectNameStrategy("validation-value");
+        await using var serializer = new JsonSchemaRegistrySerializer<ValidationPayload>(
+            registry,
+            strategy,
+            incompatibleSchema,
+            jsonOptions: null,
+            validationOptions: new JsonSchemaValidationOptions
+            {
+                ValidatorFactory = new StreamingJsonSchemaValidatorFactory(registry),
+                Mode = JsonSchemaValidationMode.Serialize
+            });
+        _ = await serializer.PrepareAsync(Context.Topic, new ValidationPayload(7));
+        var buffer = new ArrayBufferWriter<byte>();
+
+        Assert.Throws<JsonSchemaValidationException>(
+            () => serializer.Serialize(new ValidationPayload(7), ref buffer, Context));
+    }
+
+    [Test]
+    public async Task Serializer_AsyncStrategyTypeInfoOverload_AppliesValidation()
+    {
+        const string incompatibleSchema =
+            """{ "type": "object", "properties": { "id": { "type": "string" } }, "required": ["id"] }""";
+        using var registry = new MockSchemaRegistryClient();
+        var strategy = new FixedAsyncSubjectNameStrategy("validation-value");
+        var typeInfo = (System.Text.Json.Serialization.Metadata.JsonTypeInfo<ValidationPayload>)
+            System.Text.Json.JsonSerializerOptions.Default.GetTypeInfo(typeof(ValidationPayload));
+        await using var serializer = new JsonSchemaRegistrySerializer<ValidationPayload>(
+            registry,
+            strategy,
+            incompatibleSchema,
+            typeInfo,
+            new JsonSchemaValidationOptions
+            {
+                ValidatorFactory = new StreamingJsonSchemaValidatorFactory(registry),
+                Mode = JsonSchemaValidationMode.Serialize
+            });
+        _ = await serializer.PrepareAsync(Context.Topic, new ValidationPayload(7));
+        var buffer = new ArrayBufferWriter<byte>();
+
+        Assert.Throws<JsonSchemaValidationException>(
+            () => serializer.Serialize(new ValidationPayload(7), ref buffer, Context));
+    }
+
+    [Test]
     public async Task Serializer_AutoRegistrationWithValidation_UsesIdOnlyLookup()
     {
         const string schemaText = """{ "type": "object", "required": ["id"] }""";
@@ -650,6 +700,16 @@ public sealed class JsonSchemaValidationTests
     private sealed record ValidationPayload(int Id);
     private sealed record ReferencedPayload(AddressPayload Address);
     private sealed record AddressPayload(string Postcode);
+
+    private sealed class FixedAsyncSubjectNameStrategy(string subject) : IAsyncSubjectNameStrategy
+    {
+        public ValueTask<string> GetSubjectNameAsync(
+            string topic,
+            string? recordType,
+            bool isKey,
+            CancellationToken cancellationToken = default) =>
+            new(subject);
+    }
 
     private sealed class PassThroughRuleExecutor : ISchemaRegistryRuleExecutor
     {

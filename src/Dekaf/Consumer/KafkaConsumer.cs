@@ -1755,12 +1755,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         _asyncKeyDeserializer = asyncKeyDeserializer;
         _asyncValueDeserializer = asyncValueDeserializer;
         _hasAsyncDeserializers = asyncKeyDeserializer is not null || asyncValueDeserializer is not null;
-        _keyDeserializerPreparer = _keyDeserializer is IAsyncDeserializerPreparer<TKey>
-            { RequiresPreparation: true } keyDeserializerPreparer
+        _keyDeserializerPreparer = _keyDeserializer is
+            IAsyncDeserializerPreparer<TKey> { RequiresPreparation: true } keyDeserializerPreparer
                 ? keyDeserializerPreparer
                 : null;
-        _valueDeserializerPreparer = _valueDeserializer is IAsyncDeserializerPreparer<TValue>
-            { RequiresPreparation: true } valueDeserializerPreparer
+        _valueDeserializerPreparer = _valueDeserializer is
+            IAsyncDeserializerPreparer<TValue> { RequiresPreparation: true } valueDeserializerPreparer
                 ? valueDeserializerPreparer
                 : null;
         _hasDeserializerPreparers = _keyDeserializerPreparer is not null || _valueDeserializerPreparer is not null;

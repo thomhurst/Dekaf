@@ -343,18 +343,20 @@ public sealed class AssociatedNameStrategy : IAsyncSubjectNameStrategy
 
     private void Publish(CacheKey key, string subject)
     {
-        _cache[key] = subject;
+        var isNewKey = !_cache.ContainsKey(key);
         RemoveOrderNode(key);
-        var node = _order.AddLast(key);
-        _orderNodes[key] = node;
 
-        while (_cache.Count > _maxCachedSubjects)
+        while (isNewKey && _cache.Count >= _maxCachedSubjects)
         {
             var oldest = _order.First!;
             _order.RemoveFirst();
             _orderNodes.Remove(oldest.Value);
             _cache.TryRemove(oldest.Value, out _);
         }
+
+        _cache[key] = subject;
+        var node = _order.AddLast(key);
+        _orderNodes[key] = node;
     }
 
     private void RemoveOrderNode(CacheKey key)

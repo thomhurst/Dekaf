@@ -26,8 +26,8 @@ public class AssociatedNameStrategyBenchmarks
         _serializer = new SchemaRegistrySerializer<int>(
             _client,
             static (_, _) => { },
-            static () => new Schema { SchemaType = SchemaType.Json, SchemaString = "{\"type\":\"integer\"}" },
-            _strategy);
+            _strategy,
+            static () => new Schema { SchemaType = SchemaType.Json, SchemaString = "{\"type\":\"integer\"}" });
         _ = _strategy.GetSubjectNameAsync(_topic, _recordType, isKey: false)
             .GetAwaiter()
             .GetResult();
@@ -81,13 +81,17 @@ public class AssociatedNameStrategyBenchmarks
         {
             await Task.CompletedTask.ConfigureAwait(false);
             var path = request.RequestUri!.AbsolutePath;
-            var content = path.Contains("/subjects/", StringComparison.Ordinal)
-                ? """{"subject":"benchmark-associated-value","version":1,"id":1,"schemaType":"JSON","schema":"{\"type\":\"integer\"}"}"""
-                : path.Contains("/schemas/ids/", StringComparison.Ordinal)
-                    ? """{"schemaType":"JSON","schema":"{\"type\":\"integer\"}"}"""
-                    : """
-                  [{"subject":"benchmark-associated-value","guid":"benchmark-guid","resourceName":"benchmark-orders","resourceNamespace":"-","resourceId":"benchmark-orders","resourceType":"topic","associationType":"value","lifecycle":"WEAK","frozen":false}]
-                  """;
+            var content = path switch
+            {
+                var value when value.Contains("/subjects/", StringComparison.Ordinal) =>
+                    """{"subject":"benchmark-associated-value","version":1,"id":1,"schemaType":"JSON","schema":"{\"type\":\"integer\"}"}""",
+                var value when value.Contains("/schemas/ids/", StringComparison.Ordinal) =>
+                    """{"schemaType":"JSON","schema":"{\"type\":\"integer\"}"}""",
+                "/associations/resources/-/benchmark-orders" => """
+                    [{"subject":"benchmark-associated-value","guid":"benchmark-guid","resourceName":"benchmark-orders","resourceNamespace":"-","resourceId":"benchmark-orders","resourceType":"topic","associationType":"value","lifecycle":"WEAK","frozen":false}]
+                    """,
+                _ => throw new HttpRequestException($"Unexpected benchmark request path '{path}'.")
+            };
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(content)
