@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Reflection;
+using System.Runtime.ExceptionServices;
 using Dekaf.Consumer;
 using Dekaf.Protocol.Records;
 
@@ -850,7 +851,8 @@ public class MpscFetchBufferTests
     [Test]
     public async Task LaterProducer_DoesNotWaitForEarlierReservedSlotToCommit()
     {
-        using var firstReserved = new ManualResetEventSlim();
+        var firstReserved = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         using var allowFirstCommit = new ManualResetEventSlim();
         var buffer = new MpscFetchBuffer(
             capacity: 2,
@@ -859,24 +861,28 @@ public class MpscFetchBufferTests
             {
                 if (sequence == 0)
                 {
-                    firstReserved.Set();
+                    firstReserved.TrySetResult();
                     allowFirstCommit.Wait();
                 }
             });
         var first = CreateDummy("topic", 1);
         var second = CreateDummy("topic", 2);
 
-        var firstWrite = Task.Run(() => buffer.TryWrite(first));
+        var firstWrite = StartDedicatedWrite(buffer, first);
+        Task<bool>? secondWrite = null;
         Task<bool>? waitForReadable = null;
+        Exception? firstWriteFailure = null;
+        Exception? secondWriteFailure = null;
+        var firstWritten = false;
         try
         {
-            await Assert.That(firstReserved.Wait(TimeSpan.FromSeconds(5))).IsTrue();
+            await firstReserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
             waitForReadable = buffer.WaitToReadAsync(30_000, CancellationToken.None).AsTask();
             await TestWait.UntilAsync(
                 () => GetConsumerWaiting(buffer) == 1 && IsReadWaiterActive(buffer),
                 TimeSpan.FromSeconds(5));
 
-            var secondWrite = Task.Run(() => buffer.TryWrite(second));
+            secondWrite = StartDedicatedWrite(buffer, second);
             await Assert.That(await secondWrite.WaitAsync(TimeSpan.FromSeconds(5))).IsTrue();
             await Assert.That(buffer.Count).IsEqualTo(2);
             await Assert.That(waitForReadable.IsCompleted).IsFalse();
@@ -884,9 +890,18 @@ public class MpscFetchBufferTests
         finally
         {
             allowFirstCommit.Set();
+            (firstWritten, firstWriteFailure) = await ObserveDedicatedWriteAsync(firstWrite);
+
+            if (secondWrite is not null)
+                (_, secondWriteFailure) = await ObserveDedicatedWriteAsync(secondWrite);
         }
 
-        await Assert.That(await firstWrite).IsTrue();
+        if (firstWriteFailure is not null)
+            ExceptionDispatchInfo.Capture(firstWriteFailure).Throw();
+        if (secondWriteFailure is not null)
+            ExceptionDispatchInfo.Capture(secondWriteFailure).Throw();
+
+        await Assert.That(firstWritten).IsTrue();
         await Assert.That(await waitForReadable!).IsTrue();
         await Assert.That(buffer.TryRead(out var firstRead)).IsTrue();
         await Assert.That(firstRead!.PartitionIndex).IsEqualTo(1);
@@ -894,6 +909,27 @@ public class MpscFetchBufferTests
         await Assert.That(buffer.TryRead(out var secondRead)).IsTrue();
         await Assert.That(secondRead!.PartitionIndex).IsEqualTo(2);
         secondRead.Dispose();
+    }
+
+    private static Task<bool> StartDedicatedWrite(
+        MpscFetchBuffer buffer,
+        PendingFetchData item) =>
+        Task.Factory.StartNew(
+            () => buffer.TryWrite(item),
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default);
+
+    private static async Task<(bool Result, Exception? Failure)> ObserveDedicatedWriteAsync(
+        Task<bool> write)
+    {
+        var wait = write.WaitAsync(TimeSpan.FromSeconds(5));
+        Task observation = wait;
+        await observation.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+
+        return wait.IsCompletedSuccessfully
+            ? (wait.GetAwaiter().GetResult(), null)
+            : (false, wait.Exception?.InnerException ?? new TaskCanceledException(wait));
     }
 
     #endregion
