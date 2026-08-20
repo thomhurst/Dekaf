@@ -1803,8 +1803,15 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
 
     internal void ConfigureHeaderRouting(RecordHeaderRoutingPlan? headerRoutingPlan)
     {
-        if (_parsedCount == 0)
-            _headerRoutingPlan = headerRoutingPlan;
+        if (ReferenceEquals(_headerRoutingPlan, headerRoutingPlan))
+            return;
+
+        _headerRoutingPlan = headerRoutingPlan;
+        if (headerRoutingPlan is not null && _parsedRecords is { } parsedRecords)
+        {
+            for (var index = 0; index < _parsedCount; index++)
+                parsedRecords[index] = parsedRecords[index].IndexPooledHeaders(headerRoutingPlan);
+        }
     }
 
     public Record this[int index]

@@ -210,7 +210,9 @@ public class HeaderRoutingLookupBenchmarks
     private RecordHeaderRoutingLookup _matched;
     private RecordHeaderRoutingLookup _fallback;
     private RecordHeaderRoutingLookup _null;
+    private RecordHeaderRoutingLookup _lateAttachedNested;
     private Header[] _matchedHeaders = null!;
+    private LazyRecordList _lateAttachedRecords = null!;
     private SerializationContext _context;
 
     [Params(1, 8, 64, 1_024)]
@@ -235,7 +237,32 @@ public class HeaderRoutingLookupBenchmarks
         _matched = CreateLookup(plan, _matchedHeaders);
         _fallback = CreateLookup(plan, new Header("event-type", new byte[] { 2 }));
         _null = CreateLookup(plan, new Header("event-type", (byte[]?)null));
+
+        IDeserializer<RoutingSerdeBenchmarks.Event> nested = _deserializer;
+        for (var route = 4; route >= 1; route--)
+        {
+            nested = new HeaderRoutingDeserializer<RoutingSerdeBenchmarks.Event>(
+                $"route-{route}",
+                nested);
+        }
+
+        var nestedPlan = RecordHeaderRoutingPlan.Create(_deserializer, nested)!;
+        var nestedRecord = new Record
+        {
+            Headers = CreateHeaders(new Header("route-4", new byte[] { 1 })),
+            HeaderCount = HeaderCount
+        };
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        nestedRecord.Write(ref writer);
+        _lateAttachedRecords = LazyRecordList.Create(buffer.WrittenMemory, count: 1);
+        _lateAttachedRecords.EnsureAllParsed();
+        _lateAttachedRecords.ConfigureHeaderRouting(nestedPlan);
+        _lateAttachedNested = _lateAttachedRecords[0].CreateHeaderRoutingLookup(nestedPlan);
     }
+
+    [GlobalCleanup]
+    public void Cleanup() => _lateAttachedRecords.Dispose();
 
     [Benchmark(Baseline = true)]
     public RoutingSerdeBenchmarks.Event LinearMatched() =>
@@ -249,6 +276,10 @@ public class HeaderRoutingLookupBenchmarks
 
     [Benchmark]
     public RoutingSerdeBenchmarks.Event Null() => Deserialize(in _null);
+
+    [Benchmark]
+    public bool LateAttachedNested() =>
+        _lateAttachedNested.TryGetLast("route-4", out _);
 
     private RoutingSerdeBenchmarks.Event Deserialize(in RecordHeaderRoutingLookup lookup) =>
         RecordHeaderDeserializer.Deserialize(
@@ -325,6 +356,7 @@ public class HeaderRoutingParseBenchmarks
 
         _ = Parse(headerRoutingPlan: null);
         _ = Parse(_nestedPlan);
+        _ = ParseThenAttachRouting();
     }
 
     [Benchmark(Baseline = true)]
@@ -333,6 +365,9 @@ public class HeaderRoutingParseBenchmarks
     [Benchmark]
     public int ParseNestedRouting() => Parse(_nestedPlan);
 
+    [Benchmark]
+    public int ParseThenAttachNestedRouting() => ParseThenAttachRouting();
+
     private int Parse(RecordHeaderRoutingPlan? headerRoutingPlan)
     {
         var reader = new KafkaProtocolReader(_encodedRecord);
@@ -340,5 +375,13 @@ public class HeaderRoutingParseBenchmarks
         var count = record.HeaderCount;
         ArrayPool<Header>.Shared.Return(record.Headers!, clearArray: true);
         return count;
+    }
+
+    private int ParseThenAttachRouting()
+    {
+        using var records = LazyRecordList.Create(_encodedRecord, count: 1);
+        records.EnsureAllParsed();
+        records.ConfigureHeaderRouting(_nestedPlan);
+        return records.Count;
     }
 }

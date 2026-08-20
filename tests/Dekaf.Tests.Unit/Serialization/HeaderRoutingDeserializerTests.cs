@@ -233,6 +233,43 @@ public sealed class HeaderRoutingDeserializerTests
     }
 
     [Test]
+    public async Task LazyRecordList_AttachingPlanAfterParsingBuildsCompletePooledHeaderIndex()
+    {
+        const int routeCount = 18;
+        IDeserializer<string> root = new HeaderPresenceDeserializer();
+        var headers = new Header[routeCount];
+        for (var index = routeCount - 1; index >= 0; index--)
+        {
+            var headerName = $"route-{index}";
+            root = CreateNestedRouter(headerName, "next"u8.ToArray(), root);
+            headers[index] = new Header(headerName, "next"u8.ToArray());
+        }
+
+        var plan = RecordHeaderRoutingPlan.Create(Serializers.String, root)!;
+        var record = new Record
+        {
+            Value = "payload"u8.ToArray(),
+            Headers = headers,
+            HeaderCount = headers.Length
+        };
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        record.Write(ref writer);
+        using var records = LazyRecordList.Create(buffer.WrittenMemory, count: 1);
+        records.EnsureAllParsed();
+
+        records.ConfigureHeaderRouting(plan);
+        var parsed = records[0];
+        parsed.Headers![routeCount - 1] = default;
+        var lookup = parsed.CreateHeaderRoutingLookup(plan);
+
+        var found = lookup.TryGetLast($"route-{routeCount - 1}", out var indexedHeader);
+
+        await Assert.That(found).IsTrue();
+        await Assert.That(indexedHeader.Key).IsEqualTo($"route-{routeCount - 1}");
+    }
+
+    [Test]
     [Arguments(false, false)]
     [Arguments(false, true)]
     [Arguments(true, false)]

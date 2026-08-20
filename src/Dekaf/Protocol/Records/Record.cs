@@ -312,6 +312,78 @@ public readonly record struct Record
         };
     }
 
+    internal Record IndexPooledHeaders(RecordHeaderRoutingPlan headerRoutingPlan)
+    {
+        if (Headers is null || HeaderCount == 0)
+        {
+            return this with
+            {
+                RoutedHeaderIndex0 = 0,
+                RoutedHeaderIndex1 = 0,
+                RoutedHeaderTailOffset = RecordHeaderRoutingPlan.FullyIndexedWithoutTail
+            };
+        }
+
+        var headers = Headers;
+        var routedHeaderTailCount = headerRoutingPlan.Count > 2
+            ? headerRoutingPlan.GetRoutingTailCapacity(HeaderCount)
+            : 0;
+        if (routedHeaderTailCount > 0)
+        {
+            var requiredLength = checked(HeaderCount + routedHeaderTailCount);
+            if (headers.Length < requiredLength)
+            {
+                var resizedHeaders = ArrayPool<Header>.Shared.Rent(requiredLength);
+                headers.AsSpan(0, HeaderCount).CopyTo(resizedHeaders);
+                ArrayPool<Header>.Shared.Return(headers, clearArray: true);
+                headers = resizedHeaders;
+            }
+
+            headers.AsSpan(HeaderCount, routedHeaderTailCount).Clear();
+        }
+
+        var firstIndex = 0;
+        var secondIndex = 0;
+        for (var index = 0; index < HeaderCount; index++)
+        {
+            var header = headers[index];
+            if (!headerRoutingPlan.TryGetSlot(header.Key, out var slot))
+                continue;
+
+            var encodedIndex = index + 1;
+            switch (slot)
+            {
+                case 0:
+                    firstIndex = encodedIndex;
+                    break;
+                case 1:
+                    secondIndex = encodedIndex;
+                    break;
+                default:
+                    var mask = routedHeaderTailCount - 1;
+                    var bucket = RecordHeaderRoutingPlan.GetRoutingTailBucket(slot, mask);
+                    while (headers[HeaderCount + bucket].Key is { } existingKey
+                           && !string.Equals(existingKey, header.Key, StringComparison.Ordinal))
+                    {
+                        bucket = (bucket + 1) & mask;
+                    }
+
+                    headers[HeaderCount + bucket] = header;
+                    break;
+            }
+        }
+
+        return this with
+        {
+            Headers = headers,
+            RoutedHeaderIndex0 = firstIndex,
+            RoutedHeaderIndex1 = secondIndex,
+            RoutedHeaderTailOffset = routedHeaderTailCount > 0
+                ? HeaderCount
+                : RecordHeaderRoutingPlan.FullyIndexedWithoutTail
+        };
+    }
+
     private static void ValidateBodyLength(int declaredLength, long consumedLength)
     {
         if (consumedLength != declaredLength)
