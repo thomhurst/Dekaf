@@ -136,6 +136,24 @@ public sealed class SchemaIdentityFramingTests
     }
 
     [Test]
+    [Arguments(SchemaIdDeserializerStrategy.Header)]
+    [Arguments(SchemaIdDeserializerStrategy.Dual)]
+    public void HeaderStrategies_IdFrame_ThrowsWithoutReadingPrefix(
+        SchemaIdDeserializerStrategy strategy)
+    {
+        byte[] idFrame = [0, 0, 0, 0, 7];
+        var identityHeader = new Header(SchemaIdentityHeaderNames.Value, idFrame);
+        byte[] validPrefix = [0, 0, 0, 0, 42, 7, 8];
+
+        Assert.Throws<InvalidDataException>(() => SchemaIdentityFraming.Read(
+            validPrefix,
+            identityHeader,
+            strategy,
+            out _,
+            out _));
+    }
+
+    [Test]
     [Arguments(SchemaIdDeserializerStrategy.Prefix, 5)]
     [Arguments(SchemaIdDeserializerStrategy.Header, 0)]
     public async Task ExplicitStrategy_ReturnsExpectedPayloadOffset(

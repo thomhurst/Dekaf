@@ -229,36 +229,15 @@ internal static class SchemaIdentityFraming
         ReadOnlyMemory<byte> value,
         out ReadOnlyMemory<byte> trailingHeaderData)
     {
-        var parsed = ReadIdentity(value.Span);
-        trailingHeaderData = value[parsed.BytesConsumed..];
-        return parsed.Identity;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static IdentityFrame ReadIdentity(ReadOnlySpan<byte> source)
-    {
+        var source = value.Span;
         if (source.IsEmpty)
             throw new InvalidDataException("The Schema Registry identity is empty.");
+        if (source[0] != SchemaGuidMagicByte)
+            throw new InvalidDataException($"Unknown Schema Registry header magic byte: {source[0]}.");
 
-        return source[0] switch
-        {
-            SchemaIdMagicByte => ReadSchemaId(source),
-            SchemaGuidMagicByte => ReadSchemaGuid(source),
-            _ => throw new InvalidDataException($"Unknown Schema Registry magic byte: {source[0]}.")
-        };
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static IdentityFrame ReadSchemaId(ReadOnlySpan<byte> source)
-    {
-        if (source.Length < SchemaIdFrameSize)
-            throw new InvalidDataException("The Schema Registry ID frame is truncated.");
-
-        var schemaId = BinaryPrimitives.ReadInt32BigEndian(source[1..SchemaIdFrameSize]);
-        if (schemaId < 0)
-            throw new InvalidDataException("The Schema Registry ID cannot be negative.");
-
-        return new IdentityFrame(new SchemaIdentity(schemaId), SchemaIdFrameSize);
+        var parsed = ReadSchemaGuid(source);
+        trailingHeaderData = value[parsed.BytesConsumed..];
+        return parsed.Identity;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
