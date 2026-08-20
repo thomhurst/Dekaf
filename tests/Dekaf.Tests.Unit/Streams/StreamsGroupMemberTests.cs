@@ -385,6 +385,40 @@ public sealed class StreamsGroupMemberTests
         await Assert.That(fixture.Member.Snapshot.MemberEpoch).IsEqualTo(1);
     }
 
+    [Arguments(StreamsGroupMembershipOperation.Default, false, ErrorCode.FencedMemberEpoch)]
+    [Arguments(StreamsGroupMembershipOperation.Default, false, ErrorCode.UnknownMemberId)]
+    [Arguments(StreamsGroupMembershipOperation.RemainInGroup, true, ErrorCode.FencedMemberEpoch)]
+    [Arguments(StreamsGroupMembershipOperation.RemainInGroup, true, ErrorCode.UnknownMemberId)]
+    [Test]
+    public async Task CloseAsync_MembershipLossClearsRetainedIdentity(
+        StreamsGroupMembershipOperation operation,
+        bool shutdownApplication,
+        ErrorCode errorCode)
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1));
+        connection.EnqueueHeartbeat(new StreamsGroupHeartbeatResponse
+        {
+            ErrorCode = errorCode,
+            MemberId = "member-1"
+        });
+        await using var fixture = CreateFixture(connection, instanceId: "instance-1");
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+
+        var failure = await Assert.ThrowsAsync<GroupException>(async () =>
+            await fixture.Member.CloseAsync(new StreamsGroupCloseOptions
+            {
+                GroupMembershipOperation = operation,
+                ShutdownApplication = shutdownApplication
+            }));
+
+        await Assert.That(failure!.ErrorCode).IsEqualTo(errorCode);
+        await Assert.That(fixture.Member.Snapshot.IsClosed).IsTrue();
+        await Assert.That(fixture.Member.Snapshot.IsJoined).IsFalse();
+        await Assert.That(fixture.Member.Snapshot.MemberId).IsNull();
+        await Assert.That(fixture.Member.Snapshot.MemberEpoch).IsEqualTo(0);
+    }
+
     [Test]
     public async Task CloseAsync_InvalidMembershipOperationDoesNotLeaveOrClose()
     {
@@ -667,6 +701,40 @@ public sealed class StreamsGroupMemberTests
         var retry = connection.HeartbeatRequests[2];
         await Assert.That(retry.MemberEpoch).IsEqualTo(0);
         await Assert.That(retry.Topology!.Epoch).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task UpdateAsync_TopologyChangeClearsTaskAcknowledgementsForRecovery()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1));
+        connection.EnqueueHeartbeat(Success(epoch: 2));
+        connection.EnqueueHeartbeat(Success(epoch: 3));
+        connection.EnqueueHeartbeat(new StreamsGroupHeartbeatResponse
+        {
+            ErrorCode = ErrorCode.NotCoordinator,
+            MemberId = "member-1"
+        });
+        connection.EnqueueHeartbeat(Success(epoch: 4));
+        await using var fixture = CreateFixture(connection);
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+        await fixture.Member.UpdateAsync(new StreamsGroupMemberUpdate
+        {
+            ActiveTasks = [new StreamsGroupTaskSet { SubtopologyId = "active", Partitions = [0] }],
+            StandbyTasks = [new StreamsGroupTaskSet { SubtopologyId = "standby", Partitions = [1] }],
+            WarmupTasks = [new StreamsGroupTaskSet { SubtopologyId = "warmup", Partitions = [2] }]
+        });
+        await fixture.Member.UpdateAsync(new StreamsGroupMemberUpdate
+        {
+            Topology = CreateInitialUpdate(topologyEpoch: 2).Topology
+        });
+
+        await fixture.Member.UpdateAsync(new StreamsGroupMemberUpdate { ProcessId = "process-2" });
+
+        var recovery = connection.HeartbeatRequests[4];
+        await Assert.That(recovery.ActiveTasks).IsEmpty();
+        await Assert.That(recovery.StandbyTasks).IsEmpty();
+        await Assert.That(recovery.WarmupTasks).IsEmpty();
     }
 
     [Test]
