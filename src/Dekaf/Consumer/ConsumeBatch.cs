@@ -360,6 +360,7 @@ namespace Dekaf.Consumer
             private int _observedVersion;
             private int _recordsExamined;
             private int _rejectedRecordsExamined;
+            private bool _hasYieldedResult;
 
             internal Enumerator(ConsumeBatch<TKey, TValue> batch)
             {
@@ -370,6 +371,7 @@ namespace Dekaf.Consumer
                     ref _observedVersion);
                 _recordsExamined = 0;
                 _rejectedRecordsExamined = 0;
+                _hasYieldedResult = batch._count != 0;
                 Current = default!;
             }
 
@@ -632,6 +634,7 @@ namespace Dekaf.Consumer
                     if (!CompleteRecord(pending, offset, messageBytes, proveProcessed: false))
                         return false;
 
+                    _hasYieldedResult = true;
                     _batch._count++;
                     return true;
                 }
@@ -656,7 +659,7 @@ namespace Dekaf.Consumer
                 }
 
                 pending.TrackConsumed(offset, messageBytes);
-                if (proveProcessed)
+                if (proveProcessed && !_hasYieldedResult)
                     pending.MarkYieldedProcessed();
                 _batch._storeOffsetOnDelivery?.Invoke(
                     pending.TopicPartition,

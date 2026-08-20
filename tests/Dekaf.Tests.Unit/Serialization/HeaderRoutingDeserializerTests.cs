@@ -280,32 +280,34 @@ public sealed class HeaderRoutingDeserializerTests
         slab.AsSpan().Clear();
         try
         {
-            batch.UseParsedRecordSlab(slab, offset: 1);
-            _ = batch.Records[0];
+            using (batch)
+            {
+                batch.UseParsedRecordSlab(slab, offset: 1);
+                _ = batch.Records[0];
 
-            batch.ConfigureHeaderRouting(plan);
-            var parsedBeforeAttach = batch.Records[0];
-            var parsedAfterAttach = batch.Records[1];
-            parsedBeforeAttach.Headers![routeCount - 1] = default;
-            parsedAfterAttach.Headers![routeCount - 1] = default;
-            var lookupBeforeAttach = parsedBeforeAttach.CreateHeaderRoutingLookup(plan);
-            var lookupAfterAttach = parsedAfterAttach.CreateHeaderRoutingLookup(plan);
+                batch.ConfigureHeaderRouting(plan);
+                var parsedBeforeAttach = batch.Records[0];
+                var parsedAfterAttach = batch.Records[1];
+                parsedBeforeAttach.Headers![routeCount - 1] = default;
+                parsedAfterAttach.Headers![routeCount - 1] = default;
+                var lookupBeforeAttach = parsedBeforeAttach.CreateHeaderRoutingLookup(plan);
+                var lookupAfterAttach = parsedAfterAttach.CreateHeaderRoutingLookup(plan);
 
-            var foundBeforeAttach = lookupBeforeAttach.TryGetLast(
-                $"route-{routeCount - 1}",
-                out var indexedBeforeAttach);
-            var foundAfterAttach = lookupAfterAttach.TryGetLast(
-                $"route-{routeCount - 1}",
-                out var indexedAfterAttach);
+                var foundBeforeAttach = lookupBeforeAttach.TryGetLast(
+                    $"route-{routeCount - 1}",
+                    out var indexedBeforeAttach);
+                var foundAfterAttach = lookupAfterAttach.TryGetLast(
+                    $"route-{routeCount - 1}",
+                    out var indexedAfterAttach);
 
-            await Assert.That(foundBeforeAttach).IsTrue();
-            await Assert.That(indexedBeforeAttach.Key).IsEqualTo($"route-{routeCount - 1}");
-            await Assert.That(foundAfterAttach).IsTrue();
-            await Assert.That(indexedAfterAttach.Key).IsEqualTo($"route-{routeCount - 1}");
+                await Assert.That(foundBeforeAttach).IsTrue();
+                await Assert.That(indexedBeforeAttach.Key).IsEqualTo($"route-{routeCount - 1}");
+                await Assert.That(foundAfterAttach).IsTrue();
+                await Assert.That(indexedAfterAttach.Key).IsEqualTo($"route-{routeCount - 1}");
+            }
         }
         finally
         {
-            batch.Dispose();
             ArrayPool<Record>.Shared.Return(slab, clearArray: true);
         }
     }

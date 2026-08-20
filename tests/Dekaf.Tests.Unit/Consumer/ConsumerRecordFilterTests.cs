@@ -292,6 +292,26 @@ public sealed class ConsumerRecordFilterTests
         await Assert.That(valueDeserializer.Count).IsEqualTo(1);
         await Assert.That(filter.CallCount).IsEqualTo(2);
         await Assert.That(storedOffset).IsEqualTo(2L);
+        await Assert.That(pending.ProvenOffset).IsEqualTo(0L);
+    }
+
+    [Test]
+    public async Task ConsumeBatch_RejectedAfterAcceptedDoesNotProveAcceptedRecord()
+    {
+        using var pending = CreatePendingFetchData(
+            CreateRecord(0, "accept", "one", new Header("route", "keep"u8.ToArray())),
+            CreateRecord(1, "reject", "two", new Header("route", "drop"u8.ToArray())));
+        var batch = new ConsumeBatch<string, string>(
+            pending,
+            Serializers.String,
+            Serializers.String,
+            recordFilter: new HeaderValueFilter("route", "keep"u8.ToArray()));
+
+        var results = batch.ToArray();
+
+        await Assert.That(results).Count().IsEqualTo(1);
+        await Assert.That(pending.LastYieldedOffset).IsEqualTo(1L);
+        await Assert.That(pending.ProvenOffset).IsEqualTo(-1L);
     }
 
     [Test]
