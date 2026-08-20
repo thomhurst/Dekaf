@@ -42,7 +42,10 @@ public sealed class AvroSchemaRegistryDeserializer<
     [DynamicallyAccessedMembers(
         DynamicallyAccessedMemberTypes.PublicFields |
         DynamicallyAccessedMemberTypes.PublicParameterlessConstructor)] T>
-    : IDeserializer<T>, IAsyncDeserializerPreparer<T>, IAsyncDisposable
+    : IDeserializer<T>,
+      IAsyncDeserializerPreparer<T>,
+      IAsyncDeserializerPreparationRequirement,
+      IAsyncDisposable
 {
     private const byte MagicByte = 0x00;
     private static readonly TimeSpan SchemaRegistryTimeout = TimeSpan.FromSeconds(30);
@@ -107,7 +110,7 @@ public sealed class AvroSchemaRegistryDeserializer<
     internal int CachedGenericReaderCount => _genericReaders.Count;
     internal int CachedSpecificReaderCount => _specificReaders.Count;
 
-    bool IAsyncDeserializerPreparer<T>.RequiresPreparation =>
+    bool IAsyncDeserializerPreparationRequirement.RequiresPreparation =>
         _ruleExecutor is not null && _subjectNames is { RequiresPreparation: true };
 
     ValueTask IAsyncDeserializerPreparer<T>.PrepareAsync(

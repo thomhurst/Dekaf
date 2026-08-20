@@ -13,8 +13,6 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
     : IDeserializer<T>, IAsyncDeserializerPreparer<T>, IAsyncDisposable
     where TCodec : struct, IAvroPocoCodec<T>
 {
-    bool IAsyncDeserializerPreparer<T>.RequiresPreparation => true;
-
     private const byte MagicByte = 0;
     private const int WireHeaderSize = 5;
     private const int MaxAssociatedNameInvalidationRetries = 4;

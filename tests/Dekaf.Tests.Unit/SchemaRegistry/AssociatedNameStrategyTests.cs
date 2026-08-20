@@ -509,7 +509,7 @@ public sealed class AssociatedNameStrategyTests
         await preparer.PrepareAsync(data, context);
         var warm = preparer.TryDeserialize(data, context, out var value);
 
-        await Assert.That(preparer.RequiresPreparation).IsTrue();
+        await Assert.That(((IAsyncDeserializerPreparationRequirement)preparer).RequiresPreparation).IsTrue();
         await Assert.That(cold).IsFalse();
         await Assert.That(warm).IsTrue();
         await Assert.That(value).IsEqualTo(42);
@@ -569,7 +569,7 @@ public sealed class AssociatedNameStrategyTests
 
         var preparer = (IAsyncDeserializerPreparer<int>)deserializer;
 
-        await Assert.That(preparer.RequiresPreparation).IsFalse();
+        await Assert.That(((IAsyncDeserializerPreparationRequirement)preparer).RequiresPreparation).IsFalse();
     }
 
     [Test]
@@ -603,9 +603,9 @@ public sealed class AssociatedNameStrategyTests
                 RuleExecutor = executor
             });
 
-        await Assert.That(((IAsyncDeserializerPreparer<int>)json).RequiresPreparation).IsTrue();
-        await Assert.That(((IAsyncDeserializerPreparer<GenericRecord>)avro).RequiresPreparation).IsTrue();
-        await Assert.That(((IAsyncDeserializerPreparer<TestMessage>)protobuf).RequiresPreparation).IsTrue();
+        await Assert.That(((IAsyncDeserializerPreparationRequirement)json).RequiresPreparation).IsTrue();
+        await Assert.That(((IAsyncDeserializerPreparationRequirement)avro).RequiresPreparation).IsTrue();
+        await Assert.That(((IAsyncDeserializerPreparationRequirement)protobuf).RequiresPreparation).IsTrue();
     }
 
     [Test]

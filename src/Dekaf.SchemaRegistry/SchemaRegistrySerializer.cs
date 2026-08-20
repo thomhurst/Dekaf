@@ -930,6 +930,7 @@ internal static class SchemaRegistryBuffers
 public sealed class SchemaRegistryDeserializer<T> :
     IDeserializer<T>,
     IAsyncDeserializerPreparer<T>,
+    IAsyncDeserializerPreparationRequirement,
     IAsyncDisposable
 {
     private const byte MagicByte = 0x00;
@@ -994,7 +995,7 @@ public sealed class SchemaRegistryDeserializer<T> :
         }
     }
 
-    bool IAsyncDeserializerPreparer<T>.RequiresPreparation =>
+    bool IAsyncDeserializerPreparationRequirement.RequiresPreparation =>
         _ruleExecutor is not null && _subjectNames is { RequiresPreparation: true };
 
     ValueTask IAsyncDeserializerPreparer<T>.PrepareAsync(

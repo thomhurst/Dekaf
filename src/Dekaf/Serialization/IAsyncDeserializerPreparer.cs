@@ -15,15 +15,6 @@ namespace Dekaf.Serialization;
 public interface IAsyncDeserializerPreparer<T>
 {
     /// <summary>
-    /// Gets whether this instance currently requires the asynchronous preparation path.
-    /// </summary>
-    /// <remarks>
-    /// Consumers read this once during construction so conditionally configured preparers do not
-    /// add interface dispatch or asynchronous drain bookkeeping to the synchronous path.
-    /// </remarks>
-    bool RequiresPreparation { get; }
-
-    /// <summary>
     /// Attempts synchronous deserialization using already-prepared state. Returns <see langword="false"/>
     /// only when <see cref="PrepareAsync"/> must be awaited before retrying.
     /// </summary>
@@ -37,4 +28,19 @@ public interface IAsyncDeserializerPreparer<T>
         ReadOnlyMemory<byte> data,
         SerializationContext context,
         CancellationToken cancellationToken = default);
+}
+
+/// <summary>
+/// Optional capability for an <see cref="IAsyncDeserializerPreparer{T}"/> that can skip the
+/// asynchronous preparation path for its current configuration.
+/// </summary>
+/// <remarks>
+/// Preparers that do not implement this interface are treated as requiring preparation. Consumers
+/// read this once during construction, avoiding interface dispatch and asynchronous drain
+/// bookkeeping when preparation is not required.
+/// </remarks>
+public interface IAsyncDeserializerPreparationRequirement
+{
+    /// <summary>Gets whether this instance requires the asynchronous preparation path.</summary>
+    bool RequiresPreparation { get; }
 }

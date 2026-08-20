@@ -1223,8 +1223,6 @@ public sealed class ConsumeOneFastPathTests
     private sealed class GatedPreparedStringDeserializer
         : IDeserializer<string>, IAsyncDeserializerPreparer<string>
     {
-        public bool RequiresPreparation => true;
-
         private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private int _prepared;
 
@@ -1287,7 +1285,9 @@ public sealed class ConsumeOneFastPathTests
     }
 
     private sealed class PreparationNotRequiredStringDeserializer
-        : IDeserializer<string>, IAsyncDeserializerPreparer<string>
+        : IDeserializer<string>,
+          IAsyncDeserializerPreparer<string>,
+          IAsyncDeserializerPreparationRequirement
     {
         public bool RequiresPreparation => false;
         public int PrepareCallCount { get; private set; }
@@ -1343,8 +1343,6 @@ public sealed class ConsumeOneFastPathTests
     private sealed class PreparedOnlyStringDeserializer
         : IDeserializer<string>, IAsyncDeserializerPreparer<string>
     {
-        public bool RequiresPreparation => true;
-
         private int _prepared;
 
         public int PrepareCount { get; private set; }

@@ -26,6 +26,7 @@ namespace Dekaf.SchemaRegistry.Protobuf;
 public sealed class ProtobufSchemaRegistryDeserializer<T> :
     IDeserializer<T>,
     IAsyncDeserializerPreparer<T>,
+    IAsyncDeserializerPreparationRequirement,
     IAsyncDisposable
     where T : IMessage<T>, IBufferMessage, new()
 {
@@ -72,7 +73,7 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> :
         }
     }
 
-    bool IAsyncDeserializerPreparer<T>.RequiresPreparation =>
+    bool IAsyncDeserializerPreparationRequirement.RequiresPreparation =>
         _ruleExecutor is not null && _subjectNames is { RequiresPreparation: true };
 
     ValueTask IAsyncDeserializerPreparer<T>.PrepareAsync(
