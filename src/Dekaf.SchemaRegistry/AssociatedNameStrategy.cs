@@ -86,11 +86,10 @@ public sealed class AssociatedNameStrategy : IAsyncSubjectNameStrategy
     private readonly ConcurrentDictionary<CacheKey, string> _cache = new();
     private readonly Dictionary<CacheKey, PendingResolution> _pending = [];
     private readonly HashSet<PendingResolution> _invalidatedPending = [];
+    private readonly List<WeakReference<IAssociatedNameCacheInvalidationTarget>> _invalidationTargets = [];
     private readonly Dictionary<CacheKey, LinkedListNode<CacheKey>> _orderNodes = [];
     private readonly LinkedList<CacheKey> _order = [];
     private readonly object _gate = new();
-
-    internal event Action? CacheInvalidated;
 
     /// <summary>Creates an association-backed subject-name strategy.</summary>
     public AssociatedNameStrategy(
@@ -120,6 +119,26 @@ public sealed class AssociatedNameStrategy : IAsyncSubjectNameStrategy
 
     /// <summary>Gets the number of successful resolutions currently cached.</summary>
     public int CachedSubjectCount => _cache.Count;
+
+    internal void RegisterCacheInvalidationTarget(IAssociatedNameCacheInvalidationTarget target)
+    {
+        lock (_gate)
+        {
+            for (var index = _invalidationTargets.Count - 1; index >= 0; index--)
+            {
+                if (!_invalidationTargets[index].TryGetTarget(out var existing))
+                {
+                    _invalidationTargets.RemoveAt(index);
+                    continue;
+                }
+
+                if (ReferenceEquals(existing, target))
+                    return;
+            }
+
+            _invalidationTargets.Add(new WeakReference<IAssociatedNameCacheInvalidationTarget>(target));
+        }
+    }
 
     /// <inheritdoc />
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -164,7 +183,7 @@ public sealed class AssociatedNameStrategy : IAsyncSubjectNameStrategy
                 _invalidatedPending.Add(pending);
             var removed = _cache.TryRemove(key, out _);
             RemoveOrderNode(key);
-            NotifyCacheInvalidated();
+            InvalidateDependentCaches();
             return removed;
         }
     }
@@ -179,7 +198,7 @@ public sealed class AssociatedNameStrategy : IAsyncSubjectNameStrategy
             _cache.Clear();
             _order.Clear();
             _orderNodes.Clear();
-            NotifyCacheInvalidated();
+            InvalidateDependentCaches();
         }
     }
 
@@ -239,7 +258,7 @@ public sealed class AssociatedNameStrategy : IAsyncSubjectNameStrategy
                 {
                     Publish(key, subject);
                     if (pending.IsRefresh)
-                        NotifyCacheInvalidated();
+                        InvalidateDependentCaches();
                 }
             }
 
@@ -345,7 +364,16 @@ public sealed class AssociatedNameStrategy : IAsyncSubjectNameStrategy
         _order.Remove(node);
     }
 
-    private void NotifyCacheInvalidated() => CacheInvalidated?.Invoke();
+    private void InvalidateDependentCaches()
+    {
+        for (var index = _invalidationTargets.Count - 1; index >= 0; index--)
+        {
+            if (_invalidationTargets[index].TryGetTarget(out var target))
+                target.InvalidateAssociatedNameCache();
+            else
+                _invalidationTargets.RemoveAt(index);
+        }
+    }
 
     private static void ValidateTopic(string topic) =>
         ArgumentException.ThrowIfNullOrWhiteSpace(topic);
@@ -376,4 +404,9 @@ public sealed class AssociatedNameStrategy : IAsyncSubjectNameStrategy
         internal bool IsRefresh { get; } = isRefresh;
         internal Task<string> Task { get; set; } = null!;
     }
+}
+
+internal interface IAssociatedNameCacheInvalidationTarget
+{
+    void InvalidateAssociatedNameCache();
 }

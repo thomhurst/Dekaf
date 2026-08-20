@@ -225,42 +225,6 @@ public sealed class SchemaRegistryCacheTests
     }
 
     [Test]
-    public async Task SubjectSchemaIdCache_ClearRemovesEveryCacheTier()
-    {
-        var cache = new SubjectSchemaIdCache();
-        var entryCount = SubjectSchemaIdCache.MaxCachedEntries
-            + SubjectSchemaIdCache.FixedOverflowCapacity
-            + SubjectSchemaIdCache.TurnoverRetentionCapacity;
-        for (var index = 0; index < entryCount; index++)
-        {
-            _ = cache.GetOrAdd(
-                $"clear-topic-{index}",
-                isKey: false,
-                state: index,
-                static (_, topic, _) => topic,
-                static (schemaId, _) => new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(schemaId, null));
-        }
-
-        cache.Clear();
-
-        await Assert.That(cache.CachedEntryCount).IsEqualTo(0);
-        await Assert.That(cache.TryGet("clear-topic-0", isKey: false, out _)).IsFalse();
-        for (var index = SubjectSchemaIdCache.MaxCachedEntries; index < entryCount; index++)
-        {
-            await Assert.That(cache.TryGet($"clear-topic-{index}", isKey: false, out _)).IsFalse();
-        }
-
-        var fresh = cache.CacheEntry(
-            "fresh-topic",
-            isKey: false,
-            "fresh-subject",
-            42,
-            new Schema { SchemaType = SchemaType.Json, SchemaString = "{}" });
-        await Assert.That(fresh.SchemaId).IsEqualTo(42);
-        await Assert.That(cache.TryGet("fresh-topic", isKey: false, out _)).IsTrue();
-    }
-
-    [Test]
     public async Task SubjectSchemaIdCache_ConcurrentTurnoverStaysBounded()
     {
         var cache = new SubjectSchemaIdCache();

@@ -75,10 +75,11 @@ public class AssociatedNameStrategyBenchmarks
 
     private sealed class AssociationHandler : HttpMessageHandler
     {
-        protected override Task<HttpResponseMessage> SendAsync(
+        protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
+            await Task.CompletedTask.ConfigureAwait(false);
             var path = request.RequestUri!.AbsolutePath;
             var content = path.Contains("/subjects/", StringComparison.Ordinal)
                 ? """{"subject":"benchmark-associated-value","version":1,"id":1,"schemaType":"JSON","schema":"{\"type\":\"integer\"}"}"""
@@ -87,10 +88,10 @@ public class AssociatedNameStrategyBenchmarks
                     : """
                   [{"subject":"benchmark-associated-value","guid":"benchmark-guid","resourceName":"benchmark-orders","resourceNamespace":"-","resourceId":"benchmark-orders","resourceType":"topic","associationType":"value","lifecycle":"WEAK","frozen":false}]
                   """;
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(content)
-            });
+            };
         }
     }
 }

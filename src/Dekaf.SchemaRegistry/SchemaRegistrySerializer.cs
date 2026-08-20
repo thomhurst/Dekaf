@@ -26,7 +26,8 @@ namespace Dekaf.SchemaRegistry;
 public sealed class SchemaRegistrySerializer<T> :
     ISerializer<T>,
     IAsyncSerializerPreparer<T>,
-    IAsyncDisposable
+    IAsyncDisposable,
+    IAssociatedNameCacheInvalidationTarget
 {
     private const byte MagicByte = 0x00;
 
@@ -51,8 +52,7 @@ public sealed class SchemaRegistrySerializer<T> :
 
     private readonly SchemaResolutionCache<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> _schemaResolutionCache = new();
     private readonly SubjectSchemaCache? _subjectSchemaCache;
-    private readonly SubjectSchemaIdCache _subjectSchemaIdCache = new();
-    private int _associatedSubjectCacheVersion;
+    private SubjectSchemaIdCache _subjectSchemaIdCache = new();
 
     /// <summary>
     /// Creates a new Schema Registry serializer.
@@ -113,7 +113,7 @@ public sealed class SchemaRegistrySerializer<T> :
         _useLegacySubjectNames = useLegacySubjectNames;
         _ownsClient = ownsClient;
         _ruleExecutor = ruleExecutor;
-        SubscribeToAssociatedNameInvalidation();
+        RegisterAssociatedNameInvalidation();
     }
 
     /// <summary>
@@ -167,7 +167,7 @@ public sealed class SchemaRegistrySerializer<T> :
         _useLegacySubjectNames = useLegacySubjectNames;
         _ownsClient = ownsClient;
         _ruleExecutor = ruleExecutor;
-        SubscribeToAssociatedNameInvalidation();
+        RegisterAssociatedNameInvalidation();
     }
 
     /// <summary>
@@ -200,7 +200,6 @@ public sealed class SchemaRegistrySerializer<T> :
         _normalizeSchemas = normalizeSchemas;
         _ownsClient = ownsClient;
         _ruleExecutor = ruleExecutor;
-        SubscribeToAssociatedNameInvalidation();
     }
 
     /// <summary>
@@ -226,7 +225,7 @@ public sealed class SchemaRegistrySerializer<T> :
         _normalizeSchemas = normalizeSchemas;
         _ownsClient = ownsClient;
         _ruleExecutor = ruleExecutor;
-        SubscribeToAssociatedNameInvalidation();
+        RegisterAssociatedNameInvalidation();
     }
 
     /// <summary>
@@ -254,7 +253,7 @@ public sealed class SchemaRegistrySerializer<T> :
         _normalizeSchemas = normalizeSchemas;
         _ownsClient = ownsClient;
         _ruleExecutor = ruleExecutor;
-        SubscribeToAssociatedNameInvalidation();
+        RegisterAssociatedNameInvalidation();
     }
 
     /// <summary>
@@ -266,10 +265,11 @@ public sealed class SchemaRegistrySerializer<T> :
         bool isKey = false,
         CancellationToken cancellationToken = default)
     {
-        if (_subjectSchemaIdCache.TryGet(topic, isKey, out var cached))
+        var cache = Volatile.Read(ref _subjectSchemaIdCache);
+        if (cache.TryGet(topic, isKey, out var cached))
             return new ValueTask<ResolvedSchemaContext>(ToResolvedContext(cached));
 
-        return PrepareCoreAsync(topic, isKey, cancellationToken);
+        return PrepareCoreAsync(topic, isKey, cache, cancellationToken);
     }
 
     /// <inheritdoc />
@@ -343,7 +343,7 @@ public sealed class SchemaRegistrySerializer<T> :
     }
 
     private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry GetSchemaForContext(string topic, bool isKey)
-        => _subjectSchemaIdCache.GetOrAdd(
+        => Volatile.Read(ref _subjectSchemaIdCache).GetOrAdd(
             topic,
             isKey,
             this,
@@ -363,16 +363,11 @@ public sealed class SchemaRegistrySerializer<T> :
     private ValueTask<ResolvedSchemaContext> PrepareCoreAsync(
         string topic,
         bool isKey,
+        SubjectSchemaIdCache cache,
         CancellationToken cancellationToken)
     {
         if (_asyncSubjectNameStrategy is not null)
-        {
-            return PrepareAssociatedCoreAsync(
-                topic,
-                isKey,
-                Volatile.Read(ref _associatedSubjectCacheVersion),
-                cancellationToken);
-        }
+            return PrepareAssociatedCoreAsync(topic, isKey, cache, cancellationToken);
 
         var resolved = ResolveSubjectAndSchema(topic, isKey);
         var resolution = ResolveSchemaAsync(
@@ -383,7 +378,7 @@ public sealed class SchemaRegistrySerializer<T> :
         {
             var value = resolution.Result;
             return new ValueTask<ResolvedSchemaContext>(ToResolvedContext(
-                _subjectSchemaIdCache.CacheEntry(
+                cache.CacheEntry(
                     topic,
                     isKey,
                     resolved.Subject,
@@ -391,17 +386,17 @@ public sealed class SchemaRegistrySerializer<T> :
                     value.Schema!)));
         }
 
-        return AwaitSchemaAsync(this, topic, isKey, resolved.Subject, resolution);
+        return AwaitSchemaAsync(topic, isKey, resolved.Subject, cache, resolution);
 
         static async ValueTask<ResolvedSchemaContext> AwaitSchemaAsync(
-            SchemaRegistrySerializer<T> serializer,
             string topic,
             bool isKey,
             string subject,
+            SubjectSchemaIdCache cache,
             ValueTask<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> resolution)
         {
             var value = await resolution.ConfigureAwait(false);
-            return ToResolvedContext(serializer._subjectSchemaIdCache.CacheEntry(
+            return ToResolvedContext(cache.CacheEntry(
                 topic,
                 isKey,
                 subject,
@@ -413,46 +408,37 @@ public sealed class SchemaRegistrySerializer<T> :
     private async ValueTask<ResolvedSchemaContext> PrepareAssociatedCoreAsync(
         string topic,
         bool isKey,
-        int cacheVersion,
+        SubjectSchemaIdCache cache,
         CancellationToken cancellationToken)
     {
         var resolved = await ResolveAssociatedSubjectAndSchemaAsync(topic, isKey, cancellationToken)
             .ConfigureAwait(false);
         var value = await ResolveSchemaAsync(resolved.Subject, resolved.Schema, cancellationToken)
             .ConfigureAwait(false);
-        if (cacheVersion != Volatile.Read(ref _associatedSubjectCacheVersion))
+        if (!ReferenceEquals(cache, Volatile.Read(ref _subjectSchemaIdCache)))
         {
-            return await PrepareAssociatedAfterInvalidationAsync(topic, isKey, cancellationToken)
+            return await PrepareAfterInvalidationAsync(topic, isKey, cancellationToken)
                 .ConfigureAwait(false);
         }
 
-        var cached = _subjectSchemaIdCache.CacheEntry(
+        return ToResolvedContext(cache.CacheEntry(
             topic,
             isKey,
             resolved.Subject,
             value.SchemaId,
-            value.Schema!);
-        if (cacheVersion == Volatile.Read(ref _associatedSubjectCacheVersion))
-            return ToResolvedContext(cached);
-
-        _subjectSchemaIdCache.Clear();
-        return await PrepareAssociatedAfterInvalidationAsync(topic, isKey, cancellationToken)
-            .ConfigureAwait(false);
+            value.Schema!));
     }
 
-    private ValueTask<ResolvedSchemaContext> PrepareAssociatedAfterInvalidationAsync(
+    private ValueTask<ResolvedSchemaContext> PrepareAfterInvalidationAsync(
         string topic,
         bool isKey,
         CancellationToken cancellationToken)
     {
-        if (_subjectSchemaIdCache.TryGet(topic, isKey, out var cached))
+        var cache = Volatile.Read(ref _subjectSchemaIdCache);
+        if (cache.TryGet(topic, isKey, out var cached))
             return new ValueTask<ResolvedSchemaContext>(ToResolvedContext(cached));
 
-        return PrepareAssociatedCoreAsync(
-            topic,
-            isKey,
-            Volatile.Read(ref _associatedSubjectCacheVersion),
-            cancellationToken);
+        return PrepareAssociatedCoreAsync(topic, isKey, cache, cancellationToken);
     }
 
     private async ValueTask<ResolvedSubjectSchema> ResolveAssociatedSubjectAndSchemaAsync(
@@ -887,22 +873,17 @@ public sealed class SchemaRegistrySerializer<T> :
             ? new AssociatedNameStrategy(schemaRegistry)
             : null;
 
-    private void SubscribeToAssociatedNameInvalidation()
+    private void RegisterAssociatedNameInvalidation()
     {
-        if (_asyncSubjectNameStrategy is AssociatedNameStrategy associatedNameStrategy)
-            associatedNameStrategy.CacheInvalidated += InvalidateAssociatedSubjectSchemaCache;
+        if (_asyncSubjectNameStrategy is AssociatedNameStrategy strategy)
+            strategy.RegisterCacheInvalidationTarget(this);
     }
 
-    private void InvalidateAssociatedSubjectSchemaCache()
-    {
-        Interlocked.Increment(ref _associatedSubjectCacheVersion);
-        _subjectSchemaIdCache.Clear();
-    }
+    void IAssociatedNameCacheInvalidationTarget.InvalidateAssociatedNameCache() =>
+        Volatile.Write(ref _subjectSchemaIdCache, new SubjectSchemaIdCache());
 
     public ValueTask DisposeAsync()
     {
-        if (_asyncSubjectNameStrategy is AssociatedNameStrategy associatedNameStrategy)
-            associatedNameStrategy.CacheInvalidated -= InvalidateAssociatedSubjectSchemaCache;
         if (_ownsClient)
             _schemaRegistry.Dispose();
         return ValueTask.CompletedTask;
