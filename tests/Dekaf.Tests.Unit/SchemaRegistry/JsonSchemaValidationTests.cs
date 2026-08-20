@@ -817,6 +817,52 @@ public sealed class JsonSchemaValidationTests
     }
 
     [Test]
+    public void InlineRules_CompareCollectionsStructurally()
+    {
+        const string schemaText = """
+            {
+              "type": "object",
+              "confluent:rules": [{
+                "name": "collections",
+                "expr": "this.left == this.right && this.values == this.expected"
+              }]
+            }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
+
+        validator.ValidateRules(
+            """{"left":{"id":1,"name":"a"},"right":{"name":"a","id":1.0},"values":[1,"\u0061"],"expected":[1.0,"a"]}"""u8.ToArray(),
+            24,
+            failFast: false);
+        Assert.Throws<ValidationRulesFailedException>(() => validator.ValidateRules(
+            """{"left":{},"right":{},"values":[1,2],"expected":[2,1]}"""u8.ToArray(),
+            24,
+            failFast: false));
+    }
+
+    [Test]
+    public void InlineRules_RejectOpaqueCustomRuleExecutor()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        var options = new JsonSchemaValidationOptions
+        {
+            ValidatorFactory = CreateFactory(),
+            Mode = JsonSchemaValidationMode.None,
+            ValidationRulesExecution = ValidationRulesExecution.AfterDomainRules
+        };
+
+        Assert.Throws<NotSupportedException>(() =>
+        {
+            _ = new JsonSchemaRegistrySerializer<NamePayload>(
+                registry,
+                """{"type":"object"}""",
+                jsonOptions: null,
+                validationOptions: options,
+                ruleExecutor: new PassThroughRuleExecutor());
+        });
+    }
+
+    [Test]
     public void InlineRules_SizeCountsNestedCollectionElementsOnce()
     {
         const string schemaText = """

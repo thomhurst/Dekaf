@@ -68,6 +68,15 @@ public class JsonSchemaValidationBenchmarks
         }
         """;
 
+    private const string StructuralEqualityJsonSchema = """
+        {
+          "confluent:rules": [{
+            "name": "equal",
+            "expr": "this.left == this.right && this.values == this.expected"
+          }]
+        }
+        """;
+
     private ArrayBufferWriter<byte> _disabledDestination = new(256);
     private ArrayBufferWriter<byte> _enabledDestination = new(256);
     private ArrayBufferWriter<byte> _inlineRulesDestination = new(256);
@@ -87,6 +96,8 @@ public class JsonSchemaValidationBenchmarks
     private IJsonSchemaValidator _inlineRulesValidator = null!;
     private ReadOnlyMemory<byte> _nestedInlineRulesJsonPayload;
     private IJsonSchemaValidator _nestedInlineRulesValidator = null!;
+    private ReadOnlyMemory<byte> _structuralEqualityJsonPayload;
+    private IJsonSchemaValidator _structuralEqualityValidator = null!;
     private SerializationContext _context;
     private int _alternateSchemaIndex;
 
@@ -166,6 +177,15 @@ public class JsonSchemaValidationBenchmarks
             SchemaString = NestedInlineRulesJsonSchema
         });
         _nestedInlineRulesValidator.ValidateRules(_nestedInlineRulesJsonPayload, 2, failFast: false);
+        _structuralEqualityJsonPayload =
+            """{"left":{"id":1,"name":"bench"},"right":{"name":"bench","id":1.0},"values":[1,"a"],"expected":[1.0,"\u0061"]}"""u8
+                .ToArray();
+        _structuralEqualityValidator = inlineRulesFactory.GetOrCreate(new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = StructuralEqualityJsonSchema
+        });
+        _structuralEqualityValidator.ValidateRules(_structuralEqualityJsonPayload, 3, failFast: false);
         _inlineRulesDestination.Clear();
         _ = _disabledDeserializer.Deserialize(_wirePayload, _context);
         _ = _enabledDeserializer.Deserialize(_wirePayload, _context);
@@ -225,6 +245,10 @@ public class JsonSchemaValidationBenchmarks
     [Benchmark]
     public void ValidateNestedInlineRules() =>
         _nestedInlineRulesValidator.ValidateRules(_nestedInlineRulesJsonPayload, 2, failFast: false);
+
+    [Benchmark]
+    public void ValidateStructuralEquality() =>
+        _structuralEqualityValidator.ValidateRules(_structuralEqualityJsonPayload, 3, failFast: false);
 
     [Benchmark]
     public BenchmarkPayload DeserializeValidationEnabledAlternatingSchemas()

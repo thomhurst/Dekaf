@@ -136,16 +136,22 @@ internal readonly record struct ValidationResult(
 
 internal sealed class CompiledValidationRule
 {
+    [ThreadStatic]
+    private static ReadOnlyMemory<byte>[]? t_memberValues;
+
     private readonly ValidationCelNode? _expression;
+    private readonly ValidationCelMemberTable? _members;
     private readonly string? _compilationError;
 
     private CompiledValidationRule(
         ValidationRule rule,
         ValidationCelNode? expression,
+        ValidationCelMemberTable? members = null,
         string? compilationError = null)
     {
         Rule = rule;
         _expression = expression;
+        _members = members;
         _compilationError = compilationError;
     }
 
@@ -159,19 +165,23 @@ internal sealed class CompiledValidationRule
             return new CompiledValidationRule(
                 rule,
                 expression: null,
-                $"Validation rule '{rule.Name ?? "unnamed"}' has no expression.");
+                members: null,
+                compilationError: $"Validation rule '{rule.Name ?? "unnamed"}' has no expression.");
         }
 
         try
         {
-            return new CompiledValidationRule(rule, new ValidationCelParser(rule.Expr).Parse());
+            var parser = new ValidationCelParser(rule.Expr);
+            var expression = parser.Parse();
+            return new CompiledValidationRule(rule, expression, parser.CreateMemberTable());
         }
         catch (Exception exception)
         {
             return new CompiledValidationRule(
                 rule,
                 expression: null,
-                $"Could not compile validation rule '{rule.Name ?? "unnamed"}': {exception.Message}");
+                members: null,
+                compilationError: $"Could not compile validation rule '{rule.Name ?? "unnamed"}': {exception.Message}");
         }
     }
 
@@ -180,9 +190,17 @@ internal sealed class CompiledValidationRule
         if (_compilationError is not null)
             throw new SchemaRegistryRuleException(_compilationError);
 
+        var memberCount = _members?.Count ?? 0;
+        ReadOnlyMemory<byte>[]? memberValues = null;
         try
         {
-            var result = _expression!.Evaluate(new ValidationCelContext(value, nowUnixMilliseconds));
+            memberValues = memberCount == 0
+                ? null
+                : GetMemberValues(memberCount);
+            if (memberValues is not null)
+                _members!.Resolve(value, memberValues);
+
+            var result = _expression!.Evaluate(new ValidationCelContext(value, nowUnixMilliseconds, memberValues));
             return result.Kind switch
             {
                 ValidationCelValueKind.Boolean => ValidationResult.FromBoolean(result.Boolean),
@@ -201,12 +219,116 @@ internal sealed class CompiledValidationRule
                 $"Could not evaluate validation rule '{Rule.Name ?? "unnamed"}'.",
                 exception);
         }
+        finally
+        {
+            if (memberValues is not null)
+                Array.Clear(memberValues, 0, memberCount);
+        }
+    }
+
+    private static ReadOnlyMemory<byte>[] GetMemberValues(int count)
+    {
+        var values = t_memberValues;
+        if (values is null || values.Length < count)
+            t_memberValues = values = new ReadOnlyMemory<byte>[Math.Max(count, 8)];
+        return values;
     }
 }
 
 internal readonly record struct ValidationCelContext(
     ReadOnlyMemory<byte> This,
-    long NowUnixMilliseconds);
+    long NowUnixMilliseconds,
+    ReadOnlyMemory<byte>[]? MemberValues);
+
+internal sealed class ValidationCelMemberTable(byte[][] names)
+{
+    private readonly byte[][] _names = names;
+    private readonly int[] _buckets = CreateBuckets(names);
+
+    internal int Count => _names.Length;
+
+    internal void Resolve(ReadOnlyMemory<byte> json, ReadOnlyMemory<byte>[] values)
+    {
+        var reader = new Utf8JsonReader(json.Span);
+        if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject)
+            return;
+
+        while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
+        {
+            if (reader.TokenType != JsonTokenType.PropertyName)
+                return;
+            var index = Find(ref reader);
+            if (!reader.Read())
+                return;
+            var start = checked((int)reader.TokenStartIndex);
+            if (index >= 0)
+            {
+                var end = reader;
+                end.Skip();
+                values[index] = json.Slice(start, checked((int)end.BytesConsumed) - start);
+            }
+            reader.Skip();
+        }
+    }
+
+    private int Find(ref Utf8JsonReader reader)
+    {
+        var maximumLength = reader.ValueSpan.Length;
+        byte[]? rented = null;
+        Span<byte> decoded = reader.ValueIsEscaped
+            ? maximumLength <= 256
+                ? stackalloc byte[maximumLength]
+                : (rented = ArrayPool<byte>.Shared.Rent(maximumLength))
+            : default;
+        try
+        {
+            var name = reader.ValueIsEscaped
+                ? decoded[..reader.CopyString(decoded)]
+                : reader.ValueSpan;
+            var hash = Hash(name);
+            var bucket = (int)(hash & (uint)(_buckets.Length - 1));
+            while (true)
+            {
+                var stored = _buckets[bucket];
+                if (stored == 0)
+                    return -1;
+                var index = stored - 1;
+                if (name.SequenceEqual(_names[index]))
+                    return index;
+                bucket = (bucket + 1) & (_buckets.Length - 1);
+            }
+        }
+        finally
+        {
+            if (rented is not null)
+                ArrayPool<byte>.Shared.Return(rented);
+        }
+    }
+
+    private static int[] CreateBuckets(byte[][] names)
+    {
+        var capacity = 4;
+        while (capacity < names.Length * 2)
+            capacity <<= 1;
+        var buckets = new int[capacity];
+        for (var index = 0; index < names.Length; index++)
+        {
+            var bucket = (int)(Hash(names[index]) & (uint)(capacity - 1));
+            while (buckets[bucket] != 0)
+                bucket = (bucket + 1) & (capacity - 1);
+            buckets[bucket] = index + 1;
+        }
+        return buckets;
+    }
+
+    private static uint Hash(ReadOnlySpan<byte> value)
+    {
+        var hash = 2166136261u;
+        for (var index = 0; index < value.Length; index++)
+            hash = (hash ^ value[index]) * 16777619u;
+        return hash;
+    }
+}
 
 internal enum ValidationCelValueKind : byte
 {
@@ -286,12 +408,13 @@ internal sealed class ValidationCelLiteralNode(ValidationCelValue value) : Valid
     internal override ValidationCelValue Evaluate(ValidationCelContext context) => value;
 }
 
-internal sealed class ValidationCelThisNode(byte[][] path) : ValidationCelNode
+internal sealed class ValidationCelThisNode(byte[][] path, int memberIndex) : ValidationCelNode
 {
     internal override ValidationCelValue Evaluate(ValidationCelContext context)
     {
-        var value = ValidationCelValue.FromJson(context.This);
-        for (var index = 0; index < path.Length; index++)
+        var value = ValidationCelValue.FromJson(
+            path.Length == 0 ? context.This : context.MemberValues![memberIndex]);
+        for (var index = 1; index < path.Length; index++)
         {
             if (value.Kind != ValidationCelValueKind.Object || !TryGetProperty(value.Json, path[index], out var property))
                 return ValidationCelValue.Missing;
@@ -398,7 +521,9 @@ internal sealed class ValidationCelBinaryNode(
             ValidationCelValueKind.Boolean => left.Boolean == right.Boolean,
             ValidationCelValueKind.Number => left.Number.Equals(right.Number),
             ValidationCelValueKind.String => ValidationCelStrings.Evaluate(left, right, ValidationCelStringOperation.Equal),
-            _ => left.Json.Span.SequenceEqual(right.Json.Span)
+            ValidationCelValueKind.Object or ValidationCelValueKind.Array =>
+                ValidationCelJsonEquality.AreEqual(left.Json.Span, right.Json.Span),
+            _ => false
         };
     }
 
@@ -409,6 +534,243 @@ internal sealed class ValidationCelBinaryNode(
         if (left.Kind == ValidationCelValueKind.String && right.Kind == ValidationCelValueKind.String)
             return ValidationCelStrings.Compare(left, right);
         throw Unsupported("Comparison operands must have matching numeric or string types.");
+    }
+}
+
+internal static class ValidationCelJsonEquality
+{
+    internal static bool AreEqual(ReadOnlySpan<byte> left, ReadOnlySpan<byte> right)
+    {
+        var leftReader = new Utf8JsonReader(left);
+        var rightReader = new Utf8JsonReader(right);
+        return leftReader.Read() && rightReader.Read() && AreCurrentEqual(ref leftReader, left, ref rightReader, right);
+    }
+
+    private static bool AreCurrentEqual(
+        ref Utf8JsonReader leftReader,
+        ReadOnlySpan<byte> left,
+        ref Utf8JsonReader rightReader,
+        ReadOnlySpan<byte> right)
+    {
+        if (leftReader.TokenType != rightReader.TokenType)
+        {
+            if (leftReader.TokenType == JsonTokenType.Number && rightReader.TokenType == JsonTokenType.Number)
+                return NumbersEqual(ref leftReader, ref rightReader);
+            return false;
+        }
+
+        return leftReader.TokenType switch
+        {
+            JsonTokenType.Null => true,
+            JsonTokenType.True or JsonTokenType.False => true,
+            JsonTokenType.Number => NumbersEqual(ref leftReader, ref rightReader),
+            JsonTokenType.String => StringsEqual(ref leftReader, ref rightReader),
+            JsonTokenType.StartArray => ArraysEqual(ref leftReader, left, ref rightReader, right),
+            JsonTokenType.StartObject => ObjectsEqual(left, right),
+            _ => false
+        };
+    }
+
+    private static bool NumbersEqual(ref Utf8JsonReader left, ref Utf8JsonReader right) =>
+        left.TryGetDecimal(out var leftValue) &&
+        right.TryGetDecimal(out var rightValue) &&
+        leftValue == rightValue;
+
+    private static bool StringsEqual(ref Utf8JsonReader left, ref Utf8JsonReader right)
+    {
+        if (!left.ValueIsEscaped)
+            return right.ValueTextEquals(left.ValueSpan);
+
+        var maximumLength = left.ValueSpan.Length;
+        byte[]? rented = null;
+        Span<byte> decoded = maximumLength <= 256
+            ? stackalloc byte[maximumLength]
+            : (rented = ArrayPool<byte>.Shared.Rent(maximumLength));
+        try
+        {
+            var written = left.CopyString(decoded);
+            return right.ValueTextEquals(decoded[..written]);
+        }
+        finally
+        {
+            if (rented is not null)
+                ArrayPool<byte>.Shared.Return(rented);
+        }
+    }
+
+    private static bool ArraysEqual(
+        ref Utf8JsonReader leftReader,
+        ReadOnlySpan<byte> left,
+        ref Utf8JsonReader rightReader,
+        ReadOnlySpan<byte> right)
+    {
+        while (leftReader.Read() && rightReader.Read())
+        {
+            if (leftReader.TokenType == JsonTokenType.EndArray || rightReader.TokenType == JsonTokenType.EndArray)
+                return leftReader.TokenType == rightReader.TokenType;
+            var leftValue = SliceCurrent(ref leftReader, left);
+            var rightValue = SliceCurrent(ref rightReader, right);
+            if (!AreEqual(leftValue, rightValue))
+                return false;
+        }
+        return false;
+    }
+
+    private static bool ObjectsEqual(ReadOnlySpan<byte> left, ReadOnlySpan<byte> right)
+    {
+        var count = CountProperties(left);
+        var capacity = 4;
+        while (capacity < count * 2)
+            capacity <<= 1;
+
+        PropertyEntry[]? rented = null;
+        Span<PropertyEntry> table = capacity <= 64
+            ? stackalloc PropertyEntry[capacity]
+            : (rented = ArrayPool<PropertyEntry>.Shared.Rent(capacity));
+        table = table[..capacity];
+        table.Clear();
+        try
+        {
+            FillTable(left, table);
+            var reader = new Utf8JsonReader(right);
+            if (!reader.Read())
+                return false;
+            var matched = 0;
+            while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
+            {
+                if (reader.TokenType != JsonTokenType.PropertyName)
+                    return false;
+                var hash = HashName(ref reader);
+                var bucket = (int)(hash & (uint)(capacity - 1));
+                while (table[bucket].Occupied &&
+                       (table[bucket].Hash != hash || !NameEquals(left, table[bucket], ref reader)))
+                    bucket = (bucket + 1) & (capacity - 1);
+                if (!table[bucket].Occupied || table[bucket].Matched || !reader.Read())
+                    return false;
+                var rightValue = SliceCurrent(ref reader, right);
+                var entry = table[bucket];
+                if (!AreEqual(left.Slice(entry.ValueStart, entry.ValueLength), rightValue))
+                    return false;
+                entry.Matched = true;
+                table[bucket] = entry;
+                matched++;
+            }
+            return matched == count;
+        }
+        finally
+        {
+            if (rented is not null)
+                ArrayPool<PropertyEntry>.Shared.Return(rented);
+        }
+    }
+
+    private static int CountProperties(ReadOnlySpan<byte> json)
+    {
+        var reader = new Utf8JsonReader(json);
+        _ = reader.Read();
+        var count = 0;
+        while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
+        {
+            count++;
+            if (!reader.Read())
+                break;
+            reader.Skip();
+        }
+        return count;
+    }
+
+    private static void FillTable(ReadOnlySpan<byte> json, Span<PropertyEntry> table)
+    {
+        var reader = new Utf8JsonReader(json);
+        _ = reader.Read();
+        while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
+        {
+            var nameStart = checked((int)reader.TokenStartIndex + 1);
+            var nameLength = reader.ValueSpan.Length;
+            var escaped = reader.ValueIsEscaped;
+            var hash = HashName(ref reader);
+            if (!reader.Read())
+                return;
+            var valueStart = checked((int)reader.TokenStartIndex);
+            var end = reader;
+            end.Skip();
+            var bucket = (int)(hash & (uint)(table.Length - 1));
+            while (table[bucket].Occupied)
+                bucket = (bucket + 1) & (table.Length - 1);
+            table[bucket] = new PropertyEntry(
+                hash,
+                nameStart,
+                nameLength,
+                valueStart,
+                checked((int)end.BytesConsumed) - valueStart,
+                escaped);
+            reader.Skip();
+        }
+    }
+
+    private static bool NameEquals(ReadOnlySpan<byte> source, PropertyEntry entry, ref Utf8JsonReader right)
+    {
+        var name = source.Slice(entry.NameStart, entry.NameLength);
+        if (!entry.NameEscaped)
+            return right.ValueTextEquals(name);
+        var reader = new Utf8JsonReader(source.Slice(entry.NameStart - 1, entry.NameLength + 2));
+        _ = reader.Read();
+        return StringsEqual(ref reader, ref right);
+    }
+
+    private static uint HashName(ref Utf8JsonReader reader)
+    {
+        if (!reader.ValueIsEscaped)
+            return Hash(reader.ValueSpan);
+        var maximumLength = reader.ValueSpan.Length;
+        byte[]? rented = null;
+        Span<byte> decoded = maximumLength <= 256
+            ? stackalloc byte[maximumLength]
+            : (rented = ArrayPool<byte>.Shared.Rent(maximumLength));
+        try
+        {
+            return Hash(decoded[..reader.CopyString(decoded)]);
+        }
+        finally
+        {
+            if (rented is not null)
+                ArrayPool<byte>.Shared.Return(rented);
+        }
+    }
+
+    private static uint Hash(ReadOnlySpan<byte> value)
+    {
+        var hash = 2166136261u;
+        for (var index = 0; index < value.Length; index++)
+            hash = (hash ^ value[index]) * 16777619u;
+        return hash;
+    }
+
+    private static ReadOnlySpan<byte> SliceCurrent(ref Utf8JsonReader reader, ReadOnlySpan<byte> source)
+    {
+        var start = checked((int)reader.TokenStartIndex);
+        var end = reader;
+        end.Skip();
+        reader.Skip();
+        return source.Slice(start, checked((int)end.BytesConsumed) - start);
+    }
+
+    private struct PropertyEntry(
+        uint hash,
+        int nameStart,
+        int nameLength,
+        int valueStart,
+        int valueLength,
+        bool nameEscaped)
+    {
+        internal uint Hash = hash;
+        internal int NameStart = nameStart;
+        internal int NameLength = nameLength;
+        internal int ValueStart = valueStart;
+        internal int ValueLength = valueLength;
+        internal bool NameEscaped = nameEscaped;
+        internal bool Occupied = true;
+        internal bool Matched;
     }
 }
 
@@ -655,6 +1017,8 @@ internal readonly record struct ValidationCelToken(ValidationCelTokenKind Kind, 
 internal sealed class ValidationCelParser
 {
     private readonly string _expression;
+    private readonly Dictionary<string, int> _memberIndexes = new(StringComparer.Ordinal);
+    private readonly List<byte[]> _memberNames = [];
     private int _position;
     private ValidationCelToken _current;
 
@@ -670,6 +1034,9 @@ internal sealed class ValidationCelParser
         Expect(ValidationCelTokenKind.End);
         return result;
     }
+
+    internal ValidationCelMemberTable? CreateMemberTable() =>
+        _memberNames.Count == 0 ? null : new ValidationCelMemberTable([.. _memberNames]);
 
     private ValidationCelNode ParseConditional()
     {
@@ -814,16 +1181,22 @@ internal sealed class ValidationCelParser
             ValidationCelValue.FromNumber(timestamp.ToUnixTimeMilliseconds()));
     }
 
-    private static ValidationCelThisNode CreateThisNode(string identifier)
+    private ValidationCelThisNode CreateThisNode(string identifier)
     {
         if (identifier.Length == 4)
-            return new ValidationCelThisNode([]);
+            return new ValidationCelThisNode([], -1);
 
         var segments = identifier[5..].Split('.');
         var path = new byte[segments.Length][];
         for (var index = 0; index < segments.Length; index++)
             path[index] = Encoding.UTF8.GetBytes(segments[index]);
-        return new ValidationCelThisNode(path);
+        if (!_memberIndexes.TryGetValue(segments[0], out var memberIndex))
+        {
+            memberIndex = _memberNames.Count;
+            _memberIndexes.Add(segments[0], memberIndex);
+            _memberNames.Add(path[0]);
+        }
+        return new ValidationCelThisNode(path, memberIndex);
     }
 
     private static decimal ParseNumber(string text)

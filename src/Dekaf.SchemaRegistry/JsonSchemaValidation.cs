@@ -113,9 +113,24 @@ public sealed class JsonSchemaValidationOptions
             : null;
     }
 
-    internal IJsonSchemaValidatorFactory? GetValidationRulesFactory()
+    internal IJsonSchemaValidatorFactory? GetValidationRulesFactory(
+        ISchemaRegistryRuleExecutor? ruleExecutor = null)
     {
         ValidateMode();
+        ValidateRulesExecution();
+
+        if (ValidationRulesExecution == ValidationRulesExecution.Disabled)
+            return null;
+        if (ruleExecutor is not null and not SchemaRegistryRuleExecutor)
+        {
+            throw new NotSupportedException(
+                "Inline validation rules require SchemaRegistryRuleExecutor so domain and encoding rule boundaries are known.");
+        }
+        return GetValidatorFactory();
+    }
+
+    private void ValidateRulesExecution()
+    {
         if (!Enum.IsDefined(ValidationRulesExecution))
         {
             throw new ArgumentOutOfRangeException(
@@ -123,10 +138,6 @@ public sealed class JsonSchemaValidationOptions
                 ValidationRulesExecution,
                 "Unsupported inline validation execution mode.");
         }
-
-        return ValidationRulesExecution == ValidationRulesExecution.Disabled
-            ? null
-            : GetValidatorFactory();
     }
 
     private IJsonSchemaValidatorFactory GetValidatorFactory() => ValidatorFactory
