@@ -571,7 +571,8 @@ def generate_document(
     result_pattern = str(Path(results_dir))
 
     producer_md = sorted(
-        glob.glob(f"{result_pattern}/Client/results/*Producer*Benchmarks*-github.md")
+        glob.glob(f"{result_pattern}/Client/results/*ProducerBenchmarks*-github.md")
+        + glob.glob(f"{result_pattern}/Client/results/*ProducerSingleBenchmarks*-github.md")
     )
     consumer_md = sorted(
         glob.glob(f"{result_pattern}/Client/results/*Consumer*Benchmarks*-github.md")

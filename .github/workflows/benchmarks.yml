@@ -303,7 +303,10 @@ jobs:
                   output.append("")
 
           # Producer benchmarks
-          producer_md = sorted(glob.glob("benchmark-results/Client/results/*Producer*Benchmarks*-github.md"))
+          producer_md = sorted(
+              glob.glob("benchmark-results/Client/results/*ProducerBenchmarks*-github.md")
+              + glob.glob("benchmark-results/Client/results/*ProducerSingleBenchmarks*-github.md")
+          )
           if producer_md:
               output.append("## Producer Benchmarks (Dekaf vs Confluent.Kafka)\n")
               output.append("> **Ratio < 1.0 means Dekaf is faster than Confluent**\n")
@@ -317,7 +320,10 @@ jobs:
 
           # Native memory benchmarks (Windows, ETW-based NativeMemoryProfiler)
           native_md = sorted(glob.glob("benchmark-results/ClientNative/results/*Consumer*Benchmarks*-github.md"))
-          native_md += sorted(glob.glob("benchmark-results/ClientNative/results/*Producer*Benchmarks*-github.md"))
+          native_md += sorted(
+              glob.glob("benchmark-results/ClientNative/results/*ProducerBenchmarks*-github.md")
+              + glob.glob("benchmark-results/ClientNative/results/*ProducerSingleBenchmarks*-github.md")
+          )
           if native_md:
               output.append("## Native Memory Comparison (Windows, ETW)\n")
               output.append("> **'Allocated native memory' captures librdkafka's unmanaged allocations, invisible to the managed Allocated column.** Compare Dekaf's Allocated against Confluent's Allocated + Allocated native memory for a fair total.\n")

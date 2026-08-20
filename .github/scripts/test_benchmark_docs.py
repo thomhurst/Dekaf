@@ -282,7 +282,7 @@ class BenchmarkDocsTests(unittest.TestCase):
 
         self.assertIn("No comparable history yet", table[2])
 
-    def test_document_contains_rolling_and_latest_confidence_context(self):
+    def test_document_contains_context_and_only_comparison_reports(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             history_path = root / "data.js"
@@ -307,6 +307,18 @@ class BenchmarkDocsTests(unittest.TestCase):
                 "| Dekaf_PollSingle | 1000 | 200.00 μs | 500 B | 2.20 | 0.31 | 0.50 |\n",
                 encoding="utf-8",
             )
+            for name, method in (
+                ("ProducerBenchmarks", "Dekaf_ComparisonBatch"),
+                ("ProducerSingleBenchmarks", "Dekaf_ComparisonSingle"),
+                ("ProducerModeBenchmarks", "Dekaf_InternalMode"),
+                ("AsyncProducerSerdePoolingBenchmarks", "Dekaf_InternalSerde"),
+            ):
+                (results / f"{name}-report-github.md").write_text(
+                    "| Method | Mean |\n"
+                    "|---|---:|\n"
+                    f"| {method} | 1.00 ns |\n",
+                    encoding="utf-8",
+                )
 
             document = generate_document(
                 root / "results",
@@ -329,6 +341,10 @@ class BenchmarkDocsTests(unittest.TestCase):
             document,
         )
         self.assertIn("ConsumerPollBenchmarks.PollSingle", document)
+        self.assertIn("Dekaf_ComparisonBatch", document)
+        self.assertIn("Dekaf_ComparisonSingle", document)
+        self.assertNotIn("Dekaf_InternalMode", document)
+        self.assertNotIn("Dekaf_InternalSerde", document)
         self.assertIn("<summary>Latest run — consumer benchmarks</summary>", document)
         self.assertIn("⚠ Low", document)
         self.assertIn("RatioSD", document)
