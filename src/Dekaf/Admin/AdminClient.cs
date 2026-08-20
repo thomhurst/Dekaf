@@ -4072,6 +4072,120 @@ public sealed class AdminClient : IAdminClient, IKafkaClientStatusProvider
         }, cancellationToken).ConfigureAwait(false);
     }
 
+    public async ValueTask<IReadOnlyDictionary<TopicPartitionReplica, DescribeReplicaLogDirResultInfo>> DescribeReplicaLogDirsAsync(
+        IEnumerable<TopicPartitionReplica> replicas,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(replicas);
+
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        var distinctReplicas = new HashSet<TopicPartitionReplica>();
+        foreach (var replica in replicas)
+        {
+            ValidateTopicPartitionReplica(replica, nameof(replicas));
+            distinctReplicas.Add(replica);
+        }
+
+        if (distinctReplicas.Count == 0)
+        {
+            return new Dictionary<TopicPartitionReplica, DescribeReplicaLogDirResultInfo>();
+        }
+
+        var replicasByBroker = distinctReplicas.GroupBy(static replica => replica.BrokerId).ToArray();
+        return await WithRetryAsync<IReadOnlyDictionary<TopicPartitionReplica, DescribeReplicaLogDirResultInfo>>(async () =>
+        {
+            var brokerResults = await Task.WhenAll(replicasByBroker.Select(async brokerReplicas =>
+            {
+                var brokerId = brokerReplicas.Key;
+                var brokerReplicaList = brokerReplicas.ToArray();
+                using var connectionLease = await _connectionPool.LeaseConnectionAsync(brokerId, cancellationToken).ConfigureAwait(false);
+                var connection = connectionLease.Connection;
+                var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                    connection,
+                    Protocol.ApiKey.DescribeLogDirs,
+                    DescribeLogDirsRequest.LowestSupportedVersion,
+                    DescribeLogDirsRequest.HighestSupportedVersion);
+                var response = await connection.SendAsync<DescribeLogDirsRequest, DescribeLogDirsResponse>(
+                    new DescribeLogDirsRequest
+                    {
+                        Topics = BuildDescribeLogDirsTopics(
+                            brokerReplicaList.Select(static replica => replica.TopicPartition))
+                    },
+                    apiVersion,
+                    cancellationToken).ConfigureAwait(false);
+
+                var replicaInfos = new Dictionary<TopicPartition, ReplicaLogDirAccumulator>(brokerReplicaList.Length);
+                foreach (var replica in brokerReplicaList)
+                {
+                    replicaInfos[replica.TopicPartition] = new ReplicaLogDirAccumulator();
+                }
+
+                if (response.ErrorCode == Protocol.ErrorCode.None)
+                {
+                    foreach (var directory in response.Results)
+                    {
+                        if (directory.ErrorCode != Protocol.ErrorCode.None)
+                        {
+                            continue;
+                        }
+
+                        foreach (var topic in directory.Topics)
+                        {
+                            foreach (var partition in topic.Partitions)
+                            {
+                                var topicPartition = new TopicPartition(topic.Name, partition.PartitionIndex);
+                                if (!replicaInfos.TryGetValue(topicPartition, out var accumulator))
+                                {
+                                    continue;
+                                }
+
+                                if (partition.IsFutureKey)
+                                {
+                                    accumulator.FutureReplicaLogDir = directory.LogDir;
+                                    accumulator.FutureReplicaOffsetLag = partition.OffsetLag;
+                                }
+                                else
+                                {
+                                    accumulator.CurrentReplicaLogDir = directory.LogDir;
+                                    accumulator.CurrentReplicaOffsetLag = partition.OffsetLag;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                var brokerResult = new Dictionary<TopicPartitionReplica, DescribeReplicaLogDirResultInfo>(brokerReplicaList.Length);
+                foreach (var replica in brokerReplicaList)
+                {
+                    var accumulator = replicaInfos[replica.TopicPartition];
+                    brokerResult[replica] = new DescribeReplicaLogDirResultInfo
+                    {
+                        TopicPartitionReplica = replica,
+                        CurrentReplicaLogDir = accumulator.CurrentReplicaLogDir,
+                        CurrentReplicaOffsetLag = accumulator.CurrentReplicaOffsetLag,
+                        FutureReplicaLogDir = accumulator.FutureReplicaLogDir,
+                        FutureReplicaOffsetLag = accumulator.FutureReplicaOffsetLag,
+                        ErrorCode = response.ErrorCode
+                    };
+                }
+
+                return brokerResult;
+            })).ConfigureAwait(false);
+
+            var results = new Dictionary<TopicPartitionReplica, DescribeReplicaLogDirResultInfo>(distinctReplicas.Count);
+            foreach (var brokerResult in brokerResults)
+            {
+                foreach (var (replica, result) in brokerResult)
+                {
+                    results[replica] = result;
+                }
+            }
+
+            return results;
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
     private static IReadOnlyList<DescribeLogDirsRequestTopic>? BuildDescribeLogDirsTopics(IEnumerable<TopicPartition>? partitions)
     {
         if (partitions is null)
@@ -4163,6 +4277,17 @@ public sealed class AdminClient : IAdminClient, IKafkaClientStatusProvider
     }
 
     private readonly record struct ReplicaLogDirAssignment(TopicPartitionReplica Replica, string LogDir);
+
+    private sealed class ReplicaLogDirAccumulator
+    {
+        public string? CurrentReplicaLogDir { get; set; }
+
+        public long CurrentReplicaOffsetLag { get; set; } = -1;
+
+        public string? FutureReplicaLogDir { get; set; }
+
+        public long FutureReplicaOffsetLag { get; set; } = -1;
+    }
 
     public async ValueTask<IReadOnlyDictionary<string, StreamsGroupDescription>> DescribeStreamsGroupsAsync(
         IEnumerable<string> groupIds,

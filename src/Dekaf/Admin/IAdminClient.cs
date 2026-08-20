@@ -448,6 +448,16 @@ public interface IAdminClient : IAsyncDisposable
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Describes the current and future log directories for selected replicas.
+    /// </summary>
+    /// <param name="replicas">The replicas to query.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>Results for each distinct requested replica.</returns>
+    ValueTask<IReadOnlyDictionary<TopicPartitionReplica, DescribeReplicaLogDirResultInfo>> DescribeReplicaLogDirsAsync(
+        IEnumerable<TopicPartitionReplica> replicas,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Alters replica log directories on their assigned brokers.
     /// </summary>
     /// <param name="replicaAssignments">Replica-to-log-directory assignments.</param>
@@ -1169,6 +1179,42 @@ public sealed class ReplicaLogDirInfo
     /// True when this is a future log created by AlterReplicaLogDirs.
     /// </summary>
     public required bool IsFuture { get; init; }
+}
+
+/// <summary>
+/// Current and future log-directory information for a selected replica.
+/// </summary>
+public sealed class DescribeReplicaLogDirResultInfo
+{
+    /// <summary>
+    /// The replica the result applies to.
+    /// </summary>
+    public required TopicPartitionReplica TopicPartitionReplica { get; init; }
+
+    /// <summary>
+    /// The current replica log directory, or null when the replica was not found.
+    /// </summary>
+    public string? CurrentReplicaLogDir { get; init; }
+
+    /// <summary>
+    /// The current replica offset lag, or -1 when the replica was not found.
+    /// </summary>
+    public long CurrentReplicaOffsetLag { get; init; } = -1;
+
+    /// <summary>
+    /// The future replica log directory, or null when the replica is not moving.
+    /// </summary>
+    public string? FutureReplicaLogDir { get; init; }
+
+    /// <summary>
+    /// The future replica offset lag, or -1 when the replica is not moving.
+    /// </summary>
+    public long FutureReplicaOffsetLag { get; init; } = -1;
+
+    /// <summary>
+    /// Broker-level error code, or None when the broker returned replica information.
+    /// </summary>
+    public Protocol.ErrorCode ErrorCode { get; init; }
 }
 
 /// <summary>
