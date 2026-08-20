@@ -963,6 +963,32 @@ public sealed class JsonSchemaValidationTests
     }
 
     [Test]
+    public void InlineRules_DuplicateParentsUseFinalDescendantValues()
+    {
+        const string schemaText = """
+            {
+              "confluent:rules": [
+                { "name": "final-value", "expr": "this.a.b == 1" }
+              ]
+            }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
+
+        validator.ValidateRules(
+            """{"a":{"b":0},"a":{"b":1}}"""u8.ToArray(),
+            25,
+            failFast: false);
+        Assert.Throws<ValidationRulesFailedException>(() => validator.ValidateRules(
+            """{"a":{"b":1},"a":{}}"""u8.ToArray(),
+            25,
+            failFast: false));
+        Assert.Throws<ValidationRulesFailedException>(() => validator.ValidateRules(
+            """{"a":{"b":1},"a":null}"""u8.ToArray(),
+            25,
+            failFast: false));
+    }
+
+    [Test]
     public void InlineRules_ResolveMemberPathsAtSupportedDepth()
     {
         var (schema, payload) = CreateDeepMemberRule(depth: 80);
