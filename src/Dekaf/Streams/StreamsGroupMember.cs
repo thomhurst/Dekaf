@@ -11,6 +11,8 @@ namespace Dekaf.Streams;
 
 internal sealed class StreamsGroupMember : IStreamsGroupMember
 {
+    private const int CommandCapacity = 64;
+
     private static readonly StreamsGroupAssignment EmptyAssignment = new()
     {
         ActiveTasks = [],
@@ -21,9 +23,15 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
     private readonly StreamsGroupMemberOptions _options;
     private readonly IConnectionPool _connectionPool;
     private readonly MetadataManager _metadataManager;
-    private readonly Channel<MemberCommand> _commands = Channel.CreateUnbounded<MemberCommand>(
-        new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
+    private readonly Channel<MemberCommand> _commands = Channel.CreateBounded<MemberCommand>(
+        new BoundedChannelOptions(CommandCapacity)
+        {
+            SingleReader = true,
+            SingleWriter = false,
+            FullMode = BoundedChannelFullMode.Wait
+        });
     private readonly object _commandWriteGate = new();
+    private readonly CancellationTokenSource _commandAdmissionCancellation = new();
     private readonly SemaphoreSlim _initializeLock = new(1, 1);
     private readonly StreamsGroupHeartbeatRequestCache _steadyRequestCache = new();
     private readonly Timer _heartbeatTimer;
@@ -56,6 +64,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
     private IReadOnlyList<StreamsGroupHeartbeatTaskOffset>? _taskOffsets;
     private IReadOnlyList<StreamsGroupHeartbeatTaskOffset>? _taskEndOffsets;
     private int _endpointInformationEpoch;
+    private MemberCommand? _closeCommand;
 
     internal StreamsGroupMember(
         StreamsGroupMemberOptions options,
@@ -154,6 +163,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         ArgumentNullException.ThrowIfNull(options);
         if (!Enum.IsDefined(options.GroupMembershipOperation))
             throw new ArgumentOutOfRangeException(nameof(options));
+        cancellationToken.ThrowIfCancellationRequested();
         MemberCommand? command = null;
         lock (_commandWriteGate)
         {
@@ -161,8 +171,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
             {
                 Volatile.Write(ref _closeRequested, 1);
                 command = MemberCommand.Close(options);
-                if (!_commands.Writer.TryWrite(command))
-                    throw new ObjectDisposedException(nameof(StreamsGroupMember));
+                Volatile.Write(ref _closeCommand, command);
             }
         }
 
@@ -170,6 +179,14 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         {
             await _workerTask.WaitAsync(cancellationToken).ConfigureAwait(false);
             return;
+        }
+
+        _commandAdmissionCancellation.Cancel();
+        if (!_commands.Writer.TryWrite(command) && _workerTask.IsCompleted)
+        {
+            command.Completion.TrySetException(
+                Volatile.Read(ref _backgroundFailure) ??
+                new ObjectDisposedException(nameof(StreamsGroupMember)));
         }
 
         try
@@ -215,12 +232,8 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         if (backgroundFailure is not null)
             throw CreateBackgroundFailureException(backgroundFailure);
 
-        lock (_commandWriteGate)
-        {
-            ThrowIfClosed();
-            if (!_commands.Writer.TryWrite(command))
-                throw new ObjectDisposedException(nameof(StreamsGroupMember));
-        }
+        command.CancellationToken = cancellationToken;
+        await EnqueueCommandAsync(command, cancellationToken).ConfigureAwait(false);
 
         try
         {
@@ -233,14 +246,71 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         }
     }
 
+    private ValueTask EnqueueCommandAsync(MemberCommand command, CancellationToken cancellationToken)
+    {
+        lock (_commandWriteGate)
+        {
+            ThrowIfClosed();
+            if (_commands.Writer.TryWrite(command))
+                return ValueTask.CompletedTask;
+        }
+
+        return EnqueueCommandSlowAsync(command, cancellationToken);
+    }
+
+    private async ValueTask EnqueueCommandSlowAsync(
+        MemberCommand command,
+        CancellationToken cancellationToken)
+    {
+        using var admissionCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            _commandAdmissionCancellation.Token);
+        try
+        {
+            await _commands.Writer.WriteAsync(command, admissionCancellation.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (
+            _commandAdmissionCancellation.IsCancellationRequested &&
+            !cancellationToken.IsCancellationRequested)
+        {
+            throw new ObjectDisposedException(nameof(StreamsGroupMember));
+        }
+        catch (ChannelClosedException)
+        {
+            throw new ObjectDisposedException(nameof(StreamsGroupMember));
+        }
+    }
+
     private async Task RunAsync()
     {
         try
         {
             while (await _commands.Reader.WaitToReadAsync().ConfigureAwait(false))
             {
-                while (_commands.Reader.TryRead(out var command))
+                while (true)
                 {
+                    if (Volatile.Read(ref _closeCommand) is { } closeCommand)
+                    {
+                        await CompleteCloseAsync(closeCommand).ConfigureAwait(false);
+                        return;
+                    }
+
+                    if (!_commands.Reader.TryRead(out var command))
+                        break;
+
+                    if (Volatile.Read(ref _closeCommand) is { } racedCloseCommand)
+                    {
+                        if (!ReferenceEquals(command, racedCloseCommand) &&
+                            command.Kind != MemberCommandKind.Heartbeat)
+                        {
+                            CompleteAbandonedCommand(
+                                command,
+                                new ObjectDisposedException(nameof(StreamsGroupMember)));
+                        }
+                        await CompleteCloseAsync(racedCloseCommand).ConfigureAwait(false);
+                        return;
+                    }
+
                     if (command.Kind == MemberCommandKind.Heartbeat)
                     {
                         await ProcessBackgroundHeartbeatAsync().ConfigureAwait(false);
@@ -249,18 +319,14 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
 
                     if (command.Kind == MemberCommandKind.Close)
                     {
-                        try
-                        {
-                            await ProcessCloseAsync(command.CloseOptions!).ConfigureAwait(false);
-                            command.Completion.TrySetResult(null);
-                        }
-                        catch (Exception exception)
-                        {
-                            command.Completion.TrySetException(exception);
-                        }
-
-                        _commands.Writer.TryComplete();
+                        await CompleteCloseAsync(command).ConfigureAwait(false);
                         return;
+                    }
+
+                    if (command.CancellationToken.IsCancellationRequested)
+                    {
+                        command.Completion.TrySetCanceled(command.CancellationToken);
+                        continue;
                     }
 
                     var backgroundFailure = Volatile.Read(ref _backgroundFailure);
@@ -287,6 +353,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         {
             Volatile.Write(ref _backgroundFailure, exception);
             _commands.Writer.TryComplete(exception);
+            Volatile.Read(ref _closeCommand)?.Completion.TrySetException(exception);
             while (_commands.Reader.TryRead(out var command))
                 command.Completion.TrySetException(exception);
         }
@@ -294,6 +361,38 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         {
             _heartbeatTimer.Change(Timeout.Infinite, Timeout.Infinite);
         }
+    }
+
+    private async ValueTask CompleteCloseAsync(MemberCommand command)
+    {
+        try
+        {
+            await ProcessCloseAsync(command.CloseOptions!).ConfigureAwait(false);
+            command.Completion.TrySetResult(null);
+        }
+        catch (Exception exception)
+        {
+            command.Completion.TrySetException(exception);
+        }
+
+        _commands.Writer.TryComplete();
+        var disposed = new ObjectDisposedException(nameof(StreamsGroupMember));
+        while (_commands.Reader.TryRead(out var pending))
+        {
+            if (ReferenceEquals(pending, command) || pending.Kind == MemberCommandKind.Heartbeat)
+                continue;
+            CompleteAbandonedCommand(pending, disposed);
+        }
+    }
+
+    private static void CompleteAbandonedCommand(
+        MemberCommand command,
+        ObjectDisposedException disposed)
+    {
+        if (command.CancellationToken.IsCancellationRequested)
+            command.Completion.TrySetCanceled(command.CancellationToken);
+        else
+            command.Completion.TrySetException(disposed);
     }
 
     private async ValueTask<StreamsGroupHeartbeatResult> ProcessOperationAsync(MemberCommand command)
@@ -434,7 +533,8 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         var shutdownApplication = request.ShutdownApplication;
         var unreleasedFailureCount = 0;
         long unreleasedStartedAt = -1;
-        for (var attempt = 0; attempt < 5; attempt++)
+        var attemptLimit = 5;
+        for (var attempt = 0; attempt < attemptLimit; attempt++)
         {
             if (_coordinatorId < 0)
                 await FindCoordinatorAsync(cancellationToken).ConfigureAwait(false);
@@ -467,7 +567,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
                 && (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested))
             {
                 _coordinatorId = -1;
-                if (attempt == 4)
+                if (attempt == attemptLimit - 1)
                     throw;
                 if (recoverFencing)
                     request = CreateRecoveryRequest(recoveryJoinEpoch, shutdownApplication);
@@ -527,6 +627,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
                 && response.ErrorCode is ErrorCode.FencedMemberEpoch or ErrorCode.UnknownMemberId)
             {
                 fencedRecoveryAttempted = true;
+                attemptLimit++;
                 recoveryJoinEpoch = InstanceId is null ? 0 : -2;
                 _steadyRequestCache.Invalidate();
                 request = CreateJoinRequest(recoveryJoinEpoch.Value, shutdownApplication);
@@ -538,7 +639,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
 
         throw new GroupException(
             ErrorCode.CoordinatorNotAvailable,
-            "StreamsGroupHeartbeat failed after 5 coordinator attempts.")
+            $"StreamsGroupHeartbeat failed after {attemptLimit} coordinator attempts.")
         { GroupId = GroupId };
     }
 
@@ -902,8 +1003,19 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
 
     private void QueueHeartbeat()
     {
-        if (Volatile.Read(ref _closeRequested) == 0)
-            _commands.Writer.TryWrite(MemberCommand.Heartbeat);
+        if (Volatile.Read(ref _closeRequested) == 0 &&
+            !_commands.Writer.TryWrite(MemberCommand.Heartbeat))
+        {
+            try
+            {
+                if (Volatile.Read(ref _closeRequested) == 0)
+                    ScheduleHeartbeat();
+            }
+            catch (ObjectDisposedException) when (Volatile.Read(ref _disposed) != 0)
+            {
+                // DisposeAsync can release the timer after the callback's close check.
+            }
+        }
     }
 
     private void ScheduleHeartbeat() =>
@@ -1139,6 +1251,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         internal StreamsGroupMemberUpdate? Update { get; init; }
         internal StreamsGroupTaskOffsetReport? OffsetReport { get; init; }
         internal StreamsGroupCloseOptions? CloseOptions { get; init; }
+        internal CancellationToken CancellationToken { get; set; }
         internal TaskCompletionSource<StreamsGroupHeartbeatResult?> Completion { get; } = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
