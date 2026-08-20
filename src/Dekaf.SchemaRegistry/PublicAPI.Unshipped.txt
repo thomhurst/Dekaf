@@ -242,3 +242,9 @@ static Dekaf.SchemaRegistry.SchemaIdentity.operator !=(Dekaf.SchemaRegistry.Sche
 static Dekaf.SchemaRegistry.SchemaIdentity.operator ==(Dekaf.SchemaRegistry.SchemaIdentity left, Dekaf.SchemaRegistry.SchemaIdentity right) -> bool
 ~override Dekaf.SchemaRegistry.SchemaIdentity.Equals(object obj) -> bool
 ~override Dekaf.SchemaRegistry.SchemaIdentity.ToString() -> string
+Dekaf.SchemaRegistry.ISchemaRegistryCache.TryGetCachedSchema(System.Guid guid, string? format, out Dekaf.SchemaRegistry.Schema! schema) -> bool
+Dekaf.SchemaRegistry.ISchemaRegistryClient.GetSchemaByGuidAsync(string! guid, string? format = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Dekaf.SchemaRegistry.Schema!>!
+Dekaf.SchemaRegistry.RegisteredSchema.Guid.get -> string?
+Dekaf.SchemaRegistry.RegisteredSchema.Guid.init -> void
+Dekaf.SchemaRegistry.SchemaRegistryClient.GetSchemaByGuidAsync(string! guid, string? format = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Dekaf.SchemaRegistry.Schema!>!
+Dekaf.SchemaRegistry.SchemaRegistryClient.TryGetCachedSchema(System.Guid guid, string? format, out Dekaf.SchemaRegistry.Schema! schema) -> bool

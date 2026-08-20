@@ -463,6 +463,7 @@ public class KafkaProducerFastPathTests
     {
         await using var producer = await CreateBufferBoundaryProducerAsync(maxBlockMs: 30_000);
         var accumulator = producer.RecordAccumulator;
+        var topicPartition = new TopicPartition(Topic, 0);
         AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(accumulator);
 
         await Assert.That(accumulator.TryReserveMemoryForTest(BufferMemoryLimit)).IsTrue();
@@ -491,14 +492,15 @@ public class KafkaProducerFastPathTests
             accumulator.ReleaseMemory(BufferMemoryLimit);
             syntheticReservationRemaining = 0;
 
+            // The drainer temporarily removes active work from _pendingAppends, so queue
+            // emptiness is not a completion fence. Worker ownership reaches zero only after
+            // AppendAsync has committed the record.
             await TestWait.UntilAsync(
-                () => accumulator.PendingAppendCountForTest == 0,
+                () => GetSlowPathAppendCount(accumulator, topicPartition) == 0,
                 TimeSpan.FromSeconds(5));
-            await TestWait.UntilAsync(
-                () => HasCompletableCurrentBatch(accumulator, new TopicPartition(Topic, 0)),
-                TimeSpan.FromSeconds(5));
+            await Assert.That(accumulator.PendingAppendCountForTest).IsEqualTo(0);
 
-            var readyBatch = CompleteCurrentBatch(accumulator, new TopicPartition(Topic, 0));
+            var readyBatch = CompleteCurrentBatch(accumulator, topicPartition);
             await Assert.That(readyBatch.RecordBatch.Records.Count).IsEqualTo(1);
             readyBatch.CompleteSend(baseOffset: 3, DateTimeOffset.UtcNow);
 
@@ -743,7 +745,7 @@ public class KafkaProducerFastPathTests
         throw new InvalidOperationException("Partition deque did not contain a current or sealed batch.");
     }
 
-    private static bool HasCompletableCurrentBatch(
+    private static int GetSlowPathAppendCount(
         RecordAccumulator accumulator,
         TopicPartition topicPartition)
     {
@@ -751,12 +753,10 @@ public class KafkaProducerFastPathTests
         var tryGetValueMethod = deques.GetType().GetMethod("TryGetValue");
         var parameters = new object[] { topicPartition, null! };
         if (!(bool)tryGetValueMethod!.Invoke(deques, parameters)!)
-            return false;
+            return 0;
 
         var partitionDeque = parameters[1]!;
-        return GetInstanceField<object?>(partitionDeque, "CurrentBatch") is not null
-            && !GetInstanceField<bool>(partitionDeque, "AppendInProgress")
-            && !GetInstanceField<bool>(partitionDeque, "RotationInProgress");
+        return GetInstanceField<int>(partitionDeque, "SlowPathAppendCount");
     }
 
     private static ValueTask StopProducerBackgroundLoopsAsync(KafkaProducer<string, string> producer)
