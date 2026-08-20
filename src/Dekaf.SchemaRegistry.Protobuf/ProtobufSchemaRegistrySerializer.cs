@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using Dekaf.Serialization;
 using Google.Protobuf;
@@ -313,7 +314,11 @@ public sealed class ProtobufSchemaRegistrySerializer<
                     subject,
                     cancellationToken)
                 .ConfigureAwait(false);
-            ValidateExplicitSchema(schemaId, explicitSchema);
+            await ValidateExplicitSchemaAsync(
+                    schemaId,
+                    explicitSchema,
+                    cancellationToken)
+                .ConfigureAwait(false);
 
             return await CreateResolvedValueAsync(
                     subject,
@@ -400,7 +405,94 @@ public sealed class ProtobufSchemaRegistrySerializer<
             .ConfigureAwait(false);
     }
 
-    private void ValidateExplicitSchema(int schemaId, Schema schema)
+    private async Task ValidateExplicitSchemaAsync(
+        int schemaId,
+        Schema schema,
+        CancellationToken cancellationToken)
+    {
+        ValidateDescriptor(schemaId, _descriptor.File, schema);
+        var resolvedReferences = new Dictionary<SchemaReferenceKey, Schema>();
+        await ValidateReferencesAsync(
+                schemaId,
+                _descriptor.File,
+                schema,
+                resolvedReferences,
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private async Task ValidateReferencesAsync(
+        int schemaId,
+        FileDescriptor descriptor,
+        Schema schema,
+        Dictionary<SchemaReferenceKey, Schema> resolvedReferences,
+        CancellationToken cancellationToken)
+    {
+        var references = schema.References;
+        var expectedCount = 0;
+        for (var dependencyIndex = 0; dependencyIndex < descriptor.Dependencies.Count; dependencyIndex++)
+        {
+            if (!_config.SkipKnownTypes || !IsKnownType(descriptor.Dependencies[dependencyIndex].Name))
+                expectedCount++;
+        }
+
+        if ((references?.Count ?? 0) != expectedCount)
+        {
+            throw new InvalidOperationException(
+                $"Schema ID {schemaId} does not match the Protobuf reference graph for '{_descriptor.FullName}'.");
+        }
+
+        for (var dependencyIndex = 0; dependencyIndex < descriptor.Dependencies.Count; dependencyIndex++)
+        {
+            var dependency = descriptor.Dependencies[dependencyIndex];
+            if (_config.SkipKnownTypes && IsKnownType(dependency.Name))
+                continue;
+
+            SchemaReference? matchingReference = null;
+            for (var referenceIndex = 0; referenceIndex < references!.Count; referenceIndex++)
+            {
+                var candidate = references[referenceIndex];
+                if (!string.Equals(candidate.Name, dependency.Name, StringComparison.Ordinal))
+                    continue;
+                if (matchingReference is not null)
+                {
+                    throw new InvalidOperationException(
+                        $"Schema ID {schemaId} contains duplicate Protobuf reference '{dependency.Name}'.");
+                }
+
+                matchingReference = candidate;
+            }
+
+            if (matchingReference is null)
+            {
+                throw new InvalidOperationException(
+                    $"Schema ID {schemaId} is missing Protobuf reference '{dependency.Name}'.");
+            }
+
+            var key = new SchemaReferenceKey(matchingReference.Subject, matchingReference.Version);
+            if (!resolvedReferences.TryGetValue(key, out var resolvedSchema))
+            {
+                var registered = await _schemaRegistry.GetSchemaBySubjectAsync(
+                        matchingReference.Subject,
+                        matchingReference.Version.ToString(CultureInfo.InvariantCulture),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                resolvedSchema = registered.Schema;
+                resolvedReferences.Add(key, resolvedSchema);
+            }
+
+            ValidateDescriptor(schemaId, dependency, resolvedSchema);
+            await ValidateReferencesAsync(
+                    schemaId,
+                    dependency,
+                    resolvedSchema,
+                    resolvedReferences,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+    }
+
+    private void ValidateDescriptor(int schemaId, FileDescriptor descriptor, Schema schema)
     {
         if (schema.SchemaType != SchemaType.Protobuf)
         {
@@ -408,7 +500,7 @@ public sealed class ProtobufSchemaRegistrySerializer<
                 $"Schema ID {schemaId} has format {schema.SchemaType}; expected {SchemaType.Protobuf}.");
         }
 
-        if (!string.Equals(schema.SchemaString, _schemaString, StringComparison.Ordinal))
+        if (!string.Equals(schema.SchemaString, descriptor.SerializedData.ToBase64(), StringComparison.Ordinal))
         {
             throw new InvalidOperationException(
                 $"Schema ID {schemaId} does not match Protobuf message type '{_descriptor.FullName}'.");
@@ -681,6 +773,8 @@ public sealed class ProtobufSchemaRegistrySerializer<
         ProtobufSchemaRegistrySerializer<T> Serializer,
         string Topic,
         bool IsKey);
+
+    private readonly record struct SchemaReferenceKey(string Subject, int Version);
 
     private sealed class ReferenceRegistrationState(string topic, bool isKey)
     {

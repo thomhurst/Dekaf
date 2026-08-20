@@ -109,6 +109,74 @@ public class ProtobufSchemaIdentityTests
     }
 
     [Test]
+    public async Task Serialize_ExplicitId_AcceptsMatchingProtobufReferenceGraph()
+    {
+        var registry = new MockSchemaRegistryClient();
+        var registered = await RegisterReferenceGraphAsync(registry);
+        var schemaId = await registry.RegisterSchemaAsync("identity-value", registered.Schema);
+        var config = new ProtobufSerializerConfig { UseSchemaId = schemaId };
+        await using var serializer = new ProtobufSchemaRegistrySerializer<ReferenceGraphMessage>(registry, config);
+        var destination = new ArrayBufferWriter<byte>();
+
+        serializer.Serialize(new ReferenceGraphMessage(), ref destination, CreateContext());
+
+        await Assert.That(BinaryPrimitives.ReadInt32BigEndian(destination.WrittenSpan[1..5]))
+            .IsEqualTo(schemaId);
+    }
+
+    [Test]
+    public async Task Serialize_ExplicitId_RejectsDifferentNestedProtobufReferenceVersion()
+    {
+        var registry = new MockSchemaRegistryClient();
+        var registered = await RegisterReferenceGraphAsync(registry);
+        var registeredLeft = await registry.GetSchemaBySubjectAsync("deps/left.proto", "1");
+        _ = await registry.RegisterSchemaAsync("shared/base.proto", new Schema
+        {
+            SchemaType = SchemaType.Protobuf,
+            SchemaString = Google.Protobuf.WellKnownTypes.StringValue.Descriptor.File.SerializedData.ToBase64()
+        });
+        _ = await registry.RegisterSchemaAsync("deps/left.proto", new Schema
+        {
+            SchemaType = SchemaType.Protobuf,
+            SchemaString = registeredLeft.Schema.SchemaString,
+            References = registeredLeft.Schema.References!
+                .Select(static reference => new SchemaReference
+                {
+                    Name = reference.Name,
+                    Subject = reference.Subject,
+                    Version = reference.Name == "shared/base.proto" ? 2 : reference.Version
+                })
+                .ToArray()
+        });
+        var references = registered.Schema.References!
+            .Select(static reference => new SchemaReference
+            {
+                Name = reference.Name,
+                Subject = reference.Subject,
+                Version = reference.Name == "deps/left.proto" ? 2 : reference.Version
+            })
+            .ToArray();
+        var schemaId = await registry.RegisterSchemaAsync("identity-value", new Schema
+        {
+            SchemaType = SchemaType.Protobuf,
+            SchemaString = registered.Schema.SchemaString,
+            References = references
+        });
+        var config = new ProtobufSerializerConfig { UseSchemaId = schemaId };
+        await using var serializer = new ProtobufSchemaRegistrySerializer<ReferenceGraphMessage>(registry, config);
+        var destination = new ArrayBufferWriter<byte>();
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        {
+            serializer.Serialize(new ReferenceGraphMessage(), ref destination, CreateContext());
+            return Task.CompletedTask;
+        });
+
+        await Assert.That(exception!.Message).Contains("does not match Protobuf message type");
+        await Assert.That(destination.WrittenCount).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task Serialize_Header_RequiresHeadersCollection()
     {
         var registry = new MockSchemaRegistryClient();
@@ -395,6 +463,18 @@ public class ProtobufSchemaIdentityTests
         SchemaType = SchemaType.Protobuf,
         SchemaString = TestMessage.Descriptor.File.SerializedData.ToBase64()
     };
+
+    private static async Task<RegisteredSchema> RegisterReferenceGraphAsync(MockSchemaRegistryClient registry)
+    {
+        await using var serializer = new ProtobufSchemaRegistrySerializer<ReferenceGraphMessage>(registry);
+        var destination = new ArrayBufferWriter<byte>();
+        serializer.Serialize(new ReferenceGraphMessage(), ref destination, new SerializationContext
+        {
+            Topic = "graph",
+            Component = SerializationComponent.Value
+        });
+        return await registry.GetSchemaBySubjectAsync("graph-value");
+    }
 
     private static SerializationContext CreateContext(Headers? headers = null) => new()
     {
