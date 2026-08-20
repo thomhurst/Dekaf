@@ -411,6 +411,9 @@ public sealed class ProtobufSchemaRegistrySerializer<
         CancellationToken cancellationToken)
     {
         ValidateDescriptor(schemaId, _descriptor.File, schema);
+        if (!_config.UseSchemaReferences)
+            return;
+
         var resolvedReferences = new Dictionary<SchemaReferenceKey, Schema>();
         await ValidateReferencesAsync(
                 schemaId,

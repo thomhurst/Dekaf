@@ -125,6 +125,29 @@ public class ProtobufSchemaIdentityTests
     }
 
     [Test]
+    public async Task Serialize_ExplicitId_WithoutSchemaReferences_AcceptsMatchingRootDescriptor()
+    {
+        var registry = new MockSchemaRegistryClient();
+        var schemaId = await registry.RegisterSchemaAsync("identity-value", new Schema
+        {
+            SchemaType = SchemaType.Protobuf,
+            SchemaString = ReferenceGraphMessage.Descriptor.File.SerializedData.ToBase64()
+        });
+        var config = new ProtobufSerializerConfig
+        {
+            UseSchemaId = schemaId,
+            UseSchemaReferences = false
+        };
+        await using var serializer = new ProtobufSchemaRegistrySerializer<ReferenceGraphMessage>(registry, config);
+        var destination = new ArrayBufferWriter<byte>();
+
+        serializer.Serialize(new ReferenceGraphMessage(), ref destination, CreateContext());
+
+        await Assert.That(BinaryPrimitives.ReadInt32BigEndian(destination.WrittenSpan[1..5]))
+            .IsEqualTo(schemaId);
+    }
+
+    [Test]
     public async Task Serialize_ExplicitId_RejectsDifferentNestedProtobufReferenceVersion()
     {
         var registry = new MockSchemaRegistryClient();
