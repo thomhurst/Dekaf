@@ -232,21 +232,37 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
             }
         }
 
-        for (var index = 0; index < node.AllOf.Length; index++)
+        if (node.AllOf is { Length: > 0 } allOf)
         {
-            var branchReader = reader;
-            if (!WalkValidationRules(
-                    ref branchReader,
-                    payload,
-                    node.AllOf[index],
-                    schemaId,
-                    ref path,
-                    now,
-                    failFast,
-                    ref violations,
-                    ref compositionMatches,
-                    referenceDepth))
-                return false;
+            var traversedReader = reader;
+            for (var index = 0; index < allOf.Length; index++)
+            {
+                var branchReader = reader;
+                if (!WalkValidationRules(
+                        ref branchReader,
+                        payload,
+                        allOf[index],
+                        schemaId,
+                        ref path,
+                        now,
+                        failFast,
+                        ref violations,
+                        ref compositionMatches,
+                        referenceDepth))
+                    return false;
+                traversedReader = branchReader;
+            }
+
+            // An allOf-only wrapper has no remaining work on this value. Preserve one branch's
+            // final position instead of walking the same object or array again at every nesting
+            // level. Multiple branches still run independently because each may contain rules.
+            if (!node.HasAnyOf && !node.HasOneOf &&
+                node.Properties is null && node.AdditionalProperties is null &&
+                node.Items is null && node.PrefixItems.Length == 0)
+            {
+                reader = traversedReader;
+                return true;
+            }
         }
 
         if (node.HasAnyOf && !WalkMatchingBranches(

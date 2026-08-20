@@ -147,6 +147,8 @@ public class JsonSchemaValidationBenchmarks
     private IJsonSchemaValidator _nestedCompositionInlineRulesValidator = null!;
     private ReadOnlyMemory<byte> _shallowCompositionInlineRulesJsonPayload;
     private IJsonSchemaValidator _shallowCompositionInlineRulesValidator = null!;
+    private ReadOnlyMemory<byte> _nestedAllOfInlineRulesJsonPayload;
+    private IJsonSchemaValidator _nestedAllOfInlineRulesValidator = null!;
     private ReadOnlyMemory<byte> _structuralEqualityJsonPayload;
     private ReadOnlyMemory<byte> _deepStructuralEqualityJsonPayload;
     private IJsonSchemaValidator _structuralEqualityValidator = null!;
@@ -261,6 +263,17 @@ public class JsonSchemaValidationBenchmarks
         _shallowCompositionInlineRulesValidator.ValidateRules(
             _shallowCompositionInlineRulesJsonPayload,
             8,
+            failFast: false);
+        var (nestedAllOfSchema, nestedAllOfPayload) = CreateNestedCompositionRule(depth: 12, "allOf");
+        _nestedAllOfInlineRulesJsonPayload = nestedAllOfPayload;
+        _nestedAllOfInlineRulesValidator = inlineRulesFactory.GetOrCreate(new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = nestedAllOfSchema
+        });
+        _nestedAllOfInlineRulesValidator.ValidateRules(
+            _nestedAllOfInlineRulesJsonPayload,
+            9,
             failFast: false);
         _structuralEqualityJsonPayload =
             """{"left":{"id":1,"name":"bench"},"right":{"name":"bench","id":1.0},"values":[1,"a"],"expected":[1.0,"\u0061"]}"""u8
@@ -409,6 +422,13 @@ public class JsonSchemaValidationBenchmarks
             failFast: false);
 
     [Benchmark]
+    public void ValidateNestedAllOfInlineRules() =>
+        _nestedAllOfInlineRulesValidator.ValidateRules(
+            _nestedAllOfInlineRulesJsonPayload,
+            9,
+            failFast: false);
+
+    [Benchmark]
     public void ValidateStructuralEquality() =>
         _structuralEqualityValidator.ValidateRules(_structuralEqualityJsonPayload, 3, failFast: false);
 
@@ -515,14 +535,16 @@ public class JsonSchemaValidationBenchmarks
         return (schema, Encoding.UTF8.GetBytes(payload.ToString()));
     }
 
-    private static (string Schema, byte[] Payload) CreateNestedCompositionRule(int depth)
+    private static (string Schema, byte[] Payload) CreateNestedCompositionRule(
+        int depth,
+        string keyword = "anyOf")
     {
         var schema = new StringBuilder(depth * 96);
         var payload = new StringBuilder(depth * 12);
         for (var index = 0; index < depth; index++)
         {
-            schema.Append(
-                "{\"anyOf\":[{\"type\":\"object\",\"required\":[\"child\"],\"properties\":{\"child\":");
+            schema.Append("{\"").Append(keyword).Append(
+                "\":[{\"type\":\"object\",\"required\":[\"child\"],\"properties\":{\"child\":");
             payload.Append("{\"child\":");
         }
         schema.Append(
