@@ -333,7 +333,12 @@ class BenchmarkDocsTests(unittest.TestCase):
         self.assertIn("200.00 μs (2.0× slower)", document)
         self.assertIn("500 B (2.0× less)", document)
         self.assertIn("Consume — poll a single message", document)
-        self.assertIn("The `linger=0` scenario is the matched client comparison", document)
+        self.assertIn(
+            ":::note Reading producer results\n"
+            "The `linger=0` scenario is the matched client comparison. The `linger=5 ms` scenario intentionally measures each client's app-limited batching policy and should not be read as general producer throughput. In the legacy serial-awaited results below, Dekaf sends a sole record immediately while Confluent applies the configured linger; the old benchmark's unused `BatchSize` parameter also duplicated each payload result. The legacy batch and fire-and-forget results used leader acknowledgements without idempotence. The page will show the new matched controls after the next run from main.\n"
+            ":::",
+            document,
+        )
         self.assertIn("2.1× slower", document)
         self.assertIn("<details>", document)
         self.assertIn(
