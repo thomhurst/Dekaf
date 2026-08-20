@@ -125,6 +125,39 @@ public class KafkaProducerFastPathTests
     }
 
     [Test]
+    public async Task FireAsync_RecordHeaderBatchAwareCustomPartitioner_TracksPartitionCount()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 4096,
+            LingerMs = 10,
+            RequestTimeoutMs = 500,
+            DeliveryTimeoutMs = 1000,
+            CloseTimeoutMs = 1000,
+            CustomPartitioner = new BatchAwarePartitioner()
+        };
+
+        await using var producer = new KafkaProducer<string, string>(
+            options,
+            Serializers.String,
+            new RecordHeaderStringSerializer());
+        await StopProducerBackgroundLoopsAsync(producer);
+        SeedProducerMetadata(producer, partitionCount: 3);
+        SetInstanceField(producer, "_initialized", true);
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(producer.RecordAccumulator);
+
+        await producer.FireAsync(Topic, key: null, value: "value");
+
+        var partitionCount = GetCurrentBatchPartitionCount(
+            producer.RecordAccumulator,
+            new TopicPartition(Topic, 0));
+        await Assert.That(partitionCount).IsEqualTo(3);
+    }
+
+    [Test]
     public async Task ProduceAsync_TopicKeyValue_UsesHotPathWithCachedMetadata()
     {
         var options = new ProducerOptions
@@ -847,6 +880,21 @@ public class KafkaProducerFastPathTests
         throw new InvalidOperationException("Partition deque did not contain a current or sealed batch.");
     }
 
+    private static int GetCurrentBatchPartitionCount(
+        RecordAccumulator accumulator,
+        TopicPartition topicPartition)
+    {
+        var deques = GetInstanceField<object>(accumulator, "_partitionDeques");
+        var tryGetValueMethod = deques.GetType().GetMethod("TryGetValue");
+        var parameters = new object[] { topicPartition, null! };
+        if (!(bool)tryGetValueMethod!.Invoke(deques, parameters)!)
+            throw new InvalidOperationException("Partition deque was not found.");
+
+        var partitionBatch = GetInstanceField<object?>(parameters[1]!, "CurrentBatch")
+            ?? throw new InvalidOperationException("Current batch was not found.");
+        return (int)partitionBatch.GetType().GetProperty("PartitionCount")!.GetValue(partitionBatch)!;
+    }
+
     private static bool HasCurrentOrSealedBatch(
         RecordAccumulator accumulator,
         TopicPartition topicPartition)
@@ -962,6 +1010,15 @@ public class KafkaProducerFastPathTests
             }
 
             return 0;
+        }
+    }
+
+    private sealed class BatchAwarePartitioner : IPartitioner, IBatchCompletionAwarePartitioner
+    {
+        public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount) => 0;
+
+        public void OnBatchComplete(string topic, int partitionCount)
+        {
         }
     }
 }

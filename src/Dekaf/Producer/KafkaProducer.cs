@@ -4873,6 +4873,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 : keyBuffer.AsSpan(0, keyLength);
             var resolvedPartition = _partitioner.Partition(
                 topic, keySpan, keyIsNull, topicInfo.PartitionCount);
+            var batchCompletionPartitionCount = GetUniformStickyPartitionCount(
+                explicitPartition: null, keySpan, keyIsNull, topicInfo.PartitionCount);
 
             // Serialize after the user partitioner returns: it may reenter produce and overwrite
             // this thread's reusable value buffer.
@@ -4902,7 +4904,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 topic, resolvedPartition, timestampMs,
                 keySpan, keyIsNull,
                 valueSpan, valueIsNull,
-                pooledHeaderArray, headerCount, callback, CancellationToken.None);
+                pooledHeaderArray, headerCount, callback, CancellationToken.None,
+                batchCompletionPartitionCount);
         }
         finally
         {
