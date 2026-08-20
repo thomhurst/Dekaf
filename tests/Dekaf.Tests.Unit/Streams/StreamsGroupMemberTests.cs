@@ -1061,6 +1061,30 @@ public sealed class StreamsGroupMemberTests
         await Assert.That(connection.HeartbeatRequests).Count().IsEqualTo(3);
     }
 
+    [Test]
+    public async Task UpdateAsync_CancellationStopsInFlightHeartbeatAndUnblocksClose()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1));
+        var blockedUpdate = new TaskCompletionSource<StreamsGroupHeartbeatResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.EnqueueHeartbeat(blockedUpdate.Task);
+        connection.EnqueueHeartbeat(Success(epoch: 0));
+        await using var fixture = CreateFixture(connection);
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+        using var cancellation = new CancellationTokenSource();
+
+        var update = fixture.Member.UpdateAsync(
+            new StreamsGroupMemberUpdate { ProcessId = "cancelled" },
+            cancellation.Token).AsTask();
+        await connection.SecondHeartbeatStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        cancellation.Cancel();
+
+        _ = await Assert.ThrowsAsync<OperationCanceledException>(() => update);
+        await fixture.Member.CloseAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+        await Assert.That(connection.HeartbeatRequests).Count().IsEqualTo(3);
+    }
+
     private static Fixture CreateFixture(ScriptedConnection connection, string? instanceId = null)
     {
         var pool = Substitute.For<IConnectionPool>();
