@@ -606,16 +606,17 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                         position,
                         consumerStateVersion,
                         consumerGroupGeneration,
-                        out var autoCommitFaultScope))
+                        cancellationToken,
+                        out var hasAutoCommitReservation,
+                        out var autoCommitFaultApplication))
                 {
                     continue;
                 }
 
-                var hasAutoCommitReservation = autoCommitFaultScope.Operation == KafkaFaultOperation.Commit;
                 if (hasAutoCommitReservation)
                 {
                     await ApplyOnDeliveryAutoCommitFaultAsync(
-                        autoCommitFaultScope,
+                        autoCommitFaultApplication,
                         partition,
                         position,
                         cancellationToken).ConfigureAwait(false);
@@ -626,8 +627,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                         partition,
                         record,
                         position,
-                        consumerStateVersion,
-                        consumerGroupGeneration)
+                        consumerStateVersion)
                     : TryAdvanceSnapshotPosition(
                         partition,
                         record,
@@ -757,24 +757,23 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         ThrowIfDisposed();
         _ = GetCommitGroupId();
 
-        bool hasFaultScope;
-        KafkaFaultScope faultScope;
+        bool hasFaultApplication;
+        ValueTask faultApplication;
         lock (_gate)
         {
             var inDoubtOffset = _options.EnableAutoOffsetStore && _inDoubtNextOffset >= 0
                 ? _inDoubtPartition
                 : (TopicPartition?)null;
-            hasFaultScope = TryGetMatchingCommitFaultScopeUnderLock(
+            hasFaultApplication = TryApplyMatchingCommitFaultUnderLock(
                 inDoubtOffset,
                 requireInDoubtRecord: false,
-                out faultScope);
+                cancellationToken,
+                out faultApplication);
         }
 
-        if (hasFaultScope)
+        if (hasFaultApplication)
         {
-            await _cluster.FaultPlan.ApplyAsync(
-                faultScope,
-                cancellationToken).ConfigureAwait(false);
+            await faultApplication.ConfigureAwait(false);
             ThrowIfDisposed();
         }
 
@@ -1518,16 +1517,17 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             if (!TryPrepareOnDeliveryAutoCommitFault(
                     partition,
                     position,
-                    out var autoCommitFaultScope))
+                    cancellationToken,
+                    out var hasAutoCommitReservation,
+                    out var autoCommitFaultApplication))
             {
                 continue;
             }
 
-            var hasAutoCommitReservation = autoCommitFaultScope.Operation == KafkaFaultOperation.Commit;
             if (hasAutoCommitReservation)
             {
                 await ApplyOnDeliveryAutoCommitFaultAsync(
-                    autoCommitFaultScope,
+                    autoCommitFaultApplication,
                     partition,
                     position,
                     cancellationToken).ConfigureAwait(false);
@@ -1693,8 +1693,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         TopicPartition partition,
         InMemoryRecord record,
         long expectedPosition,
-        int consumerStateVersion,
-        int consumerGroupGeneration)
+        int consumerStateVersion)
     {
         lock (_gate)
         {
@@ -1707,12 +1706,20 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
             try
             {
-                return TryAdvanceSnapshotPositionUnderLock(
-                    partition,
-                    record,
-                    expectedPosition,
-                    consumerStateVersion,
-                    consumerGroupGeneration);
+                ThrowIfDisposed();
+                if (_consumerStateVersion != consumerStateVersion)
+                    ThrowSnapshotStateChanged();
+                if (!_positions.TryGetValue(partition, out var currentPosition) ||
+                    currentPosition != expectedPosition)
+                {
+                    return false;
+                }
+
+                // The commit barrier already ran for this fully materialized record. Finish
+                // publishing it if only the group generation changed while the barrier was held;
+                // post-yield validation reports that change on the next iterator step.
+                AdvancePositionUnderLock(partition, record);
+                return true;
             }
             finally
             {
@@ -1981,13 +1988,17 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private bool TryPrepareOnDeliveryAutoCommitFault(
         TopicPartition partition,
         long expectedPosition,
-        out KafkaFaultScope faultScope)
+        CancellationToken cancellationToken,
+        out bool hasReservation,
+        out ValueTask faultApplication)
     {
         lock (_gate)
             return TryPrepareOnDeliveryAutoCommitFaultUnderLock(
                 partition,
                 expectedPosition,
-                out faultScope);
+                cancellationToken,
+                out hasReservation,
+                out faultApplication);
     }
 
     private bool TryPrepareSnapshotOnDeliveryAutoCommitFault(
@@ -1995,7 +2006,9 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         long expectedPosition,
         int consumerStateVersion,
         int consumerGroupGeneration,
-        out KafkaFaultScope faultScope)
+        CancellationToken cancellationToken,
+        out bool hasReservation,
+        out ValueTask faultApplication)
     {
         lock (_gate)
         {
@@ -2005,16 +2018,21 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             return TryPrepareOnDeliveryAutoCommitFaultUnderLock(
                 partition,
                 expectedPosition,
-                out faultScope);
+                cancellationToken,
+                out hasReservation,
+                out faultApplication);
         }
     }
 
     private bool TryPrepareOnDeliveryAutoCommitFaultUnderLock(
         TopicPartition partition,
         long expectedPosition,
-        out KafkaFaultScope faultScope)
+        CancellationToken cancellationToken,
+        out bool hasReservation,
+        out ValueTask faultApplication)
     {
-        faultScope = default;
+        hasReservation = false;
+        faultApplication = ValueTask.CompletedTask;
         if (!_positions.TryGetValue(partition, out var currentPosition) ||
             currentPosition != expectedPosition)
         {
@@ -2033,37 +2051,40 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             return false;
         }
 
+        // The partition can be paused while an async deserializer runs. Do not consume
+        // its commit fault until this delivery can reserve the partition.
+        if (_paused.Contains(partition))
+            return false;
+
         var pendingOffset = _options.EnableAutoOffsetStore
             ? partition
             : (TopicPartition?)null;
-        if (TryGetMatchingCommitFaultScopeUnderLock(
+        if (TryApplyMatchingCommitFaultUnderLock(
                 pendingOffset,
                 requireInDoubtRecord: false,
-                out faultScope))
+                cancellationToken,
+                out faultApplication))
         {
-            if (!_paused.Add(partition))
-            {
-                faultScope = default;
-                return false;
-            }
+            _paused.Add(partition);
 
             (_pendingAutoCommitAdvancements ??= [])[partition] = new PendingAutoCommitAdvancement(
                 expectedPosition,
                 new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously));
+            hasReservation = true;
         }
 
         return true;
     }
 
     private async ValueTask ApplyOnDeliveryAutoCommitFaultAsync(
-        KafkaFaultScope faultScope,
+        ValueTask faultApplication,
         TopicPartition partition,
         long expectedPosition,
         CancellationToken cancellationToken)
     {
         try
         {
-            await ApplyAutomaticCommitFaultAsync(faultScope, cancellationToken).ConfigureAwait(false);
+            await faultApplication.ConfigureAwait(false);
             ThrowIfDisposed();
         }
         catch
@@ -2098,6 +2119,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             _pendingAutoCommitAdvancements = null;
 
         pending.Completion.TrySetResult();
+        _cluster.SignalRecordsChanged();
     }
 
     private void ThrowIfAutoCommitAdvancementPendingUnderLock()
@@ -2114,22 +2136,23 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         if (_options.OffsetCommitMode != OffsetCommitMode.Auto)
             return ValueTask.CompletedTask;
 
-        KafkaFaultScope faultScope;
+        ValueTask faultApplication;
         lock (_gate)
         {
             var inDoubtOffset = _options.EnableAutoOffsetStore && _inDoubtNextOffset >= 0
                 ? _inDoubtPartition
                 : (TopicPartition?)null;
-            if (!TryGetMatchingCommitFaultScopeUnderLock(
+            if (!TryApplyMatchingCommitFaultUnderLock(
                     inDoubtOffset,
                     requireInDoubtRecord: true,
-                    out faultScope))
+                    cancellationToken,
+                    out faultApplication))
             {
                 return ValueTask.CompletedTask;
             }
         }
 
-        return ApplyAutomaticCommitFaultAsync(faultScope, cancellationToken);
+        return faultApplication;
     }
 
     private ValueTask ApplyStoredAutoCommitFaultAsync(CancellationToken cancellationToken)
@@ -2137,32 +2160,29 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         if (_options.OffsetCommitMode != OffsetCommitMode.Auto)
             return ValueTask.CompletedTask;
 
-        KafkaFaultScope faultScope;
+        ValueTask faultApplication;
         lock (_gate)
         {
-            if (!TryGetMatchingCommitFaultScopeUnderLock(
+            if (!TryApplyMatchingCommitFaultUnderLock(
                     pendingOffset: null,
                     requireInDoubtRecord: false,
-                    out faultScope))
+                    cancellationToken,
+                    out faultApplication))
             {
                 return ValueTask.CompletedTask;
             }
         }
 
-        return ApplyAutomaticCommitFaultAsync(faultScope, cancellationToken);
+        return faultApplication;
     }
 
-    private ValueTask ApplyAutomaticCommitFaultAsync(
-        KafkaFaultScope faultScope,
-        CancellationToken cancellationToken) =>
-        _cluster.FaultPlan.ApplyAsync(faultScope, cancellationToken);
-
-    private bool TryGetMatchingCommitFaultScopeUnderLock(
+    private bool TryApplyMatchingCommitFaultUnderLock(
         TopicPartition? pendingOffset,
         bool requireInDoubtRecord,
-        out KafkaFaultScope faultScope)
+        CancellationToken cancellationToken,
+        out ValueTask faultApplication)
     {
-        faultScope = default;
+        faultApplication = ValueTask.CompletedTask;
         if (_groupId is null || (requireInDoubtRecord && _inDoubtNextOffset < 0))
             return false;
 
@@ -2173,24 +2193,28 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
             if (pendingOffset is { } onlyPending && _storedOffsets.Count == 0)
             {
-                faultScope = new KafkaFaultScope(
+                var faultScope = new KafkaFaultScope(
                     KafkaFaultOperation.Commit,
                     onlyPending.Topic,
                     onlyPending.Partition,
                     _groupId);
-                return indexedPlan.HasMatchingFault(faultScope);
+                return indexedPlan.TryApplyFirstMatchingFault(
+                    [faultScope],
+                    out faultApplication,
+                    cancellationToken);
             }
 
             if (_storedOffsets.Count == 0)
                 return false;
 
             var currentAssignment = GetCurrentAssignmentUnderLock();
-            return indexedPlan.TryGetFirstMatchingCommitScope(
+            return indexedPlan.TryApplyFirstMatchingCommitFault(
                 _groupId,
                 pendingOffset,
                 _storedOffsets,
                 currentAssignment,
-                out faultScope);
+                out faultApplication,
+                cancellationToken);
         }
 
         var faultPlan = _cluster.FaultPlan;
@@ -2232,7 +2256,10 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 _groupId);
         }
 
-        return faultPlan.TryGetFirstMatchingFaultScope(candidateScopes, out faultScope);
+        return faultPlan.TryApplyFirstMatchingFault(
+            candidateScopes,
+            out faultApplication,
+            cancellationToken);
     }
 
     private bool HasPotentialConsumerFault() =>

@@ -674,6 +674,15 @@ public sealed class InMemoryKafkaCluster
         await task.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
     }
 
+    internal void SignalRecordsChanged()
+    {
+        TaskCompletionSource signal;
+        lock (_gate)
+            signal = _recordsChanged;
+
+        signal.TrySetResult();
+    }
+
     internal WatermarkOffsets GetWatermarks(TopicPartition topicPartition)
     {
         lock (_gate)
