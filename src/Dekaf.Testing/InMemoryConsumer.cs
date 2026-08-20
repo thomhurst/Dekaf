@@ -552,14 +552,25 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
                 if (complete)
                 {
-                    await ApplyStoredAutoCommitFaultAsync(cancellationToken).ConfigureAwait(false);
+                    TopicPartitionOffset[] capturedOffsets;
+                    ValueTask commitFaultApplication;
                     lock (_gate)
                     {
                         ThrowIfSnapshotStateChangedUnderLock(
                             consumerStateVersion,
                             consumerGroupGeneration);
-                        if (_options.OffsetCommitMode == OffsetCommitMode.Auto)
-                            CommitStoredOffsets();
+                        capturedOffsets = CaptureStoredAutoCommitOffsetsUnderLock(
+                            cancellationToken,
+                            out commitFaultApplication);
+                    }
+
+                    await commitFaultApplication.ConfigureAwait(false);
+                    lock (_gate)
+                    {
+                        ThrowIfSnapshotStateChangedUnderLock(
+                            consumerStateVersion,
+                            consumerGroupGeneration);
+                        CommitCapturedOffsetsUnderLock(capturedOffsets);
                     }
 
                     yield break;
@@ -587,8 +598,9 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                         partition,
                         record,
                         cancellationToken).ConfigureAwait(false);
-                    if (!applyRecordFaults)
-                        applyRecordFaults = HasPotentialConsumerFault();
+                    applyRecordFaults = HasPotentialConsumerFault(
+                        consumerStateVersion,
+                        consumerGroupGeneration);
                 }
                 else
                 {
@@ -1034,21 +1046,29 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         TaskCompletionSource completion,
         CancellationToken cancellationToken)
     {
-        var commitStoredOffsets = false;
+        TopicPartitionOffset[]? capturedOffsets = null;
         Exception? failure = null;
         try
         {
-            await ApplyStoredAutoCommitFaultAsync(cancellationToken).ConfigureAwait(false);
-            commitStoredOffsets = true;
+            ValueTask commitFaultApplication;
+            lock (_gate)
+            {
+                capturedOffsets = CaptureStoredAutoCommitOffsetsUnderLock(
+                    cancellationToken,
+                    out commitFaultApplication);
+            }
+
+            await commitFaultApplication.ConfigureAwait(false);
         }
         catch (Exception ex)
         {
             failure = ex;
+            capturedOffsets = null;
         }
 
         try
         {
-            await CompleteClose(commitStoredOffsets).ConfigureAwait(false);
+            await CompleteClose(capturedOffsets).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -1065,15 +1085,15 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             completion.TrySetException(failure);
     }
 
-    private ValueTask CompleteClose(bool commitStoredOffsets = true)
+    private ValueTask CompleteClose(TopicPartitionOffset[]? capturedOffsets)
     {
         lock (_gate)
         {
             if (_disposed)
                 return ValueTask.CompletedTask;
 
-            if (commitStoredOffsets && _options.OffsetCommitMode == OffsetCommitMode.Auto)
-                CommitStoredOffsets();
+            if (capturedOffsets is not null)
+                CommitCapturedOffsetsUnderLock(capturedOffsets);
 
             // The in-memory cluster has no broker session timer. Always unregister on close so
             // RemainInGroup cannot create an immortal member that permanently owns partitions.
@@ -2452,25 +2472,27 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         }
     }
 
-    private ValueTask ApplyStoredAutoCommitFaultAsync(CancellationToken cancellationToken)
+    private TopicPartitionOffset[] CaptureStoredAutoCommitOffsetsUnderLock(
+        CancellationToken cancellationToken,
+        out ValueTask faultApplication)
     {
-        if (_options.OffsetCommitMode != OffsetCommitMode.Auto)
-            return ValueTask.CompletedTask;
+        faultApplication = ValueTask.CompletedTask;
+        if (_options.OffsetCommitMode != OffsetCommitMode.Auto || _groupId is null)
+            return [];
 
-        ValueTask faultApplication;
-        lock (_gate)
-        {
-            if (!TryApplyMatchingCommitFaultUnderLock(
-                    pendingOffset: null,
-                    requireInDoubtRecord: false,
-                    cancellationToken,
-                    out faultApplication))
-            {
-                return ValueTask.CompletedTask;
-            }
-        }
+        var offsets = CaptureCommitOffsetsUnderLock(inDoubtOffset: null);
+        _ = TryApplyMatchingCapturedCommitFault(
+            _groupId,
+            offsets,
+            cancellationToken,
+            out faultApplication);
+        return offsets;
+    }
 
-        return faultApplication;
+    private void CommitCapturedOffsetsUnderLock(TopicPartitionOffset[] offsets)
+    {
+        if (_groupId is not null && offsets.Length != 0)
+            _cluster.CommitOffsets(_groupId, offsets);
     }
 
     private bool TryApplyMatchingCommitFaultUnderLock(

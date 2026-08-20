@@ -1015,7 +1015,10 @@ public sealed class InMemoryConsumerFaultTests
     }
 
     [Test]
-    public async Task Snapshot_GroupChangeBeforeAdvancementPreservesFault()
+    [Arguments(KafkaFaultOperation.Consume)]
+    [Arguments(KafkaFaultOperation.Commit)]
+    public async Task Snapshot_GroupChangeAfterAsyncDeserializationPreservesFault(
+        KafkaFaultOperation operation)
     {
         var cluster = new InMemoryKafkaCluster();
         var producer = new InMemoryProducer<string, string>(cluster);
@@ -1023,9 +1026,11 @@ public sealed class InMemoryConsumerFaultTests
         var deserializer = new BlockingAsyncDeserializer();
         await using var consumer = CreateAsyncConsumer(cluster, deserializer);
         consumer.Subscribe(Topic);
-        var failure = new InvalidOperationException("commit failed");
+        var failure = new InvalidOperationException("record fault failed");
         cluster.FaultPlan.Fail(
-            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId),
+            operation == KafkaFaultOperation.Consume
+                ? new KafkaFaultScope(operation, Topic, 0, GroupId)
+                : new KafkaFaultScope(operation, groupId: GroupId),
             failure);
         await using var snapshot = consumer.ConsumeSnapshotAsync().GetAsyncEnumerator();
 
@@ -1040,6 +1045,30 @@ public sealed class InMemoryConsumerFaultTests
         await Assert.That(actual).IsNotSameReferenceAs(failure);
         await Assert.That(actual!.Message).Contains("snapshot enumeration");
         await Assert.That(cluster.FaultPlan.Count).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task SnapshotCompletion_BarrierCommitsExactCapturedOffsets()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic(Topic);
+        await using var consumer = CreateConsumer(
+            cluster,
+            enableAutoOffsetStore: false,
+            offsetCommitMode: OffsetCommitMode.Auto);
+        consumer.Subscribe(Topic);
+        consumer.StoreOffset(new TopicPartitionOffset(Topic, 0, 1));
+        var barrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, Topic, 0, GroupId));
+        await using var snapshot = consumer.ConsumeSnapshotAsync().GetAsyncEnumerator();
+
+        var completion = snapshot.MoveNextAsync().AsTask();
+        await barrier.WaitUntilEnteredAsync();
+        consumer.StoreOffset(new TopicPartitionOffset(Topic, 0, 9));
+        await Assert.That(barrier.Release()).IsTrue();
+
+        await Assert.That(await completion).IsFalse();
+        await Assert.That(cluster.GetCommittedOffset(GroupId, Partition)).IsEqualTo(1);
     }
 
     [Test]
@@ -1465,6 +1494,29 @@ public sealed class InMemoryConsumerFaultTests
         await Assert.That(cluster.GetCommittedOffset(GroupId, Partition)).IsNull();
         await Assert.That(barrier.Release()).IsTrue();
         await Task.WhenAll(firstClose, secondClose);
+
+        await Assert.That(cluster.GetCommittedOffset(GroupId, Partition)).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task CloseAsync_BarrierCommitsExactCapturedOffsets()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic(Topic);
+        var consumer = CreateConsumer(
+            cluster,
+            enableAutoOffsetStore: false,
+            offsetCommitMode: OffsetCommitMode.Auto);
+        consumer.Subscribe(Topic);
+        consumer.StoreOffset(new TopicPartitionOffset(Topic, 0, 1));
+        var barrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, Topic, 0, GroupId));
+
+        var close = consumer.CloseAsync().AsTask();
+        await barrier.WaitUntilEnteredAsync();
+        consumer.StoreOffset(new TopicPartitionOffset(Topic, 0, 9));
+        await Assert.That(barrier.Release()).IsTrue();
+        await close;
 
         await Assert.That(cluster.GetCommittedOffset(GroupId, Partition)).IsEqualTo(1);
     }
