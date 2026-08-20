@@ -3,6 +3,7 @@ using Dekaf.Consumer;
 using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Protocol;
+using Dekaf.Protocol.Messages;
 using Dekaf.Producer;
 using Dekaf.Serialization;
 
@@ -16,7 +17,7 @@ public sealed class InMemoryKafkaCluster
     private readonly object _gate = new();
     private readonly Dictionary<string, TopicState> _topics = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<TopicPartition, TopicPartitionOffset>> _consumerGroupOffsets = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, Dictionary<string, HashSet<TopicPartition>>> _consumerGroupMembers = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Dictionary<string, ConsumerGroupMemberState>> _consumerGroupMembers = new(StringComparer.Ordinal);
     private readonly Dictionary<string, int> _consumerGroupGenerations = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<TopicPartition, Dictionary<long, ShareLeaseState>>> _shareLeases = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<TopicPartition, Dictionary<long, int>>> _shareDeliveryCounts = new(StringComparer.Ordinal);
@@ -26,6 +27,7 @@ public sealed class InMemoryKafkaCluster
     private readonly InMemoryKafkaClusterOptions _options;
     private TaskCompletionSource _recordsChanged = NewRecordsChangedSource();
     private long _nextProducerId;
+    private long _nextConsumerGroupRegistrationId;
     private TimeSpan _produceLatency;
 
     public InMemoryKafkaCluster()
@@ -130,7 +132,8 @@ public sealed class InMemoryKafkaCluster
     internal int RegisterConsumerGroupMember(
         string groupId,
         string memberId,
-        IEnumerable<TopicPartition> subscribedPartitions)
+        IEnumerable<TopicPartition> subscribedPartitions,
+        out long registrationId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
         ArgumentException.ThrowIfNullOrWhiteSpace(memberId);
@@ -142,18 +145,22 @@ public sealed class InMemoryKafkaCluster
         {
             if (!_consumerGroupMembers.TryGetValue(groupId, out var members))
             {
-                members = new Dictionary<string, HashSet<TopicPartition>>(StringComparer.Ordinal);
+                members = new Dictionary<string, ConsumerGroupMemberState>(StringComparer.Ordinal);
                 _consumerGroupMembers[groupId] = members;
             }
 
-            members[memberId] = partitions;
+            registrationId = ++_nextConsumerGroupRegistrationId;
+            members[memberId] = new ConsumerGroupMemberState(registrationId, partitions);
             var generation = _consumerGroupGenerations.GetValueOrDefault(groupId) + 1;
             _consumerGroupGenerations[groupId] = generation;
             return generation;
         }
     }
 
-    internal void UnregisterConsumerGroupMember(string groupId, string memberId)
+    internal void UnregisterConsumerGroupMember(
+        string groupId,
+        string memberId,
+        long registrationId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
         ArgumentException.ThrowIfNullOrWhiteSpace(memberId);
@@ -163,8 +170,13 @@ public sealed class InMemoryKafkaCluster
             if (!_consumerGroupMembers.TryGetValue(groupId, out var members))
                 return;
 
-            if (!members.Remove(memberId))
+            if (!members.TryGetValue(memberId, out var member) ||
+                member.RegistrationId != registrationId)
+            {
                 return;
+            }
+
+            members.Remove(memberId);
 
             _consumerGroupGenerations[groupId] = _consumerGroupGenerations.GetValueOrDefault(groupId) + 1;
             if (members.Count == 0)
@@ -175,6 +187,7 @@ public sealed class InMemoryKafkaCluster
     internal IReadOnlySet<TopicPartition> GetConsumerGroupAssignment(
         string groupId,
         string memberId,
+        long registrationId,
         out int generation)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
@@ -182,6 +195,14 @@ public sealed class InMemoryKafkaCluster
 
         lock (_gate)
         {
+            if (!_consumerGroupMembers.TryGetValue(groupId, out var members) ||
+                !members.TryGetValue(memberId, out var member) ||
+                member.RegistrationId != registrationId)
+            {
+                generation = -1;
+                return new HashSet<TopicPartition>();
+            }
+
             generation = _consumerGroupGenerations.GetValueOrDefault(groupId);
             var assignments = BuildConsumerGroupAssignments(groupId);
             return assignments.TryGetValue(memberId, out var partitions)
@@ -496,11 +517,31 @@ public sealed class InMemoryKafkaCluster
     }
 
     internal bool TryRead(TopicPartition topicPartition, long offset, out InMemoryRecord record) =>
-        TryRead(topicPartition, offset, out record, out _);
+        TryRead(topicPartition, offset, IsolationLevel.ReadCommitted, out record, out _);
 
     internal bool TryRead(
         TopicPartition topicPartition,
         long offset,
+        IsolationLevel isolationLevel,
+        out InMemoryRecord record) =>
+        TryRead(topicPartition, offset, isolationLevel, out record, out _);
+
+    internal bool TryRead(
+        TopicPartition topicPartition,
+        long offset,
+        out InMemoryRecord record,
+        out bool blockedByOngoingTransaction) =>
+        TryRead(
+            topicPartition,
+            offset,
+            IsolationLevel.ReadCommitted,
+            out record,
+            out blockedByOngoingTransaction);
+
+    internal bool TryRead(
+        TopicPartition topicPartition,
+        long offset,
+        IsolationLevel isolationLevel,
         out InMemoryRecord record,
         out bool blockedByOngoingTransaction)
     {
@@ -509,6 +550,7 @@ public sealed class InMemoryKafkaCluster
             if (!TryReadRecordUnderLock(
                     topicPartition,
                     offset,
+                    isolationLevel,
                     out var candidate,
                     out blockedByOngoingTransaction))
             {
@@ -534,7 +576,12 @@ public sealed class InMemoryKafkaCluster
 
         lock (_gate)
         {
-            if (!TryReadRecordUnderLock(topicPartition, offset, out var candidate, out _))
+            if (!TryReadRecordUnderLock(
+                    topicPartition,
+                    offset,
+                    IsolationLevel.ReadCommitted,
+                    out var candidate,
+                    out _))
             {
                 record = null!;
                 deliveryCount = 0;
@@ -837,6 +884,7 @@ public sealed class InMemoryKafkaCluster
     private bool TryReadRecordUnderLock(
         TopicPartition topicPartition,
         long offset,
+        IsolationLevel isolationLevel,
         out InMemoryRecord record,
         out bool blockedByOngoingTransaction)
     {
@@ -851,7 +899,8 @@ public sealed class InMemoryKafkaCluster
         var partition = topic.Partitions[topicPartition.Partition];
         foreach (var candidate in partition.Records)
         {
-            if (candidate.Offset >= partition.FirstUnstableOffset)
+            if (isolationLevel == IsolationLevel.ReadCommitted &&
+                candidate.Offset >= partition.FirstUnstableOffset)
             {
                 record = null!;
                 blockedByOngoingTransaction = true;
@@ -859,7 +908,8 @@ public sealed class InMemoryKafkaCluster
             }
             if (candidate.Offset < offset)
                 continue;
-            if (IsRecordVisibleUnderLock(candidate))
+            if (isolationLevel == IsolationLevel.ReadUncommitted ||
+                IsRecordVisibleUnderLock(candidate))
             {
                 record = candidate;
                 blockedByOngoingTransaction = false;
@@ -868,7 +918,8 @@ public sealed class InMemoryKafkaCluster
         }
 
         record = null!;
-        blockedByOngoingTransaction = partition.FirstUnstableOffset != long.MaxValue;
+        blockedByOngoingTransaction = isolationLevel == IsolationLevel.ReadCommitted &&
+            partition.FirstUnstableOffset != long.MaxValue;
         return false;
     }
 
@@ -905,7 +956,7 @@ public sealed class InMemoryKafkaCluster
 
         var partitions = members
             .Values
-            .SelectMany(static item => item)
+            .SelectMany(static item => item.SubscribedPartitions)
             .Distinct()
             .OrderBy(static item => item.Topic, StringComparer.Ordinal)
             .ThenBy(static item => item.Partition)
@@ -915,7 +966,7 @@ public sealed class InMemoryKafkaCluster
         {
             var partition = partitions[i];
             var eligibleMembers = members
-                .Where(member => member.Value.Contains(partition))
+                .Where(member => member.Value.SubscribedPartitions.Contains(partition))
                 .Select(static member => member.Key)
                 .Order(StringComparer.Ordinal)
                 .ToArray();
@@ -1217,4 +1268,8 @@ public sealed class InMemoryKafkaCluster
 
         public string MemberId { get; }
     }
+
+    private readonly record struct ConsumerGroupMemberState(
+        long RegistrationId,
+        HashSet<TopicPartition> SubscribedPartitions);
 }

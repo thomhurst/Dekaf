@@ -2,6 +2,7 @@ using System.Reflection;
 using System.Text;
 using Dekaf.Consumer;
 using Dekaf.Producer;
+using Dekaf.Protocol.Messages;
 using Dekaf.Serialization;
 using Dekaf.Testing;
 
@@ -333,7 +334,11 @@ public sealed class InMemoryBoundedConsumerTests
         _ = await producer.ProduceAsync("events", "key-1", "after");
         await using var consumer = new InMemoryConsumer<string, string>(
             cluster,
-            new InMemoryConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest });
+            new InMemoryConsumerOptions
+            {
+                AutoOffsetReset = AutoOffsetReset.Earliest,
+                IsolationLevel = IsolationLevel.ReadCommitted
+            });
         var partition = new TopicPartition("events", 0);
         consumer.Assign(partition);
         consumer.Seek(new TopicPartitionOffset("events", 0, 1));

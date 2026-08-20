@@ -4,6 +4,7 @@ using Dekaf.Consumer;
 using Dekaf.Errors;
 using Dekaf.Producer;
 using Dekaf.Protocol;
+using Dekaf.Protocol.Messages;
 using Dekaf.Serialization;
 using Dekaf.Testing;
 
@@ -400,7 +401,11 @@ public sealed class InMemoryProducerFaultTests
 
         await using var consumer = new InMemoryConsumer<string, string>(
             cluster,
-            new InMemoryConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest });
+            new InMemoryConsumerOptions
+            {
+                AutoOffsetReset = AutoOffsetReset.Earliest,
+                IsolationLevel = IsolationLevel.ReadCommitted
+            });
         consumer.Subscribe("orders");
         var first = await consumer.ConsumeOneAsync(TimeSpan.Zero);
         var second = await consumer.ConsumeOneAsync(TimeSpan.Zero);
@@ -442,6 +447,61 @@ public sealed class InMemoryProducerFaultTests
         var committed = cluster.ReadRecords("orders");
         await Assert.That(committed.Select(static record => record.Offset))
             .IsEquivalentTo([0L, 1L, 2L]);
+    }
+
+    [Test]
+    public async Task Consumer_DefaultIsolationReadsOngoingTransactionAndFollowingRecords()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("orders");
+        await using var transactionalProducer = new InMemoryProducer<string, string>(cluster);
+        await using var transaction = transactionalProducer.BeginTransaction();
+        _ = await transaction.ProduceAsync("orders", "k", "pending");
+        await using var ordinaryProducer = new InMemoryProducer<string, string>(cluster);
+        _ = await ordinaryProducer.ProduceAsync("orders", "k", "following");
+        await using var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest });
+        consumer.Assign(new TopicPartition("orders", 0));
+
+        var pending = await consumer.ConsumeOneAsync(TimeSpan.Zero);
+        var following = await consumer.ConsumeOneAsync(TimeSpan.Zero);
+
+        await Assert.That(pending).IsNotNull();
+        await Assert.That(pending!.Value.Value).IsEqualTo("pending");
+        await Assert.That(following).IsNotNull();
+        await Assert.That(following!.Value.Value).IsEqualTo("following");
+    }
+
+    [Test]
+    public async Task Consumer_ReadCommittedStopsUntilTransactionCompletes()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("orders");
+        await using var transactionalProducer = new InMemoryProducer<string, string>(cluster);
+        await using var transaction = transactionalProducer.BeginTransaction();
+        _ = await transaction.ProduceAsync("orders", "k", "pending");
+        await using var ordinaryProducer = new InMemoryProducer<string, string>(cluster);
+        _ = await ordinaryProducer.ProduceAsync("orders", "k", "following");
+        await using var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions
+            {
+                AutoOffsetReset = AutoOffsetReset.Earliest,
+                IsolationLevel = IsolationLevel.ReadCommitted
+            });
+        consumer.Assign(new TopicPartition("orders", 0));
+
+        await Assert.That(await consumer.ConsumeOneAsync(TimeSpan.Zero)).IsNull();
+
+        await transaction.CommitAsync();
+
+        var pending = await consumer.ConsumeOneAsync(TimeSpan.Zero);
+        var following = await consumer.ConsumeOneAsync(TimeSpan.Zero);
+        await Assert.That(pending).IsNotNull();
+        await Assert.That(pending!.Value.Value).IsEqualTo("pending");
+        await Assert.That(following).IsNotNull();
+        await Assert.That(following!.Value.Value).IsEqualTo("following");
     }
 
     [Test]
@@ -773,6 +833,37 @@ public sealed class InMemoryProducerFaultTests
 
         await Assert.That(staleConsumer.ConsumerGroupMetadata).IsNull();
         await Assert.That(replacement.ConsumerGroupMetadata!.GenerationId).IsGreaterThan(staleGeneration);
+    }
+
+    [Test]
+    public async Task ConsumerGroupRegistration_DoesNotTransferAcrossDuplicateMemberIds()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("orders");
+        var options = new InMemoryConsumerOptions
+        {
+            GroupId = "billing",
+            MemberId = "billing-worker"
+        };
+        var displaced = new InMemoryConsumer<string, string>(cluster, options);
+        displaced.Subscribe("orders");
+        var displacedGeneration = displaced.ConsumerGroupMetadata!.GenerationId;
+        await using var replacement = new InMemoryConsumer<string, string>(cluster, options);
+        replacement.Subscribe("orders");
+        var replacementGeneration = replacement.ConsumerGroupMetadata!.GenerationId;
+
+        _ = displaced.Assignment;
+
+        await Assert.That(displaced.ConsumerGroupMetadata).IsNull();
+        await Assert.That(displaced.Assignment).IsEmpty();
+        await Assert.That(replacementGeneration).IsGreaterThan(displacedGeneration);
+
+        await displaced.DisposeAsync();
+        var replacementAssignment = replacement.Assignment;
+
+        await Assert.That(replacementAssignment).Contains(new TopicPartition("orders", 0));
+        await Assert.That(replacement.ConsumerGroupMetadata!.GenerationId)
+            .IsEqualTo(replacementGeneration);
     }
 
     [Test]
