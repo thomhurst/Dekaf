@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.ExceptionServices;
 using System.Threading.Channels;
 using Dekaf.Errors;
 using Dekaf.Metadata;
@@ -477,8 +478,15 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
             response = await SendWithRecoveryAsync(
                     request,
                     command.CancellationToken,
-                    recoveryJoinEpoch: recoveryJoinEpoch)
+                    recoveryJoinEpoch: recoveryJoinEpoch,
+                    trackAmbiguousRequestFailure: true)
                 .ConfigureAwait(false);
+        }
+        catch (AmbiguousHeartbeatException exception)
+        {
+            MarkUnjoined();
+            ExceptionDispatchInfo.Capture(exception.InnerException!).Throw();
+            throw;
         }
         catch
         {
@@ -508,9 +516,12 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         }
         catch (Exception exception)
         {
+            var fatal = IsFatalHeartbeatFailure(exception);
+            if (fatal)
+                MarkUnjoined();
             Volatile.Write(
                 ref _backgroundFailure,
-                IsFatalHeartbeatFailure(exception) ? exception : null);
+                fatal ? exception : null);
         }
 
         if (Volatile.Read(ref _closeRequested) == 0 && Volatile.Read(ref _backgroundFailure) is null)
@@ -577,7 +588,8 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         StreamsGroupHeartbeatRequest request,
         CancellationToken cancellationToken,
         int? recoveryJoinEpoch = null,
-        bool recoverFencing = true)
+        bool recoverFencing = true,
+        bool trackAmbiguousRequestFailure = false)
     {
         var fencedRecoveryAttempted = false;
         var shutdownApplication = request.ShutdownApplication;
@@ -585,6 +597,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         long unreleasedStartedAt = -1;
         var attemptLimit = 5;
         var fencingObserved = false;
+        var ambiguousCompletionObserved = false;
         try
         {
             for (var attempt = 0; attempt < attemptLimit; attempt++)
@@ -593,6 +606,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
                     await FindCoordinatorAsync(cancellationToken).ConfigureAwait(false);
 
                 StreamsGroupHeartbeatResponse response;
+                var requestAttempted = false;
                 try
                 {
                     using var lease = await _connectionPool.LeaseConnectionAsync(_coordinatorId, cancellationToken)
@@ -610,16 +624,32 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
                         ApiKey.StreamsGroupHeartbeat,
                         StreamsGroupHeartbeatRequest.LowestSupportedVersion,
                         StreamsGroupHeartbeatRequest.HighestSupportedVersion);
+                    requestAttempted = true;
                     response = await connection.SendAsync<StreamsGroupHeartbeatRequest, StreamsGroupHeartbeatResponse>(
                         request,
                         version,
                         cancellationToken).ConfigureAwait(false);
                 }
                 catch (Exception exception) when (
+                    trackAmbiguousRequestFailure
+                    && requestAttempted
+                    && exception is OperationCanceledException
+                    && cancellationToken.IsCancellationRequested)
+                {
+                    ambiguousCompletionObserved = true;
+                    throw;
+                }
+                catch (Exception exception) when (
                     RetryHelper.IsRetriableRequestFailure(exception)
                     && (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested))
                 {
                     _coordinatorId = -1;
+                    if (trackAmbiguousRequestFailure && requestAttempted)
+                    {
+                        // Later retry responses cannot prove whether an earlier request
+                        // reached the broker when its completion was lost.
+                        ambiguousCompletionObserved = true;
+                    }
                     if (attempt == attemptLimit - 1)
                         throw;
                     if (recoverFencing)
@@ -627,7 +657,6 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
                     await DelayForRetryAsync(attempt + 1, cancellationToken).ConfigureAwait(false);
                     continue;
                 }
-
                 if (response.ErrorCode == ErrorCode.None)
                     return response;
 
@@ -696,15 +725,19 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
                 $"StreamsGroupHeartbeat failed after {attemptLimit} coordinator attempts.")
             { GroupId = GroupId };
         }
+        catch (Exception exception) when (trackAmbiguousRequestFailure && ambiguousCompletionObserved)
+        {
+            throw new AmbiguousHeartbeatException(exception);
+        }
         catch
         {
             if (fencingObserved)
-                MarkUnjoinedAfterFencing();
+                MarkUnjoined();
             throw;
         }
     }
 
-    private void MarkUnjoinedAfterFencing()
+    private void MarkUnjoined()
     {
         _memberEpoch = 0;
         _steadyRequestCache.Invalidate();
@@ -1320,6 +1353,10 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         IReadOnlyList<StreamsGroupHeartbeatTaskOffset>? TaskOffsets,
         IReadOnlyList<StreamsGroupHeartbeatTaskOffset>? TaskEndOffsets,
         int EndpointInformationEpoch);
+
+    private sealed class AmbiguousHeartbeatException(Exception innerException) : Exception(
+        "StreamsGroupHeartbeat completion is ambiguous.",
+        innerException);
 
     private enum MemberCommandKind : byte
     {
