@@ -80,6 +80,51 @@ public class KafkaProducerFastPathTests
     }
 
     [Test]
+    public async Task FireAsync_RecordHeaderSerializerCustomPartitionerReentry_PreservesOuterKeyAndValue()
+    {
+        var partitioner = new ReentrantPartitioner();
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 4096,
+            LingerMs = 10,
+            RequestTimeoutMs = 500,
+            DeliveryTimeoutMs = 1000,
+            CloseTimeoutMs = 1000,
+            CustomPartitioner = partitioner
+        };
+
+        await using var producer = new KafkaProducer<string, string>(
+            options,
+            Serializers.String,
+            new RecordHeaderStringSerializer());
+        await StopProducerBackgroundLoopsAsync(producer);
+        SeedProducerMetadata(producer);
+        SetInstanceField(producer, "_initialized", true);
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(producer.RecordAccumulator);
+
+        partitioner.OnFirstPartition = () =>
+        {
+            var innerProduce = producer.FireAsync(Topic, "inner", "inner-value");
+            if (!innerProduce.IsCompletedSuccessfully)
+                throw new InvalidOperationException("Expected the reentrant hot path to complete synchronously.");
+        };
+
+        await producer.FireAsync(Topic, "outer", "outer-value");
+
+        var readyBatch = CompleteCurrentBatch(producer.RecordAccumulator, new TopicPartition(Topic, 0));
+        await Assert.That(readyBatch.RecordBatch.Records.Count).IsEqualTo(2);
+        await Assert.That(GetKeyString(readyBatch.RecordBatch.Records[0])).IsEqualTo("inner");
+        await Assert.That(GetValueString(readyBatch.RecordBatch.Records[0])).IsEqualTo("inner-value");
+        await Assert.That(GetHeaderValueString(readyBatch.RecordBatch.Records[0])).IsEqualTo("inner-value");
+        await Assert.That(GetKeyString(readyBatch.RecordBatch.Records[1])).IsEqualTo("outer");
+        await Assert.That(GetValueString(readyBatch.RecordBatch.Records[1])).IsEqualTo("outer-value");
+        await Assert.That(GetHeaderValueString(readyBatch.RecordBatch.Records[1])).IsEqualTo("outer-value");
+    }
+
+    [Test]
     public async Task ProduceAsync_TopicKeyValue_UsesHotPathWithCachedMetadata()
     {
         var options = new ProducerOptions

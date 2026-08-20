@@ -325,33 +325,10 @@ internal static class SchemaIdentityResolution
                 $"Schema Registry did not return a valid GUID for schema ID {schemaId}.");
         }
 
-        SchemaGuidFrameCache.Cache(schema, SchemaIdentityFraming.CreateSchemaGuidFrame(schemaGuid));
-        return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(schemaId, schema);
-    }
-}
-
-internal static class SchemaGuidFrameCache
-{
-    private static readonly ConditionalWeakTable<Schema, GuidFrame> Frames = new();
-
-    internal static void Cache(Schema schema, ReadOnlyMemory<byte> frame) =>
-        Frames.AddOrUpdate(schema, new GuidFrame(frame));
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal static ReadOnlyMemory<byte> Get(Schema schema, int schemaId) =>
-        Frames.TryGetValue(schema, out var frame)
-            ? frame.Value
-            : ThrowMissing(schemaId);
-
-    [DoesNotReturn]
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    private static ReadOnlyMemory<byte> ThrowMissing(int schemaId) =>
-        throw new InvalidDataException(
-            $"Schema Registry GUID framing is unavailable for schema ID {schemaId}.");
-
-    private sealed class GuidFrame(ReadOnlyMemory<byte> value)
-    {
-        internal ReadOnlyMemory<byte> Value { get; } = value;
+        return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(
+            schemaId,
+            schema,
+            SchemaIdentityFraming.CreateSchemaGuidFrame(schemaGuid));
     }
 }
 
@@ -407,7 +384,12 @@ internal static class SchemaIdentitySerialization
             throw new InvalidOperationException(
                 "Header schema identity framing requires a record Headers collection.");
         }
-        var encodedSchemaGuid = SchemaGuidFrameCache.Get(schemaEntry.Schema!, schemaEntry.SchemaId);
+        var encodedSchemaGuid = schemaEntry.SchemaGuidFrame;
+        if (encodedSchemaGuid is null)
+        {
+            throw new InvalidDataException(
+                $"Schema Registry GUID framing is unavailable for schema ID {schemaEntry.SchemaId}.");
+        }
 
         headers.Add(SchemaIdentityFraming.CreateSchemaGuidHeader(
             context.Component,

@@ -4788,6 +4788,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         var cache = GetOrCreateCache();
         var serializationHeaders = PrepareSerializationHeaders(
             headers, cache, out var originalHeaderCount, out var usesHeaderWorkspace);
+        var customPartitionerKey = PooledMemory.Null;
+        var customPartitionerValue = PooledMemory.Null;
         try
         {
             var keyIsNull = key is null;
@@ -4818,9 +4820,38 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 valueLength = valueWriter.WrittenCount;
             }
 
-            var keySpan = keyIsNull ? ReadOnlySpan<byte>.Empty : cache.KeySerializationBuffer.AsSpan(0, keyLength);
-            var resolvedPartition = partition
-                ?? _partitioner.Partition(topic, keySpan, keyIsNull, topicInfo.PartitionCount);
+            var keySpan = keyIsNull
+                ? ReadOnlySpan<byte>.Empty
+                : cache.KeySerializationBuffer.AsSpan(0, keyLength);
+            var valueSpan = valueIsNull
+                ? ReadOnlySpan<byte>.Empty
+                : cache.ValueSerializationBuffer.AsSpan(0, valueLength);
+            int resolvedPartition;
+            if (partition is { } explicitPartition)
+            {
+                resolvedPartition = explicitPartition;
+            }
+            else
+            {
+                if (_usesCustomPartitioner)
+                {
+                    // User partitioners can reenter produce and overwrite the thread-local buffers.
+                    if (!keyIsNull && keySpan.Length > 0)
+                    {
+                        customPartitionerKey = CopySpanToPooledMemory(keySpan);
+                        keySpan = customPartitionerKey.Span;
+                    }
+
+                    if (!valueIsNull && valueSpan.Length > 0)
+                    {
+                        customPartitionerValue = CopySpanToPooledMemory(valueSpan);
+                        valueSpan = customPartitionerValue.Span;
+                    }
+                }
+
+                resolvedPartition = _partitioner.Partition(
+                    topic, keySpan, keyIsNull, topicInfo.PartitionCount);
+            }
             var batchCompletionPartitionCount = GetUniformStickyPartitionCount(
                 partition, keySpan, keyIsNull, topicInfo.PartitionCount);
 
@@ -4839,12 +4870,14 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             return _accumulator.AppendFromSpansAsync(
                 topic, resolvedPartition, timestampMs,
                 keySpan, keyIsNull,
-                valueIsNull ? ReadOnlySpan<byte>.Empty : cache.ValueSerializationBuffer.AsSpan(0, valueLength),
+                valueSpan,
                 valueIsNull,
                 pooledHeaderArray, headerCount, callback, CancellationToken.None, batchCompletionPartitionCount);
         }
         finally
         {
+            customPartitionerKey.Return();
+            customPartitionerValue.Return();
             RestoreSerializationHeaders(
                 serializationHeaders, originalHeaderCount, cache, usesHeaderWorkspace);
         }

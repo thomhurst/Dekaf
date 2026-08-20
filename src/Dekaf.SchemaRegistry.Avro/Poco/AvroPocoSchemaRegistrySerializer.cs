@@ -100,8 +100,7 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
                     topic,
                     isKey,
                     subject,
-                    value.SchemaId,
-                    value.Schema!)));
+                    in value)));
         }
 
         return AwaitResolutionAsync(topic, isKey, subject, resolution);
@@ -178,8 +177,7 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
                 topic,
                 isKey,
                 subject,
-                value.SchemaId,
-                value.Schema!));
+                in value));
     }
 
     private static ResolvedSchemaContext ToResolvedContext(SubjectSchemaIdCache.SubjectSchemaIdCacheEntry entry) =>
@@ -479,7 +477,8 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
             new SubjectSchemaIdCache.SubjectSchemaIdCacheKey(topic, isKey),
             subject,
             value.SchemaId,
-            value.Schema);
+            value.Schema,
+            value.SchemaGuidFrame);
     }
 
     private ValueTask<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> ResolveSchemaAsync(

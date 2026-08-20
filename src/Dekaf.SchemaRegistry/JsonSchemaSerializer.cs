@@ -681,8 +681,7 @@ public sealed class JsonSchemaRegistrySerializer<T> :
                     topic,
                     isKey,
                     subject,
-                    value.SchemaId,
-                    value.Schema!)));
+                    in value)));
         }
 
         return AwaitSchemaAsync(this, topic, isKey, subject, resolved);
@@ -699,8 +698,7 @@ public sealed class JsonSchemaRegistrySerializer<T> :
                 topic,
                 isKey,
                 subject,
-                value.SchemaId,
-                value.Schema!));
+                in value));
         }
     }
 

@@ -429,8 +429,7 @@ public sealed class AvroSchemaRegistrySerializer<
                     topic,
                     isKey,
                     subject,
-                    value.SchemaId,
-                    value.Schema!)));
+                    in value)));
         }
 
         return AwaitSchemaAsync(topic, isKey, subject, cache, resolved);
@@ -448,8 +447,7 @@ public sealed class AvroSchemaRegistrySerializer<
                     topic,
                     isKey,
                     subject,
-                    value.SchemaId,
-                    value.Schema!));
+                    in value));
         }
     }
 
