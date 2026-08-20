@@ -1534,7 +1534,9 @@ public sealed class AvroPocoSchemaRegistryTests
 
         await outerSerializer.WarmupAsync(outerContext.Topic);
         await nestedSerializer.WarmupAsync(nestedContext.Topic);
-        for (var index = 0; index < 16; index++)
+        // Cross the tiered-compilation call-count threshold before measuring. The
+        // reentrant generic write path can otherwise promote during the allocation window.
+        for (var index = 0; index < AllocationWarmupCount; index++)
         {
             outerDestination.Clear();
             outerSerializer.Serialize(outerValue, ref outerDestination, outerContext);
