@@ -876,6 +876,33 @@ public sealed class JsonSchemaValidationTests
     }
 
     [Test]
+    public async Task InlineRules_EvaluateNestedSiblingMemberRulesAgainstSharedValues()
+    {
+        const string schemaText = """
+            {
+              "confluent:rules": [
+                { "name": "a", "expr": "this.details.a == 1" },
+                { "name": "b", "expr": "this.details.b == 2" },
+                { "name": "c", "expr": "this.details.c == 3" }
+              ]
+            }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
+
+        validator.ValidateRules(
+            """{"details":{"a":1,"b":2,"c":3}}"""u8.ToArray(),
+            25,
+            failFast: false);
+        var exception = Assert.Throws<ValidationRulesFailedException>(() => validator.ValidateRules(
+            """{"details":{"a":0,"b":2,"c":0}}"""u8.ToArray(),
+            25,
+            failFast: false));
+
+        await Assert.That(exception.Violations.Select(static violation => violation.Rule.Name!))
+            .IsEquivalentTo(["a", "c"]);
+    }
+
+    [Test]
     public void InlineRules_RejectMalformedDeclarations()
     {
         Assert.Throws<InvalidOperationException>(() => CreateFactory().GetOrCreate(CreateSchema(
@@ -1172,6 +1199,9 @@ public sealed class JsonSchemaValidationTests
             Context);
 
         await Assert.That(result.Name).IsEqualTo("ok");
+        Assert.Throws<ValidationRulesFailedException>(() => deserializer.Deserialize(
+            CreateWirePayload(schemaId, """{"name":"bad"}"""),
+            Context));
     }
 
     [Test]
@@ -1193,12 +1223,14 @@ public sealed class JsonSchemaValidationTests
                 SchemaString = schemaText,
                 RuleSet = new SchemaRuleSet
                 {
+                    DomainRules = [CreateRule("domain", "DOMAIN", SchemaRuleMode.Read)],
                     EncodingRules = [CreateRule("encoding", "ENCODING", SchemaRuleMode.Read)]
                 }
             });
         var calls = new List<string>();
         var executor = new SchemaRegistryRuleExecutor([
-            new ReplacingRuleHandler("ENCODING", """{"name":"ok"}"""u8.ToArray(), calls)
+            new ReplacingRuleHandler("ENCODING", """{"name":"ok"}"""u8.ToArray(), calls),
+            new ReplacingRuleHandler("DOMAIN", """{"name":"ok"}"""u8.ToArray(), calls)
         ]);
         await using var deserializer = new JsonSchemaRegistryDeserializer<NamePayload>(
             registry,
@@ -1217,6 +1249,28 @@ public sealed class JsonSchemaValidationTests
             Context);
 
         await Assert.That(result.Name).IsEqualTo("ok");
+        await Assert.That(calls).IsEquivalentTo(["encoding", "domain"]);
+
+        calls.Clear();
+        var invalidExecutor = new SchemaRegistryRuleExecutor([
+            new ReplacingRuleHandler("ENCODING", """{"name":"bad"}"""u8.ToArray(), calls),
+            new ReplacingRuleHandler("DOMAIN", """{"name":"ok"}"""u8.ToArray(), calls)
+        ]);
+        await using var invalidDeserializer = new JsonSchemaRegistryDeserializer<NamePayload>(
+            registry,
+            jsonOptions: null,
+            validationOptions: new JsonSchemaValidationOptions
+            {
+                ValidatorFactory = new StreamingJsonSchemaValidatorFactory(registry),
+                Mode = JsonSchemaValidationMode.None,
+                ValidationRulesExecution = ValidationRulesExecution.BeforeDomainRules
+            },
+            config: new SchemaRegistryDeserializerConfig { UseLatestVersion = true },
+            ruleExecutor: invalidExecutor);
+
+        Assert.Throws<ValidationRulesFailedException>(() => invalidDeserializer.Deserialize(
+            CreateWirePayload(schemaId, "encoded"),
+            Context));
         await Assert.That(calls).IsEquivalentTo(["encoding"]);
     }
 

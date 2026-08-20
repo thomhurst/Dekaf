@@ -1160,7 +1160,7 @@ internal sealed class SchemaCompiler : IDisposable
 
         var compiled = new List<CompiledValidationRule>();
         var memberIndexes = new Dictionary<string, int>(StringComparer.Ordinal);
-        var memberNames = new List<byte[]>();
+        var memberPaths = new List<byte[][]>();
         foreach (var element in rules.EnumerateArray())
         {
             if (element.ValueKind != JsonValueKind.Object)
@@ -1172,10 +1172,10 @@ internal sealed class SchemaCompiler : IDisposable
                 Expr = GetOptionalString(element, "expr"),
                 Sql = GetOptionalString(element, "sql")
             };
-            compiled.Add(CompiledValidationRule.Compile(rule, memberIndexes, memberNames));
+            compiled.Add(CompiledValidationRule.Compile(rule, memberIndexes, memberPaths));
         }
-        if (memberNames.Count != 0)
-            members = new ValidationCelMemberTable([.. memberNames]);
+        if (memberPaths.Count != 0)
+            members = new ValidationCelMemberTable([.. memberPaths]);
         return [.. compiled];
 
         static string? GetOptionalString(JsonElement owner, string name) =>
