@@ -265,11 +265,15 @@ internal sealed class ValidationCelMemberTable
     private sealed class MemberNode(
         byte[][] names,
         int[] valueIndexes,
-        MemberNode?[] children)
+        MemberNode?[] children,
+        int[] terminalValueIndexes)
     {
         private readonly byte[][] _names = names;
         private readonly int[] _valueIndexes = valueIndexes;
         private readonly MemberNode?[] _children = children;
+        private readonly int[] _terminalValueIndexes = terminalValueIndexes;
+        // A non-default empty slice records a match while remaining a CEL missing value.
+        private readonly int _markerValueIndex = terminalValueIndexes[0];
         private readonly int[] _buckets = CreateBuckets(names);
 
         internal void Resolve(
@@ -285,10 +289,16 @@ internal sealed class ValidationCelMemberTable
                 if (!reader.Read())
                     return;
                 var start = checked((int)reader.TokenStartIndex);
-                if (index >= 0 && _children[index] is { } child &&
-                    reader.TokenType == JsonTokenType.StartObject)
+                if (index >= 0 && _children[index] is { } child)
                 {
-                    child.Resolve(ref reader, json, values);
+                    if (!values[child._markerValueIndex].Equals(default(ReadOnlyMemory<byte>)))
+                        child.Clear(values);
+                    if (reader.TokenType == JsonTokenType.StartObject)
+                        child.Resolve(ref reader, json, values);
+                    else
+                        reader.Skip();
+                    if (values[child._markerValueIndex].Equals(default(ReadOnlyMemory<byte>)))
+                        values[child._markerValueIndex] = json[..0];
                 }
                 else
                 {
@@ -302,6 +312,12 @@ internal sealed class ValidationCelMemberTable
                         checked((int)reader.BytesConsumed) - start);
                 }
             }
+        }
+
+        private void Clear(ReadOnlyMemory<byte>[] values)
+        {
+            for (var index = 0; index < _terminalValueIndexes.Length; index++)
+                values[_terminalValueIndexes[index]] = default;
         }
 
         private int Find(ref Utf8JsonReader reader)
@@ -344,9 +360,11 @@ internal sealed class ValidationCelMemberTable
         private readonly List<byte[]> _names = [];
         private readonly List<int> _valueIndexes = [];
         private readonly List<MemberNodeBuilder?> _children = [];
+        private readonly List<int> _terminalValueIndexes = [];
 
         internal void Add(byte[][] path, int valueIndex, int depth)
         {
+            _terminalValueIndexes.Add(valueIndex);
             var memberIndex = FindOrAdd(path[depth]);
             if (depth == path.Length - 1)
             {
@@ -363,7 +381,11 @@ internal sealed class ValidationCelMemberTable
             var children = new MemberNode?[_children.Count];
             for (var index = 0; index < children.Length; index++)
                 children[index] = _children[index]?.Build();
-            return new MemberNode([.. _names], [.. _valueIndexes], children);
+            return new MemberNode(
+                [.. _names],
+                [.. _valueIndexes],
+                children,
+                [.. _terminalValueIndexes]);
         }
 
         private int FindOrAdd(byte[] name)

@@ -133,6 +133,7 @@ public class JsonSchemaValidationBenchmarks
     private ReadOnlyMemory<byte> _siblingInlineRulesJsonPayload;
     private IJsonSchemaValidator _siblingInlineRulesValidator = null!;
     private ReadOnlyMemory<byte> _nestedMemberInlineRulesJsonPayload;
+    private ReadOnlyMemory<byte> _duplicateNestedMemberInlineRulesJsonPayload;
     private IJsonSchemaValidator _nestedMemberInlineRulesValidator = null!;
     private ReadOnlyMemory<byte> _terminalPrefixInlineRulesJsonPayload;
     private IJsonSchemaValidator _terminalPrefixInlineRulesValidator = null!;
@@ -248,6 +249,13 @@ public class JsonSchemaValidationBenchmarks
             _nestedMemberInlineRulesJsonPayload,
             5,
             failFast: false);
+        _duplicateNestedMemberInlineRulesJsonPayload =
+            """{"details":{"a":0,"b":0,"c":0,"d":0,"e":0,"f":0,"g":0,"h":0},"details":{"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8}}"""u8
+                .ToArray();
+        _nestedMemberInlineRulesValidator.ValidateRules(
+            _duplicateNestedMemberInlineRulesJsonPayload,
+            5,
+            failFast: false);
         var (terminalPrefixSchema, terminalPrefixPayload) = CreateTerminalPrefixRule(depth: 32);
         _terminalPrefixInlineRulesJsonPayload = terminalPrefixPayload;
         _terminalPrefixInlineRulesValidator = inlineRulesFactory.GetOrCreate(new Schema
@@ -338,6 +346,13 @@ public class JsonSchemaValidationBenchmarks
     public void ValidateNestedMemberInlineRules() =>
         _nestedMemberInlineRulesValidator.ValidateRules(
             _nestedMemberInlineRulesJsonPayload,
+            5,
+            failFast: false);
+
+    [Benchmark]
+    public void ValidateDuplicateNestedMemberInlineRules() =>
+        _nestedMemberInlineRulesValidator.ValidateRules(
+            _duplicateNestedMemberInlineRulesJsonPayload,
             5,
             failFast: false);
 
