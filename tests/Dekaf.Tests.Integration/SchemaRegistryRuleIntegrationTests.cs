@@ -447,12 +447,12 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
         await using var serializer = new JsonSchemaRegistrySerializer<InlineValidationPayload>(
             registryClient,
             schemaText,
-            jsonOptions: null,
+            SchemaRegistryRuleJsonContext.Default.InlineValidationPayload,
             validationOptions,
             autoRegisterSchemas: false);
         await using var deserializer = new JsonSchemaRegistryDeserializer<InlineValidationPayload>(
             registryClient,
-            jsonOptions: null,
+            SchemaRegistryRuleJsonContext.Default.InlineValidationPayload,
             validationOptions);
         var context = CreateContext(topic);
         var invalid = new ArrayBufferWriter<byte>();
@@ -499,7 +499,7 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
             }
         };
 
-    private sealed record InlineValidationPayload(string Name);
+    internal sealed record InlineValidationPayload(string Name);
 
     private static SerializationContext CreateContext(string topic) =>
         new()
@@ -720,6 +720,8 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
     }
 }
 
+[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 [JsonSerializable(typeof(string))]
 [JsonSerializable(typeof(System.Text.Json.JsonElement))]
+[JsonSerializable(typeof(SchemaRegistryRuleIntegrationTests.InlineValidationPayload))]
 internal sealed partial class SchemaRegistryRuleJsonContext : JsonSerializerContext;

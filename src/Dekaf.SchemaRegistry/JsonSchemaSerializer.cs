@@ -1428,7 +1428,8 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
                     context,
                     SchemaRegistryPayloadFormat.Json);
                 payload = migration.Payload;
-                schema = migration.ReaderSchema.Schema;
+                schema = migration.PayloadSchema;
+                schemaId = migration.PayloadSchemaId;
                 if (_validationRulesExecution == ValidationRulesExecution.AfterDomainRules)
                 {
                     _validationRulesFactory!

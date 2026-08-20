@@ -152,32 +152,35 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         if (reader.TokenType == JsonTokenType.Null)
             return true;
 
-        var value = GetCurrentValue(ref reader, payload);
         var rules = node.ValidationRules;
-        for (var index = 0; index < rules.Length; index++)
+        if (rules.Length != 0)
         {
-            var compiledRule = rules[index];
-            try
+            var value = GetCurrentValue(ref reader, payload);
+            for (var index = 0; index < rules.Length; index++)
             {
-                var result = compiledRule.Evaluate(value, now);
-                if (result.Kind == ValidationResultKind.Boolean ? !result.Boolean : result.String!.Length != 0)
+                var compiledRule = rules[index];
+                try
+                {
+                    var result = compiledRule.Evaluate(value, now);
+                    if (result.Kind == ValidationResultKind.Boolean ? !result.Boolean : result.String!.Length != 0)
+                    {
+                        (violations ??= []).Add(new ValidationRuleError(
+                            compiledRule.Rule,
+                            path.ToString(),
+                            result.Kind == ValidationResultKind.String ? result.String : null));
+                        if (failFast)
+                            return false;
+                    }
+                }
+                catch (SchemaRegistryRuleException exception)
                 {
                     (violations ??= []).Add(new ValidationRuleError(
                         compiledRule.Rule,
                         path.ToString(),
-                        result.Kind == ValidationResultKind.String ? result.String : null));
+                        cause: exception));
                     if (failFast)
                         return false;
                 }
-            }
-            catch (SchemaRegistryRuleException exception)
-            {
-                (violations ??= []).Add(new ValidationRuleError(
-                    compiledRule.Rule,
-                    path.ToString(),
-                    cause: exception));
-                if (failFast)
-                    return false;
             }
         }
 
@@ -441,42 +444,44 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
                 return false;
         }
 
-        if (node.AnyOf.Length != 0)
+        if (node.HasAnyOf)
         {
             var matched = false;
+            var pathMark = path.Length;
             for (var index = 0; index < node.AnyOf.Length; index++)
             {
                 var branchReader = reader;
-                if (ValidateNode(
+                matched = ValidateNode(
                         ref branchReader,
                         node.AnyOf[index],
                         ref path,
                         SuppressFailureSchemaId,
                         out _,
-                        referenceDepth))
-                {
-                    matched = true;
+                        referenceDepth);
+                path.Truncate(pathMark);
+                if (matched)
                     break;
-                }
             }
             if (!matched)
                 return Fail(schemaId, "anyOf", ref path, out failure);
         }
 
-        if (node.OneOf.Length != 0)
+        if (node.HasOneOf)
         {
             var matches = 0;
+            var pathMark = path.Length;
             for (var index = 0; index < node.OneOf.Length; index++)
             {
                 var branchReader = reader;
-                if (ValidateNode(
+                var matched = ValidateNode(
                         ref branchReader,
                         node.OneOf[index],
                         ref path,
                         SuppressFailureSchemaId,
                         out _,
-                        referenceDepth) &&
-                    ++matches > 1)
+                        referenceDepth);
+                path.Truncate(pathMark);
+                if (matched && ++matches > 1)
                     break;
             }
             if (matches != 1)
@@ -1082,7 +1087,9 @@ internal sealed class SchemaCompiler : IDisposable
         node.MaxLength = GetNonNegativeInt32(schema, "maxLength", int.MaxValue);
         ParseNumericAssertions(schema, node);
         node.AllOf = CompileSchemaArray(document, schema, "allOf", pointer, baseUri, dialect, depth);
+        node.HasAnyOf = schema.TryGetProperty("anyOf", out _);
         node.AnyOf = CompileSchemaArray(document, schema, "anyOf", pointer, baseUri, dialect, depth);
+        node.HasOneOf = schema.TryGetProperty("oneOf", out _);
         node.OneOf = CompileSchemaArray(document, schema, "oneOf", pointer, baseUri, dialect, depth);
         CompileObjectKeywords(document, schema, pointer, baseUri, dialect, depth, node);
         CompileArrayKeywords(document, schema, pointer, baseUri, dialect, depth, node);
@@ -1507,8 +1514,8 @@ internal sealed class SchemaCompiler : IDisposable
     private static bool HasLocalAssertions(CompiledSchemaNode node) =>
         node.Types != JsonSchemaType.Any ||
         node.AllOf.Length != 0 ||
-        node.AnyOf.Length != 0 ||
-        node.OneOf.Length != 0 ||
+        node.HasAnyOf ||
+        node.HasOneOf ||
         node.Properties is not null ||
         node.RequiredCount != 0 ||
         !node.AllowsAdditionalProperties ||
@@ -1622,7 +1629,9 @@ internal sealed class CompiledSchemaNode
     internal CompiledSchemaNode? Reference { get; set; }
     internal CompiledValidationRule[] ValidationRules { get; set; } = [];
     internal CompiledSchemaNode[] AllOf { get; set; } = [];
+    internal bool HasAnyOf { get; set; }
     internal CompiledSchemaNode[] AnyOf { get; set; } = [];
+    internal bool HasOneOf { get; set; }
     internal CompiledSchemaNode[] OneOf { get; set; } = [];
     internal bool HasLocalValidationTraversal { get; set; }
     internal CompiledPropertyTable? Properties { get; set; }
