@@ -644,11 +644,19 @@ public sealed class JsonSchemaRegistrySerializer<T> :
     [MethodImpl(MethodImplOptions.NoInlining)]
     private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry GetSchemaForContextSlow(string topic, bool isKey)
     {
-        var cache = _asyncSubjectNameStrategy is SerializerSubjectNameStrategyState state
+        var state = _asyncSubjectNameStrategy as SerializerSubjectNameStrategyState;
+        var cache = state is not null
             ? Volatile.Read(ref state.Cache)
             : _subjectSchemaIdCache;
         if (cache.TryGet(topic, isKey, out var cached))
             return cached;
+
+        if (state is not null)
+        {
+            var previous = Volatile.Read(ref state.PreviousCache);
+            if (previous is not null && previous.TryGet(topic, isKey, out cached))
+                return cached;
+        }
 
         return cache.GetOrAdd(
             topic,
@@ -852,6 +860,7 @@ public sealed class JsonSchemaRegistrySerializer<T> :
     {
         internal IAsyncSubjectNameStrategy Strategy { get; } = strategy;
         internal SubjectSchemaIdCache Cache = new();
+        internal SubjectSchemaIdCache? PreviousCache;
 
         public ValueTask<string> GetSubjectNameAsync(
             string topic,
@@ -860,8 +869,13 @@ public sealed class JsonSchemaRegistrySerializer<T> :
             CancellationToken cancellationToken = default) =>
             Strategy.GetSubjectNameAsync(topic, recordType, isKey, cancellationToken);
 
-        void IAssociatedNameCacheInvalidationTarget.InvalidateAssociatedNameCache() =>
+        void IAssociatedNameCacheInvalidationTarget.InvalidateAssociatedNameCache()
+        {
+            var current = Volatile.Read(ref Cache);
+            if (current.CachedEntryCount != 0)
+                Volatile.Write(ref PreviousCache, current);
             Volatile.Write(ref Cache, new SubjectSchemaIdCache());
+        }
     }
 
     public ValueTask DisposeAsync()
@@ -1114,23 +1128,35 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
         SerializationContext context,
         out T value)
     {
+        string? preparedSubject = null;
         if (_ruleExecutor is not null
-            && _subjectNames is { RequiresPreparation: true }
-            && DeserializerSubjectNameCache.TryReadSchemaId(data, out var schemaId)
-            && !_subjectNames.IsPrepared(
-                schemaId,
-                context.Topic,
-                context.Component == SerializationComponent.Key))
+            && _subjectNames is { RequiresPreparation: true } subjectNames
+            && DeserializerSubjectNameCache.TryReadSchemaId(data, out var schemaId))
         {
-            value = default!;
-            return false;
+            if (!subjectNames.TryGetPreparedSubject(
+                    schemaId,
+                    context.Topic,
+                    context.Component == SerializationComponent.Key,
+                    out var prepared))
+            {
+                value = default!;
+                return false;
+            }
+
+            preparedSubject = prepared.Subject;
         }
 
-        value = Deserialize(data, context);
+        value = DeserializeCore(data, context, preparedSubject);
         return true;
     }
 
-    public T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
+    public T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
+        DeserializeCore(data, context, preparedSubject: null);
+
+    private T DeserializeCore(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        string? preparedSubject)
     {
         var span = data.Span;
 
@@ -1153,7 +1179,11 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
         if (_ruleExecutor is not null)
         {
             string subject;
-            if (_subjectNames is null)
+            if (preparedSubject is not null)
+            {
+                subject = preparedSubject;
+            }
+            else if (_subjectNames is null)
             {
                 subject = SubjectNameResolver.GetTopicSubjectName(
                     context.Topic,

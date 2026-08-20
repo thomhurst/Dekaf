@@ -102,24 +102,36 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> :
         SerializationContext context,
         out T value)
     {
+        string? preparedSubject = null;
         if (_ruleExecutor is not null
-            && _subjectNames is { RequiresPreparation: true }
-            && DeserializerSubjectNameCache.TryReadSchemaId(data, out var schemaId)
-            && !_subjectNames.IsPrepared(
-                schemaId,
-                context.Topic,
-                context.Component == SerializationComponent.Key))
+            && _subjectNames is { RequiresPreparation: true } subjectNames
+            && DeserializerSubjectNameCache.TryReadSchemaId(data, out var schemaId))
         {
-            value = default!;
-            return false;
+            if (!subjectNames.TryGetPreparedSubject(
+                    schemaId,
+                    context.Topic,
+                    context.Component == SerializationComponent.Key,
+                    out var prepared))
+            {
+                value = default!;
+                return false;
+            }
+
+            preparedSubject = prepared.Subject;
         }
 
-        value = Deserialize(data, context);
+        value = DeserializeCore(data, context, preparedSubject);
         return true;
     }
 
     /// <inheritdoc />
-    public T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
+    public T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
+        DeserializeCore(data, context, preparedSubject: null);
+
+    private T DeserializeCore(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        string? preparedSubject)
     {
         var span = data.Span;
 
@@ -143,7 +155,12 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> :
         string? ruleSubject = null;
         if (!_config.SkipSchemaValidation || _config.RuleExecutor is SchemaRegistryRuleExecutor || _migrationRunner is not null)
         {
-            if (_config.RuleExecutor is not null && _subjectNames is null)
+            if (preparedSubject is not null)
+            {
+                ruleSubject = preparedSubject;
+                schema = _schemaRegistry.GetSchemaSync(schemaId, ruleSubject, SchemaRegistryTimeout);
+            }
+            else if (_config.RuleExecutor is not null && _subjectNames is null)
             {
                 ruleSubject = SubjectNameResolver.GetTopicSubjectName(
                     context.Topic,

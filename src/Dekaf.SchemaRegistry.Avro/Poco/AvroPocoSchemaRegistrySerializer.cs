@@ -45,6 +45,7 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
     private AvroPocoSerializerBufferState? _primaryRuleBuffer;
     private ConditionalWeakTable<Thread, AvroPocoSerializerBufferState>? _additionalRuleBuffers;
     private SubjectSchemaIdCache? _associatedSubjectCache;
+    private SubjectSchemaIdCache? _previousAssociatedSubjectCache;
 
     /// <summary>Creates a generated POCO Avro serializer.</summary>
     public AvroPocoSchemaRegistrySerializer(
@@ -477,6 +478,13 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         if (cache.TryGet(topic, isKey, out var cached))
             return cached;
 
+        if (_asyncSubjectNameStrategy is not null)
+        {
+            var previous = Volatile.Read(ref _previousAssociatedSubjectCache);
+            if (previous is not null && previous.TryGet(topic, isKey, out cached))
+                return cached;
+        }
+
         return cache.GetOrAdd(
             topic,
             isKey,
@@ -727,8 +735,13 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         return ValueTask.CompletedTask;
     }
 
-    private void InvalidateAssociatedSubjectSchemaCache() =>
+    private void InvalidateAssociatedSubjectSchemaCache()
+    {
+        var current = Volatile.Read(ref _associatedSubjectCache)!;
+        if (current.CachedEntryCount != 0)
+            Volatile.Write(ref _previousAssociatedSubjectCache, current);
         Volatile.Write(ref _associatedSubjectCache, new SubjectSchemaIdCache());
+    }
 
 }
 

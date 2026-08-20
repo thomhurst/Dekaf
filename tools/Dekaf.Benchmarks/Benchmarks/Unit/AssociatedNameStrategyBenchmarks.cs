@@ -1,6 +1,8 @@
+using System.Buffers;
 using System.Net;
 using BenchmarkDotNet.Attributes;
 using Dekaf.SchemaRegistry;
+using Dekaf.Serialization;
 
 namespace Dekaf.Benchmarks.Benchmarks.Unit;
 
@@ -12,7 +14,10 @@ public class AssociatedNameStrategyBenchmarks
     private SchemaRegistryClient _client = null!;
     private AssociatedNameStrategy _strategy = null!;
     private SchemaRegistrySerializer<int> _serializer = null!;
+    private JsonSchemaRegistrySerializer<int> _jsonSerializer = null!;
     private DeserializerSubjectNameCache _deserializerSubjects = null!;
+    private ArrayBufferWriter<byte> _jsonDestination = null!;
+    private SerializationContext _serializationContext;
 
     [GlobalSetup]
     public void Setup()
@@ -28,10 +33,21 @@ public class AssociatedNameStrategyBenchmarks
             static (_, _) => { },
             _strategy,
             static () => new Schema { SchemaType = SchemaType.Json, SchemaString = "{\"type\":\"integer\"}" });
+        _jsonSerializer = new JsonSchemaRegistrySerializer<int>(
+            _client,
+            _strategy,
+            "{\"type\":\"integer\"}");
+        _jsonDestination = new ArrayBufferWriter<byte>(16);
+        _serializationContext = new SerializationContext
+        {
+            Topic = _topic,
+            Component = SerializationComponent.Value
+        };
         _ = _strategy.GetSubjectNameAsync(_topic, _recordType, isKey: false)
             .GetAwaiter()
             .GetResult();
         _ = _serializer.PrepareAsync(_topic, 42).GetAwaiter().GetResult();
+        _ = _jsonSerializer.PrepareAsync(_topic, 42).GetAwaiter().GetResult();
         _deserializerSubjects = DeserializerSubjectNameCache.Create(
             _client,
             new SchemaRegistryDeserializerConfig { AsyncSubjectNameStrategy = _strategy })!;
@@ -50,6 +66,7 @@ public class AssociatedNameStrategyBenchmarks
     public async Task Cleanup()
     {
         await _serializer.DisposeAsync().ConfigureAwait(false);
+        await _jsonSerializer.DisposeAsync().ConfigureAwait(false);
         _client.Dispose();
     }
 
@@ -63,6 +80,13 @@ public class AssociatedNameStrategyBenchmarks
     [Benchmark]
     public ValueTask<ResolvedSchemaContext> SerializerAssociatedNameCached() =>
         _serializer.PrepareAsync(_topic, 42);
+
+    [Benchmark]
+    public void JsonSerializerAssociatedNameCached()
+    {
+        _jsonDestination.Clear();
+        _jsonSerializer.Serialize(42, ref _jsonDestination, _serializationContext);
+    }
 
     [Benchmark]
     public string DeserializerAssociatedNameCached() =>

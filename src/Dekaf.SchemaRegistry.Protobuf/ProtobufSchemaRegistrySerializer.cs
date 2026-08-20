@@ -44,6 +44,7 @@ public sealed class ProtobufSchemaRegistrySerializer<
     private readonly SchemaResolutionCache<RegisteredDependency> _referenceResolutionCache = new();
     private readonly Schema _resolutionIdentitySchema;
     private SubjectSchemaIdCache? _associatedSubjectSchemaIdCache;
+    private SubjectSchemaIdCache? _previousAssociatedSubjectSchemaIdCache;
 
     /// <summary>
     /// Creates a new Protobuf Schema Registry serializer.
@@ -205,6 +206,13 @@ public sealed class ProtobufSchemaRegistrySerializer<
             : Volatile.Read(ref _associatedSubjectSchemaIdCache)!;
         if (cache.TryGet(topic, isKey, out var cached))
             return cached;
+
+        if (_asyncSubjectNameStrategy is not null)
+        {
+            var previous = Volatile.Read(ref _previousAssociatedSubjectSchemaIdCache);
+            if (previous is not null && previous.TryGet(topic, isKey, out cached))
+                return cached;
+        }
 
         return cache.GetOrAdd(
             topic,
@@ -701,6 +709,11 @@ public sealed class ProtobufSchemaRegistrySerializer<
         return ValueTask.CompletedTask;
     }
 
-    private void InvalidateAssociatedSubjectSchemaCache() =>
+    private void InvalidateAssociatedSubjectSchemaCache()
+    {
+        var current = Volatile.Read(ref _associatedSubjectSchemaIdCache)!;
+        if (current.CachedEntryCount != 0)
+            Volatile.Write(ref _previousAssociatedSubjectSchemaIdCache, current);
         Volatile.Write(ref _associatedSubjectSchemaIdCache, new SubjectSchemaIdCache());
+    }
 }

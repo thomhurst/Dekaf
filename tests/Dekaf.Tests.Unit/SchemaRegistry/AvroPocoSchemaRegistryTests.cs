@@ -74,6 +74,40 @@ public sealed class AvroPocoSchemaRegistryTests
         await Assert.That(second.Subject).IsEqualTo("poco-v2");
     }
 
+    [Test]
+    public async Task GeneratedSerializer_InvalidationAfterPreparationPreservesSerializeHandoff()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        await SetPocoAssociationAsync(registry, "poco-orders", "poco-v1");
+        var strategy = new Dekaf.SchemaRegistry.AssociatedNameStrategy(registry);
+        await using var serializer = PocoOrder.CreateAvroSerializer(
+            registry,
+            new AvroSerializerConfig { AsyncSubjectNameStrategy = strategy });
+        var prepared = await serializer.PrepareAsync("poco-orders");
+        var destination = new ArrayBufferWriter<byte>();
+        var context = new SerializationContext
+        {
+            Topic = "poco-orders",
+            Component = SerializationComponent.Value
+        };
+
+        strategy.ClearCache();
+        strategy.ClearCache();
+        serializer.Serialize(new PocoOrder
+        {
+            Id = 42,
+            Customer = "Ada",
+            Scores = [],
+            Tags = [],
+            Totals = [],
+            Address = new PocoAddress { City = "London", PostCode = "SW1" },
+            Created = DateTime.UnixEpoch
+        }, ref destination, context);
+
+        await Assert.That(BinaryPrimitives.ReadInt32BigEndian(destination.WrittenSpan.Slice(1)))
+            .IsEqualTo(prepared.SchemaId);
+    }
+
     private static Task<Dekaf.SchemaRegistry.AssociationResponse> SetPocoAssociationAsync(
         Dekaf.SchemaRegistry.ISchemaRegistryClient registry,
         string topic,

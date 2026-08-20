@@ -334,6 +334,32 @@ public sealed class AssociatedNameStrategyTests
     }
 
     [Test]
+    public async Task JsonSerializer_InvalidationAfterPreparationPreservesSerializeHandoff()
+    {
+        using var client = new MockSchemaRegistryClient();
+        await AssociateAsync(client, "orders", "json-v1");
+        var resolver = CreateResolver(client);
+        await using var serializer = new JsonSchemaRegistrySerializer<int>(
+            client,
+            resolver,
+            """{"type":"integer"}""");
+        var prepared = await serializer.PrepareAsync("orders", 42);
+        var destination = new ArrayBufferWriter<byte>();
+        var context = new SerializationContext
+        {
+            Topic = "orders",
+            Component = SerializationComponent.Value
+        };
+
+        resolver.ClearCache();
+        resolver.ClearCache();
+        serializer.Serialize(42, ref destination, context);
+
+        await Assert.That(BinaryPrimitives.ReadInt32BigEndian(destination.WrittenSpan.Slice(1)))
+            .IsEqualTo(prepared.SchemaId);
+    }
+
+    [Test]
     public async Task AvroSerializer_PrepareAsync_ObservesAssociationCacheInvalidation()
     {
         using var client = new MockSchemaRegistryClient();
@@ -357,6 +383,35 @@ public sealed class AssociatedNameStrategyTests
     }
 
     [Test]
+    public async Task AvroSerializer_InvalidationAfterPreparationPreservesSerializeHandoff()
+    {
+        using var client = new MockSchemaRegistryClient();
+        await AssociateAsync(client, "orders", "avro-v1");
+        var resolver = CreateResolver(client);
+        var schema = (global::Avro.RecordSchema)global::Avro.Schema.Parse(
+            """{"type":"record","name":"Order","fields":[{"name":"id","type":"int"}]}""");
+        var value = new GenericRecord(schema);
+        value.Add("id", 42);
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(
+            client,
+            new AvroSerializerConfig { AsyncSubjectNameStrategy = resolver });
+        var prepared = await serializer.PrepareAsync("orders", value);
+        var destination = new ArrayBufferWriter<byte>();
+        var context = new SerializationContext
+        {
+            Topic = "orders",
+            Component = SerializationComponent.Value
+        };
+
+        resolver.ClearCache();
+        resolver.ClearCache();
+        serializer.Serialize(value, ref destination, context);
+
+        await Assert.That(BinaryPrimitives.ReadInt32BigEndian(destination.WrittenSpan.Slice(1)))
+            .IsEqualTo(prepared.SchemaId);
+    }
+
+    [Test]
     public async Task ProtobufSerializer_PrepareAsync_ObservesAssociationCacheInvalidation()
     {
         using var client = new MockSchemaRegistryClient();
@@ -374,6 +429,32 @@ public sealed class AssociatedNameStrategyTests
 
         await Assert.That(first.Subject).IsEqualTo("protobuf-v1");
         await Assert.That(second.Subject).IsEqualTo("protobuf-v2");
+    }
+
+    [Test]
+    public async Task ProtobufSerializer_InvalidationAfterPreparationPreservesSerializeHandoff()
+    {
+        using var client = new MockSchemaRegistryClient();
+        await AssociateAsync(client, "orders", "protobuf-v1");
+        var resolver = CreateResolver(client);
+        var value = new TestMessage { Id = 42 };
+        await using var serializer = new ProtobufSchemaRegistrySerializer<TestMessage>(
+            client,
+            new ProtobufSerializerConfig { AsyncSubjectNameStrategy = resolver });
+        var prepared = await serializer.PrepareAsync("orders", value);
+        var destination = new ArrayBufferWriter<byte>();
+        var context = new SerializationContext
+        {
+            Topic = "orders",
+            Component = SerializationComponent.Value
+        };
+
+        resolver.ClearCache();
+        resolver.ClearCache();
+        serializer.Serialize(value, ref destination, context);
+
+        await Assert.That(BinaryPrimitives.ReadInt32BigEndian(destination.WrittenSpan.Slice(1)))
+            .IsEqualTo(prepared.SchemaId);
     }
 
     [Test]
@@ -554,6 +635,133 @@ public sealed class AssociatedNameStrategyTests
 
         await Assert.That(deserialized).IsTrue();
         await Assert.That(value).IsEqualTo(42);
+    }
+
+    [Test]
+    public async Task JsonDeserializer_InvalidationAfterAdmissionUsesPreparedSubject()
+    {
+        using var client = new MockSchemaRegistryClient();
+        const string subject = "orders-associated-value";
+        var schemaId = await client.RegisterSchemaAsync(subject, new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = """{"type":"integer"}"""
+        });
+        await AssociateAsync(client, "orders", subject);
+        var resolver = CreateResolver(client);
+        await using var deserializer = new JsonSchemaRegistryDeserializer<int>(
+            client,
+            jsonOptions: null,
+            config: new SchemaRegistryDeserializerConfig { AsyncSubjectNameStrategy = resolver },
+            ownsClient: false,
+            ruleExecutor: new CapturingRuleExecutor());
+        var preparer = (IAsyncDeserializerPreparer<int>)deserializer;
+        var context = new SerializationContext
+        {
+            Topic = "orders",
+            Component = SerializationComponent.Value
+        };
+        var data = new byte[7];
+        BinaryPrimitives.WriteInt32BigEndian(data.AsSpan(1), schemaId);
+        data[5] = (byte)'4';
+        data[6] = (byte)'2';
+        await preparer.PrepareAsync(data, context);
+        client.BeforeTryGetCachedSchema = () =>
+        {
+            client.BeforeTryGetCachedSchema = null;
+            resolver.ClearCache();
+        };
+
+        var deserialized = preparer.TryDeserialize(data, context, out var value);
+
+        await Assert.That(deserialized).IsTrue();
+        await Assert.That(value).IsEqualTo(42);
+    }
+
+    [Test]
+    public async Task AvroDeserializer_InvalidationAfterAdmissionUsesPreparedSubject()
+    {
+        using var client = new MockSchemaRegistryClient();
+        const string subject = "orders-associated-value";
+        const string schemaString =
+            """{"type":"record","name":"Order","fields":[{"name":"id","type":"int"}]}""";
+        var schemaId = await client.RegisterSchemaAsync(subject, new Schema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = schemaString
+        });
+        await AssociateAsync(client, "orders", subject);
+        var resolver = CreateResolver(client);
+        await using var deserializer = new AvroSchemaRegistryDeserializer<GenericRecord>(
+            client,
+            new AvroDeserializerConfig
+            {
+                AsyncSubjectNameStrategy = resolver,
+                RuleExecutor = new CapturingRuleExecutor()
+            });
+        var preparer = (IAsyncDeserializerPreparer<GenericRecord>)deserializer;
+        var context = new SerializationContext
+        {
+            Topic = "orders",
+            Component = SerializationComponent.Value
+        };
+        var data = new byte[6];
+        BinaryPrimitives.WriteInt32BigEndian(data.AsSpan(1), schemaId);
+        data[5] = 84;
+        await preparer.PrepareAsync(data, context);
+        client.BeforeTryGetCachedSchema = () =>
+        {
+            client.BeforeTryGetCachedSchema = null;
+            resolver.ClearCache();
+        };
+
+        var deserialized = preparer.TryDeserialize(data, context, out var value);
+
+        await Assert.That(deserialized).IsTrue();
+        await Assert.That(value["id"]).IsEqualTo(42);
+    }
+
+    [Test]
+    public async Task ProtobufDeserializer_InvalidationAfterAdmissionUsesPreparedSubject()
+    {
+        using var client = new MockSchemaRegistryClient();
+        const string subject = "orders-associated-value";
+        var schemaId = await client.RegisterSchemaAsync(subject, new Schema
+        {
+            SchemaType = SchemaType.Protobuf,
+            SchemaString = TestMessage.Descriptor.File.SerializedData.ToBase64()
+        });
+        await AssociateAsync(client, "orders", subject);
+        var resolver = CreateResolver(client);
+        await using var deserializer = new ProtobufSchemaRegistryDeserializer<TestMessage>(
+            client,
+            new ProtobufDeserializerConfig
+            {
+                AsyncSubjectNameStrategy = resolver,
+                RuleExecutor = new CapturingRuleExecutor()
+            });
+        var preparer = (IAsyncDeserializerPreparer<TestMessage>)deserializer;
+        var context = new SerializationContext
+        {
+            Topic = "orders",
+            Component = SerializationComponent.Value
+        };
+        var data = new byte[8];
+        BinaryPrimitives.WriteInt32BigEndian(data.AsSpan(1), schemaId);
+        data[5] = 0;
+        data[6] = 8;
+        data[7] = 42;
+        await preparer.PrepareAsync(data, context);
+        client.BeforeTryGetCachedSchema = () =>
+        {
+            client.BeforeTryGetCachedSchema = null;
+            resolver.ClearCache();
+        };
+
+        var deserialized = preparer.TryDeserialize(data, context, out var value);
+
+        await Assert.That(deserialized).IsTrue();
+        await Assert.That(value.Id).IsEqualTo(42);
     }
 
     [Test]

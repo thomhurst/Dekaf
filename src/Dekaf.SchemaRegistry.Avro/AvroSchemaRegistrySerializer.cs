@@ -74,6 +74,7 @@ public sealed class AvroSchemaRegistrySerializer<
     private DynamicSchemaCache? _lastDynamicSchemaCache;
     private DynamicSchemaCache? _previousDynamicSchemaCache;
     private SubjectSchemaIdCache? _associatedSubjectSchemaIdCache;
+    private SubjectSchemaIdCache? _previousAssociatedSubjectSchemaIdCache;
 
     /// <summary>
     /// Creates a new Avro Schema Registry serializer.
@@ -368,6 +369,10 @@ public sealed class AvroSchemaRegistrySerializer<
             if (associatedCache.TryGet(topic, isKey, out var associated))
                 return associated;
 
+            var previous = GetPreviousAssociatedSubjectSchemaIdCache(avroSchema);
+            if (previous is not null && previous.TryGet(topic, isKey, out associated))
+                return associated;
+
             cache = associatedCache;
         }
 
@@ -629,6 +634,19 @@ public sealed class AvroSchemaRegistrySerializer<
         return Interlocked.CompareExchange(ref cache.AssociatedSubjectSchemaIdCache, created, null) ?? created;
     }
 
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private SubjectSchemaIdCache? GetPreviousAssociatedSubjectSchemaIdCache(AvroSchema schema)
+    {
+        if (_writerSchema is not null)
+            return Volatile.Read(ref _previousAssociatedSubjectSchemaIdCache);
+
+        var last = Volatile.Read(ref _lastDynamicSchemaCache);
+        var cache = last is not null && ReferenceEquals(Volatile.Read(ref last.LastSeenSchema), schema)
+            ? last
+            : GetDynamicSchemaCacheSlow(schema, last);
+        return Volatile.Read(ref cache.PreviousAssociatedSubjectSchemaIdCache);
+    }
+
     private AllocationFreeGenericRecordWriter GetGenericWriter(AvroSchema schema) =>
         GetGenericDynamicSchemaCache(schema).Writer;
 
@@ -814,6 +832,7 @@ public sealed class AvroSchemaRegistrySerializer<
         internal bool IsLogicallyCached;
         internal SubjectSchemaIdCache SubjectSchemaIdCache { get; }
         internal SubjectSchemaIdCache? AssociatedSubjectSchemaIdCache;
+        internal SubjectSchemaIdCache? PreviousAssociatedSubjectSchemaIdCache;
         internal AllocationFreeGenericRecordWriter Writer { get; }
     }
 
@@ -888,13 +907,38 @@ public sealed class AvroSchemaRegistrySerializer<
 
     private void ClearSubjectSchemaIdCaches()
     {
-        Volatile.Write(ref _associatedSubjectSchemaIdCache, new SubjectSchemaIdCache());
+        InvalidateAssociatedCache(
+            ref _associatedSubjectSchemaIdCache,
+            ref _previousAssociatedSubjectSchemaIdCache);
+        var invalidated = new HashSet<DynamicSchemaCache>(ReferenceEqualityComparer.Instance);
         foreach (var cache in _dynamicSchemaCaches.Values)
-            Volatile.Write(ref cache.AssociatedSubjectSchemaIdCache, new SubjectSchemaIdCache());
+            InvalidateAssociatedCache(cache, invalidated);
         foreach (var cache in _overflowDynamicSchemaCaches.Values)
-            Volatile.Write(ref cache.AssociatedSubjectSchemaIdCache, new SubjectSchemaIdCache());
+            InvalidateAssociatedCache(cache, invalidated);
         foreach (var cache in _weakDynamicSchemaCaches)
-            Volatile.Write(ref cache.Value.AssociatedSubjectSchemaIdCache, new SubjectSchemaIdCache());
+            InvalidateAssociatedCache(cache.Value, invalidated);
+    }
+
+    private static void InvalidateAssociatedCache(
+        DynamicSchemaCache cache,
+        HashSet<DynamicSchemaCache> invalidated)
+    {
+        if (!invalidated.Add(cache))
+            return;
+
+        InvalidateAssociatedCache(
+            ref cache.AssociatedSubjectSchemaIdCache,
+            ref cache.PreviousAssociatedSubjectSchemaIdCache);
+    }
+
+    private static void InvalidateAssociatedCache(
+        ref SubjectSchemaIdCache? currentCache,
+        ref SubjectSchemaIdCache? previousCache)
+    {
+        var current = Volatile.Read(ref currentCache);
+        if (current is { CachedEntryCount: not 0 })
+            Volatile.Write(ref previousCache, current);
+        Volatile.Write(ref currentCache, new SubjectSchemaIdCache());
     }
 
     public ValueTask DisposeAsync()
