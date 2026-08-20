@@ -385,15 +385,16 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
             _ => throw new ArgumentOutOfRangeException(nameof(options))
         };
         var retainMembership = terminalEpoch is null or -2;
+        var heartbeatEpoch = terminalEpoch ?? (options.ShutdownApplication ? _memberEpoch : null);
         try
         {
-            if (_memberEpoch > 0 && terminalEpoch is not null)
+            if (_memberEpoch > 0 && heartbeatEpoch is not null)
             {
                 var request = new StreamsGroupHeartbeatRequest
                 {
                     GroupId = GroupId,
                     MemberId = _memberId,
-                    MemberEpoch = terminalEpoch.Value,
+                    MemberEpoch = heartbeatEpoch.Value,
                     EndpointInformationEpoch = _endpointInformationEpoch,
                     InstanceId = InstanceId,
                     ShutdownApplication = options.ShutdownApplication
@@ -410,8 +411,8 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
             {
                 IsJoined = retainMembership && current.IsJoined,
                 IsClosed = true,
-                MemberId = current.MemberId,
-                MemberEpoch = current.MemberEpoch,
+                MemberId = retainMembership ? current.MemberId : null,
+                MemberEpoch = retainMembership ? current.MemberEpoch : 0,
                 Assignment = current.Assignment,
                 EndpointInformationEpoch = current.EndpointInformationEpoch,
                 PartitionsByUserEndpoint = current.PartitionsByUserEndpoint,

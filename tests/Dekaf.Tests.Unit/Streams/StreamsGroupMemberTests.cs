@@ -251,11 +251,13 @@ public sealed class StreamsGroupMemberTests
         await Assert.That(connection.HeartbeatRequests).Count().IsEqualTo(2);
     }
 
-    [Arguments(null, -1, false)]
-    [Arguments("instance-1", -2, true)]
+    [Arguments(null, StreamsGroupMembershipOperation.Default, -1, false)]
+    [Arguments("instance-1", StreamsGroupMembershipOperation.Default, -2, true)]
+    [Arguments("instance-1", StreamsGroupMembershipOperation.LeaveGroup, -1, false)]
     [Test]
-    public async Task CloseAsync_DefaultUsesMembershipSpecificTerminalEpoch(
+    public async Task CloseAsync_UsesMembershipSpecificTerminalEpoch(
         string? instanceId,
+        StreamsGroupMembershipOperation operation,
         int expectedEpoch,
         bool expectedJoined)
     {
@@ -265,11 +267,18 @@ public sealed class StreamsGroupMemberTests
         await using var fixture = CreateFixture(connection, instanceId);
         await fixture.Member.JoinAsync(CreateInitialUpdate());
 
-        await fixture.Member.CloseAsync();
+        await fixture.Member.CloseAsync(new StreamsGroupCloseOptions
+        {
+            GroupMembershipOperation = operation
+        });
 
         await Assert.That(connection.HeartbeatRequests[1].MemberEpoch).IsEqualTo(expectedEpoch);
         await Assert.That(fixture.Member.Snapshot.IsClosed).IsTrue();
         await Assert.That(fixture.Member.Snapshot.IsJoined).IsEqualTo(expectedJoined);
+        await Assert.That(fixture.Member.Snapshot.MemberId)
+            .IsEqualTo(expectedJoined ? "member-1" : null);
+        await Assert.That(fixture.Member.Snapshot.MemberEpoch)
+            .IsEqualTo(expectedJoined ? 1 : 0);
     }
 
     [Arguments(false)]
@@ -317,6 +326,30 @@ public sealed class StreamsGroupMemberTests
 
         await Assert.That(connection.HeartbeatRequests).Count().IsEqualTo(1);
         await Assert.That(fixture.Member.Snapshot.IsJoined).IsTrue();
+    }
+
+    [Test]
+    public async Task CloseAsync_RemainInGroupWithShutdownSendsCurrentEpochHeartbeat()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1));
+        connection.EnqueueHeartbeat(Success(epoch: 1));
+        await using var fixture = CreateFixture(connection, instanceId: "instance-1");
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+
+        await fixture.Member.CloseAsync(new StreamsGroupCloseOptions
+        {
+            GroupMembershipOperation = StreamsGroupMembershipOperation.RemainInGroup,
+            ShutdownApplication = true
+        });
+
+        var shutdown = connection.HeartbeatRequests[1];
+        await Assert.That(shutdown.MemberEpoch).IsEqualTo(1);
+        await Assert.That(shutdown.ShutdownApplication).IsTrue();
+        await Assert.That(fixture.Member.Snapshot.IsClosed).IsTrue();
+        await Assert.That(fixture.Member.Snapshot.IsJoined).IsTrue();
+        await Assert.That(fixture.Member.Snapshot.MemberId).IsEqualTo("member-1");
+        await Assert.That(fixture.Member.Snapshot.MemberEpoch).IsEqualTo(1);
     }
 
     [Test]
