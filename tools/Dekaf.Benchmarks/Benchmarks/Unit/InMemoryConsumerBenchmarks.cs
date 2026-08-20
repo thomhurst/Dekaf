@@ -11,6 +11,7 @@ public class InMemoryConsumerBenchmarks
 {
     private const string Topic = "in-memory-consumer";
     private const string GroupId = "benchmark-group";
+    private static readonly TopicPartitionOffset StoredOffset = new(Topic, 0, 1);
     private InMemoryConsumer<Ignore, Ignore> _consumer = null!;
     private InMemoryConsumer<Ignore, Ignore> _unrelatedFaultConsumer = null!;
     private ConsumeResult<Ignore, Ignore>? _result;
@@ -52,9 +53,13 @@ public class InMemoryConsumerBenchmarks
                 OffsetCommitMode = OffsetCommitMode.Manual
             });
         _unrelatedFaultConsumer.Subscribe(Topic);
+
+        _consumer.StoreOffset(StoredOffset);
+        _unrelatedFaultConsumer.StoreOffset(StoredOffset);
     }
 
     [Benchmark]
+    [InvocationCount(131072)]
     public void ConsumeOneNoFault()
     {
         _consumer.Seek(new TopicPartitionOffset(Topic, 0, 0));
@@ -66,6 +71,7 @@ public class InMemoryConsumerBenchmarks
     }
 
     [Benchmark]
+    [InvocationCount(131072)]
     public void ConsumeOneUnrelatedFault()
     {
         _unrelatedFaultConsumer.Seek(new TopicPartitionOffset(Topic, 0, 0));
@@ -75,4 +81,13 @@ public class InMemoryConsumerBenchmarks
 
         _result = operation.Result;
     }
+
+    [Benchmark]
+    [InvocationCount(4194304)]
+    public void StoreOffsetNoFault() => _consumer.StoreOffset(StoredOffset);
+
+    [Benchmark]
+    [InvocationCount(4194304)]
+    public void StoreOffsetUnrelatedFault() =>
+        _unrelatedFaultConsumer.StoreOffset(StoredOffset);
 }

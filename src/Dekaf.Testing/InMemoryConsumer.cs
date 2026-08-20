@@ -544,8 +544,23 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                     ThrowIfDisposed();
                 }
 
-                await ApplyOnDeliveryAutoCommitFaultAsync(partition, cancellationToken).ConfigureAwait(false);
-                ThrowIfDisposed();
+                if (!TryPrepareSnapshotOnDeliveryAutoCommitFault(
+                        partition,
+                        position,
+                        consumerStateVersion,
+                        consumerGroupGeneration,
+                        out var autoCommitFaultScope))
+                {
+                    continue;
+                }
+
+                if (autoCommitFaultScope.Operation == KafkaFaultOperation.Commit)
+                {
+                    await ApplyAutomaticCommitFaultAsync(
+                        autoCommitFaultScope,
+                        cancellationToken).ConfigureAwait(false);
+                    ThrowIfDisposed();
+                }
 
                 if (!TryAdvanceSnapshotPosition(
                         partition,
@@ -707,34 +722,62 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
         var groupId = GetCommitGroupId();
-
-        var groupScope = new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: groupId);
-        if (HasMatchingFault(groupScope))
+        var faultPlan = _cluster.FaultPlan;
+        IReadOnlyList<TopicPartitionOffset>? offsetList = offsets as IReadOnlyList<TopicPartitionOffset>;
+        var faultApplied = false;
+        if (faultPlan is KafkaFaultPlan indexedPlan &&
+            offsetList is null &&
+            indexedPlan.TryGetUnconditionalCommitScope(groupId, out var unconditionalScope))
         {
-            await _cluster.FaultPlan.ApplyAsync(
-                groupScope,
+            await faultPlan.ApplyAsync(
+                unconditionalScope,
                 cancellationToken).ConfigureAwait(false);
             ThrowIfDisposed();
+            faultApplied = true;
         }
 
-        var offsetList = offsets as IReadOnlyList<TopicPartitionOffset> ?? offsets.ToArray();
-        var count = offsetList.Count;
-        for (var index = 0; index < count; index++)
+        offsetList ??= offsets.ToArray();
+        if (!faultApplied && faultPlan is KafkaFaultPlan orderedPlan)
         {
-            var offset = offsetList[index];
-            var resourceScope = new KafkaFaultScope(
-                KafkaFaultOperation.Commit,
-                offset.Topic,
-                offset.Partition,
-                groupId);
-            if (!HasMatchingFault(resourceScope))
-                continue;
+            if (orderedPlan.TryGetFirstMatchingCommitScope(groupId, offsetList, out var faultScope))
+            {
+                await faultPlan.ApplyAsync(
+                    faultScope,
+                    cancellationToken).ConfigureAwait(false);
+                ThrowIfDisposed();
+            }
+        }
+        else if (!faultApplied)
+        {
+            var groupScope = new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: groupId);
+            if (HasMatchingFault(groupScope))
+            {
+                await faultPlan.ApplyAsync(
+                    groupScope,
+                    cancellationToken).ConfigureAwait(false);
+                ThrowIfDisposed();
+            }
+            else
+            {
+                var count = offsetList.Count;
+                for (var index = 0; index < count; index++)
+                {
+                    var offset = offsetList[index];
+                    var resourceScope = new KafkaFaultScope(
+                        KafkaFaultOperation.Commit,
+                        offset.Topic,
+                        offset.Partition,
+                        groupId);
+                    if (!HasMatchingFault(resourceScope))
+                        continue;
 
-            await _cluster.FaultPlan.ApplyAsync(
-                resourceScope,
-                cancellationToken).ConfigureAwait(false);
-            ThrowIfDisposed();
-            break;
+                    await faultPlan.ApplyAsync(
+                        resourceScope,
+                        cancellationToken).ConfigureAwait(false);
+                    ThrowIfDisposed();
+                    break;
+                }
+            }
         }
 
         _cluster.CommitOffsets(groupId, offsetList);
@@ -761,7 +804,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     {
         ThrowIfDisposed();
         TopicPartitionOffsetValidator.Validate(offset, nameof(offset));
-        ApplySynchronousFault(new KafkaFaultScope(
+        ApplySynchronousFaultIfMatching(new KafkaFaultScope(
             KafkaFaultOperation.StoreOffset,
             offset.Topic,
             offset.Partition,
@@ -785,7 +828,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         for (var index = 0; index < count; index++)
         {
             var offset = offsets[index];
-            ApplySynchronousFault(new KafkaFaultScope(
+            ApplySynchronousFaultIfMatching(new KafkaFaultScope(
                 KafkaFaultOperation.StoreOffset,
                 offset.Topic,
                 offset.Partition,
@@ -809,7 +852,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         for (var index = 0; index < offsets.Length; index++)
         {
             var offset = offsets[index];
-            ApplySynchronousFault(new KafkaFaultScope(
+            ApplySynchronousFaultIfMatching(new KafkaFaultScope(
                 KafkaFaultOperation.StoreOffset,
                 offset.Topic,
                 offset.Partition,
@@ -1274,8 +1317,21 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 ThrowIfDisposed();
             }
 
-            await ApplyOnDeliveryAutoCommitFaultAsync(partition, cancellationToken).ConfigureAwait(false);
-            ThrowIfDisposed();
+            if (!TryPrepareOnDeliveryAutoCommitFault(
+                    partition,
+                    position,
+                    out var autoCommitFaultScope))
+            {
+                continue;
+            }
+
+            if (autoCommitFaultScope.Operation == KafkaFaultOperation.Commit)
+            {
+                await ApplyAutomaticCommitFaultAsync(
+                    autoCommitFaultScope,
+                    cancellationToken).ConfigureAwait(false);
+                ThrowIfDisposed();
+            }
 
             if (!TryAdvancePosition(partition, record, position))
                 continue;
@@ -1613,32 +1669,63 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         _cluster.CommitOffsets(_groupId, offsets);
     }
 
-    private ValueTask ApplyOnDeliveryAutoCommitFaultAsync(
+    private bool TryPrepareOnDeliveryAutoCommitFault(
         TopicPartition partition,
-        CancellationToken cancellationToken)
+        long expectedPosition,
+        out KafkaFaultScope faultScope)
     {
-        if (_options.OffsetCommitMode != OffsetCommitMode.Auto
-            || _options.OffsetStoreTiming != OffsetStoreTiming.OnDelivery)
-        {
-            return ValueTask.CompletedTask;
-        }
+        lock (_gate)
+            return TryPrepareOnDeliveryAutoCommitFaultUnderLock(
+                partition,
+                expectedPosition,
+                out faultScope);
+    }
 
-        KafkaFaultScope faultScope;
+    private bool TryPrepareSnapshotOnDeliveryAutoCommitFault(
+        TopicPartition partition,
+        long expectedPosition,
+        int consumerStateVersion,
+        int consumerGroupGeneration,
+        out KafkaFaultScope faultScope)
+    {
         lock (_gate)
         {
-            var pendingOffset = _options.EnableAutoOffsetStore
-                ? partition
-                : (TopicPartition?)null;
-            if (!TryGetMatchingCommitFaultScopeUnderLock(
-                    pendingOffset,
-                    requireInDoubtRecord: false,
-                    out faultScope))
-            {
-                return ValueTask.CompletedTask;
-            }
+            ThrowIfSnapshotStateChangedUnderLock(
+                consumerStateVersion,
+                consumerGroupGeneration);
+            return TryPrepareOnDeliveryAutoCommitFaultUnderLock(
+                partition,
+                expectedPosition,
+                out faultScope);
+        }
+    }
+
+    private bool TryPrepareOnDeliveryAutoCommitFaultUnderLock(
+        TopicPartition partition,
+        long expectedPosition,
+        out KafkaFaultScope faultScope)
+    {
+        faultScope = default;
+        if (!_positions.TryGetValue(partition, out var currentPosition) ||
+            currentPosition != expectedPosition)
+        {
+            return false;
         }
 
-        return ApplyAutomaticCommitFaultAsync(faultScope, cancellationToken);
+        if (_options.OffsetCommitMode != OffsetCommitMode.Auto ||
+            _options.OffsetStoreTiming != OffsetStoreTiming.OnDelivery)
+        {
+            return true;
+        }
+
+        var pendingOffset = _options.EnableAutoOffsetStore
+            ? partition
+            : (TopicPartition?)null;
+        _ = TryGetMatchingCommitFaultScopeUnderLock(
+            pendingOffset,
+            requireInDoubtRecord: false,
+            out faultScope);
+        return true;
     }
 
     private ValueTask ApplyInDoubtAutoCommitFaultAsync(CancellationToken cancellationToken)
@@ -1697,6 +1784,30 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         faultScope = default;
         if (_groupId is null || (requireInDoubtRecord && _inDoubtNextOffset < 0))
             return false;
+
+        if (_cluster.FaultPlan is KafkaFaultPlan indexedPlan)
+        {
+            if (pendingOffset is { } onlyPending && _storedOffsets.Count == 0)
+            {
+                faultScope = new KafkaFaultScope(
+                    KafkaFaultOperation.Commit,
+                    onlyPending.Topic,
+                    onlyPending.Partition,
+                    _groupId);
+                return indexedPlan.HasMatchingFault(faultScope);
+            }
+
+            if (_storedOffsets.Count == 0)
+                return false;
+
+            var currentAssignment = GetCurrentAssignmentUnderLock();
+            return indexedPlan.TryGetFirstMatchingCommitScope(
+                _groupId,
+                pendingOffset,
+                _storedOffsets,
+                currentAssignment,
+                out faultScope);
+        }
 
         var groupScope = new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: _groupId);
         var hasGroupFault = HasMatchingFault(groupScope);
@@ -1871,6 +1982,12 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         }
 
         operation.GetAwaiter().GetResult();
+    }
+
+    private void ApplySynchronousFaultIfMatching(KafkaFaultScope scope)
+    {
+        if (HasMatchingFault(scope))
+            ApplySynchronousFault(scope);
     }
 
     private void ThrowIfDisposed()

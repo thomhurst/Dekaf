@@ -73,6 +73,24 @@ public readonly struct KafkaFaultScope
             throw new ArgumentOutOfRangeException(nameof(partition), partition, "Partition cannot be negative.");
         if (groupId is not null)
             ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
+        if (operation is KafkaFaultOperation.JoinGroup or
+            KafkaFaultOperation.SyncGroup or
+            KafkaFaultOperation.Rebalance)
+        {
+            if (topic is not null)
+            {
+                throw new ArgumentException(
+                    "Consumer-group transition faults do not support topic selectors.",
+                    nameof(topic));
+            }
+
+            if (partition is not null)
+            {
+                throw new ArgumentException(
+                    "Consumer-group transition faults do not support partition selectors.",
+                    nameof(partition));
+            }
+        }
 
         Operation = operation;
         Topic = topic;
@@ -552,6 +570,35 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
     internal bool HasMatchingFault(in KafkaFaultScope operationScope) =>
         Volatile.Read(ref _scopeIndex).HasMatchingFault(operationScope);
 
+    internal bool TryGetFirstMatchingCommitScope(
+        string groupId,
+        IReadOnlyList<TopicPartitionOffset> offsets,
+        out KafkaFaultScope operationScope) =>
+        Volatile.Read(ref _scopeIndex).TryGetFirstMatchingCommitScope(
+            groupId,
+            offsets,
+            out operationScope);
+
+    internal bool TryGetUnconditionalCommitScope(
+        string groupId,
+        out KafkaFaultScope operationScope) =>
+        Volatile.Read(ref _scopeIndex).TryGetUnconditionalCommitScope(
+            groupId,
+            out operationScope);
+
+    internal bool TryGetFirstMatchingCommitScope(
+        string groupId,
+        TopicPartition? pendingOffset,
+        Dictionary<TopicPartition, TopicPartitionOffset> storedOffsets,
+        IReadOnlySet<TopicPartition> assignment,
+        out KafkaFaultScope operationScope) =>
+        Volatile.Read(ref _scopeIndex).TryGetFirstMatchingCommitScope(
+            groupId,
+            pendingOffset,
+            storedOffsets,
+            assignment,
+            out operationScope);
+
     internal bool HasPotentialConsumerMatch(
         string? groupId,
         HashSet<TopicPartition> assignment,
@@ -576,11 +623,14 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
 
         private readonly HashSet<OperationGroupKey> _operationGroups;
         private readonly HashSet<ScopeKey> _scopes;
+        private readonly ScopeKey[] _orderedScopes;
+        private readonly ulong _operations;
 
         private FaultScopeIndex()
         {
             _operationGroups = [];
             _scopes = [];
+            _orderedScopes = [];
         }
 
         internal FaultScopeIndex(List<FaultEntry> entries, long version)
@@ -588,24 +638,33 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
             Version = version;
             _operationGroups = new HashSet<OperationGroupKey>(entries.Count);
             _scopes = new HashSet<ScopeKey>(entries.Count);
+            _orderedScopes = new ScopeKey[entries.Count];
             for (var index = 0; index < entries.Count; index++)
             {
                 var scope = entries[index].Scope;
+                _operations |= 1UL << (int)scope.Operation;
                 _operationGroups.Add(new OperationGroupKey(scope.Operation, scope.GroupId));
-                _scopes.Add(new ScopeKey(
+                var key = new ScopeKey(
                     scope.Operation,
                     scope.Topic,
                     scope.Partition,
-                    scope.GroupId));
+                    scope.GroupId);
+                _scopes.Add(key);
+                _orderedScopes[index] = key;
             }
         }
 
         internal long Version { get; }
 
-        internal bool HasPotentialMatch(KafkaFaultOperation operation, string? groupId) =>
-            _operationGroups.Contains(new OperationGroupKey(operation, null)) ||
-            (groupId is not null &&
-             _operationGroups.Contains(new OperationGroupKey(operation, groupId)));
+        internal bool HasPotentialMatch(KafkaFaultOperation operation, string? groupId)
+        {
+            if ((_operations & (1UL << (int)operation)) == 0)
+                return false;
+
+            return _operationGroups.Contains(new OperationGroupKey(operation, null)) ||
+                   (groupId is not null &&
+                    _operationGroups.Contains(new OperationGroupKey(operation, groupId)));
+        }
 
         internal bool HasPotentialMatch(
             KafkaFaultOperation operation,
@@ -641,6 +700,9 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
 
         internal bool HasMatchingFault(in KafkaFaultScope operationScope)
         {
+            if (!HasPotentialMatch(operationScope.Operation, operationScope.GroupId))
+                return false;
+
             for (var selectors = 0; selectors < 8; selectors++)
             {
                 var key = new ScopeKey(
@@ -654,6 +716,112 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
 
             return false;
         }
+
+        internal bool TryGetFirstMatchingCommitScope(
+            string groupId,
+            IReadOnlyList<TopicPartitionOffset> offsets,
+            out KafkaFaultScope operationScope)
+        {
+            for (var scopeIndex = 0; scopeIndex < _orderedScopes.Length; scopeIndex++)
+            {
+                var scope = _orderedScopes[scopeIndex];
+                if (!CanMatchCommit(scope, groupId))
+                    continue;
+
+                for (var offsetIndex = 0; offsetIndex < offsets.Count; offsetIndex++)
+                {
+                    var offset = offsets[offsetIndex];
+                    if (!MatchesResource(scope, offset.Topic, offset.Partition))
+                        continue;
+
+                    operationScope = new KafkaFaultScope(
+                        KafkaFaultOperation.Commit,
+                        offset.Topic,
+                        offset.Partition,
+                        groupId);
+                    return true;
+                }
+            }
+
+            operationScope = default;
+            return false;
+        }
+
+        internal bool TryGetUnconditionalCommitScope(
+            string groupId,
+            out KafkaFaultScope operationScope)
+        {
+            for (var scopeIndex = 0; scopeIndex < _orderedScopes.Length; scopeIndex++)
+            {
+                var scope = _orderedScopes[scopeIndex];
+                if (!CanMatchCommit(scope, groupId))
+                    continue;
+
+                if (scope.Topic is not null || scope.Partition is not null)
+                    break;
+
+                operationScope = new KafkaFaultScope(
+                    KafkaFaultOperation.Commit,
+                    groupId: groupId);
+                return true;
+            }
+
+            operationScope = default;
+            return false;
+        }
+
+        internal bool TryGetFirstMatchingCommitScope(
+            string groupId,
+            TopicPartition? pendingOffset,
+            Dictionary<TopicPartition, TopicPartitionOffset> storedOffsets,
+            IReadOnlySet<TopicPartition> assignment,
+            out KafkaFaultScope operationScope)
+        {
+            for (var scopeIndex = 0; scopeIndex < _orderedScopes.Length; scopeIndex++)
+            {
+                var scope = _orderedScopes[scopeIndex];
+                if (!CanMatchCommit(scope, groupId))
+                    continue;
+
+                if (pendingOffset is { } pendingPartition &&
+                    MatchesResource(scope, pendingPartition.Topic, pendingPartition.Partition))
+                {
+                    operationScope = new KafkaFaultScope(
+                        KafkaFaultOperation.Commit,
+                        pendingPartition.Topic,
+                        pendingPartition.Partition,
+                        groupId);
+                    return true;
+                }
+
+                foreach (var partition in storedOffsets.Keys)
+                {
+                    if (!assignment.Contains(partition) ||
+                        !MatchesResource(scope, partition.Topic, partition.Partition))
+                    {
+                        continue;
+                    }
+
+                    operationScope = new KafkaFaultScope(
+                        KafkaFaultOperation.Commit,
+                        partition.Topic,
+                        partition.Partition,
+                        groupId);
+                    return true;
+                }
+            }
+
+            operationScope = default;
+            return false;
+        }
+
+        private static bool CanMatchCommit(ScopeKey scope, string groupId) =>
+            scope.Operation == KafkaFaultOperation.Commit &&
+            (scope.GroupId is null || scope.GroupId == groupId);
+
+        private static bool MatchesResource(ScopeKey scope, string topic, int partition) =>
+            (scope.Topic is null || scope.Topic == topic) &&
+            (scope.Partition is null || scope.Partition == partition);
     }
 
     private readonly record struct OperationGroupKey(

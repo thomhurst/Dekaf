@@ -67,6 +67,22 @@ public sealed class KafkaFaultPlanTests
     }
 
     [Test]
+    [Arguments(KafkaFaultOperation.JoinGroup)]
+    [Arguments(KafkaFaultOperation.SyncGroup)]
+    [Arguments(KafkaFaultOperation.Rebalance)]
+    public async Task GroupTransitionScope_RejectsResourceSelectors(
+        KafkaFaultOperation operation)
+    {
+        var topicError = Assert.Throws<ArgumentException>(() =>
+            _ = new KafkaFaultScope(operation, topic: "orders", groupId: "workers"));
+        var partitionError = Assert.Throws<ArgumentException>(() =>
+            _ = new KafkaFaultScope(operation, partition: 0, groupId: "workers"));
+
+        await Assert.That(topicError!.ParamName).IsEqualTo("topic");
+        await Assert.That(partitionError!.ParamName).IsEqualTo("partition");
+    }
+
+    [Test]
     public async Task ScopeIndex_FiltersUnrelatedOperationsAndGroups()
     {
         var plan = new KafkaFaultPlan();
