@@ -957,6 +957,75 @@ public sealed class StreamsGroupMemberTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task CloseAsync_DuringInitializationWaitsAndInitializationFailsClosed(bool dispose)
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        var refreshStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseRefresh = new TaskCompletionSource<MetadataResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        pool.GetConnectionAsync("localhost", 9092, Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<IKafkaConnection>(connection));
+        connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
+                Arg.Any<ApiVersionsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new ApiVersionsResponse
+            {
+                ErrorCode = ErrorCode.None,
+                ApiKeys =
+                [
+                    new ApiVersion(
+                        ApiKey.Metadata,
+                        MetadataRequest.LowestSupportedVersion,
+                        MetadataRequest.HighestSupportedVersion)
+                ]
+            });
+        connection.SendAsync<MetadataRequest, MetadataResponse>(
+                Arg.Any<MetadataRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                refreshStarted.TrySetResult();
+                return new ValueTask<MetadataResponse>(releaseRefresh.Task);
+            });
+        var metadataManager = new MetadataManager(pool, ["localhost:9092"]);
+        var member = new StreamsGroupMember(
+            new StreamsGroupMemberOptions { GroupId = "streams-group" },
+            pool,
+            metadataManager);
+        var metadataResponse = new MetadataResponse
+        {
+            Brokers = [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }],
+            Topics = []
+        };
+
+        try
+        {
+            var initialize = member.InitializeAsync().AsTask();
+            await refreshStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var close = dispose
+                ? member.DisposeAsync().AsTask()
+                : member.CloseAsync().AsTask();
+
+            await Assert.That(close.IsCompleted).IsFalse();
+            releaseRefresh.SetResult(metadataResponse);
+            _ = await Assert.ThrowsAsync<ObjectDisposedException>(() =>
+                initialize.WaitAsync(TimeSpan.FromSeconds(5)));
+            await close.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            releaseRefresh.TrySetResult(metadataResponse);
+            await metadataManager.DisposeAsync();
+            await member.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task CloseAsync_BypassesCanceledForegroundBacklog()
     {
         var connection = new ScriptedConnection();
