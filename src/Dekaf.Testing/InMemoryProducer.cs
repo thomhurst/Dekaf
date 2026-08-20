@@ -29,6 +29,7 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
     private bool _preparedRecoveryEnabled;
     private bool _preparedRecoveryInProgress;
     private TaskCompletionSource? _preparedRecoveryCompletion;
+    private TaskCompletionSource? _disposeCompletion;
     private bool _disposeStarted;
     private bool _disposed;
 
@@ -345,27 +346,47 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
         return new InMemoryTopicProducer(this, topic);
     }
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
         InMemoryTransaction? transaction;
         Task? preparedRecovery;
+        TaskCompletionSource disposeCompletion;
         lock (_transactionGate)
         {
-            if (_disposeStarted)
-                return;
+            if (_disposeCompletion is not null)
+                return new ValueTask(_disposeCompletion.Task);
 
             Volatile.Write(ref _disposeStarted, true);
+            disposeCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _disposeCompletion = disposeCompletion;
             transaction = _activeTransaction;
             preparedRecovery = _preparedRecoveryCompletion?.Task;
         }
 
-        if (preparedRecovery is not null)
-            await preparedRecovery.ConfigureAwait(false);
+        _ = DisposeCoreAsync(transaction, preparedRecovery, disposeCompletion);
+        return new ValueTask(disposeCompletion.Task);
+    }
 
-        if (transaction is { IsCompleted: false, IsPrepared: false })
-            await transaction.DisposeAsync().ConfigureAwait(false);
+    private async Task DisposeCoreAsync(
+        InMemoryTransaction? transaction,
+        Task? preparedRecovery,
+        TaskCompletionSource disposeCompletion)
+    {
+        try
+        {
+            if (preparedRecovery is not null)
+                await preparedRecovery.ConfigureAwait(false);
 
-        Volatile.Write(ref _disposed, true);
+            if (transaction is { IsCompleted: false, IsPrepared: false })
+                await transaction.DisposeAsync().ConfigureAwait(false);
+
+            Volatile.Write(ref _disposed, true);
+            disposeCompletion.TrySetResult();
+        }
+        catch (Exception exception)
+        {
+            disposeCompletion.TrySetException(exception);
+        }
     }
 
     private ValueTask<RecordMetadata> ProduceCoreAsync(

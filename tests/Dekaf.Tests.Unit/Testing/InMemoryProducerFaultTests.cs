@@ -926,11 +926,14 @@ public sealed class InMemoryProducerFaultTests
             .AsTask();
         await barrier.WaitUntilEnteredAsync();
 
-        var pendingDispose = replacement.DisposeAsync().AsTask();
-        await Assert.That(pendingDispose.IsCompleted).IsFalse();
+        var firstDispose = replacement.DisposeAsync().AsTask();
+        var concurrentDispose = replacement.DisposeAsync().AsTask();
+        await Assert.That(firstDispose.IsCompleted).IsFalse();
+        await Assert.That(concurrentDispose.IsCompleted).IsFalse();
         await Assert.That(barrier.Release()).IsTrue();
         await pendingRecovery;
-        await pendingDispose;
+        await firstDispose;
+        await concurrentDispose;
 
         await Assert.That(cluster.ReadRecords("orders")).Count().IsEqualTo(1);
         await Assert.That(() => replacement.BeginTransaction()).Throws<ObjectDisposedException>();
