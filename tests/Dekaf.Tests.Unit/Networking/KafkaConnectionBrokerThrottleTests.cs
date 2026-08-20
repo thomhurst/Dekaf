@@ -209,18 +209,22 @@ public sealed class KafkaConnectionBrokerThrottleTests
             cancellationToken);
         await Assert.That(await pool.ReapIdleConnectionsAsync()).IsEqualTo(1);
 
+        var bootstrapThrottleState = pool.GetBrokerThrottleStateForTest(-1, "127.0.0.1", port);
         pool.RegisterBroker(1, "127.0.0.1", port);
+        var brokerThrottleState = pool.GetBrokerThrottleStateForTest(1, "127.0.0.1", port);
+        await Assert.That(brokerThrottleState).IsSameReferenceAs(bootstrapThrottleState);
+
         var reconnectStarted = Stopwatch.GetTimestamp();
+        var remainingThrottleMs = brokerThrottleState.GetRemainingMilliseconds();
         var leaseTask = pool.LeaseConnectionAsync(1, cancellationToken).AsTask();
-        var earlyProgress = await Task.WhenAny(
-            secondConnectionAccepted.Task,
-            Task.Delay(100, cancellationToken));
-        await Assert.That(earlyProgress).IsNotSameReferenceAs(secondConnectionAccepted.Task);
+        await Assert.That(remainingThrottleMs).IsGreaterThan(0);
 
         using var lease = await leaseTask;
         var acceptedAt = await secondConnectionAccepted.Task;
         var elapsedMs = (acceptedAt - reconnectStarted) * 1000d / Stopwatch.Frequency;
-        await Assert.That(elapsedMs).IsGreaterThanOrEqualTo(200);
+        const double clockResolutionToleranceMs = 2;
+        await Assert.That(elapsedMs + clockResolutionToleranceMs)
+            .IsGreaterThanOrEqualTo(remainingThrottleMs);
         releaseSecondConnection.TrySetResult();
         await serverTask;
     }
