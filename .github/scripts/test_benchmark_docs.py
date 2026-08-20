@@ -362,7 +362,7 @@ class BenchmarkDocsTests(unittest.TestCase):
         self.assertIn("Consume — poll a single message", document)
         self.assertIn(
             ":::note Reading producer results\n"
-            "The `linger=0` scenario is the matched client comparison. The `linger=5 ms` scenario intentionally measures each client's app-limited batching policy and should not be read as general producer throughput. In the legacy serial-awaited results below, Dekaf sends a sole record immediately while Confluent applies the configured linger; the old benchmark's unused `BatchSize` parameter also duplicated each payload result. In the legacy batch and fire-and-forget results, Dekaf used `acks=all` with idempotence while Confluent used `acks=leader` without idempotence. The page will show the new matched controls after the next run from main.\n"
+            "The `linger=0` scenario is the matched client comparison. The `linger=5 ms` scenario intentionally measures each client's app-limited batching policy and should not be read as general producer throughput. Legacy serial-awaited rows, when present, send a sole Dekaf record immediately while Confluent applies the configured linger; the old benchmark's unused `BatchSize` parameter also duplicated each payload result. Legacy batch and fire-and-forget rows, when present, use `acks=all` with idempotence for Dekaf and `acks=leader` without idempotence for Confluent.\n"
             ":::",
             document,
         )
