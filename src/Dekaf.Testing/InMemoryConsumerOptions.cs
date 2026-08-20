@@ -1,4 +1,5 @@
 using Dekaf.Consumer;
+using Dekaf.Protocol.Messages;
 
 namespace Dekaf.Testing;
 
@@ -41,6 +42,11 @@ public sealed class InMemoryConsumerOptions
     /// stages it immediately at delivery.
     /// </summary>
     public OffsetStoreTiming OffsetStoreTiming { get; init; } = OffsetStoreTiming.AfterProcessing;
+
+    /// <summary>
+    /// Isolation level for transactional reads.
+    /// </summary>
+    public IsolationLevel IsolationLevel { get; init; } = IsolationLevel.ReadUncommitted;
 
     /// <summary>
     /// Member ID reported by the fake consumer.

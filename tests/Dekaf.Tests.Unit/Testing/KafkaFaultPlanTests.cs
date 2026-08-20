@@ -117,6 +117,17 @@ public sealed class KafkaFaultPlanTests
     }
 
     [Test]
+    public async Task ApplyAsync_EmptyPlanCompletesSynchronously()
+    {
+        var plan = new KafkaFaultPlan();
+
+        var application = plan.ApplyAsync(ProduceOrders);
+
+        await Assert.That(application.IsCompletedSuccessfully).IsTrue();
+        await application;
+    }
+
+    [Test]
     public async Task Clear_ExactScopeLeavesOtherRulesQueued()
     {
         var plan = new KafkaFaultPlan();
