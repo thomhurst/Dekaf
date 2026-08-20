@@ -45,7 +45,7 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
     private AvroPocoSerializerBufferState? _primaryRuleBuffer;
     private ConditionalWeakTable<Thread, AvroPocoSerializerBufferState>? _additionalRuleBuffers;
     private SubjectSchemaIdCache? _associatedSubjectCache;
-    private AssociatedSubjectSchemaIdCacheHandoff? _associatedSubjectHandoff;
+    private readonly AssociatedSubjectSchemaIdCacheHandoff? _associatedSubjectHandoff;
 
     /// <summary>Creates a generated POCO Avro serializer.</summary>
     public AvroPocoSchemaRegistrySerializer(
@@ -487,12 +487,10 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         if (cache.TryGet(topic, isKey, out var cached))
             return cached;
 
-        if (_asyncSubjectNameStrategy is not null)
-        {
-            if (_associatedSubjectHandoff is not null
-                && _associatedSubjectHandoff.TryGet(topic, isKey, out cached))
-                return cached;
-        }
+        if (_asyncSubjectNameStrategy is not null
+            && _associatedSubjectHandoff is not null
+            && _associatedSubjectHandoff.TryGet(topic, isKey, out cached))
+            return cached;
 
         return cache.GetOrAdd(
             topic,

@@ -651,11 +651,10 @@ public sealed class JsonSchemaRegistrySerializer<T> :
         if (cache.TryGet(topic, isKey, out var cached))
             return cached;
 
-        if (state is not null)
-        {
-            if (state.Handoff is not null && state.Handoff.TryGet(topic, isKey, out cached))
-                return cached;
-        }
+        if (state is not null
+            && state.Handoff is not null
+            && state.Handoff.TryGet(topic, isKey, out cached))
+            return cached;
 
         return cache.GetOrAdd(
             topic,

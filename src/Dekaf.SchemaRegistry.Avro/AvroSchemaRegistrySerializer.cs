@@ -74,7 +74,7 @@ public sealed class AvroSchemaRegistrySerializer<
     private DynamicSchemaCache? _lastDynamicSchemaCache;
     private DynamicSchemaCache? _previousDynamicSchemaCache;
     private SubjectSchemaIdCache? _associatedSubjectSchemaIdCache;
-    private AssociatedSubjectSchemaIdCacheHandoff? _associatedSubjectHandoff;
+    private readonly AssociatedSubjectSchemaIdCacheHandoff? _associatedSubjectHandoff;
 
     /// <summary>
     /// Creates a new Avro Schema Registry serializer.
