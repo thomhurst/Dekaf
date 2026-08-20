@@ -768,13 +768,8 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
                 for (var operationIndex = 0; operationIndex < operationScopes.Length; operationIndex++)
                 {
                     var candidate = operationScopes[operationIndex];
-                    if (ruleScope.Operation != candidate.Operation ||
-                        ruleScope.GroupId is not null && ruleScope.GroupId != candidate.GroupId ||
-                        ruleScope.Topic is not null && ruleScope.Topic != candidate.Topic ||
-                        ruleScope.Partition is not null && ruleScope.Partition != candidate.Partition)
-                    {
+                    if (!Matches(ruleScope, candidate))
                         continue;
-                    }
 
                     operationScope = candidate;
                     return true;
@@ -784,6 +779,12 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
             operationScope = default;
             return false;
         }
+
+        private static bool Matches(ScopeKey ruleScope, KafkaFaultScope candidate) =>
+            ruleScope.Operation == candidate.Operation &&
+            (ruleScope.GroupId is null || ruleScope.GroupId == candidate.GroupId) &&
+            (ruleScope.Topic is null || ruleScope.Topic == candidate.Topic) &&
+            (ruleScope.Partition is null || ruleScope.Partition == candidate.Partition);
 
         internal bool TryGetFirstMatchingCommitScope(
             string groupId,

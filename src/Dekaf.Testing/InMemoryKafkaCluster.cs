@@ -29,6 +29,7 @@ public sealed class InMemoryKafkaCluster
     private long _nextProducerId;
     private long _nextConsumerGroupRegistrationId;
     private TimeSpan _produceLatency;
+    private int _consumerGroupVersion;
 
     public InMemoryKafkaCluster()
         : this(new InMemoryKafkaClusterOptions(), new KafkaFaultPlan())
@@ -56,6 +57,8 @@ public sealed class InMemoryKafkaCluster
     /// Gets the deterministic fault plan consumed by in-memory client operations.
     /// </summary>
     public IKafkaFaultPlan FaultPlan { get; }
+
+    internal int ConsumerGroupVersion => Volatile.Read(ref _consumerGroupVersion);
 
     public TimeSpan ProduceLatency
     {
@@ -148,6 +151,7 @@ public sealed class InMemoryKafkaCluster
             members[memberId] = new ConsumerGroupMemberState(registrationId, partitions);
             var generation = _consumerGroupGenerations.GetValueOrDefault(groupId) + 1;
             _consumerGroupGenerations[groupId] = generation;
+            _consumerGroupVersion++;
             return generation;
         }
     }
@@ -174,6 +178,7 @@ public sealed class InMemoryKafkaCluster
             members.Remove(memberId);
 
             _consumerGroupGenerations[groupId] = _consumerGroupGenerations.GetValueOrDefault(groupId) + 1;
+            _consumerGroupVersion++;
             if (members.Count == 0)
                 _consumerGroupMembers.Remove(groupId);
         }

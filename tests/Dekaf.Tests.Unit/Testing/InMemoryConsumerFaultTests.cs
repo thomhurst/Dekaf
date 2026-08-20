@@ -1,5 +1,6 @@
 using System.Text;
 using Dekaf.Consumer;
+using Dekaf.Producer;
 using Dekaf.Serialization;
 using Dekaf.Testing;
 
@@ -96,6 +97,112 @@ public sealed class InMemoryConsumerFaultTests
         await Assert.That(operation.IsCompletedSuccessfully).IsTrue();
         await Assert.That(operation.Result).IsNotNull();
         await Assert.That(cluster.FaultPlan.Count).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task ConsumeOneAsync_GroupMemberIgnoresFaultForForeignPartition()
+    {
+        var innerPlan = new KafkaFaultPlan();
+        var faultPlan = new DelegatingFaultPlan(innerPlan);
+        var cluster = new InMemoryKafkaCluster(new InMemoryKafkaClusterOptions(), faultPlan);
+        cluster.CreateTopic(Topic, partitionCount: 2);
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Partition = 0,
+            Key = "key",
+            Value = "zero"
+        });
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Partition = 1,
+            Key = "key",
+            Value = "one"
+        });
+        await using var first = CreateConsumer(cluster);
+        await using var second = CreateConsumer(cluster);
+        first.Subscribe(Topic);
+        second.Subscribe(Topic);
+        var foreignPartition = second.Assignment.Single();
+        innerPlan.FailPersistently(
+            new KafkaFaultScope(
+                KafkaFaultOperation.Fetch,
+                foreignPartition.Topic,
+                foreignPartition.Partition,
+                GroupId),
+            new InvalidOperationException("foreign partition"));
+
+        var result = await first.ConsumeOneAsync(TimeSpan.Zero);
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(result!.Value.Partition).IsNotEqualTo(foreignPartition.Partition);
+        await Assert.That(faultPlan.MatchingProbeCount).IsEqualTo(0);
+        await Assert.That(innerPlan.Count).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task ConsumeOneAsync_GroupOwnershipChangeInvalidatesFaultCache()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic(Topic, partitionCount: 2);
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Partition = 0,
+            Key = "key",
+            Value = "zero"
+        });
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Partition = 1,
+            Key = "key",
+            Value = "one"
+        });
+        await using var first = CreateConsumer(cluster);
+        var second = CreateConsumer(cluster);
+        first.Subscribe(Topic);
+        second.Subscribe(Topic);
+        var foreignPartition = second.Assignment.Single();
+        var failure = new InvalidOperationException("newly owned partition");
+        cluster.FaultPlan.FailPersistently(
+            new KafkaFaultScope(
+                KafkaFaultOperation.Fetch,
+                foreignPartition.Topic,
+                foreignPartition.Partition,
+                GroupId),
+            failure);
+
+        var firstResult = await first.ConsumeOneAsync(TimeSpan.Zero);
+        await second.DisposeAsync();
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => first.ConsumeOneAsync(TimeSpan.Zero).AsTask());
+
+        await Assert.That(firstResult).IsNotNull();
+        await Assert.That(firstResult!.Value.Partition).IsNotEqualTo(foreignPartition.Partition);
+        await Assert.That(actual).IsSameReferenceAs(failure);
+    }
+
+    [Test]
+    public async Task ConsumeSnapshotAsync_EmptyCustomPlanSkipsRecordProbes()
+    {
+        var innerPlan = new KafkaFaultPlan();
+        var faultPlan = new DelegatingFaultPlan(innerPlan);
+        var cluster = new InMemoryKafkaCluster(new InMemoryKafkaClusterOptions(), faultPlan);
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync(Topic, "key", "value");
+        await using var consumer = CreateConsumer(cluster);
+        consumer.Subscribe(Topic);
+
+        var records = new List<ConsumeResult<string, string>>();
+        await foreach (var record in consumer.ConsumeSnapshotAsync())
+            records.Add(record);
+
+        await Assert.That(records).Count().IsEqualTo(1);
+        await Assert.That(faultPlan.MatchingProbeCount).IsEqualTo(0);
     }
 
     [Test]
@@ -420,6 +527,35 @@ public sealed class InMemoryConsumerFaultTests
         await Assert.That(result).IsNotNull();
         await Assert.That(consumer.GetPosition(Partition)).IsEqualTo(1);
         await Assert.That(await consumer.GetCommittedOffsetAsync(Partition)).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task Snapshot_WaitsForConcurrentAutoCommitReservation()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync(Topic, "key", "value");
+        await using var consumer = CreateConsumer(
+            cluster,
+            enableAutoOffsetStore: true,
+            offsetCommitMode: OffsetCommitMode.Auto);
+        consumer.Subscribe(Topic);
+        var snapshotFetchBarrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.Fetch, Topic, 0, GroupId));
+        var concurrentCommitBarrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId));
+        await using var snapshot = consumer.ConsumeSnapshotAsync().GetAsyncEnumerator();
+
+        var snapshotMove = snapshot.MoveNextAsync().AsTask();
+        await snapshotFetchBarrier.WaitUntilEnteredAsync();
+        var concurrentConsume = consumer.ConsumeOneAsync(Timeout.InfiniteTimeSpan).AsTask();
+        await concurrentCommitBarrier.WaitUntilEnteredAsync();
+        await Assert.That(snapshotFetchBarrier.Release()).IsTrue();
+        await Assert.That(concurrentCommitBarrier.Release()).IsTrue();
+
+        await Assert.That(await concurrentConsume).IsNotNull();
+        await Assert.That(await snapshotMove).IsFalse();
+        await Assert.That(consumer.GetPosition(Partition)).IsEqualTo(1);
     }
 
     [Test]

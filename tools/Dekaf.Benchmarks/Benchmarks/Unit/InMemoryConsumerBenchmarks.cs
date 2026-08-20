@@ -143,6 +143,20 @@ public class InMemoryConsumerBenchmarks
     }
 
     [Benchmark]
+    public async Task<int> ConsumeSnapshotNoFault()
+    {
+        _consumer.Seek(new TopicPartitionOffset(Topic, 0, 0));
+        var count = 0;
+        await foreach (var result in _consumer.ConsumeSnapshotAsync().ConfigureAwait(false))
+        {
+            _result = result;
+            count++;
+        }
+
+        return count;
+    }
+
+    [Benchmark]
     [InvocationCount(4194304)]
     public void StoreOffsetNoFault() => _consumer.StoreOffset(StoredOffset);
 

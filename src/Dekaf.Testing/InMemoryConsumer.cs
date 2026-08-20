@@ -25,6 +25,10 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         TopicPartition Partition,
         long EndOffset);
 
+    private readonly record struct PendingAutoCommitAdvancement(
+        long Position,
+        TaskCompletionSource Completion);
+
     private readonly object _gate = new();
     private readonly InMemoryKafkaCluster _cluster;
     private readonly IDeserializer<TKey> _keyDeserializer;
@@ -41,9 +45,10 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private readonly HashSet<TopicPartition> _paused = [];
     private readonly Dictionary<TopicPartition, long> _positions = [];
     private readonly Dictionary<TopicPartition, TopicPartitionOffset> _storedOffsets = [];
-    private Dictionary<TopicPartition, long>? _pendingAutoCommitAdvancements;
+    private Dictionary<TopicPartition, PendingAutoCommitAdvancement>? _pendingAutoCommitAdvancements;
     private long _potentialFaultScopeVersion = -1;
     private int _potentialFaultConsumerStateVersion = -1;
+    private int _potentialFaultConsumerGroupVersion = -1;
     private bool _hasPotentialConsumerFault;
     // In-doubt record under OffsetStoreTiming.AfterProcessing: delivered but not yet proven
     // processed. Staged for commit only when the next consume call or an explicit commit
@@ -480,6 +485,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
         try
         {
+            var applyRecordFaults = HasPotentialConsumerFault();
             var activePartitionIndex = 0;
             while (true)
             {
@@ -490,6 +496,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 InMemoryRecord record;
                 long position;
                 bool complete;
+                bool pendingAutoCommitAdvancement;
                 lock (_gate)
                 {
                     ThrowIfSnapshotStateChangedUnderLock(
@@ -502,14 +509,23 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                             ref activePartitionIndex,
                             out partition,
                             out record,
-                            out position))
+                            out position,
+                            out pendingAutoCommitAdvancement))
                     {
-                        complete = true;
+                        complete = !pendingAutoCommitAdvancement;
                     }
                     else
                     {
                         complete = false;
                     }
+                }
+
+                if (pendingAutoCommitAdvancement)
+                {
+                    await WaitForAutoCommitAdvancementAsync(
+                        partition,
+                        cancellationToken).ConfigureAwait(false);
+                    continue;
                 }
 
                 if (complete)
@@ -532,7 +548,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                     partition.Topic,
                     partition.Partition,
                     _groupId);
-                if (HasMatchingFault(fetchScope))
+                if (applyRecordFaults && _cluster.FaultPlan.HasMatchingFault(fetchScope))
                 {
                     await _cluster.FaultPlan.ApplyAsync(
                         fetchScope,
@@ -549,7 +565,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                     partition.Topic,
                     partition.Partition,
                     _groupId);
-                if (HasMatchingFault(consumeScope))
+                if (applyRecordFaults && _cluster.FaultPlan.HasMatchingFault(consumeScope))
                 {
                     await _cluster.FaultPlan.ApplyAsync(
                         consumeScope,
@@ -1223,11 +1239,22 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         ref int activePartitionIndex,
         out TopicPartition selectedPartition,
         out InMemoryRecord selectedRecord,
-        out long selectedPosition)
+        out long selectedPosition,
+        out bool pendingAutoCommitAdvancement)
     {
         while (activePartitionIndex < partitions.Length)
         {
             var bound = partitions[activePartitionIndex];
+            if (_pendingAutoCommitAdvancements is not null &&
+                _pendingAutoCommitAdvancements.ContainsKey(bound.Partition))
+            {
+                selectedPartition = bound.Partition;
+                selectedRecord = null!;
+                selectedPosition = -1;
+                pendingAutoCommitAdvancement = true;
+                return false;
+            }
+
             if (_positions.TryGetValue(bound.Partition, out var position) &&
                 position < bound.EndOffset)
             {
@@ -1242,6 +1269,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                     selectedPartition = bound.Partition;
                     selectedRecord = record;
                     selectedPosition = position;
+                    pendingAutoCommitAdvancement = false;
                     return true;
                 }
 
@@ -1265,7 +1293,26 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         selectedPartition = default;
         selectedRecord = null!;
         selectedPosition = -1;
+        pendingAutoCommitAdvancement = false;
         return false;
+    }
+
+    private ValueTask WaitForAutoCommitAdvancementAsync(
+        TopicPartition partition,
+        CancellationToken cancellationToken)
+    {
+        Task? advancementChanged;
+        lock (_gate)
+        {
+            advancementChanged = _pendingAutoCommitAdvancements is not null &&
+                                 _pendingAutoCommitAdvancements.TryGetValue(partition, out var pending)
+                ? pending.Completion.Task
+                : null;
+        }
+
+        return advancementChanged is null
+            ? ValueTask.CompletedTask
+            : new ValueTask(advancementChanged.WaitAsync(cancellationToken));
     }
 
     private void ThrowIfSnapshotActiveUnderLock()
@@ -1462,8 +1509,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         lock (_gate)
         {
             if (_pendingAutoCommitAdvancements is null ||
-                !_pendingAutoCommitAdvancements.TryGetValue(partition, out var reservedPosition) ||
-                reservedPosition != expectedPosition)
+                !_pendingAutoCommitAdvancements.TryGetValue(partition, out var pending) ||
+                pending.Position != expectedPosition)
             {
                 return false;
             }
@@ -1534,8 +1581,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         lock (_gate)
         {
             if (_pendingAutoCommitAdvancements is null ||
-                !_pendingAutoCommitAdvancements.TryGetValue(partition, out var reservedPosition) ||
-                reservedPosition != expectedPosition)
+                !_pendingAutoCommitAdvancements.TryGetValue(partition, out var pending) ||
+                pending.Position != expectedPosition)
             {
                 return false;
             }
@@ -1881,7 +1928,9 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 return false;
             }
 
-            (_pendingAutoCommitAdvancements ??= [])[partition] = expectedPosition;
+            (_pendingAutoCommitAdvancements ??= [])[partition] = new PendingAutoCommitAdvancement(
+                expectedPosition,
+                new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously));
         }
 
         return true;
@@ -1918,8 +1967,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         long expectedPosition)
     {
         if (_pendingAutoCommitAdvancements is null ||
-            !_pendingAutoCommitAdvancements.TryGetValue(partition, out var reservedPosition) ||
-            reservedPosition != expectedPosition)
+            !_pendingAutoCommitAdvancements.TryGetValue(partition, out var pending) ||
+            pending.Position != expectedPosition)
         {
             return;
         }
@@ -1928,6 +1977,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         _paused.Remove(partition);
         if (_pendingAutoCommitAdvancements.Count == 0)
             _pendingAutoCommitAdvancements = null;
+
+        pending.Completion.TrySetResult();
     }
 
     private void ThrowIfAutoCommitAdvancementPendingUnderLock()
@@ -2073,8 +2124,12 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
         var scopeVersion = indexedPlan.ScopeVersion;
         var consumerStateVersion = Volatile.Read(ref _consumerStateVersion);
+        var consumerGroupVersion = _groupId is null
+            ? -1
+            : _cluster.ConsumerGroupVersion;
         if (Volatile.Read(ref _potentialFaultScopeVersion) == scopeVersion &&
-            Volatile.Read(ref _potentialFaultConsumerStateVersion) == consumerStateVersion)
+            Volatile.Read(ref _potentialFaultConsumerStateVersion) == consumerStateVersion &&
+            Volatile.Read(ref _potentialFaultConsumerGroupVersion) == consumerGroupVersion)
         {
             return Volatile.Read(ref _hasPotentialConsumerFault);
         }
@@ -2082,13 +2137,24 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         lock (_gate)
         {
             consumerStateVersion = _consumerStateVersion;
+            IReadOnlySet<TopicPartition> assignment;
+            do
+            {
+                consumerGroupVersion = _groupId is null
+                    ? -1
+                    : _cluster.ConsumerGroupVersion;
+                assignment = GetCurrentAssignmentUnderLock();
+            }
+            while (_groupId is not null && consumerGroupVersion != _cluster.ConsumerGroupVersion);
+
             var hasPotentialFault = indexedPlan.HasPotentialConsumerMatch(
                 _groupId,
-                _assignment,
+                assignment,
                 _options.OffsetCommitMode == OffsetCommitMode.Auto,
                 out scopeVersion);
             Volatile.Write(ref _hasPotentialConsumerFault, hasPotentialFault);
             Volatile.Write(ref _potentialFaultConsumerStateVersion, consumerStateVersion);
+            Volatile.Write(ref _potentialFaultConsumerGroupVersion, consumerGroupVersion);
             Volatile.Write(ref _potentialFaultScopeVersion, scopeVersion);
             return hasPotentialFault;
         }
@@ -2101,10 +2167,11 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
         lock (_gate)
         {
-            return faultPlan.HasPotentialFault(KafkaFaultOperation.Fetch, _groupId, _assignment) ||
-                   faultPlan.HasPotentialFault(KafkaFaultOperation.Consume, _groupId, _assignment) ||
+            var assignment = GetCurrentAssignmentUnderLock();
+            return faultPlan.HasPotentialFault(KafkaFaultOperation.Fetch, _groupId, assignment) ||
+                   faultPlan.HasPotentialFault(KafkaFaultOperation.Consume, _groupId, assignment) ||
                    _options.OffsetCommitMode == OffsetCommitMode.Auto &&
-                   faultPlan.HasPotentialFault(KafkaFaultOperation.Commit, _groupId, _assignment);
+                   faultPlan.HasPotentialFault(KafkaFaultOperation.Commit, _groupId, assignment);
         }
     }
 
