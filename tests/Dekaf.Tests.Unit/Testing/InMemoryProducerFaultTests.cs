@@ -479,7 +479,7 @@ public sealed class InMemoryProducerFaultTests
     }
 
     [Test]
-    public async Task ProducerDispose_PreventsPausedOffsetsFromMutatingCompletedTransaction()
+    public async Task ProducerDispose_WaitsForPausedOffsetsBeforeAbortingTransaction()
     {
         var cluster = new InMemoryKafkaCluster();
         var producer = new InMemoryProducer<string, string>(cluster);
@@ -491,15 +491,17 @@ public sealed class InMemoryProducerFaultTests
             "billing").AsTask();
 
         await barrier.WaitUntilEnteredAsync();
-        await producer.DisposeAsync();
+        var pendingDispose = producer.DisposeAsync().AsTask();
+        await Assert.That(pendingDispose.IsCompleted).IsFalse();
         await Assert.That(barrier.Release()).IsTrue();
-        _ = await Assert.ThrowsAsync<InvalidOperationException>(() => pendingOffsets);
+        await pendingOffsets;
+        await pendingDispose;
 
         await Assert.That(cluster.GetCommittedOffset("billing", new TopicPartition("orders", 0))).IsNull();
     }
 
     [Test]
-    public async Task ProducerDispose_PreventsPausedProduceFromAppendingAfterAbort()
+    public async Task ProducerDispose_WaitsForPausedProduceBeforeAbortingTransaction()
     {
         var cluster = new InMemoryKafkaCluster();
         var producer = new InMemoryProducer<string, string>(cluster);
@@ -509,9 +511,11 @@ public sealed class InMemoryProducerFaultTests
         var pendingProduce = transaction.ProduceAsync("orders", "k", "v").AsTask();
 
         await barrier.WaitUntilEnteredAsync();
-        await producer.DisposeAsync();
+        var pendingDispose = producer.DisposeAsync().AsTask();
+        await Assert.That(pendingDispose.IsCompleted).IsFalse();
         await Assert.That(barrier.Release()).IsTrue();
-        _ = await Assert.ThrowsAsync<InvalidOperationException>(() => pendingProduce);
+        _ = await pendingProduce;
+        await pendingDispose;
 
         await Assert.That(cluster.ReadRecords("orders")).IsEmpty();
     }

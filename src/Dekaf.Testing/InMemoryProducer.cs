@@ -751,6 +751,7 @@ public sealed class InMemoryProducer<TKey, TValue> :
         private readonly object _pendingOffsetsGate = new();
         private readonly Dictionary<string, PendingGroupOffsets> _pendingOffsets = new(StringComparer.Ordinal);
         private TaskCompletionSource? _completionAttempt;
+        private TaskCompletionSource? _mutationCompletion;
         private long _lifecycle;
         private AbortableTransactionException? _abortableException;
         private bool _prepared;
@@ -1015,8 +1016,11 @@ public sealed class InMemoryProducer<TKey, TValue> :
                 // Fault plans accept arbitrary exceptions. Disposal is best-effort and must release the
                 // producer slot after any injected abort failure without a generic catch clause.
                 await AbortAsync().AsTask().ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
-                if (TryEnterDisposalCompletion(out var ownedCompletion))
+                if (TryEnterDisposalCompletion(out var ownedCompletion, out var mutationCompletion))
                 {
+                    if (mutationCompletion is not null)
+                        await mutationCompletion.ConfigureAwait(false);
+
                     Complete(committed: false);
                     return;
                 }
@@ -1160,7 +1164,15 @@ public sealed class InMemoryProducer<TKey, TValue> :
             }
         }
 
-        private void ExitMutation() => Interlocked.Decrement(ref _lifecycle);
+        private void ExitMutation()
+        {
+            var lifecycle = Interlocked.Decrement(ref _lifecycle);
+            if (GetState(lifecycle) == TransactionLifecycleState.Completing &&
+                (lifecycle & MutationCountMask) == 0)
+            {
+                Volatile.Read(ref _mutationCompletion)?.TrySetResult();
+            }
+        }
 
         private void TransitionToPrepared()
         {
@@ -1191,9 +1203,16 @@ public sealed class InMemoryProducer<TKey, TValue> :
 
         private void EnsureMutationActive(string operation)
         {
-            var state = GetState(Volatile.Read(ref _lifecycle));
-            if (state != TransactionLifecycleState.Active)
-                ThrowForState(operation, state);
+            var lifecycle = Volatile.Read(ref _lifecycle);
+            var state = GetState(lifecycle);
+            if (state == TransactionLifecycleState.Active ||
+                (state == TransactionLifecycleState.Completing &&
+                 (lifecycle & MutationCountMask) != 0))
+            {
+                return;
+            }
+
+            ThrowForState(operation, state);
         }
 
         private TransactionLifecycleState EnterCompletion(
@@ -1255,7 +1274,9 @@ public sealed class InMemoryProducer<TKey, TValue> :
             completion?.TrySetResult();
         }
 
-        private bool TryEnterDisposalCompletion(out Task? ownedCompletion)
+        private bool TryEnterDisposalCompletion(
+            out Task? ownedCompletion,
+            out Task? mutationCompletion)
         {
             lock (_completionGate)
             {
@@ -1266,12 +1287,14 @@ public sealed class InMemoryProducer<TKey, TValue> :
                     if (state == TransactionLifecycleState.Completing)
                     {
                         ownedCompletion = _completionAttempt!.Task;
+                        mutationCompletion = null;
                         return false;
                     }
 
                     if (state is not (TransactionLifecycleState.Active or TransactionLifecycleState.Abortable))
                     {
                         ownedCompletion = null;
+                        mutationCompletion = null;
                         return false;
                     }
 
@@ -1283,10 +1306,27 @@ public sealed class InMemoryProducer<TKey, TValue> :
                         _completionAttempt = new TaskCompletionSource(
                             TaskCreationOptions.RunContinuationsAsynchronously);
                         ownedCompletion = null;
+                        mutationCompletion = CreateMutationCompletion(lifecycle);
                         return true;
                     }
                 }
             }
+        }
+
+        private Task? CreateMutationCompletion(long lifecycle)
+        {
+            if ((lifecycle & MutationCountMask) == 0)
+                return null;
+
+            var completion = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            Volatile.Write(ref _mutationCompletion, completion);
+
+            // The last mutation may have exited between the lifecycle transition and publication.
+            if ((Volatile.Read(ref _lifecycle) & MutationCountMask) == 0)
+                completion.TrySetResult();
+
+            return completion.Task;
         }
 
         internal void PublishCompleted()
@@ -1296,6 +1336,7 @@ public sealed class InMemoryProducer<TKey, TValue> :
                 SetStatePreservingMutationCount(TransactionLifecycleState.Completed);
                 var completion = _completionAttempt;
                 _completionAttempt = null;
+                Volatile.Write(ref _mutationCompletion, null);
                 completion?.TrySetResult();
             }
         }
