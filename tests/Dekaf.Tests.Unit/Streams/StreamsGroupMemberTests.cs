@@ -501,6 +501,113 @@ public sealed class StreamsGroupMemberTests
     }
 
     [Test]
+    public async Task UpdateAsync_WhenFencedRejoinFails_PreservesJoinedEpoch()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1));
+        connection.EnqueueHeartbeat(new StreamsGroupHeartbeatResponse
+        {
+            ErrorCode = ErrorCode.FencedMemberEpoch,
+            MemberId = "member-1"
+        });
+        connection.EnqueueHeartbeat(new StreamsGroupHeartbeatResponse
+        {
+            ErrorCode = ErrorCode.StreamsInvalidTopology,
+            ErrorMessage = "topology rejected",
+            MemberId = "member-1"
+        });
+        connection.EnqueueHeartbeat(Success(epoch: 2));
+        await using var fixture = CreateFixture(connection);
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+
+        await Assert.ThrowsAsync<GroupException>(async () =>
+            await fixture.Member.UpdateAsync(new StreamsGroupMemberUpdate { ProcessId = "process-2" }));
+        var result = await fixture.Member.UpdateAsync(new StreamsGroupMemberUpdate { ProcessId = "process-3" });
+
+        await Assert.That(connection.HeartbeatRequests[3].MemberEpoch).IsEqualTo(1);
+        await Assert.That(result.MemberEpoch).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task UpdateAsync_RejectedTopologyIsNotUsedForLaterFencedRecovery()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1));
+        connection.EnqueueHeartbeat(new StreamsGroupHeartbeatResponse
+        {
+            ErrorCode = ErrorCode.StreamsInvalidTopology,
+            ErrorMessage = "topology rejected",
+            MemberId = "member-1"
+        });
+        connection.EnqueueHeartbeat(new StreamsGroupHeartbeatResponse
+        {
+            ErrorCode = ErrorCode.FencedMemberEpoch,
+            MemberId = "member-1"
+        });
+        connection.EnqueueHeartbeat(Success(epoch: 2));
+        await using var fixture = CreateFixture(connection);
+        await fixture.Member.JoinAsync(CreateInitialUpdate(topologyEpoch: 1));
+
+        await Assert.ThrowsAsync<GroupException>(async () =>
+            await fixture.Member.UpdateAsync(CreateInitialUpdate(topologyEpoch: 2)));
+        await fixture.Member.UpdateAsync(new StreamsGroupMemberUpdate { ProcessId = "process-2" });
+
+        await Assert.That(connection.HeartbeatRequests[3].Topology!.Epoch).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task UpdateAsync_TopologyChangePreservesShutdownApplication()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1));
+        connection.EnqueueHeartbeat(Success(epoch: 2));
+        await using var fixture = CreateFixture(connection);
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+
+        await fixture.Member.UpdateAsync(new StreamsGroupMemberUpdate
+        {
+            Topology = CreateInitialUpdate(topologyEpoch: 2).Topology,
+            ShutdownApplication = true
+        });
+
+        await Assert.That(connection.HeartbeatRequests[1].ShutdownApplication).IsTrue();
+    }
+
+    [Arguments(false)]
+    [Arguments(true)]
+    [Test]
+    public async Task UpdateAsync_RetryPreservesShutdownApplication(bool transportFailure)
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1));
+        if (transportFailure)
+        {
+            connection.EnqueueHeartbeat(Task.FromException<StreamsGroupHeartbeatResponse>(
+                new IOException("connection lost")));
+        }
+        else
+        {
+            connection.EnqueueHeartbeat(new StreamsGroupHeartbeatResponse
+            {
+                ErrorCode = ErrorCode.NotCoordinator,
+                MemberId = "member-1"
+            });
+        }
+        connection.EnqueueHeartbeat(Success(epoch: 2));
+        await using var fixture = CreateFixture(connection);
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+
+        await fixture.Member.UpdateAsync(new StreamsGroupMemberUpdate
+        {
+            ProcessId = "process-2",
+            ShutdownApplication = true
+        });
+
+        await Assert.That(connection.HeartbeatRequests[1].ShutdownApplication).IsTrue();
+        await Assert.That(connection.HeartbeatRequests[2].ShutdownApplication).IsTrue();
+    }
+
+    [Test]
     public async Task SteadyRequestCache_RebuildsWhenIdentityChanges()
     {
         var cache = new StreamsGroupHeartbeatRequestCache();

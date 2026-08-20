@@ -293,36 +293,48 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         if (command.Kind == MemberCommandKind.Join && _memberEpoch > 0)
             throw new InvalidOperationException("The Streams group member has already joined.");
 
-        StreamsGroupHeartbeatRequest request;
-        int? recoveryJoinEpoch = command.Kind == MemberCommandKind.Join ? 0 : null;
-        switch (command.Kind)
+        var previousState = CaptureOperationState();
+        StreamsGroupHeartbeatResponse response;
+        try
         {
-            case MemberCommandKind.Join:
-                ApplyUpdate(command.Update!);
-                request = CreateJoinRequest();
-                break;
-            case MemberCommandKind.Update:
-                var update = command.Update!;
-                ApplyUpdate(update);
-                request = update.Topology is null
-                    ? CreateDeltaRequest(update)
-                    : CreateJoinRequest();
-                recoveryJoinEpoch = update.Topology is not null ? 0 : null;
-                break;
-            case MemberCommandKind.ReportOffsets:
-                _taskOffsets = MapTaskOffsets(command.OffsetReport!.TaskOffsets);
-                _taskEndOffsets = MapTaskOffsets(command.OffsetReport.TaskEndOffsets);
-                request = CreateOffsetRequest();
-                break;
-            default:
-                throw new InvalidOperationException($"Unsupported command {command.Kind}.");
+            StreamsGroupHeartbeatRequest request;
+            int? recoveryJoinEpoch = command.Kind == MemberCommandKind.Join ? 0 : null;
+            switch (command.Kind)
+            {
+                case MemberCommandKind.Join:
+                    var initialState = command.Update!;
+                    ApplyUpdate(initialState);
+                    request = CreateJoinRequest(shutdownApplication: initialState.ShutdownApplication);
+                    break;
+                case MemberCommandKind.Update:
+                    var update = command.Update!;
+                    ApplyUpdate(update);
+                    request = update.Topology is null
+                        ? CreateDeltaRequest(update)
+                        : CreateJoinRequest(shutdownApplication: update.ShutdownApplication);
+                    recoveryJoinEpoch = update.Topology is not null ? 0 : null;
+                    break;
+                case MemberCommandKind.ReportOffsets:
+                    _taskOffsets = MapTaskOffsets(command.OffsetReport!.TaskOffsets);
+                    _taskEndOffsets = MapTaskOffsets(command.OffsetReport.TaskEndOffsets);
+                    request = CreateOffsetRequest();
+                    break;
+                default:
+                    throw new InvalidOperationException($"Unsupported command {command.Kind}.");
+            }
+
+            response = await SendWithRecoveryAsync(
+                    request,
+                    CancellationToken.None,
+                    recoveryJoinEpoch: recoveryJoinEpoch)
+                .ConfigureAwait(false);
+        }
+        catch
+        {
+            RestoreOperationState(previousState);
+            throw;
         }
 
-        var response = await SendWithRecoveryAsync(
-                request,
-                CancellationToken.None,
-                recoveryJoinEpoch: recoveryJoinEpoch)
-            .ConfigureAwait(false);
         var result = ApplyResponse(response, createResult: true)!;
         ScheduleHeartbeat();
         return result;
@@ -407,6 +419,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         bool recoverFencing = true)
     {
         var fencedRecoveryAttempted = false;
+        var shutdownApplication = request.ShutdownApplication;
         var unreleasedFailureCount = 0;
         long unreleasedStartedAt = -1;
         for (var attempt = 0; attempt < 5; attempt++)
@@ -445,7 +458,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
                 if (attempt == 4)
                     throw;
                 if (recoverFencing)
-                    request = CreateRecoveryRequest(recoveryJoinEpoch);
+                    request = CreateRecoveryRequest(recoveryJoinEpoch, shutdownApplication);
                 await DelayForRetryAsync(attempt + 1, cancellationToken).ConfigureAwait(false);
                 continue;
             }
@@ -492,7 +505,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
                 if (response.ErrorCode != ErrorCode.CoordinatorLoadInProgress)
                     _coordinatorId = -1;
                 if (recoverFencing)
-                    request = CreateRecoveryRequest(recoveryJoinEpoch);
+                    request = CreateRecoveryRequest(recoveryJoinEpoch, shutdownApplication);
                 await DelayForRetryAsync(attempt + 1, cancellationToken).ConfigureAwait(false);
                 continue;
             }
@@ -503,9 +516,8 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
             {
                 fencedRecoveryAttempted = true;
                 recoveryJoinEpoch = InstanceId is null ? 0 : -2;
-                _memberEpoch = recoveryJoinEpoch.Value;
                 _steadyRequestCache.Invalidate();
-                request = CreateJoinRequest(recoveryJoinEpoch.Value);
+                request = CreateJoinRequest(recoveryJoinEpoch.Value, shutdownApplication);
                 continue;
             }
 
@@ -762,7 +774,36 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         _steadyRequestCache.Invalidate();
     }
 
-    private StreamsGroupHeartbeatRequest CreateJoinRequest(int memberEpoch = 0) => new()
+    private OperationState CaptureOperationState() => new(
+        _topology,
+        _activeTasks,
+        _standbyTasks,
+        _warmupTasks,
+        _processId,
+        _userEndpoint,
+        _clientTags,
+        _taskOffsets,
+        _taskEndOffsets,
+        _endpointInformationEpoch);
+
+    private void RestoreOperationState(in OperationState state)
+    {
+        _topology = state.Topology;
+        _activeTasks = state.ActiveTasks;
+        _standbyTasks = state.StandbyTasks;
+        _warmupTasks = state.WarmupTasks;
+        _processId = state.ProcessId;
+        _userEndpoint = state.UserEndpoint;
+        _clientTags = state.ClientTags;
+        _taskOffsets = state.TaskOffsets;
+        _taskEndOffsets = state.TaskEndOffsets;
+        _endpointInformationEpoch = state.EndpointInformationEpoch;
+        _steadyRequestCache.Invalidate();
+    }
+
+    private StreamsGroupHeartbeatRequest CreateJoinRequest(
+        int memberEpoch = 0,
+        bool shutdownApplication = false) => new()
     {
         GroupId = GroupId,
         MemberId = _memberId,
@@ -779,13 +820,16 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         UserEndpoint = _userEndpoint,
         ClientTags = _clientTags,
         TaskOffsets = _taskOffsets,
-        TaskEndOffsets = _taskEndOffsets
+        TaskEndOffsets = _taskEndOffsets,
+        ShutdownApplication = shutdownApplication
     };
 
-    private StreamsGroupHeartbeatRequest CreateRecoveryRequest(int? recoveryJoinEpoch) =>
+    private StreamsGroupHeartbeatRequest CreateRecoveryRequest(
+        int? recoveryJoinEpoch,
+        bool shutdownApplication) =>
         recoveryJoinEpoch is not null || _memberEpoch <= 0
-            ? CreateJoinRequest(recoveryJoinEpoch ?? _memberEpoch)
-            : CreateFullRequest();
+            ? CreateJoinRequest(recoveryJoinEpoch ?? _memberEpoch, shutdownApplication)
+            : CreateFullRequest(shutdownApplication);
 
     private StreamsGroupHeartbeatRequest CreateDeltaRequest(StreamsGroupMemberUpdate update) => new()
     {
@@ -816,7 +860,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         TaskEndOffsets = _taskEndOffsets
     };
 
-    private StreamsGroupHeartbeatRequest CreateFullRequest() => new()
+    private StreamsGroupHeartbeatRequest CreateFullRequest(bool shutdownApplication) => new()
     {
         GroupId = GroupId,
         MemberId = _memberId,
@@ -832,7 +876,8 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         UserEndpoint = _userEndpoint,
         ClientTags = _clientTags,
         TaskOffsets = _taskOffsets,
-        TaskEndOffsets = _taskEndOffsets
+        TaskEndOffsets = _taskEndOffsets,
+        ShutdownApplication = shutdownApplication
     };
 
     internal StreamsGroupHeartbeatRequest GetOrCreateSteadyRequest() =>
@@ -1047,6 +1092,18 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
             result[i] = source[i];
         return result;
     }
+
+    private readonly record struct OperationState(
+        StreamsGroupHeartbeatTopology? Topology,
+        IReadOnlyList<StreamsGroupHeartbeatTaskIds>? ActiveTasks,
+        IReadOnlyList<StreamsGroupHeartbeatTaskIds>? StandbyTasks,
+        IReadOnlyList<StreamsGroupHeartbeatTaskIds>? WarmupTasks,
+        string? ProcessId,
+        StreamsGroupHeartbeatEndpoint? UserEndpoint,
+        IReadOnlyList<StreamsGroupHeartbeatKeyValue>? ClientTags,
+        IReadOnlyList<StreamsGroupHeartbeatTaskOffset>? TaskOffsets,
+        IReadOnlyList<StreamsGroupHeartbeatTaskOffset>? TaskEndOffsets,
+        int EndpointInformationEpoch);
 
     private enum MemberCommandKind : byte
     {
