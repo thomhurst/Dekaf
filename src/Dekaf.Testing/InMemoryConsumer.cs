@@ -46,9 +46,11 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private readonly Dictionary<TopicPartition, long> _positions = [];
     private readonly Dictionary<TopicPartition, TopicPartitionOffset> _storedOffsets = [];
     private Dictionary<TopicPartition, PendingAutoCommitAdvancement>? _pendingAutoCommitAdvancements;
+    private int _storedOffsetsVersion;
     private long _potentialFaultScopeVersion = -1;
     private int _potentialFaultConsumerStateVersion = -1;
     private int _potentialFaultConsumerGroupVersion = -1;
+    private int _potentialFaultStoredOffsetsVersion = -1;
     private bool _hasPotentialConsumerFault;
     // In-doubt record under OffsetStoreTiming.AfterProcessing: delivered but not yet proven
     // processed. Staged for commit only when the next consume call or an explicit commit
@@ -62,6 +64,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private int _consumerGroupGeneration = -1;
     private long _consumerGroupRegistrationId;
     private string? _subscriptionPattern;
+    private Task? _closeTask;
     private bool _disposed;
 
     public InMemoryConsumer(InMemoryKafkaCluster cluster)
@@ -403,6 +406,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             _paused.Clear();
             _positions.Clear();
             _storedOffsets.Clear();
+            _storedOffsetsVersion++;
             _inDoubtNextOffset = -1;
             _consumerStateVersion++;
             UnregisterConsumerGroupMemberUnderLock();
@@ -925,29 +929,67 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
         cancellationToken.ThrowIfCancellationRequested();
 
-        if (_disposed)
-            return ValueTask.CompletedTask;
+        Task closeTask;
+        TaskCompletionSource? closeCompletion = null;
+        lock (_gate)
+        {
+            if (_disposed)
+                return ValueTask.CompletedTask;
 
-        var autoCommitFault = ApplyStoredAutoCommitFaultAsync(cancellationToken);
-        if (!autoCommitFault.IsCompletedSuccessfully)
-            return CloseAfterAutoCommitFaultAsync(autoCommitFault);
+            if (_closeTask is null)
+            {
+                closeCompletion = new TaskCompletionSource(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                _closeTask = closeCompletion.Task;
+            }
 
-        autoCommitFault.GetAwaiter().GetResult();
-        return CompleteClose();
+            closeTask = _closeTask;
+        }
+
+        if (closeCompletion is not null)
+        {
+            _ = RunCloseAsync(closeCompletion, cancellationToken);
+            return new ValueTask(closeTask);
+        }
+
+        return cancellationToken.CanBeCanceled
+            ? new ValueTask(closeTask.WaitAsync(cancellationToken))
+            : new ValueTask(closeTask);
     }
 
-    private async ValueTask CloseAfterAutoCommitFaultAsync(ValueTask autoCommitFault)
+    private async ValueTask RunCloseAsync(
+        TaskCompletionSource completion,
+        CancellationToken cancellationToken)
     {
         var commitStoredOffsets = false;
+        Exception? failure = null;
         try
         {
-            await autoCommitFault.ConfigureAwait(false);
+            await ApplyStoredAutoCommitFaultAsync(cancellationToken).ConfigureAwait(false);
             commitStoredOffsets = true;
         }
-        finally
+        catch (Exception ex)
+        {
+            failure = ex;
+        }
+
+        try
         {
             await CompleteClose(commitStoredOffsets).ConfigureAwait(false);
         }
+        catch (Exception ex)
+        {
+            failure = failure is null
+                ? ex
+                : new AggregateException(failure, ex);
+        }
+
+        if (failure is null)
+            completion.TrySetResult();
+        else if (failure is OperationCanceledException canceled)
+            completion.TrySetCanceled(canceled.CancellationToken);
+        else
+            completion.TrySetException(failure);
     }
 
     private ValueTask CompleteClose(bool commitStoredOffsets = true)
@@ -965,6 +1007,16 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             UnregisterConsumerGroupMemberUnderLock();
             _consumerStateVersion++;
             _disposed = true;
+            if (_pendingAutoCommitAdvancements is not null)
+            {
+                foreach (var (partition, pending) in _pendingAutoCommitAdvancements)
+                {
+                    _paused.Remove(partition);
+                    pending.Completion.TrySetResult();
+                }
+
+                _pendingAutoCommitAdvancements = null;
+            }
         }
 
         return ValueTask.CompletedTask;
@@ -1091,6 +1143,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             _paused.Clear();
             _positions.Clear();
             _storedOffsets.Clear();
+            _storedOffsetsVersion++;
             _inDoubtNextOffset = -1;
             _consumerStateVersion++;
             UnregisterConsumerGroupMemberUnderLock();
@@ -1138,7 +1191,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 _assignment.Remove(partition);
                 _paused.Remove(partition);
                 _positions.Remove(partition);
-                _storedOffsets.Remove(partition);
+                if (_storedOffsets.Remove(partition))
+                    _storedOffsetsVersion++;
                 DiscardInDoubtRecordUnderLock(partition);
             }
 
@@ -1797,6 +1851,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         _paused.Clear();
         _positions.Clear();
         _storedOffsets.Clear();
+        _storedOffsetsVersion++;
         _inDoubtNextOffset = -1;
 
         foreach (var (partition, position) in nextPositions)
@@ -2124,12 +2179,20 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
         var scopeVersion = indexedPlan.ScopeVersion;
         var consumerStateVersion = Volatile.Read(ref _consumerStateVersion);
+        var autoCommitEnabled = _groupId is not null &&
+                                _options.OffsetCommitMode == OffsetCommitMode.Auto;
+        var requiresStoredOffset = autoCommitEnabled &&
+                                   !_options.EnableAutoOffsetStore;
+        var storedOffsetsVersion = requiresStoredOffset
+            ? Volatile.Read(ref _storedOffsetsVersion)
+            : -1;
         var consumerGroupVersion = _groupId is null
             ? -1
             : _cluster.ConsumerGroupVersion;
         if (Volatile.Read(ref _potentialFaultScopeVersion) == scopeVersion &&
             Volatile.Read(ref _potentialFaultConsumerStateVersion) == consumerStateVersion &&
-            Volatile.Read(ref _potentialFaultConsumerGroupVersion) == consumerGroupVersion)
+            Volatile.Read(ref _potentialFaultConsumerGroupVersion) == consumerGroupVersion &&
+            Volatile.Read(ref _potentialFaultStoredOffsetsVersion) == storedOffsetsVersion)
         {
             return Volatile.Read(ref _hasPotentialConsumerFault);
         }
@@ -2137,6 +2200,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         lock (_gate)
         {
             consumerStateVersion = _consumerStateVersion;
+            storedOffsetsVersion = requiresStoredOffset ? _storedOffsetsVersion : -1;
             IReadOnlySet<TopicPartition> assignment;
             do
             {
@@ -2147,14 +2211,18 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             }
             while (_groupId is not null && consumerGroupVersion != _cluster.ConsumerGroupVersion);
 
+            var includeCommit = autoCommitEnabled &&
+                                (_options.EnableAutoOffsetStore ||
+                                 HasStoredOffsetForAssignmentUnderLock(assignment));
             var hasPotentialFault = indexedPlan.HasPotentialConsumerMatch(
                 _groupId,
                 assignment,
-                _options.OffsetCommitMode == OffsetCommitMode.Auto,
+                includeCommit,
                 out scopeVersion);
             Volatile.Write(ref _hasPotentialConsumerFault, hasPotentialFault);
             Volatile.Write(ref _potentialFaultConsumerStateVersion, consumerStateVersion);
             Volatile.Write(ref _potentialFaultConsumerGroupVersion, consumerGroupVersion);
+            Volatile.Write(ref _potentialFaultStoredOffsetsVersion, storedOffsetsVersion);
             Volatile.Write(ref _potentialFaultScopeVersion, scopeVersion);
             return hasPotentialFault;
         }
@@ -2168,11 +2236,26 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         lock (_gate)
         {
             var assignment = GetCurrentAssignmentUnderLock();
+            var includeCommit = _groupId is not null &&
+                                _options.OffsetCommitMode == OffsetCommitMode.Auto &&
+                                (_options.EnableAutoOffsetStore ||
+                                 HasStoredOffsetForAssignmentUnderLock(assignment));
             return faultPlan.HasPotentialFault(KafkaFaultOperation.Fetch, _groupId, assignment) ||
                    faultPlan.HasPotentialFault(KafkaFaultOperation.Consume, _groupId, assignment) ||
-                   _options.OffsetCommitMode == OffsetCommitMode.Auto &&
+                   includeCommit &&
                    faultPlan.HasPotentialFault(KafkaFaultOperation.Commit, _groupId, assignment);
         }
+    }
+
+    private bool HasStoredOffsetForAssignmentUnderLock(IReadOnlySet<TopicPartition> assignment)
+    {
+        foreach (var partition in _storedOffsets.Keys)
+        {
+            if (assignment.Contains(partition))
+                return true;
+        }
+
+        return false;
     }
 
     private bool HasMatchingFault(in KafkaFaultScope operationScope)
@@ -2182,6 +2265,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     {
         var partition = new TopicPartition(offset.Topic, offset.Partition);
         _storedOffsets[partition] = offset;
+        _storedOffsetsVersion++;
     }
 
     private void StoreOffsetUnderLock(TopicPartition partition, long offset)
@@ -2190,6 +2274,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             partition.Topic,
             partition.Partition,
             offset);
+        _storedOffsetsVersion++;
     }
 
     private IReadOnlySet<TopicPartition> GetCurrentAssignmentUnderLock() =>

@@ -559,6 +559,38 @@ public sealed class InMemoryConsumerFaultTests
     }
 
     [Test]
+    public async Task Snapshot_CloseReleasesConcurrentAutoCommitReservationWait()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync(Topic, "key", "value");
+        var consumer = CreateConsumer(
+            cluster,
+            enableAutoOffsetStore: true,
+            offsetCommitMode: OffsetCommitMode.Auto);
+        consumer.Subscribe(Topic);
+        var snapshotFetchBarrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.Fetch, Topic, 0, GroupId));
+        var concurrentCommitBarrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId));
+        await using var snapshot = consumer.ConsumeSnapshotAsync().GetAsyncEnumerator();
+
+        var snapshotMove = snapshot.MoveNextAsync().AsTask();
+        await snapshotFetchBarrier.WaitUntilEnteredAsync();
+        var concurrentConsume = consumer.ConsumeOneAsync(Timeout.InfiniteTimeSpan).AsTask();
+        await concurrentCommitBarrier.WaitUntilEnteredAsync();
+        await Assert.That(snapshotFetchBarrier.Release()).IsTrue();
+        await Task.Yield();
+
+        await consumer.CloseAsync();
+        _ = await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+            await snapshotMove.WaitAsync(TimeSpan.FromSeconds(5)));
+
+        await Assert.That(concurrentCommitBarrier.Release()).IsTrue();
+        _ = await Assert.ThrowsAsync<ObjectDisposedException>(() => concurrentConsume);
+    }
+
+    [Test]
     public async Task AutoCommit_BarrierRejectsSeekUntilPositionAdvances()
     {
         var cluster = new InMemoryKafkaCluster();
@@ -736,6 +768,39 @@ public sealed class InMemoryConsumerFaultTests
     }
 
     [Test]
+    public async Task AutoCommit_WithoutCommittableOffsetStaysOnSynchronousPath()
+    {
+        var innerPlan = new KafkaFaultPlan();
+        var faultPlan = new DelegatingFaultPlan(innerPlan);
+        var cluster = new InMemoryKafkaCluster(new InMemoryKafkaClusterOptions(), faultPlan);
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync(Topic, "key-0", "value-0");
+        await producer.ProduceAsync(Topic, "key-1", "value-1");
+        var consumer = CreateConsumer(
+            cluster,
+            enableAutoOffsetStore: false,
+            offsetCommitMode: OffsetCommitMode.Auto);
+        consumer.Subscribe(Topic);
+        var failure = new InvalidOperationException("commit failed");
+        innerPlan.FailPersistently(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId),
+            failure);
+
+        var operation = consumer.ConsumeOneAsync(TimeSpan.Zero);
+
+        await Assert.That(operation.IsCompletedSuccessfully).IsTrue();
+        var result = operation.Result;
+        await Assert.That(result).IsNotNull();
+        await Assert.That(faultPlan.MatchingProbeCount).IsEqualTo(0);
+
+        consumer.StoreOffset(result!.Value);
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            consumer.ConsumeOneAsync(TimeSpan.Zero).AsTask());
+
+        await Assert.That(actual).IsSameReferenceAs(failure);
+    }
+
+    [Test]
     public async Task AutoCommit_AfterProcessingConsumesResourceFaultOnNextPoll()
     {
         var cluster = new InMemoryKafkaCluster();
@@ -790,6 +855,32 @@ public sealed class InMemoryConsumerFaultTests
         await Assert.That(cluster.GetCommittedOffset(GroupId, Partition)).IsNull();
         _ = await Assert.ThrowsAsync<ObjectDisposedException>(() =>
             consumer.ConsumeOneAsync(TimeSpan.Zero).AsTask());
+    }
+
+    [Test]
+    public async Task CloseAsync_ConcurrentCallersShareCommitBarrier()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var consumer = CreateConsumer(
+            cluster,
+            enableAutoOffsetStore: false,
+            offsetCommitMode: OffsetCommitMode.Auto);
+        consumer.Subscribe(Topic);
+        consumer.StoreOffset(new TopicPartitionOffset(Topic, 0, 1));
+        var barrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId));
+
+        var firstClose = consumer.CloseAsync().AsTask();
+        await barrier.WaitUntilEnteredAsync();
+        var secondClose = consumer.CloseAsync().AsTask();
+
+        await Assert.That(secondClose).IsSameReferenceAs(firstClose);
+        await Assert.That(secondClose.IsCompleted).IsFalse();
+        await Assert.That(cluster.GetCommittedOffset(GroupId, Partition)).IsNull();
+        await Assert.That(barrier.Release()).IsTrue();
+        await Task.WhenAll(firstClose, secondClose);
+
+        await Assert.That(cluster.GetCommittedOffset(GroupId, Partition)).IsEqualTo(1);
     }
 
     [Test]
