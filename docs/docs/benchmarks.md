@@ -17,8 +17,8 @@ Each scenario is the median Dekaf-vs-Confluent result over the last 10 benchmark
 
 The charts use the representative high-load parameter set from the latest run and show its measured values. Multipliers in brackets are calculated from those displayed figures; the table below summarizes the broader cross-run range.
 
-:::note Reading serial-awaited producer results
-The `linger=0` scenario is the matched client comparison. The `linger=5 ms` scenario intentionally measures each client's app-limited batching policy and should not be read as general producer throughput. In the legacy results below, Dekaf sends a sole serial-awaited record immediately while Confluent applies the configured linger; the old benchmark's unused `BatchSize` parameter also duplicated each payload result. The page will show the new `linger=0` control after the next run from main.
+:::note Reading producer results
+The `linger=0` scenario is the matched client comparison. The `linger=5 ms` scenario intentionally measures each client's app-limited batching policy and should not be read as general producer throughput. In the legacy serial-awaited results below, Dekaf sends a sole record immediately while Confluent applies the configured linger; the old benchmark's unused `BatchSize` parameter also duplicated each payload result. The legacy batch and fire-and-forget results used leader acknowledgements without idempotence. The page will show the new matched controls after the next run from main.
 :::
 
 <ComparisonChartGrid>
@@ -28,7 +28,7 @@ The `linger=0` scenario is the matched client comparison. The `linger=5 ms` scen
   metric="Latest run · representative high-load case"
   description="Measured time per benchmark operation; shorter bars are better."
   better="lower"
-  items={[{"label":"Produce — serial awaited (linger=5 ms; legacy)","note":"1000 B · app-limited","dekaf":116.51,"confluent":5277.37,"dekafDisplay":"116.51 μs (45× faster)","confluentDisplay":"5.28 ms"},{"label":"Produce — batches","note":"1000 B · batch 1000","dekaf":9488.78,"confluent":8016.78,"dekafDisplay":"9.49 ms (1.2× slower)","confluentDisplay":"8.02 ms"},{"label":"Produce — fire-and-forget","note":"1000 B · batch 1000","dekaf":7098.98,"confluent":5321.78,"dekafDisplay":"7.10 ms (1.3× slower)","confluentDisplay":"5.32 ms"},{"label":"Consume — drain a topic","note":"1000 B · 1000 messages","dekaf":905.32,"confluent":683.96,"dekafDisplay":"905.32 μs (1.3× slower)","confluentDisplay":"683.96 μs"},{"label":"Consume — poll a single message","note":"1000 B","dekaf":0.6131,"confluent":1.5363,"dekafDisplay":"613.1 ns (2.5× faster)","confluentDisplay":"1.54 μs"}]}
+  items={[{"label":"Produce — serial awaited (linger=5 ms; legacy)","note":"1000 B · app-limited","dekaf":116.51,"confluent":5277.37,"dekafDisplay":"116.51 μs (45× faster)","confluentDisplay":"5.28 ms"},{"label":"Produce — batches (acks=leader, non-idempotent; legacy)","note":"1000 B · batch 1000","dekaf":9488.78,"confluent":8016.78,"dekafDisplay":"9.49 ms (1.2× slower)","confluentDisplay":"8.02 ms"},{"label":"Produce — fire-and-forget (acks=leader, non-idempotent; legacy)","note":"1000 B · batch 1000","dekaf":7098.98,"confluent":5321.78,"dekafDisplay":"7.10 ms (1.3× slower)","confluentDisplay":"5.32 ms"},{"label":"Consume — drain a topic","note":"1000 B · 1000 messages","dekaf":905.32,"confluent":683.96,"dekafDisplay":"905.32 μs (1.3× slower)","confluentDisplay":"683.96 μs"},{"label":"Consume — poll a single message","note":"1000 B","dekaf":0.6131,"confluent":1.5363,"dekafDisplay":"613.1 ns (2.5× faster)","confluentDisplay":"1.54 μs"}]}
 />
 
 <ComparisonChart
@@ -36,7 +36,7 @@ The `linger=0` scenario is the matched client comparison. The `linger=5 ms` scen
   metric="Latest run · bytes per operation"
   description="Managed heap bytes allocated per operation; shorter bars are better."
   better="lower"
-  items={[{"label":"Produce — serial awaited (linger=5 ms; legacy)","note":"1000 B · app-limited","dekaf":456,"confluent":2113,"dekafDisplay":"456 B (4.6× less)","confluentDisplay":"2.06 KB"},{"label":"Produce — batches","note":"1000 B · batch 1000","dekaf":51720,"confluent":1944394,"dekafDisplay":"50.51 KB (38× less)","confluentDisplay":"1.85 MB"},{"label":"Produce — fire-and-forget","note":"1000 B · batch 1000","dekaf":1170,"confluent":1206138,"dekafDisplay":"1.14 KB (1031× less)","confluentDisplay":"1.15 MB"},{"label":"Consume — drain a topic","note":"1000 B · 1000 messages","dekaf":2064691.2,"confluent":2464153.6,"dekafDisplay":"1.97 MB (1.2× less)","confluentDisplay":"2.35 MB"},{"label":"Consume — poll a single message","note":"1000 B","dekaf":2074,"confluent":2454,"dekafDisplay":"2.03 KB (1.2× less)","confluentDisplay":"2.40 KB"}]}
+  items={[{"label":"Produce — serial awaited (linger=5 ms; legacy)","note":"1000 B · app-limited","dekaf":456,"confluent":2113,"dekafDisplay":"456 B (4.6× less)","confluentDisplay":"2.06 KB"},{"label":"Produce — batches (acks=leader, non-idempotent; legacy)","note":"1000 B · batch 1000","dekaf":51720,"confluent":1944394,"dekafDisplay":"50.51 KB (38× less)","confluentDisplay":"1.85 MB"},{"label":"Produce — fire-and-forget (acks=leader, non-idempotent; legacy)","note":"1000 B · batch 1000","dekaf":1170,"confluent":1206138,"dekafDisplay":"1.14 KB (1031× less)","confluentDisplay":"1.15 MB"},{"label":"Consume — drain a topic","note":"1000 B · 1000 messages","dekaf":2064691.2,"confluent":2464153.6,"dekafDisplay":"1.97 MB (1.2× less)","confluentDisplay":"2.35 MB"},{"label":"Consume — poll a single message","note":"1000 B","dekaf":2074,"confluent":2454,"dekafDisplay":"2.03 KB (1.2× less)","confluentDisplay":"2.40 KB"}]}
 />
 
 </ComparisonChartGrid>
@@ -44,8 +44,8 @@ The `linger=0` scenario is the matched client comparison. The `linger=5 ms` scen
 | Scenario | Speed vs Confluent | Memory vs Confluent | Confidence |
 |---|---|---|---|
 | Produce — serial awaited (linger=5 ms; legacy) | 21×–22× faster | 3.3× less | ⚠ Noisy |
-| Produce — batches | on par to 2.4× faster | 25× less | Mixed |
-| Produce — fire-and-forget | on par | 1000× less | Mixed |
+| Produce — batches (acks=leader, non-idempotent; legacy) | on par to 2.4× faster | 25× less | Mixed |
+| Produce — fire-and-forget (acks=leader, non-idempotent; legacy) | on par | 1000× less | Mixed |
 | Consume — drain a topic | 1.8× slower to 1.2× faster | 1.6× less | Mixed |
 | Consume — poll a single message | 3.7×–9.8× faster | 1.6× less | ⚠ Noisy |
 

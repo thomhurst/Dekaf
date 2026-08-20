@@ -38,6 +38,14 @@ _SCENARIO_LABELS = {
         "Produce — serial awaited (linger=5 ms; legacy)",
         1,
     ),
+    ("ProducerBenchmarks", "ProduceBatch"): (
+        "Produce — batches (acks=leader, non-idempotent; legacy)",
+        2,
+    ),
+    ("ProducerBenchmarks", "FireAndForget"): (
+        "Produce — fire-and-forget (acks=leader, non-idempotent; legacy)",
+        3,
+    ),
     ("ProducerBenchmarks", "ProduceBatchAllIdempotent"): (
         "Produce — batches (acks=all, idempotent)",
         2,
