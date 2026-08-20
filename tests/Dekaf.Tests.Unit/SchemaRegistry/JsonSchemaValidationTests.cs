@@ -80,6 +80,18 @@ public sealed class JsonSchemaValidationTests
     }
 
     [Test]
+    public async Task Validator_AcceptsIntMinValueAsARealSchemaId()
+    {
+        var validator = CreateFactory().GetOrCreate(CreateSchema("""{"type":"string"}"""));
+
+        var exception = Assert.Throws<JsonSchemaValidationException>(
+            () => validator.Validate("1"u8, int.MinValue));
+
+        await Assert.That(exception.SchemaId).IsEqualTo(int.MinValue);
+        await Assert.That(exception.Keyword).IsEqualTo("type");
+    }
+
+    [Test]
     public void Validator_SupportsInternalReferencesAndDraft202012()
     {
         const string schemaText = """
@@ -767,6 +779,51 @@ public sealed class JsonSchemaValidationTests
     }
 
     [Test]
+    public async Task InlineRules_QuoteNonIdentifierPropertyNamesInPaths()
+    {
+        const string schemaText = """
+            {
+              "properties": {
+                "a.b": {
+                  "confluent:rules": [{ "name": "required", "expr": "size(this) > 0" }]
+                }
+              }
+            }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
+
+        var exception = Assert.Throws<ValidationRulesFailedException>(() => validator.ValidateRules(
+            """{"a.b":""}"""u8.ToArray(),
+            17,
+            failFast: false));
+
+        await Assert.That(exception.Violations[0].FieldPath).IsEqualTo("$[\"a.b\"]");
+    }
+
+    [Test]
+    public async Task InlineRules_JsonEscapeQuotedPropertyNamesInPaths()
+    {
+        const string schemaText = """
+            {
+              "properties": {
+                "a\"b\\c\n": {
+                  "confluent:rules": [{ "name": "required", "expr": "size(this) > 0" }]
+                }
+              }
+            }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
+
+        var exception = Assert.Throws<ValidationRulesFailedException>(() => validator.ValidateRules(
+            """{"a\"b\\c\n":""}"""u8.ToArray(),
+            17,
+            failFast: false));
+
+        await Assert.That(exception.Violations[0].FieldPath)
+            .IsEqualTo("$[\"a\\\"b\\\\c\\n\"]");
+    }
+
+    [Test]
     public async Task InlineRules_StringResultAndFailFastMatchConfluentSemantics()
     {
         const string schemaText = """
@@ -831,6 +888,28 @@ public sealed class JsonSchemaValidationTests
         var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
 
         validator.ValidateRules("""{"code":null,"choice":{"b":"ok"}}"""u8.ToArray(), 19, failFast: false);
+    }
+
+    [Test]
+    public async Task InlineRules_RequireExactlyOneMatchingOneOfBranch()
+    {
+        const string schemaText = """
+            {
+              "oneOf": [
+                { "type": "object", "properties": { "value": { "type": "integer" } } },
+                { "type": "object", "properties": { "value": { "minimum": 0 } } }
+              ]
+            }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
+
+        var exception = Assert.Throws<JsonSchemaValidationException>(() => validator.ValidateRules(
+            """{"value":1}"""u8.ToArray(),
+            19,
+            failFast: false));
+
+        await Assert.That(exception.SchemaId).IsEqualTo(19);
+        await Assert.That(exception.Keyword).IsEqualTo("oneOf");
     }
 
     [Test]
@@ -907,6 +986,29 @@ public sealed class JsonSchemaValidationTests
             failFast: false);
         Assert.Throws<ValidationRulesFailedException>(() => validator.ValidateRules(
             """{"precise":0.1234567890123456789012345678902,"next":0.1234567890123456789012345678901,"huge":1e1000,"negative":-1e1000}"""u8.ToArray(),
+            23,
+            failFast: false));
+    }
+
+    [Test]
+    public void InlineRules_NegateArbitraryPrecisionNumbersExactly()
+    {
+        const string schemaText = """
+            {
+              "confluent:rules": [{
+                "name": "exact-negation",
+                "expr": "-this.huge == -1e1000 && -this.precise == -0.1234567890123456789012345678901 && -(-this.huge) == this.huge"
+              }]
+            }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
+
+        validator.ValidateRules(
+            """{"huge":1e1000,"precise":0.1234567890123456789012345678901}"""u8.ToArray(),
+            23,
+            failFast: false);
+        Assert.Throws<ValidationRulesFailedException>(() => validator.ValidateRules(
+            """{"huge":1e1001,"precise":0.1234567890123456789012345678901}"""u8.ToArray(),
             23,
             failFast: false));
     }
@@ -1026,6 +1128,38 @@ public sealed class JsonSchemaValidationTests
             failFast: false);
         Assert.Throws<ValidationRulesFailedException>(() => validator.ValidateRules(
             """{"left":{},"right":{},"values":[1,2],"expected":[2,1]}"""u8.ToArray(),
+            24,
+            failFast: false));
+    }
+
+    [Test]
+    public void InlineRules_ObjectEqualityUsesFinalDuplicatePropertyValues()
+    {
+        const string schemaText = """
+            {
+              "confluent:rules": [{ "name": "equal", "expr": "this.left == this.right" }]
+            }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
+
+        validator.ValidateRules(
+            """{"left":{"id":1,"id":2},"right":{"id":2}}"""u8.ToArray(),
+            24,
+            failFast: false);
+        validator.ValidateRules(
+            """{"left":{"id":2},"right":{"id":1,"id":2}}"""u8.ToArray(),
+            24,
+            failFast: false);
+        validator.ValidateRules(
+            """{"left":{"id":0,"id":2},"right":{"id":1,"id":2}}"""u8.ToArray(),
+            24,
+            failFast: false);
+        validator.ValidateRules(
+            """{"left":{"nested":{"id":2}},"right":{"nested":{"id":1},"nested":{"id":2}}}"""u8.ToArray(),
+            24,
+            failFast: false);
+        Assert.Throws<ValidationRulesFailedException>(() => validator.ValidateRules(
+            """{"left":{"id":2,"id":1},"right":{"id":2}}"""u8.ToArray(),
             24,
             failFast: false));
     }
@@ -1258,6 +1392,38 @@ public sealed class JsonSchemaValidationTests
         var beforeBuffer = new ArrayBufferWriter<byte>();
         Assert.Throws<ValidationRulesFailedException>(
             () => beforeSerializer.Serialize(new NamePayload("bad"), ref beforeBuffer, context));
+    }
+
+    [Test]
+    public async Task Serializer_ValidationRulesFailFastOptionStopsAfterFirstViolation()
+    {
+        const string schemaText = """
+            {
+              "confluent:rules": [
+                { "name": "first", "expr": "false" },
+                { "name": "second", "expr": "false" }
+              ]
+            }
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        await using var serializer = new JsonSchemaRegistrySerializer<NamePayload>(
+            registry,
+            schemaText,
+            jsonOptions: null,
+            validationOptions: new JsonSchemaValidationOptions
+            {
+                ValidatorFactory = new StreamingJsonSchemaValidatorFactory(registry),
+                Mode = JsonSchemaValidationMode.None,
+                ValidationRulesExecution = ValidationRulesExecution.BeforeDomainRules,
+                ValidationRulesFailFast = true
+            });
+        var buffer = new ArrayBufferWriter<byte>();
+
+        var exception = Assert.Throws<ValidationRulesFailedException>(
+            () => serializer.Serialize(new NamePayload("bad"), ref buffer, Context));
+
+        await Assert.That(exception.Violations.Count).IsEqualTo(1);
+        await Assert.That(exception.Violations[0].Rule.Name).IsEqualTo("first");
     }
 
     [Test]
@@ -1581,6 +1747,44 @@ public sealed class JsonSchemaValidationTests
         await Assert.That(result.Id).IsEqualTo(7);
     }
 
+    [Test]
+    public async Task MigrationRunner_LegacyTransformationValidatesAndReturnsReaderSchema()
+    {
+        const string writerSchemaText = """
+            {
+              "confluent:rules": [{ "name": "writer", "expr": "this.id == 7" }]
+            }
+            """;
+        const string readerSchemaText = """
+            {
+              "confluent:rules": [{ "name": "reader", "expr": "this.latest == 'ok'" }]
+            }
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        var writerSchema = CreateSchema(writerSchemaText);
+        var writerSchemaId = await registry.RegisterSchemaAsync("validation-value", writerSchema);
+        var readerSchema = CreateSchema(readerSchemaText);
+        var readerSchemaId = await registry.RegisterSchemaAsync("validation-value", readerSchema);
+        var runner = new SchemaRegistryMigrationRunner(
+            registry,
+            new ReplacingLegacyRuleExecutor("""{"latest":"ok"}"""u8.ToArray()),
+            TimeSpan.FromSeconds(1));
+
+        var result = runner.TransformWithBeforeDomainValidation(
+            """{"id":7}"""u8.ToArray(),
+            writerSchemaId,
+            "validation-value",
+            writerSchema,
+            Context,
+            SchemaRegistryPayloadFormat.Json,
+            new StreamingJsonSchemaValidatorFactory(registry),
+            validationRulesFailFast: false);
+
+        await Assert.That(result.PayloadSchemaId).IsEqualTo(readerSchemaId);
+        await Assert.That(result.PayloadSchema).IsSameReferenceAs(readerSchema);
+        await Assert.That(Encoding.UTF8.GetString(result.Payload.Span)).IsEqualTo("""{"latest":"ok"}""");
+    }
+
     private static Schema CreateSchema(
         string schema,
         IReadOnlyList<SchemaReference>? references = null)
@@ -1677,6 +1881,18 @@ public sealed class JsonSchemaValidationTests
         public ReadOnlyMemory<byte> TransformDeserializedPayload(
             ReadOnlyMemory<byte> payload,
             SchemaRegistryRuleContext context) => payload;
+    }
+
+    private sealed class ReplacingLegacyRuleExecutor(ReadOnlyMemory<byte> replacement)
+        : ISchemaRegistryRuleExecutor
+    {
+        public ReadOnlyMemory<byte> TransformSerializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleContext context) => payload;
+
+        public ReadOnlyMemory<byte> TransformDeserializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleContext context) => replacement;
     }
 
     private sealed class ReplacingRuleHandler(

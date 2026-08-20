@@ -77,7 +77,6 @@ public sealed class StreamingJsonSchemaValidatorFactory : IJsonSchemaValidatorFa
 internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJsonSchemaValidator
 {
     private const int MaxReferenceDepth = 128;
-    private const int SuppressFailureSchemaId = int.MinValue;
 
     public void Validate(ReadOnlySpan<byte> payload, int schemaId)
     {
@@ -131,6 +130,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
             ref reader,
             payload,
             root,
+            schemaId,
             ref path,
             now,
             failFast,
@@ -143,6 +143,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         ref Utf8JsonReader reader,
         ReadOnlyMemory<byte> payload,
         CompiledSchemaNode node,
+        int schemaId,
         scoped ref ValidationPathBuilder path,
         long now,
         bool failFast,
@@ -208,6 +209,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
                     ref referencedReader,
                     payload,
                     node.Reference,
+                    schemaId,
                     ref path,
                     now,
                     failFast,
@@ -228,6 +230,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
                     ref branchReader,
                     payload,
                     node.AllOf[index],
+                    schemaId,
                     ref path,
                     now,
                     failFast,
@@ -236,22 +239,24 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
                 return false;
         }
 
-        if (!WalkMatchingBranches(
+        if (node.HasAnyOf && !WalkMatchingBranches(
                 ref reader,
                 payload,
                 node.AnyOf,
                 oneOnly: false,
+                schemaId,
                 ref path,
                 now,
                 failFast,
                 ref violations,
                 referenceDepth))
             return false;
-        if (!WalkMatchingBranches(
+        if (node.HasOneOf && !WalkMatchingBranches(
                 ref reader,
                 payload,
                 node.OneOf,
                 oneOnly: true,
+                schemaId,
                 ref path,
                 now,
                 failFast,
@@ -262,9 +267,9 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         return reader.TokenType switch
         {
             JsonTokenType.StartObject => WalkValidationObject(
-                ref reader, payload, node, ref path, now, failFast, ref violations, referenceDepth),
+                ref reader, payload, node, schemaId, ref path, now, failFast, ref violations, referenceDepth),
             JsonTokenType.StartArray => WalkValidationArray(
-                ref reader, payload, node, ref path, now, failFast, ref violations, referenceDepth),
+                ref reader, payload, node, schemaId, ref path, now, failFast, ref violations, referenceDepth),
             _ => true
         };
     }
@@ -274,33 +279,64 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         ReadOnlyMemory<byte> payload,
         CompiledSchemaNode[] branches,
         bool oneOnly,
+        int schemaId,
         scoped ref ValidationPathBuilder path,
         long now,
         bool failFast,
         ref List<ValidationRuleError>? violations,
         int referenceDepth)
     {
+        var matchingBranch = -1;
         for (var index = 0; index < branches.Length; index++)
         {
             var branchReader = reader;
             if (!MatchesValidationShape(ref branchReader, branches[index], referenceDepth))
                 continue;
+
+            if (oneOnly)
+            {
+                if (matchingBranch >= 0)
+                    ThrowFailure(schemaId, "oneOf", path.ToString(), innerException: null);
+                matchingBranch = index;
+                continue;
+            }
+
+            matchingBranch = index;
+
             branchReader = reader;
             if (!WalkValidationRules(
                     ref branchReader,
                     payload,
                     branches[index],
+                    schemaId,
                     ref path,
                     now,
                     failFast,
                     ref violations,
                     referenceDepth))
                 return false;
-            if (oneOnly)
-                break;
         }
 
-        return true;
+        if (!oneOnly)
+        {
+            if (matchingBranch < 0)
+                ThrowFailure(schemaId, "anyOf", path.ToString(), innerException: null);
+            return true;
+        }
+        if (matchingBranch < 0)
+            ThrowFailure(schemaId, "oneOf", path.ToString(), innerException: null);
+
+        var selectedReader = reader;
+        return WalkValidationRules(
+            ref selectedReader,
+            payload,
+            branches[matchingBranch],
+            schemaId,
+            ref path,
+            now,
+            failFast,
+            ref violations,
+            referenceDepth);
     }
 
     private static bool MatchesValidationShape(
@@ -313,7 +349,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
             ref reader,
             node,
             ref path,
-            SuppressFailureSchemaId,
+            schemaId: null,
             out _,
             referenceDepth);
     }
@@ -322,6 +358,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         ref Utf8JsonReader reader,
         ReadOnlyMemory<byte> payload,
         CompiledSchemaNode node,
+        int schemaId,
         scoped ref ValidationPathBuilder path,
         long now,
         bool failFast,
@@ -348,6 +385,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
                         ref reader,
                         payload,
                         child,
+                        schemaId,
                         ref path,
                         now,
                         failFast,
@@ -368,6 +406,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         ref Utf8JsonReader reader,
         ReadOnlyMemory<byte> payload,
         CompiledSchemaNode node,
+        int schemaId,
         scoped ref ValidationPathBuilder path,
         long now,
         bool failFast,
@@ -386,6 +425,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
                         ref reader,
                         payload,
                         child,
+                        schemaId,
                         ref path,
                         now,
                         failFast,
@@ -417,7 +457,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         ref Utf8JsonReader reader,
         CompiledSchemaNode node,
         scoped ref JsonPathBuilder path,
-        int schemaId,
+        int? schemaId,
         out JsonSchemaValidationException? failure,
         int referenceDepth = 0)
     {
@@ -470,7 +510,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
                         ref branchReader,
                         node.AnyOf[index],
                         ref path,
-                        SuppressFailureSchemaId,
+                        schemaId: null,
                         out _,
                         referenceDepth);
                 path.Truncate(pathMark);
@@ -492,7 +532,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
                         ref branchReader,
                         node.OneOf[index],
                         ref path,
-                        SuppressFailureSchemaId,
+                        schemaId: null,
                         out _,
                         referenceDepth);
                 path.Truncate(pathMark);
@@ -526,7 +566,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         ref Utf8JsonReader reader,
         CompiledSchemaNode node,
         scoped ref JsonPathBuilder path,
-        int schemaId,
+        int? schemaId,
         out JsonSchemaValidationException? failure)
     {
         var requiredWordCount = (node.RequiredCount + 63) >> 6;
@@ -606,7 +646,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         ref Utf8JsonReader reader,
         CompiledSchemaNode node,
         scoped ref JsonPathBuilder path,
-        int schemaId,
+        int? schemaId,
         out JsonSchemaValidationException? failure)
     {
         var index = 0;
@@ -649,7 +689,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         ref Utf8JsonReader reader,
         CompiledSchemaNode node,
         scoped ref JsonPathBuilder path,
-        int schemaId,
+        int? schemaId,
         out JsonSchemaValidationException? failure)
     {
         if (node.MinLength == 0 && node.MaxLength == int.MaxValue)
@@ -672,7 +712,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         ref Utf8JsonReader reader,
         CompiledSchemaNode node,
         scoped ref JsonPathBuilder path,
-        int schemaId,
+        int? schemaId,
         out JsonSchemaValidationException? failure)
     {
         if (!node.HasNumericAssertions)
@@ -774,12 +814,12 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
     }
 
     private static bool Fail(
-        int schemaId,
+        int? schemaId,
         string keyword,
         scoped ref JsonPathBuilder path,
         out JsonSchemaValidationException? failure)
     {
-        if (schemaId == SuppressFailureSchemaId)
+        if (schemaId is null)
         {
             failure = null;
             return false;
@@ -787,10 +827,10 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
 
         var jsonPath = path.ToString();
         failure = new JsonSchemaValidationException(
-            schemaId,
+            schemaId.Value,
             keyword,
             jsonPath,
-            $"JSON Schema validation failed for schema ID {schemaId} at '{jsonPath}' (keyword '{keyword}').");
+            $"JSON Schema validation failed for schema ID {schemaId.Value} at '{jsonPath}' (keyword '{keyword}').");
         return false;
     }
 
@@ -1699,11 +1739,81 @@ internal struct ValidationPathBuilder
 
     internal void AppendProperty(string name)
     {
-        EnsureCapacity(name.Length + 1);
-        _buffer[Length++] = '.';
-        name.AsSpan().CopyTo(_buffer.AsSpan(Length));
-        Length += name.Length;
+        if (IsSimplePropertyName(name))
+        {
+            EnsureCapacity(name.Length + 1);
+            _buffer[Length++] = '.';
+            name.AsSpan().CopyTo(_buffer.AsSpan(Length));
+            Length += name.Length;
+            return;
+        }
+
+        EnsureCapacity((name.Length * 6) + 4);
+        _buffer[Length++] = '[';
+        _buffer[Length++] = '"';
+        for (var index = 0; index < name.Length; index++)
+        {
+            var character = name[index];
+            switch (character)
+            {
+                case '\\' or '"':
+                    _buffer[Length++] = '\\';
+                    _buffer[Length++] = character;
+                    break;
+                case '\b':
+                    AppendEscape('b');
+                    break;
+                case '\f':
+                    AppendEscape('f');
+                    break;
+                case '\n':
+                    AppendEscape('n');
+                    break;
+                case '\r':
+                    AppendEscape('r');
+                    break;
+                case '\t':
+                    AppendEscape('t');
+                    break;
+                case < ' ':
+                    _buffer[Length++] = '\\';
+                    _buffer[Length++] = 'u';
+                    _buffer[Length++] = '0';
+                    _buffer[Length++] = '0';
+                    _buffer[Length++] = ToHex(character >> 4);
+                    _buffer[Length++] = ToHex(character & 0x0f);
+                    break;
+                default:
+                    _buffer[Length++] = character;
+                    break;
+            }
+        }
+        _buffer[Length++] = '"';
+        _buffer[Length++] = ']';
     }
+
+    private void AppendEscape(char character)
+    {
+        _buffer[Length++] = '\\';
+        _buffer[Length++] = character;
+    }
+
+    private static char ToHex(int value) => (char)(value < 10 ? '0' + value : 'a' + value - 10);
+
+    private static bool IsSimplePropertyName(string name)
+    {
+        if (name.Length == 0 || !IsAsciiIdentifierStart(name[0]))
+            return false;
+        for (var index = 1; index < name.Length; index++)
+        {
+            if (!IsAsciiIdentifierStart(name[index]) && name[index] is not (>= '0' and <= '9'))
+                return false;
+        }
+        return true;
+    }
+
+    private static bool IsAsciiIdentifierStart(char value) =>
+        value is '_' or '$' or (>= 'A' and <= 'Z') or (>= 'a' and <= 'z');
 
     internal void AppendMapKey(ref Utf8JsonReader reader)
     {

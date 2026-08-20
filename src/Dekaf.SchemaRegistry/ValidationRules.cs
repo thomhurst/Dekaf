@@ -445,7 +445,8 @@ internal readonly record struct ValidationCelValue(
     bool Boolean,
     decimal Number,
     string? Literal,
-    ReadOnlyMemory<byte> Utf8Literal)
+    ReadOnlyMemory<byte> Utf8Literal,
+    bool NumberNegated = false)
 {
     internal static ValidationCelValue Missing { get; } = new(ValidationCelValueKind.Missing, default, false, 0, null, default);
     internal static ValidationCelValue Null { get; } = new(ValidationCelValueKind.Null, default, false, 0, null, default);
@@ -455,6 +456,18 @@ internal readonly record struct ValidationCelValue(
     internal static ValidationCelValue FromBoolean(bool value) => value ? True : False;
     internal static ValidationCelValue FromNumber(decimal value) =>
         new(ValidationCelValueKind.Number, default, true, value, null, default);
+
+    internal static ValidationCelValue NegateNumber(ValidationCelValue value)
+    {
+        if (value.Kind != ValidationCelValueKind.Number)
+            throw Unsupported("CEL arithmetic operators require numeric operands.");
+        return value with
+        {
+            Number = value.Boolean ? -value.Number : value.Number,
+            NumberNegated = (!value.Json.IsEmpty || !value.Utf8Literal.IsEmpty) &&
+                !value.NumberNegated
+        };
+    }
 
     internal static ValidationCelValue FromNumberLiteral(string text)
     {
@@ -565,7 +578,7 @@ internal readonly ref struct ValidationCelJsonNumber
     private readonly int _firstDigit;
     private readonly int _lastDigit;
 
-    internal ValidationCelJsonNumber(ReadOnlySpan<byte> value)
+    internal ValidationCelJsonNumber(ReadOnlySpan<byte> value, bool negated = false)
     {
         _value = value;
         var mantissaStart = value[0] == (byte)'-' ? 1 : 0;
@@ -626,7 +639,7 @@ internal readonly ref struct ValidationCelJsonNumber
         var fractionalDigits = decimalPoint < 0 ? 0 : mantissaEnd - decimalPoint - 1;
         var trailingZeros = significantLength - digitCount;
 
-        Sign = mantissaStart == 0 ? 1 : -1;
+        Sign = (mantissaStart == 0 ? 1 : -1) * (negated ? -1 : 1);
         DigitCount = digitCount;
         ExponentAdjustment = (long)trailingZeros - fractionalDigits;
         _exponentDigits = exponentDigits;
@@ -928,7 +941,7 @@ internal sealed class ValidationCelUnaryNode(ValidationCelTokenKind operation, V
         return operation switch
         {
             ValidationCelTokenKind.Not => ValidationCelValue.FromBoolean(!RequireBoolean(value)),
-            ValidationCelTokenKind.Minus => ValidationCelValue.FromNumber(-RequireNumber(value)),
+            ValidationCelTokenKind.Minus => ValidationCelValue.NegateNumber(value),
             _ => throw Unsupported("Unsupported unary operator.")
         };
     }
@@ -1010,7 +1023,8 @@ internal sealed class ValidationCelBinaryNode(
         Span<byte> rightBuffer = stackalloc byte[64];
         var leftText = GetNumberText(left, leftBuffer);
         var rightText = GetNumberText(right, rightBuffer);
-        return new ValidationCelJsonNumber(leftText).CompareTo(new ValidationCelJsonNumber(rightText));
+        return new ValidationCelJsonNumber(leftText, left.NumberNegated)
+            .CompareTo(new ValidationCelJsonNumber(rightText, right.NumberNegated));
     }
 
     private static bool HasSourceText(ValidationCelValue value) =>
@@ -1059,11 +1073,12 @@ internal static class ValidationCelJsonEquality
                 : (rentedBuckets = ArrayPool<int>.Shared.Rent(bucketCount));
             buckets = buckets[..bucketCount];
             buckets.Fill(-1);
-            FillObjectBuckets(nodes, buckets);
+            FillObjectBuckets(left, nodes, buckets);
 
             var rightReader = new Utf8JsonReader(right, ValidationCelJsonReader.Options);
+            var equalityEpoch = 0;
             return rightReader.Read() &&
-                   NodesEqual(0, left, nodes, buckets, ref rightReader) &&
+                   NodesEqual(0, left, nodes, buckets, ref rightReader, ref equalityEpoch) &&
                    !rightReader.Read();
         }
         finally
@@ -1175,7 +1190,10 @@ internal static class ValidationCelJsonEquality
         return total;
     }
 
-    private static void FillObjectBuckets(Span<EqualityNode> nodes, Span<int> buckets)
+    private static void FillObjectBuckets(
+        ReadOnlySpan<byte> source,
+        Span<EqualityNode> nodes,
+        Span<int> buckets)
     {
         for (var index = 0; index < nodes.Length; index++)
         {
@@ -1183,30 +1201,44 @@ internal static class ValidationCelJsonEquality
             if (parent.BucketCount == 0)
                 continue;
 
+            parent.ChildCount = 0;
             for (var childIndex = parent.FirstChild;
                  childIndex >= 0;
                  childIndex = nodes[childIndex].NextSibling)
             {
                 var bucket = parent.BucketStart +
                     (int)(nodes[childIndex].NameHash & (uint)(parent.BucketCount - 1));
-                while (buckets[bucket] >= 0)
+                while (true)
                 {
+                    var existingIndex = buckets[bucket];
+                    if (existingIndex < 0)
+                    {
+                        buckets[bucket] = childIndex;
+                        parent.ChildCount++;
+                        break;
+                    }
+                    if (nodes[existingIndex].NameHash == nodes[childIndex].NameHash &&
+                        IndexedNamesEqual(source, nodes[existingIndex], nodes[childIndex]))
+                    {
+                        buckets[bucket] = childIndex;
+                        break;
+                    }
                     bucket = parent.BucketStart +
                         ((bucket - parent.BucketStart + 1) & (parent.BucketCount - 1));
                 }
-                buckets[bucket] = childIndex;
             }
         }
     }
 
     private static bool NodesEqual(
-        int leftIndex,
-        ReadOnlySpan<byte> left,
+        int nodeIndex,
+        ReadOnlySpan<byte> source,
         scoped Span<EqualityNode> nodes,
         scoped ReadOnlySpan<int> buckets,
-        ref Utf8JsonReader rightReader)
+        ref Utf8JsonReader rightReader,
+        ref int equalityEpoch)
     {
-        ref var node = ref nodes[leftIndex];
+        ref var node = ref nodes[nodeIndex];
         if (node.TokenType != rightReader.TokenType)
             return false;
 
@@ -1214,31 +1246,33 @@ internal static class ValidationCelJsonEquality
         {
             JsonTokenType.Null => true,
             JsonTokenType.True or JsonTokenType.False => true,
-            JsonTokenType.Number => NumberEquals(node, left, ref rightReader),
-            JsonTokenType.String => StringEquals(node, left, ref rightReader),
-            JsonTokenType.StartArray => ArrayEquals(node, left, nodes, buckets, ref rightReader),
-            JsonTokenType.StartObject => ObjectEquals(node, left, nodes, buckets, ref rightReader),
+            JsonTokenType.Number => NumberEquals(node, source, ref rightReader),
+            JsonTokenType.String => StringEquals(node, source, ref rightReader),
+            JsonTokenType.StartArray => ArrayEquals(
+                node, source, nodes, buckets, ref rightReader, ref equalityEpoch),
+            JsonTokenType.StartObject => ObjectEquals(
+                node, source, nodes, buckets, ref rightReader, ref equalityEpoch),
             _ => false
         };
     }
 
     private static bool NumberEquals(
         EqualityNode node,
-        ReadOnlySpan<byte> left,
-        ref Utf8JsonReader right)
+        ReadOnlySpan<byte> source,
+        ref Utf8JsonReader rightReader)
     {
-        var leftReader = ReadNode(node, left);
+        var leftReader = ReadNode(node, source);
         return new ValidationCelJsonNumber(leftReader.ValueSpan)
-            .CompareTo(new ValidationCelJsonNumber(right.ValueSpan)) == 0;
+            .CompareTo(new ValidationCelJsonNumber(rightReader.ValueSpan)) == 0;
     }
 
     private static bool StringEquals(
         EqualityNode node,
-        ReadOnlySpan<byte> left,
-        ref Utf8JsonReader right)
+        ReadOnlySpan<byte> source,
+        ref Utf8JsonReader rightReader)
     {
-        var leftReader = ReadNode(node, left);
-        return StringsEqual(ref leftReader, ref right);
+        var leftReader = ReadNode(node, source);
+        return StringsEqual(ref leftReader, ref rightReader);
     }
 
     private static Utf8JsonReader ReadNode(EqualityNode node, ReadOnlySpan<byte> source)
@@ -1274,17 +1308,19 @@ internal static class ValidationCelJsonEquality
 
     private static bool ArrayEquals(
         EqualityNode node,
-        ReadOnlySpan<byte> left,
+        ReadOnlySpan<byte> source,
         scoped Span<EqualityNode> nodes,
         scoped ReadOnlySpan<int> buckets,
-        ref Utf8JsonReader rightReader)
+        ref Utf8JsonReader rightReader,
+        ref int equalityEpoch)
     {
         var childIndex = node.FirstChild;
         while (rightReader.Read())
         {
             if (rightReader.TokenType == JsonTokenType.EndArray)
                 return childIndex < 0;
-            if (childIndex < 0 || !NodesEqual(childIndex, left, nodes, buckets, ref rightReader))
+            if (childIndex < 0 ||
+                !NodesEqual(childIndex, source, nodes, buckets, ref rightReader, ref equalityEpoch))
                 return false;
             childIndex = nodes[childIndex].NextSibling;
         }
@@ -1293,12 +1329,14 @@ internal static class ValidationCelJsonEquality
 
     private static bool ObjectEquals(
         EqualityNode node,
-        ReadOnlySpan<byte> left,
+        ReadOnlySpan<byte> source,
         scoped Span<EqualityNode> nodes,
         scoped ReadOnlySpan<int> buckets,
-        ref Utf8JsonReader rightReader)
+        ref Utf8JsonReader rightReader,
+        ref int equalityEpoch)
     {
         var matched = 0;
+        var objectEpoch = ++equalityEpoch;
         while (rightReader.Read())
         {
             if (rightReader.TokenType == JsonTokenType.EndObject)
@@ -1314,14 +1352,35 @@ internal static class ValidationCelJsonEquality
                 if (childIndex < 0)
                     return false;
                 ref var child = ref nodes[childIndex];
-                if (child.NameHash == hash && NameEquals(left, child, ref rightReader))
+                if (child.NameHash == hash && NameEquals(source, child, ref rightReader))
                 {
-                    if (child.Matched || !rightReader.Read())
+                    if (!rightReader.Read())
                         return false;
-                    child.Matched = true;
-                    if (!NodesEqual(childIndex, left, nodes, buckets, ref rightReader))
-                        return false;
-                    matched++;
+
+                    var valueReader = rightReader;
+                    var equal = NodesEqual(
+                        childIndex,
+                        source,
+                        nodes,
+                        buckets,
+                        ref valueReader,
+                        ref equalityEpoch);
+                    if (equal)
+                        rightReader = valueReader;
+                    else if (rightReader.TokenType is JsonTokenType.StartArray or JsonTokenType.StartObject)
+                        rightReader.Skip();
+
+                    if (child.SeenEpoch != objectEpoch)
+                    {
+                        child.SeenEpoch = objectEpoch;
+                        if (equal)
+                            matched++;
+                    }
+                    else if (child.Matched != equal)
+                    {
+                        matched += equal ? 1 : -1;
+                    }
+                    child.Matched = equal;
                     break;
                 }
                 bucket = node.BucketStart +
@@ -1331,16 +1390,40 @@ internal static class ValidationCelJsonEquality
         return false;
     }
 
-    private static bool NameEquals(ReadOnlySpan<byte> source, EqualityNode node, ref Utf8JsonReader right)
+    private static bool NameEquals(
+        ReadOnlySpan<byte> source,
+        EqualityNode node,
+        ref Utf8JsonReader rightReader)
     {
-        var name = source.Slice(node.NameStart, node.NameLength);
         if (!node.NameEscaped)
-            return right.ValueTextEquals(name);
+            return rightReader.ValueTextEquals(source.Slice(node.NameStart, node.NameLength));
+        var leftReader = ReadName(node, source);
+        return StringsEqual(ref leftReader, ref rightReader);
+    }
+
+    private static bool IndexedNamesEqual(
+        ReadOnlySpan<byte> source,
+        EqualityNode left,
+        EqualityNode right)
+    {
+        if (!left.NameEscaped && !right.NameEscaped)
+        {
+            return source.Slice(left.NameStart, left.NameLength)
+                .SequenceEqual(source.Slice(right.NameStart, right.NameLength));
+        }
+
+        var leftReader = ReadName(left, source);
+        var rightReader = ReadName(right, source);
+        return StringsEqual(ref leftReader, ref rightReader);
+    }
+
+    private static Utf8JsonReader ReadName(EqualityNode node, ReadOnlySpan<byte> source)
+    {
         var reader = new Utf8JsonReader(
             source.Slice(node.NameStart - 1, node.NameLength + 2),
             ValidationCelJsonReader.Options);
         _ = reader.Read();
-        return StringsEqual(ref reader, ref right);
+        return reader;
     }
 
     private static uint HashName(ref Utf8JsonReader reader)
@@ -1396,6 +1479,7 @@ internal static class ValidationCelJsonEquality
         internal int NameStart;
         internal int NameLength;
         internal bool NameEscaped;
+        internal int SeenEpoch;
         internal bool Matched;
     }
 }
