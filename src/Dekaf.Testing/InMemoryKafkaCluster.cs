@@ -24,6 +24,7 @@ public sealed class InMemoryKafkaCluster
     private readonly Dictionary<PreparedTransactionState, object> _preparedTransactions = [];
     private readonly InMemoryKafkaClusterOptions _options;
     private TaskCompletionSource _recordsChanged = NewRecordsChangedSource();
+    private long _nextProducerId;
     private TimeSpan _produceLatency;
 
     public InMemoryKafkaCluster()
@@ -206,14 +207,22 @@ public sealed class InMemoryKafkaCluster
         {
             var state = GetTopicForRead(topic);
             var partitionState = GetPartitionForRead(state, partition);
-            return partitionState.Records
-                .Where(IsRecordVisibleUnderLock)
-                .Select(CloneRecord)
-                .ToArray();
+            var visible = new List<InMemoryRecord>(partitionState.Records.Count);
+            foreach (var record in partitionState.Records)
+            {
+                if (IsOngoingTransaction(record))
+                    break;
+                if (IsRecordVisibleUnderLock(record))
+                    visible.Add(CloneRecord(record));
+            }
+
+            return visible;
         }
     }
 
     internal static InMemoryTransactionMarker CreateTransactionMarker() => new();
+
+    internal long AllocateProducerId() => Interlocked.Increment(ref _nextProducerId);
 
     internal void RegisterPreparedTransaction(PreparedTransactionState state, object transaction)
     {
@@ -297,11 +306,12 @@ public sealed class InMemoryKafkaCluster
         if (failure is not null)
             throw failure;
 
+        TopicState selectedTopic;
         int selectedPartition;
         lock (_gate)
         {
-            var state = GetOrAutoCreateTopic(topic);
-            selectedPartition = SelectPartition(state, partition, key, isKeyNull);
+            selectedTopic = GetOrAutoCreateTopic(topic);
+            selectedPartition = SelectPartition(selectedTopic, partition, key, isKeyNull);
         }
 
         await FaultPlan.ApplyAsync(
@@ -312,7 +322,19 @@ public sealed class InMemoryKafkaCluster
         RecordMetadata metadata;
         lock (_gate)
         {
-            var state = GetOrAutoCreateTopic(topic);
+            if (!_topics.TryGetValue(topic, out var state) ||
+                !ReferenceEquals(state, selectedTopic) ||
+                (uint)selectedPartition >= (uint)state.Partitions.Count)
+            {
+                throw new ProduceException(
+                    ErrorCode.UnknownTopicOrPartition,
+                    $"Topic '{topic}' changed while the produce operation was paused.")
+                {
+                    Topic = topic,
+                    Partition = selectedPartition
+                };
+            }
+
             var partitionState = state.Partitions[selectedPartition];
             var offset = partitionState.HighWatermark;
             var timestampMs = timestamp.ToUnixTimeMilliseconds();
@@ -706,7 +728,7 @@ public sealed class InMemoryKafkaCluster
                 record = candidate;
                 return true;
             }
-            if (candidate.Transaction?.State == InMemoryTransactionState.Ongoing)
+            if (IsOngoingTransaction(candidate))
                 break;
         }
 
@@ -714,9 +736,12 @@ public sealed class InMemoryKafkaCluster
         return false;
     }
 
-    private bool IsRecordVisibleUnderLock(InMemoryRecord record) =>
+    private static bool IsRecordVisibleUnderLock(InMemoryRecord record) =>
         record.Transaction is not { } transaction ||
         transaction.State == InMemoryTransactionState.Committed;
+
+    private static bool IsOngoingTransaction(InMemoryRecord record) =>
+        record.Transaction?.State == InMemoryTransactionState.Ongoing;
 
     private void ValidateConsumerGroupMetadataUnderLock(
         string groupId,
@@ -727,7 +752,6 @@ public sealed class InMemoryKafkaCluster
 
         var generation = _consumerGroupGenerations.GetValueOrDefault(groupId);
         if (generation != metadata.GenerationId ||
-            metadata.GroupInstanceId is not null ||
             !_consumerGroupMembers.TryGetValue(groupId, out var members) ||
             !members.ContainsKey(metadata.MemberId))
         {

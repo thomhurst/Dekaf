@@ -1,8 +1,10 @@
+using System.Buffers;
 using System.Text;
 using Dekaf.Consumer;
 using Dekaf.Errors;
 using Dekaf.Producer;
 using Dekaf.Protocol;
+using Dekaf.Serialization;
 using Dekaf.Testing;
 
 namespace Dekaf.Tests.Unit.Testing;
@@ -59,6 +61,36 @@ public sealed class InMemoryProducerFaultTests
 
         await Assert.That(actual).IsSameReferenceAs(failure);
         await Assert.That(recovered.Partition).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task Produce_TopicDeletedDuringPartitionFaultPauseFailsAsUnknownPartition()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("orders", partitionCount: 2);
+        var producer = new InMemoryProducer<string, string>(cluster);
+        var barrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.Produce, "orders", partition: 1));
+        var message = new ProducerMessage<string, string>
+        {
+            Topic = "orders",
+            Partition = 1,
+            Key = "k",
+            Value = "v"
+        };
+
+        var pending = producer.ProduceAsync(message).AsTask();
+        await barrier.WaitUntilEnteredAsync();
+        await Assert.That(cluster.DeleteTopic("orders")).IsTrue();
+        await Assert.That(barrier.Release()).IsTrue();
+
+        var failure = await Assert.ThrowsAsync<ProduceException>(() => pending);
+        await Assert.That(failure!.ErrorCode).IsEqualTo(ErrorCode.UnknownTopicOrPartition);
+        await Assert.That(failure.Topic).IsEqualTo("orders");
+        await Assert.That(failure.Partition).IsEqualTo(1);
+
+        var recovered = await producer.ProduceAsync("orders", "k", "recovered");
+        await Assert.That(recovered.Offset).IsEqualTo(0);
     }
 
     [Test]
@@ -243,7 +275,7 @@ public sealed class InMemoryProducerFaultTests
         await Assert.That(visible.Select(static record => record.Offset))
             .IsEquivalentTo([0L, 2L]);
 
-        var consumer = new InMemoryConsumer<string, string>(
+        await using var consumer = new InMemoryConsumer<string, string>(
             cluster,
             new InMemoryConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest });
         consumer.Subscribe("orders");
@@ -252,6 +284,26 @@ public sealed class InMemoryProducerFaultTests
 
         await Assert.That(first!.Value.Offset).IsEqualTo(0);
         await Assert.That(second!.Value.Offset).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task ReadRecords_StopsAtOngoingTransactionBoundary()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        _ = await producer.ProduceAsync("orders", "k", "before");
+        await using var transaction = producer.BeginTransaction();
+        _ = await transaction.ProduceAsync("orders", "k", "pending");
+        var otherProducer = new InMemoryProducer<string, string>(cluster);
+        _ = await otherProducer.ProduceAsync("orders", "k", "after");
+
+        var blocked = cluster.ReadRecords("orders");
+        await Assert.That(blocked.Select(static record => record.Offset)).IsEquivalentTo([0L]);
+
+        await transaction.CommitAsync();
+        var committed = cluster.ReadRecords("orders");
+        await Assert.That(committed.Select(static record => record.Offset))
+            .IsEquivalentTo([0L, 1L, 2L]);
     }
 
     [Test]
@@ -275,7 +327,7 @@ public sealed class InMemoryProducerFaultTests
     {
         var cluster = new InMemoryKafkaCluster();
         cluster.CreateTopic("orders");
-        var consumer = new InMemoryConsumer<string, string>(
+        await using var consumer = new InMemoryConsumer<string, string>(
             cluster,
             new InMemoryConsumerOptions { GroupId = "billing" });
         consumer.Subscribe("orders");
@@ -286,7 +338,7 @@ public sealed class InMemoryProducerFaultTests
             [new TopicPartitionOffset("orders", 0, 17)],
             metadata);
 
-        var replacement = new InMemoryConsumer<string, string>(
+        await using var replacement = new InMemoryConsumer<string, string>(
             cluster,
             new InMemoryConsumerOptions { GroupId = "billing" });
         replacement.Subscribe("orders");
@@ -297,6 +349,35 @@ public sealed class InMemoryProducerFaultTests
         await Assert.That(failure!.ErrorCode).IsEqualTo(ErrorCode.IllegalGeneration);
         await Assert.That(cluster.GetCommittedOffset("billing", new TopicPartition("orders", 0))).IsNull();
         await transaction.AbortAsync();
+    }
+
+    [Test]
+    public async Task TransactionCommit_AcceptsCurrentStaticConsumerGroupMetadata()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("orders");
+        await using var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions { GroupId = "billing" });
+        consumer.Subscribe("orders");
+        var current = consumer.ConsumerGroupMetadata!;
+        var staticMetadata = new ConsumerGroupMetadata
+        {
+            GroupId = current.GroupId,
+            GenerationId = current.GenerationId,
+            MemberId = current.MemberId,
+            GroupInstanceId = "billing-worker-1"
+        };
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await using var transaction = producer.BeginTransaction();
+        await transaction.SendOffsetsToTransactionAsync(
+            [new TopicPartitionOffset("orders", 0, 17)],
+            staticMetadata);
+
+        await transaction.CommitAsync();
+
+        await Assert.That(cluster.GetCommittedOffset("billing", new TopicPartition("orders", 0)))
+            .IsEqualTo(17);
     }
 
     [Test]
@@ -352,6 +433,72 @@ public sealed class InMemoryProducerFaultTests
     }
 
     [Test]
+    public async Task PreparedTransaction_StatesAreUniqueAcrossProducerGenericTypes()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var firstProducer = new InMemoryProducer<ProducerKeyA, string>(
+            cluster,
+            ProducerKeySerializer<ProducerKeyA>.Instance,
+            Serializers.String);
+        var secondProducer = new InMemoryProducer<ProducerKeyB, string>(
+            cluster,
+            ProducerKeySerializer<ProducerKeyB>.Instance,
+            Serializers.String);
+        var firstTransaction = firstProducer.BeginTransaction();
+        var secondTransaction = secondProducer.BeginTransaction();
+        _ = await firstTransaction.ProduceAsync("strings", new ProducerKeyA(), "value");
+        _ = await secondTransaction.ProduceAsync("ints", new ProducerKeyB(), "value");
+        var firstState = await firstTransaction.PrepareAsync();
+        var secondState = await secondTransaction.PrepareAsync();
+        await firstProducer.DisposeAsync();
+        await secondProducer.DisposeAsync();
+
+        await Assert.That(firstState).IsNotEqualTo(secondState);
+
+        var firstReplacement = new InMemoryProducer<ProducerKeyA, string>(
+            cluster,
+            ProducerKeySerializer<ProducerKeyA>.Instance,
+            Serializers.String);
+        await firstReplacement.InitTransactionsAsync(keepPreparedTransaction: true);
+        await firstReplacement.CompletePreparedTransactionAsync(firstState, committed: true);
+        var secondReplacement = new InMemoryProducer<ProducerKeyB, string>(
+            cluster,
+            ProducerKeySerializer<ProducerKeyB>.Instance,
+            Serializers.String);
+        await secondReplacement.InitTransactionsAsync(keepPreparedTransaction: true);
+        await secondReplacement.CompletePreparedTransactionAsync(secondState, committed: true);
+
+        await Assert.That(cluster.ReadRecords("strings")).Count().IsEqualTo(1);
+        await Assert.That(cluster.ReadRecords("ints")).Count().IsEqualTo(1);
+        await firstTransaction.DisposeAsync();
+        await secondTransaction.DisposeAsync();
+    }
+
+    [Test]
+    public async Task PreparedTransaction_RecoveryUsesReplacementProducerFatalState()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var original = new InMemoryProducer<string, string>(cluster);
+        var transaction = original.BeginTransaction();
+        _ = await transaction.ProduceAsync("orders", "k", "v");
+        var prepared = await transaction.PrepareAsync();
+        var fenced = new FatalTransactionException(ErrorCode.ProducerFenced, "original fenced");
+        cluster.FaultPlan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.CommitTransaction),
+            fenced);
+        _ = await Assert.ThrowsAsync<FatalTransactionException>(() =>
+            original.CompletePreparedTransactionAsync(prepared, committed: true).AsTask());
+        await original.DisposeAsync();
+
+        var replacement = new InMemoryProducer<string, string>(cluster);
+        await replacement.InitTransactionsAsync(keepPreparedTransaction: true);
+        await replacement.CompletePreparedTransactionAsync(prepared, committed: true);
+
+        await Assert.That(cluster.ReadRecords("orders")).Count().IsEqualTo(1);
+        await transaction.DisposeAsync();
+    }
+
+    [Test]
     public async Task ProducerFencing_CapturesOneFatalInstanceAndPoisonsOnlyProducer()
     {
         var cluster = new InMemoryKafkaCluster();
@@ -392,4 +539,26 @@ public sealed class InMemoryProducerFaultTests
             Key = "k",
             Value = "v"
         }).AsTask();
+
+    private readonly struct ProducerKeyA;
+
+    private readonly struct ProducerKeyB;
+
+    private sealed class ProducerKeySerializer<T> : ISerializer<T>
+    {
+        public static readonly ProducerKeySerializer<T> Instance = new();
+
+        public void Serialize<TWriter>(
+            T value,
+            ref TWriter destination,
+            SerializationContext context)
+            where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
+        {
+            destination.GetSpan(1)[0] = 1;
+            destination.Advance(1);
+        }
+    }
 }

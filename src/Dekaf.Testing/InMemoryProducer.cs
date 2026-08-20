@@ -12,7 +12,6 @@ namespace Dekaf.Testing;
 /// </summary>
 public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 {
-    private static long s_nextProducerId;
     private readonly InMemoryKafkaCluster _cluster;
     private readonly ISerializer<TKey> _keySerializer;
     private readonly ISerializer<TValue> _valueSerializer;
@@ -23,7 +22,7 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
     private readonly IAsyncSerializer<TValue>? _asyncValueSerializer;
     private readonly bool _hasAsyncSerializers;
     private readonly object _transactionGate = new();
-    private readonly long _producerId = Interlocked.Increment(ref s_nextProducerId);
+    private readonly long _producerId;
     private InMemoryTransaction? _activeTransaction;
     private FatalTransactionException? _fatalTransactionException;
     private bool _preparedRecoveryEnabled;
@@ -106,6 +105,7 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
         IAsyncSerializer<TValue>? asyncValueSerializer)
     {
         _cluster = cluster ?? throw new ArgumentNullException(nameof(cluster));
+        _producerId = _cluster.AllocateProducerId();
         _asyncKeySerializer = asyncKeySerializer;
         _asyncValueSerializer = asyncValueSerializer;
         _keySerializer = asyncKeySerializer is null
@@ -727,7 +727,7 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
             }
             catch (Exception)
             {
-                // Best-effort cleanup mirrors the production transaction adapter.
+                // Fault plans accept arbitrary exceptions; disposal must release the slot for all of them.
                 Complete(committed: false);
             }
         }
@@ -737,7 +737,9 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
             bool committed,
             CancellationToken cancellationToken)
         {
-            ThrowIfCompleted("Cannot complete prepared transaction", allowDisposedProducer: true);
+            recoveringProducer.ThrowIfFatalTransactionError();
+            if (_completed)
+                throw new InvalidOperationException("Cannot complete prepared transaction: transaction is already completed.");
             if (!_prepared)
                 throw new InvalidOperationException("Transaction is not prepared.");
 
@@ -758,10 +760,9 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
                 throw new InvalidOperationException("Transaction is prepared; only commit or abort is permitted.");
         }
 
-        private void ThrowIfCompleted(string operation, bool allowDisposedProducer = false)
+        private void ThrowIfCompleted(string operation)
         {
-            if (!allowDisposedProducer)
-                _producer.ThrowIfDisposed();
+            _producer.ThrowIfDisposed();
             _producer.ThrowIfFatalTransactionError();
             if (_completed)
                 throw new InvalidOperationException($"{operation}: transaction is already completed.");
@@ -782,14 +783,20 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
             _producer._cluster.CompleteTransaction(
                 TransactionMarker,
                 committed,
-                _pendingOffsets.Select(static item =>
-                    (item.Key, item.Value.Metadata, (IReadOnlyList<TopicPartitionOffset>)item.Value.Offsets)),
+                _pendingOffsets.Select(static item => CreatePendingOffsets(item)),
                 PreparedState,
                 this);
             _pendingOffsets.Clear();
             _completed = true;
             _producer.CompleteTransaction(this);
         }
+
+        private static (
+            string GroupId,
+            ConsumerGroupMetadata? Metadata,
+            IReadOnlyList<TopicPartitionOffset> Offsets) CreatePendingOffsets(
+                KeyValuePair<string, PendingGroupOffsets> item) =>
+            (item.Key, item.Value.Metadata, item.Value.Offsets);
 
         private sealed class PendingGroupOffsets
         {
