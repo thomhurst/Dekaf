@@ -539,6 +539,9 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                     await WaitForAutoCommitAdvancementAsync(
                         partition,
                         cancellationToken).ConfigureAwait(false);
+                    applyRecordFaults = HasPotentialConsumerFault(
+                        consumerStateVersion,
+                        consumerGroupGeneration);
                     continue;
                 }
 
@@ -636,7 +639,11 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
                 yield return result;
                 // The caller can add fault rules while enumeration is suspended at the yield.
-                applyRecordFaults = HasPotentialConsumerFault();
+                // Reuse the fault-cache state reads to validate the snapshot before a commit
+                // fault can be consumed on the next iteration.
+                applyRecordFaults = HasPotentialConsumerFault(
+                    consumerStateVersion,
+                    consumerGroupGeneration);
             }
         }
         finally
@@ -794,7 +801,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         if (faultPlan is KafkaFaultPlan indexedPlan &&
             offsetList is null &&
             indexedPlan.HasPotentialMatch(KafkaFaultOperation.Commit, groupId) &&
-            indexedPlan.TryApplyUnconditionalCommitFault(
+            indexedPlan.TryApplyLeadingUnconditionalCommitFault(
                 groupId,
                 out var unconditionalApplication,
                 cancellationToken))
@@ -2228,7 +2235,12 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         return faultPlan.TryGetFirstMatchingFaultScope(candidateScopes, out faultScope);
     }
 
-    private bool HasPotentialConsumerFault()
+    private bool HasPotentialConsumerFault() =>
+        HasPotentialConsumerFault(expectedConsumerStateVersion: -1, expectedConsumerGroupGeneration: -1);
+
+    private bool HasPotentialConsumerFault(
+        int expectedConsumerStateVersion,
+        int expectedConsumerGroupGeneration)
     {
         var faultPlan = _cluster.FaultPlan;
         var indexedPlan = faultPlan as KafkaFaultPlan;
@@ -2244,6 +2256,16 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         var consumerGroupGeneration = _groupId is null
             ? -1
             : _cluster.GetConsumerGroupGeneration(_groupId);
+        if (expectedConsumerStateVersion >= 0)
+        {
+            ThrowIfDisposed();
+            if (consumerStateVersion != expectedConsumerStateVersion ||
+                consumerGroupGeneration != expectedConsumerGroupGeneration)
+            {
+                ThrowSnapshotStateChanged();
+            }
+        }
+
         if (Volatile.Read(ref _potentialFaultPlanVersion) == planVersion &&
             Volatile.Read(ref _potentialFaultConsumerStateVersion) == consumerStateVersion &&
             Volatile.Read(ref _potentialFaultConsumerGroupGeneration) == consumerGroupGeneration &&

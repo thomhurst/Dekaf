@@ -847,6 +847,69 @@ public sealed class InMemoryConsumerFaultTests
     }
 
     [Test]
+    public async Task Snapshot_GroupChangeAfterYieldPreservesCommitFault()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync(Topic, "key-0", "value-0");
+        await producer.ProduceAsync(Topic, "key-1", "value-1");
+        await using var consumer = CreateConsumer(
+            cluster,
+            enableAutoOffsetStore: true,
+            offsetCommitMode: OffsetCommitMode.Auto);
+        consumer.Subscribe(Topic);
+        await using var snapshot = consumer.ConsumeSnapshotAsync().GetAsyncEnumerator();
+
+        await Assert.That(await snapshot.MoveNextAsync()).IsTrue();
+        var failure = new InvalidOperationException("commit failed");
+        var faultScope = new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId);
+        cluster.FaultPlan.Fail(faultScope, failure);
+        await using var joiningConsumer = CreateConsumer(cluster);
+        joiningConsumer.Subscribe(Topic);
+
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            snapshot.MoveNextAsync().AsTask());
+
+        await Assert.That(actual).IsNotSameReferenceAs(failure);
+        await Assert.That(actual!.Message).Contains("snapshot enumeration");
+        await Assert.That(cluster.FaultPlan.Count).IsEqualTo(1);
+        await Assert.That(cluster.FaultPlan.Clear(faultScope)).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task Snapshot_FaultAddedDuringAdvancementWaitAppliesToNextRecord()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync(Topic, "key-0", "value-0");
+        await producer.ProduceAsync(Topic, "key-1", "value-1");
+        var deserializer = new FirstCallBlockingAsyncDeserializer();
+        await using var consumer = CreateAsyncConsumer(cluster, deserializer);
+        consumer.Subscribe(Topic);
+        await using var snapshot = consumer.ConsumeSnapshotAsync().GetAsyncEnumerator();
+        var snapshotMove = snapshot.MoveNextAsync().AsTask();
+        await deserializer.WaitUntilEnteredAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        var commitBarrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId));
+        var concurrentConsume = consumer.ConsumeOneAsync(Timeout.InfiniteTimeSpan).AsTask();
+        await commitBarrier.WaitUntilEnteredAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+        var waitEntered = consumer.WaitUntilAutoCommitAdvancementWaiterEnteredAsync();
+        deserializer.Release();
+        await waitEntered.WaitAsync(TimeSpan.FromSeconds(5));
+        var failure = new InvalidOperationException("consume failed");
+        cluster.FaultPlan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.Consume, Topic, 0, GroupId),
+            failure);
+        await Assert.That(commitBarrier.Release()).IsTrue();
+
+        await Assert.That(await concurrentConsume.WaitAsync(TimeSpan.FromSeconds(5))).IsNotNull();
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() => snapshotMove);
+
+        await Assert.That(actual).IsSameReferenceAs(failure);
+        await Assert.That(cluster.FaultPlan.Count).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task Snapshot_FaultAddedAfterFirstRecordAppliesToNextRecord()
     {
         var cluster = new InMemoryKafkaCluster();
@@ -1136,6 +1199,32 @@ public sealed class InMemoryConsumerFaultTests
     }
 
     [Test]
+    public async Task CommitAsync_LazyOffsetsPreserveResourceRuleOrder()
+    {
+        var (cluster, consumer) = await CreateConsumerWithRecordAsync();
+        var resourceFailure = new InvalidOperationException("resource failed");
+        var groupFailure = new InvalidOperationException("group failed");
+        cluster.FaultPlan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, Topic, 0, GroupId),
+            resourceFailure);
+        cluster.FaultPlan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId),
+            groupFailure);
+
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            consumer.CommitAsync(YieldOffset(new TopicPartitionOffset(Topic, 0, 1))).AsTask());
+
+        await Assert.That(actual).IsSameReferenceAs(resourceFailure);
+        await Assert.That(cluster.FaultPlan.Count).IsEqualTo(1);
+
+        actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            consumer.CommitAsync(ThrowOnEnumeration()).AsTask());
+
+        await Assert.That(actual).IsSameReferenceAs(groupFailure);
+        await Assert.That(cluster.FaultPlan.Count).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task CommitAsync_ReadOnlyListUsesIndexedCommitPath()
     {
         var (_, consumer) = await CreateConsumerWithRecordAsync();
@@ -1322,6 +1411,11 @@ public sealed class InMemoryConsumerFaultTests
 #pragma warning restore CS0162
     }
 
+    private static IEnumerable<TopicPartitionOffset> YieldOffset(TopicPartitionOffset offset)
+    {
+        yield return offset;
+    }
+
     private sealed class IndexOnlyOffsets(TopicPartitionOffset offset) : IReadOnlyList<TopicPartitionOffset>
     {
         public int Count => 1;
@@ -1410,6 +1504,33 @@ public sealed class InMemoryConsumerFaultTests
         {
             _entered.TrySetResult();
             await _release.Task.WaitAsync(cancellationToken);
+            return Encoding.UTF8.GetString(data.Span);
+        }
+
+        public Task WaitUntilEnteredAsync() => _entered.Task;
+
+        public void Release() => _release.TrySetResult();
+    }
+
+    private sealed class FirstCallBlockingAsyncDeserializer : IAsyncDeserializer<string>
+    {
+        private readonly TaskCompletionSource _entered = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _release = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _blockNext = 1;
+
+        public async ValueTask<string> DeserializeAsync(
+            ReadOnlyMemory<byte> data,
+            SerializationContext context,
+            CancellationToken cancellationToken = default)
+        {
+            if (Interlocked.Exchange(ref _blockNext, 0) != 0)
+            {
+                _entered.TrySetResult();
+                await _release.Task.WaitAsync(cancellationToken);
+            }
+
             return Encoding.UTF8.GetString(data.Span);
         }
 

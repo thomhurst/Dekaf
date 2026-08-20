@@ -132,6 +132,23 @@ public sealed class KafkaFaultPlanTests
     }
 
     [Test]
+    [Arguments(KafkaFaultOperation.JoinGroup)]
+    [Arguments(KafkaFaultOperation.SyncGroup)]
+    [Arguments(KafkaFaultOperation.Rebalance)]
+    public async Task HasPotentialFault_EmptyResourcesMatchesResourceFreeRule(
+        KafkaFaultOperation operation)
+    {
+        var plan = new KafkaFaultPlan();
+        var resources = new HashSet<TopicPartition>();
+        plan.FailPersistently(
+            new KafkaFaultScope(operation, groupId: "billing"),
+            new InvalidOperationException("group transition"));
+
+        await Assert.That(plan.HasPotentialFault(operation, "billing", resources)).IsTrue();
+        await Assert.That(plan.HasPotentialFault(operation, "other", resources)).IsFalse();
+    }
+
+    [Test]
     public async Task ScopeIndex_RemovesConsumedAndClearedRules()
     {
         var plan = new KafkaFaultPlan();

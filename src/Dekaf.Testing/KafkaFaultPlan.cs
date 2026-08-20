@@ -659,6 +659,50 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
         return true;
     }
 
+    internal bool TryApplyLeadingUnconditionalCommitFault(
+        string groupId,
+        out ValueTask application,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        FaultEntry? entry = null;
+        KafkaFaultObservation observation = default;
+        Action<KafkaFaultObservation>? observer = null;
+        var operationScope = new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: groupId);
+        lock (_gate)
+        {
+            for (var entryIndex = 0; entryIndex < _entries.Count; entryIndex++)
+            {
+                var scope = _entries[entryIndex].Scope;
+                if (scope.Operation != KafkaFaultOperation.Commit ||
+                    scope.GroupId is not null && scope.GroupId != groupId)
+                {
+                    continue;
+                }
+
+                if (scope.Topic is not null || scope.Partition is not null)
+                    break;
+
+                ConsumeEntryUnderLock(
+                    entryIndex,
+                    operationScope,
+                    out entry,
+                    out observation,
+                    out observer);
+                break;
+            }
+        }
+
+        if (entry is null)
+        {
+            application = ValueTask.CompletedTask;
+            return false;
+        }
+
+        application = ApplyConsumedEntry(entry, observation, observer, cancellationToken);
+        return true;
+    }
+
     internal bool TryApplyFirstMatchingCommitFault(
         string groupId,
         IReadOnlyList<TopicPartitionOffset> offsets,
@@ -874,7 +918,7 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
             string? groupId,
             IReadOnlySet<TopicPartition> assignment)
         {
-            if (assignment.Count == 0 || !HasPotentialMatch(operation, groupId))
+            if (!HasPotentialMatch(operation, groupId))
                 return false;
 
             foreach (var scope in _scopes)
@@ -942,11 +986,16 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
             return false;
         }
 
-        private static bool Matches(ScopeKey ruleScope, KafkaFaultScope candidate) =>
-            ruleScope.Operation == candidate.Operation &&
-            (ruleScope.GroupId is null || ruleScope.GroupId == candidate.GroupId) &&
-            (ruleScope.Topic is null || ruleScope.Topic == candidate.Topic) &&
-            (ruleScope.Partition is null || ruleScope.Partition == candidate.Partition);
+        private static bool Matches(ScopeKey ruleScope, KafkaFaultScope candidate)
+        {
+            if (ruleScope.Operation != candidate.Operation)
+                return false;
+            if (ruleScope.GroupId is not null && ruleScope.GroupId != candidate.GroupId)
+                return false;
+            if (ruleScope.Topic is not null && ruleScope.Topic != candidate.Topic)
+                return false;
+            return ruleScope.Partition is null || ruleScope.Partition == candidate.Partition;
+        }
 
         internal bool TryGetFirstMatchingCommitScope(
             string groupId,
