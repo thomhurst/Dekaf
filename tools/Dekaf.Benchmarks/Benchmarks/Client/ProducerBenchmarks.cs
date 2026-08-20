@@ -53,7 +53,7 @@ public class ProducerBenchmarks
         _dekafProducer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(_kafka.BootstrapServers)
             .WithClientId("dekaf-benchmark")
-            .WithAcks(DekafProducer.Acks.Leader)
+            .WithAcks(DekafProducer.Acks.All)
             .WithLinger(TimeSpan.FromMilliseconds(5))
             .WithBatchSize(16384)
             .BuildAsync()

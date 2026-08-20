@@ -68,7 +68,7 @@ public class ProducerSingleBenchmarks
         _dekafProducer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(_kafka.BootstrapServers)
             .WithClientId($"dekaf-single-linger-{lingerMs}")
-            .WithAcks(DekafProducer.Acks.Leader)
+            .WithAcks(DekafProducer.Acks.All)
             .WithLinger(TimeSpan.FromMilliseconds(lingerMs))
             .WithBatchSize(16384)
             .BuildAsync()

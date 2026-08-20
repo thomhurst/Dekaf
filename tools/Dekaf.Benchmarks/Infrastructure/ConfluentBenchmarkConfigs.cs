@@ -21,7 +21,8 @@ public static class ConfluentBenchmarkConfigs
         {
             BootstrapServers = bootstrapServers,
             ClientId = clientId,
-            Acks = Confluent.Kafka.Acks.Leader,
+            Acks = Confluent.Kafka.Acks.All,
+            EnableIdempotence = true,
             LingerMs = lingerMs,
             BatchSize = 16384,
             EnableDeliveryReports = enableDeliveryReports
