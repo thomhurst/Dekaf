@@ -14,6 +14,15 @@ public sealed class SchemaIdentityFramingTests
     ];
 
     [Test]
+    public async Task SerializerStrategy_DefaultMatchesConfluentPrefix()
+    {
+        var values = Enum.GetValues<SchemaIdSerializerStrategy>();
+
+        await Assert.That(values[0]).IsEqualTo(SchemaIdSerializerStrategy.Prefix);
+        await Assert.That(values[1]).IsEqualTo(SchemaIdSerializerStrategy.Header);
+    }
+
+    [Test]
     public async Task IdPrefix_MatchesConfluentWireVector()
     {
         var destination = new byte[SchemaIdentityFraming.SchemaIdFrameSize];
@@ -48,16 +57,13 @@ public sealed class SchemaIdentityFramingTests
         SerializationComponent component,
         string expectedName)
     {
-        var headers = new Headers(1);
         var encoded = SchemaIdentityFraming.CreateSchemaGuidFrame(SchemaGuid);
 
-        SchemaIdentityFraming.AddSchemaGuidHeader(headers, component, encoded);
-        var identityHeader = headers[0];
+        var identityHeader = SchemaIdentityFraming.CreateSchemaGuidHeader(component, encoded);
         var parsed = SchemaIdentityFraming.ReadHeader(in identityHeader, out _);
 
-        await Assert.That(headers.Count).IsEqualTo(1);
-        await Assert.That(headers[0].Key).IsEqualTo(expectedName);
-        await Assert.That(headers[0].Value.ToArray()).IsEquivalentTo(GuidVector);
+        await Assert.That(identityHeader.Key).IsEqualTo(expectedName);
+        await Assert.That(identityHeader.Value.ToArray()).IsEquivalentTo(GuidVector);
         await Assert.That(parsed).IsEqualTo(new SchemaIdentity(SchemaGuid));
     }
 
@@ -196,8 +202,10 @@ public sealed class SchemaIdentityFramingTests
     [Arguments(null, false, true, 0)]
     [Arguments(null, false, false, 1)]
     [Arguments(null, true, false, 2)]
+    [Arguments(null, true, true, 2)]
     [Arguments(42, false, true, 3)]
     [Arguments(42, true, false, 3)]
+    [Arguments(42, true, true, 3)]
     public async Task ResolveSelection_UsesDocumentedPrecedence(
         int? useSchemaId,
         bool useLatestVersion,
@@ -211,16 +219,6 @@ public sealed class SchemaIdentityFramingTests
 
         await Assert.That((int)actual).IsEqualTo(expected);
     }
-
-    [Test]
-    [Arguments(null)]
-    [Arguments(42)]
-    public void ResolveSelection_LatestAndAutoRegister_ThrowsArgumentException(int? useSchemaId) =>
-        Assert.Throws<ArgumentException>(() =>
-            SchemaRegistrySerializerConfigValidator.ValidateAndResolve(
-                useSchemaId,
-                useLatestVersion: true,
-                autoRegisterSchemas: true));
 
     [Test]
     public void ResolveSelection_NegativeExplicitId_ThrowsArgumentOutOfRangeException() =>

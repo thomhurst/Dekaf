@@ -18,7 +18,6 @@ public class SchemaIdentityFramingBenchmarks
     private static readonly Guid SchemaGuid = Guid.Parse("89791762-2336-4186-9674-299b90a802e2");
 
     private readonly byte[] _idPrefix = [0, 0, 0, 0, 42, 7, 8];
-    private readonly Headers _producerHeaders = new(1);
     private byte[] _guidFrame = null!;
     private Header _identityHeader;
 
@@ -27,13 +26,6 @@ public class SchemaIdentityFramingBenchmarks
     {
         _guidFrame = SchemaIdentityFraming.CreateSchemaGuidFrame(SchemaGuid);
         _identityHeader = new Header(SchemaIdentityHeaderNames.Value, _guidFrame);
-
-        // Retain List<Header> storage so the measured header append does not grow it.
-        SchemaIdentityFraming.AddSchemaGuidHeader(
-            _producerHeaders,
-            SerializationComponent.Value,
-            _guidFrame);
-        _producerHeaders.Clear();
     }
 
     [Benchmark(Baseline = true)]
@@ -57,15 +49,9 @@ public class SchemaIdentityFramingBenchmarks
         out _);
 
     [Benchmark]
-    public int CachedHeaderAppend()
-    {
-        _producerHeaders.Clear();
-        SchemaIdentityFraming.AddSchemaGuidHeader(
-            _producerHeaders,
-            SerializationComponent.Value,
-            _guidFrame);
-        return _producerHeaders.Count;
-    }
+    public Header CreateHeader() => SchemaIdentityFraming.CreateSchemaGuidHeader(
+        SerializationComponent.Value,
+        _guidFrame);
 
     private sealed class FramingConfig : ManualConfig
     {

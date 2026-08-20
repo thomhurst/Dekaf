@@ -9,11 +9,11 @@ namespace Dekaf.SchemaRegistry;
 /// </summary>
 public enum SchemaIdSerializerStrategy
 {
-    /// <summary>Write the schema GUID to the Confluent Kafka header.</summary>
-    Header,
-
     /// <summary>Prefix the payload with the magic byte and global schema ID.</summary>
-    Prefix
+    Prefix = 0,
+
+    /// <summary>Write the schema GUID to the Confluent Kafka header.</summary>
+    Header = 1
 }
 
 /// <summary>
@@ -124,14 +124,10 @@ internal static class SchemaIdentityFraming
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal static void AddSchemaGuidHeader(
-        Headers headers,
+    internal static Header CreateSchemaGuidHeader(
         SerializationComponent component,
         ReadOnlyMemory<byte> encodedSchemaGuid)
-    {
-        ArgumentNullException.ThrowIfNull(headers);
-        headers.Add(new Header(GetHeaderName(component), encodedSchemaGuid));
-    }
+        => new(GetHeaderName(component), encodedSchemaGuid);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static SchemaIdentity ReadPrefix(ReadOnlySpan<byte> payload, out int payloadOffset)
@@ -298,13 +294,6 @@ internal static class SchemaRegistrySerializerConfigValidator
     {
         if (useSchemaId < 0)
             throw new ArgumentOutOfRangeException(nameof(useSchemaId), "The explicit schema ID cannot be negative.");
-        if (useLatestVersion && autoRegisterSchemas)
-        {
-            throw new ArgumentException(
-                "UseLatestVersion and AutoRegisterSchemas cannot both be enabled.",
-                nameof(useLatestVersion));
-        }
-
         if (useSchemaId.HasValue)
             return SchemaSelectionMode.ExplicitId;
         if (useLatestVersion)

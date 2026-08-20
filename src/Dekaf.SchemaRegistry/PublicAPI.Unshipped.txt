@@ -226,8 +226,8 @@ Dekaf.SchemaRegistry.SchemaIdDeserializerStrategy.Dual = 0 -> Dekaf.SchemaRegist
 Dekaf.SchemaRegistry.SchemaIdDeserializerStrategy.Header = 2 -> Dekaf.SchemaRegistry.SchemaIdDeserializerStrategy
 Dekaf.SchemaRegistry.SchemaIdDeserializerStrategy.Prefix = 1 -> Dekaf.SchemaRegistry.SchemaIdDeserializerStrategy
 Dekaf.SchemaRegistry.SchemaIdSerializerStrategy
-Dekaf.SchemaRegistry.SchemaIdSerializerStrategy.Header = 0 -> Dekaf.SchemaRegistry.SchemaIdSerializerStrategy
-Dekaf.SchemaRegistry.SchemaIdSerializerStrategy.Prefix = 1 -> Dekaf.SchemaRegistry.SchemaIdSerializerStrategy
+Dekaf.SchemaRegistry.SchemaIdSerializerStrategy.Header = 1 -> Dekaf.SchemaRegistry.SchemaIdSerializerStrategy
+Dekaf.SchemaRegistry.SchemaIdSerializerStrategy.Prefix = 0 -> Dekaf.SchemaRegistry.SchemaIdSerializerStrategy
 Dekaf.SchemaRegistry.SchemaIdentity
 Dekaf.SchemaRegistry.SchemaIdentity.Equals(Dekaf.SchemaRegistry.SchemaIdentity other) -> bool
 Dekaf.SchemaRegistry.SchemaIdentity.SchemaGuid.get -> System.Guid?
