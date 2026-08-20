@@ -313,11 +313,7 @@ public sealed class ProtobufSchemaRegistrySerializer<
                     subject,
                     cancellationToken)
                 .ConfigureAwait(false);
-            if (explicitSchema.SchemaType != SchemaType.Protobuf)
-            {
-                throw new InvalidOperationException(
-                    $"Schema ID {schemaId} has format {explicitSchema.SchemaType}; expected {SchemaType.Protobuf}.");
-            }
+            ValidateExplicitSchema(schemaId, explicitSchema);
 
             return await CreateResolvedValueAsync(
                     subject,
@@ -402,6 +398,21 @@ public sealed class ProtobufSchemaRegistrySerializer<
                 registered,
                 cancellationToken)
             .ConfigureAwait(false);
+    }
+
+    private void ValidateExplicitSchema(int schemaId, Schema schema)
+    {
+        if (schema.SchemaType != SchemaType.Protobuf)
+        {
+            throw new InvalidOperationException(
+                $"Schema ID {schemaId} has format {schema.SchemaType}; expected {SchemaType.Protobuf}.");
+        }
+
+        if (!string.Equals(schema.SchemaString, _schemaString, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Schema ID {schemaId} does not match Protobuf message type '{_descriptor.FullName}'.");
+        }
     }
 
     private async Task<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> CreateResolvedValueAsync(

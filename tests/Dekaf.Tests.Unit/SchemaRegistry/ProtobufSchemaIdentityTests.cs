@@ -85,6 +85,30 @@ public class ProtobufSchemaIdentityTests
     }
 
     [Test]
+    public async Task Serialize_ExplicitId_RejectsDifferentProtobufDescriptor()
+    {
+        var registry = new MockSchemaRegistryClient();
+        var schemaId = await registry.RegisterSchemaAsync("identity-value", new Schema
+        {
+            SchemaType = SchemaType.Protobuf,
+            SchemaString = Google.Protobuf.WellKnownTypes.StringValue.Descriptor.File.SerializedData.ToBase64()
+        });
+        var config = new ProtobufSerializerConfig { UseSchemaId = schemaId };
+        await using var serializer = new ProtobufSchemaRegistrySerializer<TestMessage>(registry, config);
+        var destination = new ArrayBufferWriter<byte>();
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        {
+            serializer.Serialize(new TestMessage(), ref destination, CreateContext());
+            return Task.CompletedTask;
+        });
+
+        await Assert.That(exception!.Message).Contains("does not match Protobuf message type");
+        await Assert.That(exception.Message).Contains(TestMessage.Descriptor.FullName);
+        await Assert.That(destination.WrittenCount).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task Serialize_Header_RequiresHeadersCollection()
     {
         var registry = new MockSchemaRegistryClient();
