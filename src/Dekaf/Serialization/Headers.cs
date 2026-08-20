@@ -20,6 +20,12 @@ public sealed class Headers : IEnumerable<Header>
     private int _deferredTracestateIndex = -1;
     private int _keySchemaIdentityIndex = -1;
     private int _valueSchemaIdentityIndex = -1;
+    private Header _stagedHeader0;
+    private Header _stagedHeader1;
+    private int _stagedHeaderCount;
+    private int _stagedKeySchemaIdentityIndex = -1;
+    private int _stagedValueSchemaIdentityIndex = -1;
+    private bool _stagingRecordHeaders;
 
     /// <summary>
     /// Creates an empty headers collection.
@@ -73,6 +79,8 @@ public sealed class Headers : IEnumerable<Header>
     /// </summary>
     public int Count => _headers.Count;
 
+    internal int SerializationCount => _headers.Count + _stagedHeaderCount;
+
     internal int CountWithoutDeferredTraceContext
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -92,6 +100,48 @@ public sealed class Headers : IEnumerable<Header>
     /// Gets the header at the specified index.
     /// </summary>
     public Header this[int index] => _headers[index];
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal Header GetSerializationHeader(int index)
+    {
+        var stagedCount = _stagedHeaderCount;
+        if (stagedCount == 0)
+            return _headers[index];
+
+        var insertionIndex = _deferredTraceparentIndex >= 0
+            ? _deferredTraceparentIndex
+            : _headers.Count;
+        if (index < insertionIndex)
+            return _headers[index];
+        if (index < insertionIndex + stagedCount)
+            return index == insertionIndex ? _stagedHeader0 : _stagedHeader1;
+        return _headers[index - stagedCount];
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void CopySerializationHeadersTo(Header[] destination)
+    {
+        var stagedCount = _stagedHeaderCount;
+        if (stagedCount == 0)
+        {
+            for (var i = 0; i < _headers.Count; i++)
+                destination[i] = _headers[i];
+            return;
+        }
+
+        var insertionIndex = _deferredTraceparentIndex >= 0
+            ? _deferredTraceparentIndex
+            : _headers.Count;
+        for (var i = 0; i < insertionIndex; i++)
+            destination[i] = _headers[i];
+
+        destination[insertionIndex] = _stagedHeader0;
+        if (stagedCount == 2)
+            destination[insertionIndex + 1] = _stagedHeader1;
+
+        for (var i = insertionIndex; i < _headers.Count; i++)
+            destination[stagedCount + i] = _headers[i];
+    }
 
     /// <summary>
     /// Adds a header with a string value.
@@ -182,6 +232,14 @@ public sealed class Headers : IEnumerable<Header>
         _deferredTracestateIndex = -1;
         _keySchemaIdentityIndex = -1;
         _valueSchemaIdentityIndex = -1;
+        EndRecordHeaderStaging();
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void BeginRecordHeaderStaging()
+    {
+        EndRecordHeaderStaging();
+        _stagingRecordHeaders = true;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -193,6 +251,7 @@ public sealed class Headers : IEnumerable<Header>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void Restore(in Checkpoint checkpoint)
     {
+        EndRecordHeaderStaging();
         if ((uint)checkpoint.Count > (uint)_headers.Count)
             throw new ArgumentOutOfRangeException(nameof(checkpoint));
 
@@ -279,6 +338,12 @@ public sealed class Headers : IEnumerable<Header>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void AddHeader(Header header)
     {
+        if (_stagingRecordHeaders)
+        {
+            AddStagedRecordHeader(header);
+            return;
+        }
+
         var traceparentIndex = _deferredTraceparentIndex;
         if (traceparentIndex < 0)
         {
@@ -319,19 +384,62 @@ public sealed class Headers : IEnumerable<Header>
     {
         var index = component switch
         {
-            SerializationComponent.Key => _keySchemaIdentityIndex,
-            SerializationComponent.Value => _valueSchemaIdentityIndex,
+            SerializationComponent.Key => _stagedKeySchemaIdentityIndex >= 0
+                ? _stagedKeySchemaIdentityIndex
+                : _keySchemaIdentityIndex,
+            SerializationComponent.Value => _stagedValueSchemaIdentityIndex >= 0
+                ? _stagedValueSchemaIdentityIndex
+                : _valueSchemaIdentityIndex,
             _ => throw new ArgumentOutOfRangeException(nameof(component), component, "Unknown serialization component.")
         };
 
-        if ((uint)index < (uint)_headers.Count)
+        if ((uint)index < (uint)SerializationCount)
         {
-            header = _headers[index];
+            header = GetSerializationHeader(index);
             return true;
         }
 
         header = default;
         return false;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void AddStagedRecordHeader(Header header)
+    {
+        var stagedIndex = _stagedHeaderCount;
+        if (stagedIndex == 0)
+            _stagedHeader0 = header;
+        else if (stagedIndex == 1)
+            _stagedHeader1 = header;
+        else
+            throw new InvalidOperationException("A producer can stage at most one record header per key and value serializer.");
+
+        var insertionIndex = _deferredTraceparentIndex >= 0
+            ? _deferredTraceparentIndex
+            : _headers.Count;
+        var logicalIndex = insertionIndex + stagedIndex;
+        _stagedHeaderCount = stagedIndex + 1;
+        var key = header.Key;
+        if (key.Length == KeySchemaIdentityHeader.Length
+            && string.Equals(key, KeySchemaIdentityHeader, StringComparison.Ordinal))
+            _stagedKeySchemaIdentityIndex = logicalIndex;
+        else if (key.Length == ValueSchemaIdentityHeader.Length
+                 && string.Equals(key, ValueSchemaIdentityHeader, StringComparison.Ordinal))
+            _stagedValueSchemaIdentityIndex = logicalIndex;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void EndRecordHeaderStaging()
+    {
+        if (!_stagingRecordHeaders)
+            return;
+
+        _stagingRecordHeaders = false;
+        _stagedHeaderCount = 0;
+        _stagedHeader0 = default;
+        _stagedHeader1 = default;
+        _stagedKeySchemaIdentityIndex = -1;
+        _stagedValueSchemaIdentityIndex = -1;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

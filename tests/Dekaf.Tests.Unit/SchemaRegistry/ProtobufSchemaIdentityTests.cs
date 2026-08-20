@@ -285,6 +285,37 @@ public class ProtobufSchemaIdentityTests
     }
 
     [Test]
+    public async Task Deserialize_Header_ValidationOnly_DoesNotRequireConsumerSubject()
+    {
+        var identityGuid = Guid.NewGuid();
+        var schema = CreateSchema();
+        var registry = Substitute.For<ISchemaRegistryClient>();
+        registry.GetSchemaByGuidAsync(
+                identityGuid.ToString("D"),
+                null,
+                Arg.Is<CancellationToken>(static token => token.CanBeCanceled))
+            .Returns(schema);
+        var message = new TestMessage { Id = 92, Name = "record-name-subject" };
+        var headers = CreateIdentityHeaders(identityGuid, [0]);
+        var config = new ProtobufDeserializerConfig
+        {
+            SchemaIdStrategy = SchemaIdDeserializerStrategy.Header
+        };
+        await using var deserializer = new ProtobufSchemaRegistryDeserializer<TestMessage>(registry, config);
+
+        var result = deserializer.Deserialize(message.ToByteArray(), CreateContext(headers: headers));
+
+        await Assert.That(result.Id).IsEqualTo(message.Id);
+        await Assert.That(result.Name).IsEqualTo(message.Name);
+        await registry.DidNotReceive().LookupSchemaAsync(
+            Arg.Any<string>(),
+            Arg.Any<Schema>(),
+            Arg.Any<bool>(),
+            Arg.Any<bool>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
     [Arguments(false, new byte[] { 4, 2, 0 })]
     [Arguments(true, new byte[] { 2, 1, 0 })]
     public async Task Deserialize_Header_PreservesEveryMessageIndexEncoding(
@@ -431,7 +462,11 @@ public class ProtobufSchemaIdentityTests
                 Schema = schema
             });
         var headers = CreateIdentityHeaders(identityGuid, [0]);
-        var config = new ProtobufDeserializerConfig { SchemaIdStrategy = SchemaIdDeserializerStrategy.Header };
+        var config = new ProtobufDeserializerConfig
+        {
+            SchemaIdStrategy = SchemaIdDeserializerStrategy.Header,
+            RuleExecutor = new CapturingRuleExecutor(new TestMessage().ToByteArray())
+        };
         await using var deserializer = new ProtobufSchemaRegistryDeserializer<TestMessage>(registry, config);
 
         var exception = await Assert.ThrowsAsync<InvalidDataException>(() =>

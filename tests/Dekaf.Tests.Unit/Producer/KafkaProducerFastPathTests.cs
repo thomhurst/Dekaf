@@ -166,6 +166,58 @@ public class KafkaProducerFastPathTests
     }
 
     [Test]
+    public async Task ProduceAsync_RecordHeaderSerializer_DoesNotMutateCallerHeaders()
+    {
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name == DekafDiagnostics.ActivitySourceName,
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData
+        };
+        ActivitySource.AddActivityListener(listener);
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-record-header-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 4096,
+            LingerMs = 10,
+            RequestTimeoutMs = 500,
+            DeliveryTimeoutMs = 1000,
+            CloseTimeoutMs = 1000
+        };
+
+        await using var producer = new KafkaProducer<string, string>(
+            options,
+            Serializers.String,
+            new RecordHeaderStringSerializer());
+        await StopProducerBackgroundLoopsAsync(producer);
+        SeedProducerMetadata(producer);
+        SetInstanceField(producer, "_initialized", true);
+        var headers = new Headers(1).Add("caller", "owned");
+
+        var produceTask = producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Key = "key",
+            Value = "identity-value",
+            Headers = headers
+        });
+
+        await Assert.That(headers.Count).IsEqualTo(1);
+        await Assert.That(headers[0].Key).IsEqualTo("caller");
+        var readyBatch = CompleteCurrentBatch(producer.RecordAccumulator, new TopicPartition(Topic, 0));
+        var record = readyBatch.RecordBatch.Records[0];
+        await Assert.That(record.HeaderCount).IsEqualTo(3);
+        await Assert.That(record.Headers![0].Key).IsEqualTo("caller");
+        await Assert.That(record.Headers[1].Key).IsEqualTo("identity");
+        await Assert.That(record.Headers[2].Key).IsEqualTo("traceparent");
+
+        readyBatch.CompleteSend(baseOffset: 7, DateTimeOffset.UtcNow);
+        _ = await produceTask;
+        await Assert.That(headers.Count).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task ProduceAsync_AsyncSerializerTracing_RestoresCallerOwnedHeadersAfterAppend()
     {
         using var listener = new ActivityListener

@@ -293,6 +293,9 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
                 $"Schema with GUID {key.SchemaGuid:D} is not a Protobuf schema. Type: {unscopedSchema.SchemaType}");
         }
 
+        if (_ruleExecutor is null && _migrationRunner is null)
+            return new GuidResolvedSchema(-1, null, unscopedSchema);
+
         var context = new SerializationContext
         {
             Topic = key.Topic,
@@ -348,7 +351,7 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
 
     private readonly record struct GuidTopicKey(Guid SchemaGuid, string Topic, bool IsKey);
 
-    private sealed record GuidResolvedSchema(int SchemaId, string Subject, Schema Schema);
+    private sealed record GuidResolvedSchema(int SchemaId, string? Subject, Schema Schema);
 
     private string GetSubjectName(int schemaId, Schema? schema, SerializationContext context)
     {
