@@ -679,6 +679,31 @@ public sealed class StreamsGroupMemberTests
     }
 
     [Test]
+    public async Task BackgroundHeartbeat_UnexpectedFailureIsPreservedAfterWorkerStops()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1, heartbeatIntervalMs: 1));
+        var unexpectedFailure = new InvalidOperationException("unexpected heartbeat failure");
+        connection.EnqueueHeartbeat(Task.FromException<StreamsGroupHeartbeatResponse>(unexpectedFailure));
+        var fixture = CreateFixture(connection);
+        try
+        {
+            await fixture.Member.JoinAsync(CreateInitialUpdate());
+            await GetWorkerTask(fixture.Member).WaitAsync(TimeSpan.FromSeconds(5));
+
+            var failure = await Assert.ThrowsAsync<GroupException>(async () =>
+                await fixture.Member.JoinAsync(CreateInitialUpdate()));
+
+            await Assert.That(failure!.InnerException).IsSameReferenceAs(unexpectedFailure);
+            await Assert.That(failure.GroupId).IsEqualTo("streams-group");
+        }
+        finally
+        {
+            await fixture.DisposeMemberAndMetadataAsync();
+        }
+    }
+
+    [Test]
     public async Task BackgroundHeartbeat_PermanentProtocolFailureAllowsExplicitRejoin()
     {
         var connection = new ScriptedConnection();
@@ -1268,6 +1293,7 @@ public sealed class StreamsGroupMemberTests
     private static readonly FieldInfo HeartbeatTimerField = GetMemberField("_heartbeatTimer");
     private static readonly FieldInfo HeartbeatIntervalMsField = GetMemberField("_heartbeatIntervalMs");
     private static readonly FieldInfo CommandsField = GetMemberField("_commands");
+    private static readonly FieldInfo WorkerTaskField = GetMemberField("_workerTask");
     private static readonly MethodInfo QueueHeartbeatMethod = typeof(StreamsGroupMember).GetMethod(
         "QueueHeartbeat",
         BindingFlags.Instance | BindingFlags.NonPublic)!;
@@ -1280,6 +1306,9 @@ public sealed class StreamsGroupMemberTests
 
     private static bool QueueHeartbeat(StreamsGroupMember member) =>
         (bool)QueueHeartbeatMethod.Invoke(member, null)!;
+
+    private static Task GetWorkerTask(StreamsGroupMember member) =>
+        (Task)WorkerTaskField.GetValue(member)!;
 
     private static bool CompleteCommandWriter(StreamsGroupMember member)
     {
@@ -1309,6 +1338,12 @@ public sealed class StreamsGroupMemberTests
                     GroupMembershipOperation = StreamsGroupMembershipOperation.RemainInGroup
                 });
             }
+            await Member.DisposeAsync();
+            await metadataManager.DisposeAsync();
+        }
+
+        public async ValueTask DisposeMemberAndMetadataAsync()
+        {
             await Member.DisposeAsync();
             await metadataManager.DisposeAsync();
         }

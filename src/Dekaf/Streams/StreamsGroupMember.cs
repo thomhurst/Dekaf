@@ -304,7 +304,10 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         }
         catch (ChannelClosedException)
         {
-            throw new ObjectDisposedException(nameof(StreamsGroupMember));
+            var backgroundFailure = Volatile.Read(ref _backgroundFailure);
+            throw backgroundFailure is null
+                ? new ObjectDisposedException(nameof(StreamsGroupMember))
+                : CreateBackgroundFailureException(backgroundFailure);
         }
     }
 
