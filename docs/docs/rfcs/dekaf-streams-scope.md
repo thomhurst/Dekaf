@@ -74,8 +74,7 @@ individually, not as "Streams hooks":
 | E3 | Headers + leader epoch on `ConsumeRawRecord`; partition-EOF signal on batch/raw APIs | [#2762](https://github.com/thomhurst/Dekaf/issues/2762) | Raw path unusable where header propagation or caught-up detection is needed | Raw-path users lose headers today; EOF detection is generally useful |
 | E4 | `CommitAsync` throws (or reports) when no coordinator exists instead of silently no-opping (`KafkaConsumer.cs` early return) | [#2763](https://github.com/thomhurst/Dekaf/issues/2763) | Silent data-loss footgun for group-less consumers | Correctness fix for all users |
 | E5 | Configurable `IPartitionStopListener` timeout (hard-coded 5 s) | [#2764](https://github.com/thomhurst/Dekaf/issues/2764) | Checkpoint-on-shutdown can be truncated | Anyone flushing state on close |
-| E6 | `PublicAPI.Shipped.txt` baseline for core `Dekaf` (satellites have one; core does not) | [#2765](https://github.com/thomhurst/Dekaf/issues/2765) | No guard on the surface Streams would pin against | Protects all downstream consumers of the API |
-| E7 | Pre-processing assignment hook and/or timer callbacks in `RunPartitionedAsync` (optional — see Runtime Substrate decision) | — | Restore-before-process and punctuation are not expressible | Useful for any stateful partitioned worker, not only Streams |
+| E6 | Pre-processing assignment hook and/or timer callbacks in `RunPartitionedAsync` (optional — see Runtime Substrate decision) | — | Restore-before-process and punctuation are not expressible | Useful for any stateful partitioned worker, not only Streams |
 
 ### Traps to encode in the design (no code change needed)
 
@@ -161,7 +160,7 @@ lane. Retrofitting all of that turns it into a Streams runtime anyway.
 `ConsumeBatchAsync` + `WithRebalanceListener` (builder slot, until E1 lands) +
 manually-assigned restore consumers using `ConsumeSnapshotAsync`.
 `RunPartitionedAsync` remains the app-level API for non-Streams partitioned
-work; E7 improvements to it are optional and independent.
+work; E6 improvements to it are optional and independent.
 
 ### D4. State engine for v0
 
@@ -243,7 +242,7 @@ cases #2748 requires; land this scope doc; decide D1–D5. Exit: gates 1–4 of
 #2748 checked or the effort stays deferred.
 
 **Phase 1 — core enablers (independent of any Streams decision):** implement
-E1–E6 ([#2760](https://github.com/thomhurst/Dekaf/issues/2760)–[#2765](https://github.com/thomhurst/Dekaf/issues/2765))
+E1–E5 ([#2760](https://github.com/thomhurst/Dekaf/issues/2760)–[#2764](https://github.com/thomhurst/Dekaf/issues/2764))
 as ordinary Dekaf improvements, each with its own justification and benchmarks.
 These are worth doing even if Streams never happens; E4 in particular is a
 correctness fix. Also fix/document the `RebalanceTimeoutMs` unused-option wart
@@ -265,7 +264,7 @@ reset tool. No joins, no session/sliding windows, no standbys.
 `StreamsGroupHeartbeat` in core Dekaf protocol + coordinator path
 ([#2766](https://github.com/thomhurst/Dekaf/issues/2766)), unlocking
 task-aware assignment, standbys, and broker-registered topologies. This is the
-only phase that touches `src/Dekaf` beyond E1–E6, and it is justified as
+only phase that touches `src/Dekaf` beyond E1–E5, and it is justified as
 protocol completeness (the describe side already shipped).
 
 ## Mapping to #2748 Gates

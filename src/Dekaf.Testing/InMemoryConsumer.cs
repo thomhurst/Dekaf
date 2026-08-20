@@ -1256,6 +1256,10 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             {
                 Topic = topicPartition.Topic,
                 Component = SerializationComponent.Key,
+                Headers = _asyncKeyDeserializer is null
+                          && _keyDeserializer is ICallerOwnedHeaderDeserializer<TKey>
+                    ? ConsumeResult<TKey, TValue>.GetCallerOwnedSerializationHeaders(record.Headers)
+                    : null,
                 KeyData = ReadOnlyMemory<byte>.Empty,
                 IsNull = false
             };
@@ -1264,7 +1268,9 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             {
                 key = _asyncKeyDeserializer is not null
                     ? await _asyncKeyDeserializer.DeserializeAsync(record.Key, keyContext, cancellationToken).ConfigureAwait(false)
-                    : _keyDeserializer.Deserialize(record.Key, keyContext);
+                    : keyContext.Headers is not null
+                        ? RecordHeaderDeserializer.DeserializeCallerOwned(_keyDeserializer, record.Key, keyContext)
+                        : _keyDeserializer.Deserialize(record.Key, keyContext);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -1276,6 +1282,10 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         {
             Topic = topicPartition.Topic,
             Component = SerializationComponent.Value,
+            Headers = _asyncValueDeserializer is null
+                      && _valueDeserializer is ICallerOwnedHeaderDeserializer<TValue>
+                ? ConsumeResult<TKey, TValue>.GetCallerOwnedSerializationHeaders(record.Headers)
+                : null,
             KeyData = SerializationContext.NormalizeKeyData(record.Key, record.IsKeyNull),
             IsNull = record.IsValueNull
         };
@@ -1286,7 +1296,9 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         {
             value = _asyncValueDeserializer is not null
                 ? await _asyncValueDeserializer.DeserializeAsync(valueData, valueContext, cancellationToken).ConfigureAwait(false)
-                : _valueDeserializer.Deserialize(valueData, valueContext);
+                : valueContext.Headers is not null
+                    ? RecordHeaderDeserializer.DeserializeCallerOwned(_valueDeserializer, valueData, valueContext)
+                    : _valueDeserializer.Deserialize(valueData, valueContext);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

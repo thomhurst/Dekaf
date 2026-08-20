@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Dekaf.Producer;
+using Dekaf.Serialization;
 using Dekaf.ShareConsumer;
 
 namespace Dekaf.Tests.Integration;
@@ -269,6 +270,45 @@ public class ShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
     }
 
     [Test]
+    public async Task ShareConsumer_HeaderRouterUsesRecordHeaders()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        var groupId = $"share-group-{Guid.NewGuid():N}";
+        var router = new HeaderRoutingDeserializer<string>(
+            "event-type",
+            new LabelDeserializer("fallback"),
+            new HeaderDeserializerRoute<string>(
+                "created"u8.ToArray(),
+                new LabelDeserializer("created")));
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        await using var consumer = await Kafka.CreateShareConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId(groupId)
+            .WithValueDeserializer(router)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        consumer.Subscribe(topic);
+        await ShareConsumerTestHelper.PrimeShareConsumerAsync(consumer);
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = topic,
+            Key = "key",
+            Value = "payload",
+            Headers = Headers.Create("event-type", "created")
+        });
+        await producer.FlushAsync();
+
+        var result = await ConsumeOneAsync(consumer);
+
+        await Assert.That(result.Value).IsEqualTo("created:payload");
+    }
+
+    [Test]
     public async Task ShareConsumer_MemberId_IsSetAfterJoining()
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
@@ -304,6 +344,12 @@ public class ShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         }
 
         throw new InvalidOperationException("Share consumer completed without returning a record.");
+    }
+
+    private sealed class LabelDeserializer(string label) : IDeserializer<string>
+    {
+        public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
+            $"{label}:{Serializers.String.Deserialize(data, context)}";
     }
 }
 

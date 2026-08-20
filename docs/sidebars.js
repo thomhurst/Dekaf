@@ -25,6 +25,7 @@ const sidebars = {
       items: [
         'consumer/basics',
         'consumer/delivery-semantics',
+        'consumer/filtering-and-routing',
         'consumer/offset-management',
         'consumer/consumer-groups',
         'consumer/partitioned-processing-api',
@@ -75,7 +76,7 @@ const sidebars = {
     {
       type: 'category',
       label: 'RFCs',
-      items: ['rfcs/dekaf-streams'],
+      items: ['rfcs/dekaf-streams', 'rfcs/dekaf-streams-scope'],
     },
   ],
 };

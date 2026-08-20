@@ -21,6 +21,7 @@
     <InternalsVisibleTo Include="Dekaf.StressTests" />
     <InternalsVisibleTo Include="Dekaf.Fuzzing" />
     <InternalsVisibleTo Include="Dekaf.Testing" />
+    <InternalsVisibleTo Include="Dekaf.Serialization.Routing" />
   </ItemGroup>
 
   <ItemGroup>
