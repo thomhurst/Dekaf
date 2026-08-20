@@ -579,8 +579,9 @@ public sealed class InMemoryConsumerFaultTests
         await snapshotFetchBarrier.WaitUntilEnteredAsync();
         var concurrentConsume = consumer.ConsumeOneAsync(Timeout.InfiniteTimeSpan).AsTask();
         await concurrentCommitBarrier.WaitUntilEnteredAsync();
+        var snapshotWaitEntered = consumer.WaitUntilAutoCommitAdvancementWaiterEnteredAsync();
         await Assert.That(snapshotFetchBarrier.Release()).IsTrue();
-        await Task.Yield();
+        await snapshotWaitEntered;
 
         await consumer.CloseAsync();
         _ = await Assert.ThrowsAsync<ObjectDisposedException>(async () =>

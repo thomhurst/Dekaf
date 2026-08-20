@@ -873,6 +873,27 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
+    public async Task ConsumerGroupGeneration_IsScopedAndMonotonic()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.RegisterConsumerGroupMember("tracked", "a", []);
+        var initialGeneration = cluster.GetConsumerGroupGeneration("tracked");
+
+        cluster.RegisterConsumerGroupMember("unrelated", "b", []);
+        cluster.UnregisterConsumerGroupMember("unrelated", "b");
+
+        await Assert.That(cluster.GetConsumerGroupGeneration("tracked"))
+            .IsEqualTo(initialGeneration);
+
+        cluster.UnregisterConsumerGroupMember("tracked", "a");
+        await Assert.That(cluster.GetConsumerGroupGeneration("tracked")).IsEqualTo(0);
+        cluster.RegisterConsumerGroupMember("tracked", "c", []);
+
+        await Assert.That(cluster.GetConsumerGroupGeneration("tracked"))
+            .IsGreaterThan(initialGeneration);
+    }
+
+    [Test]
     public async Task ConsumerClose_RemainInGroup_DoesNotCreateImmortalInMemoryMember()
     {
         var cluster = new InMemoryKafkaCluster();

@@ -49,9 +49,16 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private int _storedOffsetsVersion;
     private long _potentialFaultScopeVersion = -1;
     private int _potentialFaultConsumerStateVersion = -1;
-    private int _potentialFaultConsumerGroupVersion = -1;
+    private int _potentialFaultConsumerGroupGeneration = -1;
     private int _potentialFaultStoredOffsetsVersion = -1;
     private bool _hasPotentialConsumerFault;
+    private IReadOnlySet<TopicPartition>? _potentialFaultAssignment;
+    private int _potentialFaultAssignmentConsumerStateVersion = -1;
+    private int _potentialFaultAssignmentConsumerGroupGeneration = -1;
+    private int _committableOffsetConsumerStateVersion = -1;
+    private int _committableOffsetConsumerGroupGeneration = -1;
+    private int _committableOffsetStoredOffsetsVersion = -1;
+    private bool _hasCommittableStoredOffset;
     // In-doubt record under OffsetStoreTiming.AfterProcessing: delivered but not yet proven
     // processed. Staged for commit only when the next consume call or an explicit commit
     // proves it; an unwind (or close) leaves it unstaged so it is redelivered.
@@ -64,6 +71,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private int _consumerGroupGeneration = -1;
     private long _consumerGroupRegistrationId;
     private string? _subscriptionPattern;
+    private TaskCompletionSource? _autoCommitAdvancementWaiterEntered;
     private Task? _closeTask;
     private bool _disposed;
 
@@ -937,17 +945,20 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         TaskCompletionSource? closeCompletion = null;
         lock (_gate)
         {
-            if (_disposed)
-                return ValueTask.CompletedTask;
-
-            if (_closeTask is null)
+            if (_closeTask is { IsCompleted: false } activeClose)
             {
+                closeTask = activeClose;
+            }
+            else
+            {
+                if (_disposed)
+                    return ValueTask.CompletedTask;
+
                 closeCompletion = new TaskCompletionSource(
                     TaskCreationOptions.RunContinuationsAsynchronously);
-                _closeTask = closeCompletion.Task;
+                closeTask = closeCompletion.Task;
+                _closeTask = closeTask;
             }
-
-            closeTask = _closeTask;
         }
 
         if (closeCompletion is not null)
@@ -1366,11 +1377,26 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                                  _pendingAutoCommitAdvancements.TryGetValue(partition, out var pending)
                 ? pending.Completion.Task
                 : null;
+            if (advancementChanged is not null)
+            {
+                _autoCommitAdvancementWaiterEntered?.TrySetResult();
+                _autoCommitAdvancementWaiterEntered = null;
+            }
         }
 
         return advancementChanged is null
             ? ValueTask.CompletedTask
             : new ValueTask(advancementChanged.WaitAsync(cancellationToken));
+    }
+
+    internal Task WaitUntilAutoCommitAdvancementWaiterEnteredAsync()
+    {
+        lock (_gate)
+        {
+            _autoCommitAdvancementWaiterEntered = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            return _autoCommitAdvancementWaiterEntered.Task;
+        }
     }
 
     private void ThrowIfSnapshotActiveUnderLock()
@@ -2190,12 +2216,12 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         var storedOffsetsVersion = requiresStoredOffset
             ? Volatile.Read(ref _storedOffsetsVersion)
             : -1;
-        var consumerGroupVersion = _groupId is null
+        var consumerGroupGeneration = _groupId is null
             ? -1
-            : _cluster.ConsumerGroupVersion;
+            : _cluster.GetConsumerGroupGeneration(_groupId);
         if (Volatile.Read(ref _potentialFaultScopeVersion) == scopeVersion &&
             Volatile.Read(ref _potentialFaultConsumerStateVersion) == consumerStateVersion &&
-            Volatile.Read(ref _potentialFaultConsumerGroupVersion) == consumerGroupVersion &&
+            Volatile.Read(ref _potentialFaultConsumerGroupGeneration) == consumerGroupGeneration &&
             Volatile.Read(ref _potentialFaultStoredOffsetsVersion) == storedOffsetsVersion)
         {
             return Volatile.Read(ref _hasPotentialConsumerFault);
@@ -2205,19 +2231,14 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         {
             consumerStateVersion = _consumerStateVersion;
             storedOffsetsVersion = requiresStoredOffset ? _storedOffsetsVersion : -1;
-            IReadOnlySet<TopicPartition> assignment;
-            do
-            {
-                consumerGroupVersion = _groupId is null
-                    ? -1
-                    : _cluster.ConsumerGroupVersion;
-                assignment = GetCurrentAssignmentUnderLock();
-            }
-            while (_groupId is not null && consumerGroupVersion != _cluster.ConsumerGroupVersion);
+            var assignment = GetPotentialFaultAssignmentUnderLock(
+                out consumerGroupGeneration);
 
             var includeCommit = autoCommitEnabled &&
                                 (_options.EnableAutoOffsetStore ||
-                                 HasStoredOffsetForAssignmentUnderLock(assignment));
+                                 HasCommittableStoredOffsetUnderLock(
+                                     assignment,
+                                     consumerGroupGeneration));
             var hasPotentialFault = indexedPlan.HasPotentialConsumerMatch(
                 _groupId,
                 assignment,
@@ -2225,7 +2246,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 out scopeVersion);
             Volatile.Write(ref _hasPotentialConsumerFault, hasPotentialFault);
             Volatile.Write(ref _potentialFaultConsumerStateVersion, consumerStateVersion);
-            Volatile.Write(ref _potentialFaultConsumerGroupVersion, consumerGroupVersion);
+            Volatile.Write(ref _potentialFaultConsumerGroupGeneration, consumerGroupGeneration);
             Volatile.Write(ref _potentialFaultStoredOffsetsVersion, storedOffsetsVersion);
             Volatile.Write(ref _potentialFaultScopeVersion, scopeVersion);
             return hasPotentialFault;
@@ -2239,11 +2260,14 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
         lock (_gate)
         {
-            var assignment = GetCurrentAssignmentUnderLock();
+            var assignment = GetPotentialFaultAssignmentUnderLock(
+                out var consumerGroupGeneration);
             var includeCommit = _groupId is not null &&
                                 _options.OffsetCommitMode == OffsetCommitMode.Auto &&
                                 (_options.EnableAutoOffsetStore ||
-                                 HasStoredOffsetForAssignmentUnderLock(assignment));
+                                 HasCommittableStoredOffsetUnderLock(
+                                     assignment,
+                                     consumerGroupGeneration));
             return faultPlan.HasPotentialFault(KafkaFaultOperation.Fetch, _groupId, assignment) ||
                    faultPlan.HasPotentialFault(KafkaFaultOperation.Consume, _groupId, assignment) ||
                    includeCommit &&
@@ -2251,15 +2275,62 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         }
     }
 
-    private bool HasStoredOffsetForAssignmentUnderLock(IReadOnlySet<TopicPartition> assignment)
+    private IReadOnlySet<TopicPartition> GetPotentialFaultAssignmentUnderLock(
+        out int consumerGroupGeneration)
     {
-        foreach (var partition in _storedOffsets.Keys)
+        while (true)
         {
-            if (assignment.Contains(partition))
-                return true;
+            consumerGroupGeneration = _groupId is null
+                ? -1
+                : _cluster.GetConsumerGroupGeneration(_groupId);
+            if (_potentialFaultAssignment is not null &&
+                _potentialFaultAssignmentConsumerStateVersion == _consumerStateVersion &&
+                _potentialFaultAssignmentConsumerGroupGeneration == consumerGroupGeneration)
+            {
+                return _potentialFaultAssignment;
+            }
+
+            var assignment = GetCurrentAssignmentUnderLock(out var assignmentGeneration);
+            if (_groupId is not null &&
+                assignmentGeneration != _cluster.GetConsumerGroupGeneration(_groupId))
+            {
+                continue;
+            }
+
+            consumerGroupGeneration = assignmentGeneration;
+            _potentialFaultAssignment = assignment;
+            _potentialFaultAssignmentConsumerStateVersion = _consumerStateVersion;
+            _potentialFaultAssignmentConsumerGroupGeneration = consumerGroupGeneration;
+            return assignment;
+        }
+    }
+
+    private bool HasCommittableStoredOffsetUnderLock(
+        IReadOnlySet<TopicPartition> assignment,
+        int consumerGroupGeneration)
+    {
+        if (_committableOffsetConsumerStateVersion == _consumerStateVersion &&
+            _committableOffsetConsumerGroupGeneration == consumerGroupGeneration &&
+            _committableOffsetStoredOffsetsVersion == _storedOffsetsVersion)
+        {
+            return _hasCommittableStoredOffset;
         }
 
-        return false;
+        var hasCommittableStoredOffset = false;
+        foreach (var partition in _storedOffsets.Keys)
+        {
+            if (!assignment.Contains(partition))
+                continue;
+
+            hasCommittableStoredOffset = true;
+            break;
+        }
+
+        _hasCommittableStoredOffset = hasCommittableStoredOffset;
+        _committableOffsetConsumerStateVersion = _consumerStateVersion;
+        _committableOffsetConsumerGroupGeneration = consumerGroupGeneration;
+        _committableOffsetStoredOffsetsVersion = _storedOffsetsVersion;
+        return hasCommittableStoredOffset;
     }
 
     private bool HasMatchingFault(in KafkaFaultScope operationScope)

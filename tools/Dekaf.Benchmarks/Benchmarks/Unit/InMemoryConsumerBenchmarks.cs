@@ -18,6 +18,7 @@ public class InMemoryConsumerBenchmarks
     private InMemoryConsumer<Ignore, Ignore> _unrelatedFaultConsumer = null!;
     private InMemoryConsumer<Ignore, Ignore> _asyncAutoCommitConsumer = null!;
     private InMemoryConsumer<Ignore, Ignore> _noStoreCommitFaultConsumer = null!;
+    private InMemoryConsumer<Ignore, Ignore> _customPlanStoredOffsetConsumer = null!;
     private InMemoryConsumer<Ignore, Ignore> _snapshotConsumer = null!;
     private ConsumeResult<Ignore, Ignore>? _result;
 
@@ -113,6 +114,36 @@ public class InMemoryConsumerBenchmarks
             });
         _noStoreCommitFaultConsumer.Subscribe(Topic);
 
+        var customInnerPlan = new KafkaFaultPlan();
+        var customPlanCluster = new InMemoryKafkaCluster(
+            new InMemoryKafkaClusterOptions(),
+            new DelegatingFaultPlan(customInnerPlan));
+        var customPlanProducer = new InMemoryProducer<Ignore, Ignore>(customPlanCluster);
+        customPlanProducer.ProduceAsync(Topic, default, default).GetAwaiter().GetResult();
+        customInnerPlan.FailPersistently(
+            new KafkaFaultScope(
+                KafkaFaultOperation.Commit,
+                topic: "other-topic",
+                partition: 0,
+                groupId: GroupId),
+            new InvalidOperationException("unrelated commit"));
+        _customPlanStoredOffsetConsumer = new InMemoryConsumer<Ignore, Ignore>(
+            customPlanCluster,
+            new InMemoryConsumerOptions
+            {
+                GroupId = GroupId,
+                AutoOffsetReset = AutoOffsetReset.Earliest,
+                EnableAutoOffsetStore = false,
+                OffsetCommitMode = OffsetCommitMode.Auto
+            });
+        _customPlanStoredOffsetConsumer.Subscribe(Topic);
+        for (var partition = 1; partition <= 1024; partition++)
+        {
+            _customPlanStoredOffsetConsumer.StoreOffset(
+                new TopicPartitionOffset("other-topic", partition, 1));
+        }
+        _customPlanStoredOffsetConsumer.StoreOffset(StoredOffset);
+
         var snapshotCluster = new InMemoryKafkaCluster();
         var snapshotProducer = new InMemoryProducer<Ignore, Ignore>(snapshotCluster);
         for (var i = 0; i < SnapshotRecordCount; i++)
@@ -191,6 +222,18 @@ public class InMemoryConsumerBenchmarks
     }
 
     [Benchmark]
+    [InvocationCount(131072)]
+    public void ConsumeOneCustomPlanStoredOffset()
+    {
+        _customPlanStoredOffsetConsumer.Seek(new TopicPartitionOffset(Topic, 0, 0));
+        var operation = _customPlanStoredOffsetConsumer.ConsumeOneAsync(TimeSpan.Zero);
+        if (!operation.IsCompletedSuccessfully)
+            throw new InvalidOperationException("Custom-plan consume did not complete synchronously.");
+
+        _result = operation.Result;
+    }
+
+    [Benchmark]
     public async Task<int> ConsumeSnapshotNoFault()
     {
         _snapshotConsumer.Seek(new TopicPartitionOffset(Topic, 0, 0));
@@ -223,5 +266,47 @@ public class InMemoryConsumerBenchmarks
             SerializationContext context,
             CancellationToken cancellationToken = default) =>
             ValueTask.FromResult(default(Ignore));
+    }
+
+    private sealed class DelegatingFaultPlan(KafkaFaultPlan inner) : IKafkaFaultPlan
+    {
+        public event Action<KafkaFaultObservation>? FaultConsumed
+        {
+            add => inner.FaultConsumed += value;
+            remove => inner.FaultConsumed -= value;
+        }
+
+        public int Count => inner.Count;
+
+        public bool HasMatchingFault(in KafkaFaultScope operationScope) =>
+            inner.HasMatchingFault(operationScope);
+
+        public bool HasPotentialFault(
+            KafkaFaultOperation operation,
+            string? groupId,
+            IReadOnlySet<TopicPartition> resources) =>
+            inner.HasPotentialFault(operation, groupId, resources);
+
+        public bool TryGetFirstMatchingFaultScope(
+            ReadOnlySpan<KafkaFaultScope> operationScopes,
+            out KafkaFaultScope operationScope) =>
+            inner.TryGetFirstMatchingFaultScope(operationScopes, out operationScope);
+
+        public void Fail(KafkaFaultScope scope, Exception exception, int occurrenceCount = 1) =>
+            inner.Fail(scope, exception, occurrenceCount);
+
+        public void FailPersistently(KafkaFaultScope scope, Exception exception) =>
+            inner.FailPersistently(scope, exception);
+
+        public KafkaFaultBarrier PauseNext(KafkaFaultScope scope) => inner.PauseNext(scope);
+
+        public ValueTask ApplyAsync(
+            KafkaFaultScope operationScope,
+            CancellationToken cancellationToken = default) =>
+            inner.ApplyAsync(operationScope, cancellationToken);
+
+        public int Clear(KafkaFaultScope scope) => inner.Clear(scope);
+
+        public int Clear() => inner.Clear();
     }
 }

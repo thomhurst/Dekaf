@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Dekaf.Admin;
 using Dekaf.Consumer;
 using Dekaf.Errors;
@@ -18,7 +19,7 @@ public sealed class InMemoryKafkaCluster
     private readonly Dictionary<string, TopicState> _topics = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<TopicPartition, TopicPartitionOffset>> _consumerGroupOffsets = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<string, ConsumerGroupMemberState>> _consumerGroupMembers = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, int> _consumerGroupGenerations = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, int> _consumerGroupGenerations = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<TopicPartition, Dictionary<long, ShareLeaseState>>> _shareLeases = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<TopicPartition, Dictionary<long, int>>> _shareDeliveryCounts = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Exception> _produceFailures = new(StringComparer.Ordinal);
@@ -29,7 +30,7 @@ public sealed class InMemoryKafkaCluster
     private long _nextProducerId;
     private long _nextConsumerGroupRegistrationId;
     private TimeSpan _produceLatency;
-    private int _consumerGroupVersion;
+    private int _nextConsumerGroupGeneration;
 
     public InMemoryKafkaCluster()
         : this(new InMemoryKafkaClusterOptions(), new KafkaFaultPlan())
@@ -57,8 +58,6 @@ public sealed class InMemoryKafkaCluster
     /// Gets the deterministic fault plan consumed by in-memory client operations.
     /// </summary>
     public IKafkaFaultPlan FaultPlan { get; }
-
-    internal int ConsumerGroupVersion => Volatile.Read(ref _consumerGroupVersion);
 
     public TimeSpan ProduceLatency
     {
@@ -149,9 +148,8 @@ public sealed class InMemoryKafkaCluster
 
             registrationId = ++_nextConsumerGroupRegistrationId;
             members[memberId] = new ConsumerGroupMemberState(registrationId, partitions);
-            var generation = _consumerGroupGenerations.GetValueOrDefault(groupId) + 1;
+            var generation = ++_nextConsumerGroupGeneration;
             _consumerGroupGenerations[groupId] = generation;
-            _consumerGroupVersion++;
             return generation;
         }
     }
@@ -177,10 +175,12 @@ public sealed class InMemoryKafkaCluster
 
             members.Remove(memberId);
 
-            _consumerGroupGenerations[groupId] = _consumerGroupGenerations.GetValueOrDefault(groupId) + 1;
-            _consumerGroupVersion++;
+            _consumerGroupGenerations[groupId] = ++_nextConsumerGroupGeneration;
             if (members.Count == 0)
+            {
                 _consumerGroupMembers.Remove(groupId);
+                _consumerGroupGenerations.TryRemove(groupId, out _);
+            }
         }
     }
 
@@ -215,8 +215,9 @@ public sealed class InMemoryKafkaCluster
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
 
-        lock (_gate)
-            return _consumerGroupGenerations.GetValueOrDefault(groupId);
+        return _consumerGroupGenerations.TryGetValue(groupId, out var generation)
+            ? generation
+            : 0;
     }
 
     public IReadOnlyList<InMemoryRecord> ReadRecords(string topic, int partition = 0)
