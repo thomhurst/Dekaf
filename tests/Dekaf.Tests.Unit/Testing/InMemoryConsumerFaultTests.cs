@@ -314,6 +314,72 @@ public sealed class InMemoryConsumerFaultTests
     }
 
     [Test]
+    public async Task AutoCommit_BarrierRejectsSeekUntilPositionAdvances()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync(Topic, "key", "value");
+        var consumer = CreateConsumer(
+            cluster,
+            enableAutoOffsetStore: true,
+            offsetCommitMode: OffsetCommitMode.Auto);
+        consumer.Subscribe(Topic);
+        var barrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId));
+
+        var operation = consumer.ConsumeOneAsync(Timeout.InfiniteTimeSpan).AsTask();
+        await barrier.WaitUntilEnteredAsync();
+
+        var actual = Assert.Throws<InvalidOperationException>(() =>
+            consumer.Seek(new TopicPartitionOffset(Topic, 0, 1)));
+
+        await Assert.That(actual.Message).Contains("automatic commit fault");
+        await Assert.That(consumer.GetPosition(Partition)).IsEqualTo(0);
+        await Assert.That(consumer.Paused).IsEmpty();
+        await Assert.That(await consumer.GetCommittedOffsetAsync(Partition)).IsNull();
+        await Assert.That(await consumer.ConsumeOneAsync(TimeSpan.Zero)).IsNull();
+        await Assert.That(barrier.Release()).IsTrue();
+
+        var result = await operation;
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(consumer.GetPosition(Partition)).IsEqualTo(1);
+        await Assert.That(await consumer.GetCommittedOffsetAsync(Partition)).IsEqualTo(1);
+
+        consumer.Seek(new TopicPartitionOffset(Topic, 0, 0));
+        await Assert.That(consumer.GetPosition(Partition)).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task AutoCommit_BarrierCancellationReleasesPositionReservation()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync(Topic, "key", "value");
+        var consumer = CreateConsumer(
+            cluster,
+            enableAutoOffsetStore: true,
+            offsetCommitMode: OffsetCommitMode.Auto);
+        consumer.Subscribe(Topic);
+        var barrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId));
+        using var cancellation = new CancellationTokenSource();
+
+        var operation = consumer
+            .ConsumeOneAsync(Timeout.InfiniteTimeSpan, cancellation.Token)
+            .AsTask();
+        await barrier.WaitUntilEnteredAsync();
+        cancellation.Cancel();
+
+        _ = await Assert.ThrowsAsync<OperationCanceledException>(() => operation);
+        consumer.Seek(new TopicPartitionOffset(Topic, 0, 1));
+
+        await Assert.That(consumer.GetPosition(Partition)).IsEqualTo(1);
+        await Assert.That(await consumer.GetCommittedOffsetAsync(Partition)).IsNull();
+        await Assert.That(barrier.Release()).IsTrue();
+    }
+
+    [Test]
     public async Task AutoCommit_PositionChangeBeforeAdvancementPreservesFault()
     {
         var cluster = new InMemoryKafkaCluster();

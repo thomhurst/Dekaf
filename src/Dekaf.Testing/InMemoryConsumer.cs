@@ -41,6 +41,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private readonly HashSet<TopicPartition> _paused = [];
     private readonly Dictionary<TopicPartition, long> _positions = [];
     private readonly Dictionary<TopicPartition, TopicPartitionOffset> _storedOffsets = [];
+    private Dictionary<TopicPartition, long>? _pendingAutoCommitAdvancements;
     private long _potentialFaultScopeVersion = -1;
     private int _potentialFaultConsumerStateVersion = -1;
     private bool _hasPotentialConsumerFault;
@@ -246,7 +247,16 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         get
         {
             lock (_gate)
-                return _paused.ToHashSet();
+            {
+                var paused = _paused.ToHashSet();
+                if (_pendingAutoCommitAdvancements is not null)
+                {
+                    foreach (var partition in _pendingAutoCommitAdvancements.Keys)
+                        paused.Remove(partition);
+                }
+
+                return paused;
+            }
         }
     }
 
@@ -321,6 +331,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
         lock (_gate)
         {
+            ThrowIfAutoCommitAdvancementPendingUnderLock();
             _subscriptionPattern = null;
             _subscription.Clear();
             foreach (var topic in topics.Where(topic => !string.IsNullOrWhiteSpace(topic)).Distinct(StringComparer.Ordinal))
@@ -364,6 +375,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
         lock (_gate)
         {
+            ThrowIfAutoCommitAdvancementPendingUnderLock();
             _subscriptionPattern = pattern;
             _subscription.Clear();
             ReplaceAssignment(topicPartitions);
@@ -379,6 +391,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
         lock (_gate)
         {
+            ThrowIfAutoCommitAdvancementPendingUnderLock();
             _subscriptionPattern = null;
             _subscription.Clear();
             _assignment.Clear();
@@ -554,20 +567,30 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                     continue;
                 }
 
-                if (autoCommitFaultScope.Operation == KafkaFaultOperation.Commit)
+                var hasAutoCommitReservation = autoCommitFaultScope.Operation == KafkaFaultOperation.Commit;
+                if (hasAutoCommitReservation)
                 {
-                    await ApplyAutomaticCommitFaultAsync(
+                    await ApplyOnDeliveryAutoCommitFaultAsync(
                         autoCommitFaultScope,
+                        partition,
+                        position,
                         cancellationToken).ConfigureAwait(false);
-                    ThrowIfDisposed();
                 }
 
-                if (!TryAdvanceSnapshotPosition(
+                var positionAdvanced = hasAutoCommitReservation
+                    ? TryAdvanceReservedSnapshotPosition(
                         partition,
                         record,
                         position,
                         consumerStateVersion,
-                        consumerGroupGeneration))
+                        consumerGroupGeneration)
+                    : TryAdvanceSnapshotPosition(
+                        partition,
+                        record,
+                        position,
+                        consumerStateVersion,
+                        consumerGroupGeneration);
+                if (!positionAdvanced)
                     continue;
 
                 yield return result;
@@ -1031,6 +1054,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
         lock (_gate)
         {
+            ThrowIfAutoCommitAdvancementPendingUnderLock();
             _subscriptionPattern = null;
             _subscription.Clear();
             ReplaceAssignment(partitions);
@@ -1044,6 +1068,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
         lock (_gate)
         {
+            ThrowIfAutoCommitAdvancementPendingUnderLock();
             _assignment.Clear();
             _paused.Clear();
             _positions.Clear();
@@ -1061,6 +1086,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
         lock (_gate)
         {
+            ThrowIfAutoCommitAdvancementPendingUnderLock();
             var changed = false;
             foreach (var offset in partitions)
             {
@@ -1086,6 +1112,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
         lock (_gate)
         {
+            ThrowIfAutoCommitAdvancementPendingUnderLock();
             var changed = false;
             foreach (var partition in partitions)
             {
@@ -1111,6 +1138,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
         lock (_gate)
         {
+            ThrowIfAutoCommitAdvancementPendingUnderLock();
             var changed = false;
             foreach (var partition in partitions)
                 changed |= _paused.Add(partition);
@@ -1126,6 +1154,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
         lock (_gate)
         {
+            ThrowIfAutoCommitAdvancementPendingUnderLock();
             var changed = false;
             foreach (var partition in partitions)
                 changed |= _paused.Remove(partition);
@@ -1244,6 +1273,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             throw new InvalidOperationException(
                 "Cannot change consumer position while a snapshot enumeration is active.");
         }
+
+        ThrowIfAutoCommitAdvancementPendingUnderLock();
     }
 
     private void ThrowIfSnapshotStateChangedUnderLock(
@@ -1325,15 +1356,20 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 continue;
             }
 
-            if (autoCommitFaultScope.Operation == KafkaFaultOperation.Commit)
+            var hasAutoCommitReservation = autoCommitFaultScope.Operation == KafkaFaultOperation.Commit;
+            if (hasAutoCommitReservation)
             {
-                await ApplyAutomaticCommitFaultAsync(
+                await ApplyOnDeliveryAutoCommitFaultAsync(
                     autoCommitFaultScope,
+                    partition,
+                    position,
                     cancellationToken).ConfigureAwait(false);
-                ThrowIfDisposed();
             }
 
-            if (!TryAdvancePosition(partition, record, position))
+            var positionAdvanced = hasAutoCommitReservation
+                ? TryAdvanceReservedPosition(partition, record, position)
+                : TryAdvancePosition(partition, record, position);
+            if (!positionAdvanced)
                 continue;
 
             return selectedResult;
@@ -1389,6 +1425,12 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     {
         lock (_gate)
         {
+            if (_pendingAutoCommitAdvancements is not null &&
+                _pendingAutoCommitAdvancements.ContainsKey(partition))
+            {
+                return false;
+            }
+
             if (!_positions.TryGetValue(partition, out var currentPosition) || currentPosition != expectedPosition)
                 return false;
 
@@ -1410,6 +1452,52 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         }
     }
 
+    private bool TryAdvanceReservedPosition(
+        TopicPartition partition,
+        InMemoryRecord record,
+        long expectedPosition)
+    {
+        lock (_gate)
+        {
+            if (_pendingAutoCommitAdvancements is null ||
+                !_pendingAutoCommitAdvancements.TryGetValue(partition, out var reservedPosition) ||
+                reservedPosition != expectedPosition)
+            {
+                return false;
+            }
+
+            try
+            {
+                if (!_positions.TryGetValue(partition, out var currentPosition) || currentPosition != expectedPosition)
+                    return false;
+
+                AdvancePositionUnderLock(partition, record);
+                return true;
+            }
+            finally
+            {
+                ClearPendingAutoCommitAdvancementUnderLock(partition, expectedPosition);
+            }
+        }
+    }
+
+    private void AdvancePositionUnderLock(TopicPartition partition, InMemoryRecord record)
+    {
+        _positions[partition] = record.Offset + 1;
+        if (_options.OffsetStoreTiming == OffsetStoreTiming.OnDelivery)
+        {
+            if (_options.EnableAutoOffsetStore)
+                StoreOffsetUnderLock(partition, record.Offset + 1);
+            if (_options.OffsetCommitMode == OffsetCommitMode.Auto)
+                CommitStoredOffsets();
+        }
+        else
+        {
+            _inDoubtPartition = partition;
+            _inDoubtNextOffset = record.Offset + 1;
+        }
+    }
+
     private bool TryAdvanceSnapshotPosition(
         TopicPartition partition,
         InMemoryRecord record,
@@ -1419,28 +1507,81 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     {
         lock (_gate)
         {
-            ThrowIfSnapshotStateChangedUnderLock(
+            if (_pendingAutoCommitAdvancements is not null &&
+                _pendingAutoCommitAdvancements.ContainsKey(partition))
+            {
+                return false;
+            }
+
+            return TryAdvanceSnapshotPositionUnderLock(
+                partition,
+                record,
+                expectedPosition,
                 consumerStateVersion,
                 consumerGroupGeneration);
-            if (!_positions.TryGetValue(partition, out var currentPosition) || currentPosition != expectedPosition)
-                return false;
-
-            _positions[partition] = record.Offset + 1;
-            if (_options.OffsetStoreTiming == OffsetStoreTiming.OnDelivery)
-            {
-                if (_options.EnableAutoOffsetStore)
-                    StoreOffsetUnderLock(partition, record.Offset + 1);
-                if (_options.OffsetCommitMode == OffsetCommitMode.Auto)
-                    CommitStoredOffsets();
-            }
-            else
-            {
-                _inDoubtPartition = partition;
-                _inDoubtNextOffset = record.Offset + 1;
-            }
-
-            return true;
         }
+    }
+
+    private bool TryAdvanceReservedSnapshotPosition(
+        TopicPartition partition,
+        InMemoryRecord record,
+        long expectedPosition,
+        int consumerStateVersion,
+        int consumerGroupGeneration)
+    {
+        lock (_gate)
+        {
+            if (_pendingAutoCommitAdvancements is null ||
+                !_pendingAutoCommitAdvancements.TryGetValue(partition, out var reservedPosition) ||
+                reservedPosition != expectedPosition)
+            {
+                return false;
+            }
+
+            try
+            {
+                return TryAdvanceSnapshotPositionUnderLock(
+                    partition,
+                    record,
+                    expectedPosition,
+                    consumerStateVersion,
+                    consumerGroupGeneration);
+            }
+            finally
+            {
+                ClearPendingAutoCommitAdvancementUnderLock(partition, expectedPosition);
+            }
+        }
+    }
+
+    private bool TryAdvanceSnapshotPositionUnderLock(
+        TopicPartition partition,
+        InMemoryRecord record,
+        long expectedPosition,
+        int consumerStateVersion,
+        int consumerGroupGeneration)
+    {
+        ThrowIfSnapshotStateChangedUnderLock(
+            consumerStateVersion,
+            consumerGroupGeneration);
+        if (!_positions.TryGetValue(partition, out var currentPosition) || currentPosition != expectedPosition)
+            return false;
+
+        _positions[partition] = record.Offset + 1;
+        if (_options.OffsetStoreTiming == OffsetStoreTiming.OnDelivery)
+        {
+            if (_options.EnableAutoOffsetStore)
+                StoreOffsetUnderLock(partition, record.Offset + 1);
+            if (_options.OffsetCommitMode == OffsetCommitMode.Auto)
+                CommitStoredOffsets();
+        }
+        else
+        {
+            _inDoubtPartition = partition;
+            _inDoubtNextOffset = record.Offset + 1;
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -1718,14 +1859,82 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             return true;
         }
 
+        if (_pendingAutoCommitAdvancements is not null &&
+            _pendingAutoCommitAdvancements.ContainsKey(partition))
+        {
+            return false;
+        }
+
         var pendingOffset = _options.EnableAutoOffsetStore
             ? partition
             : (TopicPartition?)null;
-        _ = TryGetMatchingCommitFaultScopeUnderLock(
-            pendingOffset,
-            requireInDoubtRecord: false,
-            out faultScope);
+        if (TryGetMatchingCommitFaultScopeUnderLock(
+                pendingOffset,
+                requireInDoubtRecord: false,
+                out faultScope))
+        {
+            if (!_paused.Add(partition))
+            {
+                faultScope = default;
+                return false;
+            }
+
+            (_pendingAutoCommitAdvancements ??= [])[partition] = expectedPosition;
+        }
+
         return true;
+    }
+
+    private async ValueTask ApplyOnDeliveryAutoCommitFaultAsync(
+        KafkaFaultScope faultScope,
+        TopicPartition partition,
+        long expectedPosition,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await ApplyAutomaticCommitFaultAsync(faultScope, cancellationToken).ConfigureAwait(false);
+            ThrowIfDisposed();
+        }
+        catch
+        {
+            ClearPendingAutoCommitAdvancement(partition, expectedPosition);
+            throw;
+        }
+    }
+
+    private void ClearPendingAutoCommitAdvancement(
+        TopicPartition partition,
+        long expectedPosition)
+    {
+        lock (_gate)
+            ClearPendingAutoCommitAdvancementUnderLock(partition, expectedPosition);
+    }
+
+    private void ClearPendingAutoCommitAdvancementUnderLock(
+        TopicPartition partition,
+        long expectedPosition)
+    {
+        if (_pendingAutoCommitAdvancements is null ||
+            !_pendingAutoCommitAdvancements.TryGetValue(partition, out var reservedPosition) ||
+            reservedPosition != expectedPosition)
+        {
+            return;
+        }
+
+        _pendingAutoCommitAdvancements.Remove(partition);
+        _paused.Remove(partition);
+        if (_pendingAutoCommitAdvancements.Count == 0)
+            _pendingAutoCommitAdvancements = null;
+    }
+
+    private void ThrowIfAutoCommitAdvancementPendingUnderLock()
+    {
+        if (_pendingAutoCommitAdvancements is not null)
+        {
+            throw new InvalidOperationException(
+                "Cannot change consumer assignment or position while an automatic commit fault is pending.");
+        }
     }
 
     private ValueTask ApplyInDoubtAutoCommitFaultAsync(CancellationToken cancellationToken)
