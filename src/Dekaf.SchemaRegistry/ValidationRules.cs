@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Buffers.Text;
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using Dekaf.Errors;
@@ -236,6 +237,266 @@ internal static class ValidationCelJsonReader
         CommentHandling = JsonCommentHandling.Disallow,
         MaxDepth = 128
     };
+}
+
+internal ref struct JsonObjectPropertyIndex
+{
+    private const int InitialEntryCapacity = 8;
+    private const int InitialBucketCapacity = InitialEntryCapacity * 2;
+
+    [InlineArray(InitialEntryCapacity)]
+    private struct InitialEntries
+    {
+        private Entry _element0;
+    }
+
+    [InlineArray(InitialBucketCapacity)]
+    private struct InitialBuckets
+    {
+        private int _element0;
+    }
+
+    private InitialEntries _initialEntries;
+    private InitialBuckets _initialBuckets;
+    private Entry[]? _rentedEntries;
+    private int[]? _rentedBuckets;
+    private int _entryCapacity;
+    private int _bucketCapacity;
+    private int _count;
+
+    public JsonObjectPropertyIndex()
+    {
+        Unsafe.SkipInit(out _initialEntries);
+        Unsafe.SkipInit(out _initialBuckets);
+        _rentedEntries = null;
+        _rentedBuckets = null;
+        _entryCapacity = InitialEntryCapacity;
+        _bucketCapacity = InitialBucketCapacity;
+        _count = 0;
+        Span<int> buckets = _initialBuckets;
+        buckets.Fill(-1);
+    }
+
+    internal readonly int Count => _count;
+
+    internal void Build(ref Utf8JsonReader reader, ReadOnlySpan<byte> source)
+    {
+        var scan = reader;
+        while (scan.Read() && scan.TokenType != JsonTokenType.EndObject)
+        {
+            if (scan.TokenType != JsonTokenType.PropertyName)
+                return;
+
+            AddOrReplace(ref scan, source);
+            if (!scan.Read())
+                return;
+            scan.Skip();
+        }
+    }
+
+    internal readonly bool IsLast(ref Utf8JsonReader reader, ReadOnlySpan<byte> source)
+    {
+        var hash = HashName(ref reader);
+        var bucket = (int)(hash & (uint)(_bucketCapacity - 1));
+        while (true)
+        {
+            var entryIndex = GetBucket(bucket);
+            if (entryIndex < 0)
+                return false;
+
+            var entry = GetEntry(entryIndex);
+            if (entry.Hash == hash && NameEquals(source, entry, ref reader))
+                return entry.TokenStart == checked((int)reader.TokenStartIndex);
+            bucket = (bucket + 1) & (_bucketCapacity - 1);
+        }
+    }
+
+    private void AddOrReplace(ref Utf8JsonReader reader, ReadOnlySpan<byte> source)
+    {
+        var hash = HashName(ref reader);
+        var bucket = FindBucket(source, hash, ref reader, out var entryIndex);
+        if (entryIndex >= 0)
+        {
+            SetEntry(entryIndex, CreateEntry(hash, ref reader));
+            return;
+        }
+
+        if (_count == _entryCapacity)
+        {
+            Grow();
+            bucket = FindBucket(source, hash, ref reader, out _);
+        }
+
+        SetEntry(_count, CreateEntry(hash, ref reader));
+        SetBucket(bucket, _count++);
+    }
+
+    internal static bool NamesEqual(
+        ReadOnlySpan<byte> source,
+        ref Utf8JsonReader left,
+        ref Utf8JsonReader right)
+    {
+        var hash = HashName(ref left);
+        return hash == HashName(ref right) &&
+            NameEquals(source, CreateEntry(hash, ref left), ref right);
+    }
+
+    internal void Dispose()
+    {
+        if (_rentedBuckets is not null)
+            ArrayPool<int>.Shared.Return(_rentedBuckets);
+        if (_rentedEntries is not null)
+            ArrayPool<Entry>.Shared.Return(_rentedEntries);
+    }
+
+    private readonly int FindBucket(
+        ReadOnlySpan<byte> source,
+        uint hash,
+        ref Utf8JsonReader reader,
+        out int entryIndex)
+    {
+        var bucket = (int)(hash & (uint)(_bucketCapacity - 1));
+        while (true)
+        {
+            entryIndex = GetBucket(bucket);
+            if (entryIndex < 0 ||
+                (GetEntry(entryIndex).Hash == hash &&
+                 NameEquals(source, GetEntry(entryIndex), ref reader)))
+            {
+                return bucket;
+            }
+            bucket = (bucket + 1) & (_bucketCapacity - 1);
+        }
+    }
+
+    private void Grow()
+    {
+        var entryCapacity = checked(_entryCapacity * 2);
+        var bucketCapacity = checked(entryCapacity * 2);
+        var entries = ArrayPool<Entry>.Shared.Rent(entryCapacity);
+        var buckets = ArrayPool<int>.Shared.Rent(bucketCapacity);
+        var newEntries = entries.AsSpan(0, entryCapacity);
+        var newBuckets = buckets.AsSpan(0, bucketCapacity);
+        for (var index = 0; index < _count; index++)
+            newEntries[index] = GetEntry(index);
+        newBuckets.Fill(-1);
+
+        for (var index = 0; index < _count; index++)
+        {
+            var bucket = (int)(newEntries[index].Hash & (uint)(bucketCapacity - 1));
+            while (newBuckets[bucket] >= 0)
+                bucket = (bucket + 1) & (bucketCapacity - 1);
+            newBuckets[bucket] = index;
+        }
+
+        if (_rentedBuckets is not null)
+            ArrayPool<int>.Shared.Return(_rentedBuckets);
+        if (_rentedEntries is not null)
+            ArrayPool<Entry>.Shared.Return(_rentedEntries);
+        _rentedEntries = entries;
+        _rentedBuckets = buckets;
+        _entryCapacity = entryCapacity;
+        _bucketCapacity = bucketCapacity;
+    }
+
+    private readonly Entry GetEntry(int index) => _rentedEntries is null
+        ? _initialEntries[index]
+        : _rentedEntries[index];
+
+    private void SetEntry(int index, Entry entry)
+    {
+        if (_rentedEntries is null)
+            _initialEntries[index] = entry;
+        else
+            _rentedEntries[index] = entry;
+    }
+
+    private readonly int GetBucket(int index) => _rentedBuckets is null
+        ? _initialBuckets[index]
+        : _rentedBuckets[index];
+
+    private void SetBucket(int index, int value)
+    {
+        if (_rentedBuckets is null)
+            _initialBuckets[index] = value;
+        else
+            _rentedBuckets[index] = value;
+    }
+
+    private static Entry CreateEntry(uint hash, ref Utf8JsonReader reader) => new()
+    {
+        Hash = hash,
+        NameStart = checked((int)reader.TokenStartIndex + 1),
+        NameLength = reader.ValueSpan.Length,
+        TokenStart = checked((int)reader.TokenStartIndex),
+        NameEscaped = reader.ValueIsEscaped
+    };
+
+    private static bool NameEquals(
+        ReadOnlySpan<byte> source,
+        Entry entry,
+        ref Utf8JsonReader reader)
+    {
+        if (!entry.NameEscaped)
+            return reader.ValueTextEquals(source.Slice(entry.NameStart, entry.NameLength));
+
+        var leftReader = new Utf8JsonReader(
+            source.Slice(entry.NameStart - 1, entry.NameLength + 2),
+            ValidationCelJsonReader.Options);
+        _ = leftReader.Read();
+        var maximumLength = leftReader.ValueSpan.Length;
+        byte[]? rented = null;
+        Span<byte> decoded = maximumLength <= 256
+            ? stackalloc byte[maximumLength]
+            : (rented = ArrayPool<byte>.Shared.Rent(maximumLength));
+        try
+        {
+            return reader.ValueTextEquals(decoded[..leftReader.CopyString(decoded)]);
+        }
+        finally
+        {
+            if (rented is not null)
+                ArrayPool<byte>.Shared.Return(rented);
+        }
+    }
+
+    private static uint HashName(ref Utf8JsonReader reader)
+    {
+        if (!reader.ValueIsEscaped)
+            return Hash(reader.ValueSpan);
+
+        var maximumLength = reader.ValueSpan.Length;
+        byte[]? rented = null;
+        Span<byte> decoded = maximumLength <= 256
+            ? stackalloc byte[maximumLength]
+            : (rented = ArrayPool<byte>.Shared.Rent(maximumLength));
+        try
+        {
+            return Hash(decoded[..reader.CopyString(decoded)]);
+        }
+        finally
+        {
+            if (rented is not null)
+                ArrayPool<byte>.Shared.Return(rented);
+        }
+    }
+
+    private static uint Hash(ReadOnlySpan<byte> value)
+    {
+        var hash = 2166136261u;
+        for (var index = 0; index < value.Length; index++)
+            hash = (hash ^ value[index]) * 16777619u;
+        return hash;
+    }
+
+    private struct Entry
+    {
+        internal uint Hash;
+        internal int NameStart;
+        internal int NameLength;
+        internal int TokenStart;
+        internal bool NameEscaped;
+    }
 }
 
 internal sealed class ValidationCelMemberTable
@@ -1564,14 +1825,16 @@ internal sealed class ValidationCelFunctionNode(
             return count;
         }
 
-        while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
+        var properties = new JsonObjectPropertyIndex();
+        try
         {
-            if (reader.TokenType != JsonTokenType.PropertyName || !reader.Read())
-                throw Unsupported("CEL map value contains invalid JSON.");
-            count++;
-            reader.Skip();
+            properties.Build(ref reader, value.Json.Span);
+            return properties.Count;
         }
-        return count;
+        finally
+        {
+            properties.Dispose();
+        }
     }
 }
 
