@@ -261,6 +261,14 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
                         return;
                     }
 
+                    var backgroundFailure = Volatile.Read(ref _backgroundFailure);
+                    if (backgroundFailure is not null)
+                    {
+                        command.Completion.TrySetException(
+                            CreateBackgroundFailureException(backgroundFailure));
+                        continue;
+                    }
+
                     try
                     {
                         var result = await ProcessOperationAsync(command).ConfigureAwait(false);
