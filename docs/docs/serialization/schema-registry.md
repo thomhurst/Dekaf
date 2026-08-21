@@ -1,6 +1,6 @@
 ---
 sidebar_position: 3
-description: "Confluent Schema Registry with Avro and Protobuf, JSON Schema validation, and client-side field-level encryption via AWS, Azure, GCP, or Vault KMS."
+description: "Confluent Schema Registry with Avro and Protobuf, JSON Schema validation, and client-side field-level encryption via AWS, Azure, GCP, Alibaba Cloud, or Vault KMS."
 ---
 
 # Schema Registry
@@ -494,6 +494,73 @@ Grant the runtime identity `cloudkms.cryptoKeyVersions.useToEncrypt` and
 `cloudkms.cryptoKeyVersions.useToDecrypt`, for example with the Cloud KMS CryptoKey Encrypter/
 Decrypter role. Cancellation is forwarded to the gRPC call. Provider errors omit service response
 text and key material, and temporary SDK plaintext buffers are cleared after copy-out.
+
+## Alibaba Cloud KMS
+
+Install the opt-in Alibaba Cloud provider only in applications whose Schema Registry client-side
+field-level encryption (CSFLE) keys are stored in Alibaba Cloud KMS:
+
+```bash
+dotnet add package Dekaf.SchemaRegistry.Kms.AliCloud
+```
+
+```csharp
+using Dekaf.SchemaRegistry;
+using Dekaf.SchemaRegistry.Kms.AliCloud;
+
+var aliCloudKms = new AliCloudKmsProvider();
+var csfle = new SchemaRegistryCsfleRuleHandler(schemaRegistry, [aliCloudKms]);
+```
+
+Use KMS type `alicloud-kms` and a key URI in
+`alicloud-kms://<region>/<key>` format. Percent-encoded key paths are decoded for JVM compatibility;
+for example, `alicloud-kms://cn-chengdu/alias%2Forders` selects region `cn-chengdu` and key ID
+`alias/orders`. The ciphertext bytes use Confluent's format: the Alibaba Cloud `CiphertextBlob` is
+stored as UTF-8, while plaintext sent to and received from the KMS API is Base64.
+
+The default constructor uses the Alibaba Cloud SDK credential chain. Prefer short-lived workload
+credentials. Explicit configuration can be supplied through `AliCloudKmsProviderOptions`, or per
+KEK through `SchemaRegistryKmsKeyReference.KmsProps`. Resolution order is KEK property, provider
+option, then environment variable. The provider accepts the current JVM property names below and
+the older Confluent .NET short names for compatibility.
+
+| Purpose | KEK property | Environment variable |
+| --- | --- | --- |
+| KMS endpoint | `alicloud.kms.endpoint` | `ALICLOUD_KMS_ENDPOINT` |
+| CA certificate file | `alicloud.kms.caFile` | `ALICLOUD_KMS_CA_FILE` |
+| Credential type | `alicloud.kms.credentialType` | `ALICLOUD_KMS_CREDENTIAL_TYPE` |
+| Access key ID | `alicloud.kms.accessKeyId` | `ALIBABA_CLOUD_ACCESS_KEY_ID` |
+| Access key secret | `alicloud.kms.accessKeySecret` | `ALIBABA_CLOUD_ACCESS_KEY_SECRET` |
+| STS security token | `alicloud.kms.securityToken` | `ALIBABA_CLOUD_SECURITY_TOKEN` |
+| RAM role ARN | `alicloud.kms.roleArn` | `ALICLOUD_KMS_ROLE_ARN`, then `ALIBABA_CLOUD_ROLE_ARN` |
+| Role session name | `alicloud.kms.roleSessionName` | `ALICLOUD_KMS_ROLE_SESSION_NAME`, then `ALIBABA_CLOUD_ROLE_SESSION_NAME` |
+| Role session duration | `alicloud.kms.roleSessionExpiration` | `ALICLOUD_KMS_ROLE_SESSION_EXPIRATION` |
+| Role policy | `alicloud.kms.policy` | `ALICLOUD_KMS_ROLE_POLICY` |
+| STS endpoint | `alicloud.kms.stsEndpoint` | `ALICLOUD_KMS_STS_ENDPOINT` |
+| External ID | `alicloud.kms.externalId` | `ALICLOUD_KMS_EXTERNAL_ID` |
+
+Credential type values are `default`, `access_key`, `sts`, and `ram_role_arn`; hyphens are also
+accepted. `access_key` requires an ID and secret. `sts` additionally requires a security token.
+`ram_role_arn` requires a role ARN and accepts either explicit source credentials or the default
+credential chain. Role sessions default to `alicloud-kms-csfle`; an explicit duration must be at least
+900 seconds. Schema Registry default rule parameters using the
+`rule.executors._default_.param.` prefix are also recognized.
+
+Endpoint and CA overrides affect every key using the matching resolved client configuration. The
+provider caches at most 64 thread-safe clients, so one instance can serve multiple regions without
+unbounded growth. `IAliCloudKmsClientFactory` supports application-controlled transports and
+credential brokers; clients returned by an injected factory remain caller-owned. Cancellation stops
+the caller's wait and is forwarded to injected clients;
+the upstream Alibaba Cloud SDK currently has no cancellation-token overload, so its underlying
+HTTP request may finish after cancellation.
+
+Grant only the KMS permissions needed to encrypt and decrypt DEKs. Do not put credentials in key
+URIs, logs, or source control. Managed credential and service-response strings cannot be zeroed by
+.NET; keep them short-lived. Only trusted administrators should control KEK KMS properties: endpoint,
+CA, and credential overrides can redirect requests or disclose credentials. The package participates
+in trimming and NativeAOT analysis, and the
+injected-client path is AOT-safe. The default SDK path is also rooted by the NativeAOT smoke test;
+upstream SDK reflection behavior remains subject to the Alibaba Cloud SDK version in use.
 
 ## HashiCorp Vault Transit KMS
 

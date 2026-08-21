@@ -1,0 +1,80 @@
+#nullable enable
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsClientConfiguration
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsClientConfiguration.AccessKeyId.get -> string?
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsClientConfiguration.AccessKeyId.init -> void
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsClientConfiguration.AccessKeySecret.get -> string?
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsClientConfiguration.AccessKeySecret.init -> void
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsClientConfiguration.AliCloudKmsClientConfiguration() -> void
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsClientConfiguration.CertificateAuthority.get -> string?
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsClientConfiguration.CertificateAuthority.init -> void
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsClientConfiguration.CredentialType.get -> string!
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsClientConfiguration.CredentialType.init -> void
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsClientConfiguration.Endpoint.get -> string?
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsClientConfiguration.Endpoint.init -> void
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsClientConfiguration.Policy.get -> string?
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsClientConfiguration.Policy.init -> void
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsClientConfiguration.RegionId.get -> string!
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsClientConfiguration.RegionId.init -> void
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsClientConfiguration.RoleArn.get -> string?
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsClientConfiguration.RoleArn.init -> void
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsClientConfiguration.RoleExternalId.get -> string?
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsClientConfiguration.RoleExternalId.init -> void
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsClientConfiguration.RoleSessionExpiration.get -> int?
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsClientConfiguration.RoleSessionExpiration.init -> void
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsClientConfiguration.RoleSessionName.get -> string?
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsClientConfiguration.RoleSessionName.init -> void
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsClientConfiguration.SecurityToken.get -> string?
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsClientConfiguration.SecurityToken.init -> void
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsClientConfiguration.StsEndpoint.get -> string?
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsClientConfiguration.StsEndpoint.init -> void
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProvider
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProvider.AliCloudKmsProvider(Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProviderOptions? options = null, string! type = "alicloud-kms") -> void
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProvider.AliCloudKmsProvider(Dekaf.SchemaRegistry.Kms.AliCloud.IAliCloudKmsClientFactory! clientFactory, Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProviderOptions? options = null, string! type = "alicloud-kms") -> void
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProvider.Type.get -> string!
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProvider.UnwrapKeyAsync(System.ReadOnlyMemory<byte> encryptedKeyMaterial, Dekaf.SchemaRegistry.SchemaRegistryKmsKeyReference! keyReference, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<byte[]!>
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProvider.WrapKeyAsync(System.ReadOnlyMemory<byte> keyMaterial, Dekaf.SchemaRegistry.SchemaRegistryKmsKeyReference! keyReference, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<byte[]!>
+const Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProvider.AccessKeyIdProperty = "alicloud.kms.accessKeyId" -> string!
+const Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProvider.AccessKeySecretProperty = "alicloud.kms.accessKeySecret" -> string!
+const Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProvider.CaFileProperty = "alicloud.kms.caFile" -> string!
+const Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProvider.CredentialTypeProperty = "alicloud.kms.credentialType" -> string!
+const Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProvider.DefaultType = "alicloud-kms" -> string!
+const Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProvider.EndpointProperty = "alicloud.kms.endpoint" -> string!
+const Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProvider.KeyUriPrefix = "alicloud-kms://" -> string!
+const Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProvider.PolicyProperty = "alicloud.kms.policy" -> string!
+const Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProvider.RoleArnProperty = "alicloud.kms.roleArn" -> string!
+const Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProvider.RoleExternalIdProperty = "alicloud.kms.externalId" -> string!
+const Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProvider.RoleSessionExpirationProperty = "alicloud.kms.roleSessionExpiration" -> string!
+const Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProvider.RoleSessionNameProperty = "alicloud.kms.roleSessionName" -> string!
+const Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProvider.SecurityTokenProperty = "alicloud.kms.securityToken" -> string!
+const Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProvider.StsEndpointProperty = "alicloud.kms.stsEndpoint" -> string!
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProviderOptions
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProviderOptions.AccessKeyId.get -> string?
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProviderOptions.AccessKeyId.init -> void
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProviderOptions.AccessKeySecret.get -> string?
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProviderOptions.AccessKeySecret.init -> void
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProviderOptions.AliCloudKmsProviderOptions() -> void
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProviderOptions.CaFile.get -> string?
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProviderOptions.CaFile.init -> void
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProviderOptions.CredentialType.get -> string?
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProviderOptions.CredentialType.init -> void
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProviderOptions.Endpoint.get -> string?
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProviderOptions.Endpoint.init -> void
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProviderOptions.Policy.get -> string?
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProviderOptions.Policy.init -> void
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProviderOptions.RoleArn.get -> string?
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProviderOptions.RoleArn.init -> void
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProviderOptions.RoleExternalId.get -> string?
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProviderOptions.RoleExternalId.init -> void
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProviderOptions.RoleSessionExpiration.get -> int?
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProviderOptions.RoleSessionExpiration.init -> void
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProviderOptions.RoleSessionName.get -> string?
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProviderOptions.RoleSessionName.init -> void
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProviderOptions.SecurityToken.get -> string?
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProviderOptions.SecurityToken.init -> void
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProviderOptions.StsEndpoint.get -> string?
+Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsProviderOptions.StsEndpoint.init -> void
+Dekaf.SchemaRegistry.Kms.AliCloud.IAliCloudKmsClient
+Dekaf.SchemaRegistry.Kms.AliCloud.IAliCloudKmsClient.DecryptAsync(System.ReadOnlyMemory<byte> ciphertext, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<byte[]!>
+Dekaf.SchemaRegistry.Kms.AliCloud.IAliCloudKmsClient.EncryptAsync(string! keyId, System.ReadOnlyMemory<byte> plaintext, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<byte[]!>
+Dekaf.SchemaRegistry.Kms.AliCloud.IAliCloudKmsClientFactory
+Dekaf.SchemaRegistry.Kms.AliCloud.IAliCloudKmsClientFactory.CreateClient(Dekaf.SchemaRegistry.Kms.AliCloud.AliCloudKmsClientConfiguration! configuration) -> Dekaf.SchemaRegistry.Kms.AliCloud.IAliCloudKmsClient!

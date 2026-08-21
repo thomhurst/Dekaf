@@ -13,6 +13,7 @@
     <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Kms.Vault\Dekaf.SchemaRegistry.Kms.Vault.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Kms.Aws\Dekaf.SchemaRegistry.Kms.Aws.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Kms.Azure\Dekaf.SchemaRegistry.Kms.Azure.csproj" />
+    <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Kms.AliCloud\Dekaf.SchemaRegistry.Kms.AliCloud.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Json\Dekaf.SchemaRegistry.Json.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Jsonata\Dekaf.SchemaRegistry.Jsonata.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Protobuf\Dekaf.SchemaRegistry.Protobuf.csproj" />

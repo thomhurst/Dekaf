@@ -15,6 +15,7 @@ using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Avro;
 using Dekaf.SchemaRegistry.Avro.Poco;
 using Dekaf.SchemaRegistry.Json;
+using Dekaf.SchemaRegistry.Kms.AliCloud;
 using Dekaf.SchemaRegistry.Protobuf;
 using Dekaf.Security.Sasl;
 using Dekaf.Serialization;
@@ -49,7 +50,40 @@ internal static class AotSmoke
         await RunSchemaRegistryCompatibilitySmokeAsync();
         await RunSchemaRegistryAssociationSmokeAsync();
         await RunSchemaRegistryPackageSmokeAsync();
+        await RunAliCloudKmsSmokeAsync();
         await RunCoreSmokeAsync();
+    }
+
+    private static async Task RunAliCloudKmsSmokeAsync()
+    {
+        var factory = new AotAliCloudKmsClientFactory();
+        var provider = new AliCloudKmsProvider(factory);
+        var reference = new SchemaRegistryKmsKeyReference
+        {
+            KmsType = AliCloudKmsProvider.DefaultType,
+            KmsKeyId = "alicloud-kms://cn-chengdu/alias%2Faot"
+        };
+        var plaintext = new byte[] { 1, 2, 3 };
+
+        var wrapped = await provider.WrapKeyAsync(plaintext, reference);
+        var unwrapped = await provider.UnwrapKeyAsync(wrapped, reference);
+
+        Require(unwrapped.AsSpan().SequenceEqual(plaintext), "AliCloud KMS provider AOT round-trip failed.");
+
+        // Root the SDK-backed path. Live I/O remains explicitly gated.
+        var liveKeyUri = Environment.GetEnvironmentVariable("DEKAF_ALICLOUD_KMS_KEY_URI");
+        if (!string.IsNullOrWhiteSpace(liveKeyUri))
+        {
+            var liveProvider = new AliCloudKmsProvider();
+            var liveReference = new SchemaRegistryKmsKeyReference
+            {
+                KmsType = AliCloudKmsProvider.DefaultType,
+                KmsKeyId = liveKeyUri
+            };
+            var liveWrapped = await liveProvider.WrapKeyAsync(plaintext, liveReference);
+            var liveUnwrapped = await liveProvider.UnwrapKeyAsync(liveWrapped, liveReference);
+            Require(liveUnwrapped.AsSpan().SequenceEqual(plaintext), "Live AliCloud KMS AOT round-trip failed.");
+        }
     }
 
     private static void RunSchemaRegistryHttpPipelineConstructionSmoke()
@@ -719,6 +753,31 @@ internal static class AotSmoke
         }
 
         private static Guid GuidFromId(int id) => new(id, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    }
+
+    private sealed class AotAliCloudKmsClientFactory : IAliCloudKmsClientFactory, IAliCloudKmsClient
+    {
+        public IAliCloudKmsClient CreateClient(AliCloudKmsClientConfiguration configuration) => this;
+
+        public ValueTask<byte[]> EncryptAsync(
+            string keyId,
+            ReadOnlyMemory<byte> plaintext,
+            CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult(Transform(plaintext.Span, cancellationToken));
+
+        public ValueTask<byte[]> DecryptAsync(
+            ReadOnlyMemory<byte> ciphertext,
+            CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult(Transform(ciphertext.Span, cancellationToken));
+
+        private static byte[] Transform(ReadOnlySpan<byte> input, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var output = input.ToArray();
+            for (var index = 0; index < output.Length; index++)
+                output[index] ^= 0xa5;
+            return output;
+        }
     }
 }
 
