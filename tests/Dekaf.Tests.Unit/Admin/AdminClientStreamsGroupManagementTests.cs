@@ -341,6 +341,62 @@ public sealed class AdminClientStreamsGroupManagementTests
     }
 
     [Test]
+    public async Task DeleteStreamsGroupOffsetsAsync_RetriesMetadataRefreshGroupErrors()
+    {
+        var (admin, connection) = CreateAdmin();
+        SetupFindCoordinator(connection);
+        connection.SendAsync<OffsetDeleteRequest, OffsetDeleteResponse>(
+                Arg.Any<OffsetDeleteRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(
+                ValueTask.FromResult(new OffsetDeleteResponse
+                {
+                    ErrorCode = ErrorCode.BrokerNotAvailable,
+                    Topics = []
+                }),
+                ValueTask.FromResult(DeleteOffsetsResponse(Deleted(0, ErrorCode.None))));
+        var partition = new TopicPartition(Topic, 0);
+
+        var results = await admin.DeleteStreamsGroupOffsetsAsync(FirstGroup, [partition]);
+
+        await Assert.That(results[partition].ErrorCode).IsEqualTo(ErrorCode.None);
+        await connection.Received(2).SendAsync<OffsetDeleteRequest, OffsetDeleteResponse>(
+            Arg.Any<OffsetDeleteRequest>(),
+            0,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task DeleteStreamsGroupOffsetsAsync_RetriesOnlyMetadataRefreshPartitionErrors()
+    {
+        var (admin, connection) = CreateAdmin();
+        SetupFindCoordinator(connection);
+        connection.SendAsync<OffsetDeleteRequest, OffsetDeleteResponse>(
+                Arg.Any<OffsetDeleteRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(
+                ValueTask.FromResult(DeleteOffsetsResponse(
+                    Deleted(0, ErrorCode.None),
+                    Deleted(1, ErrorCode.BrokerNotAvailable))),
+                ValueTask.FromResult(DeleteOffsetsResponse(Deleted(1, ErrorCode.None))));
+        var firstPartition = new TopicPartition(Topic, 0);
+        var secondPartition = new TopicPartition(Topic, 1);
+
+        var results = await admin.DeleteStreamsGroupOffsetsAsync(FirstGroup, [firstPartition, secondPartition]);
+
+        await Assert.That(results.Values.All(static result => result.ErrorCode == ErrorCode.None)).IsTrue();
+        await connection.Received(1).SendAsync<OffsetDeleteRequest, OffsetDeleteResponse>(
+            Arg.Is<OffsetDeleteRequest>(request =>
+                request.Topics.Count == 1 &&
+                request.Topics[0].Partitions.Count == 1 &&
+                request.Topics[0].Partitions[0].PartitionIndex == 1),
+            0,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
     public async Task DeleteStreamsGroupOffsetsAsync_GroupMissingAfterPartitionRetryIsSuccess()
     {
         var (admin, connection) = CreateAdmin();
