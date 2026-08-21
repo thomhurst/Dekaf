@@ -162,20 +162,29 @@ internal sealed class CompiledValidationRule
     [ThreadStatic]
     private static int t_resolvedMemberLength;
 
+    [ThreadStatic]
+    private static ValidationCelSizeSlot[]? t_sizes;
+
+    [ThreadStatic]
+    private static uint t_sizeGeneration;
+
     private readonly ValidationCelNode? _expression;
     private readonly string? _compilationError;
 
     private CompiledValidationRule(
         ValidationRule rule,
         ValidationCelNode? expression,
+        bool usesSize = false,
         string? compilationError = null)
     {
         Rule = rule;
         _expression = expression;
+        UsesSize = usesSize;
         _compilationError = compilationError;
     }
 
     internal ValidationRule Rule { get; }
+    internal bool UsesSize { get; }
 
     internal static CompiledValidationRule Compile(
         ValidationRule rule,
@@ -200,7 +209,7 @@ internal sealed class CompiledValidationRule
                 memberPaths,
                 usedMemberIndexes);
             var expression = parser.Parse();
-            return new CompiledValidationRule(rule, expression);
+            return new CompiledValidationRule(rule, expression, parser.UsesSize);
         }
         catch (SchemaRegistryRuleException exception)
         {
@@ -214,14 +223,19 @@ internal sealed class CompiledValidationRule
     internal ValidationResult Evaluate(
         ReadOnlyMemory<byte> value,
         long nowUnixMilliseconds,
-        ValidationCelMemberValues memberValues)
+        ValidationCelMemberValues memberValues,
+        ValidationCelSizeValues sizes)
     {
         if (_compilationError is not null)
             throw new SchemaRegistryRuleException(_compilationError);
 
         try
         {
-            var result = _expression!.Evaluate(new ValidationCelContext(value, nowUnixMilliseconds, memberValues));
+            var result = _expression!.Evaluate(new ValidationCelContext(
+                value,
+                nowUnixMilliseconds,
+                memberValues,
+                sizes));
             return result.Kind switch
             {
                 ValidationCelValueKind.Boolean => ValidationResult.FromBoolean(result.Boolean),
@@ -255,6 +269,21 @@ internal sealed class CompiledValidationRule
             generation = ++t_memberGeneration;
         }
         return new ValidationCelMemberValues(values, generation);
+    }
+
+    internal static ValidationCelSizeValues GetSizeValues(int count)
+    {
+        var sizes = t_sizes;
+        if (sizes is null || sizes.Length < count)
+            t_sizes = sizes = new ValidationCelSizeSlot[Math.Max(count, 8)];
+
+        var generation = unchecked(++t_sizeGeneration);
+        if (generation == 0)
+        {
+            Array.Clear(sizes);
+            generation = ++t_sizeGeneration;
+        }
+        return new ValidationCelSizeValues(sizes, generation);
     }
 
     internal static void BeginMemberResolution()
@@ -295,7 +324,8 @@ internal sealed class CompiledValidationRule
 internal readonly record struct ValidationCelContext(
     ReadOnlyMemory<byte> This,
     long NowUnixMilliseconds,
-    ValidationCelMemberValues MemberValues);
+    ValidationCelMemberValues MemberValues,
+    ValidationCelSizeValues Sizes);
 
 internal struct ValidationCelMemberSlot
 {
@@ -327,6 +357,31 @@ internal readonly struct ValidationCelMemberValues(
     }
 
     internal void Clear(int index) => values[index].Generation = 0;
+}
+
+internal struct ValidationCelSizeSlot
+{
+    internal int Value;
+    internal uint Generation;
+}
+
+internal readonly struct ValidationCelSizeValues(
+    ValidationCelSizeSlot[] values,
+    uint generation)
+{
+    internal bool TryGet(int index, out int value)
+    {
+        ref readonly var slot = ref values[index];
+        value = slot.Value;
+        return slot.Generation == generation;
+    }
+
+    internal void Set(int index, int value)
+    {
+        ref var slot = ref values[index];
+        slot.Value = value;
+        slot.Generation = generation;
+    }
 }
 
 internal static class ValidationCelJsonReader
@@ -813,7 +868,8 @@ internal readonly record struct ValidationCelValue(
     decimal Number,
     string? Literal,
     ReadOnlyMemory<byte> Utf8Literal,
-    bool NumberNegated = false)
+    bool NumberNegated = false,
+    int SizeIndex = -1)
 {
     internal static ValidationCelValue Missing { get; } = new(ValidationCelValueKind.Missing, default, false, 0, null, default);
     internal static ValidationCelValue Null { get; } = new(ValidationCelValueKind.Null, default, false, 0, null, default);
@@ -893,7 +949,7 @@ internal readonly record struct ValidationCelValue(
     internal static ValidationCelValue FromString(string value) =>
         new(ValidationCelValueKind.String, default, false, 0, value, Encoding.UTF8.GetBytes(value));
 
-    internal static ValidationCelValue FromJson(ReadOnlyMemory<byte> json)
+    internal static ValidationCelValue FromJson(ReadOnlyMemory<byte> json, int sizeIndex = -1)
     {
         if (json.IsEmpty)
             return Missing;
@@ -906,9 +962,12 @@ internal readonly record struct ValidationCelValue(
             JsonTokenType.True => True,
             JsonTokenType.False => False,
             JsonTokenType.Number => FromJsonNumber(json, ref reader),
-            JsonTokenType.String => new ValidationCelValue(ValidationCelValueKind.String, json, false, 0, null, default),
-            JsonTokenType.StartObject => new ValidationCelValue(ValidationCelValueKind.Object, json, false, 0, null, default),
-            JsonTokenType.StartArray => new ValidationCelValue(ValidationCelValueKind.Array, json, false, 0, null, default),
+            JsonTokenType.String => new ValidationCelValue(
+                ValidationCelValueKind.String, json, false, 0, null, default, SizeIndex: sizeIndex),
+            JsonTokenType.StartObject => new ValidationCelValue(
+                ValidationCelValueKind.Object, json, false, 0, null, default, SizeIndex: sizeIndex),
+            JsonTokenType.StartArray => new ValidationCelValue(
+                ValidationCelValueKind.Array, json, false, 0, null, default, SizeIndex: sizeIndex),
             _ => Missing
         };
     }
@@ -1293,7 +1352,8 @@ internal sealed class ValidationCelThisNode(int memberIndex) : ValidationCelNode
 {
     internal override ValidationCelValue Evaluate(ValidationCelContext context) =>
         ValidationCelValue.FromJson(
-            memberIndex < 0 ? context.This : context.MemberValues.Get(memberIndex, context.This));
+            memberIndex < 0 ? context.This : context.MemberValues.Get(memberIndex, context.This),
+            memberIndex + 1);
 }
 
 internal sealed class ValidationCelNowNode : ValidationCelNode
@@ -1882,7 +1942,7 @@ internal sealed class ValidationCelFunctionNode(
         if (name == "size")
         {
             RequireArgumentCount(1);
-            return ValidationCelValue.FromNumber(GetSize(arguments[0].Evaluate(context)));
+            return ValidationCelValue.FromNumber(GetSize(arguments[0].Evaluate(context), context.Sizes));
         }
 
         if (name is "startsWith" or "endsWith" or "contains")
@@ -1914,7 +1974,18 @@ internal sealed class ValidationCelFunctionNode(
             throw Unsupported($"CEL function '{name}' expects {expected.ToString(CultureInfo.InvariantCulture)} argument(s).");
     }
 
-    private static int GetSize(ValidationCelValue value)
+    private static int GetSize(ValidationCelValue value, ValidationCelSizeValues sizes)
+    {
+        if (value.SizeIndex >= 0 && sizes.TryGet(value.SizeIndex, out var cached))
+            return cached;
+
+        var size = GetSizeCore(value);
+        if (value.SizeIndex >= 0)
+            sizes.Set(value.SizeIndex, size);
+        return size;
+    }
+
+    private static int GetSizeCore(ValidationCelValue value)
     {
         if (value.Kind == ValidationCelValueKind.String)
             return ValidationCelStrings.GetLength(value);
@@ -2125,6 +2196,8 @@ internal sealed class ValidationCelParser
         return result;
     }
 
+    internal bool UsesSize { get; private set; }
+
     private ValidationCelNode ParseConditional()
     {
         var condition = ParseOr();
@@ -2236,6 +2309,7 @@ internal sealed class ValidationCelParser
         else if (TryTake(ValidationCelTokenKind.LeftParen))
         {
             var arguments = ParseArguments();
+            UsesSize |= identifier == "size";
             return identifier == "timestamp"
                 ? ParseTimestamp(arguments)
                 : new ValidationCelFunctionNode(identifier, arguments);

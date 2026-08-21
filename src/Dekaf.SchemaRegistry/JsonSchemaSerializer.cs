@@ -743,9 +743,21 @@ public sealed class JsonSchemaRegistrySerializer<T> :
 
         var payload = payloadBuffer.WrittenMemory;
         var validator = _validatorFactory?.GetOrCreate(schemaEntry.Schema!);
+        var validationRules = _validationRulesFactory?.GetOrCreate(schemaEntry.Schema!);
         if (_ruleExecutor is null)
         {
-            validator?.Validate(payload.Span, schemaId);
+            if (validationRules is null)
+            {
+                validator?.Validate(payload.Span, schemaId);
+            }
+            else
+            {
+                if (_validationRulesExecution == ValidationRulesExecution.BeforeDomainRules)
+                    validationRules.ValidateRules(payload, schemaId, _validationRulesFailFast);
+                validator?.Validate(payload.Span, schemaId);
+                if (_validationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+                    validationRules.ValidateRules(payload, schemaId, _validationRulesFailFast);
+            }
         }
         else
         {
@@ -758,18 +770,28 @@ public sealed class JsonSchemaRegistrySerializer<T> :
                 SchemaRegistryPayloadFormat.Json);
             try
             {
-                if (_ruleExecutor is SchemaRegistryRuleExecutor builtInRuleExecutor && validator is not null)
+                if (_ruleExecutor is SchemaRegistryRuleExecutor builtInRuleExecutor &&
+                    (validator is not null || validationRules is not null))
                 {
                     payload = builtInRuleExecutor.TransformSerializedPayload(
                         payload,
                         ruleContext,
                         validator,
-                        schemaId);
+                        schemaId,
+                        validationRules,
+                        _validationRulesExecution,
+                        _validationRulesFailFast);
                 }
                 else
                 {
+                    if (validationRules is not null &&
+                        _validationRulesExecution == ValidationRulesExecution.BeforeDomainRules)
+                        validationRules.ValidateRules(payload, schemaId, _validationRulesFailFast);
                     validator?.Validate(payload.Span, schemaId);
                     payload = _ruleExecutor.TransformSerializedPayload(payload, ruleContext);
+                    if (validationRules is not null &&
+                        _validationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+                        validationRules.ValidateRules(payload, schemaId, _validationRulesFailFast);
                 }
             }
             finally
