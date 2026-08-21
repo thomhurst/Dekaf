@@ -439,6 +439,10 @@ public class JsonSchemaValidationBenchmarks
         _inlineRulesValidator.ValidateRules(_inlineRulesJsonPayload, 1, failFast: false);
 
     [Benchmark]
+    public void ValidateInlineRulesFailFast() =>
+        _inlineRulesValidator.ValidateRules(_inlineRulesJsonPayload, 1, failFast: true);
+
+    [Benchmark]
     public void ValidateNestedInlineRules() =>
         _nestedInlineRulesValidator.ValidateRules(_nestedInlineRulesJsonPayload, 2, failFast: false);
 
