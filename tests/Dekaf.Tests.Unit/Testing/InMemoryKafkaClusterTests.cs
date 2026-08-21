@@ -68,6 +68,47 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
+    public async Task StreamsGroupManagement_RoundTripsOffsetsAndDeletesGroup()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        IAdminClient admin = new InMemoryAdminClient(cluster);
+        const string groupId = "streams-app";
+        var first = new TopicPartition("input", 0);
+        var second = new TopicPartition("input", 1);
+
+        var altered = await admin.AlterStreamsGroupOffsetsAsync(groupId,
+        [
+            new TopicPartitionOffset(first.Topic, first.Partition, 42, 7) { Metadata = "checkpoint" },
+            new TopicPartitionOffset(second.Topic, second.Partition, 84)
+        ]);
+        var listed = await admin.ListStreamsGroupOffsetsAsync(
+            new Dictionary<string, ListStreamsGroupOffsetsSpec>
+            {
+                [groupId] = new() { TopicPartitions = [first, second] }
+            });
+
+        await Assert.That(altered.Values.All(result => result.ErrorCode == ErrorCode.None)).IsTrue();
+        await Assert.That(listed[groupId].Offsets[first].Offset).IsEqualTo(42);
+        await Assert.That(listed[groupId].Offsets[first].LeaderEpoch).IsEqualTo(7);
+        await Assert.That(listed[groupId].Offsets[first].Metadata).IsEqualTo("checkpoint");
+
+        var deletedOffsets = await admin.DeleteStreamsGroupOffsetsAsync(groupId, [first]);
+        var afterOffsetDeletion = await admin.ListStreamsGroupOffsetsAsync(
+            new Dictionary<string, ListStreamsGroupOffsetsSpec> { [groupId] = new() });
+
+        await Assert.That(deletedOffsets[first].ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(afterOffsetDeletion[groupId].Offsets.ContainsKey(first)).IsFalse();
+        await Assert.That(afterOffsetDeletion[groupId].Offsets[second].Offset).IsEqualTo(84);
+
+        var deletedGroups = await admin.DeleteStreamsGroupsAsync([groupId]);
+        var afterGroupDeletion = await admin.ListStreamsGroupOffsetsAsync(
+            new Dictionary<string, ListStreamsGroupOffsetsSpec> { [groupId] = new() });
+
+        await Assert.That(deletedGroups[groupId].ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(afterGroupDeletion[groupId].Offsets).IsEmpty();
+    }
+
+    [Test]
     public async Task ProducerConsumer_RoundTripsThroughSerializers()
     {
         var cluster = new InMemoryKafkaCluster();

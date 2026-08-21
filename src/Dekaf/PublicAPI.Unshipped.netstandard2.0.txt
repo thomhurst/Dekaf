@@ -27,6 +27,74 @@ Dekaf.Admin.AdminClientTransactionRemediationExtensions
 Dekaf.Admin.ITransactionRemediationAdminClient
 Dekaf.Admin.ITransactionRemediationAdminClient.ForceTerminateTransactionAsync(string! transactionalId, Dekaf.Admin.ForceTerminateTransactionOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Admin.ForceTerminateTransactionResultInfo!>
 static Dekaf.Admin.AdminClientTransactionRemediationExtensions.ForceTerminateTransactionAsync(this Dekaf.Admin.IAdminClient! adminClient, string! transactionalId, Dekaf.Admin.ForceTerminateTransactionOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Admin.ForceTerminateTransactionResultInfo!>
+Dekaf.Admin.AdminClient.AlterStreamsGroupOffsetsAsync(string! groupId, System.Collections.Generic.IEnumerable<Dekaf.TopicPartitionOffset>! offsets, Dekaf.Admin.AlterStreamsGroupOffsetsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<Dekaf.TopicPartition, Dekaf.Admin.StreamsGroupOffsetOperationResult!>!>
+Dekaf.Admin.AdminClient.DeleteStreamsGroupOffsetsAsync(string! groupId, System.Collections.Generic.IEnumerable<Dekaf.TopicPartition>! partitions, Dekaf.Admin.DeleteStreamsGroupOffsetsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<Dekaf.TopicPartition, Dekaf.Admin.StreamsGroupOffsetOperationResult!>!>
+Dekaf.Admin.AdminClient.DeleteStreamsGroupsAsync(System.Collections.Generic.IEnumerable<string!>! groupIds, Dekaf.Admin.DeleteStreamsGroupsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.DeleteStreamsGroupResult!>!>
+Dekaf.Admin.AdminClient.ListStreamsGroupOffsetsAsync(System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.ListStreamsGroupOffsetsSpec!>! groupSpecs, Dekaf.Admin.ListStreamsGroupOffsetsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.StreamsGroupOffsetsResult!>!>
+Dekaf.Admin.AdminClientStreamsGroupManagementExtensions
+Dekaf.Admin.AlterStreamsGroupOffsetsOptions
+Dekaf.Admin.AlterStreamsGroupOffsetsOptions.AlterStreamsGroupOffsetsOptions() -> void
+Dekaf.Admin.AlterStreamsGroupOffsetsOptions.TimeoutMs.get -> int
+Dekaf.Admin.AlterStreamsGroupOffsetsOptions.TimeoutMs.init -> void
+Dekaf.Admin.DeleteStreamsGroupOffsetsOptions
+Dekaf.Admin.DeleteStreamsGroupOffsetsOptions.DeleteStreamsGroupOffsetsOptions() -> void
+Dekaf.Admin.DeleteStreamsGroupOffsetsOptions.TimeoutMs.get -> int
+Dekaf.Admin.DeleteStreamsGroupOffsetsOptions.TimeoutMs.init -> void
+Dekaf.Admin.DeleteStreamsGroupResult
+Dekaf.Admin.DeleteStreamsGroupResult.DeleteStreamsGroupResult() -> void
+Dekaf.Admin.DeleteStreamsGroupResult.ErrorCode.get -> Dekaf.Protocol.ErrorCode
+Dekaf.Admin.DeleteStreamsGroupResult.ErrorCode.init -> void
+Dekaf.Admin.DeleteStreamsGroupResult.GroupId.get -> string!
+Dekaf.Admin.DeleteStreamsGroupResult.GroupId.init -> void
+Dekaf.Admin.DeleteStreamsGroupsOptions
+Dekaf.Admin.DeleteStreamsGroupsOptions.DeleteStreamsGroupsOptions() -> void
+Dekaf.Admin.DeleteStreamsGroupsOptions.TimeoutMs.get -> int
+Dekaf.Admin.DeleteStreamsGroupsOptions.TimeoutMs.init -> void
+Dekaf.Admin.IStreamsGroupManagementAdminClient
+Dekaf.Admin.IStreamsGroupManagementAdminClient.AlterStreamsGroupOffsetsAsync(string! groupId, System.Collections.Generic.IEnumerable<Dekaf.TopicPartitionOffset>! offsets, Dekaf.Admin.AlterStreamsGroupOffsetsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<Dekaf.TopicPartition, Dekaf.Admin.StreamsGroupOffsetOperationResult!>!>
+Dekaf.Admin.IStreamsGroupManagementAdminClient.DeleteStreamsGroupOffsetsAsync(string! groupId, System.Collections.Generic.IEnumerable<Dekaf.TopicPartition>! partitions, Dekaf.Admin.DeleteStreamsGroupOffsetsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<Dekaf.TopicPartition, Dekaf.Admin.StreamsGroupOffsetOperationResult!>!>
+Dekaf.Admin.IStreamsGroupManagementAdminClient.DeleteStreamsGroupsAsync(System.Collections.Generic.IEnumerable<string!>! groupIds, Dekaf.Admin.DeleteStreamsGroupsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.DeleteStreamsGroupResult!>!>
+Dekaf.Admin.IStreamsGroupManagementAdminClient.ListStreamsGroupOffsetsAsync(System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.ListStreamsGroupOffsetsSpec!>! groupSpecs, Dekaf.Admin.ListStreamsGroupOffsetsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.StreamsGroupOffsetsResult!>!>
+Dekaf.Admin.ListStreamsGroupOffsetsOptions
+Dekaf.Admin.ListStreamsGroupOffsetsOptions.ListStreamsGroupOffsetsOptions() -> void
+Dekaf.Admin.ListStreamsGroupOffsetsOptions.RequireStable.get -> bool
+Dekaf.Admin.ListStreamsGroupOffsetsOptions.RequireStable.init -> void
+Dekaf.Admin.ListStreamsGroupOffsetsOptions.TimeoutMs.get -> int
+Dekaf.Admin.ListStreamsGroupOffsetsOptions.TimeoutMs.init -> void
+Dekaf.Admin.ListStreamsGroupOffsetsSpec
+Dekaf.Admin.ListStreamsGroupOffsetsSpec.ListStreamsGroupOffsetsSpec() -> void
+Dekaf.Admin.ListStreamsGroupOffsetsSpec.TopicPartitions.get -> System.Collections.Generic.IReadOnlyList<Dekaf.TopicPartition>?
+Dekaf.Admin.ListStreamsGroupOffsetsSpec.TopicPartitions.init -> void
+Dekaf.Admin.StreamsGroupOffsetDescription
+Dekaf.Admin.StreamsGroupOffsetDescription.ErrorCode.get -> Dekaf.Protocol.ErrorCode
+Dekaf.Admin.StreamsGroupOffsetDescription.ErrorCode.init -> void
+Dekaf.Admin.StreamsGroupOffsetDescription.LeaderEpoch.get -> int
+Dekaf.Admin.StreamsGroupOffsetDescription.LeaderEpoch.init -> void
+Dekaf.Admin.StreamsGroupOffsetDescription.Metadata.get -> string?
+Dekaf.Admin.StreamsGroupOffsetDescription.Metadata.init -> void
+Dekaf.Admin.StreamsGroupOffsetDescription.Offset.get -> long
+Dekaf.Admin.StreamsGroupOffsetDescription.Offset.init -> void
+Dekaf.Admin.StreamsGroupOffsetDescription.StreamsGroupOffsetDescription() -> void
+Dekaf.Admin.StreamsGroupOffsetDescription.TopicPartition.get -> Dekaf.TopicPartition
+Dekaf.Admin.StreamsGroupOffsetDescription.TopicPartition.init -> void
+Dekaf.Admin.StreamsGroupOffsetOperationResult
+Dekaf.Admin.StreamsGroupOffsetOperationResult.ErrorCode.get -> Dekaf.Protocol.ErrorCode
+Dekaf.Admin.StreamsGroupOffsetOperationResult.ErrorCode.init -> void
+Dekaf.Admin.StreamsGroupOffsetOperationResult.StreamsGroupOffsetOperationResult() -> void
+Dekaf.Admin.StreamsGroupOffsetOperationResult.TopicPartition.get -> Dekaf.TopicPartition
+Dekaf.Admin.StreamsGroupOffsetOperationResult.TopicPartition.init -> void
+Dekaf.Admin.StreamsGroupOffsetsResult
+Dekaf.Admin.StreamsGroupOffsetsResult.ErrorCode.get -> Dekaf.Protocol.ErrorCode
+Dekaf.Admin.StreamsGroupOffsetsResult.ErrorCode.init -> void
+Dekaf.Admin.StreamsGroupOffsetsResult.GroupId.get -> string!
+Dekaf.Admin.StreamsGroupOffsetsResult.GroupId.init -> void
+Dekaf.Admin.StreamsGroupOffsetsResult.Offsets.get -> System.Collections.Generic.IReadOnlyDictionary<Dekaf.TopicPartition, Dekaf.Admin.StreamsGroupOffsetDescription!>!
+Dekaf.Admin.StreamsGroupOffsetsResult.Offsets.init -> void
+Dekaf.Admin.StreamsGroupOffsetsResult.StreamsGroupOffsetsResult() -> void
+static Dekaf.Admin.AdminClientStreamsGroupManagementExtensions.AlterStreamsGroupOffsetsAsync(this Dekaf.Admin.IAdminClient! adminClient, string! groupId, System.Collections.Generic.IEnumerable<Dekaf.TopicPartitionOffset>! offsets, Dekaf.Admin.AlterStreamsGroupOffsetsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<Dekaf.TopicPartition, Dekaf.Admin.StreamsGroupOffsetOperationResult!>!>
+static Dekaf.Admin.AdminClientStreamsGroupManagementExtensions.DeleteStreamsGroupOffsetsAsync(this Dekaf.Admin.IAdminClient! adminClient, string! groupId, System.Collections.Generic.IEnumerable<Dekaf.TopicPartition>! partitions, Dekaf.Admin.DeleteStreamsGroupOffsetsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<Dekaf.TopicPartition, Dekaf.Admin.StreamsGroupOffsetOperationResult!>!>
+static Dekaf.Admin.AdminClientStreamsGroupManagementExtensions.DeleteStreamsGroupsAsync(this Dekaf.Admin.IAdminClient! adminClient, System.Collections.Generic.IEnumerable<string!>! groupIds, Dekaf.Admin.DeleteStreamsGroupsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.DeleteStreamsGroupResult!>!>
+static Dekaf.Admin.AdminClientStreamsGroupManagementExtensions.ListStreamsGroupOffsetsAsync(this Dekaf.Admin.IAdminClient! adminClient, System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.ListStreamsGroupOffsetsSpec!>! groupSpecs, Dekaf.Admin.ListStreamsGroupOffsetsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.StreamsGroupOffsetsResult!>!>
 Dekaf.Admin.AdminClient.DescribeReplicaLogDirsAsync(System.Collections.Generic.IEnumerable<Dekaf.Admin.TopicPartitionReplica>! replicas, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<Dekaf.Admin.TopicPartitionReplica, Dekaf.Admin.DescribeReplicaLogDirResultInfo!>!>
 Dekaf.Admin.DescribeReplicaLogDirResultInfo
 Dekaf.Admin.DescribeReplicaLogDirResultInfo.CurrentReplicaLogDir.get -> string?
