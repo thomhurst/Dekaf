@@ -168,6 +168,12 @@ internal sealed class CompiledValidationRule
     [ThreadStatic]
     private static uint t_sizeGeneration;
 
+    [ThreadStatic]
+    private static ValidationCelEqualitySlots t_equalities;
+
+    [ThreadStatic]
+    private static uint t_equalityGeneration;
+
     private readonly ValidationCelNode? _expression;
     private readonly string? _compilationError;
 
@@ -175,16 +181,19 @@ internal sealed class CompiledValidationRule
         ValidationRule rule,
         ValidationCelNode? expression,
         bool usesSize = false,
+        bool usesCachedEquality = false,
         string? compilationError = null)
     {
         Rule = rule;
         _expression = expression;
         UsesSize = usesSize;
+        UsesCachedEquality = usesCachedEquality;
         _compilationError = compilationError;
     }
 
     internal ValidationRule Rule { get; }
     internal bool UsesSize { get; }
+    internal bool UsesCachedEquality { get; }
 
     internal static CompiledValidationRule Compile(
         ValidationRule rule,
@@ -209,7 +218,11 @@ internal sealed class CompiledValidationRule
                 memberPaths,
                 usedMemberIndexes);
             var expression = parser.Parse();
-            return new CompiledValidationRule(rule, expression, parser.UsesSize);
+            return new CompiledValidationRule(
+                rule,
+                expression,
+                parser.UsesSize,
+                parser.UsesCachedEquality);
         }
         catch (SchemaRegistryRuleException exception)
         {
@@ -285,6 +298,45 @@ internal sealed class CompiledValidationRule
         }
         return new ValidationCelSizeValues(sizes, generation);
     }
+
+    internal static void BeginEqualityResolution()
+    {
+        if (unchecked(++t_equalityGeneration) == 0)
+        {
+            t_equalities = default;
+            t_equalityGeneration = 1;
+        }
+    }
+
+    internal static bool TryGetEquality(int leftIndex, int rightIndex, out bool value)
+    {
+        NormalizeEqualityIndexes(ref leftIndex, ref rightIndex);
+        ref readonly var slot = ref t_equalities[GetEqualitySlot(leftIndex, rightIndex)];
+        value = slot.Value;
+        return slot.Generation == t_equalityGeneration &&
+            slot.LeftIndex == leftIndex &&
+            slot.RightIndex == rightIndex;
+    }
+
+    internal static void SetEquality(int leftIndex, int rightIndex, bool value)
+    {
+        NormalizeEqualityIndexes(ref leftIndex, ref rightIndex);
+        ref var slot = ref t_equalities[GetEqualitySlot(leftIndex, rightIndex)];
+        slot.LeftIndex = leftIndex;
+        slot.RightIndex = rightIndex;
+        slot.Value = value;
+        slot.Generation = t_equalityGeneration;
+    }
+
+    private static void NormalizeEqualityIndexes(ref int leftIndex, ref int rightIndex)
+    {
+        if (leftIndex <= rightIndex)
+            return;
+        (leftIndex, rightIndex) = (rightIndex, leftIndex);
+    }
+
+    private static int GetEqualitySlot(int leftIndex, int rightIndex) =>
+        (int)(((uint)leftIndex * 397u ^ (uint)rightIndex) & 7u);
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     internal static ValidationCelSizeValues GrowSizeValues(
@@ -396,6 +448,20 @@ internal readonly struct ValidationCelSizeValues(
         slot.Value = value;
         slot.Generation = generation;
     }
+}
+
+internal struct ValidationCelEqualitySlot
+{
+    internal int LeftIndex;
+    internal int RightIndex;
+    internal bool Value;
+    internal uint Generation;
+}
+
+[InlineArray(8)]
+internal struct ValidationCelEqualitySlots
+{
+    private ValidationCelEqualitySlot _element0;
 }
 
 internal static class ValidationCelJsonReader
@@ -1364,6 +1430,8 @@ internal sealed class ValidationCelLiteralNode(ValidationCelValue value) : Valid
 
 internal sealed class ValidationCelThisNode(int memberIndex) : ValidationCelNode
 {
+    internal int ValueIndex => memberIndex + 1;
+
     internal override ValidationCelValue Evaluate(ValidationCelContext context) =>
         ValidationCelValue.FromJson(
             memberIndex < 0 ? context.This : context.MemberValues.Get(memberIndex, context.This),
@@ -1396,6 +1464,18 @@ internal sealed class ValidationCelBinaryNode(
     ValidationCelNode left,
     ValidationCelNode right) : ValidationCelNode
 {
+    private readonly int _leftValueIndex = left is ValidationCelThisNode leftThis
+        ? leftThis.ValueIndex
+        : -1;
+    private readonly int _rightValueIndex = right is ValidationCelThisNode rightThis
+        ? rightThis.ValueIndex
+        : -1;
+
+    internal bool UsesCachedEquality =>
+        (operation is ValidationCelTokenKind.Equal or ValidationCelTokenKind.NotEqual) &&
+        _leftValueIndex >= 0 &&
+        _rightValueIndex >= 0;
+
     internal override ValidationCelValue Evaluate(ValidationCelContext context)
     {
         var leftValue = left.Evaluate(context);
@@ -1421,7 +1501,7 @@ internal sealed class ValidationCelBinaryNode(
         };
     }
 
-    private static bool AreEqual(ValidationCelValue left, ValidationCelValue right)
+    private bool AreEqual(ValidationCelValue left, ValidationCelValue right)
     {
         if (left.Kind == ValidationCelValueKind.Missing || right.Kind == ValidationCelValueKind.Missing)
             throw Unsupported("Cannot compare a missing CEL member; guard optional members with has(...).");
@@ -1434,9 +1514,21 @@ internal sealed class ValidationCelBinaryNode(
             ValidationCelValueKind.Number => CompareNumbers(left, right) == 0,
             ValidationCelValueKind.String => ValidationCelStrings.Evaluate(left, right, ValidationCelStringOperation.Equal),
             ValidationCelValueKind.Object or ValidationCelValueKind.Array =>
-                ValidationCelJsonEquality.AreEqual(left.Json.Span, right.Json.Span),
+                AreJsonValuesEqual(left, right),
             _ => false
         };
+    }
+
+    private bool AreJsonValuesEqual(ValidationCelValue left, ValidationCelValue right)
+    {
+        if (_leftValueIndex < 0 || _rightValueIndex < 0)
+            return ValidationCelJsonEquality.AreEqual(left.Json.Span, right.Json.Span);
+        if (CompiledValidationRule.TryGetEquality(_leftValueIndex, _rightValueIndex, out var value))
+            return value;
+
+        value = ValidationCelJsonEquality.AreEqual(left.Json.Span, right.Json.Span);
+        CompiledValidationRule.SetEquality(_leftValueIndex, _rightValueIndex, value);
+        return value;
     }
 
     private static int Compare(ValidationCelValue left, ValidationCelValue right)
@@ -2211,6 +2303,7 @@ internal sealed class ValidationCelParser
     }
 
     internal bool UsesSize { get; private set; }
+    internal bool UsesCachedEquality { get; private set; }
 
     private ValidationCelNode ParseConditional()
     {
@@ -2244,7 +2337,9 @@ internal sealed class ValidationCelParser
         while (_current.Kind is ValidationCelTokenKind.Equal or ValidationCelTokenKind.NotEqual)
         {
             var operation = Take().Kind;
-            left = new ValidationCelBinaryNode(operation, left, ParseComparison());
+            var equality = new ValidationCelBinaryNode(operation, left, ParseComparison());
+            UsesCachedEquality |= equality.UsesCachedEquality;
+            left = equality;
         }
         return left;
     }

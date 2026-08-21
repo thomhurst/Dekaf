@@ -78,6 +78,21 @@ public class JsonSchemaValidationBenchmarks
         }
         """;
 
+    private const string RepeatedStructuralEqualityJsonSchema = """
+        {
+          "confluent:rules": [
+            { "name": "a", "expr": "this.left == this.right" },
+            { "name": "b", "expr": "this.left == this.right" },
+            { "name": "c", "expr": "this.left == this.right" },
+            { "name": "d", "expr": "this.left == this.right" },
+            { "name": "e", "expr": "this.right == this.left" },
+            { "name": "f", "expr": "this.right == this.left" },
+            { "name": "g", "expr": "this.left != this.other" },
+            { "name": "h", "expr": "this.left != this.other" }
+          ]
+        }
+        """;
+
     private const string SiblingInlineRulesJsonSchema = """
         {
           "confluent:rules": [
@@ -207,6 +222,8 @@ public class JsonSchemaValidationBenchmarks
     private ReadOnlyMemory<byte> _structuralEqualityJsonPayload;
     private ReadOnlyMemory<byte> _deepStructuralEqualityJsonPayload;
     private IJsonSchemaValidator _structuralEqualityValidator = null!;
+    private IJsonSchemaValidator _repeatedStructuralEqualityValidator = null!;
+    private ReadOnlyMemory<byte> _repeatedStructuralEqualityJsonPayload;
     private ReadOnlyMemory<byte> _siblingInlineRulesJsonPayload;
     private IJsonSchemaValidator _siblingInlineRulesValidator = null!;
     private ReadOnlyMemory<byte> _nestedMemberInlineRulesJsonPayload;
@@ -389,6 +406,16 @@ public class JsonSchemaValidationBenchmarks
         _structuralEqualityValidator.ValidateRules(
             _deepStructuralEqualityJsonPayload,
             3,
+            failFast: false);
+        _repeatedStructuralEqualityJsonPayload = CreateRepeatedStructuralEqualityPayload(depth: 48);
+        _repeatedStructuralEqualityValidator = inlineRulesFactory.GetOrCreate(new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = RepeatedStructuralEqualityJsonSchema
+        });
+        _repeatedStructuralEqualityValidator.ValidateRules(
+            _repeatedStructuralEqualityJsonPayload,
+            17,
             failFast: false);
         _siblingInlineRulesJsonPayload =
             """{"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8}"""u8.ToArray();
@@ -631,6 +658,13 @@ public class JsonSchemaValidationBenchmarks
             failFast: false);
 
     [Benchmark]
+    public void ValidateRepeatedStructuralEquality() =>
+        _repeatedStructuralEqualityValidator.ValidateRules(
+            _repeatedStructuralEqualityJsonPayload,
+            17,
+            failFast: false);
+
+    [Benchmark]
     public void ValidateSiblingInlineRules() =>
         _siblingInlineRulesValidator.ValidateRules(_siblingInlineRulesJsonPayload, 4, failFast: false);
 
@@ -734,6 +768,17 @@ public class JsonSchemaValidationBenchmarks
         json.Append(",\"right\":");
         AppendNestedValue(json, depth);
         json.Append(",\"values\":[],\"expected\":[]}");
+        return Encoding.UTF8.GetBytes(json.ToString());
+    }
+
+    private static byte[] CreateRepeatedStructuralEqualityPayload(int depth)
+    {
+        var json = new StringBuilder(depth * 24);
+        json.Append("{\"left\":");
+        AppendNestedValue(json, depth);
+        json.Append(",\"right\":");
+        AppendNestedValue(json, depth);
+        json.Append(",\"other\":{\"different\":true}}");
         return Encoding.UTF8.GetBytes(json.ToString());
     }
 
