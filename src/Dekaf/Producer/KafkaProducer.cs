@@ -1452,6 +1452,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         }
         catch (Exception ex)
         {
+            headers?.RemoveDeferredTraceContext();
             // If TryProduceSyncCore throws before setting result/exception on completion,
             // the rented completion would be leaked (never awaited = never returned to pool).
             // Set the exception on the completion so the caller can await it and it gets
@@ -1490,7 +1491,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 cancellationToken,
                 out var fastCompletion))
         {
-            return await AwaitProduceCompletionAsync(fastCompletion!, activity, metricsEnabled, message.Topic, cancellationToken).ConfigureAwait(false);
+            return await AwaitProduceCompletionAsync(
+                fastCompletion!, activity, metricsEnabled, message.Topic, cancellationToken).ConfigureAwait(false);
         }
 
         // Topic cache miss — fetch topic metadata inline and produce
@@ -1506,14 +1508,17 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            headers?.RemoveDeferredTraceContext(activity);
             completion.TrySetCanceled(cancellationToken);
         }
         catch (Exception ex)
         {
+            headers?.RemoveDeferredTraceContext(activity);
             completion.TrySetException(ex);
         }
 
-        return await AwaitProduceCompletionAsync(completion, activity, metricsEnabled, message.Topic, cancellationToken).ConfigureAwait(false);
+        return await AwaitProduceCompletionAsync(
+            completion, activity, metricsEnabled, message.Topic, cancellationToken).ConfigureAwait(false);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -5884,14 +5889,17 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            headers?.RemoveDeferredTraceContext(activity);
             completion.TrySetCanceled(cancellationToken);
         }
         catch (Exception ex)
         {
+            headers?.RemoveDeferredTraceContext(activity);
             completion.TrySetException(ex);
         }
 
-        return await AwaitProduceCompletionAsync(completion, activity, metricsEnabled, message.Topic, cancellationToken).ConfigureAwait(false);
+        return await AwaitProduceCompletionAsync(
+            completion, activity, metricsEnabled, message.Topic, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>

@@ -415,6 +415,60 @@ public class KafkaProducerFastPathTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task ProduceAsync_SerializerFailure_RestoresCallerOwnedTraceHeaders(
+        bool useAsyncSerializer)
+    {
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name == DekafDiagnostics.ActivitySourceName,
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData
+        };
+        ActivitySource.AddActivityListener(listener);
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-failing-serializer-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 4096,
+            LingerMs = 10,
+            RequestTimeoutMs = 500,
+            DeliveryTimeoutMs = 1000,
+            CloseTimeoutMs = 1000
+        };
+        var producer = useAsyncSerializer
+            ? new KafkaProducer<string, string>(
+                options,
+                Serializers.String,
+                Serializers.String,
+                asyncValueSerializer: ThrowingAsyncStringSerializer.Instance)
+            : new KafkaProducer<string, string>(
+                options,
+                Serializers.String,
+                ThrowingStringSerializer.Instance);
+        await using (producer)
+        {
+            await StopProducerBackgroundLoopsAsync(producer);
+            SeedProducerMetadata(producer);
+            SetInstanceField(producer, "_initialized", true);
+            var headers = new Headers(1).Add("existing", "value");
+
+            _ = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await producer.ProduceAsync(new ProducerMessage<string, string>
+                {
+                    Topic = Topic,
+                    Key = "key",
+                    Value = "value",
+                    Headers = headers
+                }));
+
+            await Assert.That(headers.Count).IsEqualTo(1);
+            await Assert.That(headers[0].Key).IsEqualTo("existing");
+        }
+    }
+
+    [Test]
     public async Task ProduceAsync_RecordHeaderSerializer_DoesNotMutateCallerHeaders()
     {
         using var listener = new ActivityListener
@@ -1373,6 +1427,33 @@ public class KafkaProducerFastPathTests
             destination.Advance(written);
             return ValueTask.CompletedTask;
         }
+    }
+
+    private sealed class ThrowingStringSerializer : ISerializer<string>
+    {
+        internal static readonly ThrowingStringSerializer Instance = new();
+
+        public void Serialize<TWriter>(
+            string value,
+            ref TWriter destination,
+            SerializationContext context)
+            where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
+            => throw new InvalidOperationException("Serialization failed.");
+    }
+
+    private sealed class ThrowingAsyncStringSerializer : IAsyncSerializer<string>
+    {
+        internal static readonly ThrowingAsyncStringSerializer Instance = new();
+
+        public ValueTask SerializeAsync(
+            string value,
+            IBufferWriter<byte> destination,
+            SerializationContext context,
+            CancellationToken cancellationToken = default) =>
+            ValueTask.FromException(new InvalidOperationException("Serialization failed."));
     }
 
     private sealed class OverlappingRecordHeaderAsyncSerializer : IAsyncSerializer<string>, IRecordHeaderSerializer

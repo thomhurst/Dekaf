@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Text;
 using Dekaf.Outbox;
 using Dekaf.Serialization;
@@ -121,5 +122,41 @@ public class OutboxBucketTests
 
         await Assert.That(message.Value).IsNull();
         await Assert.That(message.Key).IsNotNull();
+    }
+
+    [Test]
+    public async Task Create_RecordHeaderSerializerWithoutCallerHeaders_PersistsGeneratedHeader()
+    {
+        var message = OutboxMessage.Create(
+            "orders",
+            "order-1",
+            "created",
+            Serializers.String,
+            new RecordHeaderStringSerializer());
+
+        var headers = OutboxHeaderCodec.Decode(message.Headers);
+
+        await Assert.That(headers).IsNotNull();
+        await Assert.That(headers!).Count().IsEqualTo(1);
+        await Assert.That(headers[0].Key).IsEqualTo("identity");
+        await Assert.That(headers[0].GetValueAsString()).IsEqualTo("created");
+    }
+
+    private sealed class RecordHeaderStringSerializer : ISerializer<string>, IRecordHeaderSerializer
+    {
+        public bool ProducesRecordHeaders => true;
+
+        public void Serialize<TWriter>(
+            string value,
+            ref TWriter destination,
+            SerializationContext context)
+            where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
+        {
+            context.Headers!.Add("identity", value);
+            Serializers.String.Serialize(value, ref destination, context);
+        }
     }
 }

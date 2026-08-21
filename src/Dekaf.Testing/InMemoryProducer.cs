@@ -45,6 +45,8 @@ public sealed class InMemoryProducer<TKey, TValue> :
     private readonly IAsyncSerializer<TKey>? _asyncKeySerializer;
     private readonly IAsyncSerializer<TValue>? _asyncValueSerializer;
     private readonly bool _hasAsyncSerializers;
+    private readonly bool _keyProducesRecordHeaders;
+    private readonly bool _valueProducesRecordHeaders;
     private readonly object _transactionGate = new();
     private readonly long _producerId;
     private InMemoryTransaction? _activeTransaction;
@@ -143,6 +145,10 @@ public sealed class InMemoryProducer<TKey, TValue> :
             ? valueSerializer!
             : AsyncOnlySerializerPlaceholder<TValue>.Instance;
         _hasAsyncSerializers = asyncKeySerializer is not null || asyncValueSerializer is not null;
+        _keyProducesRecordHeaders = (asyncKeySerializer as IRecordHeaderSerializer
+            ?? keySerializer as IRecordHeaderSerializer) is { ProducesRecordHeaders: true };
+        _valueProducesRecordHeaders = (asyncValueSerializer as IRecordHeaderSerializer
+            ?? valueSerializer as IRecordHeaderSerializer) is { ProducesRecordHeaders: true };
     }
 
     public ValueTask InitializeAsync(CancellationToken cancellationToken = default)
@@ -457,6 +463,13 @@ public sealed class InMemoryProducer<TKey, TValue> :
         ThrowIfFatalTransactionError();
         if (transactionMarker is null)
             ThrowIfTransactionActive();
+
+        if (headers is null &&
+            (key is not null && _keyProducesRecordHeaders
+             || value is not null && _valueProducesRecordHeaders))
+        {
+            headers = new Headers();
+        }
 
         if (_hasAsyncSerializers)
         {

@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Reflection;
 using System.Text;
 using Dekaf.Admin;
@@ -106,6 +107,33 @@ public sealed class InMemoryKafkaClusterTests
         await Assert.That(result.Value.Value).IsEqualTo("created");
         await Assert.That(result.Value.Headers.Single().GetValueAsString()).IsEqualTo("abc");
         await Assert.That(result.Value.TimestampMs).IsEqualTo(1234);
+    }
+
+    [Test]
+    public async Task Producer_RecordHeaderSerializerWithoutCallerHeaders_PersistsGeneratedHeader()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("orders");
+        await using var producer = new InMemoryProducer<string, string>(
+            cluster,
+            Serializers.String,
+            new RecordHeaderStringSerializer());
+        await using var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions
+            {
+                GroupId = "orders-service",
+                AutoOffsetReset = AutoOffsetReset.Earliest
+            });
+
+        await producer.ProduceAsync("orders", "order-1", "created");
+        consumer.Subscribe("orders");
+        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1));
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(result!.Value.Headers).Count().IsEqualTo(1);
+        await Assert.That(result.Value.Headers[0].Key).IsEqualTo("identity");
+        await Assert.That(result.Value.Headers[0].GetValueAsString()).IsEqualTo("created");
     }
 
     [Test]
@@ -1141,6 +1169,24 @@ public sealed class InMemoryKafkaClusterTests
     {
         public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
             context.Headers is null ? "no-headers" : "headers";
+    }
+
+    private sealed class RecordHeaderStringSerializer : ISerializer<string>, IRecordHeaderSerializer
+    {
+        public bool ProducesRecordHeaders => true;
+
+        public void Serialize<TWriter>(
+            string value,
+            ref TWriter destination,
+            SerializationContext context)
+            where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
+        {
+            context.Headers!.Add("identity", value);
+            Serializers.String.Serialize(value, ref destination, context);
+        }
     }
 
     private sealed class AsyncStringDeserializer : IAsyncDeserializer<string>
