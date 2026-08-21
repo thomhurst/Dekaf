@@ -804,6 +804,16 @@ public sealed class InMemoryKafkaCluster
         }
     }
 
+    internal IReadOnlyDictionary<TopicPartition, TopicPartitionOffset> GetGroupOffsetDetails(string groupId)
+    {
+        lock (_gate)
+        {
+            return _consumerGroupOffsets.TryGetValue(groupId, out var offsets)
+                ? new Dictionary<TopicPartition, TopicPartitionOffset>(offsets)
+                : new Dictionary<TopicPartition, TopicPartitionOffset>();
+        }
+    }
+
     internal IReadOnlyList<string> ListGroups()
     {
         lock (_gate)
