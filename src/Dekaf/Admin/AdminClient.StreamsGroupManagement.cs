@@ -304,7 +304,8 @@ public sealed partial class AdminClient
         {
             return new Errors.GroupException(
                 groupError,
-                $"ListStreamsGroupOffsets failed for group '{groupId}': {groupError}")
+                $"ListStreamsGroupOffsets failed for group '{groupId}': {groupError}",
+                isRetriable: true)
             {
                 GroupId = groupId
             };
@@ -344,7 +345,8 @@ public sealed partial class AdminClient
                 {
                     retryFailure ??= new Errors.GroupException(
                         partition.ErrorCode,
-                        $"ListStreamsGroupOffsets failed for {topicName}-{partition.PartitionIndex}: {partition.ErrorCode}")
+                        $"ListStreamsGroupOffsets failed for {topicName}-{partition.PartitionIndex}: {partition.ErrorCode}",
+                        isRetriable: true)
                     {
                         GroupId = groupId
                     };
@@ -451,7 +453,8 @@ public sealed partial class AdminClient
                     {
                         retryFailure ??= new Errors.GroupException(
                             partition.ErrorCode,
-                            $"AlterStreamsGroupOffsets failed for {topicName}-{partition.PartitionIndex}: {partition.ErrorCode}")
+                            $"AlterStreamsGroupOffsets failed for {topicName}-{partition.PartitionIndex}: {partition.ErrorCode}",
+                            isRetriable: true)
                         {
                             GroupId = groupId
                         };
@@ -527,7 +530,8 @@ public sealed partial class AdminClient
 
                 throw new Errors.GroupException(
                     groupError,
-                    $"DeleteStreamsGroupOffsets failed for group '{groupId}': {groupError}")
+                    $"DeleteStreamsGroupOffsets failed for group '{groupId}': {groupError}",
+                    isRetriable: true)
                 {
                     GroupId = groupId
                 };
@@ -555,7 +559,8 @@ public sealed partial class AdminClient
                             deleteMayHaveApplied = true;
                             retryFailure ??= new Errors.GroupException(
                                 partition.ErrorCode,
-                                $"DeleteStreamsGroupOffsets failed for {topic.Name}-{partition.PartitionIndex}: {partition.ErrorCode}")
+                                $"DeleteStreamsGroupOffsets failed for {topic.Name}-{partition.PartitionIndex}: {partition.ErrorCode}",
+                                isRetriable: true)
                             {
                                 GroupId = groupId
                             };
@@ -646,7 +651,8 @@ public sealed partial class AdminClient
 
                         retryFailure ??= new Errors.GroupException(
                             errorCode,
-                            $"DeleteStreamsGroups failed for group '{groupResult.GroupId}': {errorCode}")
+                            $"DeleteStreamsGroups failed for group '{groupResult.GroupId}': {errorCode}",
+                            isRetriable: true)
                         {
                             GroupId = groupResult.GroupId
                         };
