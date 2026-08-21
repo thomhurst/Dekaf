@@ -109,6 +109,18 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
+    public async Task StreamsGroupManagement_EmptyAlterDoesNotCreateGroup()
+    {
+        IAdminClient admin = new InMemoryAdminClient(new InMemoryKafkaCluster());
+
+        var altered = await admin.AlterStreamsGroupOffsetsAsync("empty-streams", []);
+        var groups = await admin.ListStreamsGroupsAsync();
+
+        await Assert.That(altered).IsEmpty();
+        await Assert.That(groups.Any(group => group.GroupId == "empty-streams")).IsFalse();
+    }
+
+    [Test]
     public async Task ProducerConsumer_RoundTripsThroughSerializers()
     {
         var cluster = new InMemoryKafkaCluster();

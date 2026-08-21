@@ -446,6 +446,7 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
         await Assert.That(altered[partition].ErrorCode).IsEqualTo(ErrorCode.None);
         await Assert.That(listed[groupId].ErrorCode).IsEqualTo(ErrorCode.None);
         await Assert.That(listed[groupId].Offsets[partition].Offset).IsEqualTo(42);
+        await Assert.That(listed[groupId].Offsets[partition].LeaderEpoch).IsEqualTo(3);
         await Assert.That(listed[groupId].Offsets[partition].Metadata).IsEqualTo("checkpoint");
 
         var deletedOffsets = await admin.DeleteStreamsGroupOffsetsAsync(groupId, [partition])
@@ -457,6 +458,7 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
             }).ConfigureAwait(false);
 
         await Assert.That(deletedOffsets[partition].ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(afterOffsetDeletion[groupId].Offsets[partition].ErrorCode).IsEqualTo(ErrorCode.None);
         await Assert.That(afterOffsetDeletion[groupId].Offsets[partition].Offset).IsEqualTo(-1);
 
         await admin.AlterStreamsGroupOffsetsAsync(
