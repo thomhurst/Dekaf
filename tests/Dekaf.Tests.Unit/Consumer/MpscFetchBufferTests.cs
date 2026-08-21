@@ -916,7 +916,10 @@ public class MpscFetchBufferTests
         try
         {
             await firstReserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
-            waitForReadable = buffer.WaitToReadAsync(30_000, CancellationToken.None).AsTask();
+            // Keep the buffer timeout out of the ordering proof. Under full-suite load the
+            // test continuation may be delayed while slot 0 is intentionally blocked, so a
+            // wall-clock timeout can win before finally releases the producer.
+            waitForReadable = buffer.WaitToReadAsync(Timeout.Infinite, CancellationToken.None).AsTask();
             await TestWait.UntilAsync(
                 () => GetConsumerWaiting(buffer) == 1 && IsReadWaiterActive(buffer),
                 TimeSpan.FromSeconds(5));
@@ -941,7 +944,9 @@ public class MpscFetchBufferTests
             ExceptionDispatchInfo.Capture(secondWriteFailure).Throw();
 
         await Assert.That(firstWritten).IsTrue();
-        await Assert.That(await waitForReadable!).IsTrue();
+        // firstWrite completion proves slot 0 was published and its reader wake was queued.
+        // Bound only the subsequent completion observation so a product wake bug still fails.
+        await Assert.That(await waitForReadable!.WaitAsync(TimeSpan.FromSeconds(30))).IsTrue();
         await Assert.That(buffer.TryRead(out var firstRead)).IsTrue();
         await Assert.That(firstRead!.PartitionIndex).IsEqualTo(1);
         firstRead.Dispose();
