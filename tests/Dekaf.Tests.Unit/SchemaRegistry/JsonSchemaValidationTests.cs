@@ -1091,6 +1091,25 @@ public sealed class JsonSchemaValidationTests
     }
 
     [Test]
+    public void InlineRules_NegateDecimalMinValueExactly()
+    {
+        const string schemaText = """
+            {
+              "confluent:rules": [{
+                "name": "decimal-boundary",
+                "expr": "-this == 79228162514264337593543950335 && -(-this) == this"
+              }]
+            }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
+
+        validator.ValidateRules(
+            "-79228162514264337593543950335"u8.ToArray(),
+            23,
+            failFast: false);
+    }
+
+    [Test]
     public async Task InlineRules_EvaluateSiblingMemberRulesAgainstSharedValues()
     {
         const string schemaText = """
@@ -1313,6 +1332,8 @@ public sealed class JsonSchemaValidationTests
 
         validator.ValidateRules("""{"value":0,"value":"ok"}"""u8.ToArray(), 25, failFast: false);
         validator.ValidateRules("""{"value":0,"value":"ok"}"""u8.ToArray(), 25, failFast: true);
+        validator.ValidateRules("""{"value":null,"value":"ok"}"""u8.ToArray(), 25, failFast: false);
+        validator.ValidateRules("""{"value":null,"value":"ok"}"""u8.ToArray(), 25, failFast: true);
         Assert.Throws<ValidationRulesFailedException>(() => validator.ValidateRules(
             """{"value":"ok","value":0}"""u8.ToArray(),
             25,
@@ -1875,6 +1896,99 @@ public sealed class JsonSchemaValidationTests
         Assert.Throws<ValidationRulesFailedException>(() => deserializer.Deserialize(
             CreateWirePayload(writerSchemaId, """{"id":6}"""),
             Context));
+    }
+
+    [Test]
+    public async Task Deserializer_LatestVersionMarkerValidatesWriterRulesAfterDomainBoundary()
+    {
+        const string writerSchemaText = """
+            {
+              "confluent:rules": [{ "name": "writer", "expr": "this.id == 7" }]
+            }
+            """;
+        const string readerSchemaText = """
+            {
+              "confluent:rules": [{ "name": "reader", "expr": "this.latest == 'ok'" }]
+            }
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        var writerSchemaId = await registry.RegisterSchemaAsync(
+            "validation-value",
+            CreateSchema(writerSchemaText));
+        _ = await registry.RegisterSchemaAsync(
+            "validation-value",
+            CreateSchema(readerSchemaText));
+        await using var deserializer = new JsonSchemaRegistryDeserializer<ValidationPayload>(
+            registry,
+            jsonOptions: null,
+            validationOptions: new JsonSchemaValidationOptions
+            {
+                ValidatorFactory = new StreamingJsonSchemaValidatorFactory(registry),
+                Mode = JsonSchemaValidationMode.None,
+                ValidationRulesExecution = ValidationRulesExecution.AfterDomainRules
+            },
+            config: new SchemaRegistryDeserializerConfig { UseLatestVersion = true });
+
+        var result = deserializer.Deserialize(
+            CreateWirePayload(writerSchemaId, """{"id":7}"""),
+            Context);
+
+        await Assert.That(result.Id).IsEqualTo(7);
+        Assert.Throws<ValidationRulesFailedException>(() => deserializer.Deserialize(
+            CreateWirePayload(writerSchemaId, """{"id":6}"""),
+            Context));
+    }
+
+    [Test]
+    public async Task Deserializer_LatestVersionValidatesTransformedReaderDomainPayload()
+    {
+        const string writerSchemaText = """
+            {
+              "confluent:rules": [{ "name": "writer", "expr": "this.id == 7" }]
+            }
+            """;
+        const string readerSchemaText = """
+            {
+              "confluent:rules": [{ "name": "reader", "expr": "this.name == 'ok'" }]
+            }
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        var writerSchemaId = await registry.RegisterSchemaAsync(
+            "validation-value",
+            CreateSchema(writerSchemaText));
+        _ = await registry.RegisterSchemaAsync(
+            "validation-value",
+            new Schema
+            {
+                SchemaType = SchemaType.Json,
+                SchemaString = readerSchemaText,
+                RuleSet = new SchemaRuleSet
+                {
+                    DomainRules = [CreateRule("domain", "DOMAIN", SchemaRuleMode.Read)]
+                }
+            });
+        var calls = new List<string>();
+        var executor = new SchemaRegistryRuleExecutor([
+            new ReplacingRuleHandler("DOMAIN", """{"name":"ok"}"""u8.ToArray(), calls)
+        ]);
+        await using var deserializer = new JsonSchemaRegistryDeserializer<NamePayload>(
+            registry,
+            jsonOptions: null,
+            validationOptions: new JsonSchemaValidationOptions
+            {
+                ValidatorFactory = new StreamingJsonSchemaValidatorFactory(registry),
+                Mode = JsonSchemaValidationMode.None,
+                ValidationRulesExecution = ValidationRulesExecution.AfterDomainRules
+            },
+            config: new SchemaRegistryDeserializerConfig { UseLatestVersion = true },
+            ruleExecutor: executor);
+
+        var result = deserializer.Deserialize(
+            CreateWirePayload(writerSchemaId, """{"id":7}"""),
+            Context);
+
+        await Assert.That(result.Name).IsEqualTo("ok");
+        await Assert.That(calls).IsEquivalentTo(["domain"]);
     }
 
     [Test]

@@ -167,7 +167,7 @@ internal sealed class SchemaRegistryMigrationRunner
                     $"Migration rules require {nameof(SchemaRegistryRuleExecutor)}.");
             }
 
-            if (_ruleExecutor is null)
+            if (_ruleExecutor is null || ReferenceEquals(_ruleExecutor, MarkerRuleExecutor))
                 return new MigrationResult(payload, plan.ReaderSchema, schemaId, writerSchema);
 
             var readerContext = RentContext(
@@ -248,16 +248,26 @@ internal sealed class SchemaRegistryMigrationRunner
             payloadFormat,
             taggedFieldTransformers,
             taggedFieldSchema: payloadSchema);
+        bool readerDomainTransformed;
         try
         {
-            payload = _schemaRuleExecutor.TransformDeserializedDomainPayload(payload, context);
+            payload = _schemaRuleExecutor.TransformDeserializedDomainPayload(
+                payload,
+                context,
+                out readerDomainTransformed);
         }
         finally
         {
             context.Return();
         }
 
-        return new MigrationResult(payload, plan.ReaderSchema, payloadSchemaId, payloadSchema);
+        return readerDomainTransformed && payloadFormat == SchemaRegistryPayloadFormat.Json
+            ? new MigrationResult(
+                payload,
+                plan.ReaderSchema,
+                plan.ReaderSchema.Id,
+                plan.ReaderSchema.Schema)
+            : new MigrationResult(payload, plan.ReaderSchema, payloadSchemaId, payloadSchema);
     }
 
     // Kept separate from Transform so inline JSON validation adds no branch or argument
@@ -421,16 +431,26 @@ internal sealed class SchemaRegistryMigrationRunner
             payloadFormat,
             taggedFieldTransformers,
             taggedFieldSchema: payloadSchema);
+        bool readerDomainTransformed;
         try
         {
-            payload = _schemaRuleExecutor.TransformDeserializedDomainPayload(payload, context);
+            payload = _schemaRuleExecutor.TransformDeserializedDomainPayload(
+                payload,
+                context,
+                out readerDomainTransformed);
         }
         finally
         {
             context.Return();
         }
 
-        return new MigrationResult(payload, plan.ReaderSchema, payloadSchemaId, payloadSchema);
+        return readerDomainTransformed && payloadFormat == SchemaRegistryPayloadFormat.Json
+            ? new MigrationResult(
+                payload,
+                plan.ReaderSchema,
+                plan.ReaderSchema.Id,
+                plan.ReaderSchema.Schema)
+            : new MigrationResult(payload, plan.ReaderSchema, payloadSchemaId, payloadSchema);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
