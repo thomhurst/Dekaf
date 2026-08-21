@@ -1,4 +1,5 @@
 using Dekaf.SchemaRegistry;
+using Dekaf.SchemaRegistry.Json;
 using Dekaf.Serialization;
 using System.Buffers;
 using System.Buffers.Binary;
@@ -159,11 +160,14 @@ public sealed class SchemaIdentityFramingTests
     }
 
     [Test]
-    public async Task JsonSerializer_UseSchemaIdWithDifferentReferences_Throws()
+    public async Task JsonSerializer_UseSchemaIdWithReferences_AcceptsMatchingRootSchema()
     {
-        const string topic = "json-wrong-references";
-        const string schemaText = "{\"type\":\"string\"}";
+        const string topic = "json-references";
+        const string schemaText = "{\"$ref\":\"shared.json\"}";
         using var registry = new MockSchemaRegistryClient();
+        _ = await registry.RegisterSchemaAsync(
+            "shared-contract",
+            new Schema { SchemaType = SchemaType.Json, SchemaString = "{\"type\":\"string\"}" });
         var schemaId = await registry.RegisterSchemaAsync(
             $"{topic}-value",
             new Schema
@@ -175,7 +179,7 @@ public sealed class SchemaIdentityFramingTests
                     new SchemaReference
                     {
                         Name = "shared.json",
-                        Subject = "other-contract",
+                        Subject = "shared-contract",
                         Version = 1
                     }
                 ]
@@ -184,11 +188,62 @@ public sealed class SchemaIdentityFramingTests
             registry,
             schemaText,
             jsonOptions: null,
+            new JsonSchemaValidationOptions
+            {
+                ValidatorFactory = new StreamingJsonSchemaValidatorFactory(registry),
+                Mode = JsonSchemaValidationMode.Serialize
+            },
             new JsonSchemaSerializerConfig { UseSchemaId = schemaId });
+        await serializer.PrepareAsync(topic, "value");
+        var destination = new ArrayBufferWriter<byte>();
 
-        await Assert.That(async () => await serializer.PrepareAsync(topic, "value"))
-            .Throws<InvalidOperationException>()
-            .WithMessageContaining("does not match");
+        serializer.Serialize("value", ref destination, new SerializationContext
+        {
+            Topic = topic,
+            Component = SerializationComponent.Value
+        });
+
+        await Assert.That(BinaryPrimitives.ReadInt32BigEndian(destination.WrittenSpan[1..5]))
+            .IsEqualTo(schemaId);
+    }
+
+    [Test]
+    public async Task JsonSerializer_LookupRetainsRegisteredRuleMetadata()
+    {
+        const string topic = "json-rules-lookup";
+        const string schemaText = "{\"type\":\"string\"}";
+        using var registry = new MockSchemaRegistryClient
+        {
+            LookupRequiresRuleSetPresenceMatch = true
+        };
+        _ = await registry.RegisterSchemaAsync(
+            $"{topic}-value",
+            new Schema
+            {
+                SchemaType = SchemaType.Json,
+                SchemaString = schemaText,
+                RuleSet = new SchemaRuleSet { DomainRules = [] }
+            });
+        var ruleExecutor = new CapturingRuleExecutor();
+        await using var serializer = new JsonSchemaRegistrySerializer<string>(
+            registry,
+            schemaText,
+            jsonOptions: null,
+            new JsonSchemaSerializerConfig
+            {
+                AutoRegisterSchemas = false,
+                RuleExecutor = ruleExecutor
+            });
+        await serializer.PrepareAsync(topic, "value");
+        var destination = new ArrayBufferWriter<byte>();
+
+        serializer.Serialize("value", ref destination, new SerializationContext
+        {
+            Topic = topic,
+            Component = SerializationComponent.Value
+        });
+
+        await Assert.That(ruleExecutor.Schema?.RuleSet).IsNotNull();
     }
 
     [Test]
@@ -596,5 +651,22 @@ public sealed class SchemaIdentityFramingTests
                 SchemaIdentityHeaderNames.Value,
                 SchemaIdentityFraming.CreateSchemaGuidFrame(guid))
         };
+    }
+
+    private sealed class CapturingRuleExecutor : ISchemaRegistryRuleExecutor
+    {
+        internal Schema? Schema { get; private set; }
+
+        public ReadOnlyMemory<byte> TransformSerializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleContext context)
+        {
+            Schema = context.Schema;
+            return payload;
+        }
+
+        public ReadOnlyMemory<byte> TransformDeserializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleContext context) => payload;
     }
 }
