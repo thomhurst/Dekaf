@@ -202,6 +202,8 @@ public class JsonSchemaValidationBenchmarks
     private IJsonSchemaValidator _nestedAllOfInlineRulesValidator = null!;
     private ReadOnlyMemory<byte> _ruleBearingAllOfChainJsonPayload;
     private IJsonSchemaValidator _ruleBearingAllOfChainValidator = null!;
+    private ReadOnlyMemory<byte> _sizeRuleBearingAllOfChainJsonPayload;
+    private IJsonSchemaValidator _sizeRuleBearingAllOfChainValidator = null!;
     private ReadOnlyMemory<byte> _structuralEqualityJsonPayload;
     private ReadOnlyMemory<byte> _deepStructuralEqualityJsonPayload;
     private IJsonSchemaValidator _structuralEqualityValidator = null!;
@@ -361,6 +363,18 @@ public class JsonSchemaValidationBenchmarks
         _ruleBearingAllOfChainValidator.ValidateRules(
             _ruleBearingAllOfChainJsonPayload,
             10,
+            failFast: false);
+        var (sizeRuleBearingAllOfSchema, sizeRuleBearingAllOfPayload) =
+            CreateSizeRuleBearingAllOfChain(depth: 24, itemCount: 256);
+        _sizeRuleBearingAllOfChainJsonPayload = sizeRuleBearingAllOfPayload;
+        _sizeRuleBearingAllOfChainValidator = inlineRulesFactory.GetOrCreate(new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = sizeRuleBearingAllOfSchema
+        });
+        _sizeRuleBearingAllOfChainValidator.ValidateRules(
+            _sizeRuleBearingAllOfChainJsonPayload,
+            15,
             failFast: false);
         _structuralEqualityJsonPayload =
             """{"left":{"id":1,"name":"bench"},"right":{"name":"bench","id":1.0},"values":[1,"a"],"expected":[1.0,"\u0061"]}"""u8
@@ -596,6 +610,13 @@ public class JsonSchemaValidationBenchmarks
         _ruleBearingAllOfChainValidator.ValidateRules(
             _ruleBearingAllOfChainJsonPayload,
             10,
+            failFast: false);
+
+    [Benchmark]
+    public void ValidateSizeRuleBearingAllOfChain() =>
+        _sizeRuleBearingAllOfChainValidator.ValidateRules(
+            _sizeRuleBearingAllOfChainJsonPayload,
+            15,
             failFast: false);
 
     [Benchmark]
@@ -849,6 +870,33 @@ public class JsonSchemaValidationBenchmarks
             payload.Append(index);
         }
         payload.Append("]}");
+        return (schema.ToString(), Encoding.UTF8.GetBytes(payload.ToString()));
+    }
+
+    private static (string Schema, byte[] Payload) CreateSizeRuleBearingAllOfChain(
+        int depth,
+        int itemCount)
+    {
+        var schema = new StringBuilder(depth * 96);
+        for (var index = 0; index < depth; index++)
+        {
+            schema.Append("{\"confluent:rules\":[{\"name\":\"size\",\"expr\":\"size(this) == ")
+                .Append(itemCount)
+                .Append("\"}],\"allOf\":[");
+        }
+        schema.Append("{}");
+        for (var index = 0; index < depth; index++)
+            schema.Append("]}");
+
+        var payload = new StringBuilder(itemCount * 4);
+        payload.Append('[');
+        for (var index = 0; index < itemCount; index++)
+        {
+            if (index != 0)
+                payload.Append(',');
+            payload.Append(index);
+        }
+        payload.Append(']');
         return (schema.ToString(), Encoding.UTF8.GetBytes(payload.ToString()));
     }
 

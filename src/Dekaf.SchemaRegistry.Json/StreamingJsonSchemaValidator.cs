@@ -192,7 +192,9 @@ internal sealed class StreamingJsonSchemaValidator(
                         value)
                     : ResolveMembers(node.ValidationRuleMembers!, memberCount, value);
             var sizes = node.ValidationRulesUseSize
-                ? CompiledValidationRule.GetSizeValues(memberCount + 1)
+                ? node.SharesValidationRuleSizes
+                    ? valueSlice.GetOrCreateSizes(memberCount + 1)
+                    : CompiledValidationRule.GetSizeValues(memberCount + 1)
                 : default;
 
             for (var index = 0; index < rules.Length; index++)
@@ -841,6 +843,8 @@ internal sealed class StreamingJsonSchemaValidator(
     private struct ValidationValueSlice
     {
         private ReadOnlyMemory<byte> _value;
+        private ValidationCelSizeValues _sizes;
+        private bool _hasSizes;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public ReadOnlyMemory<byte> GetOrCreate(
@@ -850,6 +854,21 @@ internal sealed class StreamingJsonSchemaValidator(
             if (_value.IsEmpty)
                 _value = GetCurrentValue(ref reader, payload);
             return _value;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public ValidationCelSizeValues GetOrCreateSizes(int count)
+        {
+            if (!_hasSizes)
+            {
+                _sizes = CompiledValidationRule.GetSizeValues(count);
+                _hasSizes = true;
+            }
+            else if (_sizes.Capacity < count)
+            {
+                _sizes = CompiledValidationRule.GrowSizeValues(_sizes, count);
+            }
+            return _sizes;
         }
     }
 
@@ -2079,14 +2098,12 @@ internal sealed class SchemaCompiler : IDisposable
 
     private void AssignValidationRuleMemberTables()
     {
-        if (_validationMemberPaths.Count == 0)
-            return;
-
         var parents = CreateValidationMemberParents();
         UnionValidationMemberNodes(parents);
         var membersByRoot = CollectValidationMembers(parents, out var memberNodeCounts);
         var tablesByRoot = CreateValidationMemberTables(membersByRoot);
-        ApplyValidationMemberTables(parents, memberNodeCounts, tablesByRoot);
+        var sizeNodeCounts = CountValidationSizeNodes(parents);
+        ApplyValidationMemberTables(parents, memberNodeCounts, tablesByRoot, sizeNodeCounts);
     }
 
     private int[] CreateValidationMemberParents()
@@ -2166,10 +2183,22 @@ internal sealed class SchemaCompiler : IDisposable
         return tablesByRoot;
     }
 
+    private int[] CountValidationSizeNodes(int[] parents)
+    {
+        var counts = new int[parents.Length];
+        for (var index = 0; index < _compiledNodeList.Count; index++)
+        {
+            if (_compiledNodeList[index].ValidationRulesUseSize)
+                counts[FindValidationMemberRoot(parents, index)]++;
+        }
+        return counts;
+    }
+
     private void ApplyValidationMemberTables(
         int[] parents,
         Dictionary<int, int> memberNodeCounts,
-        Dictionary<int, ValidationCelMemberTable> tablesByRoot)
+        Dictionary<int, ValidationCelMemberTable> tablesByRoot,
+        int[] sizeNodeCounts)
     {
         for (var index = 0; index < _compiledNodeList.Count; index++)
         {
@@ -2182,6 +2211,7 @@ internal sealed class SchemaCompiler : IDisposable
                 node.SharesValidationRuleMembers = memberNodeCounts[root] > 1;
                 node.ValidationRuleMemberGroupId = root + 1;
             }
+            node.SharesValidationRuleSizes = sizeNodeCounts[root] > 1;
             node.ValidationRuleMemberIndexes = [];
         }
     }
@@ -2679,6 +2709,7 @@ internal sealed class CompiledSchemaNode
     internal CompiledSchemaNode? Reference { get; set; }
     internal CompiledValidationRule[] ValidationRules { get; set; } = [];
     internal bool ValidationRulesUseSize { get; set; }
+    internal bool SharesValidationRuleSizes { get; set; }
     internal int[] ValidationRuleMemberIndexes { get; set; } = [];
     internal ValidationCelMemberTable? ValidationRuleMembers { get; set; }
     internal bool SharesValidationRuleMembers { get; set; }

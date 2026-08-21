@@ -1713,6 +1713,28 @@ public sealed class JsonSchemaValidationTests
     }
 
     [Test]
+    public void InlineRules_SameValueLayersGrowSharedSizeCache()
+    {
+        const string schemaText = """
+            {
+              "confluent:rules": [{ "name": "root-size", "expr": "size(this) == 9" }],
+              "allOf": [{
+                "confluent:rules": [{
+                  "name": "member-sizes",
+                  "expr": "size(this.a) == 1 && size(this.b) == 1 && size(this.c) == 1 && size(this.d) == 1 && size(this.e) == 1 && size(this.f) == 1 && size(this.g) == 1 && size(this.h) == 1 && size(this.i) == 1"
+                }]
+              }]
+            }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
+
+        validator.ValidateRules(
+            """{"a":"1","b":"2","c":"3","d":"4","e":"5","f":"6","g":"7","h":"8","i":"9"}"""u8.ToArray(),
+            25,
+            failFast: false);
+    }
+
+    [Test]
     public async Task Validator_EnforcesCompositionKeywordsWithoutAllocatingProbeFailures()
     {
         const string schemaText = """
