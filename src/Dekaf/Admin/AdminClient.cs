@@ -4121,12 +4121,18 @@ public sealed class AdminClient : IAdminClient, IKafkaClientStatusProvider
                     replicaInfos[replica.TopicPartition] = new ReplicaLogDirAccumulator();
                 }
 
+                var directoryError = Protocol.ErrorCode.None;
                 if (response.ErrorCode == Protocol.ErrorCode.None)
                 {
                     foreach (var directory in response.Results)
                     {
                         if (directory.ErrorCode != Protocol.ErrorCode.None)
                         {
+                            if (directoryError == Protocol.ErrorCode.None)
+                            {
+                                directoryError = directory.ErrorCode;
+                            }
+
                             continue;
                         }
 
@@ -4159,6 +4165,15 @@ public sealed class AdminClient : IAdminClient, IKafkaClientStatusProvider
                 foreach (var replica in brokerReplicaList)
                 {
                     var accumulator = replicaInfos[replica.TopicPartition];
+                    var errorCode = response.ErrorCode;
+                    if (errorCode == Protocol.ErrorCode.None
+                        && accumulator.CurrentReplicaLogDir is null)
+                    {
+                        // Kafka omits replica entries for failed directories, so preserve the failure
+                        // when no healthy directory identified the replica's current log.
+                        errorCode = directoryError;
+                    }
+
                     brokerResult[replica] = new DescribeReplicaLogDirResultInfo
                     {
                         TopicPartitionReplica = replica,
@@ -4166,7 +4181,7 @@ public sealed class AdminClient : IAdminClient, IKafkaClientStatusProvider
                         CurrentReplicaOffsetLag = accumulator.CurrentReplicaOffsetLag,
                         FutureReplicaLogDir = accumulator.FutureReplicaLogDir,
                         FutureReplicaOffsetLag = accumulator.FutureReplicaOffsetLag,
-                        ErrorCode = response.ErrorCode
+                        ErrorCode = errorCode
                     };
                 }
 

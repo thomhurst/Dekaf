@@ -103,6 +103,36 @@ public sealed class AdminLogDirsTests
     }
 
     [Test]
+    public async Task DescribeReplicaLogDirsAsync_PreservesDirectoryErrorForUnresolvedReplica()
+    {
+        await using var context = new AdminTestContext();
+        context.EnqueueDescribe(new DescribeLogDirsResponse
+        {
+            ErrorCode = ErrorCode.None,
+            Results =
+            [
+                DescribeDirectory("/data-online", "topic-a", partition: 0, offsetLag: 2, isFuture: false),
+                new DescribeLogDirsResponseDir
+                {
+                    ErrorCode = ErrorCode.KafkaStorageError,
+                    LogDir = "/data-offline",
+                    Topics = []
+                }
+            ]
+        });
+        var online = new TopicPartitionReplica("topic-a", 0, 1);
+        var unresolved = new TopicPartitionReplica("topic-a", 1, 1);
+
+        var result = await context.Client.DescribeReplicaLogDirsAsync([online, unresolved]);
+
+        await Assert.That(result[online].ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(result[online].CurrentReplicaLogDir).IsEqualTo("/data-online");
+        await Assert.That(result[unresolved].ErrorCode).IsEqualTo(ErrorCode.KafkaStorageError);
+        await Assert.That(result[unresolved].CurrentReplicaLogDir).IsNull();
+        await Assert.That(result[unresolved].FutureReplicaLogDir).IsNull();
+    }
+
+    [Test]
     [Arguments("", 0, 1)]
     [Arguments("topic-a", -1, 1)]
     [Arguments("topic-a", 0, -1)]

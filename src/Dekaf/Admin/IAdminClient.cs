@@ -1212,7 +1212,7 @@ public sealed class DescribeReplicaLogDirResultInfo
     public long FutureReplicaOffsetLag { get; init; } = -1;
 
     /// <summary>
-    /// Broker-level error code, or None when the broker returned replica information.
+    /// Broker- or directory-level error code, or None when the broker returned replica information.
     /// </summary>
     public Protocol.ErrorCode ErrorCode { get; init; }
 }
