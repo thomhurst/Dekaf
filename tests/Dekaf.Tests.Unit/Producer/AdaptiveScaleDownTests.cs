@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Reflection;
+using System.Threading.Channels;
 using Dekaf.Compression;
 using Dekaf.Errors;
 using Dekaf.Metadata;
@@ -671,7 +672,7 @@ public sealed class AdaptiveScaleDownTests
     [Timeout(120_000)]
     public async Task ScaleDown_UnderContinuousIdempotentTraffic_LosesNoBatches(CancellationToken cancellationToken)
     {
-        var options = CreateOptions(idempotent: true, scaleCooldownMs: 25, scaleDownSustainedMs: 50);
+        var options = CreateOptions(idempotent: true, scaleCooldownMs: 0, scaleDownSustainedMs: 0);
         var accumulator = new RecordAccumulator(options);
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
 
@@ -683,6 +684,12 @@ public sealed class AdaptiveScaleDownTests
 
         var scaleUpApplied = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
         var shrinkRequested = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var acknowledgements = Channel.CreateUnbounded<(TopicPartition TopicPartition, int Count, Exception? Error)>(
+            new UnboundedChannelOptions
+            {
+                SingleReader = true,
+                SingleWriter = true
+            });
 
         var pool = Substitute.For<IConnectionPool>();
         pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
@@ -703,58 +710,42 @@ public sealed class AdaptiveScaleDownTests
                 return new ValueTask<IKafkaConnection?>(removedConnection);
             });
 
-        var enqueued = 0;
-        var succeededAcks = 0;
-        var failedAcks = 0;
-        var sender = CreateSender(pool, options, accumulator, (_, _, _, count, ex) =>
-        {
-            if (ex is null)
-                Interlocked.Add(ref succeededAcks, count);
-            else
-                Interlocked.Add(ref failedAcks, count);
-        });
+        var sender = CreateSender(pool, options, accumulator, (topicPartition, _, _, count, error) =>
+            acknowledgements.Writer.TryWrite((topicPartition, count, error)));
         try
         {
             // Wave 1: enough backlog across more partitions than connections to build
             // send-loop pressure and trigger a scale-up.
             for (var i = 0; i < 512; i++)
-            {
                 sender.Enqueue(CreateTestBatch(vtPool, i % PartitionCount));
-                enqueued++;
-            }
 
             await scaleUpApplied.Task.WaitAsync(cancellationToken);
+            await WaitForSuccessfulAcknowledgementsAsync(
+                acknowledgements.Reader, expectedCount: 512, cancellationToken);
 
-            // Trickle: keep the loop iterating with near-zero buffer utilization so the
-            // sustained-low-utilization scale-down window elapses and a shrink fires.
-            while (!shrinkRequested.Task.IsCompleted)
+            // Keep traffic flowing one acknowledged batch at a time until scale-down starts.
+            // Zero-duration test-only scale gates remove wall-clock sleeps while preserving
+            // the send-loop iterations and an empty in-flight boundary required by shrink.
+            for (var bridgeBatchCount = 0;
+                 bridgeBatchCount < PartitionCount && !shrinkRequested.Task.IsCompleted;
+                 bridgeBatchCount++)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                sender.Enqueue(CreateTestBatch(vtPool, enqueued % PartitionCount));
-                enqueued++;
-                await Task.Delay(5, cancellationToken);
+                sender.Enqueue(CreateTestBatch(vtPool, bridgeBatchCount % PartitionCount));
+                await WaitForSuccessfulAcknowledgementsAsync(
+                    acknowledgements.Reader, expectedCount: 1, cancellationToken);
             }
+
+            await shrinkRequested.Task.WaitAsync(cancellationToken);
 
             // Wave 2: continued traffic through and after the scale-down apply. Under the
             // pre-fix code the send loop is already dead at this point and every one of
             // these fails with ObjectDisposedException.
             for (var i = 0; i < 128; i++)
-            {
                 sender.Enqueue(CreateTestBatch(vtPool, i % PartitionCount));
-                enqueued++;
-                if (i % 16 == 0)
-                    await Task.Delay(1, cancellationToken);
-            }
 
-            // Every accepted batch must complete successfully.
-            while (Volatile.Read(ref succeededAcks) < enqueued && Volatile.Read(ref failedAcks) == 0)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                await Task.Yield();
-            }
+            await WaitForSuccessfulAcknowledgementsAsync(
+                acknowledgements.Reader, expectedCount: 128, cancellationToken);
 
-            await Assert.That(Volatile.Read(ref failedAcks)).IsEqualTo(0);
-            await Assert.That(Volatile.Read(ref succeededAcks)).IsEqualTo(enqueued);
             await Assert.That(sender.IsAlive).IsTrue();
         }
         finally
@@ -767,6 +758,26 @@ public sealed class AdaptiveScaleDownTests
         // The removed connection must be disposed exactly once (drain path or sender disposal),
         // never leaked.
         await Assert.That(Volatile.Read(ref removedConnection.DisposeCalls)).IsEqualTo(1);
+    }
+
+    private static async Task WaitForSuccessfulAcknowledgementsAsync(
+        ChannelReader<(TopicPartition TopicPartition, int Count, Exception? Error)> acknowledgements,
+        int expectedCount,
+        CancellationToken cancellationToken)
+    {
+        var acknowledgedCount = 0;
+        while (acknowledgedCount < expectedCount)
+        {
+            var acknowledgement = await acknowledgements.ReadAsync(cancellationToken);
+            if (acknowledgement.Error is not null)
+            {
+                throw new InvalidOperationException(
+                    $"Acknowledgement failed for {acknowledgement.TopicPartition}",
+                    acknowledgement.Error);
+            }
+
+            acknowledgedCount += acknowledgement.Count;
+        }
     }
 
     [Test]
