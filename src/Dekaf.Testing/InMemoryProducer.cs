@@ -464,11 +464,10 @@ public sealed class InMemoryProducer<TKey, TValue> :
         if (transactionMarker is null)
             ThrowIfTransactionActive();
 
-        if (headers is null &&
-            (key is not null && _keyProducesRecordHeaders
-             || value is not null && _valueProducesRecordHeaders))
+        if (key is not null && _keyProducesRecordHeaders
+            || value is not null && _valueProducesRecordHeaders)
         {
-            headers = new Headers();
+            headers = headers is null ? new Headers() : new Headers(headers);
         }
 
         if (_hasAsyncSerializers)
