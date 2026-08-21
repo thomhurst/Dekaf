@@ -790,15 +790,18 @@ public sealed class ConsumerPauseResumeCacheTests
 
         using var consumeCancellation = new CancellationTokenSource();
         await using var ownedConsumer = consumer;
-        var records = consumer.ConsumeAsync(consumeCancellation.Token).GetAsyncEnumerator();
-        var moveNext = Task.Run(() => records.MoveNextAsync().AsTask());
-        var stagePendingClear = typeof(KafkaConsumer<string, string>).GetMethod(
-            "StagePendingFetchClear",
-            BindingFlags.Instance | BindingFlags.NonPublic)
-            ?? throw new InvalidOperationException("StagePendingFetchClear method not found");
+        IAsyncEnumerator<ConsumeResult<string, string>>? records = null;
+        Task<bool>? moveNext = null;
 
         try
         {
+            records = consumer.ConsumeAsync(consumeCancellation.Token).GetAsyncEnumerator();
+            moveNext = Task.Run(() => records.MoveNextAsync().AsTask());
+            var stagePendingClear = typeof(KafkaConsumer<string, string>).GetMethod(
+                "StagePendingFetchClear",
+                BindingFlags.Instance | BindingFlags.NonPublic)
+                ?? throw new InvalidOperationException("StagePendingFetchClear method not found");
+
             await Assert.That(waitEntered.Wait(TimeSpan.FromSeconds(5))).IsTrue();
             stagePendingClear.Invoke(consumer, [revokedPartition]);
             await Assert.That(prefetchBuffer.TryWrite(CreatePendingFetch(revokedPartition, 10, 1))).IsTrue();
@@ -816,12 +819,20 @@ public sealed class ConsumerPauseResumeCacheTests
             consumeCancellation.Cancel();
             try
             {
-                await moveNext;
+                if (moveNext is not null)
+                {
+                    await ((Task)moveNext).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+                }
             }
-            catch (OperationCanceledException) when (consumeCancellation.IsCancellationRequested)
+            finally
             {
+                if (records is not null)
+                {
+                    await records.DisposeAsync()
+                        .AsTask()
+                        .ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+                }
             }
-            await records.DisposeAsync();
         }
     }
 
