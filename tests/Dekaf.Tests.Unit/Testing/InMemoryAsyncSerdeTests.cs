@@ -297,13 +297,13 @@ public sealed class InMemoryAsyncSerdeTests
         shareConsumer.Acknowledge(record);
         await shareConsumer.CommitAsync();
 
-        var offsets = await admin.ListConsumerGroupOffsetsAsync("async-share");
+        var offsets = await admin.DescribeShareGroupOffsetsAsync("async-share");
 
         await Assert.That(record.Key).IsEqualTo("k");
         await Assert.That(record.Value).IsEqualTo("v");
         await Assert.That(Encoding.UTF8.GetString(serde.LastDeserializeContext.KeyData.Span)).IsEqualTo("v:k");
         await Assert.That(serde.LastDeserializeContext.IsKeyNull).IsFalse();
-        await Assert.That(offsets[new TopicPartition("shared", 0)]).IsEqualTo(1);
+        await Assert.That(offsets.Single().StartOffset).IsEqualTo(1);
     }
 
     [Test]

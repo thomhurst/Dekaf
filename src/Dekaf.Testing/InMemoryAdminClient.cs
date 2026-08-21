@@ -1137,7 +1137,7 @@ public sealed class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
 
-        var groupOffsets = _cluster.GetGroupOffsets(groupId);
+        var groupOffsets = _cluster.GetShareGroupOffsets(groupId);
         var targetPartitions = partitions?.ToArray() ?? groupOffsets.Keys.ToArray();
         var result = targetPartitions
             .Select(partition =>
@@ -1168,7 +1168,7 @@ public sealed class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
 
-        _cluster.CommitOffsets(
+        _cluster.CommitShareOffsets(
             groupId,
             offsets.Select(offset => new TopicPartitionOffset(
                 offset.TopicPartition.Topic,
@@ -1189,12 +1189,12 @@ public sealed class InMemoryAdminClient :
         ThrowIfDisposed();
 
         var topicSet = topics.ToHashSet(StringComparer.Ordinal);
-        var partitions = _cluster.GetGroupOffsets(groupId)
+        var partitions = _cluster.GetShareGroupOffsets(groupId)
             .Keys
             .Where(partition => topicSet.Contains(partition.Topic))
             .ToArray();
 
-        _cluster.DeleteGroupOffsets(groupId, partitions);
+        _cluster.DeleteShareGroupOffsets(groupId, partitions);
         return ValueTask.CompletedTask;
     }
 
