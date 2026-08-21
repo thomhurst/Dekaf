@@ -626,12 +626,16 @@ public sealed class InMemoryKafkaClusterTests
         var listings = await admin.ListTransactionsAsync();
         var descriptions = await admin.DescribeTransactionsAsync(["tx-1"]);
         var producers = await admin.DescribeProducersAsync([topicPartition]);
+        var termination = await admin.ForceTerminateTransactionAsync("tx-1");
 
         await Assert.That(listings.Transactions).IsEmpty();
         await Assert.That(listings.UnknownStateFilters).IsEmpty();
         await Assert.That(descriptions["tx-1"].ErrorCode).IsEqualTo(ErrorCode.TransactionalIdNotFound);
         await Assert.That(producers[topicPartition].ErrorCode).IsEqualTo(ErrorCode.None);
         await Assert.That(producers[topicPartition].ActiveProducers).IsEmpty();
+        await Assert.That(termination.TransactionalId).IsEqualTo("tx-1");
+        await Assert.That(termination.ErrorCode).IsEqualTo(ErrorCode.TransactionalIdNotFound);
+        await Assert.That(termination.IsRetriable).IsFalse();
     }
 
     [Test]

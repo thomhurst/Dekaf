@@ -23,7 +23,6 @@ concurrency:
 
 env:
   DOTNET_VERSION: '10.0.x'
-  SHARPFUZZ_VERSION: '2.3.0'
   LIBFUZZER_DOTNET_VERSION: 'v2025.05.02.0904'
   LIBFUZZER_DOTNET_SHA256: 'c2c2a90d94c409a4af339a0d4f244e0442c5a5d249be0f1252ba07871f285958'
   MAX_INPUT_LENGTH: '1048576'
@@ -64,10 +63,12 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p artifacts/fuzz/tools
+          sharpfuzz_version="$(jq -er '.tools["sharpfuzz.commandline"].version' \
+            .config/fuzzing/dotnet-tools.json)"
           dotnet tool install \
             --tool-path artifacts/fuzz/tools \
             SharpFuzz.CommandLine \
-            --version "$SHARPFUZZ_VERSION"
+            --version "$sharpfuzz_version"
           curl --fail --location --silent --show-error \
             "https://github.com/Metalnem/libfuzzer-dotnet/releases/download/${LIBFUZZER_DOTNET_VERSION}/libfuzzer-dotnet-ubuntu" \
             --output artifacts/fuzz/tools/libfuzzer-dotnet

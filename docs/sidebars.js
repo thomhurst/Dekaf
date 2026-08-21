@@ -8,7 +8,11 @@ const sidebars = {
     {
       type: 'category',
       label: 'Admin',
-      items: ['admin/topic-identifiers', 'admin/replica-log-directories'],
+      items: [
+        'admin/topic-identifiers',
+        'admin/transaction-remediation',
+        'admin/replica-log-directories',
+      ],
     },
     {
       type: 'category',
