@@ -611,6 +611,88 @@ public sealed class AdminClientStreamsGroupManagementTests
     }
 
     [Test]
+    public async Task DeleteStreamsGroupsAsync_PreservesCoordinatorLookupErrors()
+    {
+        var (admin, connection) = CreateAdmin();
+        connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                Arg.Any<FindCoordinatorRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                var request = call.ArgAt<FindCoordinatorRequest>(0);
+                return ValueTask.FromResult(new FindCoordinatorResponse
+                {
+                    Coordinators =
+                    [
+                        new Coordinator
+                        {
+                            Key = request.Key,
+                            NodeId = 1,
+                            Host = "localhost",
+                            Port = 9092,
+                            ErrorCode = request.Key == FirstGroup
+                                ? ErrorCode.GroupAuthorizationFailed
+                                : ErrorCode.None
+                        }
+                    ]
+                });
+            });
+        connection.SendAsync<DeleteGroupsRequest, DeleteGroupsResponse>(
+                Arg.Any<DeleteGroupsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new DeleteGroupsResponse
+            {
+                Results = [DeletedGroup(SecondGroup, ErrorCode.None)]
+            }));
+
+        var results = await admin.DeleteStreamsGroupsAsync([FirstGroup, SecondGroup]);
+
+        await Assert.That(results[FirstGroup].ErrorCode).IsEqualTo(ErrorCode.GroupAuthorizationFailed);
+        await Assert.That(results[SecondGroup].ErrorCode).IsEqualTo(ErrorCode.None);
+        await connection.Received(1).SendAsync<DeleteGroupsRequest, DeleteGroupsResponse>(
+            Arg.Is<DeleteGroupsRequest>(request =>
+                request != null &&
+                request.GroupsNames.Count == 1 &&
+                request.GroupsNames[0] == SecondGroup),
+            2,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task DeleteStreamsGroupsAsync_ReturnsFinalRetriableErrors()
+    {
+        var (admin, connection) = CreateAdmin();
+        SetupFindCoordinator(connection);
+        connection.SendAsync<DeleteGroupsRequest, DeleteGroupsResponse>(
+                Arg.Any<DeleteGroupsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                var request = call.ArgAt<DeleteGroupsRequest>(0);
+                return ValueTask.FromResult(new DeleteGroupsResponse
+                {
+                    Results = request.GroupsNames
+                        .Select(groupId => DeletedGroup(
+                            groupId,
+                            groupId == FirstGroup ? ErrorCode.None : ErrorCode.RequestTimedOut))
+                        .ToList()
+                });
+            });
+
+        var results = await admin.DeleteStreamsGroupsAsync([FirstGroup, SecondGroup]);
+
+        await Assert.That(results[FirstGroup].ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(results[SecondGroup].ErrorCode).IsEqualTo(ErrorCode.RequestTimedOut);
+        await connection.Received(4).SendAsync<DeleteGroupsRequest, DeleteGroupsResponse>(
+            Arg.Any<DeleteGroupsRequest>(),
+            2,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
     public async Task ListStreamsGroupOffsetsAsync_OperationTimeoutThrowsKafkaTimeoutException()
     {
         var (admin, connection) = CreateAdmin();

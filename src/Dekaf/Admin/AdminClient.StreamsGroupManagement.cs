@@ -600,104 +600,131 @@ public sealed partial class AdminClient
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
         var results = new Dictionary<string, DeleteStreamsGroupResult>(groupIds.Count, StringComparer.Ordinal);
         var ambiguousGroups = new HashSet<string>(StringComparer.Ordinal);
+        var retryErrors = new Dictionary<string, Protocol.ErrorCode>(groupIds.Count, StringComparer.Ordinal);
 
-        return await WithRetryAsync<IReadOnlyDictionary<string, DeleteStreamsGroupResult>>(async () =>
+        try
         {
-            var groupsByCoordinator = new Dictionary<int, List<string>>();
-            foreach (var groupId in groupIds)
+            return await WithRetryAsync<IReadOnlyDictionary<string, DeleteStreamsGroupResult>>(async () =>
             {
-                if (results.ContainsKey(groupId))
-                    continue;
-
-                var coordinatorId = await FindGroupCoordinatorAsync(groupId, cancellationToken).ConfigureAwait(false);
-                if (!groupsByCoordinator.TryGetValue(coordinatorId, out var coordinatorGroups))
+                retryErrors.Clear();
+                Exception? retryFailure = null;
+                var groupsByCoordinator = new Dictionary<int, List<string>>();
+                foreach (var groupId in groupIds)
                 {
-                    coordinatorGroups = [];
-                    groupsByCoordinator[coordinatorId] = coordinatorGroups;
-                }
-                coordinatorGroups.Add(groupId);
-            }
-
-            Exception? retryFailure = null;
-            foreach (var (coordinatorId, coordinatorGroups) in groupsByCoordinator)
-            {
-                using var connectionLease = await _connectionPool.LeaseConnectionAsync(
-                    coordinatorId,
-                    cancellationToken).ConfigureAwait(false);
-                var connection = connectionLease.Connection;
-                var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-                    connection,
-                    Protocol.ApiKey.DeleteGroups,
-                    DeleteGroupsRequest.LowestSupportedVersion,
-                    DeleteGroupsRequest.HighestSupportedVersion);
-
-                DeleteGroupsResponse response;
-                try
-                {
-                    response = await connection.SendAsync<DeleteGroupsRequest, DeleteGroupsResponse>(
-                        new DeleteGroupsRequest { GroupsNames = coordinatorGroups },
-                        apiVersion,
-                        cancellationToken).ConfigureAwait(false);
-                }
-                catch (Exception exception) when (
-                    RetryHelper.IsRetriableRequestFailure(exception) &&
-                    !cancellationToken.IsCancellationRequested)
-                {
-                    ambiguousGroups.UnionWith(coordinatorGroups);
-                    retryFailure ??= exception;
-                    continue;
-                }
-
-                var requested = new HashSet<string>(coordinatorGroups, StringComparer.Ordinal);
-                foreach (var groupResult in response.Results)
-                {
-                    if (!requested.Contains(groupResult.GroupId))
+                    if (results.ContainsKey(groupId))
                         continue;
 
-                    var errorCode = groupResult.ErrorCode;
-                    if (errorCode.IsRetriable() || errorCode.RequiresMetadataRefresh())
+                    int coordinatorId;
+                    try
                     {
-                        if (errorCode == Protocol.ErrorCode.RequestTimedOut)
-                            ambiguousGroups.Add(groupResult.GroupId);
-
-                        retryFailure ??= new Errors.GroupException(
-                            errorCode,
-                            $"DeleteStreamsGroups failed for group '{groupResult.GroupId}': {errorCode}",
-                            isRetriable: true)
-                        {
-                            GroupId = groupResult.GroupId
-                        };
+                        coordinatorId = await FindGroupCoordinatorAsync(
+                            groupId,
+                            cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (Errors.GroupException exception) when (
+                        exception.ErrorCode is { } errorCode &&
+                        !errorCode.IsRetriable() &&
+                        !errorCode.RequiresMetadataRefresh())
+                    {
+                        results[groupId] = DeleteGroupResult(groupId, errorCode);
+                        continue;
+                    }
+                    catch (Exception exception) when (
+                        RetryHelper.IsRetriableRequestFailure(exception) &&
+                        !cancellationToken.IsCancellationRequested)
+                    {
+                        retryErrors[groupId] = GetDeleteGroupRetryError(exception);
+                        retryFailure ??= exception;
                         continue;
                     }
 
-                    if (errorCode == Protocol.ErrorCode.GroupIdNotFound && ambiguousGroups.Contains(groupResult.GroupId))
-                        errorCode = Protocol.ErrorCode.None;
-
-                    results[groupResult.GroupId] = new DeleteStreamsGroupResult
+                    if (!groupsByCoordinator.TryGetValue(coordinatorId, out var coordinatorGroups))
                     {
-                        GroupId = groupResult.GroupId,
-                        ErrorCode = errorCode
-                    };
+                        coordinatorGroups = [];
+                        groupsByCoordinator[coordinatorId] = coordinatorGroups;
+                    }
+                    coordinatorGroups.Add(groupId);
                 }
-            }
 
-            if (retryFailure is not null)
-                throw retryFailure;
-
-            foreach (var groupId in groupIds)
-            {
-                if (!results.ContainsKey(groupId))
+                foreach (var (coordinatorId, coordinatorGroups) in groupsByCoordinator)
                 {
-                    results[groupId] = new DeleteStreamsGroupResult
-                    {
-                        GroupId = groupId,
-                        ErrorCode = Protocol.ErrorCode.UnknownServerError
-                    };
-                }
-            }
+                    using var connectionLease = await _connectionPool.LeaseConnectionAsync(
+                        coordinatorId,
+                        cancellationToken).ConfigureAwait(false);
+                    var connection = connectionLease.Connection;
+                    var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                        connection,
+                        Protocol.ApiKey.DeleteGroups,
+                        DeleteGroupsRequest.LowestSupportedVersion,
+                        DeleteGroupsRequest.HighestSupportedVersion);
 
-            return OrderDeleteGroupResults(groupIds, results);
-        }, cancellationToken).ConfigureAwait(false);
+                    DeleteGroupsResponse response;
+                    try
+                    {
+                        response = await connection.SendAsync<DeleteGroupsRequest, DeleteGroupsResponse>(
+                            new DeleteGroupsRequest { GroupsNames = coordinatorGroups },
+                            apiVersion,
+                            cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (Exception exception) when (
+                        RetryHelper.IsRetriableRequestFailure(exception) &&
+                        !cancellationToken.IsCancellationRequested)
+                    {
+                        ambiguousGroups.UnionWith(coordinatorGroups);
+                        foreach (var groupId in coordinatorGroups)
+                            retryErrors[groupId] = GetDeleteGroupRetryError(exception);
+                        retryFailure ??= exception;
+                        continue;
+                    }
+
+                    var requested = new HashSet<string>(coordinatorGroups, StringComparer.Ordinal);
+                    foreach (var groupResult in response.Results)
+                    {
+                        if (!requested.Contains(groupResult.GroupId))
+                            continue;
+
+                        var errorCode = groupResult.ErrorCode;
+                        if (errorCode.IsRetriable() || errorCode.RequiresMetadataRefresh())
+                        {
+                            if (errorCode == Protocol.ErrorCode.RequestTimedOut)
+                                ambiguousGroups.Add(groupResult.GroupId);
+
+                            retryErrors[groupResult.GroupId] = errorCode;
+                            retryFailure ??= new Errors.GroupException(
+                                errorCode,
+                                $"DeleteStreamsGroups failed for group '{groupResult.GroupId}': {errorCode}",
+                                isRetriable: true)
+                            {
+                                GroupId = groupResult.GroupId
+                            };
+                            continue;
+                        }
+
+                        if (errorCode == Protocol.ErrorCode.GroupIdNotFound &&
+                            ambiguousGroups.Contains(groupResult.GroupId))
+                        {
+                            errorCode = Protocol.ErrorCode.None;
+                        }
+
+                        results[groupResult.GroupId] = DeleteGroupResult(groupResult.GroupId, errorCode);
+                    }
+                }
+
+                if (retryFailure is not null)
+                    throw retryFailure;
+
+                return CompleteDeleteGroupResults(groupIds, results);
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (
+            RetryHelper.IsRetriableRequestFailure(exception) &&
+            !cancellationToken.IsCancellationRequested)
+        {
+            foreach (var (groupId, errorCode) in retryErrors)
+                results.TryAdd(groupId, DeleteGroupResult(groupId, errorCode));
+
+            return CompleteDeleteGroupResults(groupIds, results);
+        }
     }
 
     private IReadOnlyList<OffsetFetchRequestTopic>? BuildOffsetFetchTopics(
@@ -808,6 +835,32 @@ public sealed partial class AdminClient
             ordered[groupId] = results[groupId];
         return ordered;
     }
+
+    private static IReadOnlyDictionary<string, DeleteStreamsGroupResult> CompleteDeleteGroupResults(
+        IReadOnlyList<string> groupIds,
+        Dictionary<string, DeleteStreamsGroupResult> results)
+    {
+        foreach (var groupId in groupIds)
+        {
+            results.TryAdd(
+                groupId,
+                DeleteGroupResult(groupId, Protocol.ErrorCode.UnknownServerError));
+        }
+        return OrderDeleteGroupResults(groupIds, results);
+    }
+
+    private static DeleteStreamsGroupResult DeleteGroupResult(
+        string groupId,
+        Protocol.ErrorCode errorCode) => new()
+    {
+        GroupId = groupId,
+        ErrorCode = errorCode
+    };
+
+    private static Protocol.ErrorCode GetDeleteGroupRetryError(Exception exception) =>
+        exception is Errors.KafkaException { ErrorCode: { } errorCode }
+            ? errorCode
+            : Protocol.ErrorCode.UnknownServerError;
 
     private static IReadOnlyDictionary<TopicPartition, StreamsGroupOffsetOperationResult> OrderPartitionResults(
         IEnumerable<TopicPartition> partitions,
