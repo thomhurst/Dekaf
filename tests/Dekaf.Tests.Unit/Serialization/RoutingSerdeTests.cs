@@ -136,6 +136,31 @@ public sealed class RoutingSerdeTests
     }
 
     [Test]
+    public async Task Serializers_AdvertiseNestedRecordHeaderCapability()
+    {
+        var nested = new TypeRoutingSerializer<EventBase>()
+            .Register(new RecordHeaderEventSerializer<AlphaEvent>())
+            .Freeze();
+        var topicRouter = new TopicRoutingSerializer<EventBase>()
+            .Register("nested", nested)
+            .Freeze();
+        var typeRouter = new TypeRoutingSerializer<EventBase>()
+            .Register(new RecordHeaderEventSerializer<AlphaEvent>())
+            .Freeze();
+        var fallbackRouter = new TopicRoutingSerializer<EventBase>()
+            .SetFallback(new RecordHeaderEventSerializer<EventBase>())
+            .Freeze();
+        var plainRouter = new TopicRoutingSerializer<EventBase>()
+            .Register("alpha", new EventSerializer<AlphaEvent>(0xA1))
+            .Freeze();
+
+        await Assert.That(((IRecordHeaderSerializer)topicRouter).ProducesRecordHeaders).IsTrue();
+        await Assert.That(((IRecordHeaderSerializer)typeRouter).ProducesRecordHeaders).IsTrue();
+        await Assert.That(((IRecordHeaderSerializer)fallbackRouter).ProducesRecordHeaders).IsTrue();
+        await Assert.That(((IRecordHeaderSerializer)plainRouter).ProducesRecordHeaders).IsFalse();
+    }
+
+    [Test]
     public async Task FrozenRouter_SupportsConcurrentReads()
     {
         var router = new TopicRoutingDeserializer<EventBase>()
@@ -265,6 +290,22 @@ public sealed class RoutingSerdeTests
 #endif
         {
             destination.GetSpan(1)[0] = marker;
+            destination.Advance(1);
+        }
+    }
+
+    private sealed class RecordHeaderEventSerializer<T> : ISerializer<T>, IRecordHeaderSerializer
+    {
+        public bool ProducesRecordHeaders => true;
+
+        public void Serialize<TWriter>(T value, ref TWriter destination, SerializationContext context)
+            where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
+        {
+            context.Headers!.Add("identity", [1]);
+            destination.GetSpan(1)[0] = 1;
             destination.Advance(1);
         }
     }

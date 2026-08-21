@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Text;
 using Dekaf.Outbox;
 using Dekaf.Serialization;
+using Dekaf.Serialization.Routing;
 
 namespace Dekaf.Tests.Unit.Outbox;
 
@@ -140,6 +141,30 @@ public class OutboxBucketTests
         await Assert.That(headers!).Count().IsEqualTo(1);
         await Assert.That(headers[0].Key).IsEqualTo("identity");
         await Assert.That(headers[0].GetValueAsString()).IsEqualTo("created");
+    }
+
+    [Test]
+    public async Task Create_RoutedRecordHeaderSerializer_DoesNotMutateCallerHeaders()
+    {
+        var callerHeaders = Headers.Create("caller", "owned");
+        var serializer = new TopicRoutingSerializer<string>()
+            .Register("orders", new RecordHeaderStringSerializer())
+            .Freeze();
+
+        var message = OutboxMessage.Create(
+            "orders",
+            "order-1",
+            "created",
+            Serializers.String,
+            serializer,
+            callerHeaders);
+        var persistedHeaders = OutboxHeaderCodec.Decode(message.Headers)!;
+
+        await Assert.That(callerHeaders).Count().IsEqualTo(1);
+        await Assert.That(callerHeaders[0].Key).IsEqualTo("caller");
+        await Assert.That(persistedHeaders).Count().IsEqualTo(2);
+        await Assert.That(persistedHeaders[0].Key).IsEqualTo("caller");
+        await Assert.That(persistedHeaders[1].Key).IsEqualTo("identity");
     }
 
     private sealed class RecordHeaderStringSerializer : ISerializer<string>, IRecordHeaderSerializer
