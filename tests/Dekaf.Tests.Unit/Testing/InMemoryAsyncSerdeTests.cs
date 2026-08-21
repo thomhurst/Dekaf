@@ -4,6 +4,7 @@ using Dekaf.Admin;
 using Dekaf.Consumer;
 using Dekaf.Errors;
 using Dekaf.Producer;
+using Dekaf.Protocol.Messages;
 using Dekaf.Serialization;
 using Dekaf.ShareConsumer;
 using Dekaf.Testing;
@@ -243,6 +244,34 @@ public sealed class InMemoryAsyncSerdeTests
         await Assert.That(first!.Value.Value).IsEqualTo("one");
         await Assert.That(second!.Value.Value).IsEqualTo("two");
         await Assert.That(offsets[new TopicPartition("orders", 0)]).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task AsyncDeserializer_ReadUncommittedConsumesOngoingTransaction()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var serde = new AsyncPrefixSerde("v:");
+        await using var producer = new InMemoryProducer<string, string>(
+            cluster,
+            Serializers.String,
+            serde);
+        await using var transaction = producer.BeginTransaction();
+        _ = await transaction.ProduceAsync("orders", "key", "pending");
+        await using var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            Serializers.String,
+            serde,
+            new InMemoryConsumerOptions
+            {
+                AutoOffsetReset = AutoOffsetReset.Earliest,
+                IsolationLevel = IsolationLevel.ReadUncommitted
+            });
+        consumer.Assign(new TopicPartition("orders", 0));
+
+        var result = await consumer.ConsumeOneAsync(TimeSpan.Zero);
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(result!.Value.Value).IsEqualTo("pending");
     }
 
     [Test]

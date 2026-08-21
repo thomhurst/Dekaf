@@ -591,18 +591,12 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                         consumerGroupGeneration);
                 }
 
-                ConsumeResult<TKey, TValue> result;
-                if (_hasAsyncDeserializers)
-                {
-                    result = await ToConsumeResultAsync(
+                var result = _hasAsyncDeserializers
+                    ? await ToConsumeResultAsync(
                         partition,
                         record,
-                        cancellationToken).ConfigureAwait(false);
-                }
-                else
-                {
-                    result = ToConsumeResult(partition, record);
-                }
+                        cancellationToken).ConfigureAwait(false)
+                    : ToConsumeResult(partition, record);
 
                 applyRecordFaults = HasPotentialConsumerFault(
                     consumerStateVersion,
@@ -1718,7 +1712,11 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 if (!_positions.TryGetValue(partition, out var position))
                     continue;
 
-                if (!_cluster.TryRead(partition, position, out var record))
+                if (!_cluster.TryRead(
+                        partition,
+                        position,
+                        _options.IsolationLevel,
+                        out var record))
                     continue;
 
                 selectedPartition = partition;
