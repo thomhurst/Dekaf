@@ -1217,6 +1217,50 @@ public sealed class InMemoryKafkaCluster
         }
     }
 
+    internal IReadOnlyDictionary<TopicPartition, ErrorCode> DeleteStreamsGroupOffsets(
+        string groupId,
+        IReadOnlyList<TopicPartition> partitions)
+    {
+        lock (_gate)
+        {
+            var results = new Dictionary<TopicPartition, ErrorCode>(partitions.Count);
+            if (!_consumerGroupOffsets.TryGetValue(groupId, out var offsets))
+            {
+                foreach (var partition in partitions)
+                    results[partition] = ErrorCode.GroupIdNotFound;
+                return results;
+            }
+
+            _consumerGroupMembers.TryGetValue(groupId, out var members);
+            foreach (var partition in partitions)
+            {
+                var isSubscribed = false;
+                if (members is not null)
+                {
+                    foreach (var member in members.Values)
+                    {
+                        if (!member.SubscribedPartitions.Contains(partition))
+                            continue;
+
+                        isSubscribed = true;
+                        break;
+                    }
+                }
+
+                if (isSubscribed)
+                {
+                    results[partition] = ErrorCode.GroupSubscribedToTopic;
+                    continue;
+                }
+
+                offsets.Remove(partition);
+                results[partition] = ErrorCode.None;
+            }
+
+            return results;
+        }
+    }
+
     internal IReadOnlyDictionary<TopicPartition, long> DeleteRecords(IReadOnlyDictionary<TopicPartition, long> offsets)
     {
         lock (_gate)

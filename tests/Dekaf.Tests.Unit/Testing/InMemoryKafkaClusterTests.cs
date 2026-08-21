@@ -171,6 +171,47 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
+    public async Task StreamsGroupManagement_DeleteOffsetsRejectsSubscribedPartitionAndPreservesOffset()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("input", partitionCount: 2);
+        IAdminClient admin = new InMemoryAdminClient(cluster);
+        const string groupId = "active-streams";
+        var subscribed = new TopicPartition("input", 0);
+        var inactive = new TopicPartition("input", 1);
+        await using var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions { GroupId = groupId });
+        consumer.Assign(subscribed);
+        _ = await admin.AlterStreamsGroupOffsetsAsync(
+            groupId,
+            [
+                new TopicPartitionOffset(subscribed.Topic, subscribed.Partition, 42),
+                new TopicPartitionOffset(inactive.Topic, inactive.Partition, 84)
+            ]);
+
+        var deletion = await admin.DeleteStreamsGroupOffsetsAsync(groupId, [subscribed, inactive]);
+        var offsetsAfterRejection = await admin.ListStreamsGroupOffsetsAsync(
+            new Dictionary<string, ListStreamsGroupOffsetsSpec>
+            {
+                [groupId] = new()
+            });
+
+        await Assert.That(deletion[subscribed].ErrorCode).IsEqualTo(ErrorCode.GroupSubscribedToTopic);
+        await Assert.That(deletion[inactive].ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(offsetsAfterRejection[groupId].Offsets[subscribed].Offset).IsEqualTo(42);
+        await Assert.That(offsetsAfterRejection[groupId].Offsets.ContainsKey(inactive)).IsFalse();
+
+        consumer.Unassign();
+        var inactiveDeletion = await admin.DeleteStreamsGroupOffsetsAsync(groupId, [subscribed]);
+        var offsetsAfterDeletion = await admin.ListStreamsGroupOffsetsAsync(
+            new Dictionary<string, ListStreamsGroupOffsetsSpec> { [groupId] = new() });
+
+        await Assert.That(inactiveDeletion[subscribed].ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(offsetsAfterDeletion[groupId].Offsets).IsEmpty();
+    }
+
+    [Test]
     public async Task StreamsGroupManagement_RejectsNegativeOffsets()
     {
         IAdminClient admin = new InMemoryAdminClient(new InMemoryKafkaCluster());
