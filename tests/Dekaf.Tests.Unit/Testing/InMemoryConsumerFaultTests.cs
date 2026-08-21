@@ -573,6 +573,66 @@ public sealed class InMemoryConsumerFaultTests
     }
 
     [Test]
+    public async Task OnDeliveryAutoCommit_FaultObserverCannotWidenCapturedOffsets()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic(Topic, partitionCount: 2);
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Partition = 0,
+            Key = "key",
+            Value = "value"
+        });
+        await using var consumer = CreateConsumer(
+            cluster,
+            enableAutoOffsetStore: true,
+            offsetCommitMode: OffsetCommitMode.Auto);
+        var secondPartition = new TopicPartition(Topic, 1);
+        consumer.Assign(Partition, secondPartition);
+        consumer.StoreOffset(new TopicPartitionOffset(Topic, 1, 1));
+        var barrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, Topic, 0, GroupId));
+        cluster.FaultPlan.FaultConsumed += _ =>
+            consumer.StoreOffset(new TopicPartitionOffset(Topic, 1, 9));
+
+        var consume = consumer.ConsumeOneAsync(TimeSpan.Zero).AsTask();
+        await barrier.WaitUntilEnteredAsync();
+        await Assert.That(barrier.Release()).IsTrue();
+        _ = await consume;
+
+        await Assert.That(cluster.GetCommittedOffset(GroupId, Partition)).IsEqualTo(1);
+        await Assert.That(cluster.GetCommittedOffset(GroupId, secondPartition)).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task OnDeliveryAutoCommit_FaultObserverClosePreventsReservation()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync(Topic, "key", "value");
+        var consumer = CreateConsumer(
+            cluster,
+            enableAutoOffsetStore: true,
+            offsetCommitMode: OffsetCommitMode.Auto);
+        consumer.Assign(Partition);
+        var failure = new InvalidOperationException("commit failed");
+        cluster.FaultPlan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, Topic, 0, GroupId),
+            failure);
+        Task? closeTask = null;
+        cluster.FaultPlan.FaultConsumed += _ => closeTask = consumer.CloseAsync().AsTask();
+
+        _ = await Assert.ThrowsAsync<ObjectDisposedException>(() =>
+            consumer.ConsumeOneAsync(TimeSpan.Zero).AsTask());
+
+        await Assert.That(closeTask).IsNotNull();
+        await closeTask!;
+        await Assert.That(cluster.FaultPlan.Count).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task CommitAsync_InjectedPlanPreservesStoredResourceBeforeGroupOrder()
     {
         var innerPlan = new KafkaFaultPlan();

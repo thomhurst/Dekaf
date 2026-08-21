@@ -62,6 +62,9 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private IReadOnlySet<TopicPartition>? _potentialFaultActiveResources;
     private int _potentialFaultAssignmentConsumerStateVersion = -1;
     private int _potentialFaultAssignmentConsumerGroupGeneration = -1;
+    private TopicPartition[] _orderedAssignment = [];
+    private int _orderedAssignmentConsumerStateVersion = -1;
+    private int _orderedAssignmentConsumerGroupGeneration = -1;
     private int _committableOffsetConsumerStateVersion = -1;
     private int _committableOffsetConsumerGroupGeneration = -1;
     private int _committableOffsetStoredOffsetsVersion = -1;
@@ -1657,8 +1660,10 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 previousRecordProven = true;
             }
 
-            foreach (var partition in GetCurrentAssignmentUnderLock().OrderBy(item => item.Topic, StringComparer.Ordinal).ThenBy(item => item.Partition))
+            var assignment = GetOrderedCurrentAssignmentUnderLock(out _);
+            for (var partitionIndex = 0; partitionIndex < assignment.Length; partitionIndex++)
             {
+                var partition = assignment[partitionIndex];
                 if (_paused.Contains(partition))
                     continue;
 
@@ -1707,12 +1712,13 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 previousRecordProven = true;
             }
 
-            var assignment = GetCurrentAssignmentUnderLock(out var consumerGroupGeneration);
+            var assignment = GetOrderedCurrentAssignmentUnderLock(out var consumerGroupGeneration);
             selectionVersion = new ConsumerSelectionVersion(
                 _consumerStateVersion,
                 consumerGroupGeneration);
-            foreach (var partition in assignment.OrderBy(item => item.Topic, StringComparer.Ordinal).ThenBy(item => item.Partition))
+            for (var partitionIndex = 0; partitionIndex < assignment.Length; partitionIndex++)
             {
+                var partition = assignment[partitionIndex];
                 if (_paused.Contains(partition))
                     continue;
 
@@ -2326,6 +2332,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         out bool hasReservation,
         out ValueTask faultApplication)
     {
+        ThrowIfDisposed();
         hasReservation = false;
         faultApplication = ValueTask.CompletedTask;
         if (!_positions.TryGetValue(partition, out var currentPosition) ||
@@ -2352,18 +2359,16 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             return false;
 
         var pendingOffset = _options.EnableAutoOffsetStore
-            ? partition
-            : (TopicPartition?)null;
-        if (TryApplyMatchingCommitFaultUnderLock(
+            ? new TopicPartitionOffset(partition.Topic, partition.Partition, nextOffset)
+            : (TopicPartitionOffset?)null;
+        if (TryCaptureAndApplyMatchingCommitFaultUnderLock(
                 pendingOffset,
-                requireInDoubtRecord: false,
                 cancellationToken,
+                out var capturedOffsets,
                 out faultApplication))
         {
-            var capturedOffsets = CaptureCommitOffsetsUnderLock(
-                _options.EnableAutoOffsetStore
-                    ? new TopicPartitionOffset(partition.Topic, partition.Partition, nextOffset)
-                    : null);
+            // Fault observers run synchronously and may re-enter this consumer.
+            ThrowIfDisposed();
             _paused.Add(partition);
 
             (_pendingAutoCommitAdvancements ??= [])[partition] = new PendingAutoCommitAdvancement(
@@ -2375,6 +2380,42 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         }
 
         return true;
+    }
+
+    private bool TryCaptureAndApplyMatchingCommitFaultUnderLock(
+        TopicPartitionOffset? pendingOffset,
+        CancellationToken cancellationToken,
+        out TopicPartitionOffset[] capturedOffsets,
+        out ValueTask faultApplication)
+    {
+        capturedOffsets = [];
+        faultApplication = ValueTask.CompletedTask;
+        if (_groupId is null)
+            return false;
+
+        var faultPlan = _cluster.FaultPlan;
+        if (faultPlan is KafkaFaultPlan indexedPlan)
+        {
+            if (!indexedPlan.HasPotentialMatch(KafkaFaultOperation.Commit, _groupId))
+                return false;
+        }
+        else if (faultPlan.Count == 0)
+        {
+            return false;
+        }
+
+        capturedOffsets = CaptureCommitOffsetsUnderLock(pendingOffset);
+        if (TryApplyMatchingCapturedCommitFault(
+                _groupId,
+                capturedOffsets,
+                cancellationToken,
+                out faultApplication))
+        {
+            return true;
+        }
+
+        capturedOffsets = [];
+        return false;
     }
 
     private async ValueTask ApplyOnDeliveryAutoCommitFaultAsync(
@@ -2789,6 +2830,37 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
     private IReadOnlySet<TopicPartition> GetCurrentAssignmentUnderLock() =>
         GetCurrentAssignmentUnderLock(out _);
+
+    private TopicPartition[] GetOrderedCurrentAssignmentUnderLock(
+        out int consumerGroupGeneration)
+    {
+        var assignment = GetPotentialFaultAssignmentUnderLock(
+            out _,
+            out consumerGroupGeneration);
+        if (_orderedAssignmentConsumerStateVersion == _consumerStateVersion &&
+            _orderedAssignmentConsumerGroupGeneration == consumerGroupGeneration)
+        {
+            return _orderedAssignment;
+        }
+
+        var orderedAssignment = new TopicPartition[assignment.Count];
+        var partitionIndex = 0;
+        foreach (var partition in assignment)
+            orderedAssignment[partitionIndex++] = partition;
+
+        Array.Sort(orderedAssignment, static (left, right) =>
+        {
+            var topicComparison = string.CompareOrdinal(left.Topic, right.Topic);
+            return topicComparison != 0
+                ? topicComparison
+                : left.Partition.CompareTo(right.Partition);
+        });
+
+        _orderedAssignment = orderedAssignment;
+        _orderedAssignmentConsumerStateVersion = _consumerStateVersion;
+        _orderedAssignmentConsumerGroupGeneration = consumerGroupGeneration;
+        return orderedAssignment;
+    }
 
     private IReadOnlySet<TopicPartition> GetCurrentAssignmentUnderLock(out int consumerGroupGeneration)
     {
