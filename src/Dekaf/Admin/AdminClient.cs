@@ -4109,8 +4109,7 @@ public sealed class AdminClient : IAdminClient, IKafkaClientStatusProvider
                 var response = await connection.SendAsync<DescribeLogDirsRequest, DescribeLogDirsResponse>(
                     new DescribeLogDirsRequest
                     {
-                        Topics = BuildDescribeLogDirsTopics(
-                            brokerReplicaList.Select(static replica => replica.TopicPartition))
+                        Topics = BuildDescribeReplicaLogDirsTopics(brokerReplicaList)
                     },
                     apiVersion,
                     cancellationToken).ConfigureAwait(false);
@@ -4121,21 +4120,10 @@ public sealed class AdminClient : IAdminClient, IKafkaClientStatusProvider
                     replicaInfos[replica.TopicPartition] = new ReplicaLogDirAccumulator();
                 }
 
-                var directoryError = Protocol.ErrorCode.None;
                 if (response.ErrorCode == Protocol.ErrorCode.None)
                 {
                     foreach (var directory in response.Results)
                     {
-                        if (directory.ErrorCode != Protocol.ErrorCode.None)
-                        {
-                            if (directoryError == Protocol.ErrorCode.None)
-                            {
-                                directoryError = directory.ErrorCode;
-                            }
-
-                            continue;
-                        }
-
                         foreach (var topic in directory.Topics)
                         {
                             foreach (var partition in topic.Partitions)
@@ -4146,7 +4134,11 @@ public sealed class AdminClient : IAdminClient, IKafkaClientStatusProvider
                                     continue;
                                 }
 
-                                if (partition.IsFutureKey)
+                                if (directory.ErrorCode != Protocol.ErrorCode.None)
+                                {
+                                    accumulator.ErrorCode = directory.ErrorCode;
+                                }
+                                else if (partition.IsFutureKey)
                                 {
                                     accumulator.FutureReplicaLogDir = directory.LogDir;
                                     accumulator.FutureReplicaOffsetLag = partition.OffsetLag;
@@ -4165,15 +4157,6 @@ public sealed class AdminClient : IAdminClient, IKafkaClientStatusProvider
                 foreach (var replica in brokerReplicaList)
                 {
                     var accumulator = replicaInfos[replica.TopicPartition];
-                    var errorCode = response.ErrorCode;
-                    if (errorCode == Protocol.ErrorCode.None
-                        && accumulator.CurrentReplicaLogDir is null)
-                    {
-                        // Kafka omits replica entries for failed directories, so preserve the failure
-                        // when no healthy directory identified the replica's current log.
-                        errorCode = directoryError;
-                    }
-
                     brokerResult[replica] = new DescribeReplicaLogDirResultInfo
                     {
                         TopicPartitionReplica = replica,
@@ -4181,7 +4164,9 @@ public sealed class AdminClient : IAdminClient, IKafkaClientStatusProvider
                         CurrentReplicaOffsetLag = accumulator.CurrentReplicaOffsetLag,
                         FutureReplicaLogDir = accumulator.FutureReplicaLogDir,
                         FutureReplicaOffsetLag = accumulator.FutureReplicaOffsetLag,
-                        ErrorCode = errorCode
+                        ErrorCode = response.ErrorCode == Protocol.ErrorCode.None
+                            ? accumulator.ErrorCode
+                            : response.ErrorCode
                     };
                 }
 
@@ -4199,6 +4184,31 @@ public sealed class AdminClient : IAdminClient, IKafkaClientStatusProvider
 
             return results;
         }, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static IReadOnlyList<DescribeLogDirsRequestTopic> BuildDescribeReplicaLogDirsTopics(
+        IReadOnlyList<TopicPartitionReplica> replicas)
+    {
+        var topics = new Dictionary<string, List<int>>(StringComparer.Ordinal);
+        for (var index = 0; index < replicas.Count; index++)
+        {
+            var replica = replicas[index];
+            if (!topics.TryGetValue(replica.Topic, out var partitions))
+            {
+                partitions = [];
+                topics[replica.Topic] = partitions;
+            }
+
+            partitions.Add(replica.Partition);
+        }
+
+        return topics
+            .Select(static topic => new DescribeLogDirsRequestTopic
+            {
+                Topic = topic.Key,
+                Partitions = topic.Value
+            })
+            .ToList();
     }
 
     private static IReadOnlyList<DescribeLogDirsRequestTopic>? BuildDescribeLogDirsTopics(IEnumerable<TopicPartition>? partitions)
@@ -4302,6 +4312,8 @@ public sealed class AdminClient : IAdminClient, IKafkaClientStatusProvider
         public string? FutureReplicaLogDir { get; set; }
 
         public long FutureReplicaOffsetLag { get; set; } = -1;
+
+        public Protocol.ErrorCode ErrorCode { get; set; }
     }
 
     public async ValueTask<IReadOnlyDictionary<string, StreamsGroupDescription>> DescribeStreamsGroupsAsync(

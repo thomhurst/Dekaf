@@ -56,9 +56,17 @@ public sealed class AdminLogDirsTests
         var result = await context.Client.DescribeReplicaLogDirsAsync([brokerOne, brokerOne, brokerTwo]);
 
         var requests = context.RequestsOfType<DescribeLogDirsRequest>();
+        var brokerOneRequest = context.RequestsForBroker<DescribeLogDirsRequest>(1).Single();
+        var brokerTwoRequest = context.RequestsForBroker<DescribeLogDirsRequest>(2).Single();
+        var brokerOneTopic = brokerOneRequest.Topics!.Single();
+        var brokerTwoTopic = brokerTwoRequest.Topics!.Single();
         await Assert.That(requests.Count).IsEqualTo(2);
         await Assert.That(requests.SelectMany(static request => request.Topics!).Select(static topic => topic.Topic))
             .IsEquivalentTo(["topic-a", "topic-b"]);
+        await Assert.That(brokerOneTopic.Topic).IsEqualTo("topic-a");
+        await Assert.That(brokerOneTopic.Partitions).IsEquivalentTo([0]);
+        await Assert.That(brokerTwoTopic.Topic).IsEqualTo("topic-b");
+        await Assert.That(brokerTwoTopic.Partitions).IsEquivalentTo([1]);
         await Assert.That(result.Count).IsEqualTo(2);
     }
 
@@ -103,7 +111,7 @@ public sealed class AdminLogDirsTests
     }
 
     [Test]
-    public async Task DescribeReplicaLogDirsAsync_PreservesDirectoryErrorForUnresolvedReplica()
+    public async Task DescribeReplicaLogDirsAsync_DoesNotMisattributeUnmappedDirectoryError()
     {
         await using var context = new AdminTestContext();
         context.EnqueueDescribe(new DescribeLogDirsResponse
@@ -127,9 +135,43 @@ public sealed class AdminLogDirsTests
 
         await Assert.That(result[online].ErrorCode).IsEqualTo(ErrorCode.None);
         await Assert.That(result[online].CurrentReplicaLogDir).IsEqualTo("/data-online");
-        await Assert.That(result[unresolved].ErrorCode).IsEqualTo(ErrorCode.KafkaStorageError);
+        await Assert.That(result[unresolved].ErrorCode).IsEqualTo(ErrorCode.None);
         await Assert.That(result[unresolved].CurrentReplicaLogDir).IsNull();
         await Assert.That(result[unresolved].FutureReplicaLogDir).IsNull();
+    }
+
+    [Test]
+    public async Task DescribeReplicaLogDirsAsync_MapsDistinctReportedDirectoryErrors()
+    {
+        await using var context = new AdminTestContext();
+        context.EnqueueDescribe(new DescribeLogDirsResponse
+        {
+            ErrorCode = ErrorCode.None,
+            Results =
+            [
+                DescribeDirectory(
+                    "/data-failed-a",
+                    "topic-a",
+                    partition: 0,
+                    offsetLag: -1,
+                    isFuture: false,
+                    errorCode: ErrorCode.KafkaStorageError),
+                DescribeDirectory(
+                    "/data-failed-b",
+                    "topic-b",
+                    partition: 1,
+                    offsetLag: -1,
+                    isFuture: false,
+                    errorCode: ErrorCode.LogDirNotFound)
+            ]
+        });
+        var first = new TopicPartitionReplica("topic-a", 0, 1);
+        var second = new TopicPartitionReplica("topic-b", 1, 1);
+
+        var result = await context.Client.DescribeReplicaLogDirsAsync([first, second]);
+
+        await Assert.That(result[first].ErrorCode).IsEqualTo(ErrorCode.KafkaStorageError);
+        await Assert.That(result[second].ErrorCode).IsEqualTo(ErrorCode.LogDirNotFound);
     }
 
     [Test]
@@ -347,9 +389,10 @@ public sealed class AdminLogDirsTests
         string topicName,
         int partition,
         long offsetLag,
-        bool isFuture) => new()
+        bool isFuture,
+        ErrorCode errorCode = ErrorCode.None) => new()
         {
-            ErrorCode = ErrorCode.None,
+            ErrorCode = errorCode,
             LogDir = logDir,
             Topics =
             [
@@ -394,64 +437,27 @@ public sealed class AdminLogDirsTests
     private sealed class AdminTestContext : IAsyncDisposable
     {
         private readonly IConnectionPool _pool;
-        private readonly IKafkaConnection _connection;
+        private readonly Dictionary<int, IKafkaConnection> _connections = [];
         private readonly MetadataManager _metadataManager;
         private readonly ConcurrentQueue<DescribeLogDirsResponse> _describeResponses = new();
         private readonly ConcurrentQueue<AlterReplicaLogDirsResponse> _alterResponses = new();
-        private readonly ConcurrentQueue<object> _requests = new();
+        private readonly ConcurrentQueue<(int BrokerId, object Request)> _requests = new();
         private Exception? _nextDescribeException;
 
         public AdminTestContext()
         {
-            _connection = Substitute.For<IKafkaConnection>();
-            _connection.BrokerId.Returns(1);
-            _connection.Host.Returns("localhost");
-            _connection.Port.Returns(9092);
-            _connection.IsConnected.Returns(true);
-            _connection
-                .SendAsync<DescribeLogDirsRequest, DescribeLogDirsResponse>(
-                    Arg.Any<DescribeLogDirsRequest>(),
-                    Arg.Any<short>(),
-                    Arg.Any<CancellationToken>())
-                .Returns(callInfo =>
-                {
-                    _requests.Enqueue(callInfo.ArgAt<DescribeLogDirsRequest>(0));
-                    var exception = Interlocked.Exchange(ref _nextDescribeException, null);
-                    if (exception is not null)
-                    {
-                        throw exception;
-                    }
-
-                    if (!_describeResponses.TryDequeue(out var response))
-                    {
-                        throw new InvalidOperationException($"No queued response for {nameof(DescribeLogDirsRequest)}.");
-                    }
-
-                    return new ValueTask<DescribeLogDirsResponse>(response);
-                });
-            _connection
-                .SendAsync<AlterReplicaLogDirsRequest, AlterReplicaLogDirsResponse>(
-                    Arg.Any<AlterReplicaLogDirsRequest>(),
-                    Arg.Any<short>(),
-                    Arg.Any<CancellationToken>())
-                .Returns(callInfo =>
-                {
-                    _requests.Enqueue(callInfo.ArgAt<AlterReplicaLogDirsRequest>(0));
-                    if (!_alterResponses.TryDequeue(out var response))
-                    {
-                        throw new InvalidOperationException($"No queued response for {nameof(AlterReplicaLogDirsRequest)}.");
-                    }
-
-                    return new ValueTask<AlterReplicaLogDirsResponse>(response);
-                });
-
             _pool = Substitute.For<IConnectionPool>();
+            _connections[1] = CreateConnection(1);
+            _connections[2] = CreateConnection(2);
             _pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
-                .Returns(new ValueTask<IKafkaConnection>(_connection));
+                .Returns(callInfo => new ValueTask<IKafkaConnection>(
+                    GetConnection(callInfo.ArgAt<int>(0))));
             _pool.GetConnectionByIndexAsync(Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
-                .Returns(new ValueTask<IKafkaConnection>(_connection));
+                .Returns(callInfo => new ValueTask<IKafkaConnection>(
+                    GetConnection(callInfo.ArgAt<int>(0))));
+            var bootstrapConnection = GetConnection(1);
             _pool.GetConnectionAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
-                .Returns(new ValueTask<IKafkaConnection>(_connection));
+                .Returns(new ValueTask<IKafkaConnection>(bootstrapConnection));
 
             _metadataManager = new MetadataManager(_pool, ["localhost:9092"]);
             _metadataManager.SetApiVersion(ApiKey.DescribeLogDirs, 1, 5);
@@ -487,6 +493,55 @@ public sealed class AdminLogDirsTests
                 _metadataManager);
         }
 
+        private IKafkaConnection GetConnection(int brokerId) => _connections[brokerId];
+
+        private IKafkaConnection CreateConnection(int brokerId)
+        {
+            var connection = Substitute.For<IKafkaConnection>();
+            connection.BrokerId.Returns(brokerId);
+            connection.Host.Returns("localhost");
+            connection.Port.Returns(9091 + brokerId);
+            connection.IsConnected.Returns(true);
+            connection
+                .SendAsync<DescribeLogDirsRequest, DescribeLogDirsResponse>(
+                    Arg.Any<DescribeLogDirsRequest>(),
+                    Arg.Any<short>(),
+                    Arg.Any<CancellationToken>())
+                .Returns(callInfo =>
+                {
+                    _requests.Enqueue((brokerId, callInfo.ArgAt<DescribeLogDirsRequest>(0)));
+                    var exception = Interlocked.Exchange(ref _nextDescribeException, null);
+                    if (exception is not null)
+                    {
+                        throw exception;
+                    }
+
+                    if (!_describeResponses.TryDequeue(out var response))
+                    {
+                        throw new InvalidOperationException($"No queued response for {nameof(DescribeLogDirsRequest)}.");
+                    }
+
+                    return new ValueTask<DescribeLogDirsResponse>(response);
+                });
+            connection
+                .SendAsync<AlterReplicaLogDirsRequest, AlterReplicaLogDirsResponse>(
+                    Arg.Any<AlterReplicaLogDirsRequest>(),
+                    Arg.Any<short>(),
+                    Arg.Any<CancellationToken>())
+                .Returns(callInfo =>
+                {
+                    _requests.Enqueue((brokerId, callInfo.ArgAt<AlterReplicaLogDirsRequest>(0)));
+                    if (!_alterResponses.TryDequeue(out var response))
+                    {
+                        throw new InvalidOperationException($"No queued response for {nameof(AlterReplicaLogDirsRequest)}.");
+                    }
+
+                    return new ValueTask<AlterReplicaLogDirsResponse>(response);
+                });
+
+            return connection;
+        }
+
         public AdminClient Client { get; }
 
         public void EnqueueDescribe(DescribeLogDirsResponse response) => _describeResponses.Enqueue(response);
@@ -495,7 +550,16 @@ public sealed class AdminLogDirsTests
 
         public void EnqueueAlter(AlterReplicaLogDirsResponse response) => _alterResponses.Enqueue(response);
 
-        public IReadOnlyList<T> RequestsOfType<T>() => _requests.OfType<T>().ToArray();
+        public IReadOnlyList<T> RequestsOfType<T>() => _requests
+            .Select(static request => request.Request)
+            .OfType<T>()
+            .ToArray();
+
+        public IReadOnlyList<T> RequestsForBroker<T>(int brokerId) => _requests
+            .Where(request => request.BrokerId == brokerId)
+            .Select(static request => request.Request)
+            .OfType<T>()
+            .ToArray();
 
         public async ValueTask DisposeAsync()
         {

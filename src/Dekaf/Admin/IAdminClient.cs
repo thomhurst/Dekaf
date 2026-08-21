@@ -1212,7 +1212,8 @@ public sealed class DescribeReplicaLogDirResultInfo
     public long FutureReplicaOffsetLag { get; init; } = -1;
 
     /// <summary>
-    /// Broker- or directory-level error code, or None when the broker returned replica information.
+    /// Broker-level error code, an explicitly reported directory-level error code,
+    /// or None when Kafka did not report an error for this replica.
     /// </summary>
     public Protocol.ErrorCode ErrorCode { get; init; }
 }
