@@ -805,7 +805,10 @@ public class JsonSchemaValidationBenchmarks
 
     private static (string Schema, byte[] Payload) CreateLayeredStructuralEqualitySchema(
         int depth,
-        int itemCount)
+        int itemCount) =>
+        (CreateLayeredStructuralEqualitySchema(depth), CreateMirroredIntegerArrays(itemCount));
+
+    private static string CreateLayeredStructuralEqualitySchema(int depth)
     {
         var schema = new StringBuilder(depth * 112);
         for (var index = 0; index < depth; index++)
@@ -816,24 +819,28 @@ public class JsonSchemaValidationBenchmarks
         schema.Append("{}");
         for (var index = 0; index < depth; index++)
             schema.Append("]}");
+        return schema.ToString();
+    }
 
+    private static byte[] CreateMirroredIntegerArrays(int itemCount)
+    {
         var payload = new StringBuilder(itemCount * 8);
         payload.Append("{\"left\":[");
-        for (var index = 0; index < itemCount; index++)
-        {
-            if (index != 0)
-                payload.Append(',');
-            payload.Append(index);
-        }
+        AppendIntegerArray(payload, itemCount);
         payload.Append("],\"right\":[");
+        AppendIntegerArray(payload, itemCount);
+        payload.Append("]}");
+        return Encoding.UTF8.GetBytes(payload.ToString());
+    }
+
+    private static void AppendIntegerArray(StringBuilder payload, int itemCount)
+    {
         for (var index = 0; index < itemCount; index++)
         {
             if (index != 0)
                 payload.Append(',');
             payload.Append(index);
         }
-        payload.Append("]}");
-        return (schema.ToString(), Encoding.UTF8.GetBytes(payload.ToString()));
     }
 
     private static byte[] CreateDuplicateNestedMemberPayload(int duplicateCount)
