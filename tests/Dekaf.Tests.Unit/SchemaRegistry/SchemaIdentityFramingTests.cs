@@ -282,6 +282,43 @@ public sealed class SchemaIdentityFramingTests
     }
 
     [Test]
+    public async Task JsonSerializer_PreparationAdmission_PreservesGuidHeaderFrame()
+    {
+        const string schemaText = "{\"type\":\"string\"}";
+        using var registry = new MockSchemaRegistryClient();
+        var schema = new Schema { SchemaType = SchemaType.Json, SchemaString = schemaText };
+        var schemaId = await registry.RegisterSchemaAsync("json-admission-value", schema);
+        await using var serializer = new JsonSchemaRegistrySerializer<string>(
+            registry,
+            schemaText,
+            jsonOptions: null,
+            new JsonSchemaSerializerConfig
+            {
+                AutoRegisterSchemas = false,
+                SchemaIdStrategy = SchemaIdSerializerStrategy.Header
+            });
+        var headers = new Headers();
+        var context = new SerializationContext
+        {
+            Topic = "json-admission",
+            Component = SerializationComponent.Value,
+            Headers = headers
+        };
+        var admissionSerializer = (IAsyncSerializerPreparationAdmission<string>)serializer;
+        var admission = await admissionSerializer.PrepareForSerializationAsync("value", context);
+        var destination = new ArrayBufferWriter<byte>();
+
+        admissionSerializer.SerializePrepared("value", ref destination, context, in admission);
+
+        var expectedGuid = new Guid(schemaId, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        var expectedFrame = SchemaIdentityFraming.CreateSchemaGuidFrame(expectedGuid);
+        await Assert.That(Encoding.UTF8.GetString(destination.WrittenSpan)).IsEqualTo("\"value\"");
+        await Assert.That(headers.Count).IsEqualTo(1);
+        await Assert.That(headers[0].Key).IsEqualTo(SchemaIdentityHeaderNames.Value);
+        await Assert.That(headers[0].Value.ToArray()).IsEquivalentTo(expectedFrame);
+    }
+
+    [Test]
     public async Task IdPrefix_MatchesConfluentWireVector()
     {
         var destination = new byte[SchemaIdentityFraming.SchemaIdFrameSize];

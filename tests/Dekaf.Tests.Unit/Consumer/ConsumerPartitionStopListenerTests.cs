@@ -106,7 +106,7 @@ public sealed class ConsumerPartitionStopListenerTests
     public async Task CloseAsync_PartitionStopTimeout_CancelsListenerAndContinuesCleanup()
     {
         var cancellationObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseListener = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseListener = new TaskCompletionSource();
         var listenerCompleted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var listener = new TrackingPartitionStopListener
         {

@@ -442,6 +442,40 @@ public class KafkaProducerFastPathTests
     }
 
     [Test]
+    public async Task ProduceAsync_PreparedRecordHeaderSerializerWithoutCallerHeaders_AppendsHeader()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-prepared-record-header-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 4096,
+            LingerMs = 10,
+            RequestTimeoutMs = 500,
+            DeliveryTimeoutMs = 1000,
+            CloseTimeoutMs = 1000
+        };
+
+        var serializer = new PreparedRecordHeaderStringSerializer();
+        await using var producer = new KafkaProducer<string, string>(
+            options,
+            Serializers.String,
+            serializer);
+        await StopProducerBackgroundLoopsAsync(producer);
+        SeedProducerMetadata(producer);
+        SetInstanceField(producer, "_initialized", true);
+
+        var produceTask = producer.ProduceAsync(Topic, "key", "identity-value");
+        var readyBatch = CompleteCurrentBatch(producer.RecordAccumulator, new TopicPartition(Topic, 0));
+        var record = readyBatch.RecordBatch.Records[0];
+
+        await Assert.That(serializer.SerializePreparedCount).IsEqualTo(1);
+        await Assert.That(GetNamedHeaderValueString(record, "identity")).IsEqualTo("identity-value");
+        readyBatch.CompleteSend(baseOffset: 7, DateTimeOffset.UtcNow);
+        _ = await produceTask;
+    }
+
+    [Test]
     public async Task ProduceAsync_AsyncSerializerTracing_RestoresCallerOwnedHeadersAfterAppend()
     {
         using var listener = new ActivityListener
@@ -1189,6 +1223,51 @@ public class KafkaProducerFastPathTests
             , allows ref struct
 #endif
         {
+            context.Headers!.Add("identity", Encoding.UTF8.GetBytes(value));
+            Serializers.String.Serialize(value, ref destination, context);
+        }
+    }
+
+    private sealed class PreparedRecordHeaderStringSerializer :
+        ISerializer<string>,
+        IAsyncSerializerPreparationAdmission<string>,
+        IRecordHeaderSerializer
+    {
+        private static readonly object PreparedSchema = new();
+
+        public bool ProducesRecordHeaders => true;
+        public int SerializePreparedCount { get; private set; }
+
+        public ValueTask PrepareAsync(
+            string value,
+            SerializationContext context,
+            CancellationToken cancellationToken = default) =>
+            ValueTask.CompletedTask;
+
+        public ValueTask<SerializerPreparationAdmission> PrepareForSerializationAsync(
+            string value,
+            SerializationContext context,
+            CancellationToken cancellationToken = default) =>
+            new(new SerializerPreparationAdmission("subject", 1, PreparedSchema));
+
+        public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
+            where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
+            => throw new InvalidOperationException("Prepared serialization admission was not used.");
+
+        public void SerializePrepared<TWriter>(
+            string value,
+            ref TWriter destination,
+            SerializationContext context,
+            in SerializerPreparationAdmission admission)
+            where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
+        {
+            SerializePreparedCount++;
             context.Headers!.Add("identity", Encoding.UTF8.GetBytes(value));
             Serializers.String.Serialize(value, ref destination, context);
         }

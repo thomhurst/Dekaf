@@ -12,10 +12,14 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
     private readonly Dictionary<(Guid Guid, string? Format), Schema> _schemasByGuid = new();
     private readonly Dictionary<string, List<(int Version, int Id, Schema Schema)>> _schemasBySubject = new();
     private readonly Dictionary<(string Namespace, string Name), List<Association>> _associationsByResource = new();
+    private readonly Queue<Task<IReadOnlyList<Association>>> _associationLookupResponses = new();
     private TaskCompletionSource? _getSchemaEntered;
     private TaskCompletionSource? _getSchemaRelease;
     private TaskCompletionSource? _getOrRegisterSchemaEntered;
     private TaskCompletionSource? _getOrRegisterSchemaRelease;
+    private TaskCompletionSource? _associationLookupEntered;
+    private TaskCompletionSource? _associationLookupRelease;
+    private int _associationLookupCallCount;
     private int _nextId = 1;
     private bool _disposed;
 
@@ -25,9 +29,35 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
     public int GetOrRegisterSchemaCallCount { get; private set; }
     public CancellationToken LastGetOrRegisterSchemaCancellationToken { get; private set; }
     public int TryGetCachedSchemaCallCount { get; private set; }
+    internal Action? BeforeTryGetCachedSchema { get; set; }
     public int GetSchemaFailuresRemaining { get; set; }
     public int GetOrRegisterSchemaFailuresRemaining { get; set; }
+    public int AssociationLookupCallCount => Volatile.Read(ref _associationLookupCallCount);
+    public int AssociationLookupFailuresRemaining { get; set; }
     public bool SupportsDeletedVersionLookup { get; init; }
+
+    public void BlockNextAssociationLookup()
+    {
+        _associationLookupEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _associationLookupRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    public void EnqueueAssociationLookup(Task<IReadOnlyList<Association>> response) =>
+        _associationLookupResponses.Enqueue(response);
+
+    public async Task WaitForBlockedAssociationLookupAsync(TimeSpan timeout)
+    {
+        var entered = _associationLookupEntered
+            ?? throw new InvalidOperationException("No blocked association lookup was configured.");
+        await entered.Task.WaitAsync(timeout);
+    }
+
+    public void ReleaseBlockedAssociationLookup()
+    {
+        _associationLookupRelease?.TrySetResult();
+        _associationLookupEntered = null;
+        _associationLookupRelease = null;
+    }
 
     public void BlockNextGetSchema()
     {
@@ -114,6 +144,18 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
         return Task.FromResult(id);
     }
 
+    internal void AddSchemaSubject(int id, string subject)
+    {
+        var schema = _schemasById[id];
+        if (!_schemasBySubject.TryGetValue(subject, out var list))
+        {
+            list = [];
+            _schemasBySubject[subject] = list;
+        }
+
+        list.Add((list.Count + 1, id, schema));
+    }
+
     public async Task<Schema> GetSchemaAsync(int id, CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
@@ -184,6 +226,7 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
     public bool TryGetCachedSchema(int id, out Schema schema)
     {
         ThrowIfDisposed();
+        BeforeTryGetCachedSchema?.Invoke();
         TryGetCachedSchemaCallCount++;
         return _schemasById.TryGetValue(id, out schema!);
     }
@@ -384,7 +427,7 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
         return Task.FromResult<IReadOnlyList<int>>(versions);
     }
 
-    public Task<IReadOnlyList<Association>> GetAssociationsByResourceNameAsync(
+    public async Task<IReadOnlyList<Association>> GetAssociationsByResourceNameAsync(
         string resourceName,
         string resourceNamespace = "-",
         string? resourceType = null,
@@ -404,6 +447,20 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
             offset,
             limit);
         cancellationToken.ThrowIfCancellationRequested();
+        Interlocked.Increment(ref _associationLookupCallCount);
+        if (_associationLookupResponses.Count > 0)
+            return await _associationLookupResponses.Dequeue().WaitAsync(cancellationToken);
+        if (_associationLookupEntered is { } entered && _associationLookupRelease is { } release)
+        {
+            entered.TrySetResult();
+            await release.Task.WaitAsync(cancellationToken);
+        }
+
+        if (AssociationLookupFailuresRemaining > 0)
+        {
+            AssociationLookupFailuresRemaining--;
+            throw new SchemaRegistryException(500, "Simulated association lookup failure.");
+        }
 
         IEnumerable<Association> filtered;
         if (resourceNamespace == "-")
@@ -418,7 +475,7 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
         }
         else
         {
-            return Task.FromResult<IReadOnlyList<Association>>([]);
+            return [];
         }
 
         if (resourceType is not null)
@@ -432,7 +489,7 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
         if (limit >= 0)
             filtered = filtered.Take(limit);
 
-        return Task.FromResult<IReadOnlyList<Association>>(filtered.ToArray());
+        return filtered.ToArray();
     }
 
     public Task<AssociationResponse> CreateAssociationAsync(

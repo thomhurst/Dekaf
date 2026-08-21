@@ -48,6 +48,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     // synchronous Serialize can run without blocking. Null for the common case (built-in serializers).
     private readonly IAsyncSerializerPreparer<TKey>? _keyPreparer;
     private readonly IAsyncSerializerPreparer<TValue>? _valuePreparer;
+    private readonly IAsyncSerializerPreparationAdmission<TKey>? _keyPreparationAdmission;
+    private readonly IAsyncSerializerPreparationAdmission<TValue>? _valuePreparationAdmission;
     // Non-null when the user configured an IAsyncSerializer for that component (issue #2309:
     // serializers that perform per-message I/O, e.g. envelope encryption with short-lived keys).
     // When either is set, every produce entry point routes to the asynchronous serialization path
@@ -328,6 +330,14 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         protected override void Reset(Headers item) => item.Clear();
     }
 
+    private readonly struct SerializerPreparationLease(
+        SerializerPreparationAdmission key,
+        SerializerPreparationAdmission value)
+    {
+        internal SerializerPreparationAdmission Key { get; } = key;
+        internal SerializerPreparationAdmission Value { get; } = value;
+    }
+
     private const string TransactionVersionFeature = "transaction.version";
 
     // Default sizes match typical key/value sizes to avoid growth in common cases
@@ -480,6 +490,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         _valueSerializer = asyncValueSerializer is null ? valueSerializer : AsyncOnlySerializerPlaceholder<TValue>.Instance;
         _keyPreparer = _keySerializer as IAsyncSerializerPreparer<TKey>;
         _valuePreparer = _valueSerializer as IAsyncSerializerPreparer<TValue>;
+        _keyPreparationAdmission = _keySerializer as IAsyncSerializerPreparationAdmission<TKey>;
+        _valuePreparationAdmission = _valueSerializer as IAsyncSerializerPreparationAdmission<TValue>;
         _asyncKeySerializer = asyncKeySerializer;
         _asyncValueSerializer = asyncValueSerializer;
         _hasAsyncSerializers = asyncKeySerializer is not null || asyncValueSerializer is not null;
@@ -774,10 +786,15 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         // subject this completes synchronously and falls straight through to the fast path below.
         if (_keyPreparer is not null || _valuePreparer is not null)
         {
-            ValueTask prepare;
+            ValueTask<SerializerPreparationLease> prepare;
             try
             {
-                prepare = PrepareSerializersAsync(message.Topic, message.Key, message.Value, headers, cancellationToken);
+                prepare = PrepareSerializersAsync(
+                    message.Topic,
+                    message.Key,
+                    message.Value,
+                    headers,
+                    cancellationToken);
             }
             catch (Exception ex)
             {
@@ -797,9 +814,23 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     continuationMode,
                     cancellationToken);
             }
+
+            return ProduceAfterPrepare(
+                message,
+                headers,
+                activity,
+                continuationMode,
+                prepare.Result,
+                cancellationToken);
         }
 
-        return ProduceAfterPrepare(message, headers, activity, continuationMode, cancellationToken);
+        return ProduceAfterPrepare(
+            message,
+            headers,
+            activity,
+            continuationMode,
+            default,
+            cancellationToken);
     }
 
     // Stops and error-tags a started span when async serializer preparation fails before the
@@ -822,6 +853,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         Headers? headers,
         Activity? activity,
         ProduceContinuationMode continuationMode,
+        in SerializerPreparationLease preparationLease,
         CancellationToken cancellationToken)
     {
         // AwaitWithActivity/AwaitWithMetrics interpose an async state machine whose continuation
@@ -836,7 +868,13 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
         // Fast path: Try synchronous produce if metadata is initialized and cached.
         // This bypasses channel overhead for 99%+ of calls after warmup.
-        if (TryProduceSyncForAsync(message, headers, runContinuationsAsynchronously, cancellationToken, out var completion))
+        if (TryProduceSyncForAsync(
+                message,
+                headers,
+                runContinuationsAsynchronously,
+                preparationLease,
+                cancellationToken,
+                out var completion))
         {
             // POST-QUEUE: Message appended to a batch (committed to being sent, cancellation
             // only stops the wait) or handed to the slow-path append worker under
@@ -858,20 +896,27 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
         // Slow path: Fall back to channel-based async processing.
         // This handles first-time metadata initialization or cache misses.
-        return ProduceAsyncSlow(message, headers, activity, continuationMode, cancellationToken);
+        return ProduceAsyncSlow(
+            message,
+            headers,
+            activity,
+            continuationMode,
+            preparationLease,
+            cancellationToken);
     }
 
     private async ValueTask<RecordMetadata> AwaitPrepareThenProduce(
-        ValueTask prepare,
+        ValueTask<SerializerPreparationLease> prepare,
         ProducerMessage<TKey, TValue> message,
         Headers? headers,
         Activity? activity,
         ProduceContinuationMode continuationMode,
         CancellationToken cancellationToken)
     {
+        SerializerPreparationLease preparationLease;
         try
         {
-            await prepare.ConfigureAwait(false);
+            preparationLease = await prepare.ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -886,50 +931,81 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             headers,
             activity,
             continuationMode,
+            preparationLease,
             cancellationToken).ConfigureAwait(false);
     }
 
     // Ensures any serializer that implements IAsyncSerializerPreparer<T> has fetched its schema (or
     // other async prerequisite) for this topic before the synchronous serialize runs. Returns a
     // synchronously-completed ValueTask in the steady state (already prepared), keeping the fast path sync.
-    private ValueTask PrepareSerializersAsync(
+    private ValueTask<SerializerPreparationLease> PrepareSerializersAsync(
         string topic,
         TKey? key,
         TValue? value,
         Headers? headers,
         CancellationToken cancellationToken)
     {
-        var keyPrepare = default(ValueTask);
+        var keyPrepare = default(ValueTask<SerializerPreparationAdmission>);
         if (_keyPreparer is not null && key is not null)
         {
-            keyPrepare = _keyPreparer.PrepareAsync(
-                key,
-                new SerializationContext { Topic = topic, Component = SerializationComponent.Key, Headers = headers },
-                cancellationToken);
+            var context = new SerializationContext
+            {
+                Topic = topic,
+                Component = SerializationComponent.Key,
+                Headers = headers
+            };
+            keyPrepare = _keyPreparationAdmission is { } admission
+                ? admission.PrepareForSerializationAsync(key, context, cancellationToken)
+                : AwaitPreparationAsync(_keyPreparer.PrepareAsync(key, context, cancellationToken));
         }
 
-        var valuePrepare = default(ValueTask);
+        var valuePrepare = default(ValueTask<SerializerPreparationAdmission>);
         if (_valuePreparer is not null && value is not null)
         {
-            valuePrepare = _valuePreparer.PrepareAsync(
-                value,
-                new SerializationContext { Topic = topic, Component = SerializationComponent.Value, Headers = headers },
-                cancellationToken);
+            var context = new SerializationContext
+            {
+                Topic = topic,
+                Component = SerializationComponent.Value,
+                Headers = headers
+            };
+            valuePrepare = _valuePreparationAdmission is { } admission
+                ? admission.PrepareForSerializationAsync(value, context, cancellationToken)
+                : AwaitPreparationAsync(_valuePreparer.PrepareAsync(value, context, cancellationToken));
         }
 
         if (keyPrepare.IsCompletedSuccessfully && valuePrepare.IsCompletedSuccessfully)
         {
-            return default;
+            return new ValueTask<SerializerPreparationLease>(
+                new SerializerPreparationLease(keyPrepare.Result, valuePrepare.Result));
         }
 
         return AwaitBothAsync(keyPrepare, valuePrepare);
 
-        static async ValueTask AwaitBothAsync(ValueTask keyPrepare, ValueTask valuePrepare)
+        static ValueTask<SerializerPreparationAdmission> AwaitPreparationAsync(ValueTask preparation)
+        {
+            if (preparation.IsCompletedSuccessfully)
+                return default;
+
+            return AwaitAsync(preparation);
+
+            static async ValueTask<SerializerPreparationAdmission> AwaitAsync(ValueTask pending)
+            {
+                await pending.ConfigureAwait(false);
+                return default;
+            }
+        }
+
+        static async ValueTask<SerializerPreparationLease> AwaitBothAsync(
+            ValueTask<SerializerPreparationAdmission> keyPrepare,
+            ValueTask<SerializerPreparationAdmission> valuePrepare)
         {
             // Await both even when one faults first, so a later fault on the other side is always
             // observed rather than left as an unobserved task exception. This is the cold path
             // (first message per subject); the steady state returns synchronously above.
-            await Task.WhenAll(keyPrepare.AsTask(), valuePrepare.AsTask()).ConfigureAwait(false);
+            var keyTask = keyPrepare.AsTask();
+            var valueTask = valuePrepare.AsTask();
+            await Task.WhenAll(keyTask, valueTask).ConfigureAwait(false);
+            return new SerializerPreparationLease(keyTask.Result, valueTask.Result);
         }
     }
 
@@ -1001,14 +1077,49 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         // synchronous serialize so it never blocks. Steady state completes synchronously and falls through.
         if (_keyPreparer is not null || _valuePreparer is not null)
         {
-            var prepare = PrepareSerializersAsync(topic, key, value, headers, cancellationToken);
+            var prepare = PrepareSerializersAsync(
+                topic,
+                key,
+                value,
+                headers,
+                cancellationToken);
+
             if (!prepare.IsCompletedSuccessfully)
             {
-                return AwaitPrepareThenProduce(prepare, topic, key, value, headers, partition, timestamp, continuationMode, cancellationToken);
+                return AwaitPrepareThenProduce(
+                    prepare,
+                    topic,
+                    key,
+                    value,
+                    headers,
+                    partition,
+                    timestamp,
+                    continuationMode,
+                    cancellationToken);
             }
+
+            return ProduceAfterPrepare(
+                topic,
+                key,
+                value,
+                headers,
+                partition,
+                timestamp,
+                continuationMode,
+                prepare.Result,
+                cancellationToken);
         }
 
-        return ProduceAfterPrepare(topic, key, value, headers, partition, timestamp, continuationMode, cancellationToken);
+        return ProduceAfterPrepare(
+            topic,
+            key,
+            value,
+            headers,
+            partition,
+            timestamp,
+            continuationMode,
+            default,
+            cancellationToken);
     }
 
     private ValueTask<RecordMetadata> ProduceAfterPrepare(
@@ -1019,6 +1130,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         int? partition,
         DateTimeOffset? timestamp,
         ProduceContinuationMode continuationMode,
+        in SerializerPreparationLease preparationLease,
         CancellationToken cancellationToken)
     {
         // See the message-based ProduceAfterPrepare: the metrics wrapper's continuation must not
@@ -1036,6 +1148,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             partition,
             timestamp,
             runContinuationsAsynchronously,
+            preparationLease,
             cancellationToken,
             out var completion))
         {
@@ -1067,11 +1180,12 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             headers,
             activity: null,
             continuationMode,
+            preparationLease,
             cancellationToken);
     }
 
     private async ValueTask<RecordMetadata> AwaitPrepareThenProduce(
-        ValueTask prepare,
+        ValueTask<SerializerPreparationLease> prepare,
         string topic,
         TKey? key,
         TValue value,
@@ -1081,8 +1195,18 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         ProduceContinuationMode continuationMode,
         CancellationToken cancellationToken)
     {
-        await prepare.ConfigureAwait(false);
-        return await ProduceAfterPrepare(topic, key, value, headers, partition, timestamp, continuationMode, cancellationToken).ConfigureAwait(false);
+        var preparationLease = await prepare.ConfigureAwait(false);
+
+        return await ProduceAfterPrepare(
+            topic,
+            key,
+            value,
+            headers,
+            partition,
+            timestamp,
+            continuationMode,
+            preparationLease,
+            cancellationToken).ConfigureAwait(false);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -1237,6 +1361,22 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         CancellationToken cancellationToken,
         out PooledValueTaskSource<RecordMetadata>? completion)
         => TryProduceSyncForAsync(
+            message,
+            headers,
+            runContinuationsAsynchronously,
+            default,
+            cancellationToken,
+            out completion);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryProduceSyncForAsync(
+        ProducerMessage<TKey, TValue> message,
+        Headers? headers,
+        bool runContinuationsAsynchronously,
+        in SerializerPreparationLease preparationLease,
+        CancellationToken cancellationToken,
+        out PooledValueTaskSource<RecordMetadata>? completion)
+        => TryProduceSyncForAsync(
             message.Topic,
             message.Key,
             message.Value,
@@ -1244,6 +1384,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             message.Partition,
             message.Timestamp,
             runContinuationsAsynchronously,
+            preparationLease,
             cancellationToken,
             out completion);
 
@@ -1256,6 +1397,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         int? partition,
         DateTimeOffset? timestamp,
         bool runContinuationsAsynchronously,
+        in SerializerPreparationLease preparationLease,
         CancellationToken cancellationToken,
         out PooledValueTaskSource<RecordMetadata>? completion)
     {
@@ -1293,7 +1435,17 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         completion = RentCompletion(runContinuationsAsynchronously);
         try
         {
-            TryProduceSyncCore(topic, key, value, headers, partition, timestamp, topicInfo, completion, cancellationToken);
+            TryProduceSyncCore(
+                topic,
+                key,
+                value,
+                headers,
+                partition,
+                timestamp,
+                topicInfo,
+                completion,
+                preparationLease,
+                cancellationToken);
         }
         catch (Exception ex)
         {
@@ -1315,6 +1467,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         Headers? headers,
         Activity? activity,
         ProduceContinuationMode continuationMode,
+        SerializerPreparationLease preparationLease,
         CancellationToken cancellationToken)
     {
         // See ProduceAfterPrepare: instrumented awaits interpose a state machine that must not
@@ -1326,7 +1479,13 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         var runContinuationsAsynchronously = continuationMode == ProduceContinuationMode.Async;
 
         // Retry fast path - metadata should already be initialized via InitializeAsync()
-        if (TryProduceSyncForAsync(message, headers, runContinuationsAsynchronously, cancellationToken, out var fastCompletion))
+        if (TryProduceSyncForAsync(
+                message,
+                headers,
+                runContinuationsAsynchronously,
+                preparationLease,
+                cancellationToken,
+                out var fastCompletion))
         {
             return await AwaitProduceCompletionAsync(fastCompletion!, activity, metricsEnabled, message.Topic, cancellationToken).ConfigureAwait(false);
         }
@@ -1335,7 +1494,12 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         var completion = RentCompletion(runContinuationsAsynchronously);
         try
         {
-            await ProduceInternalAsync(message, headers, completion, cancellationToken).ConfigureAwait(false);
+            await ProduceInternalAsync(
+                message,
+                headers,
+                completion,
+                preparationLease,
+                cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -1371,10 +1535,52 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
         var activity = StartPublishActivity(message, out var headers);
 
-        // Async serializers cannot run on the synchronous append path — serialize on the async
-        // path, then enqueue. Delivery errors are observed and logged (fire-and-forget contract).
-        if (_hasAsyncSerializers)
-            return FireWithAsyncSerializationAsync(message, headers, activity, deliveryHandler: null);
+        var preparationLease = default(SerializerPreparationLease);
+        if (_keyPreparer is not null || _valuePreparer is not null)
+        {
+            ValueTask<SerializerPreparationLease> preparation;
+            try
+            {
+                preparation = PrepareSerializersAsync(
+                    message.Topic,
+                    message.Key,
+                    message.Value,
+                    headers,
+                    CancellationToken.None);
+            }
+            catch (KafkaTimeoutException)
+            {
+                headers?.RemoveDeferredTraceContext();
+                activity?.Dispose();
+                throw;
+            }
+            catch (Exception ex)
+            {
+                LogFireAndForgetProduceFailed(ex, message.Topic);
+                headers?.RemoveDeferredTraceContext();
+                activity?.Dispose();
+                return default;
+            }
+
+            if (_hasAsyncSerializers || !preparation.IsCompletedSuccessfully)
+                return FireWithAsyncSerializationAsync(
+                    message,
+                    headers,
+                    activity,
+                    deliveryHandler: null,
+                    preparation);
+
+            preparationLease = preparation.Result;
+        }
+        else if (_hasAsyncSerializers)
+        {
+            return FireWithAsyncSerializationAsync(
+                message,
+                headers,
+                activity,
+                deliveryHandler: null,
+                default);
+        }
 
         // Fast path: try thread-local cached topic metadata first
         var inThreadLocalCache = TryGetCachedTopicInfo(message.Topic, out var topicInfo);
@@ -1386,7 +1592,26 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
             try
             {
-                var appendResult = SerializeAndAppendFromSpansAsync(message.Topic, message.Key, message.Value, headers, message.Partition, message.Timestamp, topicInfo!, null);
+                var appendResult = _keyPreparer is null && _valuePreparer is null
+                    ? SerializeAndAppendFromSpansAsync(
+                        message.Topic,
+                        message.Key,
+                        message.Value,
+                        headers,
+                        message.Partition,
+                        message.Timestamp,
+                        topicInfo!,
+                        null)
+                    : SerializePreparedAndAppendFromSpansAsync(
+                        message.Topic,
+                        message.Key,
+                        message.Value,
+                        headers,
+                        message.Partition,
+                        message.Timestamp,
+                        topicInfo!,
+                        null,
+                        in preparationLease);
 
                 if (appendResult.IsCompleted)
                 {
@@ -1420,7 +1645,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         }
 
         // Metadata miss — full async path
-        return FireAsyncSlow(message, headers, activity);
+        return FireAsyncSlow(message, headers, activity, preparationLease);
     }
 
     /// <inheritdoc />
@@ -1436,14 +1661,47 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         if (_interceptors is not null)
             return FireAsync(new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value });
 
-        // Async serializers divert before the synchronous append path (see FireAsync(message)).
-        if (_hasAsyncSerializers)
+        var preparationLease = default(SerializerPreparationLease);
+        if (_keyPreparer is not null || _valuePreparer is not null)
+        {
+            ValueTask<SerializerPreparationLease> preparation;
+            try
+            {
+                preparation = PrepareSerializersAsync(
+                    topic,
+                    key,
+                    value,
+                    headers: null,
+                    CancellationToken.None);
+            }
+            catch (KafkaTimeoutException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                LogFireAndForgetProduceFailed(ex, topic);
+                return default;
+            }
+
+            if (_hasAsyncSerializers || !preparation.IsCompletedSuccessfully)
+                return FireWithAsyncSerializationAsync(
+                    new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value },
+                    headers: null,
+                    activity: null,
+                    deliveryHandler: null,
+                    preparation);
+
+            preparationLease = preparation.Result;
+        }
+        else if (_hasAsyncSerializers)
         {
             return FireWithAsyncSerializationAsync(
                 new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value },
                 headers: null,
                 activity: null,
-                deliveryHandler: null);
+                deliveryHandler: null,
+                default);
         }
 
         // Fast path: no ProducerMessage allocation, no interceptors, no activity tracing
@@ -1456,7 +1714,26 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
             try
             {
-                var appendResult = SerializeAndAppendFromSpansAsync(topic, key, value, null, null, null, topicInfo!, null);
+                var appendResult = _keyPreparer is null && _valuePreparer is null
+                    ? SerializeAndAppendFromSpansAsync(
+                        topic,
+                        key,
+                        value,
+                        headers: null,
+                        partition: null,
+                        timestamp: null,
+                        topicInfo!,
+                        callback: null)
+                    : SerializePreparedAndAppendFromSpansAsync(
+                        topic,
+                        key,
+                        value,
+                        headers: null,
+                        partition: null,
+                        timestamp: null,
+                        topicInfo!,
+                        callback: null,
+                        in preparationLease);
 
                 if (appendResult.IsCompleted)
                 {
@@ -1479,7 +1756,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         return FireAsyncSlow(
             new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value },
             headers: null,
-            activity: null);
+            activity: null,
+            preparationLease);
     }
 
     /// <summary>
@@ -1549,6 +1827,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             message.Timestamp,
             topicInfo,
             completion,
+            default,
             cancellationToken);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1577,6 +1856,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         DateTimeOffset? timestamp,
         TopicInfo topicInfo,
         PooledValueTaskSource<RecordMetadata> completion,
+        in SerializerPreparationLease preparationLease,
         CancellationToken cancellationToken,
         bool recordHeadersPrepared = false)
     {
@@ -1589,7 +1869,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             {
                 TryProduceSyncCore(
                     topic, key, value, serializationHeaders, partition, timestamp, topicInfo,
-                    completion, cancellationToken, recordHeadersPrepared: true);
+                    completion, in preparationLease, cancellationToken, recordHeadersPrepared: true);
             }
             finally
             {
@@ -1607,6 +1887,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
         try
         {
+            var keyPreparationAdmission = preparationLease.Key;
+            var valuePreparationAdmission = preparationLease.Value;
             var keyIsNull = key is null;
             var keySpan = ReadOnlySpan<byte>.Empty;
             if (!keyIsNull)
@@ -1614,7 +1896,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 if (partition is null && _usesCustomPartitioner)
                 {
                     SerializeCustomPartitionerKey(
-                        topic, key!, headers, cache,
+                        topic, key!, headers, cache, in keyPreparationAdmission,
                         out var keyBuffer, out customPartitionerKeyBuffer, out var keyLength);
                     keySpan = keyBuffer.AsSpan(0, keyLength);
                 }
@@ -1624,22 +1906,25 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     cache.SerializationContext.Topic = topic;
                     cache.SerializationContext.Component = SerializationComponent.Key;
                     cache.SerializationContext.Headers = headers;
-                    _keySerializer.Serialize(key!, ref keyWriter, cache.SerializationContext);
+                    if (keyPreparationAdmission.IsPrepared)
+                    {
+                        _keyPreparationAdmission!.SerializePrepared(
+                            key!,
+                            ref keyWriter,
+                            cache.SerializationContext,
+                            in keyPreparationAdmission);
+                    }
+                    else
+                    {
+                        _keySerializer.Serialize(key!, ref keyWriter, cache.SerializationContext);
+                    }
                     keySpan = keyWriter.WrittenSpan;
                     keyWriter.UpdateBufferRef(ref cache.KeySerializationBuffer);
                 }
             }
 
-            // Determine partition
-            int resolvedPartition;
-            if (partition is { } explicitPartition)
-            {
-                resolvedPartition = explicitPartition;
-            }
-            else
-            {
-                resolvedPartition = _partitioner.Partition(topic, keySpan, keyIsNull, topicInfo.PartitionCount);
-            }
+            var resolvedPartition = partition
+                ?? _partitioner.Partition(topic, keySpan, keyIsNull, topicInfo.PartitionCount);
 
             var valueIsNull = value is null;
             var valueSpan = ReadOnlySpan<byte>.Empty;
@@ -1649,7 +1934,18 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 cache.SerializationContext.Topic = topic;
                 cache.SerializationContext.Component = SerializationComponent.Value;
                 cache.SerializationContext.Headers = headers;
-                _valueSerializer.Serialize(value!, ref valueWriter, cache.SerializationContext);
+                if (valuePreparationAdmission.IsPrepared)
+                {
+                    _valuePreparationAdmission!.SerializePrepared(
+                        value!,
+                        ref valueWriter,
+                        cache.SerializationContext,
+                        in valuePreparationAdmission);
+                }
+                else
+                {
+                    _valueSerializer.Serialize(value!, ref valueWriter, cache.SerializationContext);
+                }
                 valueSpan = valueWriter.WrittenSpan;
                 valueWriter.UpdateBufferRef(ref cache.ValueSerializationBuffer);
             }
@@ -1854,10 +2150,44 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         // Apply OnSend interceptors before serialization
         message = ApplyOnSendInterceptors(message);
 
-        // Async serializers divert before the synchronous append path; the delivery handler is
-        // invoked from a background observer when the batch completes (see FireAsync(message)).
-        if (_hasAsyncSerializers)
-            return FireWithAsyncSerializationAsync(message, message.Headers, activity: null, deliveryHandler);
+        var preparationLease = default(SerializerPreparationLease);
+        if (_keyPreparer is not null || _valuePreparer is not null)
+        {
+            ValueTask<SerializerPreparationLease> preparation;
+            try
+            {
+                preparation = PrepareSerializersAsync(
+                    message.Topic,
+                    message.Key,
+                    message.Value,
+                    message.Headers,
+                    CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                try { deliveryHandler(default, ex); } catch (Exception cbEx) { LogBatchCleanupStepFailed(cbEx); }
+                return default;
+            }
+
+            if (_hasAsyncSerializers || !preparation.IsCompletedSuccessfully)
+                return FireWithAsyncSerializationAsync(
+                    message,
+                    message.Headers,
+                    activity: null,
+                    deliveryHandler,
+                    preparation);
+
+            preparationLease = preparation.Result;
+        }
+        else if (_hasAsyncSerializers)
+        {
+            return FireWithAsyncSerializationAsync(
+                message,
+                message.Headers,
+                activity: null,
+                deliveryHandler,
+                default);
+        }
 
         // Fast path: try thread-local cached topic metadata first
         var inThreadLocalCache = TryGetCachedTopicInfo(message.Topic, out var topicInfo);
@@ -1869,7 +2199,26 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
             try
             {
-                var appendResult = SerializeAndAppendFromSpansAsync(message.Topic, message.Key, message.Value, message.Headers, message.Partition, message.Timestamp, topicInfo!, deliveryHandler);
+                var appendResult = _keyPreparer is null && _valuePreparer is null
+                    ? SerializeAndAppendFromSpansAsync(
+                        message.Topic,
+                        message.Key,
+                        message.Value,
+                        message.Headers,
+                        message.Partition,
+                        message.Timestamp,
+                        topicInfo!,
+                        deliveryHandler)
+                    : SerializePreparedAndAppendFromSpansAsync(
+                        message.Topic,
+                        message.Key,
+                        message.Value,
+                        message.Headers,
+                        message.Partition,
+                        message.Timestamp,
+                        topicInfo!,
+                        deliveryHandler,
+                        in preparationLease);
 
                 if (appendResult.IsCompleted)
                 {
@@ -1892,13 +2241,14 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         }
 
         // Metadata miss — full async path
-        return ProduceAsyncWithCallbackSlow(message, deliveryHandler);
+        return ProduceAsyncWithCallbackSlow(message, deliveryHandler, preparationLease);
     }
 
     private async ValueTask ProduceInternalAsync(
         ProducerMessage<TKey, TValue> message,
         Headers? headers,
         PooledValueTaskSource<RecordMetadata> completion,
+        SerializerPreparationLease preparationLease,
         CancellationToken cancellationToken)
     {
         // Fast path: thread-local topic cache (three reference compares), then the metadata
@@ -1959,7 +2309,11 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     ? await SerializeToPooledAsync(
                         _asyncKeySerializer, message.Key!, message.Topic,
                         SerializationComponent.Key, serializationHeaders, cancellationToken).ConfigureAwait(false)
-                    : SerializeKeyToPooled(message.Key!, message.Topic, serializationHeaders);
+                    : SerializeKeyToPooled(
+                        message.Key!,
+                        message.Topic,
+                        serializationHeaders,
+                        preparationLease.Key);
             }
 
             if (!valueIsNull)
@@ -1968,7 +2322,11 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                     ? await SerializeToPooledAsync(
                         _asyncValueSerializer, message.Value!, message.Topic,
                         SerializationComponent.Value, serializationHeaders, cancellationToken).ConfigureAwait(false)
-                    : SerializeValueToPooled(message.Value!, message.Topic, serializationHeaders);
+                    : SerializeValueToPooled(
+                        message.Value!,
+                        message.Topic,
+                        serializationHeaders,
+                        preparationLease.Value);
             }
 
             // Determine partition
@@ -4610,7 +4968,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     private async ValueTask FireAsyncSlow(
         ProducerMessage<TKey, TValue> message,
         Headers? headers,
-        Activity? activity)
+        Activity? activity,
+        SerializerPreparationLease preparationLease)
     {
         try
         {
@@ -4637,7 +4996,26 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
             UpdateCachedTopicInfo(message.Topic, topicInfo);
 
-            var appendResult = await SerializeAndAppendFromSpansAsync(message.Topic, message.Key, message.Value, headers, message.Partition, message.Timestamp, topicInfo, null).ConfigureAwait(false);
+            var appendResult = await (_keyPreparer is null && _valuePreparer is null
+                ? SerializeAndAppendFromSpansAsync(
+                    message.Topic,
+                    message.Key,
+                    message.Value,
+                    headers,
+                    message.Partition,
+                    message.Timestamp,
+                    topicInfo,
+                    callback: null)
+                : SerializePreparedAndAppendFromSpansAsync(
+                    message.Topic,
+                    message.Key,
+                    message.Value,
+                    headers,
+                    message.Partition,
+                    message.Timestamp,
+                    topicInfo,
+                    callback: null,
+                    in preparationLease)).ConfigureAwait(false);
 
             if (!appendResult)
                 throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
@@ -4684,7 +5062,8 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     [MethodImpl(MethodImplOptions.NoInlining)]
     private async ValueTask ProduceAsyncWithCallbackSlow(
         ProducerMessage<TKey, TValue> message,
-        Action<RecordMetadata, Exception?> deliveryHandler)
+        Action<RecordMetadata, Exception?> deliveryHandler,
+        SerializerPreparationLease preparationLease)
     {
         try
         {
@@ -4709,7 +5088,26 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
             UpdateCachedTopicInfo(message.Topic, topicInfo);
 
-            var appendResult = await SerializeAndAppendFromSpansAsync(message.Topic, message.Key, message.Value, message.Headers, message.Partition, message.Timestamp, topicInfo, deliveryHandler).ConfigureAwait(false);
+            var appendResult = await (_keyPreparer is null && _valuePreparer is null
+                ? SerializeAndAppendFromSpansAsync(
+                    message.Topic,
+                    message.Key,
+                    message.Value,
+                    message.Headers,
+                    message.Partition,
+                    message.Timestamp,
+                    topicInfo,
+                    deliveryHandler)
+                : SerializePreparedAndAppendFromSpansAsync(
+                    message.Topic,
+                    message.Key,
+                    message.Value,
+                    message.Headers,
+                    message.Partition,
+                    message.Timestamp,
+                    topicInfo,
+                    deliveryHandler,
+                    in preparationLease)).ConfigureAwait(false);
 
             if (!appendResult)
                 throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
@@ -4775,7 +5173,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
         Header[]? pooledHeaderArray = null;
         var headerCount = 0;
-        if (headers is not null && headers.Count > 0)
+        if (headers is not null && headers.SerializationCount > 0)
         {
             RentAndFillHeaders(headers, out pooledHeaderArray, out headerCount);
         }
@@ -4879,7 +5277,21 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         TopicInfo topicInfo,
         Action<RecordMetadata, Exception?>? callback)
     {
+        var preparationLease = default(SerializerPreparationLease);
+        return SerializeAndAppendWithCustomPartitionerCoreAsync(
+            topic, key, value, headers, timestamp, topicInfo, callback, in preparationLease);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private ValueTask<bool> SerializeAndAppendWithCustomPartitionerCoreAsync(
+        string topic, TKey? key, TValue value, Headers? headers, DateTimeOffset? timestamp,
+        TopicInfo topicInfo,
+        Action<RecordMetadata, Exception?>? callback,
+        in SerializerPreparationLease preparationLease)
+    {
         var cache = GetOrCreateCache();
+        var keyPreparationAdmission = preparationLease.Key;
+        var valuePreparationAdmission = preparationLease.Value;
         var keyIsNull = key is null;
         byte[]? retainedKeyBuffer = null;
         byte[]? keyBuffer = null;
@@ -4887,7 +5299,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         if (!keyIsNull)
         {
             SerializeCustomPartitionerKey(
-                topic, key!, headers, cache,
+                topic, key!, headers, cache, in keyPreparationAdmission,
                 out keyBuffer, out retainedKeyBuffer, out keyLength);
         }
 
@@ -4911,7 +5323,18 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 cache.SerializationContext.Topic = topic;
                 cache.SerializationContext.Component = SerializationComponent.Value;
                 cache.SerializationContext.Headers = headers;
-                _valueSerializer.Serialize(value!, ref valueWriter, cache.SerializationContext);
+                if (valuePreparationAdmission.IsPrepared)
+                {
+                    _valuePreparationAdmission!.SerializePrepared(
+                        value!,
+                        ref valueWriter,
+                        cache.SerializationContext,
+                        in valuePreparationAdmission);
+                }
+                else
+                {
+                    _valueSerializer.Serialize(value!, ref valueWriter, cache.SerializationContext);
+                }
                 valueSpan = valueWriter.WrittenSpan;
                 valueWriter.UpdateBufferRef(ref cache.ValueSerializationBuffer);
             }
@@ -4936,6 +5359,130 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         {
             RestoreCustomPartitionerKeyBuffer(cache, ref retainedKeyBuffer);
         }
+    }
+
+    private ValueTask<bool> SerializePreparedAndAppendFromSpansAsync(
+        string topic, TKey? key, TValue value, Headers? headers, int? partition, DateTimeOffset? timestamp,
+        TopicInfo topicInfo,
+        Action<RecordMetadata, Exception?>? callback,
+        in SerializerPreparationLease preparationLease,
+        bool recordHeadersPrepared = false)
+    {
+        var cache = GetOrCreateCache();
+        if (_producesRecordHeaders && !recordHeadersPrepared)
+        {
+            var serializationHeaders = PrepareSerializationHeaders(
+                headers, cache, out var headerCheckpoint, out var usesHeaderWorkspace);
+            try
+            {
+                return SerializePreparedAndAppendFromSpansAsync(
+                    topic,
+                    key,
+                    value,
+                    serializationHeaders,
+                    partition,
+                    timestamp,
+                    topicInfo,
+                    callback,
+                    in preparationLease,
+                    recordHeadersPrepared: true);
+            }
+            finally
+            {
+                RestoreSerializationHeaders(
+                    serializationHeaders, in headerCheckpoint, cache, usesHeaderWorkspace);
+            }
+        }
+
+        if (partition is null && _usesCustomPartitioner)
+        {
+            return SerializeAndAppendWithCustomPartitionerCoreAsync(
+                topic,
+                key,
+                value,
+                headers,
+                timestamp,
+                topicInfo,
+                callback,
+                in preparationLease);
+        }
+
+        var keyPreparationAdmission = preparationLease.Key;
+        var valuePreparationAdmission = preparationLease.Value;
+        var keyIsNull = key is null;
+        int keyLength = 0;
+
+        if (!keyIsNull)
+        {
+            var keyWriter = new ReusableBufferWriter(ref cache.KeySerializationBuffer, DefaultKeyBufferSize);
+            cache.SerializationContext.Topic = topic;
+            cache.SerializationContext.Component = SerializationComponent.Key;
+            cache.SerializationContext.Headers = headers;
+            if (keyPreparationAdmission.IsPrepared)
+            {
+                _keyPreparationAdmission!.SerializePrepared(
+                    key!,
+                    ref keyWriter,
+                    cache.SerializationContext,
+                    in keyPreparationAdmission);
+            }
+            else
+            {
+                _keySerializer.Serialize(key!, ref keyWriter, cache.SerializationContext);
+            }
+            keyWriter.UpdateBufferRef(ref cache.KeySerializationBuffer);
+            keyLength = keyWriter.WrittenCount;
+        }
+
+        var valueIsNull = value is null;
+        int valueLength = 0;
+
+        if (!valueIsNull)
+        {
+            var valueWriter = new ReusableBufferWriter(ref cache.ValueSerializationBuffer, DefaultValueBufferSize);
+            cache.SerializationContext.Topic = topic;
+            cache.SerializationContext.Component = SerializationComponent.Value;
+            cache.SerializationContext.Headers = headers;
+            if (valuePreparationAdmission.IsPrepared)
+            {
+                _valuePreparationAdmission!.SerializePrepared(
+                    value!,
+                    ref valueWriter,
+                    cache.SerializationContext,
+                    in valuePreparationAdmission);
+            }
+            else
+            {
+                _valueSerializer.Serialize(value!, ref valueWriter, cache.SerializationContext);
+            }
+            valueWriter.UpdateBufferRef(ref cache.ValueSerializationBuffer);
+            valueLength = valueWriter.WrittenCount;
+        }
+
+        var keySpan = keyIsNull ? ReadOnlySpan<byte>.Empty : cache.KeySerializationBuffer.AsSpan(0, keyLength);
+        var resolvedPartition = partition
+            ?? _partitioner.Partition(topic, keySpan, keyIsNull, topicInfo.PartitionCount);
+        var batchCompletionPartitionCount = GetUniformStickyPartitionCount(
+            partition, keySpan, keyIsNull, topicInfo.PartitionCount);
+
+        var timestampMs = timestamp?.ToUnixTimeMilliseconds() ?? GetFastTimestampMs();
+
+        Header[]? pooledHeaderArray = null;
+        var headerCount = 0;
+        if (headers is not null && headers.SerializationCount > 0)
+        {
+            RentAndFillHeaders(headers, out pooledHeaderArray, out headerCount);
+        }
+
+        // CancellationToken.None is intentional: fire-and-forget callers have no per-call token.
+        // Backpressure is bounded by MaxBlockMs inside ReserveMemoryAsync, which enforces its
+        // own deadline independently of the cancellation token.
+        return _accumulator.AppendFromSpansAsync(
+            topic, resolvedPartition, timestampMs,
+            keySpan, keyIsNull,
+            valueIsNull ? ReadOnlySpan<byte>.Empty : cache.ValueSerializationBuffer.AsSpan(0, valueLength),
+            valueIsNull,
+            pooledHeaderArray, headerCount, callback, CancellationToken.None, batchCompletionPartitionCount);
     }
 
     /// <summary>
@@ -5199,6 +5746,16 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     /// </summary>
     private PooledMemory SerializeKeyToPooled(TKey key, string topic, Headers? headers)
     {
+        var preparationAdmission = default(SerializerPreparationAdmission);
+        return SerializeKeyToPooled(key, topic, headers, in preparationAdmission);
+    }
+
+    private PooledMemory SerializeKeyToPooled(
+        TKey key,
+        string topic,
+        Headers? headers,
+        in SerializerPreparationAdmission preparationAdmission)
+    {
         var cache = GetOrCreateCache();
 
         // Use thread-local buffer to avoid per-message allocation
@@ -5208,7 +5765,18 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         cache.SerializationContext.Topic = topic;
         cache.SerializationContext.Component = SerializationComponent.Key;
         cache.SerializationContext.Headers = headers;
-        _keySerializer.Serialize(key, ref writer, cache.SerializationContext);
+        if (preparationAdmission.IsPrepared)
+        {
+            _keyPreparationAdmission!.SerializePrepared(
+                key,
+                ref writer,
+                cache.SerializationContext,
+                in preparationAdmission);
+        }
+        else
+        {
+            _keySerializer.Serialize(key, ref writer, cache.SerializationContext);
+        }
 
         // Update buffer ref in case it grew during serialization
         writer.UpdateBufferRef(ref cache.KeySerializationBuffer);
@@ -5224,6 +5792,16 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     /// </summary>
     private PooledMemory SerializeValueToPooled(TValue value, string topic, Headers? headers)
     {
+        var preparationAdmission = default(SerializerPreparationAdmission);
+        return SerializeValueToPooled(value, topic, headers, in preparationAdmission);
+    }
+
+    private PooledMemory SerializeValueToPooled(
+        TValue value,
+        string topic,
+        Headers? headers,
+        in SerializerPreparationAdmission preparationAdmission)
+    {
         var cache = GetOrCreateCache();
 
         // Use thread-local buffer to avoid per-message allocation
@@ -5233,7 +5811,18 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         cache.SerializationContext.Topic = topic;
         cache.SerializationContext.Component = SerializationComponent.Value;
         cache.SerializationContext.Headers = headers;
-        _valueSerializer.Serialize(value, ref writer, cache.SerializationContext);
+        if (preparationAdmission.IsPrepared)
+        {
+            _valuePreparationAdmission!.SerializePrepared(
+                value,
+                ref writer,
+                cache.SerializationContext,
+                in preparationAdmission);
+        }
+        else
+        {
+            _valueSerializer.Serialize(value, ref writer, cache.SerializationContext);
+        }
 
         // Update buffer ref in case it grew during serialization
         writer.UpdateBufferRef(ref cache.ValueSerializationBuffer);
@@ -5264,7 +5853,20 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         var completion = RentCompletion(runContinuationsAsynchronously);
         try
         {
-            await ProduceInternalAsync(message, headers, completion, cancellationToken).ConfigureAwait(false);
+            var preparationLease = _keyPreparer is null && _valuePreparer is null
+                ? default
+                : await PrepareSerializersAsync(
+                    message.Topic,
+                    message.Key,
+                    message.Value,
+                    headers,
+                    cancellationToken).ConfigureAwait(false);
+            await ProduceInternalAsync(
+                message,
+                headers,
+                completion,
+                preparationLease,
+                cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -5348,12 +5950,19 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         ProducerMessage<TKey, TValue> message,
         Headers? headers,
         Activity? activity,
-        Action<RecordMetadata, Exception?>? deliveryHandler)
+        Action<RecordMetadata, Exception?>? deliveryHandler,
+        ValueTask<SerializerPreparationLease> preparation)
     {
         var serializationHeaders = PrepareAsyncSerializationHeaders(
             headers, out var headerCheckpoint, out var usesHeaderWorkspace);
         try
         {
+            var preparationLease = preparation.IsCompletedSuccessfully
+                ? preparation.Result
+                : await preparation.ConfigureAwait(false);
+            var keyPreparationAdmission = preparationLease.Key;
+            var valuePreparationAdmission = preparationLease.Value;
+
             // Metadata: thread-local cache, then manager cache, then bounded fetch
             // (mirrors FireAsyncSlow).
             TopicInfo? topicInfo;
@@ -5400,7 +6009,11 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                         ? await SerializeToPooledAsync(
                             _asyncKeySerializer, message.Key!, message.Topic,
                             SerializationComponent.Key, serializationHeaders, CancellationToken.None).ConfigureAwait(false)
-                        : SerializeKeyToPooled(message.Key!, message.Topic, serializationHeaders);
+                        : SerializeKeyToPooled(
+                            message.Key!,
+                            message.Topic,
+                            serializationHeaders,
+                            in keyPreparationAdmission);
                 }
 
                 if (!valueIsNull)
@@ -5409,7 +6022,11 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                         ? await SerializeToPooledAsync(
                             _asyncValueSerializer, message.Value!, message.Topic,
                             SerializationComponent.Value, serializationHeaders, CancellationToken.None).ConfigureAwait(false)
-                        : SerializeValueToPooled(message.Value!, message.Topic, serializationHeaders);
+                        : SerializeValueToPooled(
+                            message.Value!,
+                            message.Topic,
+                            serializationHeaders,
+                            in valuePreparationAdmission);
                 }
 
                 var appendResult = await AppendSerializedToAccumulatorAsync(
@@ -5505,6 +6122,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         TKey key,
         Headers? headers,
         ProducerThreadCache cache,
+        in SerializerPreparationAdmission preparationAdmission,
         out byte[] keyBuffer,
         out byte[]? retainedBuffer,
         out int keyLength)
@@ -5525,7 +6143,18 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 Component = SerializationComponent.Key,
                 Headers = headers,
             };
-            _keySerializer.Serialize(key, ref writer, context);
+            if (preparationAdmission.IsPrepared)
+            {
+                _keyPreparationAdmission!.SerializePrepared(
+                    key,
+                    ref writer,
+                    context,
+                    in preparationAdmission);
+            }
+            else
+            {
+                _keySerializer.Serialize(key, ref writer, context);
+            }
             keyLength = writer.WrittenCount;
             keyBuffer = writer.WrittenBuffer;
             writer.UpdateBufferRef(ref retainedBuffer);

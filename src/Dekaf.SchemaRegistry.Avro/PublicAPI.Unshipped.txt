@@ -1,4 +1,8 @@
 #nullable enable
+Dekaf.SchemaRegistry.Avro.AvroDeserializerConfig.AsyncSubjectNameStrategy.get -> Dekaf.SchemaRegistry.IAsyncSubjectNameStrategy?
+Dekaf.SchemaRegistry.Avro.AvroDeserializerConfig.AsyncSubjectNameStrategy.init -> void
+Dekaf.SchemaRegistry.Avro.AvroSerializerConfig.AsyncSubjectNameStrategy.get -> Dekaf.SchemaRegistry.IAsyncSubjectNameStrategy?
+Dekaf.SchemaRegistry.Avro.AvroSerializerConfig.AsyncSubjectNameStrategy.init -> void
 Dekaf.SchemaRegistry.Avro.AvroSerializerConfig.MaxCachedSchemas.get -> int
 Dekaf.SchemaRegistry.Avro.AvroSerializerConfig.MaxCachedSchemas.init -> void
 Dekaf.SchemaRegistry.Avro.AvroSerializerConfig.SchemaIdStrategy.get -> Dekaf.SchemaRegistry.SchemaIdSerializerStrategy

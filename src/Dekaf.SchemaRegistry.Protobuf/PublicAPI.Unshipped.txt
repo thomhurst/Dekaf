@@ -1,4 +1,8 @@
 #nullable enable
+Dekaf.SchemaRegistry.Protobuf.ProtobufDeserializerConfig.AsyncSubjectNameStrategy.get -> Dekaf.SchemaRegistry.IAsyncSubjectNameStrategy?
+Dekaf.SchemaRegistry.Protobuf.ProtobufDeserializerConfig.AsyncSubjectNameStrategy.init -> void
+Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig.AsyncSubjectNameStrategy.get -> Dekaf.SchemaRegistry.IAsyncSubjectNameStrategy?
+Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig.AsyncSubjectNameStrategy.init -> void
 Dekaf.SchemaRegistry.Protobuf.ProtobufDeserializerConfig.CustomSubjectNameStrategy.get -> Dekaf.SchemaRegistry.ISubjectNameStrategy?
 Dekaf.SchemaRegistry.Protobuf.ProtobufDeserializerConfig.CustomSubjectNameStrategy.init -> void
 Dekaf.SchemaRegistry.Protobuf.ProtobufDeserializerConfig.SchemaIdStrategy.get -> Dekaf.SchemaRegistry.SchemaIdDeserializerStrategy

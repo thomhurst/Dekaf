@@ -43,7 +43,10 @@ public sealed class AvroSchemaRegistryDeserializer<
         DynamicallyAccessedMemberTypes.PublicFields |
         DynamicallyAccessedMemberTypes.PublicParameterlessConstructor)] T>
     : IDeserializer<T>, IRecordHeaderDeserializer<T>, ICallerOwnedHeaderDeserializer<T>,
-      IRecordHeaderRoutingProvider, IAsyncDisposable
+      IRecordHeaderRoutingProvider,
+      IAsyncDeserializerPreparer<T>,
+      IAsyncDeserializerPreparationRequirement,
+      IAsyncDisposable
 {
     private static readonly TimeSpan SchemaRegistryTimeout = TimeSpan.FromSeconds(30);
     private const int MaxCachedGuidSchemas = 1024;
@@ -94,8 +97,10 @@ public sealed class AvroSchemaRegistryDeserializer<
         }
 
         _subjectNames = DeserializerSubjectNameCache.Create(
+            schemaRegistry,
             _config.SubjectNameStrategy,
             _config.CustomSubjectNameStrategy,
+            _config.AsyncSubjectNameStrategy,
             _config.UseLegacySubjectNames);
         if (_config.UseLatestVersion)
         {
@@ -111,6 +116,57 @@ public sealed class AvroSchemaRegistryDeserializer<
 
     internal int CachedGenericReaderCount => _genericReaders.Count;
     internal int CachedSpecificReaderCount => _specificReaders.Count;
+
+    bool IAsyncDeserializerPreparationRequirement.RequiresPreparation =>
+        _ruleExecutor is not null && _subjectNames is { RequiresPreparation: true };
+
+    ValueTask IAsyncDeserializerPreparer<T>.PrepareAsync(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        CancellationToken cancellationToken)
+    {
+        if (_ruleExecutor is null
+            || _subjectNames is not { RequiresPreparation: true }
+            || !DeserializerSubjectNameCache.TryReadSchemaId(data, out var schemaId))
+        {
+            return default;
+        }
+
+        return _subjectNames.PrepareAsync(
+            _schemaRegistry,
+            schemaId,
+            context.Topic,
+            context.Component == SerializationComponent.Key,
+            FallbackRecordName,
+            cancellationToken);
+    }
+
+    bool IAsyncDeserializerPreparer<T>.TryDeserialize(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        out T value)
+    {
+        string? preparedSubject = null;
+        if (_ruleExecutor is not null
+            && _subjectNames is { RequiresPreparation: true } subjectNames
+            && DeserializerSubjectNameCache.TryReadSchemaId(data, out var schemaId))
+        {
+            if (!subjectNames.TryGetPreparedSubject(
+                    schemaId,
+                    context.Topic,
+                    context.Component == SerializationComponent.Key,
+                    out var prepared))
+            {
+                value = default!;
+                return false;
+            }
+
+            preparedSubject = prepared.Subject;
+        }
+
+        value = DeserializeCore(data, context, preparedSubject);
+        return true;
+    }
 
     /// <summary>
     /// Pre-warms the schema cache for a specific schema ID.
@@ -138,7 +194,13 @@ public sealed class AvroSchemaRegistryDeserializer<
     /// for the same schema ID will use the cached value without blocking.
     /// For best performance, use <see cref="WarmupAsync"/> before starting consumption.
     /// </remarks>
-    public T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
+    public T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
+        DeserializeCore(data, context, preparedSubject: null);
+
+    private T DeserializeCore(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        string? preparedSubject)
     {
         Header? identityHeader = null;
         if (_config.SchemaIdStrategy != SchemaIdDeserializerStrategy.Prefix
@@ -155,7 +217,7 @@ public sealed class AvroSchemaRegistryDeserializer<
             }
         }
 
-        return DeserializeCore(data, context, identityHeader);
+        return DeserializeCore(data, context, identityHeader, preparedSubject);
     }
 
     T ICallerOwnedHeaderDeserializer<T>.DeserializeCallerOwned(
@@ -170,7 +232,7 @@ public sealed class AvroSchemaRegistryDeserializer<
         Header? identityHeader = headers.TryGetLast(GetIdentityHeaderName(context.Component), out var header)
             ? header
             : null;
-        return DeserializeCore(data, context, identityHeader);
+        return DeserializeCore(data, context, identityHeader, preparedSubject: null);
     }
 
     void IRecordHeaderRoutingProvider.CollectHeaderNames(List<string> names)
@@ -182,7 +244,8 @@ public sealed class AvroSchemaRegistryDeserializer<
     private T DeserializeCore(
         ReadOnlyMemory<byte> data,
         SerializationContext context,
-        Header? identityHeader)
+        Header? identityHeader,
+        string? preparedSubject)
     {
         if (context is { IsNull: true, Component: SerializationComponent.Value })
             return default!;
@@ -227,6 +290,11 @@ public sealed class AvroSchemaRegistryDeserializer<
                 schemaId = guidSchema.SchemaId;
                 subject = guidSchema.Subject;
                 schema = guidSchema.Schema;
+            }
+            else if (preparedSubject is not null)
+            {
+                subject = preparedSubject;
+                schema = _schemaRegistry.GetSchemaSync(schemaId, subject, SchemaRegistryTimeout);
             }
             else if (_subjectNames is null)
             {

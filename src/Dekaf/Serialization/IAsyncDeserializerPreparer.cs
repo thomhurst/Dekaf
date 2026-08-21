@@ -44,3 +44,18 @@ internal interface IRecordHeaderAsyncDeserializerPreparer<T>
         RecordHeaderRoutingLookup headers,
         CancellationToken cancellationToken);
 }
+
+/// <summary>
+/// Optional capability for an <see cref="IAsyncDeserializerPreparer{T}"/> that can skip the
+/// asynchronous preparation path for its current configuration.
+/// </summary>
+/// <remarks>
+/// Preparers that do not implement this interface are treated as requiring preparation. Consumers
+/// read this once during construction, avoiding interface dispatch and asynchronous drain
+/// bookkeeping when preparation is not required.
+/// </remarks>
+public interface IAsyncDeserializerPreparationRequirement
+{
+    /// <summary>Gets whether this instance requires the asynchronous preparation path.</summary>
+    bool RequiresPreparation { get; }
+}

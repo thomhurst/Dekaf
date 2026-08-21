@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
+using Dekaf.Serialization;
 
 namespace Dekaf.SchemaRegistry;
 
@@ -67,6 +68,15 @@ internal sealed class SubjectSchemaIdCache
     }
 
     internal bool TryGet(
+        string topic,
+        bool isKey,
+        out SubjectSchemaIdCacheEntry entry) =>
+        TryGetCached(new SubjectSchemaIdCacheKey(topic, isKey), out entry);
+
+    // Avro serialization benefits from expanding this outer lookup; forcing the
+    // same expansion on every serializer regresses their measured fast paths.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal bool TryGetInline(
         string topic,
         bool isKey,
         out SubjectSchemaIdCacheEntry entry) =>
@@ -215,6 +225,17 @@ internal sealed class SubjectSchemaIdCache
         Schema schema,
         byte[]? schemaGuidFrame = null) =>
         Cache(new SubjectSchemaIdCacheKey(topic, isKey), subject, schemaId, schema, schemaGuidFrame);
+
+    internal static SubjectSchemaIdCacheEntry FromAdmission(
+        string topic,
+        bool isKey,
+        in SerializerPreparationAdmission admission) =>
+        new(
+            new SubjectSchemaIdCacheKey(topic, isKey),
+            admission.Subject!,
+            admission.SchemaId,
+            (Schema)admission.Schema!,
+            admission.SchemaGuidFrame);
 
     private SubjectSchemaIdCacheEntry Cache(
         SubjectSchemaIdCacheKey key,

@@ -195,6 +195,21 @@ public sealed class SchemaPreparationTests
     }
 
     [Test]
+    public async Task Json_PrepareAsync_AssociatedNameUsesRegistryAssociation()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        await AssociateSubjectAsync(registry, "orders", "json-associated");
+        await using var serializer = new JsonSchemaRegistrySerializer<PreparationPayload>(
+            registry,
+            "{\"type\":\"object\"}",
+            subjectNameStrategy: SubjectNameStrategy.AssociatedName);
+
+        var resolved = await serializer.PrepareAsync("orders", new PreparationPayload { Id = 42 });
+
+        await Assert.That(resolved.Subject).IsEqualTo("json-associated");
+    }
+
+    [Test]
     public async Task Json_PrepareAsync_LookupReturnsExactRegisteredSchemaWhenNewerVersionExists()
     {
         using var registry = new MockSchemaRegistryClient();
@@ -271,6 +286,20 @@ public sealed class SchemaPreparationTests
     }
 
     [Test]
+    public async Task Avro_PrepareAsync_AssociatedNameUsesRegistryAssociation()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        await AssociateSubjectAsync(registry, "orders", "avro-associated");
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(
+            registry,
+            new AvroSerializerConfig { SubjectNameStrategy = SubjectNameStrategy.AssociatedName });
+
+        var resolved = await serializer.PrepareAsync("orders", CreateAvroRecord(42));
+
+        await Assert.That(resolved.Subject).IsEqualTo("avro-associated");
+    }
+
+    [Test]
     public async Task Avro_PrepareAsync_UseLatestVersion_ReturnsRegisteredSchema()
     {
         using var registry = new MockSchemaRegistryClient();
@@ -333,6 +362,20 @@ public sealed class SchemaPreparationTests
         await Assert.That(BinaryPrimitives.ReadInt32BigEndian(buffer.WrittenSpan.Slice(1, 4)))
             .IsEqualTo(resolved.SchemaId);
         await Assert.That(registry.GetOrRegisterSchemaCallCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task Protobuf_PrepareAsync_AssociatedNameUsesRegistryAssociation()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        await AssociateSubjectAsync(registry, "orders", "protobuf-associated");
+        await using var serializer = new ProtobufSchemaRegistrySerializer<TestMessage>(
+            registry,
+            new ProtobufSerializerConfig { SubjectNameStrategy = SubjectNameStrategy.AssociatedName });
+
+        var resolved = await serializer.PrepareAsync("orders", new TestMessage { Id = 42 });
+
+        await Assert.That(resolved.Subject).IsEqualTo("protobuf-associated");
     }
 
     [Test]
@@ -1004,6 +1047,29 @@ public sealed class SchemaPreparationTests
         }
 
         await preparation;
+    }
+
+    private static async Task AssociateSubjectAsync(
+        ISchemaRegistryClient registry,
+        string topic,
+        string subject)
+    {
+        _ = await registry.CreateAssociationAsync(new AssociationCreateOrUpdateRequest
+        {
+            ResourceName = topic,
+            ResourceNamespace = "test-cluster",
+            ResourceId = $"test-cluster:{topic}",
+            ResourceType = "topic",
+            Associations =
+            [
+                new AssociationCreateOrUpdateInfo
+                {
+                    Subject = subject,
+                    AssociationType = "value",
+                    Lifecycle = "WEAK"
+                }
+            ]
+        });
     }
 
     private static void SetField<T>(object target, string name, T value)

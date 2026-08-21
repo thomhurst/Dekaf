@@ -27,6 +27,11 @@ public sealed class ProtobufDeserializerConfig
     public ISubjectNameStrategy? CustomSubjectNameStrategy { get; init; }
 
     /// <summary>
+    /// Custom asynchronous subject-name strategy used during deserializer preparation.
+    /// </summary>
+    public IAsyncSubjectNameStrategy? AsyncSubjectNameStrategy { get; init; }
+
+    /// <summary>
     /// Whether record-based strategies retain Dekaf's legacy -key/-value suffix.
     /// </summary>
     public bool UseLegacySubjectNames { get; init; }

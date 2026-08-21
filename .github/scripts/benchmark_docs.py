@@ -25,11 +25,37 @@ _PARITY_LOW = 0.83
 _PARITY_HIGH = 1.20
 
 _SCENARIO_LABELS = {
-    ("ProducerBenchmarks", "ProduceSingle"): ("Produce — one message at a time (awaited)", 0),
-    ("ProducerBenchmarks", "ProduceBatch"): ("Produce — batches", 1),
-    ("ProducerBenchmarks", "FireAndForget"): ("Produce — fire-and-forget", 2),
-    ("ConsumerBenchmarks", "ConsumeAll"): ("Consume — drain a topic", 3),
-    ("ConsumerPollBenchmarks", "PollSingle"): ("Consume — poll a single message", 4),
+    ("ProducerSingleBenchmarks", "ProduceSingleNoLinger"): (
+        "Produce — serial awaited (linger=0)",
+        0,
+    ),
+    ("ProducerSingleBenchmarks", "ProduceSingleLinger5"): (
+        "Produce — serial awaited (linger=5 ms)",
+        1,
+    ),
+    # Historical results collected before the matched zero-linger control was added.
+    ("ProducerBenchmarks", "ProduceSingle"): (
+        "Produce — serial awaited (linger=5 ms; legacy)",
+        1,
+    ),
+    ("ProducerBenchmarks", "ProduceBatch"): (
+        "Produce — batches (legacy: Dekaf acks=all/idempotent; Confluent acks=leader/non-idempotent)",
+        2,
+    ),
+    ("ProducerBenchmarks", "FireAndForget"): (
+        "Produce — fire-and-forget (legacy: Dekaf acks=all/idempotent; Confluent acks=leader/non-idempotent)",
+        3,
+    ),
+    ("ProducerBenchmarks", "ProduceBatchAllIdempotent"): (
+        "Produce — batches (acks=all, idempotent)",
+        2,
+    ),
+    ("ProducerBenchmarks", "FireAndForgetAllIdempotent"): (
+        "Produce — fire-and-forget (acks=all, idempotent)",
+        3,
+    ),
+    ("ConsumerBenchmarks", "ConsumeAll"): ("Consume — drain a topic", 4),
+    ("ConsumerPollBenchmarks", "PollSingle"): ("Consume — poll a single message", 5),
 }
 
 
@@ -546,6 +572,7 @@ def generate_document(
 
     producer_md = sorted(
         glob.glob(f"{result_pattern}/Client/results/*ProducerBenchmarks*-github.md")
+        + glob.glob(f"{result_pattern}/Client/results/*ProducerSingleBenchmarks*-github.md")
     )
     consumer_md = sorted(
         glob.glob(f"{result_pattern}/Client/results/*Consumer*Benchmarks*-github.md")
@@ -569,9 +596,13 @@ def generate_document(
         "",
         "## At a glance",
         "",
-        f"Each scenario is the median Dekaf-vs-Confluent result over the last {window} benchmark runs (both clients measured on the same runner), aggregated across message and batch sizes. Memory compares heap allocations per operation from the latest run.",
+        f"Each scenario is the median Dekaf-vs-Confluent result over the last {window} benchmark runs (both clients measured on the same runner), aggregated across its parameter configurations. Memory compares heap allocations per operation from the latest run.",
         "",
         "The charts use the representative high-load parameter set from the latest run and show its measured values. Multipliers in brackets are calculated from those displayed figures; the table below summarizes the broader cross-run range.",
+        "",
+        ":::note Reading producer results",
+        "The `linger=0` scenario is the matched client comparison. The `linger=5 ms` scenario intentionally measures each client's app-limited batching policy and should not be read as general producer throughput. Legacy serial-awaited rows, when present, send a sole Dekaf record immediately while Confluent applies the configured linger; the old benchmark's unused `BatchSize` parameter also duplicated each payload result. Legacy batch and fire-and-forget rows, when present, use `acks=all` with idempotence for Dekaf and `acks=leader` without idempotence for Confluent.",
+        ":::",
         "",
         *format_comparison_charts(summaries, chart_metrics),
         *format_summary_table(summaries, alloc_ratios),

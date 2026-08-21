@@ -26,7 +26,8 @@ namespace Dekaf.SchemaRegistry.Protobuf;
 /// <typeparam name="T">The Protobuf message type to deserialize.</typeparam>
 public sealed class ProtobufSchemaRegistryDeserializer<T>
     : IDeserializer<T>, IRecordHeaderDeserializer<T>, ICallerOwnedHeaderDeserializer<T>,
-      IRecordHeaderRoutingProvider, IAsyncDisposable
+      IRecordHeaderRoutingProvider, IAsyncDeserializerPreparer<T>,
+      IAsyncDeserializerPreparationRequirement, IAsyncDisposable
     where T : IMessage<T>, IBufferMessage, new()
 {
     private static readonly TimeSpan SchemaRegistryTimeout = TimeSpan.FromSeconds(30);
@@ -63,8 +64,10 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
         _ownsClient = ownsClient;
         _parser = new MessageParser<T>(() => new T());
         _subjectNames = DeserializerSubjectNameCache.Create(
+            schemaRegistry,
             _config.SubjectNameStrategy,
             _config.CustomSubjectNameStrategy,
+            _config.AsyncSubjectNameStrategy,
             _config.UseLegacySubjectNames);
         if (_config.UseLatestVersion)
         {
@@ -75,8 +78,65 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
         }
     }
 
+    bool IAsyncDeserializerPreparationRequirement.RequiresPreparation =>
+        _ruleExecutor is not null && _subjectNames is { RequiresPreparation: true };
+
+    ValueTask IAsyncDeserializerPreparer<T>.PrepareAsync(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        CancellationToken cancellationToken)
+    {
+        if (_ruleExecutor is null
+            || _subjectNames is not { RequiresPreparation: true }
+            || !DeserializerSubjectNameCache.TryReadSchemaId(data, out var schemaId))
+        {
+            return default;
+        }
+
+        return _subjectNames.PrepareAsync(
+            _schemaRegistry,
+            schemaId,
+            context.Topic,
+            context.Component == SerializationComponent.Key,
+            RecordName,
+            cancellationToken);
+    }
+
+    bool IAsyncDeserializerPreparer<T>.TryDeserialize(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        out T value)
+    {
+        string? preparedSubject = null;
+        if (_ruleExecutor is not null
+            && _subjectNames is { RequiresPreparation: true } subjectNames
+            && DeserializerSubjectNameCache.TryReadSchemaId(data, out var schemaId))
+        {
+            if (!subjectNames.TryGetPreparedSubject(
+                    schemaId,
+                    context.Topic,
+                    context.Component == SerializationComponent.Key,
+                    out var prepared))
+            {
+                value = default!;
+                return false;
+            }
+
+            preparedSubject = prepared.Subject;
+        }
+
+        value = DeserializeCore(data, context, preparedSubject);
+        return true;
+    }
+
     /// <inheritdoc />
-    public T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
+    public T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
+        DeserializeCore(data, context, preparedSubject: null);
+
+    private T DeserializeCore(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        string? preparedSubject)
     {
         Header? identityHeader = null;
         if (_config.SchemaIdStrategy != SchemaIdDeserializerStrategy.Prefix
@@ -86,7 +146,7 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
             identityHeader = header;
         }
 
-        return DeserializeCore(data, context, identityHeader);
+        return DeserializeCore(data, context, identityHeader, preparedSubject);
     }
 
     T ICallerOwnedHeaderDeserializer<T>.DeserializeCallerOwned(
@@ -101,7 +161,7 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
         Header? identityHeader = headers.TryGetLast(GetIdentityHeaderName(context.Component), out var header)
             ? header
             : null;
-        return DeserializeCore(data, context, identityHeader);
+        return DeserializeCore(data, context, identityHeader, preparedSubject: null);
     }
 
     void IRecordHeaderRoutingProvider.CollectHeaderNames(List<string> names)
@@ -113,7 +173,8 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
     private T DeserializeCore(
         ReadOnlyMemory<byte> data,
         SerializationContext context,
-        Header? identityHeader)
+        Header? identityHeader,
+        string? preparedSubject)
     {
         if (context is { IsNull: true, Component: SerializationComponent.Value })
             return default!;
@@ -140,7 +201,12 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
         string? ruleSubject = null;
         if (needsSchema && guidSchema is null)
         {
-            if (_config.RuleExecutor is not null && _subjectNames is null)
+            if (preparedSubject is not null)
+            {
+                ruleSubject = preparedSubject;
+                schema = _schemaRegistry.GetSchemaSync(schemaId, ruleSubject, SchemaRegistryTimeout);
+            }
+            else if (_config.RuleExecutor is not null && _subjectNames is null)
             {
                 ruleSubject = SubjectNameResolver.GetTopicSubjectName(
                     context.Topic,

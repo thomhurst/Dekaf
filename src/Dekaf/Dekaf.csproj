@@ -23,6 +23,9 @@
     <InternalsVisibleTo Include="Dekaf.Extensions.Hosting" />
     <InternalsVisibleTo Include="Dekaf.Extensions.DependencyInjection" />
     <InternalsVisibleTo Include="Dekaf.Testing" />
+    <InternalsVisibleTo Include="Dekaf.SchemaRegistry" />
+    <InternalsVisibleTo Include="Dekaf.SchemaRegistry.Avro" />
+    <InternalsVisibleTo Include="Dekaf.SchemaRegistry.Protobuf" />
   </ItemGroup>
 
   <ItemGroup>
