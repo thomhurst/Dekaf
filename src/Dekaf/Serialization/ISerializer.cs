@@ -169,6 +169,11 @@ public interface ISerializer<in T>
         ;
 }
 
+internal interface IRecordHeaderSerializer
+{
+    bool ProducesRecordHeaders { get; }
+}
+
 /// <summary>
 /// Interface for deserializing values from bytes.
 /// </summary>

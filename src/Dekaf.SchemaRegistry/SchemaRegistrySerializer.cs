@@ -456,7 +456,8 @@ public sealed class SchemaRegistrySerializer<T> :
             new SubjectSchemaIdCache.SubjectSchemaIdCacheKey(topic, isKey),
             resolved.Subject,
             value.SchemaId,
-            value.Schema);
+            value.Schema,
+            value.SchemaGuidFrame);
     }
 
     private ValueTask<ResolvedSchemaContext> PrepareCoreAsync(
@@ -481,8 +482,7 @@ public sealed class SchemaRegistrySerializer<T> :
                     topic,
                     isKey,
                     resolved.Subject,
-                    value.SchemaId,
-                    value.Schema!)));
+                    in value)));
         }
 
         return AwaitSchemaAsync(topic, isKey, resolved.Subject, cache, resolution);
@@ -499,8 +499,7 @@ public sealed class SchemaRegistrySerializer<T> :
                 topic,
                 isKey,
                 subject,
-                value.SchemaId,
-                value.Schema!));
+                in value));
         }
     }
 
@@ -522,8 +521,7 @@ public sealed class SchemaRegistrySerializer<T> :
                     topic,
                     isKey,
                     resolved.Subject,
-                    value.SchemaId,
-                    value.Schema!);
+                    in value);
                 if (ReferenceEquals(cache, Volatile.Read(ref _subjectSchemaIdCache)))
                     return ToResolvedContext(preparedEntry);
             }

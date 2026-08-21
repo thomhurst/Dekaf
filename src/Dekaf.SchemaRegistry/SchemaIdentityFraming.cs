@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using Dekaf.Serialization;
@@ -212,12 +213,13 @@ internal static class SchemaIdentityFraming
     [DoesNotReturn]
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static void ThrowTruncatedSchemaIdPrefix() =>
-        throw new InvalidDataException("The Schema Registry ID frame is truncated.");
+        throw new InvalidOperationException("Message too short to contain Schema Registry wire format.");
 
     [DoesNotReturn]
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static void ThrowUnknownPrefixMagicByte(byte magicByte) =>
-        throw new InvalidDataException($"Unknown Schema Registry prefix magic byte: {magicByte}.");
+        throw new InvalidOperationException(
+            $"Unknown magic byte: {magicByte}. Expected Schema Registry format (0x00).");
 
     [DoesNotReturn]
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -287,5 +289,110 @@ internal static class SchemaRegistrySerializerConfigValidator
             return SchemaSelectionMode.Latest;
 
         return autoRegisterSchemas ? SchemaSelectionMode.AutoRegister : SchemaSelectionMode.Lookup;
+    }
+}
+
+internal static class SchemaIdentityResolution
+{
+    internal static async Task<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> CreateSerializerValueAsync(
+        ISchemaRegistryClient schemaRegistry,
+        string subject,
+        int schemaId,
+        Schema schema,
+        SchemaIdSerializerStrategy strategy,
+        bool normalizeSchemas,
+        RegisteredSchema? registeredSchema,
+        CancellationToken cancellationToken)
+    {
+        if (strategy == SchemaIdSerializerStrategy.Prefix)
+            return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(schemaId, schema);
+
+        registeredSchema ??= await schemaRegistry.LookupSchemaAsync(
+                subject,
+                schema,
+                ignoreDeletedSchemas: true,
+                normalize: normalizeSchemas,
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (registeredSchema.Id != schemaId)
+        {
+            throw new InvalidDataException(
+                $"Schema Registry resolved ID {registeredSchema.Id}; expected schema ID {schemaId}.");
+        }
+        if (!Guid.TryParse(registeredSchema.Guid, out var schemaGuid) || schemaGuid == Guid.Empty)
+        {
+            throw new InvalidDataException(
+                $"Schema Registry did not return a valid GUID for schema ID {schemaId}.");
+        }
+
+        return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(
+            schemaId,
+            schema,
+            SchemaIdentityFraming.CreateSchemaGuidFrame(schemaGuid));
+    }
+}
+
+internal static class BoundedSchemaIdentityCache
+{
+    internal static void RecordSuccessfulResolution<TKey, TValue>(
+        ConcurrentDictionary<TKey, TValue> cache,
+        ConcurrentQueue<KeyValuePair<TKey, TValue>> evictionQueue,
+        TKey key,
+        ref int cachedCount,
+        int maxCachedEntries)
+        where TKey : notnull
+    {
+        if (!cache.TryGetValue(key, out var entry))
+            return;
+
+        Interlocked.Increment(ref cachedCount);
+        evictionQueue.Enqueue(new KeyValuePair<TKey, TValue>(key, entry));
+        while (Volatile.Read(ref cachedCount) > maxCachedEntries
+               && evictionQueue.TryDequeue(out var oldest))
+        {
+            if (((ICollection<KeyValuePair<TKey, TValue>>)cache).Remove(oldest))
+                Interlocked.Decrement(ref cachedCount);
+        }
+    }
+}
+
+internal static class SchemaIdentitySerialization
+{
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static int GetPayloadOffset(SchemaIdSerializerStrategy strategy) => strategy switch
+    {
+        SchemaIdSerializerStrategy.Prefix => SchemaIdentityFraming.SchemaIdFrameSize,
+        SchemaIdSerializerStrategy.Header => 0,
+        _ => throw new ArgumentOutOfRangeException(nameof(strategy), strategy, "Unknown schema identity strategy.")
+    };
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static void WriteIdentity(
+        Span<byte> destination,
+        SerializationContext context,
+        in SubjectSchemaIdCache.SubjectSchemaIdCacheEntry schemaEntry,
+        SchemaIdSerializerStrategy strategy)
+    {
+        if (strategy == SchemaIdSerializerStrategy.Prefix)
+        {
+            SchemaIdentityFraming.WriteSchemaId(destination, schemaEntry.SchemaId);
+            return;
+        }
+
+        if (context.Headers is not { } headers)
+        {
+            throw new InvalidOperationException(
+                "Header schema identity framing requires a record Headers collection.");
+        }
+        var encodedSchemaGuid = schemaEntry.SchemaGuidFrame;
+        if (encodedSchemaGuid is null)
+        {
+            throw new InvalidDataException(
+                $"Schema Registry GUID framing is unavailable for schema ID {schemaEntry.SchemaId}.");
+        }
+
+        headers.Add(SchemaIdentityFraming.CreateSchemaGuidHeader(
+            context.Component,
+            encodedSchemaGuid));
     }
 }

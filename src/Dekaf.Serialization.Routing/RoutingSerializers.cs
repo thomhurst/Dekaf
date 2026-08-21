@@ -7,13 +7,15 @@ namespace Dekaf.Serialization.Routing;
 /// Routes serialization by the destination topic.
 /// </summary>
 /// <typeparam name="TBase">The common reference type accepted by every route.</typeparam>
-public sealed class TopicRoutingSerializer<TBase> : ISerializer<TBase>
+public sealed class TopicRoutingSerializer<TBase> : ISerializer<TBase>, IRecordHeaderSerializer
     where TBase : class
 {
     private readonly FrozenRouteTable<string, SerializerRoute<TBase>> _routes = new(StringComparer.Ordinal);
 
     /// <summary>Whether registration has been frozen for routing.</summary>
     public bool IsFrozen => _routes.IsFrozen;
+
+    bool IRecordHeaderSerializer.ProducesRecordHeaders => _routes.ProducesRecordHeaders;
 
     /// <summary>Registers one topic route.</summary>
     public TopicRoutingSerializer<TBase> Register<TDerived>(string topic, ISerializer<TDerived> serializer)
@@ -74,13 +76,15 @@ public sealed class TopicRoutingSerializer<TBase> : ISerializer<TBase>
 /// Routes serialization by the value's exact runtime type.
 /// </summary>
 /// <typeparam name="TBase">The common reference type accepted by every route.</typeparam>
-public sealed class TypeRoutingSerializer<TBase> : ISerializer<TBase>
+public sealed class TypeRoutingSerializer<TBase> : ISerializer<TBase>, IRecordHeaderSerializer
     where TBase : class
 {
     private readonly FrozenRouteTable<Type, SerializerRoute<TBase>> _routes = new();
 
     /// <summary>Whether registration has been frozen for routing.</summary>
     public bool IsFrozen => _routes.IsFrozen;
+
+    bool IRecordHeaderSerializer.ProducesRecordHeaders => _routes.ProducesRecordHeaders;
 
     /// <summary>Registers one exact runtime-type route.</summary>
     public TypeRoutingSerializer<TBase> Register<TDerived>(ISerializer<TDerived> serializer)
@@ -137,9 +141,11 @@ public sealed class TypeRoutingSerializer<TBase> : ISerializer<TBase>
     }
 }
 
-internal abstract class SerializerRoute<TBase>
+internal abstract class SerializerRoute<TBase> : IRecordHeaderSerializer
     where TBase : class
 {
+    public abstract bool ProducesRecordHeaders { get; }
+
     internal abstract void Serialize<TWriter>(
         TBase value,
         ref TWriter destination,
@@ -156,6 +162,9 @@ internal sealed class SerializerRoute<TBase, TDerived>(ISerializer<TDerived> ser
     where TBase : class
     where TDerived : class, TBase
 {
+    public override bool ProducesRecordHeaders =>
+        serializer is IRecordHeaderSerializer { ProducesRecordHeaders: true };
+
     internal override void Serialize<TWriter>(
         TBase value,
         ref TWriter destination,

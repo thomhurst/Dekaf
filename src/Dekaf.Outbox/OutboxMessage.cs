@@ -104,6 +104,14 @@ public class OutboxMessage
         ArgumentOutOfRangeException.ThrowIfLessThan(bucketCount, 1);
 
         var messageId = Guid.NewGuid();
+        if (key is not null
+            && keySerializer is IRecordHeaderSerializer { ProducesRecordHeaders: true }
+            || value is not null
+            && valueSerializer is IRecordHeaderSerializer { ProducesRecordHeaders: true })
+        {
+            headers = headers is null ? new Headers() : new Headers(headers);
+        }
+
         var keyBytes = SerializeComponent(topic, key, keySerializer, headers, SerializationComponent.Key);
         var valueBytes = SerializeComponent(topic, value, valueSerializer, headers, SerializationComponent.Value);
 

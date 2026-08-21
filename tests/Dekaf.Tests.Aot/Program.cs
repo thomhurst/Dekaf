@@ -185,6 +185,37 @@ internal static class AotSmoke
 
         var roundTrip = deserializer.Deserialize(buffer.WrittenMemory, ValueContext);
         Require(roundTrip == payload, "Schema Registry JSON round-trip failed.");
+
+        var headerContext = new SerializationContext
+        {
+            Topic = "aot-json-header-topic",
+            Component = SerializationComponent.Value,
+            Headers = new Headers(1)
+        };
+        var headerConfig = new JsonSchemaSerializerConfig
+        {
+            SchemaIdStrategy = SchemaIdSerializerStrategy.Header
+        };
+        await using var headerSerializer = new JsonSchemaRegistrySerializer<AotPayload>(
+            registry,
+            AotPayloadJsonSchema,
+            AotJsonContext.Default.AotPayload,
+            headerConfig);
+        await using var headerDeserializer = new JsonSchemaRegistryDeserializer<AotPayload>(
+            registry,
+            AotJsonContext.Default.AotPayload,
+            new SchemaRegistryDeserializerConfig
+            {
+                SchemaIdStrategy = SchemaIdDeserializerStrategy.Header
+            });
+        await headerSerializer.PrepareAsync(headerContext.Topic, payload);
+
+        buffer.Clear();
+        headerSerializer.Serialize(payload, ref buffer, headerContext);
+
+        Require(headerContext.Headers.Count == 1, "Schema Registry JSON GUID header missing.");
+        var headerRoundTrip = headerDeserializer.Deserialize(buffer.WrittenMemory, headerContext);
+        Require(headerRoundTrip == payload, "Schema Registry JSON GUID round-trip failed.");
     }
 
     private static async Task RunSchemaRegistryCompatibilitySmokeAsync()
@@ -369,6 +400,20 @@ internal static class AotSmoke
             .UseAvroPocoSchemaRegistry(registry);
         var pocoConsumer = Kafka.CreateConsumer<string, AotAvroPoco>()
             .UseAvroPocoSchemaRegistry(registry);
+        var jsonProducer = Kafka.CreateProducer<string, AotPayload>()
+            .UseJsonSchemaRegistry(
+                registry,
+                AotPayloadJsonSchema,
+                AotJsonContext.Default.AotPayload,
+                new JsonSchemaSerializerConfig { UseSchemaId = 1 });
+        var jsonConsumer = Kafka.CreateConsumer<string, AotPayload>()
+            .UseJsonSchemaRegistry(
+                registry,
+                AotJsonContext.Default.AotPayload,
+                new SchemaRegistryDeserializerConfig
+                {
+                    SchemaIdStrategy = SchemaIdDeserializerStrategy.Dual
+                });
 
         var protobufProducer = Kafka.CreateProducer<string, AotProtobufMessage>()
             .UseProtobufSchemaRegistry(registry);
@@ -385,6 +430,8 @@ internal static class AotSmoke
         GC.KeepAlive(avroKeyConsumer);
         GC.KeepAlive(pocoProducer);
         GC.KeepAlive(pocoConsumer);
+        GC.KeepAlive(jsonProducer);
+        GC.KeepAlive(jsonConsumer);
         GC.KeepAlive(protobufProducer);
         GC.KeepAlive(protobufKeyValueProducer);
         GC.KeepAlive(protobufConsumer);
@@ -662,6 +709,24 @@ internal static class AotSmoke
         {
             cancellationToken.ThrowIfCancellationRequested();
             return Task.FromResult(_schemasBySubject[subject]);
+        }
+
+        public Task<RegisteredSchema> LookupSchemaAsync(
+            string subject,
+            Schema schema,
+            bool ignoreDeletedSchemas = true,
+            bool normalize = false,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var registered = _schemasBySubject[subject];
+            if (registered.Schema.SchemaType != schema.SchemaType
+                || !string.Equals(registered.Schema.SchemaString, schema.SchemaString, StringComparison.Ordinal))
+            {
+                throw new KeyNotFoundException($"Schema is not registered under subject '{subject}'.");
+            }
+
+            return Task.FromResult(registered);
         }
 
         public Task<int> GetOrRegisterSchemaAsync(

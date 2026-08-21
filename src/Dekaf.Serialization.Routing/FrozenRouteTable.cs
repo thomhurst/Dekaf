@@ -10,8 +10,10 @@ internal sealed class FrozenRouteTable<TKey, TRoute>(IEqualityComparer<TKey>? co
     private readonly Dictionary<TKey, TRoute> _registrations = new(comparer);
     private FrozenDictionary<TKey, TRoute>? _routes;
     private TRoute? _fallback;
+    private bool _producesRecordHeaders;
 
     internal bool IsFrozen => Volatile.Read(ref _routes) is not null;
+    internal bool ProducesRecordHeaders => Volatile.Read(ref _producesRecordHeaders);
 
     internal void Register(TKey key, TRoute route)
     {
@@ -21,6 +23,8 @@ internal sealed class FrozenRouteTable<TKey, TRoute>(IEqualityComparer<TKey>? co
                 throw new InvalidOperationException("Routes cannot be changed after Freeze().");
             if (!_registrations.TryAdd(key, route))
                 throw new InvalidOperationException("A route is already registered for the supplied key.");
+            if (route is IRecordHeaderSerializer { ProducesRecordHeaders: true })
+                Volatile.Write(ref _producesRecordHeaders, true);
         }
     }
 
@@ -31,6 +35,8 @@ internal sealed class FrozenRouteTable<TKey, TRoute>(IEqualityComparer<TKey>? co
             if (_routes is not null)
                 throw new InvalidOperationException("Routes cannot be changed after Freeze().");
             _fallback = route;
+            if (route is IRecordHeaderSerializer { ProducesRecordHeaders: true })
+                Volatile.Write(ref _producesRecordHeaders, true);
         }
     }
 
@@ -40,6 +46,21 @@ internal sealed class FrozenRouteTable<TKey, TRoute>(IEqualityComparer<TKey>? co
         {
             if (_routes is null)
             {
+                var producesRecordHeaders =
+                    _fallback is IRecordHeaderSerializer { ProducesRecordHeaders: true };
+                if (!producesRecordHeaders)
+                {
+                    foreach (var route in _registrations.Values)
+                    {
+                        if (route is IRecordHeaderSerializer { ProducesRecordHeaders: true })
+                        {
+                            producesRecordHeaders = true;
+                            break;
+                        }
+                    }
+                }
+
+                Volatile.Write(ref _producesRecordHeaders, producesRecordHeaders);
                 Volatile.Write(
                     ref _routes,
                     _registrations.ToFrozenDictionary(comparer: _registrations.Comparer));
