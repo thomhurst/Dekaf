@@ -541,7 +541,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
 
     private long GetNextOffsetUnderLock(TopicPartition partition)
     {
-        var offset = _cluster.GetCommittedOffset(_options.GroupId, partition) ??
+        var offset = _cluster.GetCommittedShareOffset(_options.GroupId, partition) ??
                      _cluster.GetWatermarks(partition).Low;
 
         foreach (var pending in _pending.Values)

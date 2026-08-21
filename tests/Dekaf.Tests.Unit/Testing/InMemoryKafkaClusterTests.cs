@@ -778,11 +778,11 @@ public sealed class InMemoryKafkaClusterTests
         shareConsumer.Acknowledge(second);
         await shareConsumer.CommitAsync();
         var admin = new InMemoryAdminClient(cluster);
-        var offsets = await admin.ListConsumerGroupOffsetsAsync("share-workers");
+        var offsets = await admin.DescribeShareGroupOffsetsAsync("share-workers");
 
         await Assert.That(first.Offset).IsEqualTo(0);
         await Assert.That(second.Offset).IsEqualTo(0);
-        await Assert.That(offsets[new TopicPartition("shared", 0)]).IsEqualTo(1);
+        await Assert.That(offsets.Single().StartOffset).IsEqualTo(1);
     }
 
     [Test]
@@ -792,17 +792,17 @@ public sealed class InMemoryKafkaClusterTests
         var admin = new InMemoryAdminClient(cluster);
         var partition = new TopicPartition("shared", 0);
         await admin.AlterShareGroupOffsetsAsync(
-            "share-delete",
+            "shared-id",
             [new ShareGroupOffsetAlteration { TopicPartition = partition, StartOffset = 3 }]);
         await admin.AlterConsumerGroupOffsetsAsync(
-            "consumer-preserve",
+            "shared-id",
             [new TopicPartitionOffset(partition.Topic, partition.Partition, 7)]);
 
-        var results = await admin.DeleteShareGroupsAsync(["share-delete"]);
+        var results = await admin.DeleteShareGroupsAsync(["shared-id"]);
 
-        await Assert.That(results["share-delete"].ErrorCode).IsEqualTo(ErrorCode.None);
-        await Assert.That(await admin.ListConsumerGroupOffsetsAsync("share-delete")).IsEmpty();
-        await Assert.That((await admin.ListConsumerGroupOffsetsAsync("consumer-preserve"))[partition]).IsEqualTo(7);
+        await Assert.That(results["shared-id"].ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(await admin.DescribeShareGroupOffsetsAsync("shared-id")).IsEmpty();
+        await Assert.That((await admin.ListConsumerGroupOffsetsAsync("shared-id"))[partition]).IsEqualTo(7);
     }
 
     [Test]
@@ -818,7 +818,8 @@ public sealed class InMemoryKafkaClusterTests
         await Assert.ThrowsAsync<ArgumentException>(async () =>
             await admin.DeleteShareGroupsAsync(["share-preserve", "share-preserve"]));
 
-        await Assert.That((await admin.ListConsumerGroupOffsetsAsync("share-preserve"))[partition]).IsEqualTo(3);
+        await Assert.That((await admin.DescribeShareGroupOffsetsAsync("share-preserve")).Single().StartOffset)
+            .IsEqualTo(3);
     }
 
     [Test]
@@ -838,7 +839,8 @@ public sealed class InMemoryKafkaClusterTests
         var activeResult = await admin.DeleteShareGroupsAsync(["share-active"]);
 
         await Assert.That(activeResult["share-active"].ErrorCode).IsEqualTo(ErrorCode.NonEmptyGroup);
-        await Assert.That((await admin.ListConsumerGroupOffsetsAsync("share-active"))[partition]).IsEqualTo(3);
+        await Assert.That((await admin.DescribeShareGroupOffsetsAsync("share-active")).Single().StartOffset)
+            .IsEqualTo(3);
 
         await consumer.CloseAsync();
         var inactiveResult = await admin.DeleteShareGroupsAsync(["share-active"]);
@@ -909,10 +911,10 @@ public sealed class InMemoryKafkaClusterTests
 
         var redelivered = await shareConsumer.PollAsync().FirstAsync();
         var admin = new InMemoryAdminClient(cluster);
-        var offsets = await admin.ListConsumerGroupOffsetsAsync("share-gap");
+        var offsets = await admin.DescribeShareGroupOffsetsAsync("share-gap");
 
         await Assert.That(records.Select(record => record.Offset).ToArray()).IsEquivalentTo([0L, 1L, 2L]);
-        await Assert.That(offsets[new TopicPartition("shared", 0)]).IsEqualTo(1);
+        await Assert.That(offsets.Single().StartOffset).IsEqualTo(1);
         await Assert.That(redelivered.Offset).IsEqualTo(1);
     }
 

@@ -17,6 +17,7 @@ public sealed class InMemoryKafkaCluster
     private readonly object _gate = new();
     private readonly Dictionary<string, TopicState> _topics = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<TopicPartition, TopicPartitionOffset>> _consumerGroupOffsets = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Dictionary<TopicPartition, TopicPartitionOffset>> _shareGroupOffsets = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<string, ConsumerGroupMemberState>> _consumerGroupMembers = new(StringComparer.Ordinal);
     private readonly Dictionary<string, int> _consumerGroupGenerations = new(StringComparer.Ordinal);
     private readonly Dictionary<string, HashSet<string>> _shareGroupMembers = new(StringComparer.Ordinal);
@@ -665,7 +666,7 @@ public sealed class InMemoryKafkaCluster
             ReleaseShareLeasesUnderLock(groupId, memberId, completed);
             if (commits.Length > 0)
             {
-                CommitOffsetsUnderLock(groupId, commits);
+                CommitShareOffsetsUnderLock(groupId, commits);
                 foreach (var commitOffset in commits)
                     RemoveCommittedShareDeliveryCountsUnderLock(groupId, commitOffset);
             }
@@ -795,11 +796,38 @@ public sealed class InMemoryKafkaCluster
             CommitOffsetsUnderLock(groupId, offsets);
     }
 
+    internal long? GetCommittedShareOffset(string groupId, TopicPartition topicPartition)
+    {
+        lock (_gate)
+        {
+            return _shareGroupOffsets.TryGetValue(groupId, out var offsets) &&
+                   offsets.TryGetValue(topicPartition, out var offset)
+                ? offset.Offset
+                : null;
+        }
+    }
+
+    internal void CommitShareOffsets(string groupId, IEnumerable<TopicPartitionOffset> offsets)
+    {
+        lock (_gate)
+            CommitShareOffsetsUnderLock(groupId, offsets);
+    }
+
     internal IReadOnlyDictionary<TopicPartition, long> GetGroupOffsets(string groupId)
     {
         lock (_gate)
         {
             return _consumerGroupOffsets.TryGetValue(groupId, out var offsets)
+                ? offsets.ToDictionary(static item => item.Key, static item => item.Value.Offset)
+                : new Dictionary<TopicPartition, long>();
+        }
+    }
+
+    internal IReadOnlyDictionary<TopicPartition, long> GetShareGroupOffsets(string groupId)
+    {
+        lock (_gate)
+        {
+            return _shareGroupOffsets.TryGetValue(groupId, out var offsets)
                 ? offsets.ToDictionary(static item => item.Key, static item => item.Value.Offset)
                 : new Dictionary<TopicPartition, long>();
         }
@@ -862,7 +890,7 @@ public sealed class InMemoryKafkaCluster
                 return false;
             }
 
-            _consumerGroupOffsets.Remove(groupId);
+            _shareGroupOffsets.Remove(groupId);
             _shareGroupMembers.Remove(groupId);
             _shareLeases.Remove(groupId);
             _shareDeliveryCounts.Remove(groupId);
@@ -875,6 +903,18 @@ public sealed class InMemoryKafkaCluster
         lock (_gate)
         {
             if (!_consumerGroupOffsets.TryGetValue(groupId, out var offsets))
+                return;
+
+            foreach (var partition in partitions)
+                offsets.Remove(partition);
+        }
+    }
+
+    internal void DeleteShareGroupOffsets(string groupId, IEnumerable<TopicPartition> partitions)
+    {
+        lock (_gate)
+        {
+            if (!_shareGroupOffsets.TryGetValue(groupId, out var offsets))
                 return;
 
             foreach (var partition in partitions)
@@ -1109,6 +1149,18 @@ public sealed class InMemoryKafkaCluster
         {
             groupOffsets = [];
             _consumerGroupOffsets[groupId] = groupOffsets;
+        }
+
+        foreach (var offset in offsets)
+            groupOffsets[new TopicPartition(offset.Topic, offset.Partition)] = offset;
+    }
+
+    private void CommitShareOffsetsUnderLock(string groupId, IEnumerable<TopicPartitionOffset> offsets)
+    {
+        if (!_shareGroupOffsets.TryGetValue(groupId, out var groupOffsets))
+        {
+            groupOffsets = [];
+            _shareGroupOffsets[groupId] = groupOffsets;
         }
 
         foreach (var offset in offsets)
