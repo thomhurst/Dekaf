@@ -580,11 +580,10 @@ public sealed class AdminClient : IAdminClient, IReplicaLogDirAdminClient, ITopi
 
         var opts = options ?? new DeleteTopicsOptions();
         var unresolvedIds = new HashSet<Guid>(ids);
-        var deleteMayHaveApplied = false;
+        var ambiguousIds = new HashSet<Guid>();
 
         await WithRetryAsync(async () =>
         {
-            var isRetryAttempt = deleteMayHaveApplied;
             var topics = new DeleteTopicState[unresolvedIds.Count];
             for (int sourceIndex = 0, destinationIndex = 0; sourceIndex < ids.Count; sourceIndex++)
             {
@@ -616,7 +615,7 @@ public sealed class AdminClient : IAdminClient, IReplicaLogDirAdminClient, ITopi
             }
             catch
             {
-                deleteMayHaveApplied = true;
+                ambiguousIds.UnionWith(unresolvedIds);
                 throw;
             }
 
@@ -629,17 +628,23 @@ public sealed class AdminClient : IAdminClient, IReplicaLogDirAdminClient, ITopi
                     identifier = topics[i].TopicId;
 
                 if (topic.ErrorCode == Protocol.ErrorCode.None ||
-                    (isRetryAttempt && topic.ErrorCode == Protocol.ErrorCode.UnknownTopicId))
+                    (topic.ErrorCode == Protocol.ErrorCode.UnknownTopicId &&
+                     ambiguousIds.Contains(identifier)))
                 {
                     unresolvedIds.Remove(identifier);
+                    ambiguousIds.Remove(identifier);
                     continue;
                 }
 
-                if (topic.ErrorCode.IsRetriable())
-                    deleteMayHaveApplied = true;
+                var isRetriable = topic.ErrorCode.IsRetriable();
+                if (isRetriable && topic.ErrorCode != Protocol.ErrorCode.UnknownTopicId)
+                    ambiguousIds.Add(identifier);
 
-                failure ??= new KafkaException(topic.ErrorCode,
-                    $"Failed to delete topic '{topic.Name}' ({identifier}): {topic.ErrorMessage ?? topic.ErrorCode.ToString()}");
+                if (failure is null || (failure.IsRetriable && !isRetriable))
+                {
+                    failure = new KafkaException(topic.ErrorCode,
+                        $"Failed to delete topic '{topic.Name}' ({identifier}): {topic.ErrorMessage ?? topic.ErrorCode.ToString()}");
+                }
             }
 
             if (failure is not null)

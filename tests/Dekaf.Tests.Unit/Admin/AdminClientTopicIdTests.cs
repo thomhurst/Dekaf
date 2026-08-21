@@ -12,6 +12,7 @@ public sealed class AdminClientTopicIdTests
 {
     private static readonly Guid TopicId = new("00112233-4455-6677-8899-aabbccddeeff");
     private static readonly Guid UnknownTopicId = new("ffeeddcc-bbaa-9988-7766-554433221100");
+    private static readonly Guid OtherTopicId = new("12345678-9abc-def0-1234-56789abcdef0");
 
     [Test]
     public async Task DescribeTopicsAsync_EmptyIds_DoesNotSendRequest()
@@ -156,6 +157,63 @@ public sealed class AdminClientTopicIdTests
             .IsEquivalentTo([TopicId, UnknownTopicId]);
         await Assert.That(context.DeleteRequests[1].Topics!.Select(topic => topic.TopicId))
             .IsEquivalentTo([UnknownTopicId]);
+    }
+
+    [Test]
+    public async Task DeleteTopicsAsync_UnknownId_RemainsAnErrorAcrossRetries()
+    {
+        await using var context = new AdminTestContext();
+        for (var attempt = 0; attempt <= 3; attempt++)
+        {
+            context.EnqueueDeleteResponse(DeleteResponse(
+                DeleteResult("missing", UnknownTopicId, ErrorCode.UnknownTopicId)));
+        }
+
+        var exception = await Assert.ThrowsAsync<KafkaException>(async () =>
+            await context.Client.DeleteTopicsAsync([UnknownTopicId]));
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.UnknownTopicId);
+        await Assert.That(context.DeleteRequests.Count).IsEqualTo(4);
+    }
+
+    [Test]
+    public async Task DeleteTopicsAsync_AmbiguousId_DoesNotMaskUnknownUnrelatedId()
+    {
+        await using var context = new AdminTestContext();
+        context.EnqueueDeleteResponse(DeleteResponse(
+            DeleteResult("pending", TopicId, ErrorCode.RequestTimedOut)));
+        context.EnqueueDeleteResponse(DeleteResponse(
+            DeleteResult("pending", TopicId, ErrorCode.UnknownTopicId),
+            DeleteResult("missing", OtherTopicId, ErrorCode.UnknownTopicId)));
+        context.EnqueueDeleteResponse(DeleteResponse(
+            DeleteResult("missing", OtherTopicId, ErrorCode.UnknownTopicId)));
+        context.EnqueueDeleteResponse(DeleteResponse(
+            DeleteResult("missing", OtherTopicId, ErrorCode.UnknownTopicId)));
+
+        var exception = await Assert.ThrowsAsync<KafkaException>(async () =>
+            await context.Client.DeleteTopicsAsync([TopicId, OtherTopicId]));
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.UnknownTopicId);
+        await Assert.That(context.DeleteRequests.Count).IsEqualTo(4);
+        await Assert.That(context.DeleteRequests[1].Topics!.Select(topic => topic.TopicId))
+            .IsEquivalentTo([TopicId, OtherTopicId]);
+        await Assert.That(context.DeleteRequests[2].Topics!.Select(topic => topic.TopicId))
+            .IsEquivalentTo([OtherTopicId]);
+    }
+
+    [Test]
+    public async Task DeleteTopicsAsync_MixedResponse_PrefersPermanentFailure()
+    {
+        await using var context = new AdminTestContext();
+        context.EnqueueDeleteResponse(DeleteResponse(
+            DeleteResult("pending", TopicId, ErrorCode.RequestTimedOut),
+            DeleteResult("denied", OtherTopicId, ErrorCode.TopicAuthorizationFailed)));
+
+        var exception = await Assert.ThrowsAsync<KafkaException>(async () =>
+            await context.Client.DeleteTopicsAsync([TopicId, OtherTopicId]));
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.TopicAuthorizationFailed);
+        await Assert.That(context.DeleteRequests.Count).IsEqualTo(1);
     }
 
     [Test]
