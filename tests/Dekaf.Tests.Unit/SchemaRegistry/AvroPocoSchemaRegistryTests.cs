@@ -1542,6 +1542,58 @@ public sealed class AvroPocoSchemaRegistryTests
         await Assert.That(registry.LastGetSchemaByGuidCancellationToken.CanBeCanceled).IsTrue();
     }
 
+    [Arguments(false)]
+    [Arguments(true)]
+    [Test]
+    public async Task GeneratedCodec_GuidHeader_PreparesConfiguredAsyncSubject(bool useWarmup)
+    {
+        const string topic = "poco-guid-async-subject";
+        var subject = $"{topic}-value";
+        using var registry = new MockSchemaRegistryClient();
+        await using var serializer = PocoNullableStructRecord.CreateAvroSerializer(
+            registry,
+            new AvroSerializerConfig { SchemaIdStrategy = SchemaIdSerializerStrategy.Header });
+        var strategy = new FixedAsyncSubjectNameStrategy(subject);
+        await using var deserializer = PocoNullableStructRecord.CreateAvroDeserializer(
+            registry,
+            new AvroDeserializerConfig
+            {
+                SchemaIdStrategy = SchemaIdDeserializerStrategy.Header,
+                AsyncSubjectNameStrategy = strategy
+            });
+        var headers = new Headers();
+        var context = new SerializationContext
+        {
+            Topic = topic,
+            Component = SerializationComponent.Value,
+            Headers = headers
+        };
+        var destination = new ArrayBufferWriter<byte>();
+        var expected = new PocoNullableStructRecord
+        {
+            Value = new PocoReadonlyRecord { Id = 42 }
+        };
+        var schemaId = await serializer.WarmupAsync(topic);
+        serializer.Serialize(expected, ref destination, context);
+
+        if (useWarmup)
+        {
+            await deserializer.WarmupAsync(
+                new Guid(schemaId, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+                context);
+        }
+        else
+        {
+            await ((IAsyncDeserializerPreparer<PocoNullableStructRecord>)deserializer)
+                .PrepareAsync(destination.WrittenMemory, context);
+        }
+
+        var actual = deserializer.Deserialize(destination.WrittenMemory, context);
+
+        await Assert.That(actual.Value).IsEqualTo(expected.Value);
+        await Assert.That(strategy.CallCount).IsEqualTo(1);
+    }
+
     [Test]
     public async Task GeneratedCodec_RulesPathLargePayloadAllocatesZeroAfterWarmup()
     {

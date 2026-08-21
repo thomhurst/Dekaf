@@ -215,6 +215,20 @@ internal sealed class DeserializerSubjectNameCache : IAssociatedNameCacheInvalid
                 _useLegacySubjectNames);
     }
 
+    internal ValueTask<string> ResolveSubjectNameAsync(
+        Schema schema,
+        string topic,
+        bool isKey,
+        string fallbackRecordName,
+        CancellationToken cancellationToken)
+    {
+        if (_asyncStrategy is null)
+            return new ValueTask<string>(ResolveSubjectName(schema, topic, isKey, fallbackRecordName));
+
+        var recordName = SubjectNameResolver.GetRecordName(schema, fallbackRecordName);
+        return _asyncStrategy.GetSubjectNameAsync(topic, recordName, isKey, cancellationToken);
+    }
+
     private async ValueTask PrepareSlowAsync(
         ISchemaRegistryClient schemaRegistry,
         int schemaId,

@@ -1085,7 +1085,15 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
             throw new InvalidOperationException(
                 $"Schema GUID {key.SchemaGuid:D} is {unscopedSchema.SchemaType}, not Avro.");
         }
-        var subject = GetSubjectName(key.Topic, key.IsKey);
+        var subject = _subjectNames is null
+            ? SubjectNameResolver.GetTopicSubjectName(key.Topic, key.IsKey)
+            : await _subjectNames.ResolveSubjectNameAsync(
+                    unscopedSchema,
+                    key.Topic,
+                    key.IsKey,
+                    TCodec.FullName,
+                    cancellationToken)
+                .ConfigureAwait(false);
         var registered = await _schemaRegistry.LookupSchemaAsync(
                 subject,
                 unscopedSchema,

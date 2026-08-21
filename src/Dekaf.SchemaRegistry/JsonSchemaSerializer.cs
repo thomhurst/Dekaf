@@ -111,6 +111,9 @@ public sealed class JsonSchemaRegistrySerializer<T> :
         _serializePayload = SerializeWithOptions;
         _subjectNameStrategy = config.SubjectNameStrategy;
         _customSubjectNameStrategy = config.CustomSubjectNameStrategy;
+        _asyncSubjectNameStrategy = config.CustomSubjectNameStrategy is null
+            ? CreateAsyncSubjectNameStrategy(schemaRegistry, config.SubjectNameStrategy)
+            : null;
         _autoRegisterSchemas = config.AutoRegisterSchemas;
         _normalizeSchemas = config.NormalizeSchemas;
         _useLegacySubjectNames = config.UseLegacySubjectNames;
@@ -130,6 +133,7 @@ public sealed class JsonSchemaRegistrySerializer<T> :
             SchemaString = jsonSchema
         };
         _recordName = SubjectNameResolver.GetRecordName(_schema, typeof(T).FullName ?? typeof(T).Name);
+        SubscribeToAssociatedNameInvalidation();
     }
 
     /// <summary>Creates a JSON Schema Registry serializer with identity configuration and payload validation.</summary>
@@ -267,6 +271,9 @@ public sealed class JsonSchemaRegistrySerializer<T> :
         _serializePayload = SerializeWithTypeInfo;
         _subjectNameStrategy = config.SubjectNameStrategy;
         _customSubjectNameStrategy = config.CustomSubjectNameStrategy;
+        _asyncSubjectNameStrategy = config.CustomSubjectNameStrategy is null
+            ? CreateAsyncSubjectNameStrategy(schemaRegistry, config.SubjectNameStrategy)
+            : null;
         _autoRegisterSchemas = config.AutoRegisterSchemas;
         _normalizeSchemas = config.NormalizeSchemas;
         _useLegacySubjectNames = config.UseLegacySubjectNames;
@@ -286,6 +293,7 @@ public sealed class JsonSchemaRegistrySerializer<T> :
             SchemaString = jsonSchema
         };
         _recordName = SubjectNameResolver.GetRecordName(_schema, typeof(T).FullName ?? typeof(T).Name);
+        SubscribeToAssociatedNameInvalidation();
     }
 
     /// <summary>Creates a NativeAOT-safe JSON Schema Registry serializer with identity configuration and payload validation.</summary>
@@ -1316,6 +1324,7 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
     ICallerOwnedHeaderDeserializer<T>,
     IRecordHeaderRoutingProvider,
     IAsyncDeserializerPreparer<T>,
+    IRecordHeaderAsyncDeserializerPreparer<T>,
     IAsyncDeserializerPreparationRequirement,
     IAsyncDisposable
 {
@@ -1501,53 +1510,150 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
     }
 
     bool IAsyncDeserializerPreparationRequirement.RequiresPreparation =>
-        _ruleExecutor is not null && _subjectNames is { RequiresPreparation: true };
+        _subjectNames is { RequiresPreparation: true }
+        && (_ruleExecutor is not null || _schemaIdStrategy != SchemaIdDeserializerStrategy.Prefix);
 
     ValueTask IAsyncDeserializerPreparer<T>.PrepareAsync(
         ReadOnlyMemory<byte> data,
         SerializationContext context,
+        CancellationToken cancellationToken) =>
+        PrepareCoreAsync(data, context, FindCallerIdentityHeader(context), cancellationToken);
+
+    ValueTask IRecordHeaderAsyncDeserializerPreparer<T>.PrepareAsync(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        RecordHeaderRoutingLookup headers,
+        CancellationToken cancellationToken) =>
+        PrepareCoreAsync(data, context, FindRoutedIdentityHeader(context, in headers), cancellationToken);
+
+    private ValueTask PrepareCoreAsync(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        Header? identityHeader,
         CancellationToken cancellationToken)
     {
-        if (_ruleExecutor is null
-            || _subjectNames is not { RequiresPreparation: true }
-            || !DeserializerSubjectNameCache.TryReadSchemaId(data, out var schemaId))
+        if (context is { IsNull: true, Component: SerializationComponent.Value }
+            || _subjectNames is not { RequiresPreparation: true })
         {
             return default;
         }
 
-        return _subjectNames.PrepareAsync(
-            _schemaRegistry,
-            schemaId,
-            context.Topic,
-            context.Component == SerializationComponent.Key,
-            FallbackRecordName,
-            cancellationToken);
+        if (_schemaIdStrategy == SchemaIdDeserializerStrategy.Prefix)
+        {
+            return _ruleExecutor is not null
+                && DeserializerSubjectNameCache.TryReadSchemaId(data, out var prefixSchemaId)
+                    ? _subjectNames.PrepareAsync(
+                        _schemaRegistry,
+                        prefixSchemaId,
+                        context.Topic,
+                        context.Component == SerializationComponent.Key,
+                        FallbackRecordName,
+                        cancellationToken)
+                    : default;
+        }
+
+        var identity = ReadIdentity(data, identityHeader, out _);
+        if (identity.SchemaGuid is { } schemaGuid)
+        {
+            return new ValueTask(GetGuidSchemaAsync(
+                new GuidTopicKey(
+                    schemaGuid,
+                    context.Topic,
+                    context.Component == SerializationComponent.Key),
+                cancellationToken));
+        }
+
+        return _ruleExecutor is null
+            ? default
+            : _subjectNames.PrepareAsync(
+                _schemaRegistry,
+                identity.SchemaId!.Value,
+                context.Topic,
+                context.Component == SerializationComponent.Key,
+                FallbackRecordName,
+                cancellationToken);
     }
 
     bool IAsyncDeserializerPreparer<T>.TryDeserialize(
         ReadOnlyMemory<byte> data,
         SerializationContext context,
+        out T value) =>
+        TryDeserializeCore(data, context, FindCallerIdentityHeader(context), out value);
+
+    bool IRecordHeaderAsyncDeserializerPreparer<T>.TryDeserialize(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        in RecordHeaderRoutingLookup headers,
+        out T value) =>
+        TryDeserializeCore(data, context, FindRoutedIdentityHeader(context, in headers), out value);
+
+    private bool TryDeserializeCore(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        Header? identityHeader,
         out T value)
     {
-        string? preparedSubject = null;
-        if (_ruleExecutor is not null
-            && _subjectNames is { RequiresPreparation: true } subjectNames
-            && DeserializerSubjectNameCache.TryReadSchemaId(data, out var schemaId))
+        if (context is { IsNull: true, Component: SerializationComponent.Value })
         {
-            if (!subjectNames.TryGetPreparedSubject(
-                    schemaId,
-                    context.Topic,
-                    context.Component == SerializationComponent.Key,
-                    out var prepared))
-            {
-                value = default!;
-                return false;
-            }
-
-            preparedSubject = prepared.Subject;
+            value = default!;
+            return true;
         }
 
-        value = DeserializeCore(data, context, preparedSubject);
+        string? preparedSubject = null;
+        if (_subjectNames is { RequiresPreparation: true } subjectNames)
+        {
+            if (_schemaIdStrategy == SchemaIdDeserializerStrategy.Prefix)
+            {
+                if (_ruleExecutor is not null
+                    && DeserializerSubjectNameCache.TryReadSchemaId(data, out var prefixSchemaId))
+                {
+                    if (!subjectNames.TryGetPreparedSubject(
+                            prefixSchemaId,
+                            context.Topic,
+                            context.Component == SerializationComponent.Key,
+                            out var prepared))
+                    {
+                        value = default!;
+                        return false;
+                    }
+
+                    preparedSubject = prepared.Subject;
+                }
+
+                value = DeserializeCore(data, context, identityHeader, preparedSubject);
+                return true;
+            }
+
+            var identity = ReadIdentity(data, identityHeader, out _);
+            if (identity.SchemaGuid is { } schemaGuid)
+            {
+                var key = new GuidTopicKey(
+                    schemaGuid,
+                    context.Topic,
+                    context.Component == SerializationComponent.Key);
+                if (!HasResolvedGuidSchema(key))
+                {
+                    value = default!;
+                    return false;
+                }
+            }
+            else if (_ruleExecutor is not null)
+            {
+                if (!subjectNames.TryGetPreparedSubject(
+                        identity.SchemaId!.Value,
+                        context.Topic,
+                        context.Component == SerializationComponent.Key,
+                        out var prepared))
+                {
+                    value = default!;
+                    return false;
+                }
+
+                preparedSubject = prepared.Subject;
+            }
+        }
+
+        value = DeserializeCore(data, context, identityHeader, preparedSubject);
         return true;
     }
 
@@ -1607,14 +1713,7 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
         if (context is { IsNull: true, Component: SerializationComponent.Value })
             return default!;
 
-        var identity = SchemaIdentityFraming.Read(
-            data.Span,
-            identityHeader,
-            _schemaIdStrategy,
-            out var payloadOffset,
-            out var trailingHeaderData);
-        if (!trailingHeaderData.IsEmpty)
-            throw new InvalidDataException("JSON schema identity headers cannot contain trailing data.");
+        var identity = ReadIdentity(data, identityHeader, out var payloadOffset);
         var schemaId = identity.SchemaId ?? -1;
         var guidSchema = identity.SchemaGuid is { } schemaGuid
             ? GetGuidSchemaCached(schemaGuid, context)
@@ -1715,6 +1814,22 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
             : task.WaitAsync(SchemaRegistryTimeout).ConfigureAwait(false).GetAwaiter().GetResult();
     }
 
+    private bool HasResolvedGuidSchema(GuidTopicKey key) =>
+        _guidSchemaCache.TryGetValue(key, out var lazy)
+        && lazy.IsValueCreated
+        && lazy.Value.IsCompletedSuccessfully;
+
+    private Task<GuidResolvedSchema> GetGuidSchemaAsync(
+        GuidTopicKey key,
+        CancellationToken cancellationToken)
+    {
+        var lazy = _guidSchemaCache.GetOrAdd(
+            key,
+            static (cacheKey, deserializer) => deserializer.CreateGuidSchemaLazy(cacheKey),
+            this);
+        return lazy.Value.WaitAsync(cancellationToken);
+    }
+
     private Lazy<Task<GuidResolvedSchema>> CreateGuidSchemaLazy(GuidTopicKey key) =>
         new(() => FetchGuidSchemaAsync(key));
 
@@ -1755,12 +1870,15 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
             throw new InvalidOperationException(
                 $"Schema with GUID {key.SchemaGuid:D} is not a JSON schema. Type: {unscopedSchema.SchemaType}");
         }
-        var context = new SerializationContext
-        {
-            Topic = key.Topic,
-            Component = key.IsKey ? SerializationComponent.Key : SerializationComponent.Value
-        };
-        var subject = GetUncachedSubjectName(unscopedSchema, context);
+        var subject = _subjectNames is null
+            ? SubjectNameResolver.GetTopicSubjectName(key.Topic, key.IsKey)
+            : await _subjectNames.ResolveSubjectNameAsync(
+                    unscopedSchema,
+                    key.Topic,
+                    key.IsKey,
+                    FallbackRecordName,
+                    cancellationToken)
+                .ConfigureAwait(false);
         var registered = await _schemaRegistry.LookupSchemaAsync(
                 subject,
                 unscopedSchema,
@@ -1801,6 +1919,50 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
         _ => throw new ArgumentOutOfRangeException(nameof(component), component, "Unknown serialization component.")
     };
 
+    private SchemaIdentity ReadIdentity(
+        ReadOnlyMemory<byte> data,
+        Header? identityHeader,
+        out int payloadOffset)
+    {
+        var identity = SchemaIdentityFraming.Read(
+            data.Span,
+            identityHeader,
+            _schemaIdStrategy,
+            out payloadOffset,
+            out var trailingHeaderData);
+        if (!trailingHeaderData.IsEmpty)
+            throw new InvalidDataException("JSON schema identity headers cannot contain trailing data.");
+        return identity;
+    }
+
+    private Header? FindCallerIdentityHeader(SerializationContext context)
+    {
+        if (context is { IsNull: true, Component: SerializationComponent.Value }
+            || _schemaIdStrategy == SchemaIdDeserializerStrategy.Prefix
+            || context.Headers is not { } headers)
+        {
+            return null;
+        }
+
+        var headerName = GetIdentityHeaderName(context.Component);
+        for (var index = headers.Count - 1; index >= 0; index--)
+        {
+            if (string.Equals(headers[index].Key, headerName, StringComparison.Ordinal))
+                return headers[index];
+        }
+
+        return null;
+    }
+
+    private Header? FindRoutedIdentityHeader(
+        SerializationContext context,
+        in RecordHeaderRoutingLookup headers) =>
+        context is not { IsNull: true, Component: SerializationComponent.Value }
+        && _schemaIdStrategy != SchemaIdDeserializerStrategy.Prefix
+        && headers.TryGetLast(GetIdentityHeaderName(context.Component), out var header)
+            ? header
+            : null;
+
     private readonly record struct GuidTopicKey(Guid SchemaGuid, string Topic, bool IsKey);
 
     private sealed record GuidResolvedSchema(int SchemaId, string Subject, Schema Schema);
@@ -1814,13 +1976,6 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
                 context.Topic,
                 isKey,
                 FallbackRecordName)
-            ?? SubjectNameResolver.GetTopicSubjectName(context.Topic, isKey);
-    }
-
-    private string GetUncachedSubjectName(Schema schema, SerializationContext context)
-    {
-        var isKey = context.Component == SerializationComponent.Key;
-        return _subjectNames?.ResolveSubjectName(schema, context.Topic, isKey, FallbackRecordName)
             ?? SubjectNameResolver.GetTopicSubjectName(context.Topic, isKey);
     }
 
