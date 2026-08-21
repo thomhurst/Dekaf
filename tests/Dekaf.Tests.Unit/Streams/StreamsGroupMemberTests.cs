@@ -83,7 +83,7 @@ public sealed class StreamsGroupMemberTests
     public async Task UpdateAsync_WhenMemberFenced_RejoinsWithCompleteState()
     {
         var connection = new ScriptedConnection();
-        connection.EnqueueHeartbeat(Success(epoch: 1));
+        connection.EnqueueHeartbeat(Success(epoch: 1, active: [TaskIds("topology", 0)]));
         connection.EnqueueHeartbeat(new StreamsGroupHeartbeatResponse
         {
             ErrorCode = ErrorCode.FencedMemberEpoch,
@@ -97,14 +97,24 @@ public sealed class StreamsGroupMemberTests
         var result = await fixture.Member.UpdateAsync(new StreamsGroupMemberUpdate
         {
             EndpointInformationEpoch = 6,
-            ProcessId = "process-2"
+            ProcessId = "process-2",
+            ActiveTasks =
+            [
+                new StreamsGroupTaskSet { SubtopologyId = "topology", Partitions = [0] }
+            ]
         });
 
         var rejoin = connection.HeartbeatRequests[2];
         await Assert.That(rejoin.MemberEpoch).IsEqualTo(0);
         await Assert.That(rejoin.Topology!.Epoch).IsEqualTo(5);
         await Assert.That(rejoin.ProcessId).IsEqualTo("process-2");
+        await Assert.That(rejoin.ActiveTasks).IsEmpty();
+        await Assert.That(rejoin.StandbyTasks).IsEmpty();
+        await Assert.That(rejoin.WarmupTasks).IsEmpty();
         await Assert.That(result.MemberEpoch).IsEqualTo(2);
+        await Assert.That(fixture.Member.Snapshot.Assignment.ActiveTasks).IsEmpty();
+        await Assert.That(fixture.Member.Snapshot.Assignment.StandbyTasks).IsEmpty();
+        await Assert.That(fixture.Member.Snapshot.Assignment.WarmupTasks).IsEmpty();
     }
 
     [Test]

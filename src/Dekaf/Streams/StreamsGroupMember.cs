@@ -742,7 +742,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
                     fencedRecoveryAttempted = true;
                     attemptLimit++;
                     recoveryJoinEpoch = InstanceId is null ? 0 : -2;
-                    _steadyRequestCache.Invalidate();
+                    ResetTaskAssignment(markUnjoined: false);
                     request = CreateJoinRequest(recoveryJoinEpoch.Value, shutdownApplication);
                     continue;
                 }
@@ -770,16 +770,24 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
     private void MarkUnjoined()
     {
         _memberEpoch = 0;
+        ResetTaskAssignment(markUnjoined: true);
+    }
+
+    private void ResetTaskAssignment(bool markUnjoined)
+    {
+        _activeTasks = [];
+        _standbyTasks = [];
+        _warmupTasks = [];
         _steadyRequestCache.Invalidate();
         var current = _snapshot;
         _snapshot = new StreamsGroupMemberSnapshot
         {
-            IsJoined = false,
+            IsJoined = !markUnjoined && current.IsJoined,
             MemberId = current.MemberId,
-            MemberEpoch = 0,
+            MemberEpoch = markUnjoined ? 0 : current.MemberEpoch,
             Assignment = EmptyAssignment,
             EndpointInformationEpoch = current.EndpointInformationEpoch,
-            PartitionsByUserEndpoint = [],
+            PartitionsByUserEndpoint = markUnjoined ? [] : current.PartitionsByUserEndpoint,
             Status = current.Status,
             HeartbeatInterval = current.HeartbeatInterval,
             AcceptableRecoveryLag = current.AcceptableRecoveryLag,

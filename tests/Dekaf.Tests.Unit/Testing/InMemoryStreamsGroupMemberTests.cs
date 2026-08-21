@@ -89,6 +89,31 @@ public sealed class InMemoryStreamsGroupMemberTests
     }
 
     [Test]
+    public async Task UpdateAsync_TopologyRejoinClearsOmittedAssignment()
+    {
+        await using var member = CreateMember();
+        await member.JoinAsync(new StreamsGroupMemberUpdate
+        {
+            Topology = CreateTopology(),
+            ActiveTasks = [new StreamsGroupTaskSet { SubtopologyId = "active", Partitions = [0] }],
+            StandbyTasks = [new StreamsGroupTaskSet { SubtopologyId = "standby", Partitions = [1] }],
+            WarmupTasks = [new StreamsGroupTaskSet { SubtopologyId = "warmup", Partitions = [2] }]
+        });
+
+        var result = await member.UpdateAsync(new StreamsGroupMemberUpdate
+        {
+            Topology = CreateTopology()
+        });
+
+        await Assert.That(result.ActiveTasks).IsNull();
+        await Assert.That(result.StandbyTasks).IsNull();
+        await Assert.That(result.WarmupTasks).IsNull();
+        await Assert.That(member.Snapshot.Assignment.ActiveTasks).IsEmpty();
+        await Assert.That(member.Snapshot.Assignment.StandbyTasks).IsEmpty();
+        await Assert.That(member.Snapshot.Assignment.WarmupTasks).IsEmpty();
+    }
+
+    [Test]
     public async Task JoinAndUpdateAsync_DeepCopyPublishedTaskSets()
     {
         await using var member = CreateMember();

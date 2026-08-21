@@ -197,11 +197,14 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember
         var standbyTasks = CopyTaskSets(update.StandbyTasks);
         var warmupTasks = CopyTaskSets(update.WarmupTasks);
         var previous = _snapshot;
+        var fallbackAssignment = !isJoin && update.Topology is not null
+            ? EmptyAssignment
+            : previous.Assignment;
         var assignment = new StreamsGroupAssignment
         {
-            ActiveTasks = activeTasks ?? previous.Assignment.ActiveTasks,
-            StandbyTasks = standbyTasks ?? previous.Assignment.StandbyTasks,
-            WarmupTasks = warmupTasks ?? previous.Assignment.WarmupTasks
+            ActiveTasks = activeTasks ?? fallbackAssignment.ActiveTasks,
+            StandbyTasks = standbyTasks ?? fallbackAssignment.StandbyTasks,
+            WarmupTasks = warmupTasks ?? fallbackAssignment.WarmupTasks
         };
         var memberId = isJoin ? "in-memory-streams-member" : previous.MemberId!;
         var memberEpoch = isJoin ? 1 : previous.MemberEpoch;
