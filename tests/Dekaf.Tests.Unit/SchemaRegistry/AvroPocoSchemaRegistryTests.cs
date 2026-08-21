@@ -1706,7 +1706,10 @@ public sealed class AvroPocoSchemaRegistryTests
         await Assert.That(allocated).IsEqualTo(0);
     }
 
+    // The warmup returns a 2 MiB buffer to ArrayPool<byte>.Shared. Keep the allocation
+    // window exclusive so another test cannot rent that buffer before measurement.
     [Test]
+    [NotInParallel]
     public async Task GeneratedCodec_RulesPathIsolatesSizingStateAcrossSerializerInstances()
     {
         using var registry = new MockSchemaRegistryClient();
