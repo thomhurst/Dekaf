@@ -4919,7 +4919,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             var timestampMs = timestamp?.ToUnixTimeMilliseconds() ?? GetFastTimestampMs();
             Header[]? pooledHeaderArray = null;
             var headerCount = 0;
-            if (headers is { Count: > 0 })
+            if (headers is not null && headers.SerializationCount > 0)
             {
                 RentAndFillHeaders(headers, out pooledHeaderArray, out headerCount);
             }

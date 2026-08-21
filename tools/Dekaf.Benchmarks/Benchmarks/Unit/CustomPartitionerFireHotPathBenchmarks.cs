@@ -21,6 +21,7 @@ public class CustomPartitionerFireHotPathBenchmarks
     private const string Topic = "custom-partitioner-fire-hot-path";
     private const long FixtureCapacityBytes = 1L << 30;
     private static readonly string[] Keys = BenchmarkData.CreateKeys(10_000);
+    private static readonly Header IdentityHeader = new("identity", new byte[] { 1 });
 
     private KafkaProducer<string, string> _producer = null!;
     private KafkaProducer<string, string> _recursiveProducer = null!;
@@ -30,6 +31,7 @@ public class CustomPartitionerFireHotPathBenchmarks
     private Thread _drainerThread = null!;
     private ProducerMessage<string, string>[] _messages = null!;
     private ProducerMessage<string, string>[] _recursiveMessages = null!;
+    private readonly Headers _nestedStagingHeaders = new();
 
     [GlobalSetup]
     public async Task Setup()
@@ -95,6 +97,7 @@ public class CustomPartitionerFireHotPathBenchmarks
         _drainerThread.Start();
         FireBatch();
         FireRecursiveBatch();
+        NestedCallerHeaderStaging();
     }
 
     private static async Task<KafkaProducer<string, string>> CreateProducerAsync(
@@ -166,6 +169,26 @@ public class CustomPartitionerFireHotPathBenchmarks
                     $"PendingAppends={_recursiveAccumulator.PendingAppendCountForTest}.");
             }
         }
+    }
+
+    [Benchmark]
+    public int NestedCallerHeaderStaging()
+    {
+        var headers = _nestedStagingHeaders;
+        var outerCheckpoint = headers.CaptureCheckpoint();
+        headers.BeginRecordHeaderStaging();
+        headers.Add(IdentityHeader);
+        var middleCheckpoint = headers.CaptureCheckpoint();
+        headers.BeginRecordHeaderStaging();
+        headers.Add(IdentityHeader);
+        var innerCheckpoint = headers.CaptureCheckpoint();
+        headers.BeginRecordHeaderStaging();
+        headers.Add(IdentityHeader);
+        headers.Restore(in innerCheckpoint);
+        headers.Restore(in middleCheckpoint);
+        var serializationCount = headers.SerializationCount;
+        headers.Restore(in outerCheckpoint);
+        return serializationCount;
     }
 
     private void DrainLoop(CancellationToken cancellationToken)

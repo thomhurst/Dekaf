@@ -125,6 +125,104 @@ public class KafkaProducerFastPathTests
     }
 
     [Test]
+    public async Task FireAsync_CustomPartitionerWithEmptyCallerHeaders_AppendsStagedKeyHeader()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 4096,
+            LingerMs = 10,
+            RequestTimeoutMs = 500,
+            DeliveryTimeoutMs = 1000,
+            CloseTimeoutMs = 1000,
+            CustomPartitioner = new BatchAwarePartitioner()
+        };
+
+        await using var producer = new KafkaProducer<string, string>(
+            options,
+            new RecordHeaderStringSerializer(),
+            Serializers.String);
+        await StopProducerBackgroundLoopsAsync(producer);
+        SeedProducerMetadata(producer);
+        SetInstanceField(producer, "_initialized", true);
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(producer.RecordAccumulator);
+        var headers = new Headers();
+
+        await producer.FireAsync(new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Key = "key",
+            Value = "value",
+            Headers = headers
+        });
+
+        var readyBatch = CompleteCurrentBatch(producer.RecordAccumulator, new TopicPartition(Topic, 0));
+        await Assert.That(readyBatch.RecordBatch.Records.Count).IsEqualTo(1);
+        await Assert.That(GetNamedHeaderValueString(readyBatch.RecordBatch.Records[0], "identity"))
+            .IsEqualTo("key");
+        await Assert.That(headers.Count).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task FireAsync_CustomPartitionerReusingCallerHeaders_PreservesOuterStagedKeyHeader()
+    {
+        var partitioner = new ReentrantPartitioner();
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 4096,
+            LingerMs = 10,
+            RequestTimeoutMs = 500,
+            DeliveryTimeoutMs = 1000,
+            CloseTimeoutMs = 1000,
+            CustomPartitioner = partitioner
+        };
+
+        await using var producer = new KafkaProducer<string, string>(
+            options,
+            new RecordHeaderStringSerializer(),
+            Serializers.String);
+        await StopProducerBackgroundLoopsAsync(producer);
+        SeedProducerMetadata(producer);
+        SetInstanceField(producer, "_initialized", true);
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(producer.RecordAccumulator);
+        var headers = new Headers();
+
+        partitioner.OnFirstPartition = () =>
+        {
+            var innerProduce = producer.FireAsync(new ProducerMessage<string, string>
+            {
+                Topic = Topic,
+                Key = "inner",
+                Value = "inner-value",
+                Headers = headers
+            });
+            if (!innerProduce.IsCompletedSuccessfully)
+                throw new InvalidOperationException("Expected the reentrant hot path to complete synchronously.");
+        };
+
+        await producer.FireAsync(new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Key = "outer",
+            Value = "outer-value",
+            Headers = headers
+        });
+
+        var readyBatch = CompleteCurrentBatch(producer.RecordAccumulator, new TopicPartition(Topic, 0));
+        await Assert.That(readyBatch.RecordBatch.Records.Count).IsEqualTo(2);
+        await Assert.That(GetNamedHeaderValueString(readyBatch.RecordBatch.Records[0], "identity"))
+            .IsEqualTo("inner");
+        await Assert.That(GetNamedHeaderValueString(readyBatch.RecordBatch.Records[1], "identity"))
+            .IsEqualTo("outer");
+        await Assert.That(headers.Count).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task FireAsync_RecordHeaderSerializerNestedPartitionerReentry_PreservesEveryKeyAndValue()
     {
         var partitioner = new NestedReentrantPartitioner();
@@ -1062,6 +1160,23 @@ public class KafkaProducerFastPathTests
         }
 
         return Encoding.UTF8.GetString(headers[0].Value.Span);
+    }
+
+    private static string GetNamedHeaderValueString(Dekaf.Protocol.Records.Record record, string key)
+    {
+        var headers = record.Headers;
+        string? value = null;
+        for (var index = 0; index < record.HeaderCount; index++)
+        {
+            if (headers![index].Key != key)
+                continue;
+            if (value is not null)
+                throw new InvalidOperationException($"Found duplicate '{key}' headers.");
+
+            value = Encoding.UTF8.GetString(headers[index].Value.Span);
+        }
+
+        return value ?? throw new InvalidOperationException($"Expected a '{key}' header.");
     }
 
     private sealed class RecordHeaderStringSerializer : ISerializer<string>, IRecordHeaderSerializer

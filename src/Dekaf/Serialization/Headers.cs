@@ -26,6 +26,9 @@ public sealed class Headers : IEnumerable<Header>
     private int _stagedKeySchemaIdentityIndex = -1;
     private int _stagedValueSchemaIdentityIndex = -1;
     private bool _stagingRecordHeaders;
+    private StagedRecordHeadersCheckpoint _previousStagedRecordHeaders;
+    private StagedRecordHeadersCheckpoint[]? _stagedRecordHeadersStack;
+    private int _stagedRecordHeadersDepth;
 
     /// <summary>
     /// Creates an empty headers collection.
@@ -233,11 +236,14 @@ public sealed class Headers : IEnumerable<Header>
         _keySchemaIdentityIndex = -1;
         _valueSchemaIdentityIndex = -1;
         EndRecordHeaderStaging();
+        ClearPreviousStagedRecordHeaders();
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void BeginRecordHeaderStaging()
     {
+        if (_stagingRecordHeaders)
+            PushStagedRecordHeaders();
         EndRecordHeaderStaging();
         _stagingRecordHeaders = true;
     }
@@ -252,6 +258,7 @@ public sealed class Headers : IEnumerable<Header>
     internal void Restore(in Checkpoint checkpoint)
     {
         EndRecordHeaderStaging();
+        RestorePreviousStagedRecordHeaders();
         if ((uint)checkpoint.Count > (uint)_headers.Count)
             throw new ArgumentOutOfRangeException(nameof(checkpoint));
 
@@ -443,6 +450,79 @@ public sealed class Headers : IEnumerable<Header>
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void PushStagedRecordHeaders()
+    {
+        var checkpoint = new StagedRecordHeadersCheckpoint(
+            _stagedHeader0,
+            _stagedHeader1,
+            _stagedHeaderCount,
+            _stagedKeySchemaIdentityIndex,
+            _stagedValueSchemaIdentityIndex);
+        var depth = _stagedRecordHeadersDepth;
+        if (depth == 0)
+        {
+            _previousStagedRecordHeaders = checkpoint;
+        }
+        else
+        {
+            var stackIndex = depth - 1;
+            var stack = _stagedRecordHeadersStack;
+            if (stack is null)
+            {
+                stack = new StagedRecordHeadersCheckpoint[2];
+                _stagedRecordHeadersStack = stack;
+            }
+            else if (stackIndex == stack.Length)
+            {
+                Array.Resize(ref stack, stack.Length * 2);
+                _stagedRecordHeadersStack = stack;
+            }
+
+            stack[stackIndex] = checkpoint;
+        }
+
+        _stagedRecordHeadersDepth = depth + 1;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void RestorePreviousStagedRecordHeaders()
+    {
+        var depth = _stagedRecordHeadersDepth;
+        if (depth == 0)
+            return;
+
+        depth--;
+        StagedRecordHeadersCheckpoint checkpoint;
+        if (depth == 0)
+        {
+            checkpoint = _previousStagedRecordHeaders;
+            _previousStagedRecordHeaders = default;
+        }
+        else
+        {
+            var stackIndex = depth - 1;
+            checkpoint = _stagedRecordHeadersStack![stackIndex];
+            _stagedRecordHeadersStack[stackIndex] = default;
+        }
+
+        _stagedRecordHeadersDepth = depth;
+        _stagedHeader0 = checkpoint.Header0;
+        _stagedHeader1 = checkpoint.Header1;
+        _stagedHeaderCount = checkpoint.Count;
+        _stagedKeySchemaIdentityIndex = checkpoint.KeySchemaIdentityIndex;
+        _stagedValueSchemaIdentityIndex = checkpoint.ValueSchemaIdentityIndex;
+        _stagingRecordHeaders = true;
+    }
+
+    private void ClearPreviousStagedRecordHeaders()
+    {
+        _previousStagedRecordHeaders = default;
+        if (_stagedRecordHeadersStack is not null)
+            Array.Clear(_stagedRecordHeadersStack, 0, _stagedRecordHeadersStack.Length);
+        _stagedRecordHeadersDepth = 0;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void TrackSchemaIdentityCandidate(string? key, int index)
     {
         if (key is null)
@@ -508,6 +588,13 @@ public sealed class Headers : IEnumerable<Header>
         trackedIndex == removedIndex ? -1 : trackedIndex > removedIndex ? trackedIndex - 1 : trackedIndex;
 
     internal readonly record struct Checkpoint(
+        int Count,
+        int KeySchemaIdentityIndex,
+        int ValueSchemaIdentityIndex);
+
+    private readonly record struct StagedRecordHeadersCheckpoint(
+        Header Header0,
+        Header Header1,
         int Count,
         int KeySchemaIdentityIndex,
         int ValueSchemaIdentityIndex);

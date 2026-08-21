@@ -63,6 +63,54 @@ public class ProtobufSchemaIdentityTests
     }
 
     [Test]
+    public async Task Serialize_ExplicitId_AcceptsRegistrySerializedDescriptorWithDefaultFileName()
+    {
+        var registry = new MockSchemaRegistryClient();
+        var registryDescriptor = TestMessage.Descriptor.File.ToProto();
+        registryDescriptor.Name = "default";
+        var schemaId = await registry.RegisterSchemaAsync("identity-value", new Schema
+        {
+            SchemaType = SchemaType.Protobuf,
+            SchemaString = registryDescriptor.ToByteString().ToBase64()
+        });
+        await using var serializer = new ProtobufSchemaRegistrySerializer<TestMessage>(
+            registry,
+            new ProtobufSerializerConfig { UseSchemaId = schemaId });
+        var destination = new ArrayBufferWriter<byte>();
+
+        serializer.Serialize(new TestMessage { Id = 7 }, ref destination, CreateContext());
+
+        await Assert.That(BinaryPrimitives.ReadInt32BigEndian(destination.WrittenSpan[1..5]))
+            .IsEqualTo(schemaId);
+    }
+
+    [Test]
+    public async Task Serialize_ExplicitId_RejectsDescriptorWithDifferentNonCanonicalFileName()
+    {
+        var registry = new MockSchemaRegistryClient();
+        var registryDescriptor = TestMessage.Descriptor.File.ToProto();
+        registryDescriptor.Name = "different.proto";
+        var schemaId = await registry.RegisterSchemaAsync("identity-value", new Schema
+        {
+            SchemaType = SchemaType.Protobuf,
+            SchemaString = registryDescriptor.ToByteString().ToBase64()
+        });
+        await using var serializer = new ProtobufSchemaRegistrySerializer<TestMessage>(
+            registry,
+            new ProtobufSerializerConfig { UseSchemaId = schemaId });
+        var destination = new ArrayBufferWriter<byte>();
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        {
+            serializer.Serialize(new TestMessage(), ref destination, CreateContext());
+            return Task.CompletedTask;
+        });
+
+        await Assert.That(exception!.Message).Contains("does not match Protobuf message type");
+        await Assert.That(destination.WrittenCount).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task Serialize_ExplicitId_RejectsNonProtobufSchema()
     {
         var registry = new MockSchemaRegistryClient();

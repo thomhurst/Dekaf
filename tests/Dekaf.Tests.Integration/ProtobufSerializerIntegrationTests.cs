@@ -11,8 +11,8 @@ namespace Dekaf.Tests.Integration;
 /// Integration tests for Protobuf serializer with Kafka and Schema Registry.
 /// </summary>
 [Category("Serialization")]
-[ClassDataSource<KafkaWithSchemaRegistryContainer>(Shared = SharedType.PerTestSession)]
-public sealed class ProtobufSerializerIntegrationTests(KafkaWithSchemaRegistryContainer testInfra)
+[ClassDataSource<KafkaWithAssociationSchemaRegistryContainer>(Shared = SharedType.PerTestSession)]
+public sealed class ProtobufSerializerIntegrationTests(KafkaWithAssociationSchemaRegistryContainer testInfra)
 {
     [Test]
     public async Task ProtobufSerializer_ExplicitSchemaId_RoundTrips()

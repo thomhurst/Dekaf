@@ -41,6 +41,40 @@ public sealed class SchemaIdentityFramingTests
     }
 
     [Test]
+    public async Task JsonReflectionOverloads_PositionalNullSelectJsonOptions()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        await using var serializer = new JsonSchemaRegistrySerializer<string>(
+            registry,
+            "{\"type\":\"string\"}",
+            null);
+        await using var configuredSerializer = new JsonSchemaRegistrySerializer<string>(
+            registry,
+            "{\"type\":\"string\"}",
+            null,
+            new JsonSchemaSerializerConfig());
+        var producerBuilder = Kafka.CreateProducer<string, string>()
+            .UseJsonSchemaRegistry(registry, "{\"type\":\"string\"}", null);
+        var configuredProducerBuilder = Kafka.CreateProducer<string, string>()
+            .UseJsonSchemaRegistry(
+                registry,
+                "{\"type\":\"string\"}",
+                null,
+                new JsonSchemaSerializerConfig());
+        var consumerBuilder = Kafka.CreateConsumer<string, string>()
+            .UseJsonSchemaRegistry(registry, null);
+        var configuredConsumerBuilder = Kafka.CreateConsumer<string, string>()
+            .UseJsonSchemaRegistry(registry, null, new SchemaRegistryDeserializerConfig());
+
+        await Assert.That(serializer).IsNotNull();
+        await Assert.That(configuredSerializer).IsNotNull();
+        await Assert.That(producerBuilder).IsNotNull();
+        await Assert.That(configuredProducerBuilder).IsNotNull();
+        await Assert.That(consumerBuilder).IsNotNull();
+        await Assert.That(configuredConsumerBuilder).IsNotNull();
+    }
+
+    [Test]
     public async Task JsonSerializer_UseSchemaId_TakesPrecedenceOverLatestAndRegistration()
     {
         const string schemaText = "{\"type\":\"string\"}";
@@ -51,6 +85,7 @@ public sealed class SchemaIdentityFramingTests
         await using var serializer = new JsonSchemaRegistrySerializer<string>(
             registry,
             schemaText,
+            jsonOptions: null,
             new JsonSchemaSerializerConfig
             {
                 UseSchemaId = explicitId,
@@ -80,6 +115,7 @@ public sealed class SchemaIdentityFramingTests
             var serializer = new JsonSchemaRegistrySerializer<string>(
                 registry,
                 "{\"type\":\"string\"}",
+                jsonOptions: null,
                 new JsonSchemaSerializerConfig { UseSchemaId = -1 });
             GC.KeepAlive(serializer);
         });
@@ -96,6 +132,7 @@ public sealed class SchemaIdentityFramingTests
         await using var serializer = new JsonSchemaRegistrySerializer<string>(
             registry,
             "{\"type\":\"string\"}",
+            jsonOptions: null,
             new JsonSchemaSerializerConfig { UseSchemaId = schemaId });
 
         await Assert.That(async () => await serializer.PrepareAsync(topic, "value"))
@@ -113,6 +150,7 @@ public sealed class SchemaIdentityFramingTests
         await using var serializer = new JsonSchemaRegistrySerializer<string>(
             registry,
             "{\"type\":\"string\"}",
+            jsonOptions: null,
             new JsonSchemaSerializerConfig { UseSchemaId = schemaId });
 
         await Assert.That(async () => await serializer.PrepareAsync(topic, "value"))
@@ -131,6 +169,7 @@ public sealed class SchemaIdentityFramingTests
         await using var serializer = new JsonSchemaRegistrySerializer<string>(
             registry,
             "{\"type\":\"string\"}",
+            jsonOptions: null,
             new JsonSchemaSerializerConfig { AutoRegisterSchemas = false });
 
         await Assert.That(async () => await serializer.PrepareAsync(topic, "value"))
@@ -206,6 +245,7 @@ public sealed class SchemaIdentityFramingTests
         await using var serializer = new JsonSchemaRegistrySerializer<string>(
             registry,
             schemaText,
+            jsonOptions: null,
             new JsonSchemaSerializerConfig
             {
                 AutoRegisterSchemas = false,

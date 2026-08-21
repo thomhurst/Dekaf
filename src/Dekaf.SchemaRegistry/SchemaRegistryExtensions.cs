@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 
@@ -13,19 +14,20 @@ public static class SchemaRegistryExtensions
     /// <summary>Configures JSON Schema Registry serialization with identity selection and framing.</summary>
     [RequiresUnreferencedCode("JsonSerializerOptions-based JSON serialization uses reflection. Use the JsonTypeInfo<TValue> overload for NativeAOT.")]
     [RequiresDynamicCode("JsonSerializerOptions-based JSON serialization may require runtime code generation. Use the JsonTypeInfo<TValue> overload for NativeAOT.")]
+    [OverloadResolutionPriority(1)]
     public static ProducerBuilder<TKey, TValue> UseJsonSchemaRegistry<TKey, TValue>(
         this ProducerBuilder<TKey, TValue> builder,
         ISchemaRegistryClient schemaRegistry,
         string jsonSchema,
-        JsonSchemaSerializerConfig config,
-        JsonSerializerOptions? jsonOptions = null)
+        JsonSerializerOptions? jsonOptions,
+        JsonSchemaSerializerConfig config)
     {
         ArgumentNullException.ThrowIfNull(builder);
         var serializer = new JsonSchemaRegistrySerializer<TValue>(
             schemaRegistry,
             jsonSchema,
-            config,
-            jsonOptions);
+            jsonOptions,
+            config);
         return builder.WithValueSerializer(serializer);
     }
 
@@ -51,6 +53,7 @@ public static class SchemaRegistryExtensions
     /// </summary>
     [RequiresUnreferencedCode("JsonSerializerOptions-based JSON serialization uses reflection. Use the JsonTypeInfo<TValue> overload for NativeAOT.")]
     [RequiresDynamicCode("JsonSerializerOptions-based JSON serialization may require runtime code generation. Use the JsonTypeInfo<TValue> overload for NativeAOT.")]
+    [OverloadResolutionPriority(1)]
     public static ProducerBuilder<TKey, TValue> UseJsonSchemaRegistry<TKey, TValue>(
         this ProducerBuilder<TKey, TValue> builder,
         ISchemaRegistryClient schemaRegistry,
@@ -72,6 +75,7 @@ public static class SchemaRegistryExtensions
     /// </summary>
     [RequiresUnreferencedCode("JsonSerializerOptions-based JSON serialization uses reflection. Use the JsonTypeInfo<TValue> overload for NativeAOT.")]
     [RequiresDynamicCode("JsonSerializerOptions-based JSON serialization may require runtime code generation. Use the JsonTypeInfo<TValue> overload for NativeAOT.")]
+    [OverloadResolutionPriority(1)]
     public static ProducerBuilder<TKey, TValue> UseJsonSchemaRegistry<TKey, TValue>(
         this ProducerBuilder<TKey, TValue> builder,
         ISchemaRegistryClient schemaRegistry,
@@ -107,6 +111,7 @@ public static class SchemaRegistryExtensions
     /// <returns>The builder for chaining.</returns>
     [RequiresUnreferencedCode("JsonSerializerOptions-based JSON serialization uses reflection. Use the JsonTypeInfo<TValue> overload for NativeAOT.")]
     [RequiresDynamicCode("JsonSerializerOptions-based JSON serialization may require runtime code generation. Use the JsonTypeInfo<TValue> overload for NativeAOT.")]
+    [OverloadResolutionPriority(1)]
     public static ProducerBuilder<TKey, TValue> UseJsonSchemaRegistry<TKey, TValue>(
         this ProducerBuilder<TKey, TValue> builder,
         ISchemaRegistryClient schemaRegistry,
@@ -213,6 +218,7 @@ public static class SchemaRegistryExtensions
     /// <returns>The builder for chaining.</returns>
     [RequiresUnreferencedCode("JsonSerializerOptions-based JSON deserialization uses reflection. Use the JsonTypeInfo<TValue> overload for NativeAOT.")]
     [RequiresDynamicCode("JsonSerializerOptions-based JSON deserialization may require runtime code generation. Use the JsonTypeInfo<TValue> overload for NativeAOT.")]
+    [OverloadResolutionPriority(1)]
     public static ConsumerBuilder<TKey, TValue> UseJsonSchemaRegistry<TKey, TValue>(
         this ConsumerBuilder<TKey, TValue> builder,
         ISchemaRegistryClient schemaRegistry,
@@ -228,11 +234,12 @@ public static class SchemaRegistryExtensions
     /// <summary>Configures JSON Schema Registry deserialization with identity framing.</summary>
     [RequiresUnreferencedCode("JsonSerializerOptions-based JSON deserialization uses reflection. Use the JsonTypeInfo<TValue> overload for NativeAOT.")]
     [RequiresDynamicCode("JsonSerializerOptions-based JSON deserialization may require runtime code generation. Use the JsonTypeInfo<TValue> overload for NativeAOT.")]
+    [OverloadResolutionPriority(1)]
     public static ConsumerBuilder<TKey, TValue> UseJsonSchemaRegistry<TKey, TValue>(
         this ConsumerBuilder<TKey, TValue> builder,
         ISchemaRegistryClient schemaRegistry,
-        SchemaRegistryDeserializerConfig config,
-        JsonSerializerOptions? jsonOptions = null)
+        JsonSerializerOptions? jsonOptions,
+        SchemaRegistryDeserializerConfig config)
     {
         ArgumentNullException.ThrowIfNull(builder);
         var deserializer = new JsonSchemaRegistryDeserializer<TValue>(
@@ -247,6 +254,7 @@ public static class SchemaRegistryExtensions
     /// </summary>
     [RequiresUnreferencedCode("JsonSerializerOptions-based JSON deserialization uses reflection. Use the JsonTypeInfo<TValue> overload for NativeAOT.")]
     [RequiresDynamicCode("JsonSerializerOptions-based JSON deserialization may require runtime code generation. Use the JsonTypeInfo<TValue> overload for NativeAOT.")]
+    [OverloadResolutionPriority(1)]
     public static ConsumerBuilder<TKey, TValue> UseJsonSchemaRegistry<TKey, TValue>(
         this ConsumerBuilder<TKey, TValue> builder,
         ISchemaRegistryClient schemaRegistry,

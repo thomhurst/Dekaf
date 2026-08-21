@@ -30,6 +30,8 @@ public sealed class ProtobufSchemaRegistrySerializer<
     : ISerializer<T>, IAsyncSerializerPreparer<T>, IRecordHeaderSerializer, IAsyncDisposable
     where T : IMessage<T>
 {
+    private const string RegistrySerializedRootName = "default";
+    private const string SerializedSchemaFormat = "serialized";
     private static readonly TimeSpan SchemaRegistryTimeout = TimeSpan.FromSeconds(30);
 
     private readonly ISchemaRegistryClient _schemaRegistry;
@@ -309,7 +311,7 @@ public sealed class ProtobufSchemaRegistrySerializer<
         if (_schemaSelectionMode == SchemaSelectionMode.ExplicitId)
         {
             var schemaId = _config.UseSchemaId!.Value;
-            var explicitSchema = await _schemaRegistry.GetSchemaAsync(
+            var explicitSchema = await GetSerializedSchemaAsync(
                     schemaId,
                     subject,
                     cancellationToken)
@@ -466,7 +468,7 @@ public sealed class ProtobufSchemaRegistrySerializer<
             var key = new SchemaReferenceKey(matchingReference.Subject, matchingReference.Version);
             if (!resolvedReferences.TryGetValue(key, out var resolvedSchema))
             {
-                var registered = await _schemaRegistry.GetSchemaBySubjectAsync(
+                var registered = await GetSerializedSchemaBySubjectAsync(
                         matchingReference.Subject,
                         matchingReference.Version.ToString(CultureInfo.InvariantCulture),
                         cancellationToken)
@@ -500,12 +502,57 @@ public sealed class ProtobufSchemaRegistrySerializer<
                 $"Schema ID {schemaId} has format {schema.SchemaType}; expected {SchemaType.Protobuf}.");
         }
 
-        if (!string.Equals(schema.SchemaString, descriptor.SerializedData.ToBase64(), StringComparison.Ordinal))
+        if (!string.Equals(schema.SchemaString, descriptor.SerializedData.ToBase64(), StringComparison.Ordinal)
+            && !MatchesDescriptorIgnoringFileName(schema.SchemaString, descriptor))
         {
             throw new InvalidOperationException(
                 $"Schema ID {schemaId} does not match Protobuf message type '{_descriptor.FullName}'.");
         }
     }
+
+    private static bool MatchesDescriptorIgnoringFileName(string schemaString, FileDescriptor descriptor)
+    {
+        try
+        {
+            var selectedDescriptor = FileDescriptorProto.Parser.ParseFrom(
+                Convert.FromBase64String(schemaString));
+            if (!string.Equals(selectedDescriptor.Name, RegistrySerializedRootName, StringComparison.Ordinal))
+                return false;
+
+            var expectedDescriptor = descriptor.ToProto();
+            selectedDescriptor.Name = expectedDescriptor.Name;
+            return selectedDescriptor.Equals(expectedDescriptor);
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+        catch (InvalidProtocolBufferException)
+        {
+            return false;
+        }
+    }
+
+    private Task<Schema> GetSerializedSchemaAsync(
+        int schemaId,
+        string subject,
+        CancellationToken cancellationToken) =>
+        _schemaRegistry is SchemaRegistryClient client
+            ? client.GetSchemaAsync(schemaId, subject, SerializedSchemaFormat, cancellationToken)
+            : _schemaRegistry.GetSchemaAsync(schemaId, subject, cancellationToken);
+
+    private Task<RegisteredSchema> GetSerializedSchemaBySubjectAsync(
+        string subject,
+        string version,
+        CancellationToken cancellationToken) =>
+        _schemaRegistry is SchemaRegistryClient client
+            ? client.GetSchemaBySubjectAsync(
+                subject,
+                version,
+                ignoreDeletedSchemas: true,
+                format: SerializedSchemaFormat,
+                cancellationToken)
+            : _schemaRegistry.GetSchemaBySubjectAsync(subject, version, cancellationToken);
 
     private async Task<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> CreateResolvedValueAsync(
         string subject,

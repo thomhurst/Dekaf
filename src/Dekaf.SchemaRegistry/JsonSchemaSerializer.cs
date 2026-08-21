@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization.Metadata;
@@ -67,6 +68,7 @@ public sealed class JsonSchemaRegistrySerializer<T> :
     /// </summary>
     [RequiresUnreferencedCode("JsonSerializerOptions-based JSON serialization uses reflection. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
     [RequiresDynamicCode("JsonSerializerOptions-based JSON serialization may require runtime code generation. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
+    [OverloadResolutionPriority(1)]
     public JsonSchemaRegistrySerializer(
         ISchemaRegistryClient schemaRegistry,
         string jsonSchema,
@@ -92,11 +94,12 @@ public sealed class JsonSchemaRegistrySerializer<T> :
     /// <summary>Creates a JSON Schema Registry serializer with identity and schema-selection configuration.</summary>
     [RequiresUnreferencedCode("JsonSerializerOptions-based JSON serialization uses reflection. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
     [RequiresDynamicCode("JsonSerializerOptions-based JSON serialization may require runtime code generation. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
+    [OverloadResolutionPriority(1)]
     public JsonSchemaRegistrySerializer(
         ISchemaRegistryClient schemaRegistry,
         string jsonSchema,
+        JsonSerializerOptions? jsonOptions,
         JsonSchemaSerializerConfig config,
-        JsonSerializerOptions? jsonOptions = null,
         bool ownsClient = false)
     {
         ArgumentNullException.ThrowIfNull(config);
@@ -129,14 +132,15 @@ public sealed class JsonSchemaRegistrySerializer<T> :
     /// <summary>Creates a JSON Schema Registry serializer with identity configuration and payload validation.</summary>
     [RequiresUnreferencedCode("JsonSerializerOptions-based JSON serialization uses reflection. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
     [RequiresDynamicCode("JsonSerializerOptions-based JSON serialization may require runtime code generation. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
+    [OverloadResolutionPriority(1)]
     public JsonSchemaRegistrySerializer(
         ISchemaRegistryClient schemaRegistry,
         string jsonSchema,
-        JsonSchemaSerializerConfig config,
+        JsonSerializerOptions? jsonOptions,
         JsonSchemaValidationOptions validationOptions,
-        JsonSerializerOptions? jsonOptions = null,
+        JsonSchemaSerializerConfig config,
         bool ownsClient = false)
-        : this(schemaRegistry, jsonSchema, config, jsonOptions, ownsClient)
+        : this(schemaRegistry, jsonSchema, jsonOptions, config, ownsClient)
     {
         ArgumentNullException.ThrowIfNull(validationOptions);
         _validatorFactory = validationOptions.GetSerializerFactory();
@@ -147,6 +151,7 @@ public sealed class JsonSchemaRegistrySerializer<T> :
     /// </summary>
     [RequiresUnreferencedCode("JsonSerializerOptions-based JSON serialization uses reflection. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
     [RequiresDynamicCode("JsonSerializerOptions-based JSON serialization may require runtime code generation. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
+    [OverloadResolutionPriority(1)]
     public JsonSchemaRegistrySerializer(
         ISchemaRegistryClient schemaRegistry,
         string jsonSchema,
@@ -935,6 +940,7 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
     /// <param name="ownsClient">Whether this deserializer owns the client and should dispose it.</param>
     [RequiresUnreferencedCode("JsonSerializerOptions-based JSON deserialization uses reflection. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
     [RequiresDynamicCode("JsonSerializerOptions-based JSON deserialization may require runtime code generation. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
+    [OverloadResolutionPriority(1)]
     public JsonSchemaRegistryDeserializer(
         ISchemaRegistryClient schemaRegistry,
         JsonSerializerOptions? jsonOptions = null,
@@ -953,6 +959,7 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
     /// </summary>
     [RequiresUnreferencedCode("JsonSerializerOptions-based JSON deserialization uses reflection. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
     [RequiresDynamicCode("JsonSerializerOptions-based JSON deserialization may require runtime code generation. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
+    [OverloadResolutionPriority(1)]
     public JsonSchemaRegistryDeserializer(
         ISchemaRegistryClient schemaRegistry,
         JsonSerializerOptions? jsonOptions,
@@ -979,6 +986,7 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
     /// </summary>
     [RequiresUnreferencedCode("JsonSerializerOptions-based JSON deserialization uses reflection. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
     [RequiresDynamicCode("JsonSerializerOptions-based JSON deserialization may require runtime code generation. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
+    [OverloadResolutionPriority(1)]
     public JsonSchemaRegistryDeserializer(
         ISchemaRegistryClient schemaRegistry,
         JsonSerializerOptions? jsonOptions,
@@ -996,6 +1004,7 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
     /// </summary>
     [RequiresUnreferencedCode("JsonSerializerOptions-based JSON deserialization uses reflection. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
     [RequiresDynamicCode("JsonSerializerOptions-based JSON deserialization may require runtime code generation. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
+    [OverloadResolutionPriority(1)]
     public JsonSchemaRegistryDeserializer(
         ISchemaRegistryClient schemaRegistry,
         JsonSerializerOptions? jsonOptions,
