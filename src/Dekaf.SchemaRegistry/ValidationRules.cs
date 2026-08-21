@@ -286,6 +286,17 @@ internal sealed class CompiledValidationRule
         return new ValidationCelSizeValues(sizes, generation);
     }
 
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static ValidationCelSizeValues GrowSizeValues(
+        ValidationCelSizeValues current,
+        int count)
+    {
+        var sizes = t_sizes!;
+        Array.Resize(ref sizes, Math.Max(count, sizes.Length * 2));
+        t_sizes = sizes;
+        return new ValidationCelSizeValues(sizes, current.Generation);
+    }
+
     internal static void BeginMemberResolution()
     {
         if (unchecked(++t_memberResolutionEpoch) == 0)
@@ -369,6 +380,9 @@ internal readonly struct ValidationCelSizeValues(
     ValidationCelSizeSlot[] values,
     uint generation)
 {
+    internal int Capacity => values.Length;
+    internal uint Generation => generation;
+
     internal bool TryGet(int index, out int value)
     {
         ref readonly var slot = ref values[index];
