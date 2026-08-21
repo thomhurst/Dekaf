@@ -48,8 +48,8 @@
     <PackageVersion Include="ModularPipelines.Git" Version="3.2.8" />
     <PackageVersion Include="ModularPipelines.GitHub" Version="3.2.8" />
     <PackageVersion Include="NSubstitute" Version="6.2.0" />
-    <PackageVersion Include="OpenTelemetry" Version="1.17.0" />
-    <PackageVersion Include="OpenTelemetry.Api" Version="1.17.0" />
+    <PackageVersion Include="OpenTelemetry" Version="1.18.0" />
+    <PackageVersion Include="OpenTelemetry.Api" Version="1.18.0" />
     <PackageVersion Include="Polyfill" Version="11.2.0" />
     <PackageVersion Include="protobuf-net.Reflection" Version="3.4.0" />
     <PackageVersion Include="Reservoir" Version="1.4.0" />
