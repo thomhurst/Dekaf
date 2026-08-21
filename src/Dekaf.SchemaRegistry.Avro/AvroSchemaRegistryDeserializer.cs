@@ -412,12 +412,15 @@ public sealed class AvroSchemaRegistryDeserializer<
                 $"Schema with GUID {key.SchemaGuid:D} is not an Avro schema. Type: {unscopedSchema.SchemaType}");
         }
 
-        var context = new SerializationContext
-        {
-            Topic = key.Topic,
-            Component = key.IsKey ? SerializationComponent.Key : SerializationComponent.Value
-        };
-        var subject = GetUncachedSubjectName(unscopedSchema, context);
+        var subject = _subjectNames is null
+            ? SubjectNameResolver.GetTopicSubjectName(key.Topic, key.IsKey)
+            : await _subjectNames.ResolveSubjectNameAsync(
+                    unscopedSchema,
+                    key.Topic,
+                    key.IsKey,
+                    FallbackRecordName,
+                    cancellationToken)
+                .ConfigureAwait(false);
         var registered = await _schemaRegistry.LookupSchemaAsync(
                 subject,
                 unscopedSchema,
@@ -478,13 +481,6 @@ public sealed class AvroSchemaRegistryDeserializer<
                 context.Topic,
                 isKey,
                 FallbackRecordName)
-            ?? SubjectNameResolver.GetTopicSubjectName(context.Topic, isKey);
-    }
-
-    private string GetUncachedSubjectName(Schema schema, SerializationContext context)
-    {
-        var isKey = context.Component == SerializationComponent.Key;
-        return _subjectNames?.ResolveSubjectName(schema, context.Topic, isKey, FallbackRecordName)
             ?? SubjectNameResolver.GetTopicSubjectName(context.Topic, isKey);
     }
 

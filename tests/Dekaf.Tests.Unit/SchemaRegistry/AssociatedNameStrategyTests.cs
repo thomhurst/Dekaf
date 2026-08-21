@@ -514,6 +514,78 @@ public sealed class AssociatedNameStrategyTests
     }
 
     [Test]
+    public async Task AvroDeserializer_GuidHeader_UsesConfiguredAsyncSubject()
+    {
+        const string subject = "configured-associated";
+        const string schemaString =
+            """{"type":"record","name":"Order","fields":[{"name":"id","type":"int"}]}""";
+        using var client = new MockSchemaRegistryClient();
+        var schemaId = await client.RegisterSchemaAsync(subject, new Schema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = schemaString
+        });
+        var strategy = new FixedAsyncSubjectNameStrategy(subject);
+        await using var deserializer = new AvroSchemaRegistryDeserializer<GenericRecord>(
+            client,
+            new AvroDeserializerConfig
+            {
+                SchemaIdStrategy = SchemaIdDeserializerStrategy.Header,
+                AsyncSubjectNameStrategy = strategy
+            });
+        var context = new SerializationContext
+        {
+            Topic = "orders",
+            Component = SerializationComponent.Value,
+            Headers = new Headers().Add(
+                SchemaIdentityHeaderNames.Value,
+                SchemaIdentityFraming.CreateSchemaGuidFrame(
+                    new Guid(schemaId, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)))
+        };
+
+        var value = deserializer.Deserialize(new byte[] { 84 }, context);
+
+        await Assert.That(value["id"]).IsEqualTo(42);
+        await Assert.That(strategy.CallCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task ProtobufDeserializer_GuidHeader_UsesConfiguredAsyncSubject()
+    {
+        const string subject = "configured-associated";
+        using var client = new MockSchemaRegistryClient();
+        var schemaId = await client.RegisterSchemaAsync(subject, new Schema
+        {
+            SchemaType = SchemaType.Protobuf,
+            SchemaString = TestMessage.Descriptor.File.SerializedData.ToBase64()
+        });
+        var strategy = new FixedAsyncSubjectNameStrategy(subject);
+        await using var deserializer = new ProtobufSchemaRegistryDeserializer<TestMessage>(
+            client,
+            new ProtobufDeserializerConfig
+            {
+                SchemaIdStrategy = SchemaIdDeserializerStrategy.Header,
+                AsyncSubjectNameStrategy = strategy,
+                RuleExecutor = new CapturingRuleExecutor()
+            });
+        var identityFrame = SchemaIdentityFraming.CreateSchemaGuidFrame(
+            new Guid(schemaId, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0));
+        var identityAndIndexes = new byte[identityFrame.Length + 1];
+        identityFrame.CopyTo(identityAndIndexes, 0);
+        var context = new SerializationContext
+        {
+            Topic = "orders",
+            Component = SerializationComponent.Value,
+            Headers = new Headers().Add(SchemaIdentityHeaderNames.Value, identityAndIndexes)
+        };
+
+        var value = deserializer.Deserialize(new byte[] { 8, 42 }, context);
+
+        await Assert.That(value.Id).IsEqualTo(42);
+        await Assert.That(strategy.CallCount).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task JsonDeserializer_AsyncSubject_TombstoneDoesNotRequireIdentity()
     {
         using var client = new MockSchemaRegistryClient();

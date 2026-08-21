@@ -362,12 +362,15 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
         if (_ruleExecutor is null && _migrationRunner is null)
             return new GuidResolvedSchema(-1, null, unscopedSchema);
 
-        var context = new SerializationContext
-        {
-            Topic = key.Topic,
-            Component = key.IsKey ? SerializationComponent.Key : SerializationComponent.Value
-        };
-        var subject = GetUncachedSubjectName(unscopedSchema, context);
+        var subject = _subjectNames is null
+            ? SubjectNameResolver.GetTopicSubjectName(key.Topic, key.IsKey)
+            : await _subjectNames.ResolveSubjectNameAsync(
+                    unscopedSchema,
+                    key.Topic,
+                    key.IsKey,
+                    RecordName,
+                    cancellationToken)
+                .ConfigureAwait(false);
         var registered = await _schemaRegistry.LookupSchemaAsync(
                 subject,
                 unscopedSchema,
@@ -428,13 +431,6 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
                 context.Topic,
                 isKey,
                 RecordName)
-            ?? SubjectNameResolver.GetTopicSubjectName(context.Topic, isKey);
-    }
-
-    private string GetUncachedSubjectName(Schema schema, SerializationContext context)
-    {
-        var isKey = context.Component == SerializationComponent.Key;
-        return _subjectNames?.ResolveSubjectName(schema, context.Topic, isKey, RecordName)
             ?? SubjectNameResolver.GetTopicSubjectName(context.Topic, isKey);
     }
 
