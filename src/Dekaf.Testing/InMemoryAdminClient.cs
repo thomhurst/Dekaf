@@ -83,6 +83,8 @@ public sealed class InMemoryAdminClient :
         for (var index = 0; index < topicList.Length; index++)
         {
             var topic = topicList[index];
+            ArgumentException.ThrowIfNullOrWhiteSpace(topic.Name);
+            ArgumentOutOfRangeException.ThrowIfLessThan(topic.NumPartitions, 1);
             await ApplyAdminFaultAsync(
                 cancellationToken,
                 topic: topic.Name).ConfigureAwait(false);
@@ -128,7 +130,9 @@ public sealed class InMemoryAdminClient :
 
         foreach (var topicId in ids)
         {
-            await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+            await ApplyAdminFaultAsync(
+                cancellationToken,
+                topic: _cluster.GetTopicName(topicId)).ConfigureAwait(false);
             if (!_cluster.DeleteTopic(topicId))
                 throw new KafkaException(ErrorCode.UnknownTopicId, $"Topic ID '{topicId}' does not exist.");
         }
@@ -164,9 +168,13 @@ public sealed class InMemoryAdminClient :
         ArgumentNullException.ThrowIfNull(topicIds);
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
-        var ids = topicIds.ToArray();
-        if (ids.Length != 0)
-            await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        var ids = topicIds.Distinct().ToArray();
+        for (var index = 0; index < ids.Length; index++)
+        {
+            await ApplyAdminFaultAsync(
+                cancellationToken,
+                topic: _cluster.GetTopicName(ids[index])).ConfigureAwait(false);
+        }
         return _cluster.DescribeTopics(ids);
     }
 
@@ -432,6 +440,8 @@ public sealed class InMemoryAdminClient :
         var partitionCounts = newPartitionCounts.ToArray();
         foreach (var (topicName, partitionCount) in partitionCounts)
         {
+            ArgumentException.ThrowIfNullOrWhiteSpace(topicName);
+            ArgumentOutOfRangeException.ThrowIfLessThan(partitionCount, 1);
             await ApplyAdminFaultAsync(cancellationToken, topic: topicName).ConfigureAwait(false);
             _cluster.CreatePartitions(topicName, partitionCount);
         }
@@ -1100,6 +1110,8 @@ public sealed class InMemoryAdminClient :
         var targetBrokerIds = brokerIds.Distinct().Order().ToArray();
         if (targetBrokerIds.Length == 0)
             return new Dictionary<int, IReadOnlyDictionary<string, LogDirDescription>>();
+        for (var index = 0; index < targetBrokerIds.Length; index++)
+            ArgumentOutOfRangeException.ThrowIfNegative(targetBrokerIds[index]);
 
         foreach (var partition in targetPartitions)
         {
@@ -1115,8 +1127,6 @@ public sealed class InMemoryAdminClient :
         var result = new Dictionary<int, IReadOnlyDictionary<string, LogDirDescription>>();
         foreach (var brokerId in targetBrokerIds)
         {
-            ArgumentOutOfRangeException.ThrowIfNegative(brokerId);
-
             if (brokerId != 0)
             {
                 result[brokerId] = new Dictionary<string, LogDirDescription>();

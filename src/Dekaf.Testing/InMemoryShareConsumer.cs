@@ -23,6 +23,11 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
     private readonly HashSet<string> _subscription = new(StringComparer.Ordinal);
     private readonly HashSet<TopicPartition> _assignment = [];
     private readonly Dictionary<ShareConsumeResult<TKey, TValue>, PendingShareRecord> _pending = [];
+    private readonly SemaphoreSlim _commitSemaphore = new(1, 1);
+    private KeyValuePair<ShareConsumeResult<TKey, TValue>, PendingShareRecord>[] _commitSnapshot = [];
+    private PendingShareRecord[] _commitRecords = [];
+    private TopicPartitionOffset[] _completedRecords = [];
+    private TopicPartitionOffset[] _commitOffsets = [];
     private readonly string _memberId;
     private ShareGroupMemberRegistration? _registration;
     private bool _disposed;
@@ -307,66 +312,162 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
     {
         cancellationToken.ThrowIfCancellationRequested();
 
+        if (_commitSemaphore.Wait(0, cancellationToken))
+            return CommitAfterWaitAsync(cancellationToken);
+
+        return AwaitCommitSemaphoreAsync(
+            _commitSemaphore.WaitAsync(cancellationToken),
+            cancellationToken);
+    }
+
+    private async ValueTask AwaitCommitSemaphoreAsync(Task wait, CancellationToken cancellationToken)
+    {
+        await wait.ConfigureAwait(false);
+        await CommitAfterWaitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private ValueTask CommitAfterWaitAsync(CancellationToken cancellationToken)
+    {
         if (HasPotentialFault(KafkaFaultOperation.ShareAcknowledge))
             return CommitWithFaultAsync(cancellationToken);
 
-        lock (_gate)
+        try
         {
-            ThrowIfDisposed();
-            CompletePendingUnderLock();
-        }
-
-        return ValueTask.CompletedTask;
-    }
-
-    private async ValueTask CommitWithFaultAsync(CancellationToken cancellationToken)
-    {
-        KeyValuePair<ShareConsumeResult<TKey, TValue>, PendingShareRecord>[] pending;
-        lock (_gate)
-        {
-            ThrowIfDisposed();
-            if (_pending.Count == 0)
-                return;
-
-            pending = _pending.ToArray();
-        }
-
-        for (var index = 0; index < pending.Length; index++)
-        {
-            var record = pending[index].Value;
-            await _cluster.FaultPlan.ApplyAsync(
-                new KafkaFaultScope(
-                    KafkaFaultOperation.ShareAcknowledge,
-                    record.TopicPartition.Topic,
-                    record.TopicPartition.Partition,
-                    _options.GroupId),
-                cancellationToken).ConfigureAwait(false);
-        }
-
-        lock (_gate)
-        {
-            var current = new List<PendingShareRecord>(pending.Length);
-            for (var index = 0; index < pending.Length; index++)
+            lock (_gate)
             {
-                var pair = pending[index];
-                if (_pending.TryGetValue(pair.Key, out var record) && ReferenceEquals(record, pair.Value))
-                    current.Add(record);
+                ThrowIfDisposed();
+                if (_pending.Count == 0)
+                    return ValueTask.CompletedTask;
+
+                EnsureCommitRecordCapacity(_pending.Count);
+                var recordCount = 0;
+                foreach (var record in _pending.Values)
+                    _commitRecords[recordCount++] = record;
+
+                try
+                {
+                    CompleteRecords(recordCount);
+                    _pending.Clear();
+                }
+                finally
+                {
+                    Array.Clear(_commitRecords, 0, recordCount);
+                }
             }
 
-            if (current.Count == 0)
+            return ValueTask.CompletedTask;
+        }
+        finally
+        {
+            _commitSemaphore.Release();
+        }
+    }
+
+    private ValueTask CommitWithFaultAsync(CancellationToken cancellationToken)
+    {
+        var snapshotCount = 0;
+        try
+        {
+            lock (_gate)
+            {
+                ThrowIfDisposed();
+                if (_pending.Count == 0)
+                {
+                    _commitSemaphore.Release();
+                    return ValueTask.CompletedTask;
+                }
+
+                EnsureSnapshotCapacity(_pending.Count);
+                foreach (var pair in _pending)
+                    _commitSnapshot[snapshotCount++] = pair;
+            }
+
+            for (var index = 0; index < snapshotCount; index++)
+            {
+                var record = _commitSnapshot[index].Value;
+                var apply = _cluster.FaultPlan.ApplyAsync(
+                    new KafkaFaultScope(
+                        KafkaFaultOperation.ShareAcknowledge,
+                        record.TopicPartition.Topic,
+                        record.TopicPartition.Partition,
+                        _options.GroupId),
+                    cancellationToken);
+                if (!apply.IsCompletedSuccessfully)
+                    return AwaitCommitFaultAsync(apply, index + 1, snapshotCount, cancellationToken);
+            }
+
+            CompleteFaultedRecords(snapshotCount);
+            Array.Clear(_commitSnapshot, 0, snapshotCount);
+            _commitSemaphore.Release();
+            return ValueTask.CompletedTask;
+        }
+        catch
+        {
+            Array.Clear(_commitSnapshot, 0, snapshotCount);
+            _commitSemaphore.Release();
+            throw;
+        }
+    }
+
+    private async ValueTask AwaitCommitFaultAsync(
+        ValueTask apply,
+        int nextIndex,
+        int snapshotCount,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await apply.ConfigureAwait(false);
+            for (var index = nextIndex; index < snapshotCount; index++)
+            {
+                var record = _commitSnapshot[index].Value;
+                await _cluster.FaultPlan.ApplyAsync(
+                    new KafkaFaultScope(
+                        KafkaFaultOperation.ShareAcknowledge,
+                        record.TopicPartition.Topic,
+                        record.TopicPartition.Partition,
+                        _options.GroupId),
+                    cancellationToken).ConfigureAwait(false);
+            }
+
+            CompleteFaultedRecords(snapshotCount);
+        }
+        finally
+        {
+            Array.Clear(_commitSnapshot, 0, snapshotCount);
+            _commitSemaphore.Release();
+        }
+    }
+
+    private void CompleteFaultedRecords(int snapshotCount)
+    {
+        lock (_gate)
+        {
+            EnsureCommitRecordCapacity(snapshotCount);
+            var recordCount = 0;
+            for (var index = 0; index < snapshotCount; index++)
+            {
+                var pair = _commitSnapshot[index];
+                if (_pending.TryGetValue(pair.Key, out var record) && ReferenceEquals(record, pair.Value))
+                    _commitRecords[recordCount++] = record;
+            }
+
+            if (recordCount == 0)
                 return;
 
-            _cluster.CompleteShareRecords(
-                _options.GroupId,
-                _memberId,
-                _registration!,
-                BuildCompletedRecords(current),
-                BuildCommitOffsets(current));
-            for (var index = 0; index < pending.Length; index++)
+            try
             {
-                var pair = pending[index];
-                if (_pending.TryGetValue(pair.Key, out var record) && ReferenceEquals(record, pair.Value))
-                    _pending.Remove(pair.Key);
+                CompleteRecords(recordCount);
+                for (var index = 0; index < snapshotCount; index++)
+                {
+                    var pair = _commitSnapshot[index];
+                    if (_pending.TryGetValue(pair.Key, out var record) && ReferenceEquals(record, pair.Value))
+                        _pending.Remove(pair.Key);
+                }
+            }
+            finally
+            {
+                Array.Clear(_commitRecords, 0, recordCount);
             }
         }
     }
@@ -455,7 +556,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
     {
         foreach (var partition in OrderedAssignment())
         {
-            if (!TryAcquireRecord(partition, out var record, out var deliveryCount))
+            if (!TryAcquireRecord(partition, out var record, out var deliveryCount, out var registration))
                 continue;
 
             try
@@ -487,11 +588,11 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             }
             catch
             {
-                ReleaseAcquiredRecord(partition, record);
+                ReleaseAcquiredRecord(partition, record, registration);
                 throw;
             }
 
-            return RegisterPending(partition, record, result);
+            return RegisterPending(partition, record, result, registration);
         }
 
         return null;
@@ -705,24 +806,6 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
         _pending.Clear();
     }
 
-    private void CompletePendingUnderLock()
-    {
-        if (_pending.Count == 0)
-            return;
-
-        var pending = _pending.Values.ToArray();
-        var offsets = BuildCommitOffsets(pending);
-        var completedRecords = BuildCompletedRecords(pending);
-
-        _cluster.CompleteShareRecords(
-            _options.GroupId,
-            _memberId,
-            _registration!,
-            completedRecords,
-            offsets);
-        _pending.Clear();
-    }
-
     private void UnregisterShareGroupMemberUnderLock()
     {
         if (_registration is not { } registration)
@@ -732,39 +815,83 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
         _registration = null;
     }
 
-    private static TopicPartitionOffset[] BuildCommitOffsets(IEnumerable<PendingShareRecord> records)
+    private void EnsureSnapshotCapacity(int count)
     {
-        var offsets = new List<TopicPartitionOffset>();
+        if (_commitSnapshot.Length < count)
+            Array.Resize(ref _commitSnapshot, count);
+    }
 
-        foreach (var group in records.GroupBy(record => record.TopicPartition))
+    private void EnsureCommitRecordCapacity(int count)
+    {
+        if (_commitRecords.Length < count)
+            Array.Resize(ref _commitRecords, count);
+        if (_completedRecords.Length < count)
+            Array.Resize(ref _completedRecords, count);
+        if (_commitOffsets.Length < count)
+            Array.Resize(ref _commitOffsets, count);
+    }
+
+    private void CompleteRecords(int recordCount)
+    {
+        for (var index = 0; index < recordCount; index++)
         {
-            var ordered = group.OrderBy(record => record.NextOffset).ToArray();
-            if (ordered.Length == 0)
-                continue;
+            var record = _commitRecords[index];
+            _completedRecords[index] = new TopicPartitionOffset(
+                record.TopicPartition.Topic,
+                record.TopicPartition.Partition,
+                record.Offset);
+        }
 
-            var commitOffset = ordered[0].NextOffset - 1;
-            foreach (var record in ordered)
+        if (recordCount > 1)
+            Array.Sort(_commitRecords, 0, recordCount, PendingShareRecordComparer.Instance);
+        var commitCount = BuildCommitOffsets(recordCount);
+        _cluster.CompleteShareRecords(
+            _options.GroupId,
+            _memberId,
+            _registration!,
+            _completedRecords,
+            recordCount,
+            _commitOffsets,
+            commitCount);
+    }
+
+    private int BuildCommitOffsets(int recordCount)
+    {
+        var commitCount = 0;
+        var groupStart = 0;
+        while (groupStart < recordCount)
+        {
+            var first = _commitRecords[groupStart];
+            var groupEnd = groupStart + 1;
+            while (groupEnd < recordCount &&
+                   _commitRecords[groupEnd].TopicPartition == first.TopicPartition)
             {
-                var recordOffset = record.NextOffset - 1;
-                if (recordOffset != commitOffset)
-                    break;
+                groupEnd++;
+            }
 
-                if (record.AcknowledgeType is not (AcknowledgeType.Accept or AcknowledgeType.Reject))
+            var commitOffset = first.NextOffset - 1;
+            for (var index = groupStart; index < groupEnd; index++)
+            {
+                var record = _commitRecords[index];
+                if (record.NextOffset - 1 != commitOffset ||
+                    record.AcknowledgeType is not (AcknowledgeType.Accept or AcknowledgeType.Reject))
+                {
                     break;
+                }
 
                 commitOffset = record.NextOffset;
             }
 
-            if (commitOffset > ordered[0].NextOffset - 1)
-            {
-                offsets.Add(new TopicPartitionOffset(
-                    group.Key.Topic,
-                    group.Key.Partition,
-                    commitOffset));
-            }
+            if (commitOffset > first.NextOffset - 1)
+                _commitOffsets[commitCount++] = new TopicPartitionOffset(
+                    first.TopicPartition.Topic,
+                    first.TopicPartition.Partition,
+                    commitOffset);
+
+            groupStart = groupEnd;
         }
 
-        return offsets.ToArray();
+        return commitCount;
     }
 
     private static TopicPartitionOffset[] BuildCompletedRecords(IEnumerable<PendingShareRecord> records)
@@ -811,5 +938,29 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
         public long Offset { get; }
         public long NextOffset { get; }
         public AcknowledgeType AcknowledgeType { get; set; } = AcknowledgeType.Accept;
+    }
+
+    private sealed class PendingShareRecordComparer : IComparer<PendingShareRecord>
+    {
+        public static PendingShareRecordComparer Instance { get; } = new();
+
+        public int Compare(PendingShareRecord? left, PendingShareRecord? right)
+        {
+            if (ReferenceEquals(left, right))
+                return 0;
+            if (left is null)
+                return -1;
+            if (right is null)
+                return 1;
+
+            var topic = StringComparer.Ordinal.Compare(
+                left.TopicPartition.Topic,
+                right.TopicPartition.Topic);
+            if (topic != 0)
+                return topic;
+
+            var partition = left.TopicPartition.Partition.CompareTo(right.TopicPartition.Partition);
+            return partition != 0 ? partition : left.NextOffset.CompareTo(right.NextOffset);
+        }
     }
 }
