@@ -70,11 +70,14 @@ public sealed class StreamingJsonSchemaValidatorFactory : IJsonSchemaValidatorFa
     private IJsonSchemaValidator CreateValidator(RegistrySchema schema)
     {
         using var compiler = new SchemaCompiler(_schemaRegistry, _options);
-        return new StreamingJsonSchemaValidator(compiler.Compile(schema, RootRetrievalUri));
+        var root = compiler.Compile(schema, RootRetrievalUri);
+        return new StreamingJsonSchemaValidator(root, compiler.ValidationRulesDeclarationError);
     }
 }
 
-internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJsonSchemaValidator
+internal sealed class StreamingJsonSchemaValidator(
+    CompiledSchemaNode root,
+    string? validationRulesDeclarationError) : IJsonSchemaValidator
 {
     private const int MaxReferenceDepth = 128;
     private const int InitialCompositionMatchCapacity = 32;
@@ -118,6 +121,9 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
 
     public void ValidateRules(ReadOnlyMemory<byte> payload, int schemaId, bool failFast)
     {
+        if (validationRulesDeclarationError is not null)
+            ThrowInvalidValidationRulesDeclaration(validationRulesDeclarationError);
+
         var reader = new Utf8JsonReader(payload.Span, new JsonReaderOptions
         {
             CommentHandling = JsonCommentHandling.Disallow,
@@ -153,6 +159,10 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         if (violations is not null)
             throw new ValidationRulesFailedException(violations);
     }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void ThrowInvalidValidationRulesDeclaration(string message) =>
+        throw new InvalidOperationException(message);
 
     private static bool WalkValidationRules(
         ref Utf8JsonReader reader,
@@ -1660,6 +1670,8 @@ internal sealed class SchemaCompiler : IDisposable
         _options = options;
     }
 
+    internal string? ValidationRulesDeclarationError { get; private set; }
+
     internal CompiledSchemaNode Compile(RegistrySchema schema, Uri retrievalUri)
     {
         var root = AddDocument(schema, retrievalUri);
@@ -2018,14 +2030,25 @@ internal sealed class SchemaCompiler : IDisposable
         if (!schema.TryGetProperty("confluent:rules", out var rules))
             return [];
         if (rules.ValueKind != JsonValueKind.Array)
-            throw new InvalidOperationException("JSON Schema 'confluent:rules' must be an array.");
+        {
+            ValidationRulesDeclarationError ??= "JSON Schema 'confluent:rules' must be an array.";
+            return [];
+        }
+
+        foreach (var element in rules.EnumerateArray())
+        {
+            if (element.ValueKind != JsonValueKind.Object)
+            {
+                ValidationRulesDeclarationError ??=
+                    "JSON Schema 'confluent:rules' entries must be objects.";
+                return [];
+            }
+        }
 
         var compiled = new List<CompiledValidationRule>();
         var usedMemberIndexes = new HashSet<int>();
         foreach (var element in rules.EnumerateArray())
         {
-            if (element.ValueKind != JsonValueKind.Object)
-                throw new InvalidOperationException("JSON Schema 'confluent:rules' entries must be objects.");
             var rule = new ValidationRule
             {
                 Name = GetOptionalString(element, "name"),

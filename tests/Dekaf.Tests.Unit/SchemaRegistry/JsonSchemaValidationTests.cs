@@ -1434,10 +1434,48 @@ public sealed class JsonSchemaValidationTests
     [Test]
     public void InlineRules_RejectMalformedDeclarations()
     {
-        Assert.Throws<InvalidOperationException>(() => CreateFactory().GetOrCreate(CreateSchema(
-            """{ "confluent:rules": {} }""")));
-        Assert.Throws<InvalidOperationException>(() => CreateFactory().GetOrCreate(CreateSchema(
-            """{ "confluent:rules": [true] }""")));
+        var invalidCollection = CreateFactory().GetOrCreate(CreateSchema(
+            """{ "confluent:rules": {} }"""));
+        var invalidEntry = CreateFactory().GetOrCreate(CreateSchema(
+            """{ "confluent:rules": [true] }"""));
+
+        invalidCollection.Validate("{}"u8, 25);
+        invalidEntry.Validate("{}"u8, 25);
+        Assert.Throws<InvalidOperationException>(() => invalidCollection.ValidateRules(
+            "{}"u8.ToArray(),
+            25,
+            failFast: false));
+        Assert.Throws<InvalidOperationException>(() => invalidEntry.ValidateRules(
+            "{}"u8.ToArray(),
+            25,
+            failFast: false));
+    }
+
+    [Test]
+    public async Task Serializer_DisabledInlineRulesIgnoreMalformedDeclarations()
+    {
+        const string schemaText = """
+            {
+              "type": "object",
+              "confluent:rules": {},
+              "properties": { "name": { "type": "string" } }
+            }
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        await using var serializer = new JsonSchemaRegistrySerializer<NamePayload>(
+            registry,
+            schemaText,
+            jsonOptions: null,
+            validationOptions: new JsonSchemaValidationOptions
+            {
+                ValidatorFactory = new StreamingJsonSchemaValidatorFactory(registry),
+                Mode = JsonSchemaValidationMode.Serialize
+            });
+        var buffer = new ArrayBufferWriter<byte>();
+
+        serializer.Serialize(new NamePayload("valid"), ref buffer, Context);
+
+        await Assert.That(buffer.WrittenCount).IsGreaterThan(5);
     }
 
     [Test]
