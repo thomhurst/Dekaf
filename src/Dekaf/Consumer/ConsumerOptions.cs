@@ -10,25 +10,6 @@ using Dekaf.Telemetry;
 namespace Dekaf.Consumer;
 
 /// <summary>
-/// Specifies how consumer offsets are committed.
-/// </summary>
-public enum OffsetCommitMode
-{
-    /// <summary>
-    /// Offsets are automatically committed periodically in the background.
-    /// This matches Kafka's enable.auto.commit=true behavior.
-    /// </summary>
-    Auto,
-
-    /// <summary>
-    /// You must call CommitAsync() explicitly to commit offsets.
-    /// This matches Kafka's enable.auto.commit=false behavior.
-    /// Use for at-least-once processing where you commit after processing.
-    /// </summary>
-    Manual
-}
-
-/// <summary>
 /// Controls when a consumed record's offset is staged (stored) for commit under
 /// automatic offset storage (<see cref="ConsumerOptions.EnableAutoOffsetStore"/>).
 /// </summary>
@@ -206,7 +187,9 @@ public sealed class ConsumerOptions
     public int HeartbeatIntervalMs { get; init; } = 3000;
 
     /// <summary>
-    /// Rebalance timeout in milliseconds.
+    /// Maximum time in milliseconds for the consumer to complete a group rebalance.
+    /// Sent to the broker on the initial KIP-848 heartbeat and used to bound the
+    /// automatic revoked-offset commit. Default is 60000.
     /// </summary>
     public int RebalanceTimeoutMs { get; init; } = 60000;
 
@@ -394,10 +377,19 @@ public sealed class ConsumerOptions
     public IRebalanceListener? RebalanceListener { get; init; }
 
     /// <summary>
+    /// Maximum time to await <see cref="IPartitionStopListener.OnPartitionsStoppedAsync"/>
+    /// during graceful shutdown. The callback token is cancelled when this timeout expires.
+    /// Default is 5 seconds.
+    /// </summary>
+    public TimeSpan PartitionStopTimeout { get; init; } = TimeSpan.FromSeconds(5);
+
+    /// <summary>
     /// Rebalance listener that receives a callback-scoped restricted consumer view.
     /// </summary>
     /// <remarks>Takes precedence over <see cref="RebalanceListener"/> when both are set.</remarks>
     public IConsumerAwareRebalanceListener? ConsumerAwareRebalanceListener { get; init; }
+
+    internal IRebalanceListener[]? AdditionalRebalanceListeners { get; init; }
 
     /// <summary>
     /// Socket send buffer size in bytes. Set to 0 to use system default.
@@ -466,6 +458,12 @@ public sealed class ConsumerOptions
     /// arrive and are consumed. Default is false.
     /// </summary>
     public bool EnablePartitionEof { get; init; }
+
+    /// <summary>
+    /// Optional predicate invoked after record parsing and before key/value deserialization.
+    /// Rejected records advance consumer position but are not delivered.
+    /// </summary>
+    public IConsumerRecordFilter? RecordFilter { get; init; }
 
     /// <summary>
     /// Strategy for recovering cluster metadata when all known brokers become unavailable.
@@ -652,7 +650,7 @@ internal interface IConsumerRebalanceEventSource
 
 /// <summary>
 /// Optional companion interface for observing graceful partition stop during
-/// <see cref="IKafkaConsumer{TKey,TValue}.CloseAsync"/> or
+/// <see cref="IKafkaConsumer{TKey,TValue}.CloseAsync(CancellationToken)"/> or
 /// <see cref="IAsyncDisposable.DisposeAsync"/>.
 /// </summary>
 /// <remarks>
@@ -665,11 +663,12 @@ internal interface IConsumerRebalanceEventSource
 /// and disposal. The callback receives the current assigned partitions.
 ///
 /// Non-cancellation exceptions follow the rebalance listener policy: they are caught
-/// and logged at <c>Error</c> level. <see cref="OperationCanceledException"/> follows
-/// the <see cref="IKafkaConsumer{TKey,TValue}.CloseAsync"/> token or internal
-/// disposal shutdown token, but close/disposal teardown still runs before
-/// <c>CloseAsync</c> rethrows the cancellation. The callback is bounded by a
-/// five-second timeout.
+/// and logged at <c>Error</c> level. Cancellation caused by
+/// <see cref="ConsumerOptions.PartitionStopTimeout"/> is logged and suppressed so shutdown can
+/// continue. Cancellation from the <see cref="IKafkaConsumer{TKey,TValue}.CloseAsync(CancellationToken)"/>
+/// token or internal disposal shutdown token is deferred until teardown completes, then rethrown
+/// by <c>CloseAsync</c>. The callback token is cancelled after the configured timeout, which
+/// defaults to five seconds.
 /// </remarks>
 public interface IPartitionStopListener
 {

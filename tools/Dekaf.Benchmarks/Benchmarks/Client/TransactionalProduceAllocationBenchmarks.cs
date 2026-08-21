@@ -1,3 +1,6 @@
+using System.Buffers;
+using System.Diagnostics;
+using System.Reflection;
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Configs;
 using BenchmarkDotNet.Engines;
@@ -6,7 +9,7 @@ using Dekaf.Metadata;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Producer;
-using System.Reflection;
+using Dekaf.Serialization;
 
 namespace Dekaf.Benchmarks.Benchmarks.Client;
 
@@ -14,7 +17,7 @@ namespace Dekaf.Benchmarks.Benchmarks.Client;
 [Config(typeof(AllocationJobConfig))]
 public class TransactionalProduceAllocationBenchmarks
 {
-    private const int MessagesPerIteration = 1_000;
+    private const int MessagesPerIteration = 50_000;
 
     private sealed class AllocationJobConfig : ManualConfig
     {
@@ -24,7 +27,7 @@ public class TransactionalProduceAllocationBenchmarks
                 .WithStrategy(RunStrategy.Throughput)
                 .WithLaunchCount(1)
                 .WithWarmupCount(3)
-                .WithIterationCount(3)
+                .WithIterationCount(10)
                 .WithInvocationCount(MessagesPerIteration)
                 .WithUnrollFactor(1));
         }
@@ -37,6 +40,13 @@ public class TransactionalProduceAllocationBenchmarks
     private TopicPartition _topicPartition;
     private long _offset;
     private CancellationTokenSource _cancellation = null!;
+    private ActivityListener? _activityListener;
+
+    [Params(false, true)]
+    public bool UsePreparedSerializer { get; set; }
+
+    [Params(false, true)]
+    public bool TracingEnabled { get; set; }
 
     [GlobalSetup]
     public async Task Setup()
@@ -46,7 +56,17 @@ public class TransactionalProduceAllocationBenchmarks
             .WithTransactionalId("benchmark-transaction-allocation")
             .WithBufferMemory(ulong.MaxValue)
             .WithLinger(TimeSpan.Zero)
+            .WithValueSerializer(UsePreparedSerializer ? PreparedStringSerializer.Instance : Serializers.String)
             .Build();
+        if (TracingEnabled)
+        {
+            _activityListener = new ActivityListener
+            {
+                ShouldListenTo = static source => source.Name == Diagnostics.DekafDiagnostics.ActivitySourceName,
+                Sample = static (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData
+            };
+            ActivitySource.AddActivityListener(_activityListener);
+        }
         var producer = (KafkaProducer<string, string>)_producer;
         await producer.StopSenderLoopsForTestingAsync();
 
@@ -66,6 +86,13 @@ public class TransactionalProduceAllocationBenchmarks
             Value = "value"
         };
         _cancellation = new CancellationTokenSource();
+    }
+
+    [GlobalCleanup]
+    public void Cleanup()
+    {
+        _activityListener?.Dispose();
+        _cancellation.Dispose();
     }
 
     [Benchmark(Baseline = true)]
@@ -113,6 +140,9 @@ public class TransactionalProduceAllocationBenchmarks
         }
 
         _ = produce.GetAwaiter().GetResult();
+        // AwaitWithActivity completes on a worker in this synchronous harness. Reset the
+        // benchmark thread's ambient span so later invocations do not become nested children.
+        Activity.Current = null;
     }
 
     private static void SeedMetadata(MetadataManager metadataManager) =>
@@ -152,4 +182,41 @@ public class TransactionalProduceAllocationBenchmarks
     private static void SetField<T>(object target, string name, T value) =>
         target.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!
             .SetValue(target, value);
+
+    private sealed class PreparedStringSerializer :
+        ISerializer<string>,
+        IAsyncSerializerPreparationAdmission<string>
+    {
+        internal static readonly PreparedStringSerializer Instance = new();
+        private static readonly object PreparedSchema = new();
+
+        public ValueTask PrepareAsync(
+            string value,
+            SerializationContext context,
+            CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
+
+        public ValueTask<SerializerPreparationAdmission> PrepareForSerializationAsync(
+            string value,
+            SerializationContext context,
+            CancellationToken cancellationToken = default) =>
+            new(new SerializerPreparationAdmission("benchmark", 1, PreparedSchema));
+
+        public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
+            where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
+            => Serializers.String.Serialize(value, ref destination, context);
+
+        public void SerializePrepared<TWriter>(
+            string value,
+            ref TWriter destination,
+            SerializationContext context,
+            in SerializerPreparationAdmission admission)
+            where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
+            => Serializers.String.Serialize(value, ref destination, context);
+    }
 }

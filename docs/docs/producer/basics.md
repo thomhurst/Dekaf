@@ -1,5 +1,6 @@
 ---
 sidebar_position: 1
+description: "Create a producer and send messages, covering acks and delivery guarantees, batching, compression, the idempotent producer, and ordering."
 ---
 
 # Producer Basics

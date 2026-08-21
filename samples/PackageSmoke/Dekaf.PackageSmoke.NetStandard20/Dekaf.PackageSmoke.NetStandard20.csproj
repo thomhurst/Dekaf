@@ -7,7 +7,9 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Dekaf" />
+    <ProjectReference Include="..\..\..\src\Dekaf\Dekaf.csproj"
+                      Condition="'$(UseDekafPackages)' != 'true'" />
+    <PackageReference Include="Dekaf" Condition="'$(UseDekafPackages)' == 'true'" />
   </ItemGroup>
 
 </Project>

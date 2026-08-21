@@ -28,6 +28,14 @@ internal static class DeterministicResponseFixtureFactory
             ["DescribeGroupsResponse.v5"] = Encode(WriteDescribeGroupsResponse),
             ["DescribeGroupsResponse.v6"] = Encode(WriteDescribeGroupsResponseV6),
             ["DescribeTransactionsResponse.v1"] = Encode(WriteDescribeTransactionsResponseV1),
+            ["FetchResponse.v4"] = EncodeLegacyFetchResponse(version: 4),
+            ["FetchResponse.v5"] = EncodeLegacyFetchResponse(version: 5),
+            ["FetchResponse.v6"] = EncodeLegacyFetchResponse(version: 6),
+            ["FetchResponse.v7"] = EncodeLegacyFetchResponse(version: 7),
+            ["FetchResponse.v8"] = EncodeLegacyFetchResponse(version: 8),
+            ["FetchResponse.v9"] = EncodeLegacyFetchResponse(version: 9),
+            ["FetchResponse.v10"] = EncodeLegacyFetchResponse(version: 10),
+            ["FetchResponse.v11"] = EncodeLegacyFetchResponse(version: 11),
             ["FetchResponse.v16"] = Encode(WriteFetchResponse),
             ["FetchResponse.v17"] = Encode(WriteFetchResponse),
             ["FetchResponse.v18"] = Encode(WriteFetchResponse),
@@ -37,16 +45,79 @@ internal static class DeterministicResponseFixtureFactory
             ["ListOffsetsResponse.v9"] = Encode(WriteListOffsetsResponse),
             ["ListOffsetsResponse.v10"] = Encode(WriteListOffsetsResponse),
             ["ListOffsetsResponse.v11"] = Encode(WriteListOffsetsResponse),
+            ["MetadataResponse.v5"] = EncodeLegacyMetadataResponse(version: 5),
+            ["MetadataResponse.v6"] = EncodeLegacyMetadataResponse(version: 6),
+            ["MetadataResponse.v7"] = EncodeLegacyMetadataResponse(version: 7),
+            ["MetadataResponse.v8"] = EncodeLegacyMetadataResponse(version: 8),
             ["MetadataResponse.v13"] = Encode(WriteMetadataResponse),
             ["OffsetCommitResponse.v10"] = Encode(WriteOffsetCommitResponseV10),
             ["OffsetFetchResponse.v9"] = Encode(WriteOffsetFetchResponse),
             ["OffsetFetchResponse.v10"] = Encode(WriteOffsetFetchResponseV10),
+            ["ProduceResponse.v3"] = EncodeLegacyProduceResponse(version: 3),
+            ["ProduceResponse.v4"] = EncodeLegacyProduceResponse(version: 4),
+            ["ProduceResponse.v5"] = EncodeLegacyProduceResponse(version: 5),
+            ["ProduceResponse.v6"] = EncodeLegacyProduceResponse(version: 6),
+            ["ProduceResponse.v7"] = EncodeLegacyProduceResponse(version: 7),
+            ["ProduceResponse.v8"] = EncodeLegacyProduceResponse(version: 8),
             ["ProduceResponse.v12"] = Encode(WriteProduceResponseV12),
             ["ProduceResponse.v13"] = Encode(WriteProduceResponseV13),
+            ["StreamsGroupHeartbeatResponse.v0"] = Encode(WriteStreamsGroupHeartbeatResponse),
             ["UpdateFeaturesResponse.v0"] = EncodeUpdateFeaturesResponse(version: 0),
             ["UpdateFeaturesResponse.v1"] = EncodeUpdateFeaturesResponse(version: 1),
             ["UpdateFeaturesResponse.v2"] = EncodeUpdateFeaturesResponse(version: 2)
         };
+
+    private static void WriteStreamsGroupHeartbeatResponse(ref KafkaProtocolWriter writer)
+    {
+        writer.WriteInt32(17);
+        writer.WriteInt16((short)ErrorCode.None);
+        writer.WriteCompactNullableString(null);
+        writer.WriteCompactString("wire-member");
+        writer.WriteInt32(3);
+        writer.WriteInt32(5_000);
+        writer.WriteInt32(42);
+        writer.WriteInt32(10_000);
+
+        WriteCompactArrayLength(ref writer, 1);
+        writer.WriteInt8(1);
+        writer.WriteCompactString("missing source");
+        WriteEmptyTaggedFields(ref writer);
+
+        WriteCompactArrayLength(ref writer, 1);
+        WriteStreamsTaskIds(ref writer, "wire-subtopology", [0, 2]);
+        WriteCompactArrayLength(ref writer, 0);
+        writer.WriteUnsignedVarInt(0);
+
+        writer.WriteInt32(7);
+        WriteCompactArrayLength(ref writer, 1);
+        writer.WriteCompactString("broker.example");
+        writer.WriteUInt16(7070);
+        WriteEmptyTaggedFields(ref writer);
+        WriteCompactArrayLength(ref writer, 1);
+        writer.WriteCompactString("wire-topic");
+        WriteCompactArrayLength(ref writer, 2);
+        writer.WriteInt32(0);
+        writer.WriteInt32(2);
+        WriteEmptyTaggedFields(ref writer);
+        WriteCompactArrayLength(ref writer, 0);
+        WriteEmptyTaggedFields(ref writer);
+        WriteEmptyTaggedFields(ref writer);
+    }
+
+    private static void WriteStreamsTaskIds(
+        ref KafkaProtocolWriter writer,
+        string subtopologyId,
+        IReadOnlyList<int> partitions)
+    {
+        writer.WriteCompactString(subtopologyId);
+        WriteCompactArrayLength(ref writer, partitions.Count);
+        for (var i = 0; i < partitions.Count; i++)
+        {
+            writer.WriteInt32(partitions[i]);
+        }
+
+        WriteEmptyTaggedFields(ref writer);
+    }
 
     private static byte[] EncodeDescribeClusterResponse(short version)
     {
@@ -182,6 +253,81 @@ internal static class DeterministicResponseFixtureFactory
         WriteEmptyTaggedFields(ref writer);
     }
 
+    private static byte[] EncodeLegacyMetadataResponse(short version)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteInt32(17);
+        writer.WriteInt32(2);
+        WriteLegacyBroker(ref writer, 1, "broker-a.example", 9092, "rack-a");
+        WriteLegacyBroker(ref writer, 2, "broker-b.example", 9093, rack: null);
+        writer.WriteString("wire-cluster");
+        writer.WriteInt32(1);
+        writer.WriteInt32(2);
+        WriteLegacyMetadataTopic(ref writer, version, "wire-topic", ErrorCode.None, firstPartition: 0);
+        WriteLegacyMetadataTopic(
+            ref writer,
+            version,
+            "wire-topic-b",
+            ErrorCode.UnknownTopicOrPartition,
+            firstPartition: 2);
+        if (version >= 8)
+            writer.WriteInt32(0x3FFF);
+        return buffer.WrittenSpan.ToArray();
+    }
+
+    private static void WriteLegacyBroker(
+        ref KafkaProtocolWriter writer,
+        int nodeId,
+        string host,
+        int port,
+        string? rack)
+    {
+        writer.WriteInt32(nodeId);
+        writer.WriteString(host);
+        writer.WriteInt32(port);
+        writer.WriteString(rack);
+    }
+
+    private static void WriteLegacyMetadataTopic(
+        ref KafkaProtocolWriter writer,
+        short version,
+        string name,
+        ErrorCode errorCode,
+        int firstPartition)
+    {
+        writer.WriteInt16((short)errorCode);
+        writer.WriteString(name);
+        writer.WriteBoolean(false);
+        writer.WriteInt32(2);
+        WriteLegacyMetadataPartition(ref writer, version, firstPartition, ErrorCode.None, leaderId: 1);
+        WriteLegacyMetadataPartition(
+            ref writer,
+            version,
+            firstPartition + 1,
+            ErrorCode.NotLeaderOrFollower,
+            leaderId: 2);
+        if (version >= 8)
+            writer.WriteInt32(0x1FFF);
+    }
+
+    private static void WriteLegacyMetadataPartition(
+        ref KafkaProtocolWriter writer,
+        short version,
+        int partition,
+        ErrorCode errorCode,
+        int leaderId)
+    {
+        writer.WriteInt16((short)errorCode);
+        writer.WriteInt32(partition);
+        writer.WriteInt32(leaderId);
+        if (version >= 7)
+            writer.WriteInt32(7);
+        WriteLegacyInt32Array(ref writer, [1, 2, 3]);
+        WriteLegacyInt32Array(ref writer, [1, 2]);
+        WriteLegacyInt32Array(ref writer, [3]);
+    }
+
     private static void WriteBroker(
         ref KafkaProtocolWriter writer,
         int nodeId,
@@ -253,6 +399,59 @@ internal static class DeterministicResponseFixtureFactory
         writer.WriteUnsignedVarInt(2);
         WriteTaggedField(ref writer, tag: 0, WriteNodeEndpoints);
         WriteTaggedBytes(ref writer, tag: 9, [0xAA, 0xBB, 0xCC]);
+    }
+
+    private static byte[] EncodeLegacyProduceResponse(short version)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteInt32(2);
+        WriteLegacyProduceTopic(ref writer, version, "wire-topic", firstPartition: 0);
+        WriteLegacyProduceTopic(ref writer, version, "wire-topic-b", firstPartition: 2);
+        writer.WriteInt32(29);
+        return buffer.WrittenSpan.ToArray();
+    }
+
+    private static void WriteLegacyProduceTopic(
+        ref KafkaProtocolWriter writer,
+        short version,
+        string topic,
+        int firstPartition)
+    {
+        writer.WriteString(topic);
+        writer.WriteInt32(2);
+        WriteLegacyProducePartition(ref writer, version, firstPartition, ErrorCode.None, includeRecordError: false);
+        WriteLegacyProducePartition(
+            ref writer,
+            version,
+            firstPartition + 1,
+            ErrorCode.NotLeaderOrFollower,
+            includeRecordError: true);
+    }
+
+    private static void WriteLegacyProducePartition(
+        ref KafkaProtocolWriter writer,
+        short version,
+        int partition,
+        ErrorCode errorCode,
+        bool includeRecordError)
+    {
+        writer.WriteInt32(partition);
+        writer.WriteInt16((short)errorCode);
+        writer.WriteInt64(42 + partition);
+        writer.WriteInt64(1_700_000_000_000L + partition);
+        if (version >= 5)
+            writer.WriteInt64(5);
+        if (version < 8)
+            return;
+
+        writer.WriteInt32(includeRecordError ? 1 : 0);
+        if (includeRecordError)
+        {
+            writer.WriteInt32(3);
+            writer.WriteString("record rejected");
+        }
+        writer.WriteString(includeRecordError ? "leader moved" : null);
     }
 
     private static void WriteProduceTopic(
@@ -421,6 +620,55 @@ internal static class DeterministicResponseFixtureFactory
         WriteEmptyTaggedFields(ref writer);
 
         WriteEmptyTaggedFields(ref writer);
+    }
+
+    private static byte[] EncodeLegacyFetchResponse(short version)
+    {
+        var recordBatch = CreateRecordBatchBytes();
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteInt32(31);
+        if (version >= 7)
+        {
+            writer.WriteInt16((short)ErrorCode.None);
+            writer.WriteInt32(0x10203040);
+        }
+
+        writer.WriteInt32(1);
+        writer.WriteString("wire-topic");
+        writer.WriteInt32(2);
+        WriteLegacyFetchPartition(ref writer, version, 0, ErrorCode.None, recordBatch);
+        WriteLegacyFetchPartition(ref writer, version, 1, ErrorCode.OffsetOutOfRange, recordBatch: null);
+        return buffer.WrittenSpan.ToArray();
+    }
+
+    private static void WriteLegacyFetchPartition(
+        ref KafkaProtocolWriter writer,
+        short version,
+        int partition,
+        ErrorCode errorCode,
+        byte[]? recordBatch)
+    {
+        writer.WriteInt32(partition);
+        writer.WriteInt16((short)errorCode);
+        writer.WriteInt64(100 + partition);
+        writer.WriteInt64(90 + partition);
+        if (version >= 5)
+            writer.WriteInt64(5);
+
+        writer.WriteInt32(partition == 0 ? 1 : 0);
+        if (partition == 0)
+        {
+            writer.WriteInt64(7);
+            writer.WriteInt64(11);
+        }
+
+        if (version >= 11)
+            writer.WriteInt32(partition == 0 ? 2 : -1);
+
+        writer.WriteInt32(recordBatch?.Length ?? -1);
+        if (recordBatch is not null)
+            writer.WriteRawBytes(recordBatch);
     }
 
     private static void WriteConfig(
@@ -776,6 +1024,15 @@ internal static class DeterministicResponseFixtureFactory
         {
             writer.WriteInt32(values[index]);
         }
+    }
+
+    private static void WriteLegacyInt32Array(
+        ref KafkaProtocolWriter writer,
+        IReadOnlyList<int> values)
+    {
+        writer.WriteInt32(values.Count);
+        for (var index = 0; index < values.Count; index++)
+            writer.WriteInt32(values[index]);
     }
 
     private static void WriteCompactArrayLength(ref KafkaProtocolWriter writer, int count) =>

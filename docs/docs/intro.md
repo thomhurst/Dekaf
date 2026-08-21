@@ -1,6 +1,7 @@
 ---
 sidebar_position: 1
 slug: /
+description: "Dekaf is a high-performance, pure C# Apache Kafka client for .NET, implemented from the wire protocol up with no librdkafka or JVM dependency."
 ---
 
 # Introduction
@@ -43,6 +44,7 @@ Everything you'd expect from a production Kafka client:
 
 - Producer with acks, batching, and compression
 - Consumer groups with automatic rebalancing
+- [Share groups (KIP-932)](./consumer/share-consumers) for queue-style consumption with per-record acknowledgement
 - Manual partition assignment when you need control
 - Transactions and exactly-once semantics
 - Idempotent producers

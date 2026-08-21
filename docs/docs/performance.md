@@ -1,10 +1,36 @@
 ---
 sidebar_position: 12
+description: "What makes Dekaf fast, how to tune batching and compression for your workload, what throughput to expect, and the common mistakes that cost you."
 ---
+
+import ComparisonChart, {ComparisonChartGrid} from '@site/src/components/ComparisonChart';
 
 # Performance
 
 Performance isn't an afterthought in Dekaf—it's the reason the library exists. We wrote a pure C# Kafka client specifically to get zero allocations in hot paths and avoid the overhead of crossing into native code.
+
+## Measured against Confluent.Kafka
+
+The published 2026-08-16 paired stress run shows the practical effect across common workloads. Bars show the measured values, with the relative comparison in brackets; see the [benchmark results](./benchmarks.md) and [stress test results](./stress-tests.md) for confidence and methodology.
+
+<ComparisonChartGrid>
+
+<ComparisonChart
+  title="Sustained throughput"
+  metric="Broker-confirmed messages per second"
+  description="Higher means more broker-confirmed work completed in the same time."
+  items={[{"label":"Fire-and-forget produce","dekaf":1451115,"confluent":1174152,"dekafDisplay":"1.45M msg/s (1.24×)","confluentDisplay":"1.17M msg/s"},{"label":"Acks=all produce","dekaf":1552262,"confluent":1373448,"dekafDisplay":"1.55M msg/s (1.13×)","confluentDisplay":"1.37M msg/s"},{"label":"Produce + consume round-trip","dekaf":2254179,"confluent":1211189,"dekafDisplay":"2.25M msg/s (1.86×)","confluentDisplay":"1.21M msg/s"},{"label":"Transactional produce","dekaf":1259,"confluent":172,"dekafDisplay":"1.26K msg/s (7.32×)","confluentDisplay":"172 msg/s"},{"label":"Consume messages","dekaf":1643250,"confluent":1088637,"dekafDisplay":"1.64M msg/s (1.51×)","confluentDisplay":"1.09M msg/s"}]}
+/>
+
+<ComparisonChart
+  title="CPU cost per message"
+  metric="Median client CPU time"
+  description="CPU time needed to deliver one message; shorter bars are better."
+  better="lower"
+  items={[{"label":"Fire-and-forget produce","dekaf":0.75,"confluent":1.49,"dekafDisplay":"0.75 μs/msg (1.99× less)","confluentDisplay":"1.49 μs/msg"},{"label":"Acks=all produce","dekaf":0.71,"confluent":1.31,"dekafDisplay":"0.71 μs/msg (1.85× less)","confluentDisplay":"1.31 μs/msg"},{"label":"Produce + consume round-trip","dekaf":0.91,"confluent":2.34,"dekafDisplay":"0.91 μs/msg (2.57× less)","confluentDisplay":"2.34 μs/msg"},{"label":"Transactional produce","dekaf":225.52,"confluent":292.34,"dekafDisplay":"225.52 μs/msg (1.30× less)","confluentDisplay":"292.34 μs/msg"},{"label":"Consume messages","dekaf":0.8,"confluent":1.13,"dekafDisplay":"0.80 μs/msg (1.41× less)","confluentDisplay":"1.13 μs/msg"}]}
+/>
+
+</ComparisonChartGrid>
 
 ## How Dekaf Stays Fast
 

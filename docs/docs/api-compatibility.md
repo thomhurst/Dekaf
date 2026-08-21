@@ -1,5 +1,6 @@
 ---
 sidebar_position: 5
+description: "How Dekaf locks its public API surface with analyzer baselines, how to validate a change locally, and how to update a baseline."
 ---
 
 # Public API Compatibility

@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
 using Dekaf.Admin;
+using Dekaf.Errors;
 using Dekaf.Networking;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
@@ -47,9 +48,9 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
 
         await _network.CreateAsync().ConfigureAwait(false);
 
-        _brokers[0] = CreateBroker(nodeId: 1, rack: "rack-b", externalPort: _hostPorts[0]);
-        _brokers[1] = CreateBroker(nodeId: 2, rack: "rack-a", externalPort: _hostPorts[1]);
-        _brokers[2] = CreateBroker(nodeId: 3, rack: "rack-a", externalPort: _hostPorts[2]);
+        _brokers[0] = CreateBroker(nodeId: 1, rack: GetRack(1), externalPort: _hostPorts[0]);
+        _brokers[1] = CreateBroker(nodeId: 2, rack: GetRack(2), externalPort: _hostPorts[1]);
+        _brokers[2] = CreateBroker(nodeId: 3, rack: GetRack(3), externalPort: _hostPorts[2]);
 
         var initiallyStartedBrokerIds = InitiallyStartedBrokerIds;
         await Task.WhenAll(initiallyStartedBrokerIds.Select(nodeId => GetBroker(nodeId).StartAsync()))
@@ -107,12 +108,26 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
             .Build();
     }
 
+    private static async Task CreateUniqueTopicAsync(IAdminClient admin, NewTopic topic)
+    {
+        try
+        {
+            await admin.CreateTopicsAsync([topic]).ConfigureAwait(false);
+        }
+        catch (KafkaException exception) when (exception.ErrorCode == ErrorCode.TopicAlreadyExists)
+        {
+            // Every helper topic has a fresh GUID. TopicAlreadyExists therefore means an
+            // ambiguous create was applied before the first observable response.
+        }
+    }
+
     public async Task<string> CreateTopicWithRemoteLeaderAndLocalFollowerAsync()
     {
         var topic = $"rack-aware-{Guid.NewGuid():N}";
         await using var admin = CreateAdminClient();
 
-        await admin.CreateTopicsAsync([
+        await CreateUniqueTopicAsync(
+            admin,
             new NewTopic
             {
                 Name = topic,
@@ -126,8 +141,7 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
                 {
                     ["min.insync.replicas"] = "1"
                 }
-            }
-        ]).ConfigureAwait(false);
+            }).ConfigureAwait(false);
 
         await WaitForTopicAssignmentAsync(admin, topic).ConfigureAwait(false);
         return topic;
@@ -138,7 +152,8 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
         var topic = $"replicated-{Guid.NewGuid():N}";
         await using var admin = CreateAdminClient();
 
-        await admin.CreateTopicsAsync([
+        await CreateUniqueTopicAsync(
+            admin,
             new NewTopic
             {
                 Name = topic,
@@ -152,8 +167,7 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
                 {
                     ["min.insync.replicas"] = minInSyncReplicas.ToString()
                 }
-            }
-        ]).ConfigureAwait(false);
+            }).ConfigureAwait(false);
 
         await WaitForTopicAssignmentAsync(admin, topic, [1, 2, 3]).ConfigureAwait(false);
         return topic;
@@ -182,7 +196,8 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
                 });
         await using var admin = CreateAdminClient();
 
-        await admin.CreateTopicsAsync([
+        await CreateUniqueTopicAsync(
+            admin,
             new NewTopic
             {
                 Name = topic,
@@ -193,8 +208,7 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
                 {
                     ["min.insync.replicas"] = minInSyncReplicas.ToString()
                 }
-            }
-        ]).ConfigureAwait(false);
+            }).ConfigureAwait(false);
 
         await WaitForTopicAssignmentAsync(admin, topic, assignments).ConfigureAwait(false);
         return topic;
@@ -285,7 +299,8 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
         var topic = $"unclean-election-{Guid.NewGuid():N}";
         await using var admin = CreateAdminClient();
 
-        await admin.CreateTopicsAsync([
+        await CreateUniqueTopicAsync(
+            admin,
             new NewTopic
             {
                 Name = topic,
@@ -300,8 +315,7 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
                     ["min.insync.replicas"] = "1",
                     ["unclean.leader.election.enable"] = "true"
                 }
-            }
-        ]).ConfigureAwait(false);
+            }).ConfigureAwait(false);
 
         await WaitForTopicAssignmentAsync(admin, topic).ConfigureAwait(false);
         return topic;
@@ -331,8 +345,13 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
         CancellationToken cancellationToken = default)
     {
         var broker = GetBroker(nodeId);
-        if (broker.State != TestcontainersStates.Running)
-            await broker.StartAsync(cancellationToken).ConfigureAwait(false);
+        if (broker.State == TestcontainersStates.Running)
+            return;
+
+        await ContainerStartupRetry.RunAsync(
+            () => GetBroker(nodeId).StartAsync(cancellationToken),
+            () => RecreateBrokerAsync(nodeId),
+            ContainerStartupRetry.IsKnownTransient).ConfigureAwait(false);
     }
 
     public async Task StartBrokersAsync(
@@ -390,6 +409,22 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
             .WithEnvironment(CreateBrokerEnvironment(nodeId, rack, externalPort))
             .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(ExternalBrokerPort))
             .Build();
+    }
+
+    private async ValueTask RecreateBrokerAsync(int nodeId)
+    {
+        var brokerIndex = nodeId - 1;
+        var broker = GetBroker(nodeId);
+        try
+        {
+            await broker.DisposeAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            var externalPort = GetFreeTcpPorts(1)[0];
+            _hostPorts[brokerIndex] = externalPort;
+            _brokers[brokerIndex] = CreateBroker(nodeId, GetRack(nodeId), externalPort);
+        }
     }
 
     private static IReadOnlyDictionary<string, string> CreateBrokerEnvironment(int nodeId, string rack, int externalPort)
@@ -560,4 +595,6 @@ public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
     }
 
     private static string BrokerAlias(int nodeId) => $"broker-{nodeId}";
+
+    private static string GetRack(int nodeId) => nodeId == 1 ? "rack-b" : "rack-a";
 }

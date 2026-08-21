@@ -30,7 +30,9 @@ public sealed class SchemaRegistryCacheTests
     {
         private readonly ConcurrentDictionary<string, int> _callCounts = new();
         private readonly ConcurrentDictionary<string, int> _idsBySubject = new();
+        private readonly ConcurrentDictionary<int, Schema> _schemasById = new();
         private int _nextId;
+        private int _subjectGetSchemaCallCount;
 
         /// <summary>
         /// Returns the number of times GetOrRegisterSchemaAsync was called for a given subject.
@@ -43,6 +45,8 @@ public sealed class SchemaRegistryCacheTests
         /// </summary>
         public int TotalCallCount => _callCounts.Values.Sum();
 
+        public int SubjectGetSchemaCallCount => _subjectGetSchemaCallCount;
+
         public int GetSchemaId(string subject) =>
             _idsBySubject[subject];
 
@@ -50,14 +54,31 @@ public sealed class SchemaRegistryCacheTests
         {
             _callCounts.AddOrUpdate(subject, 1, static (_, count) => count + 1);
             var id = _idsBySubject.GetOrAdd(subject, static (_, state) => Interlocked.Increment(ref state._nextId), this);
+            _schemasById[id] = schema;
             return Task.FromResult(id);
         }
 
         public Task<int> RegisterSchemaAsync(string subject, Schema schema, CancellationToken cancellationToken = default)
-            => Task.FromResult(Interlocked.Increment(ref _nextId));
+        {
+            var id = Interlocked.Increment(ref _nextId);
+            _schemasById[id] = schema;
+            return Task.FromResult(id);
+        }
 
         public Task<Schema> GetSchemaAsync(int id, CancellationToken cancellationToken = default)
-            => throw new NotImplementedException();
+            => Task.FromResult(_schemasById[id]);
+
+        public Task<Schema> GetSchemaAsync(
+            int id,
+            string subject,
+            CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref _subjectGetSchemaCallCount);
+            if (_idsBySubject.TryGetValue(subject, out var subjectId) && subjectId == id)
+                return Task.FromResult(_schemasById[id]);
+
+            throw new SchemaRegistryException(40403, $"Schema {id} not found under subject '{subject}'");
+        }
 
         public Task<RegisteredSchema> GetSchemaBySubjectAsync(string subject, string version = "latest", CancellationToken cancellationToken = default)
             => throw new NotImplementedException();
@@ -135,7 +156,7 @@ public sealed class SchemaRegistryCacheTests
             ReadOnlyMemory<byte> payload,
             SchemaRegistryRuleContext context)
         {
-            SerializeContext = context;
+            SerializeContext = SchemaRegistryRuleContextSnapshot.Capture(context);
             return serializedPayload ?? payload;
         }
 
@@ -143,7 +164,7 @@ public sealed class SchemaRegistryCacheTests
             ReadOnlyMemory<byte> payload,
             SchemaRegistryRuleContext context)
         {
-            DeserializeContext = context;
+            DeserializeContext = SchemaRegistryRuleContextSnapshot.Capture(context);
             return deserializedPayload ?? payload;
         }
     }
@@ -368,6 +389,7 @@ public sealed class SchemaRegistryCacheTests
         await Assert.That(strategy.CallCount).IsEqualTo(1);
         await Assert.That(schemaFactoryCalls).IsEqualTo(1);
         await Assert.That(registry.GetCallCount("topic-value")).IsEqualTo(1);
+        await Assert.That(registry.SubjectGetSchemaCallCount).IsEqualTo(0);
     }
 
     [Test]
@@ -408,6 +430,7 @@ public sealed class SchemaRegistryCacheTests
         await Assert.That(executor.SerializeContext.Schema).IsSameReferenceAs(schema);
         await Assert.That(schemaFactoryCalls).IsEqualTo(1);
         await Assert.That(registry.GetCallCount("topic-value")).IsEqualTo(1);
+        await Assert.That(registry.SubjectGetSchemaCallCount).IsEqualTo(0);
     }
 
     [Test]
@@ -447,8 +470,12 @@ public sealed class SchemaRegistryCacheTests
     public async Task Deserializer_RuleExecutor_TransformsDeserializedPayload()
     {
         var registry = new MockSchemaRegistryClient();
-        var schema = new Schema { SchemaType = SchemaType.Json, SchemaString = """{ "type": "string" }""" };
-        var schemaId = await registry.RegisterSchemaAsync("topic-value", schema);
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = """{ "type": "string", "title": "CustomRecord" }"""
+        };
+        var schemaId = await registry.RegisterSchemaAsync("CustomRecord", schema);
         var cipherText = "encrypted"u8.ToArray();
         var wireBytes = new byte[5 + cipherText.Length];
         wireBytes[0] = 0;
@@ -459,6 +486,10 @@ public sealed class SchemaRegistryCacheTests
         await using var deserializer = SchemaRegistryDeserializer.Create(
             registry,
             static (ReadOnlyMemory<byte> payload, Schema _) => Encoding.UTF8.GetString(payload.Span),
+            new SchemaRegistryDeserializerConfig
+            {
+                CustomSubjectNameStrategy = SubjectNameStrategies.Record
+            },
             ruleExecutor: executor);
 
         var result = deserializer.Deserialize(wireBytes, CreateContext());
@@ -466,8 +497,70 @@ public sealed class SchemaRegistryCacheTests
         await Assert.That(result).IsEqualTo("plain");
         await Assert.That(executor.DeserializeContext).IsNotNull();
         await Assert.That(executor.DeserializeContext!.PayloadFormat).IsEqualTo(SchemaRegistryPayloadFormat.Custom);
+        await Assert.That(executor.DeserializeContext.Subject).IsEqualTo("CustomRecord");
         await Assert.That(executor.DeserializeContext.SchemaId).IsEqualTo(schemaId);
         await Assert.That(executor.DeserializeContext.Schema).IsSameReferenceAs(schema);
+    }
+
+    [Test]
+    public async Task Deserializer_RuleExecutor_RequiresSubjectScopedSchemaLookup()
+    {
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = """{ "type": "string" }"""
+        };
+        var registry = new NonCachingSchemaRegistryClient(schema);
+        var wireBytes = new byte[6];
+        BinaryPrimitives.WriteInt32BigEndian(wireBytes.AsSpan(1, 4), 42);
+        wireBytes[5] = (byte)'x';
+        await using var deserializer = SchemaRegistryDeserializer.Create(
+            registry,
+            static (ReadOnlyMemory<byte> payload, Schema _) => Encoding.UTF8.GetString(payload.Span),
+            ruleExecutor: new ReplacingRuleExecutor());
+
+        var act = () => deserializer.Deserialize(wireBytes, CreateContext());
+
+        await Assert.That(act).Throws<NotSupportedException>()
+            .And.HasMessageContaining("subject-scoped schema lookup");
+        await Assert.That(registry.GetSchemaCallCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Deserializer_RuleExecutor_CachesRuleMetadataBySubjectAndId()
+    {
+        using var handler = new QueueingSchemaRegistryHandler()
+            .Enqueue(HttpStatusCode.OK, SchemaWithRuleJson("topic-a-rule"))
+            .Enqueue(HttpStatusCode.OK, SchemaWithRuleJson("topic-b-rule"));
+        using var registry = new SchemaRegistryClient(new SchemaRegistryConfig
+        {
+            Url = "http://registry:8081"
+        }, handler);
+        var payload = "plain"u8.ToArray();
+        var wireBytes = new byte[5 + payload.Length];
+        wireBytes[0] = 0;
+        BinaryPrimitives.WriteInt32BigEndian(wireBytes.AsSpan(1, 4), 42);
+        payload.CopyTo(wireBytes.AsSpan(5));
+        var executor = new ReplacingRuleExecutor();
+        await using var deserializer = SchemaRegistryDeserializer.Create(
+            registry,
+            static (ReadOnlyMemory<byte> value, Schema _) => Encoding.UTF8.GetString(value.Span),
+            ruleExecutor: executor);
+
+        _ = deserializer.Deserialize(wireBytes, CreateContext("topic-a"));
+        var firstSchema = executor.DeserializeContext!.Schema!;
+        _ = deserializer.Deserialize(wireBytes, CreateContext("topic-b"));
+        var secondSchema = executor.DeserializeContext!.Schema!;
+        _ = deserializer.Deserialize(wireBytes, CreateContext("topic-a"));
+
+        await Assert.That(firstSchema.RuleSet!.EncodingRules![0].Name).IsEqualTo("topic-a-rule");
+        await Assert.That(secondSchema.RuleSet!.EncodingRules![0].Name).IsEqualTo("topic-b-rule");
+        await Assert.That(firstSchema).IsNotSameReferenceAs(secondSchema);
+        await Assert.That(handler.RequestUris).Count().IsEqualTo(2);
+        await Assert.That(handler.RequestUris[0].Query).IsEqualTo("?subject=topic-a-value");
+        await Assert.That(handler.RequestUris[1].Query).IsEqualTo("?subject=topic-b-value");
+        await Assert.That(registry.TryGetCachedSchema(42, "topic-a-value", out var cached)).IsTrue();
+        await Assert.That(cached).IsSameReferenceAs(firstSchema);
     }
 
     [Test]
@@ -848,8 +941,12 @@ public sealed class SchemaRegistryCacheTests
     public async Task Deserializer_UsesCachedSchema_AndPassesPayloadWithoutCopy()
     {
         var registry = new MockSchemaRegistryClient();
-        var schema = new Schema { SchemaType = SchemaType.Json, SchemaString = """{ "type": "string" }""" };
-        var schemaId = await registry.RegisterSchemaAsync("topic-value", schema);
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = """{ "type": "string", "title": "JsonRecord" }"""
+        };
+        var schemaId = await registry.RegisterSchemaAsync("JsonRecord", schema);
         var payloadBytes = "hello"u8.ToArray();
         var wireBytes = new byte[5 + payloadBytes.Length];
         wireBytes[0] = 0;
@@ -928,8 +1025,12 @@ public sealed class SchemaRegistryCacheTests
     public async Task JsonDeserializer_RuleExecutor_TransformsPayload()
     {
         var registry = new MockSchemaRegistryClient();
-        var schema = new Schema { SchemaType = SchemaType.Json, SchemaString = """{ "type": "string" }""" };
-        var schemaId = await registry.RegisterSchemaAsync("topic-value", schema);
+        var schema = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = """{ "type": "string", "title": "JsonRecord" }"""
+        };
+        var schemaId = await registry.RegisterSchemaAsync("JsonRecord", schema);
         var cipherText = "encrypted-json"u8.ToArray();
         var wireBytes = new byte[5 + cipherText.Length];
         wireBytes[0] = 0;
@@ -940,6 +1041,11 @@ public sealed class SchemaRegistryCacheTests
         var executor = new ReplacingRuleExecutor(deserializedPayload: plainJson);
         await using var deserializer = new JsonSchemaRegistryDeserializer<string>(
             registry,
+            jsonOptions: null,
+            config: new SchemaRegistryDeserializerConfig
+            {
+                SubjectNameStrategy = SubjectNameStrategy.RecordName
+            },
             ruleExecutor: executor);
 
         var result = deserializer.Deserialize(wireBytes, CreateContext());
@@ -947,6 +1053,7 @@ public sealed class SchemaRegistryCacheTests
         await Assert.That(result).IsEqualTo("plain");
         await Assert.That(executor.DeserializeContext).IsNotNull();
         await Assert.That(executor.DeserializeContext!.PayloadFormat).IsEqualTo(SchemaRegistryPayloadFormat.Json);
+        await Assert.That(executor.DeserializeContext.Subject).IsEqualTo("JsonRecord");
         await Assert.That(executor.DeserializeContext.SchemaId).IsEqualTo(schemaId);
         await Assert.That(executor.DeserializeContext.Schema).IsSameReferenceAs(schema);
     }
@@ -965,6 +1072,22 @@ public sealed class SchemaRegistryCacheTests
           "id": {{id}},
           "schema": "{ \"type\": \"string\" }",
           "schemaType": "JSON"
+        }
+        """;
+
+    private static string SchemaWithRuleJson(string ruleName) =>
+        $$"""
+        {
+          "schema": "{ \"type\": \"string\" }",
+          "schemaType": "JSON",
+          "ruleSet": {
+            "encodingRules": [{
+              "name": "{{ruleName}}",
+              "kind": "TRANSFORM",
+              "mode": "READ",
+              "type": "TEST"
+            }]
+          }
         }
         """;
 

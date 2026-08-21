@@ -14,7 +14,7 @@ namespace Dekaf.Tests.Integration;
 /// </summary>
 public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposable
 {
-    private static readonly ContainerImageBootstrapCoordinator ImageBootstrapCoordinator = new();
+    private static readonly ConcurrentDictionary<string, ContainerImageBootstrapCoordinator> ImageBootstrapCoordinators = new();
 
     private KafkaContainer? _kafkaContainer;
     private IContainer? _schemaRegistryContainer;
@@ -34,6 +34,8 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
     /// The Schema Registry URL.
     /// </summary>
     public string RegistryUrl => _registryUrl;
+
+    protected virtual string SchemaRegistryImage => "confluentinc/cp-schema-registry:7.9.0";
 
     public async Task InitializeAsync()
     {
@@ -55,7 +57,10 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
         }
 
         // A complete first startup guarantees Testcontainers has pulled both images.
-        await ImageBootstrapCoordinator.RunAsync(StartLocalContainersAsync).ConfigureAwait(false);
+        var bootstrapCoordinator = ImageBootstrapCoordinators.GetOrAdd(
+            SchemaRegistryImage,
+            static _ => new ContainerImageBootstrapCoordinator());
+        await bootstrapCoordinator.RunAsync(StartLocalContainersAsync).ConfigureAwait(false);
     }
 
     private async Task StartLocalContainersAsync()
@@ -92,13 +97,16 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
         Console.WriteLine("[KafkaWithSchemaRegistry] Starting Schema Registry container...");
 
         // Start Schema Registry connected to Kafka via network
-        _schemaRegistryContainer = new ContainerBuilder("confluentinc/cp-schema-registry:7.9.0")
+        _schemaRegistryContainer = new ContainerBuilder(SchemaRegistryImage)
             .WithNetwork(_network)
             .WithNetworkAliases("schema-registry")
             .WithPortBinding(8081, true)
             .WithEnvironment("SCHEMA_REGISTRY_HOST_NAME", "schema-registry")
             .WithEnvironment("SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS", "kafka:9093")
             .WithEnvironment("SCHEMA_REGISTRY_LISTENERS", "http://0.0.0.0:8081")
+            .WithEnvironment(
+                "SCHEMA_REGISTRY_RESOURCE_EXTENSION_CLASS",
+                "io.confluent.kafka.schemaregistry.rulehandler.RuleSetResourceExtension")
             .WithWaitStrategy(Wait.ForUnixContainer().UntilHttpRequestIsSucceeded(r => r.ForPath("/subjects").ForPort(8081)))
             .Build();
 
@@ -174,17 +182,23 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
     /// <summary>
     /// Creates a unique topic for a test and returns the topic name.
     /// </summary>
-    public async Task<string> CreateTestTopicAsync(int partitions = 1)
+    public async Task<string> CreateTestTopicAsync(
+        int partitions = 1,
+        IReadOnlyDictionary<string, string>? configs = null)
     {
         var topicName = $"test-topic-{Guid.NewGuid():N}";
-        await CreateTopicAsync(topicName, partitions).ConfigureAwait(false);
+        await CreateTopicAsync(topicName, partitions, configs: configs).ConfigureAwait(false);
         return topicName;
     }
 
     /// <summary>
     /// Creates a topic with the specified name.
     /// </summary>
-    public async Task CreateTopicAsync(string topicName, int partitions = 1, int replicationFactor = 1)
+    public async Task CreateTopicAsync(
+        string topicName,
+        int partitions = 1,
+        int replicationFactor = 1,
+        IReadOnlyDictionary<string, string>? configs = null)
     {
         if (_createdTopics.ContainsKey(topicName))
         {
@@ -205,7 +219,8 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
                 {
                     Name = topicName,
                     NumPartitions = partitions,
-                    ReplicationFactor = (short)replicationFactor
+                    ReplicationFactor = (short)replicationFactor,
+                    Configs = configs
                 }
             ]).ConfigureAwait(false);
         }
@@ -241,4 +256,9 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
 
         GC.SuppressFinalize(this);
     }
+}
+
+public sealed class KafkaWithAssociationSchemaRegistryContainer : KafkaWithSchemaRegistryContainer
+{
+    protected override string SchemaRegistryImage => "confluentinc/cp-schema-registry:8.2.0";
 }

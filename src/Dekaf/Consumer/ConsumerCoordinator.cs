@@ -30,6 +30,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private readonly MetadataManager _metadataManager;
     private readonly IRebalanceListener? _rebalanceListener;
     private readonly IConsumerAwareRebalanceListener? _consumerAwareRebalanceListener;
+    private readonly IRebalanceListener[]? _additionalRebalanceListeners;
     // Retained for the public six-parameter constructor and direct coordinator callers.
     // KafkaConsumer uses the pre-publication hook below to invalidate buffered fetches.
     private readonly Action<IReadOnlyList<TopicPartition>>? _onPartitionsRevoked;
@@ -142,6 +143,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         _rebalanceListener = _consumerAwareRebalanceListener is null
             ? options.RebalanceListener
             : null;
+        _additionalRebalanceListeners = options.AdditionalRebalanceListeners;
         _onPartitionsRevoked = onPartitionsRevoked;
         _onPartitionsRevoking = onPartitionsRevoking;
         _onPartitionsRevokedAsync = onPartitionsRevokedAsync;
@@ -475,7 +477,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     /// <summary>
     /// Forces the coordinator to rejoin the group on the next
-    /// <see cref="EnsureActiveGroupAsync"/> call by transitioning to <see cref="CoordinatorState.Unjoined"/>.
+    /// <see cref="EnsureActiveGroupAsync(StringSet, CancellationToken)"/> call by transitioning to <see cref="CoordinatorState.Unjoined"/>.
     /// </summary>
     internal void RequestRejoin()
     {
@@ -873,6 +875,20 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 cancellationToken).ConfigureAwait(false);
         }
 
+        var additionalListeners = _additionalRebalanceListeners;
+        if (additionalListeners is not null)
+        {
+            for (var index = 0; index < additionalListeners.Length; index++)
+            {
+                await InvokeRebalanceListenerAsync(
+                    callbackName,
+                    partitions,
+                    additionalListeners[index],
+                    callback,
+                    cancellationToken).ConfigureAwait(false);
+            }
+        }
+
         var runtimeListener = Volatile.Read(ref _runtimeRebalanceListener);
         if (runtimeListener is not null)
         {
@@ -1200,7 +1216,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                                             topic.Name,
                                             partition.PartitionIndex,
                                             partition.CommittedOffset,
-                                            partition.CommittedLeaderEpoch);
+                                            partition.CommittedLeaderEpoch)
+                                        {
+                                            Metadata = partition.Metadata
+                                        };
                                 }
                             }
                         }
@@ -1251,7 +1270,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                                                 topicName,
                                                 partition.PartitionIndex,
                                                 partition.CommittedOffset,
-                                                partition.CommittedLeaderEpoch);
+                                                partition.CommittedLeaderEpoch)
+                                            {
+                                                Metadata = partition.Metadata
+                                            };
                                     }
                                 }
                             }
@@ -1521,7 +1543,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 MemberId = memberId,
                 MemberEpoch = memberEpoch,
                 InstanceId = _options.GroupInstanceId,
-                RebalanceTimeoutMs = isInitial ? _options.MaxPollIntervalMs : -1,
+                RebalanceTimeoutMs = isInitial ? _options.RebalanceTimeoutMs : -1,
                 RackId = isInitial ? _options.ClientRack : null,
                 SubscribedTopicNames = subscribedTopics,
                 SubscribedTopicRegex = subscribedTopicRegex,

@@ -1,4 +1,37 @@
 #nullable enable
+Dekaf.Consumer.ConsumerRecordFilterContext
+Dekaf.Consumer.ConsumerRecordFilterContext.ConsumerRecordFilterContext() -> void
+Dekaf.Consumer.ConsumerRecordFilterContext.Headers.get -> System.ReadOnlySpan<Dekaf.Serialization.Header>
+Dekaf.Consumer.ConsumerRecordFilterContext.IsKeyNull.get -> bool
+Dekaf.Consumer.ConsumerRecordFilterContext.IsValueNull.get -> bool
+Dekaf.Consumer.ConsumerRecordFilterContext.Key.get -> System.ReadOnlyMemory<byte>
+Dekaf.Consumer.ConsumerRecordFilterContext.LeaderEpoch.get -> int?
+Dekaf.Consumer.ConsumerRecordFilterContext.Offset.get -> long
+Dekaf.Consumer.ConsumerRecordFilterContext.Partition.get -> int
+Dekaf.Consumer.ConsumerRecordFilterContext.TimestampMs.get -> long
+Dekaf.Consumer.ConsumerRecordFilterContext.TimestampType.get -> Dekaf.Consumer.TimestampType
+Dekaf.Consumer.ConsumerRecordFilterContext.Topic.get -> string!
+Dekaf.Consumer.ConsumerRecordFilterContext.Value.get -> System.ReadOnlyMemory<byte>
+Dekaf.Consumer.IConsumerRecordFilter
+Dekaf.Consumer.IConsumerRecordFilter.ShouldDeserialize(scoped in Dekaf.Consumer.ConsumerRecordFilterContext context) -> bool
+Dekaf.Serialization.HeaderDeserializerRoute<T>
+Dekaf.Serialization.HeaderDeserializerRoute<T>.Deserializer.get -> Dekaf.Serialization.IDeserializer<T>!
+Dekaf.Serialization.HeaderDeserializerRoute<T>.HeaderDeserializerRoute() -> void
+Dekaf.Serialization.HeaderDeserializerRoute<T>.HeaderDeserializerRoute(System.ReadOnlyMemory<byte> headerValue, Dekaf.Serialization.IDeserializer<T>! deserializer) -> void
+Dekaf.Serialization.HeaderDeserializerRoute<T>.HeaderValue.get -> System.ReadOnlyMemory<byte>
+Dekaf.Serialization.HeaderRoutingDeserializer<T>
+Dekaf.Serialization.HeaderRoutingDeserializer<T>.Deserialize(System.ReadOnlyMemory<byte> data, Dekaf.Serialization.SerializationContext context) -> T
+Dekaf.Serialization.HeaderRoutingDeserializer<T>.HeaderRoutingDeserializer(string! headerName, Dekaf.Serialization.IDeserializer<T>! fallbackDeserializer, params Dekaf.Serialization.HeaderDeserializerRoute<T>[]! routes) -> void
+Dekaf.Consumer.ConsumerOptions.RecordFilter.get -> Dekaf.Consumer.IConsumerRecordFilter?
+Dekaf.Consumer.ConsumerOptions.RecordFilter.init -> void
+Dekaf.ConsumerBuilder<TKey, TValue>.WithRecordFilter(Dekaf.Consumer.IConsumerRecordFilter! filter) -> Dekaf.ConsumerBuilder<TKey, TValue>!
+Dekaf.Consumer.IConsumerCommittedOffsets (forwarded, contained in Dekaf.Abstractions)
+Dekaf.Consumer.IConsumerCommittedOffsets.GetCommittedOffsetsAsync(System.Collections.Generic.IReadOnlyCollection<Dekaf.TopicPartition>! partitions, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<Dekaf.TopicPartition, Dekaf.TopicPartitionOffset>!> (forwarded, contained in Dekaf.Abstractions)
+Dekaf.Consumer.KafkaConsumer<TKey, TValue>.GetCommittedOffsetsAsync(System.Collections.Generic.IReadOnlyCollection<Dekaf.TopicPartition>! partitions, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<Dekaf.TopicPartition, Dekaf.TopicPartitionOffset>!>
+static Dekaf.ConsumerFacetExtensions.GetCommittedOffsetsAsync<TKey, TValue>(this Dekaf.Consumer.IKafkaConsumer<TKey, TValue>! consumer, System.Collections.Generic.IReadOnlyCollection<Dekaf.TopicPartition>! partitions, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<Dekaf.TopicPartition, Dekaf.TopicPartitionOffset>!>
+static Dekaf.Protocol.Messages.MetadataRequest.GetRequestHeaderVersion(short version) -> short
+static Dekaf.Protocol.Messages.MetadataRequest.GetResponseHeaderVersion(short version) -> short
+static Dekaf.Protocol.Messages.MetadataRequest.IsFlexibleVersion(short version) -> bool
 Dekaf.Consumer.BoundedConsumerExtensions
 Dekaf.Consumer.IBoundedKafkaConsumer<TKey, TValue>
 Dekaf.Consumer.IBoundedKafkaConsumer<TKey, TValue>.ConsumeSnapshotAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Collections.Generic.IAsyncEnumerable<Dekaf.Consumer.ConsumeResult<TKey, TValue>>!
@@ -7,13 +40,13 @@ Dekaf.Consumer.KafkaConsumer<TKey, TValue>.ConsumeSnapshotAsync(System.Threading
 Dekaf.Consumer.KafkaConsumer<TKey, TValue>.SeekToTailAsync(Dekaf.TopicPartition partition, int offsetCount, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.TopicPartitionOffset>
 static Dekaf.Consumer.BoundedConsumerExtensions.ConsumeSnapshotAsync<TKey, TValue>(this Dekaf.Consumer.IKafkaConsumer<TKey, TValue>! consumer, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Collections.Generic.IAsyncEnumerable<Dekaf.Consumer.ConsumeResult<TKey, TValue>>!
 static Dekaf.Consumer.BoundedConsumerExtensions.SeekToTailAsync<TKey, TValue>(this Dekaf.Consumer.IKafkaConsumer<TKey, TValue>! consumer, Dekaf.TopicPartition partition, int offsetCount, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.TopicPartitionOffset>
-Dekaf.Serialization.SerializationContext.IsKeyNull.get -> bool
-Dekaf.Serialization.SerializationContext.KeyData.get -> System.ReadOnlyMemory<byte>
-Dekaf.Serialization.SerializationContext.KeyData.set -> void
+Dekaf.Serialization.SerializationContext.IsKeyNull.get -> bool (forwarded, contained in Dekaf.Abstractions)
+Dekaf.Serialization.SerializationContext.KeyData.get -> System.ReadOnlyMemory<byte> (forwarded, contained in Dekaf.Abstractions)
+Dekaf.Serialization.SerializationContext.KeyData.set -> void (forwarded, contained in Dekaf.Abstractions)
 Dekaf.Consumer.ConsumerOffsetStoreExtensions
-Dekaf.Consumer.IConsumerBatchOffsetStore
-Dekaf.Consumer.IConsumerBatchOffsetStore.StoreOffsets(System.ReadOnlySpan<Dekaf.TopicPartitionOffset> offsets) -> void
-Dekaf.Consumer.IConsumerBatchOffsetStore.StoreOffsets<TOffsets>(TOffsets offsets) -> void
+Dekaf.Consumer.IConsumerBatchOffsetStore (forwarded, contained in Dekaf.Abstractions)
+Dekaf.Consumer.IConsumerBatchOffsetStore.StoreOffsets(System.ReadOnlySpan<Dekaf.TopicPartitionOffset> offsets) -> void (forwarded, contained in Dekaf.Abstractions)
+Dekaf.Consumer.IConsumerBatchOffsetStore.StoreOffsets<TOffsets>(TOffsets offsets) -> void (forwarded, contained in Dekaf.Abstractions)
 Dekaf.Consumer.KafkaConsumer<TKey, TValue>.StoreOffsets(System.ReadOnlySpan<Dekaf.TopicPartitionOffset> offsets) -> void
 Dekaf.Consumer.KafkaConsumer<TKey, TValue>.StoreOffsets<TOffsets>(TOffsets offsets) -> void
 static Dekaf.Consumer.ConsumerOffsetStoreExtensions.StoreOffsets<TKey, TValue>(this Dekaf.Consumer.IKafkaConsumer<TKey, TValue>! consumer, Dekaf.TopicPartitionOffset[]! offsets) -> void
@@ -124,3 +157,227 @@ Dekaf.Consumer.KafkaConsumer<TKey, TValue>.ClusterId.get -> string?
 Dekaf.Consumer.KafkaConsumer<TKey, TValue>.GetStatus() -> Dekaf.Diagnostics.KafkaClientStatus!
 Dekaf.Producer.KafkaProducer<TKey, TValue>.ClusterId.get -> string?
 Dekaf.Producer.KafkaProducer<TKey, TValue>.GetStatus() -> Dekaf.Diagnostics.KafkaClientStatus!
+Dekaf.Serialization.IAsyncDeserializerPreparer<T> (forwarded, contained in Dekaf.Abstractions)
+Dekaf.Serialization.IAsyncDeserializerPreparer<T>.TryDeserialize(System.ReadOnlyMemory<byte> data, Dekaf.Serialization.SerializationContext context, out T value) -> bool (forwarded, contained in Dekaf.Abstractions)
+Dekaf.Serialization.IAsyncDeserializerPreparer<T>.PrepareAsync(System.ReadOnlyMemory<byte> data, Dekaf.Serialization.SerializationContext context, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask (forwarded, contained in Dekaf.Abstractions)
+Dekaf.Serialization.IAsyncDeserializerPreparationRequirement (forwarded, contained in Dekaf.Abstractions)
+Dekaf.Serialization.IAsyncDeserializerPreparationRequirement.RequiresPreparation.get -> bool (forwarded, contained in Dekaf.Abstractions)
+Dekaf.Consumer.ConsumerOptions.PartitionStopTimeout.get -> System.TimeSpan
+Dekaf.Consumer.ConsumerOptions.PartitionStopTimeout.init -> void
+Dekaf.ConsumerBuilder<TKey, TValue>.WithPartitionStopTimeout(System.TimeSpan timeout) -> Dekaf.ConsumerBuilder<TKey, TValue>!
+Dekaf.ConsumerBuilder<TKey, TValue>.AddRebalanceListener(Dekaf.Consumer.IRebalanceListener! listener) -> Dekaf.ConsumerBuilder<TKey, TValue>!
+Dekaf.Consumer.ConsumeBatch<TKey, TValue>.IsPartitionEof.get -> bool
+Dekaf.Consumer.ConsumeBatch<TKey, TValue>.PartitionEofOffset.get -> long?
+Dekaf.Consumer.ConsumeRawBatch.IsPartitionEof.get -> bool
+Dekaf.Consumer.ConsumeRawBatch.PartitionEofOffset.get -> long?
+Dekaf.Consumer.ConsumeRawRecord.Headers.get -> System.ReadOnlyMemory<Dekaf.Serialization.Header>
+Dekaf.Consumer.ConsumeRawRecord.LeaderEpoch.get -> int?
+Dekaf.Streams.IStreamsGroupMember
+Dekaf.Streams.IStreamsGroupMember.CloseAsync(Dekaf.Streams.StreamsGroupCloseOptions! options, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Streams.IStreamsGroupMember.CloseAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Streams.IStreamsGroupMember.GroupId.get -> string!
+Dekaf.Streams.IStreamsGroupMember.InstanceId.get -> string?
+Dekaf.Streams.IStreamsGroupMember.JoinAsync(Dekaf.Streams.StreamsGroupMemberUpdate! initialState, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Streams.StreamsGroupHeartbeatResult!>
+Dekaf.Streams.IStreamsGroupMember.ReportTaskOffsetsAsync(Dekaf.Streams.StreamsGroupTaskOffsetReport! report, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Streams.StreamsGroupHeartbeatResult!>
+Dekaf.Streams.IStreamsGroupMember.Snapshot.get -> Dekaf.Streams.StreamsGroupMemberSnapshot!
+Dekaf.Streams.IStreamsGroupMember.UpdateAsync(Dekaf.Streams.StreamsGroupMemberUpdate! update, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Streams.StreamsGroupHeartbeatResult!>
+Dekaf.Streams.StreamsGroupAssignment
+Dekaf.Streams.StreamsGroupAssignment.ActiveTasks.get -> System.Collections.Generic.IReadOnlyList<Dekaf.Streams.StreamsGroupTaskSet!>!
+Dekaf.Streams.StreamsGroupAssignment.ActiveTasks.init -> void
+Dekaf.Streams.StreamsGroupAssignment.StandbyTasks.get -> System.Collections.Generic.IReadOnlyList<Dekaf.Streams.StreamsGroupTaskSet!>!
+Dekaf.Streams.StreamsGroupAssignment.StandbyTasks.init -> void
+Dekaf.Streams.StreamsGroupAssignment.StreamsGroupAssignment() -> void
+Dekaf.Streams.StreamsGroupAssignment.WarmupTasks.get -> System.Collections.Generic.IReadOnlyList<Dekaf.Streams.StreamsGroupTaskSet!>!
+Dekaf.Streams.StreamsGroupAssignment.WarmupTasks.init -> void
+Dekaf.Streams.StreamsGroupKeyValue
+Dekaf.Streams.StreamsGroupKeyValue.Key.get -> string!
+Dekaf.Streams.StreamsGroupKeyValue.Key.init -> void
+Dekaf.Streams.StreamsGroupKeyValue.StreamsGroupKeyValue() -> void
+Dekaf.Streams.StreamsGroupKeyValue.Value.get -> string!
+Dekaf.Streams.StreamsGroupKeyValue.Value.init -> void
+Dekaf.Streams.StreamsGroupCloseOptions
+Dekaf.Streams.StreamsGroupCloseOptions.GroupMembershipOperation.get -> Dekaf.Streams.StreamsGroupMembershipOperation
+Dekaf.Streams.StreamsGroupCloseOptions.GroupMembershipOperation.init -> void
+Dekaf.Streams.StreamsGroupCloseOptions.ShutdownApplication.get -> bool
+Dekaf.Streams.StreamsGroupCloseOptions.ShutdownApplication.init -> void
+Dekaf.Streams.StreamsGroupCloseOptions.StreamsGroupCloseOptions() -> void
+Dekaf.Streams.StreamsGroupCopartitionGroup
+Dekaf.Streams.StreamsGroupCopartitionGroup.RepartitionSourceTopics.get -> System.Collections.Generic.IReadOnlyList<short>!
+Dekaf.Streams.StreamsGroupCopartitionGroup.RepartitionSourceTopics.init -> void
+Dekaf.Streams.StreamsGroupCopartitionGroup.SourceTopicRegex.get -> System.Collections.Generic.IReadOnlyList<short>!
+Dekaf.Streams.StreamsGroupCopartitionGroup.SourceTopicRegex.init -> void
+Dekaf.Streams.StreamsGroupCopartitionGroup.SourceTopics.get -> System.Collections.Generic.IReadOnlyList<short>!
+Dekaf.Streams.StreamsGroupCopartitionGroup.SourceTopics.init -> void
+Dekaf.Streams.StreamsGroupCopartitionGroup.StreamsGroupCopartitionGroup() -> void
+Dekaf.Streams.StreamsGroupEndpoint
+Dekaf.Streams.StreamsGroupEndpoint.Host.get -> string!
+Dekaf.Streams.StreamsGroupEndpoint.Host.init -> void
+Dekaf.Streams.StreamsGroupEndpoint.Port.get -> ushort
+Dekaf.Streams.StreamsGroupEndpoint.Port.init -> void
+Dekaf.Streams.StreamsGroupEndpoint.StreamsGroupEndpoint() -> void
+Dekaf.Streams.StreamsGroupEndpointAssignment
+Dekaf.Streams.StreamsGroupEndpointAssignment.ActivePartitions.get -> System.Collections.Generic.IReadOnlyList<Dekaf.Streams.StreamsGroupTopicPartitions!>!
+Dekaf.Streams.StreamsGroupEndpointAssignment.ActivePartitions.init -> void
+Dekaf.Streams.StreamsGroupEndpointAssignment.StandbyPartitions.get -> System.Collections.Generic.IReadOnlyList<Dekaf.Streams.StreamsGroupTopicPartitions!>!
+Dekaf.Streams.StreamsGroupEndpointAssignment.StandbyPartitions.init -> void
+Dekaf.Streams.StreamsGroupEndpointAssignment.StreamsGroupEndpointAssignment() -> void
+Dekaf.Streams.StreamsGroupEndpointAssignment.UserEndpoint.get -> Dekaf.Streams.StreamsGroupEndpoint!
+Dekaf.Streams.StreamsGroupEndpointAssignment.UserEndpoint.init -> void
+Dekaf.Streams.StreamsGroupHeartbeatResult
+Dekaf.Streams.StreamsGroupHeartbeatResult.AcceptableRecoveryLag.get -> int
+Dekaf.Streams.StreamsGroupHeartbeatResult.AcceptableRecoveryLag.init -> void
+Dekaf.Streams.StreamsGroupHeartbeatResult.ActiveTasks.get -> System.Collections.Generic.IReadOnlyList<Dekaf.Streams.StreamsGroupTaskSet!>?
+Dekaf.Streams.StreamsGroupHeartbeatResult.ActiveTasks.init -> void
+Dekaf.Streams.StreamsGroupHeartbeatResult.EndpointInformationEpoch.get -> int
+Dekaf.Streams.StreamsGroupHeartbeatResult.EndpointInformationEpoch.init -> void
+Dekaf.Streams.StreamsGroupHeartbeatResult.HeartbeatInterval.get -> System.TimeSpan
+Dekaf.Streams.StreamsGroupHeartbeatResult.HeartbeatInterval.init -> void
+Dekaf.Streams.StreamsGroupHeartbeatResult.MemberEpoch.get -> int
+Dekaf.Streams.StreamsGroupHeartbeatResult.MemberEpoch.init -> void
+Dekaf.Streams.StreamsGroupHeartbeatResult.MemberId.get -> string!
+Dekaf.Streams.StreamsGroupHeartbeatResult.MemberId.init -> void
+Dekaf.Streams.StreamsGroupHeartbeatResult.PartitionsByUserEndpoint.get -> System.Collections.Generic.IReadOnlyList<Dekaf.Streams.StreamsGroupEndpointAssignment!>?
+Dekaf.Streams.StreamsGroupHeartbeatResult.PartitionsByUserEndpoint.init -> void
+Dekaf.Streams.StreamsGroupHeartbeatResult.StandbyTasks.get -> System.Collections.Generic.IReadOnlyList<Dekaf.Streams.StreamsGroupTaskSet!>?
+Dekaf.Streams.StreamsGroupHeartbeatResult.StandbyTasks.init -> void
+Dekaf.Streams.StreamsGroupHeartbeatResult.Status.get -> System.Collections.Generic.IReadOnlyList<Dekaf.Streams.StreamsGroupStatus!>?
+Dekaf.Streams.StreamsGroupHeartbeatResult.Status.init -> void
+Dekaf.Streams.StreamsGroupHeartbeatResult.StreamsGroupHeartbeatResult() -> void
+Dekaf.Streams.StreamsGroupHeartbeatResult.TaskOffsetInterval.get -> System.TimeSpan
+Dekaf.Streams.StreamsGroupHeartbeatResult.TaskOffsetInterval.init -> void
+Dekaf.Streams.StreamsGroupHeartbeatResult.ThrottleTime.get -> System.TimeSpan
+Dekaf.Streams.StreamsGroupHeartbeatResult.ThrottleTime.init -> void
+Dekaf.Streams.StreamsGroupHeartbeatResult.WarmupTasks.get -> System.Collections.Generic.IReadOnlyList<Dekaf.Streams.StreamsGroupTaskSet!>?
+Dekaf.Streams.StreamsGroupHeartbeatResult.WarmupTasks.init -> void
+Dekaf.Streams.StreamsGroupMemberOptions
+Dekaf.Streams.StreamsGroupMemberOptions.GroupId.get -> string!
+Dekaf.Streams.StreamsGroupMemberOptions.GroupId.init -> void
+Dekaf.Streams.StreamsGroupMemberOptions.InstanceId.get -> string?
+Dekaf.Streams.StreamsGroupMemberOptions.InstanceId.init -> void
+Dekaf.Streams.StreamsGroupMemberOptions.RackId.get -> string?
+Dekaf.Streams.StreamsGroupMemberOptions.RackId.init -> void
+Dekaf.Streams.StreamsGroupMemberOptions.RebalanceTimeout.get -> System.TimeSpan
+Dekaf.Streams.StreamsGroupMemberOptions.RebalanceTimeout.init -> void
+Dekaf.Streams.StreamsGroupMemberOptions.StreamsGroupMemberOptions() -> void
+Dekaf.Streams.StreamsGroupMembershipOperation
+Dekaf.Streams.StreamsGroupMembershipOperation.Default = 0 -> Dekaf.Streams.StreamsGroupMembershipOperation
+Dekaf.Streams.StreamsGroupMembershipOperation.LeaveGroup = 1 -> Dekaf.Streams.StreamsGroupMembershipOperation
+Dekaf.Streams.StreamsGroupMembershipOperation.RemainInGroup = 2 -> Dekaf.Streams.StreamsGroupMembershipOperation
+Dekaf.Streams.StreamsGroupMemberSnapshot
+Dekaf.Streams.StreamsGroupMemberSnapshot.AcceptableRecoveryLag.get -> int
+Dekaf.Streams.StreamsGroupMemberSnapshot.AcceptableRecoveryLag.init -> void
+Dekaf.Streams.StreamsGroupMemberSnapshot.Assignment.get -> Dekaf.Streams.StreamsGroupAssignment!
+Dekaf.Streams.StreamsGroupMemberSnapshot.Assignment.init -> void
+Dekaf.Streams.StreamsGroupMemberSnapshot.EndpointInformationEpoch.get -> int
+Dekaf.Streams.StreamsGroupMemberSnapshot.EndpointInformationEpoch.init -> void
+Dekaf.Streams.StreamsGroupMemberSnapshot.HeartbeatInterval.get -> System.TimeSpan
+Dekaf.Streams.StreamsGroupMemberSnapshot.HeartbeatInterval.init -> void
+Dekaf.Streams.StreamsGroupMemberSnapshot.IsClosed.get -> bool
+Dekaf.Streams.StreamsGroupMemberSnapshot.IsClosed.init -> void
+Dekaf.Streams.StreamsGroupMemberSnapshot.IsJoined.get -> bool
+Dekaf.Streams.StreamsGroupMemberSnapshot.IsJoined.init -> void
+Dekaf.Streams.StreamsGroupMemberSnapshot.MemberEpoch.get -> int
+Dekaf.Streams.StreamsGroupMemberSnapshot.MemberEpoch.init -> void
+Dekaf.Streams.StreamsGroupMemberSnapshot.MemberId.get -> string?
+Dekaf.Streams.StreamsGroupMemberSnapshot.MemberId.init -> void
+Dekaf.Streams.StreamsGroupMemberSnapshot.PartitionsByUserEndpoint.get -> System.Collections.Generic.IReadOnlyList<Dekaf.Streams.StreamsGroupEndpointAssignment!>!
+Dekaf.Streams.StreamsGroupMemberSnapshot.PartitionsByUserEndpoint.init -> void
+Dekaf.Streams.StreamsGroupMemberSnapshot.Status.get -> System.Collections.Generic.IReadOnlyList<Dekaf.Streams.StreamsGroupStatus!>!
+Dekaf.Streams.StreamsGroupMemberSnapshot.Status.init -> void
+Dekaf.Streams.StreamsGroupMemberSnapshot.StreamsGroupMemberSnapshot() -> void
+Dekaf.Streams.StreamsGroupMemberSnapshot.TaskOffsetInterval.get -> System.TimeSpan
+Dekaf.Streams.StreamsGroupMemberSnapshot.TaskOffsetInterval.init -> void
+Dekaf.Streams.StreamsGroupMemberUpdate
+Dekaf.Streams.StreamsGroupMemberUpdate.ActiveTasks.get -> System.Collections.Generic.IReadOnlyList<Dekaf.Streams.StreamsGroupTaskSet!>?
+Dekaf.Streams.StreamsGroupMemberUpdate.ActiveTasks.init -> void
+Dekaf.Streams.StreamsGroupMemberUpdate.ClientTags.get -> System.Collections.Generic.IReadOnlyList<Dekaf.Streams.StreamsGroupKeyValue!>?
+Dekaf.Streams.StreamsGroupMemberUpdate.ClientTags.init -> void
+Dekaf.Streams.StreamsGroupMemberUpdate.EndpointInformationEpoch.get -> int
+Dekaf.Streams.StreamsGroupMemberUpdate.EndpointInformationEpoch.init -> void
+Dekaf.Streams.StreamsGroupMemberUpdate.ProcessId.get -> string?
+Dekaf.Streams.StreamsGroupMemberUpdate.ProcessId.init -> void
+Dekaf.Streams.StreamsGroupMemberUpdate.ShutdownApplication.get -> bool
+Dekaf.Streams.StreamsGroupMemberUpdate.ShutdownApplication.init -> void
+Dekaf.Streams.StreamsGroupMemberUpdate.StandbyTasks.get -> System.Collections.Generic.IReadOnlyList<Dekaf.Streams.StreamsGroupTaskSet!>?
+Dekaf.Streams.StreamsGroupMemberUpdate.StandbyTasks.init -> void
+Dekaf.Streams.StreamsGroupMemberUpdate.StreamsGroupMemberUpdate() -> void
+Dekaf.Streams.StreamsGroupMemberUpdate.TaskEndOffsets.get -> System.Collections.Generic.IReadOnlyList<Dekaf.Streams.StreamsGroupTaskOffset!>?
+Dekaf.Streams.StreamsGroupMemberUpdate.TaskEndOffsets.init -> void
+Dekaf.Streams.StreamsGroupMemberUpdate.TaskOffsets.get -> System.Collections.Generic.IReadOnlyList<Dekaf.Streams.StreamsGroupTaskOffset!>?
+Dekaf.Streams.StreamsGroupMemberUpdate.TaskOffsets.init -> void
+Dekaf.Streams.StreamsGroupMemberUpdate.Topology.get -> Dekaf.Streams.StreamsGroupTopology?
+Dekaf.Streams.StreamsGroupMemberUpdate.Topology.init -> void
+Dekaf.Streams.StreamsGroupMemberUpdate.UserEndpoint.get -> Dekaf.Streams.StreamsGroupEndpoint?
+Dekaf.Streams.StreamsGroupMemberUpdate.UserEndpoint.init -> void
+Dekaf.Streams.StreamsGroupMemberUpdate.WarmupTasks.get -> System.Collections.Generic.IReadOnlyList<Dekaf.Streams.StreamsGroupTaskSet!>?
+Dekaf.Streams.StreamsGroupMemberUpdate.WarmupTasks.init -> void
+Dekaf.Streams.StreamsGroupStatus
+Dekaf.Streams.StreamsGroupStatus.StatusCode.get -> sbyte
+Dekaf.Streams.StreamsGroupStatus.StatusCode.init -> void
+Dekaf.Streams.StreamsGroupStatus.StatusDetail.get -> string!
+Dekaf.Streams.StreamsGroupStatus.StatusDetail.init -> void
+Dekaf.Streams.StreamsGroupStatus.StreamsGroupStatus() -> void
+Dekaf.Streams.StreamsGroupSubtopology
+Dekaf.Streams.StreamsGroupSubtopology.CopartitionGroups.get -> System.Collections.Generic.IReadOnlyList<Dekaf.Streams.StreamsGroupCopartitionGroup!>!
+Dekaf.Streams.StreamsGroupSubtopology.CopartitionGroups.init -> void
+Dekaf.Streams.StreamsGroupSubtopology.RepartitionSinkTopics.get -> System.Collections.Generic.IReadOnlyList<string!>!
+Dekaf.Streams.StreamsGroupSubtopology.RepartitionSinkTopics.init -> void
+Dekaf.Streams.StreamsGroupSubtopology.RepartitionSourceTopics.get -> System.Collections.Generic.IReadOnlyList<Dekaf.Streams.StreamsGroupTopicInfo!>!
+Dekaf.Streams.StreamsGroupSubtopology.RepartitionSourceTopics.init -> void
+Dekaf.Streams.StreamsGroupSubtopology.SourceTopicRegex.get -> System.Collections.Generic.IReadOnlyList<string!>!
+Dekaf.Streams.StreamsGroupSubtopology.SourceTopicRegex.init -> void
+Dekaf.Streams.StreamsGroupSubtopology.SourceTopics.get -> System.Collections.Generic.IReadOnlyList<string!>!
+Dekaf.Streams.StreamsGroupSubtopology.SourceTopics.init -> void
+Dekaf.Streams.StreamsGroupSubtopology.StateChangelogTopics.get -> System.Collections.Generic.IReadOnlyList<Dekaf.Streams.StreamsGroupTopicInfo!>!
+Dekaf.Streams.StreamsGroupSubtopology.StateChangelogTopics.init -> void
+Dekaf.Streams.StreamsGroupSubtopology.StreamsGroupSubtopology() -> void
+Dekaf.Streams.StreamsGroupSubtopology.SubtopologyId.get -> string!
+Dekaf.Streams.StreamsGroupSubtopology.SubtopologyId.init -> void
+Dekaf.Streams.StreamsGroupTaskOffset
+Dekaf.Streams.StreamsGroupTaskOffset.Offset.get -> long
+Dekaf.Streams.StreamsGroupTaskOffset.Offset.init -> void
+Dekaf.Streams.StreamsGroupTaskOffset.Partition.get -> int
+Dekaf.Streams.StreamsGroupTaskOffset.Partition.init -> void
+Dekaf.Streams.StreamsGroupTaskOffset.StreamsGroupTaskOffset() -> void
+Dekaf.Streams.StreamsGroupTaskOffset.SubtopologyId.get -> string!
+Dekaf.Streams.StreamsGroupTaskOffset.SubtopologyId.init -> void
+Dekaf.Streams.StreamsGroupTaskOffsetReport
+Dekaf.Streams.StreamsGroupTaskOffsetReport.StreamsGroupTaskOffsetReport() -> void
+Dekaf.Streams.StreamsGroupTaskOffsetReport.TaskEndOffsets.get -> System.Collections.Generic.IReadOnlyList<Dekaf.Streams.StreamsGroupTaskOffset!>!
+Dekaf.Streams.StreamsGroupTaskOffsetReport.TaskEndOffsets.init -> void
+Dekaf.Streams.StreamsGroupTaskOffsetReport.TaskOffsets.get -> System.Collections.Generic.IReadOnlyList<Dekaf.Streams.StreamsGroupTaskOffset!>!
+Dekaf.Streams.StreamsGroupTaskOffsetReport.TaskOffsets.init -> void
+Dekaf.Streams.StreamsGroupTaskSet
+Dekaf.Streams.StreamsGroupTaskSet.Partitions.get -> System.Collections.Generic.IReadOnlyList<int>!
+Dekaf.Streams.StreamsGroupTaskSet.Partitions.init -> void
+Dekaf.Streams.StreamsGroupTaskSet.StreamsGroupTaskSet() -> void
+Dekaf.Streams.StreamsGroupTaskSet.SubtopologyId.get -> string!
+Dekaf.Streams.StreamsGroupTaskSet.SubtopologyId.init -> void
+Dekaf.Streams.StreamsGroupTopicInfo
+Dekaf.Streams.StreamsGroupTopicInfo.Name.get -> string!
+Dekaf.Streams.StreamsGroupTopicInfo.Name.init -> void
+Dekaf.Streams.StreamsGroupTopicInfo.Partitions.get -> int
+Dekaf.Streams.StreamsGroupTopicInfo.Partitions.init -> void
+Dekaf.Streams.StreamsGroupTopicInfo.ReplicationFactor.get -> short
+Dekaf.Streams.StreamsGroupTopicInfo.ReplicationFactor.init -> void
+Dekaf.Streams.StreamsGroupTopicInfo.StreamsGroupTopicInfo() -> void
+Dekaf.Streams.StreamsGroupTopicInfo.TopicConfigs.get -> System.Collections.Generic.IReadOnlyList<Dekaf.Streams.StreamsGroupKeyValue!>!
+Dekaf.Streams.StreamsGroupTopicInfo.TopicConfigs.init -> void
+Dekaf.Streams.StreamsGroupTopicPartitions
+Dekaf.Streams.StreamsGroupTopicPartitions.Partitions.get -> System.Collections.Generic.IReadOnlyList<int>!
+Dekaf.Streams.StreamsGroupTopicPartitions.Partitions.init -> void
+Dekaf.Streams.StreamsGroupTopicPartitions.StreamsGroupTopicPartitions() -> void
+Dekaf.Streams.StreamsGroupTopicPartitions.Topic.get -> string!
+Dekaf.Streams.StreamsGroupTopicPartitions.Topic.init -> void
+Dekaf.Streams.StreamsGroupTopology
+Dekaf.Streams.StreamsGroupTopology.Epoch.get -> int
+Dekaf.Streams.StreamsGroupTopology.Epoch.init -> void
+Dekaf.Streams.StreamsGroupTopology.StreamsGroupTopology() -> void
+Dekaf.Streams.StreamsGroupTopology.Subtopologies.get -> System.Collections.Generic.IReadOnlyList<Dekaf.Streams.StreamsGroupSubtopology!>!
+Dekaf.Streams.StreamsGroupTopology.Subtopologies.init -> void
+static Dekaf.Protocol.Messages.ProduceRequest.GetRequestHeaderVersion(short version) -> short
+static Dekaf.Protocol.Messages.ProduceRequest.GetResponseHeaderVersion(short version) -> short
+static Dekaf.Protocol.Messages.ProduceRequest.IsFlexibleVersion(short version) -> bool
+static Dekaf.Protocol.Messages.FetchRequest.GetRequestHeaderVersion(short version) -> short
+static Dekaf.Protocol.Messages.FetchRequest.GetResponseHeaderVersion(short version) -> short
+static Dekaf.Protocol.Messages.FetchRequest.IsFlexibleVersion(short version) -> bool

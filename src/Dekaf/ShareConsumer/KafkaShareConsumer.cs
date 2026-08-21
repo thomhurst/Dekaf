@@ -32,6 +32,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
     private readonly ShareConsumerOptions _options;
     private readonly IDeserializer<TKey> _keyDeserializer;
     private readonly IDeserializer<TValue> _valueDeserializer;
+    private readonly RecordHeaderRoutingPlan? _recordHeaderRoutingPlan;
     private readonly IConnectionPool _connectionPool;
     private readonly MetadataManager _metadataManager;
     private readonly ShareConsumerCoordinator _coordinator;
@@ -148,6 +149,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         _options = options;
         _keyDeserializer = keyDeserializer;
         _valueDeserializer = valueDeserializer;
+        _recordHeaderRoutingPlan = RecordHeaderRoutingPlan.Create(
+            keyDeserializer,
+            valueDeserializer);
         _connectionPool = infrastructure.Pool;
         _metadataManager = infrastructure.Metadata;
         _ownsInfrastructure = ownsInfrastructure;
@@ -1086,6 +1090,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
 
             try
             {
+                batch.ConfigureHeaderRouting(_recordHeaderRoutingPlan);
                 foreach (var record in batch.Records)
                 {
                     if (results.Count >= maxRecords)
@@ -1104,18 +1109,30 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                     t_serializationContext.Component = SerializationComponent.Key;
                     t_serializationContext.KeyData = ReadOnlyMemory<byte>.Empty;
                     t_serializationContext.IsNull = record.IsKeyNull;
+                    t_serializationContext.Headers = null;
+                    var headerRouting = record.CreateHeaderRoutingLookup(
+                        _recordHeaderRoutingPlan);
                     var key = record.IsKeyNull
                         ? default
-                        : _keyDeserializer.Deserialize(record.Key, t_serializationContext);
+                        : RecordHeaderDeserializer.Deserialize(
+                            _keyDeserializer,
+                            record.Key,
+                            t_serializationContext,
+                            in headerRouting);
 
                     t_serializationContext.Component = SerializationComponent.Value;
                     t_serializationContext.KeyData = SerializationContext.NormalizeKeyData(
                         record.Key,
                         record.IsKeyNull);
                     t_serializationContext.IsNull = record.IsValueNull;
+                    t_serializationContext.Headers = null;
                     var value = record.IsValueNull
                         ? default!
-                        : _valueDeserializer.Deserialize(record.Value, t_serializationContext);
+                        : RecordHeaderDeserializer.Deserialize(
+                            _valueDeserializer,
+                            record.Value,
+                            t_serializationContext,
+                            in headerRouting);
 
                     var headers = Array.Empty<Header>();
                     if (record.Headers is not null && record.HeaderCount > 0)

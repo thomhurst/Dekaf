@@ -163,6 +163,50 @@ public class KafkaProducerFastPathTests
     }
 
     [Test]
+    public async Task FireAsync_Tracing_AppendsTraceHeaderWithoutReplacingMessage()
+    {
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name == DekafDiagnostics.ActivitySourceName,
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData
+        };
+        ActivitySource.AddActivityListener(listener);
+
+        await using var producer = new KafkaProducer<string, string>(
+            new ProducerOptions
+            {
+                BootstrapServers = ["localhost:9092"],
+                ClientId = "test-producer",
+                BufferMemory = ulong.MaxValue,
+                BatchSize = 4096,
+                LingerMs = 10,
+                RequestTimeoutMs = 500,
+                DeliveryTimeoutMs = 1000,
+                CloseTimeoutMs = 1000
+            },
+            Serializers.String,
+            Serializers.String);
+        await StopProducerBackgroundLoopsAsync(producer);
+        SeedProducerMetadata(producer);
+        SetInstanceField(producer, "_initialized", true);
+        var message = new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Key = "key",
+            Value = "value"
+        };
+
+        await producer.FireAsync(message);
+
+        await Assert.That(message.Headers).IsNull();
+        var readyBatch = CompleteCurrentBatch(producer.RecordAccumulator, new TopicPartition(Topic, 0));
+        var record = readyBatch.RecordBatch.Records[0];
+        await Assert.That(record.HeaderCount).IsEqualTo(1);
+        await Assert.That(record.Headers![0].Key).IsEqualTo("traceparent");
+        readyBatch.CompleteSend(baseOffset: 7, DateTimeOffset.UtcNow);
+    }
+
+    [Test]
     public async Task TransactionProduceAsync_CompletesContinuationInlineOnSenderThread()
     {
         var options = new ProducerOptions
@@ -419,6 +463,8 @@ public class KafkaProducerFastPathTests
     {
         await using var producer = await CreateBufferBoundaryProducerAsync(maxBlockMs: 30_000);
         var accumulator = producer.RecordAccumulator;
+        var topicPartition = new TopicPartition(Topic, 0);
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(accumulator);
 
         await Assert.That(accumulator.TryReserveMemoryForTest(BufferMemoryLimit)).IsTrue();
         var syntheticReservationRemaining = BufferMemoryLimit;
@@ -446,11 +492,15 @@ public class KafkaProducerFastPathTests
             accumulator.ReleaseMemory(BufferMemoryLimit);
             syntheticReservationRemaining = 0;
 
+            // The drainer temporarily removes active work from _pendingAppends, so queue
+            // emptiness is not a completion fence. Worker ownership reaches zero only after
+            // AppendAsync has committed the record.
             await TestWait.UntilAsync(
-                () => accumulator.PendingAppendCountForTest == 0,
+                () => GetSlowPathAppendCount(accumulator, topicPartition) == 0,
                 TimeSpan.FromSeconds(5));
+            await Assert.That(accumulator.PendingAppendCountForTest).IsEqualTo(0);
 
-            var readyBatch = CompleteCurrentBatch(accumulator, new TopicPartition(Topic, 0));
+            var readyBatch = CompleteCurrentBatch(accumulator, topicPartition);
             await Assert.That(readyBatch.RecordBatch.Records.Count).IsEqualTo(1);
             readyBatch.CompleteSend(baseOffset: 3, DateTimeOffset.UtcNow);
 
@@ -649,17 +699,18 @@ public class KafkaProducerFastPathTests
             binder: null,
             [
                 typeof(ProducerMessage<string, string>),
+                typeof(Headers),
                 typeof(bool),
                 typeof(CancellationToken),
                 typeof(PooledValueTaskSource<RecordMetadata>).MakeByRefType()
             ],
             modifiers: null);
-        object?[] arguments = [message, runContinuationsAsynchronously, CancellationToken.None, null];
+        object?[] arguments = [message, message.Headers, runContinuationsAsynchronously, CancellationToken.None, null];
 
         try
         {
             var result = (bool)method!.Invoke(producer, arguments)!;
-            completion = (PooledValueTaskSource<RecordMetadata>?)arguments[3];
+            completion = (PooledValueTaskSource<RecordMetadata>?)arguments[4];
             return result;
         }
         catch (TargetInvocationException ex) when (ex.InnerException is not null)
@@ -692,6 +743,20 @@ public class KafkaProducerFastPathTests
             return readyBatch;
 
         throw new InvalidOperationException("Partition deque did not contain a current or sealed batch.");
+    }
+
+    private static int GetSlowPathAppendCount(
+        RecordAccumulator accumulator,
+        TopicPartition topicPartition)
+    {
+        var deques = GetInstanceField<object>(accumulator, "_partitionDeques");
+        var tryGetValueMethod = deques.GetType().GetMethod("TryGetValue");
+        var parameters = new object[] { topicPartition, null! };
+        if (!(bool)tryGetValueMethod!.Invoke(deques, parameters)!)
+            return 0;
+
+        var partitionDeque = parameters[1]!;
+        return GetInstanceField<int>(partitionDeque, "SlowPathAppendCount");
     }
 
     private static ValueTask StopProducerBackgroundLoopsAsync(KafkaProducer<string, string> producer)

@@ -1,8 +1,12 @@
 ---
 sidebar_position: 4
+description: "Route heterogeneous records by topic or by schema ID without allocating in steady state, on both the produce and consume sides."
 ---
 
 # Routing Serdes
+
+To route from a Kafka header, or reject records before any key/value deserialization, see
+[Pre-deserialization filtering and routing](../consumer/filtering-and-routing.md).
 
 `Dekaf.Serialization.Routing` routes heterogeneous records without allocating during steady-state
 dispatch. Registration is a cold-start operation; call `Freeze()` before passing a router to a

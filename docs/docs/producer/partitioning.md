@@ -1,5 +1,6 @@
 ---
 sidebar_position: 5
+description: "How keys map to partitions, the available partitioner types, explicit partition assignment, and the ordering guarantees each choice gives you."
 ---
 
 # Partitioning

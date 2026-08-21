@@ -13,6 +13,7 @@ using Dekaf.Compression.Snappy;
 using Dekaf.Compression.Zstd;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Avro;
+using Dekaf.SchemaRegistry.Avro.Poco;
 using Dekaf.SchemaRegistry.Json;
 using Dekaf.SchemaRegistry.Protobuf;
 using Dekaf.Security.Sasl;
@@ -32,13 +33,21 @@ internal static class AotSmoke
         Component = SerializationComponent.Value
     };
 
+    private static readonly SerializationContext PocoValueContext = new()
+    {
+        Topic = "aot-poco-topic",
+        Component = SerializationComponent.Value
+    };
+
     public static async Task RunAsync()
     {
         RunCompressionSmoke();
         RunJsonSmoke();
         RunSchemaRegistryHttpPipelineConstructionSmoke();
         await RunSchemaRegistrySmokeAsync();
+        await RunSchemaRegistryGuidSmokeAsync();
         await RunSchemaRegistryCompatibilitySmokeAsync();
+        await RunSchemaRegistryAssociationSmokeAsync();
         await RunSchemaRegistryPackageSmokeAsync();
         await RunCoreSmokeAsync();
     }
@@ -161,6 +170,67 @@ internal static class AotSmoke
         Require(handler.RequestCount == 2, "Compatibility request count mismatch.");
     }
 
+    private static async Task RunSchemaRegistryAssociationSmokeAsync()
+    {
+        using var handler = new AssociationHandler();
+        using var registry = new SchemaRegistryClient(
+            new SchemaRegistryConfig { Url = "https://schema-registry.example.test" },
+            handler);
+        var request = new AssociationCreateOrUpdateRequest
+        {
+            ResourceName = "aot-topic",
+            ResourceNamespace = "lkc-aot",
+            ResourceId = "lkc-aot:aot-topic",
+            ResourceType = "topic",
+            Associations =
+            [
+                new AssociationCreateOrUpdateInfo
+                {
+                    Subject = "aot-topic-value",
+                    AssociationType = "value",
+                    Lifecycle = "STRONG",
+                    Schema = new Schema
+                    {
+                        SchemaString = AotPayloadJsonSchema,
+                        SchemaType = SchemaType.Json
+                    }
+                }
+            ]
+        };
+
+        var created = await registry.CreateAssociationAsync(request);
+        var found = await registry.GetAssociationsByResourceNameAsync(
+            "aot-topic",
+            "lkc-aot",
+            associationTypes: ["value"]);
+        await registry.DeleteAssociationsAsync(
+            "lkc-aot:aot-topic",
+            associationTypes: ["value"],
+            cascadeLifecycle: true);
+
+        Require(created.Associations.Count == 1, "Association create smoke failed.");
+        Require(created.Associations[0].Schema?.SchemaType == SchemaType.Json,
+            "Association schema mapping smoke failed.");
+        Require(found.Count == 1, "Association list smoke failed.");
+        Require(handler.RequestCount == 3, "Association request count mismatch.");
+    }
+
+    private static async Task RunSchemaRegistryGuidSmokeAsync()
+    {
+        using var handler = new GuidSchemaHandler();
+        using var registry = new SchemaRegistryClient(
+            new SchemaRegistryConfig { Url = "https://schema-registry.example.test" },
+            handler);
+
+        var schema = await registry.GetSchemaByGuidAsync(
+            "{01234567-89ab-cdef-0123-456789abcdef}",
+            "serialized");
+
+        Require(handler.RequestCount == 1, "Schema GUID request count mismatch.");
+        Require(schema.SchemaType == SchemaType.Json, "Schema GUID type mismatch.");
+        Require(schema.Metadata?.Properties?["owner"] == "aot", "Schema GUID metadata mismatch.");
+    }
+
     private static async Task RunSchemaRegistryPackageSmokeAsync()
     {
         var avroSerializerConfig = new AvroSerializerConfig { AutoRegisterSchemas = false };
@@ -205,6 +275,19 @@ internal static class AotSmoke
         var roundTrip = deserializer.Deserialize(buffer.WrittenMemory, ValueContext);
         Require(roundTrip.Id == payload.Id, "Avro Schema Registry ID mismatch.");
         Require(roundTrip.Name == payload.Name, "Avro Schema Registry name mismatch.");
+
+        await using var pocoSerializer = AotAvroPoco.CreateAvroSerializer(registry);
+        await using var pocoDeserializer = AotAvroPoco.CreateAvroDeserializer(registry);
+        var poco = new AotAvroPoco { Id = 12, Name = "poco", Amount = 34.56m };
+        var pocoBuffer = new ArrayBufferWriter<byte>();
+
+        await pocoSerializer.WarmupAsync(PocoValueContext.Topic);
+        pocoSerializer.Serialize(poco, ref pocoBuffer, PocoValueContext);
+
+        var pocoRoundTrip = pocoDeserializer.Deserialize(pocoBuffer.WrittenMemory, PocoValueContext);
+        Require(pocoRoundTrip.Id == poco.Id, "POCO Avro Schema Registry ID mismatch.");
+        Require(pocoRoundTrip.Name == poco.Name, "POCO Avro Schema Registry name mismatch.");
+        Require(pocoRoundTrip.Amount == poco.Amount, "POCO Avro Schema Registry decimal mismatch.");
     }
 
     private static void RequireInterfaceTypedAvroSerializerRejected(InMemorySchemaRegistry registry)
@@ -248,6 +331,10 @@ internal static class AotSmoke
             .UseAvroSchemaRegistry(registry);
         var avroKeyConsumer = Kafka.CreateConsumer<AotAvroRecord, string>()
             .UseAvroSchemaRegistryKey(registry);
+        var pocoProducer = Kafka.CreateProducer<string, AotAvroPoco>()
+            .UseAvroPocoSchemaRegistry(registry);
+        var pocoConsumer = Kafka.CreateConsumer<string, AotAvroPoco>()
+            .UseAvroPocoSchemaRegistry(registry);
 
         var protobufProducer = Kafka.CreateProducer<string, AotProtobufMessage>()
             .UseProtobufSchemaRegistry(registry);
@@ -262,6 +349,8 @@ internal static class AotSmoke
         GC.KeepAlive(avroKeyProducer);
         GC.KeepAlive(avroConsumer);
         GC.KeepAlive(avroKeyConsumer);
+        GC.KeepAlive(pocoProducer);
+        GC.KeepAlive(pocoConsumer);
         GC.KeepAlive(protobufProducer);
         GC.KeepAlive(protobufKeyValueProducer);
         GC.KeepAlive(protobufConsumer);
@@ -356,6 +445,103 @@ internal static class AotSmoke
         };
     }
 
+    private sealed class AssociationHandler : HttpMessageHandler
+    {
+        internal int RequestCount { get; private set; }
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            RequestCount++;
+            if (RequestCount == 1)
+            {
+                Require(request.Method == HttpMethod.Post, "Association POST method mismatch.");
+                var body = await request.Content!.ReadAsStringAsync(cancellationToken);
+                Require(body.Contains("\"schemaType\":\"JSON\"", StringComparison.Ordinal),
+                    "Association schema body mismatch.");
+                return JsonResponse("""
+                    {
+                      "resourceName": "aot-topic",
+                      "resourceNamespace": "lkc-aot",
+                      "resourceId": "lkc-aot:aot-topic",
+                      "resourceType": "topic",
+                      "associations": [
+                        {
+                          "subject": "aot-topic-value",
+                          "associationType": "value",
+                          "lifecycle": "STRONG",
+                          "frozen": false,
+                          "schema": {
+                            "schema": "{}",
+                            "schemaType": "JSON"
+                          }
+                        }
+                      ]
+                    }
+                    """);
+            }
+
+            if (RequestCount == 2)
+            {
+                Require(request.Method == HttpMethod.Get, "Association GET method mismatch.");
+                return JsonResponse("""
+                    [
+                      {
+                        "subject": "aot-topic-value",
+                        "guid": "guid-aot",
+                        "resourceName": "aot-topic",
+                        "resourceNamespace": "lkc-aot",
+                        "resourceId": "lkc-aot:aot-topic",
+                        "resourceType": "topic",
+                        "associationType": "value",
+                        "lifecycle": "STRONG",
+                        "frozen": false
+                      }
+                    ]
+                    """);
+            }
+
+            Require(request.Method == HttpMethod.Delete, "Association DELETE method mismatch.");
+            return new HttpResponseMessage(HttpStatusCode.NoContent);
+        }
+
+        private static HttpResponseMessage JsonResponse(string json) => new(HttpStatusCode.OK)
+        {
+            Content = new StringContent(json, Encoding.UTF8, "application/json")
+        };
+    }
+
+    private sealed class GuidSchemaHandler : HttpMessageHandler
+    {
+        internal int RequestCount { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            RequestCount++;
+            Require(request.Method == HttpMethod.Get, "Schema GUID method mismatch.");
+            Require(
+                request.RequestUri!.PathAndQuery ==
+                "/schemas/guids/01234567-89ab-cdef-0123-456789abcdef?format=serialized",
+                "Schema GUID path mismatch.");
+            Require(
+                request.Headers.GetValues("Confluent-Accept-Unknown-Properties").Single() == "true",
+                "Schema GUID extended-properties header mismatch.");
+
+            return Task.FromResult(JsonResponse());
+        }
+
+        private static HttpResponseMessage JsonResponse() => new(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """{ "schema": "{}", "schemaType": "JSON", "metadata": { "properties": { "owner": "aot" } } }""",
+                Encoding.UTF8,
+                "application/json")
+        };
+    }
+
     private const string AotPayloadJsonSchema = """
         {
           "type": "object",
@@ -370,6 +556,7 @@ internal static class AotSmoke
     private sealed class InMemorySchemaRegistry : ISchemaRegistryClient, ISchemaRegistryCache
     {
         private readonly Dictionary<int, Schema> _schemasById = [];
+        private readonly Dictionary<(Guid Guid, string? Format), Schema> _schemasByGuid = [];
         private readonly Dictionary<string, RegisteredSchema> _schemasBySubject = new(StringComparer.Ordinal);
         private int _nextId = 1;
 
@@ -384,15 +571,18 @@ internal static class AotSmoke
                 return Task.FromResult(existing.Id);
 
             var id = _nextId++;
+            var guid = GuidFromId(id);
             var registered = new RegisteredSchema
             {
                 Id = id,
+                Guid = guid.ToString(),
                 Subject = subject,
                 Version = 1,
                 Schema = schema
             };
             _schemasBySubject[subject] = registered;
             _schemasById[id] = schema;
+            _schemasByGuid[(guid, null)] = schema;
 
             return Task.FromResult(id);
         }
@@ -401,6 +591,34 @@ internal static class AotSmoke
         {
             cancellationToken.ThrowIfCancellationRequested();
             return Task.FromResult(_schemasById[id]);
+        }
+
+        public Task<Schema> GetSchemaByGuidAsync(
+            string guid,
+            string? format = null,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var parsedGuid = Guid.Parse(guid);
+            if (_schemasByGuid.TryGetValue((parsedGuid, format), out var cached))
+                return Task.FromResult(cached);
+
+            var schema = _schemasByGuid[(parsedGuid, null)];
+            _schemasByGuid[(parsedGuid, format)] = schema;
+            return Task.FromResult(schema);
+        }
+
+        public Task<Schema> GetSchemaAsync(
+            int id,
+            string subject,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var registered = _schemasBySubject[subject];
+            if (registered.Id != id)
+                throw new KeyNotFoundException($"Schema {id} is not registered under subject '{subject}'.");
+
+            return Task.FromResult(registered.Schema);
         }
 
         public Task<RegisteredSchema> GetSchemaBySubjectAsync(
@@ -448,8 +666,15 @@ internal static class AotSmoke
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            return Task.FromResult<IReadOnlyList<int>>(
-                _schemasBySubject.Remove(subject, out var registered) ? [registered.Version] : []);
+            if (!_schemasBySubject.Remove(subject, out var registered))
+                return Task.FromResult<IReadOnlyList<int>>([]);
+
+            _schemasById.Remove(registered.Id);
+            var guid = Guid.Parse(registered.Guid!);
+            foreach (var key in _schemasByGuid.Keys.Where(key => key.Guid == guid).ToArray())
+                _schemasByGuid.Remove(key);
+
+            return Task.FromResult<IReadOnlyList<int>>([registered.Version]);
         }
 
         public bool TryGetCachedSchema(int id, out Schema schema)
@@ -464,9 +689,36 @@ internal static class AotSmoke
             return false;
         }
 
+        public bool TryGetCachedSchema(Guid guid, string? format, out Schema schema)
+        {
+            if (_schemasByGuid.TryGetValue((guid, format), out var cached))
+            {
+                schema = cached;
+                return true;
+            }
+
+            schema = null!;
+            return false;
+        }
+
+        public bool TryGetCachedSchema(int id, string subject, out Schema schema)
+        {
+            if (_schemasBySubject.TryGetValue(subject, out var registered)
+                && registered.Id == id)
+            {
+                schema = registered.Schema;
+                return true;
+            }
+
+            schema = null!;
+            return false;
+        }
+
         public void Dispose()
         {
         }
+
+        private static Guid GuidFromId(int id) => new(id, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
     }
 }
 
@@ -514,6 +766,16 @@ internal sealed class AotAvroRecord : ISpecificRecord
                 throw new ArgumentOutOfRangeException(nameof(fieldPos), fieldPos, "Invalid field position.");
         }
     }
+}
+
+[AvroRecord(Name = "AotAvroPoco", Namespace = "Dekaf.Tests.Aot")]
+internal sealed partial class AotAvroPoco
+{
+    public int Id { get; init; }
+    public required string Name { get; init; }
+
+    [AvroField(Precision = 8, Scale = 2)]
+    public decimal Amount { get; init; }
 }
 
 internal sealed class AotProtobufMessage : IMessage<AotProtobufMessage>, IBufferMessage

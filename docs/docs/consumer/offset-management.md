@@ -1,5 +1,6 @@
 ---
 sidebar_position: 3
+description: "Offset commit modes, commit strategies, seeking, and inspecting committed offsets, so you can choose the right delivery guarantee."
 ---
 
 # Offset Management
@@ -202,6 +203,15 @@ await foreach (var msg in consumer.ConsumeAsync(ct))
 // Get committed offset for a partition
 long? committed = await consumer.Positions.GetCommittedOffsetAsync(
     new TopicPartition("my-topic", 0)
+);
+
+// Fetch selected partitions in one OffsetFetch request. Values include leader epochs.
+// Partitions with no committed offset are absent from the dictionary.
+var committedOffsets = await consumer.GetCommittedOffsetsAsync(
+    [
+        new TopicPartition("my-topic", 0),
+        new TopicPartition("my-topic", 1)
+    ]
 );
 
 // Get current position (next offset to be consumed)

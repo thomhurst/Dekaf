@@ -1,11 +1,8 @@
 name: Benchmarks
 
 on:
-  push:
-    branches:
-      - main
-    paths-ignore:
-      - 'docs/docs/benchmarks.md'
+  schedule:
+    - cron: '0 5 * * *'  # Daily at 05:00 UTC
   workflow_dispatch:
     inputs:
       benchmark_filter:
@@ -23,8 +20,8 @@ env:
   ContinuousIntegrationBuild: true
   Deterministic: true
 
-# Cancel superseded runs: a newer commit on main cancels older in-progress
-# benchmark runs. Manual workflow_dispatch runs are never cancelled.
+# Cancel an overlapping scheduled run before starting the next one. Manual
+# workflow_dispatch runs are never cancelled.
 concurrency:
   group: benchmarks-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
@@ -306,7 +303,10 @@ jobs:
                   output.append("")
 
           # Producer benchmarks
-          producer_md = sorted(glob.glob("benchmark-results/Client/results/*ProducerBenchmarks*-github.md"))
+          producer_md = sorted(
+              glob.glob("benchmark-results/Client/results/*ProducerBenchmarks*-github.md")
+              + glob.glob("benchmark-results/Client/results/*ProducerSingleBenchmarks*-github.md")
+          )
           if producer_md:
               output.append("## Producer Benchmarks (Dekaf vs Confluent.Kafka)\n")
               output.append("> **Ratio < 1.0 means Dekaf is faster than Confluent**\n")
@@ -320,7 +320,10 @@ jobs:
 
           # Native memory benchmarks (Windows, ETW-based NativeMemoryProfiler)
           native_md = sorted(glob.glob("benchmark-results/ClientNative/results/*Consumer*Benchmarks*-github.md"))
-          native_md += sorted(glob.glob("benchmark-results/ClientNative/results/*ProducerBenchmarks*-github.md"))
+          native_md += sorted(
+              glob.glob("benchmark-results/ClientNative/results/*ProducerBenchmarks*-github.md")
+              + glob.glob("benchmark-results/ClientNative/results/*ProducerSingleBenchmarks*-github.md")
+          )
           if native_md:
               output.append("## Native Memory Comparison (Windows, ETW)\n")
               output.append("> **'Allocated native memory' captures librdkafka's unmanaged allocations, invisible to the managed Allocated column.** Compare Dekaf's Allocated against Confluent's Allocated + Allocated native memory for a fair total.\n")
@@ -414,7 +417,7 @@ jobs:
           EOF
 
       - name: Store Benchmark Results
-        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1
+        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
         with:
           name: Dekaf Benchmarks
           tool: 'benchmarkdotnet'

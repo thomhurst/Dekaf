@@ -64,6 +64,37 @@ public class AsyncSerdeTests(KafkaTestContainer kafka) : KafkaIntegrationTest(ka
         }
     }
 
+    private sealed class PreparingStringSerializer : ISerializer<string>, IAsyncSerializerPreparer<string>
+    {
+        private int _prepareCalls;
+        private int _prepared;
+
+        public int PrepareCalls => Volatile.Read(ref _prepareCalls);
+
+        public async ValueTask PrepareAsync(
+            string value,
+            SerializationContext context,
+            CancellationToken cancellationToken = default)
+        {
+            await Task.Yield();
+            cancellationToken.ThrowIfCancellationRequested();
+            Interlocked.Increment(ref _prepareCalls);
+            Volatile.Write(ref _prepared, 1);
+        }
+
+        public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
+            where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
+        {
+            if (Volatile.Read(ref _prepared) == 0)
+                throw new InvalidOperationException("Serialize ran before asynchronous preparation.");
+
+            Serializers.String.Serialize(value, ref destination, context);
+        }
+    }
+
     [Test]
     public async Task AsyncSerde_ProduceAsyncAndConsumeAsync_RoundTrips()
     {
@@ -219,6 +250,59 @@ public class AsyncSerdeTests(KafkaTestContainer kafka) : KafkaIntegrationTest(ka
 
         await Assert.That(result).IsNotNull();
         await Assert.That(result!.Value.Value).IsEqualTo("fire-value");
+    }
+
+    [Test]
+    public async Task AsyncPreparer_FireAsync_PreparesAndDeliversMessage()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        var serializer = new PreparingStringSerializer();
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithValueSerializer(serializer)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        await producer.FireAsync(topic, "fire-key", "prepared-value");
+        await producer.FlushAsync();
+
+        await Assert.That(serializer.PrepareCalls).IsEqualTo(1);
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId($"test-group-{Guid.NewGuid():N}")
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        consumer.Subscribe(topic);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(result!.Value.Value).IsEqualTo("prepared-value");
+    }
+
+    [Test]
+    public async Task AsyncSerde_MixedPreparer_ProduceAsync_PreparesAndDeliversMessage()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        var keySerializer = new XorEncryptionStringSerde();
+        var valueSerializer = new PreparingStringSerializer();
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithKeySerializer(keySerializer)
+            .WithValueSerializer(valueSerializer)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        var metadata = await producer.ProduceAsync(topic, "mixed-key", "prepared-value");
+
+        await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
+        await Assert.That(keySerializer.SerializeCalls).IsEqualTo(1);
+        await Assert.That(valueSerializer.PrepareCalls).IsEqualTo(1);
     }
 
     [Test]

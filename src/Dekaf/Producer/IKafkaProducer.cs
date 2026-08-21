@@ -1,10 +1,13 @@
 using Dekaf.Consumer;
+#if !DEKAF_ABSTRACTIONS
 using Dekaf.Networking;
+#endif
 using Dekaf.Serialization;
 using Dekaf.Telemetry;
 
 namespace Dekaf.Producer;
 
+#if DEKAF_ABSTRACTIONS
 /// <summary>
 /// Interface for Kafka producer.
 /// </summary>
@@ -207,7 +210,7 @@ public interface IKafkaProducer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// <remarks>
     /// Transactional produce continuations run inline on a broker sender thread shared by
     /// other partitions using that broker connection. Code after each transactional
-    /// <see cref="ITransaction{TKey, TValue}.ProduceAsync"/> call must remain non-blocking
+    /// <see cref="ITransaction{TKey, TValue}.ProduceAsync(ProducerMessage{TKey, TValue}, CancellationToken)"/> call must remain non-blocking
     /// and avoid long-running synchronous work. Configure
     /// <see cref="ProducerBuilder{TKey,TValue}.WithInlineTransactionCompletions"/> with
     /// <see langword="false"/> when continuation code cannot meet this constraint.
@@ -251,7 +254,9 @@ public interface IKafkaProducer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// <returns>A producer bound to the specified topic.</returns>
     ITopicProducer<TKey, TValue> ForTopic(string topic);
 }
+#endif
 
+#if !DEKAF_ABSTRACTIONS
 /// <summary>
 /// Exposes live producer delivery diagnostics for test and stress harness troubleshooting.
 /// </summary>
@@ -414,7 +419,9 @@ internal sealed class ProducerBatchDeliveryDiagnostic
     public required bool IsReturnedToPool { get; init; }
     public required bool InFlightLinked { get; init; }
 }
+#endif
 
+#if DEKAF_ABSTRACTIONS
 /// <summary>
 /// Flags controlling which producer messages are purged.
 /// </summary>
@@ -659,3 +666,4 @@ public readonly record struct PreparedTransactionState(long ProducerId, short Pr
     public override string ToString()
         => HasTransaction ? $"{ProducerId}:{ProducerEpoch}" : string.Empty;
 }
+#endif

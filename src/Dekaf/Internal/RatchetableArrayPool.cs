@@ -23,13 +23,13 @@ internal sealed class RatchetableArrayPool<T>
     }
 
     /// <summary>
-    /// Gets the current pool instance. Uses <see cref="Volatile.Read{T}(ref T)"/> to ensure
+    /// Gets the current pool instance. Uses <c>Volatile.Read</c> to ensure
     /// visibility of pool replacements from <see cref="RatchetBucketCapacity"/>.
     /// </summary>
     internal ArrayPool<T> Pool => Volatile.Read(ref _pool);
 
     /// <summary>
-    /// Gets the current per-bucket array capacity. Uses <see cref="Volatile.Read(ref int)"/>
+    /// Gets the current per-bucket array capacity. Uses <c>Volatile.Read</c>
     /// for cross-thread visibility.
     /// </summary>
     internal int CurrentArraysPerBucket => Volatile.Read(ref _currentArraysPerBucket);

@@ -53,45 +53,30 @@ public class ProducerBenchmarks
         _dekafProducer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(_kafka.BootstrapServers)
             .WithClientId("dekaf-benchmark")
-            .WithAcks(DekafProducer.Acks.Leader)
+            .WithAcks(DekafProducer.Acks.All)
             .WithLinger(TimeSpan.FromMilliseconds(5))
             .WithBatchSize(16384)
             .BuildAsync()
             .ConfigureAwait(false);
 
         _confluentProducer = new Confluent.Kafka.ProducerBuilder<string, string>(
-            CreateConfluentConfig("confluent-benchmark", enableDeliveryReports: true))
+            ConfluentBenchmarkConfigs.CreateProducerConfig(
+                _kafka.BootstrapServers,
+                "confluent-benchmark",
+                lingerMs: 5,
+                enableDeliveryReports: true))
             .Build();
 
         _confluentFireAndForgetProducer = new Confluent.Kafka.ProducerBuilder<string, string>(
-            CreateConfluentConfig(
+            ConfluentBenchmarkConfigs.CreateProducerConfig(
+                _kafka.BootstrapServers,
                 "confluent-benchmark-fnf",
+                lingerMs: 5,
                 enableDeliveryReports: false,
                 queueBufferingMaxMessages: ConfluentProducerBackpressure.QueueBufferingMaxMessages))
             .Build();
 
         await WarmupAsync().ConfigureAwait(false);
-    }
-
-    private Confluent.Kafka.ProducerConfig CreateConfluentConfig(
-        string clientId,
-        bool enableDeliveryReports,
-        int? queueBufferingMaxMessages = null)
-    {
-        var config = new Confluent.Kafka.ProducerConfig
-        {
-            BootstrapServers = _kafka.BootstrapServers,
-            ClientId = clientId,
-            Acks = Confluent.Kafka.Acks.Leader,
-            LingerMs = 5,
-            BatchSize = 16384,
-            EnableDeliveryReports = enableDeliveryReports
-        };
-
-        if (queueBufferingMaxMessages is { } maxMessages)
-            config.QueueBufferingMaxMessages = maxMessages;
-
-        return config;
     }
 
     private async Task WarmupAsync()
@@ -140,32 +125,11 @@ public class ProducerBenchmarks
         await _kafka.DisposeAsync().ConfigureAwait(false);
     }
 
-    // ===== Single Message Produce =====
-
-    [BenchmarkCategory("SingleProduce")]
-    [Benchmark(Baseline = true)]
-    public async Task<Confluent.Kafka.DeliveryResult<string, string>> Confluent_ProduceSingle()
-    {
-        return await _confluentProducer.ProduceAsync(Topic, new Confluent.Kafka.Message<string, string>
-        {
-            Key = "key",
-            Value = _messageValue
-        }).ConfigureAwait(false);
-    }
-
-    [BenchmarkCategory("SingleProduce")]
-    [Benchmark]
-    public async Task<DekafProducer.RecordMetadata> Dekaf_ProduceSingle()
-    {
-        return await _dekafProducer.ProduceAsync(Topic, "key", _messageValue, CancellationToken.None)
-            .ConfigureAwait(false);
-    }
-
     // ===== Batch Produce =====
 
     [BenchmarkCategory("BatchProduce")]
     [Benchmark(Baseline = true)]
-    public async Task Confluent_ProduceBatch()
+    public async Task Confluent_ProduceBatchAllIdempotent()
     {
         var tasks = new List<Task<Confluent.Kafka.DeliveryResult<string, string>>>(BatchSize);
 
@@ -183,7 +147,7 @@ public class ProducerBenchmarks
 
     [BenchmarkCategory("BatchProduce")]
     [Benchmark]
-    public async Task Dekaf_ProduceBatch()
+    public async Task Dekaf_ProduceBatchAllIdempotent()
     {
         // ProduceAllAsync is the idiomatic batch-produce API: it awaits every message through a
         // single counting completion instead of allocating a Task per message via AsTask().
@@ -194,7 +158,7 @@ public class ProducerBenchmarks
 
     [BenchmarkCategory("FireAndForget")]
     [Benchmark(Baseline = true)]
-    public void Confluent_FireAndForget()
+    public void Confluent_FireAndForgetAllIdempotent()
     {
         for (var i = 0; i < BatchSize; i++)
         {
@@ -221,7 +185,7 @@ public class ProducerBenchmarks
 
     [BenchmarkCategory("FireAndForget")]
     [Benchmark]
-    public async Task Dekaf_FireAndForget()
+    public async Task Dekaf_FireAndForgetAllIdempotent()
     {
         for (var i = 0; i < BatchSize; i++)
         {

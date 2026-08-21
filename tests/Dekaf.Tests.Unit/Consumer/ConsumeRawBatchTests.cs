@@ -1,11 +1,18 @@
 using System.Text;
 using Dekaf.Consumer;
 using Dekaf.Protocol.Records;
+using Dekaf.Serialization;
 
 namespace Dekaf.Tests.Unit.Consumer;
 
 public class ConsumeRawBatchTests
 {
+    [Test]
+    public async Task ConsumeRawRecord_Default_HasNoLeaderEpoch()
+    {
+        await Assert.That(default(ConsumeRawRecord).LeaderEpoch).IsNull();
+    }
+
     [Test]
     public async Task ConsumeRawBatch_EnumeratesAllRecords()
     {
@@ -84,6 +91,60 @@ public class ConsumeRawBatchTests
         await Assert.That(Encoding.UTF8.GetString(results[1].Value.Span)).IsEqualTo("value-1");
         await Assert.That(results[0].IsKeyNull).IsFalse();
         await Assert.That(results[0].IsValueNull).IsFalse();
+    }
+
+    [Test]
+    public async Task ConsumeRawBatch_Records_ExposeZeroCopyHeadersAndLeaderEpoch()
+    {
+        var expectedValue = "trace-value"u8.ToArray();
+        var headers = new[]
+        {
+            new Header("trace-id", expectedValue),
+            new Header("nullable", value: null)
+        };
+        var records = new[]
+        {
+            new Record
+            {
+                OffsetDelta = 0,
+                Key = "key"u8.ToArray(),
+                Value = "value"u8.ToArray(),
+                Headers = headers,
+                HeaderCount = headers.Length
+            }
+        };
+        var recordBatch = new RecordBatch
+        {
+            BaseOffset = 10,
+            PartitionLeaderEpoch = 7,
+            Records = records
+        };
+        using var pending = PendingFetchData.Create("test-topic", 0, [recordBatch]);
+        pending.EagerParseAll();
+        var batch = new ConsumeRawBatch(pending);
+
+        using var enumerator = batch.GetEnumerator();
+        await Assert.That(enumerator.MoveNext()).IsTrue();
+        var record = enumerator.Current;
+
+        await Assert.That(record.LeaderEpoch).IsEqualTo(7);
+        await Assert.That(record.Headers.Length).IsEqualTo(2);
+        await Assert.That(record.Headers.Span[0].Key).IsEqualTo("trace-id");
+        await Assert.That(record.Headers.Span[0].Value.Span.SequenceEqual(expectedValue)).IsTrue();
+        await Assert.That(record.Headers.Span[1].IsValueNull).IsTrue();
+    }
+
+    [Test]
+    public async Task ConsumeRawBatch_PartitionEofMarker_IsEmptyAndCarriesOffset()
+    {
+        using var pending = PendingFetchData.CreatePartitionEof("test-topic", 3, 42);
+        var batch = new ConsumeRawBatch(pending);
+
+        await Assert.That(batch.TopicPartition).IsEqualTo(new TopicPartition("test-topic", 3));
+        await Assert.That(batch.IsPartitionEof).IsTrue();
+        await Assert.That(batch.PartitionEofOffset).IsEqualTo(42);
+        using var records = batch.GetEnumerator();
+        await Assert.That(records.MoveNext()).IsFalse();
     }
 
     [Test]

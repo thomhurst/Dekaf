@@ -34,6 +34,10 @@ public readonly record struct Record
     /// </summary>
     public int HeaderCount { get; init; }
 
+    private int RoutedHeaderIndex0 { get; init; }
+    private int RoutedHeaderIndex1 { get; init; }
+    private int RoutedHeaderTailOffset { get; init; }
+
     /// <summary>
     /// Returns true if the key is null (empty memory with special flag).
     /// </summary>
@@ -112,7 +116,7 @@ public readonly record struct Record
         {
             for (var i = 0; i < effectiveHeaderCount; i++)
             {
-                Headers[i].Write(ref writer);
+                HeaderProtocol.Write(in Headers[i], ref writer);
             }
         }
     }
@@ -122,6 +126,11 @@ public readonly record struct Record
     /// The returned Record's Key and Value reference memory from the reader's buffer.
     /// </summary>
     public static Record Read(ref KafkaProtocolReader reader)
+        => Read(ref reader, headerRoutingPlan: null);
+
+    internal static Record Read(
+        ref KafkaProtocolReader reader,
+        RecordHeaderRoutingPlan? headerRoutingPlan)
     {
         var length = reader.ReadVarInt();
         if (length < 0)
@@ -139,7 +148,7 @@ public readonly record struct Record
 
         try
         {
-            return ReadBody(ref bodyReader, length, bodyStart);
+            return ReadBody(ref bodyReader, length, bodyStart, headerRoutingPlan);
         }
         catch (RecordBodyLengthMismatchException ex)
         {
@@ -155,7 +164,11 @@ public readonly record struct Record
         }
     }
 
-    private static Record ReadBody(ref KafkaProtocolReader reader, int length, long bodyStart)
+    private static Record ReadBody(
+        ref KafkaProtocolReader reader,
+        int length,
+        long bodyStart,
+        RecordHeaderRoutingPlan? headerRoutingPlan)
     {
         var attributes = (byte)reader.ReadInt8();
         var timestampDelta = reader.ReadVarLong();
@@ -173,16 +186,56 @@ public readonly record struct Record
         ValidateHeaderCount(headerCount, length, reader.Consumed - bodyStart, reader.Remaining);
 
         Header[]? headers = null;
+        var routedHeaderIndex0 = 0;
+        var routedHeaderIndex1 = 0;
+        var routedHeaderTailOffset = headerRoutingPlan is null
+            ? 0
+            : RecordHeaderRoutingPlan.FullyIndexedWithoutTail;
         if (headerCount > 0)
         {
             // Rent from ArrayPool to avoid per-record allocation.
             // The rented array may be oversized; HeaderCount tracks the valid count.
             // The array is returned to the pool when the owning LazyRecordList is disposed.
-            headers = ArrayPool<Header>.Shared.Rent(headerCount);
+            var routedHeaderTailCount = headerRoutingPlan is { Count: > 2 }
+                ? headerRoutingPlan.GetRoutingTailCapacity(headerCount)
+                : 0;
+            headers = ArrayPool<Header>.Shared.Rent(checked(headerCount + routedHeaderTailCount));
+            if (routedHeaderTailCount > 0)
+            {
+                routedHeaderTailOffset = headerCount;
+                headers.AsSpan(routedHeaderTailOffset, routedHeaderTailCount).Clear();
+            }
             try
             {
                 for (var i = 0; i < headerCount; i++)
-                    headers[i] = Header.Read(ref reader);
+                {
+                    var header = HeaderProtocol.Read(ref reader);
+                    headers[i] = header;
+                    if (headerRoutingPlan is not null
+                        && headerRoutingPlan.TryGetSlot(header.Key, out var slot))
+                    {
+                        var index = i + 1;
+                        switch (slot)
+                        {
+                            case 0:
+                                routedHeaderIndex0 = index;
+                                break;
+                            case 1:
+                                routedHeaderIndex1 = index;
+                                break;
+                            default:
+                                var mask = routedHeaderTailCount - 1;
+                                var bucket = RecordHeaderRoutingPlan.GetRoutingTailBucket(slot, mask);
+                                while (headers[routedHeaderTailOffset + bucket].Key is { } existingKey
+                                       && !string.Equals(existingKey, header.Key, StringComparison.Ordinal))
+                                {
+                                    bucket = (bucket + 1) & mask;
+                                }
+                                headers[routedHeaderTailOffset + bucket] = header;
+                                break;
+                        }
+                    }
+                }
 
                 ValidateBodyLength(length, reader.Consumed - bodyStart);
             }
@@ -208,7 +261,126 @@ public readonly record struct Record
             Value = value,
             IsValueNull = isValueNull,
             Headers = headers,
-            HeaderCount = headerCount
+            HeaderCount = headerCount,
+            RoutedHeaderIndex0 = routedHeaderIndex0,
+            RoutedHeaderIndex1 = routedHeaderIndex1,
+            RoutedHeaderTailOffset = routedHeaderTailOffset
+        };
+    }
+
+    internal RecordHeaderRoutingLookup CreateHeaderRoutingLookup(
+        RecordHeaderRoutingPlan? headerRoutingPlan) =>
+        new(
+            headerRoutingPlan,
+            Headers,
+            HeaderCount,
+            RoutedHeaderIndex0,
+            RoutedHeaderIndex1,
+            RoutedHeaderTailOffset);
+
+    internal Record IndexHeaders(RecordHeaderRoutingPlan headerRoutingPlan)
+    {
+        if (Headers is null || HeaderCount == 0)
+            return this;
+
+        var firstIndex = 0;
+        var secondIndex = 0;
+        for (var index = 0; index < HeaderCount; index++)
+        {
+            if (!headerRoutingPlan.TryGetSlot(Headers[index].Key, out var slot))
+                continue;
+
+            var encodedIndex = index + 1;
+            switch (slot)
+            {
+                case 0:
+                    firstIndex = encodedIndex;
+                    break;
+                case 1:
+                    secondIndex = encodedIndex;
+                    break;
+            }
+        }
+
+        return this with
+        {
+            RoutedHeaderIndex0 = firstIndex,
+            RoutedHeaderIndex1 = secondIndex,
+            RoutedHeaderTailOffset = headerRoutingPlan.Count > 2
+                ? RecordHeaderRoutingPlan.InlineSlotsOnly
+                : RecordHeaderRoutingPlan.FullyIndexedWithoutTail
+        };
+    }
+
+    internal Record IndexPooledHeaders(RecordHeaderRoutingPlan headerRoutingPlan)
+    {
+        if (Headers is null || HeaderCount == 0)
+        {
+            return this with
+            {
+                RoutedHeaderIndex0 = 0,
+                RoutedHeaderIndex1 = 0,
+                RoutedHeaderTailOffset = RecordHeaderRoutingPlan.FullyIndexedWithoutTail
+            };
+        }
+
+        var headers = Headers;
+        var routedHeaderTailCount = headerRoutingPlan.Count > 2
+            ? headerRoutingPlan.GetRoutingTailCapacity(HeaderCount)
+            : 0;
+        if (routedHeaderTailCount > 0)
+        {
+            var requiredLength = checked(HeaderCount + routedHeaderTailCount);
+            if (headers.Length < requiredLength)
+            {
+                var resizedHeaders = ArrayPool<Header>.Shared.Rent(requiredLength);
+                headers.AsSpan(0, HeaderCount).CopyTo(resizedHeaders);
+                ArrayPool<Header>.Shared.Return(headers, clearArray: true);
+                headers = resizedHeaders;
+            }
+
+            headers.AsSpan(HeaderCount, routedHeaderTailCount).Clear();
+        }
+
+        var firstIndex = 0;
+        var secondIndex = 0;
+        for (var index = 0; index < HeaderCount; index++)
+        {
+            var header = headers[index];
+            if (!headerRoutingPlan.TryGetSlot(header.Key, out var slot))
+                continue;
+
+            var encodedIndex = index + 1;
+            switch (slot)
+            {
+                case 0:
+                    firstIndex = encodedIndex;
+                    break;
+                case 1:
+                    secondIndex = encodedIndex;
+                    break;
+                default:
+                    var mask = routedHeaderTailCount - 1;
+                    var bucket = RecordHeaderRoutingPlan.GetRoutingTailBucket(slot, mask);
+                    while (headers[HeaderCount + bucket].Key is { } existingKey
+                           && !string.Equals(existingKey, header.Key, StringComparison.Ordinal))
+                    {
+                        bucket = (bucket + 1) & mask;
+                    }
+
+                    headers[HeaderCount + bucket] = header;
+                    break;
+            }
+        }
+
+        return this with
+        {
+            Headers = headers,
+            RoutedHeaderIndex0 = firstIndex,
+            RoutedHeaderIndex1 = secondIndex,
+            RoutedHeaderTailOffset = routedHeaderTailCount > 0
+                ? HeaderCount
+                : RecordHeaderRoutingPlan.FullyIndexedWithoutTail
         };
     }
 
@@ -282,7 +454,7 @@ public readonly record struct Record
         {
             for (var i = 0; i < headerCount; i++)
             {
-                size += headers[i].CalculateSize();
+                size += HeaderProtocol.CalculateSize(in headers[i]);
             }
         }
 
@@ -342,7 +514,7 @@ public readonly record struct Record
         {
             for (var i = 0; i < headerCount; i++)
             {
-                headers[i].Encode(destination, ref offset);
+                HeaderProtocol.Encode(in headers[i], destination, ref offset);
             }
         }
 

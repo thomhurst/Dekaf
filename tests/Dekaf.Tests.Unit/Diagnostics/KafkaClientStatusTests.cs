@@ -235,7 +235,8 @@ public sealed class KafkaClientStatusTests
             BindingFlags.NonPublic | BindingFlags.Instance)!;
         object?[] arguments =
         [
-            new ProducerMessage<string, string> { Topic = "orders", Key = "key", Value = "value" }
+            new ProducerMessage<string, string> { Topic = "orders", Key = "key", Value = "value" },
+            null
         ];
         return (Activity?)method.Invoke(producer, arguments);
     }

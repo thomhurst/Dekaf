@@ -1,10 +1,13 @@
 ---
 sidebar_position: 4
+description: "Share partitions across consumer instances, covering rebalancing, static membership, session and heartbeat tuning, and how to scale group members."
 ---
 
 # Consumer Groups
 
 Consumer groups enable multiple consumer instances to share the work of consuming a topic. Kafka automatically distributes partitions among group members.
+
+Consumer groups guarantee per-partition ordering and give you full offset control (seek, replay, reset), but parallelism is capped at the partition count and one unprocessable message blocks the partition behind it. If you need work-queue semantics instead — more workers than partitions, per-record retry and redelivery, no ordering requirement — see [Share Consumers (KIP-932)](./share-consumers), which includes a [side-by-side comparison](./share-consumers#consumer-or-share-consumer) of the two models.
 
 ## How Consumer Groups Work
 
@@ -125,6 +128,7 @@ var consumer = await Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
     .WithRebalanceListener(new MyRebalanceListener())
+    .WithPartitionStopTimeout(TimeSpan.FromSeconds(30))
     .BuildAsync();
 ```
 
@@ -137,7 +141,22 @@ Callback semantics:
 | `OnPartitionsLostAsync` | After ownership was lost involuntarily, such as heartbeat timeout or unknown member recovery. | Do not commit offsets for lost partitions unless your application has a separate ownership guarantee. |
 | `OnPartitionsStoppedAsync` | During graceful `CloseAsync` or `DisposeAsync`, after heartbeat, leader-refresh, auto-commit, and prefetch tasks stop and before final auto-commit, `LeaveGroup`, assignment cleanup, and resource disposal. | Drain local work if needed, commit completed offsets, then release resources. |
 
-Non-cancellation callback exceptions are logged and suppressed. `OperationCanceledException` follows the supplied cancellation token.
+Non-cancellation callback exceptions are logged and suppressed. The callback token
+is cancelled by caller cancellation, the aggregate `WithDefaultApiTimeout`, or the
+configured `WithPartitionStopTimeout`.
+
+During a cooperative revoke, Dekaf awaits its automatic revoked-offset commit and
+`OnPartitionsRevokedAsync` before completing the assignment transfer. The initial
+KIP-848 heartbeat advertises `ConsumerOptions.RebalanceTimeoutMs` (60 seconds by
+default), which is the broker-visible window for completing that rebalance. The
+automatic revoked-offset commit is cancelled at the same limit. Listener callbacks
+receive the consumer operation/lifetime token rather than a separate timeout token,
+so revoke work should still complete within `RebalanceTimeoutMs`; exceeding the
+broker window can cause the member to lose its assignment.
+
+`MaxPollIntervalMs` is separate: it limits time between foreground polls and is not
+sent as the rebalance timeout. Configuration-bound consumers can set the window with
+the `RebalanceTimeoutMs` key.
 
 Use `IConsumerAwareRebalanceListener` when a callback must operate on the consumer
 without capturing its unrestricted instance:
@@ -368,9 +387,21 @@ When a consumer leaves gracefully (`await using` or `CloseAsync`):
 4. Consumer sends `LeaveGroup` and releases resources
 5. Remaining consumers get its partitions
 
-The stop callback is bounded to five seconds. If it is cancelled, Dekaf still
-clears local assignment and releases resources before `CloseAsync` rethrows the
-cancellation.
+The stop callback timeout defaults to five seconds and is configured with
+`WithPartitionStopTimeout`. On expiry, Dekaf cancels the callback token and stops
+awaiting the callback so assignment cleanup and resource disposal can continue. A
+callback that ignores cancellation may keep running after close, so it must not use
+consumer-owned resources after its token is cancelled. Caller cancellation and the
+aggregate `WithDefaultApiTimeout` can end the window sooner; those cancellations are
+re-thrown by `CloseAsync` after local cleanup. `ConsumerCloseOptions` controls only
+whether group membership is retained or left and does not replace the callback
+timeout.
+
+For `KafkaConsumerService`, `KafkaConsumerServiceOptions.ShutdownTimeout`
+independently caps how long the hosted service awaits consumer disposal. Set it
+longer than `WithPartitionStopTimeout` plus remaining close work when the host must
+observe callback completion; the generic host's shutdown timeout can impose a
+further outer cap.
 
 Cancel the token passed to `ConsumeAsync` before closing when you need to stop a pending fetch promptly during shutdown.
 

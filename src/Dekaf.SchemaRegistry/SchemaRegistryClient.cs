@@ -18,11 +18,14 @@ namespace Dekaf.SchemaRegistry;
 /// </summary>
 public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistryCache
 {
+    private const string AcceptUnknownPropertiesHeader = "Confluent-Accept-Unknown-Properties";
     private static readonly TimeSpan PooledConnectionLifetime = TimeSpan.FromMinutes(2);
 
     private readonly HttpClient _httpClient;
     private readonly SchemaRegistryConfig _config;
     private readonly ConcurrentDictionary<int, Schema> _schemaByIdCache = new();
+    private readonly ConcurrentDictionary<(Guid Guid, string? Format), Schema> _schemaByGuidCache = new();
+    private readonly ConcurrentDictionary<(int Id, string Subject), Schema> _schemaBySubjectAndIdCache = new();
     private readonly ConcurrentDictionary<(string Subject, Schema Schema, bool Normalize), int> _idBySchemaCache = new();
     private readonly object _cacheLock = new();
     private readonly int _maxCachedSchemas;
@@ -99,7 +102,12 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
     }
 
     internal int CachedSchemaByIdCount => _schemaByIdCache.Count;
+    internal int CachedSchemaByGuidCount => _schemaByGuidCache.Count;
+    internal int CachedSchemaBySubjectAndIdCount => _schemaBySubjectAndIdCache.Count;
     internal int CachedSchemaIdCount => _idBySchemaCache.Count;
+
+    /// <inheritdoc />
+    public int LatestCacheTtlSecs => _config.LatestCacheTtlSecs;
 
     internal static HttpMessageHandler CreateConfiguredHttpHandler(SchemaRegistryConfig? config)
     {
@@ -166,6 +174,13 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             throw new ArgumentOutOfRangeException(
                 nameof(config),
                 "RequestTimeoutMs must be positive or -1 for an infinite timeout.");
+        }
+
+        if (config.LatestCacheTtlSecs < -1)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(config),
+                "LatestCacheTtlSecs must be non-negative or -1 for no expiry.");
         }
 
         if (!config.UseProxy && config.Proxy is not null)
@@ -272,13 +287,16 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             throw new ArgumentException("UserAgent is not a valid HTTP User-Agent value.", nameof(config), ex);
         }
 
+        headers.Add(AcceptUnknownPropertiesHeader, "true");
+
         if (config.DefaultHeaders is null)
             return;
 
         foreach (var (name, value) in config.DefaultHeaders)
         {
             if (string.Equals(name, "User-Agent", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(name, "Accept", StringComparison.OrdinalIgnoreCase))
+                string.Equals(name, "Accept", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(name, AcceptUnknownPropertiesHeader, StringComparison.OrdinalIgnoreCase))
             {
                 throw new ArgumentException(
                     $"The {name} header is managed by SchemaRegistryClient and cannot be overridden.",
@@ -335,18 +353,54 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
     {
         StringBuilder? builder = null;
         foreach (var (name, value) in parameters)
-        {
-            if (value is null)
-                continue;
-
-            builder ??= new StringBuilder(path);
-            builder.Append(builder.Length == path.Length ? '?' : '&');
-            builder.Append(Uri.EscapeDataString(name));
-            builder.Append('=');
-            builder.Append(Uri.EscapeDataString(value));
-        }
+            AppendQueryParameter(ref builder, path, name, value);
 
         return builder?.ToString() ?? path;
+    }
+
+    private static string WithAssociationQuery(
+        string path,
+        string? resourceType,
+        IReadOnlyList<string>? associationTypes,
+        string? lifecycle,
+        int? offset,
+        int? limit,
+        bool? cascadeLifecycle)
+    {
+        StringBuilder? builder = null;
+        AppendQueryParameter(ref builder, path, "resourceType", resourceType);
+
+        if (associationTypes is not null)
+        {
+            for (var index = 0; index < associationTypes.Count; index++)
+                AppendQueryParameter(ref builder, path, "associationType", associationTypes[index]);
+        }
+
+        AppendQueryParameter(ref builder, path, "lifecycle", lifecycle);
+        AppendQueryParameter(ref builder, path, "offset", IntQuery(offset));
+        AppendQueryParameter(ref builder, path, "limit", IntQuery(limit));
+        AppendQueryParameter(
+            ref builder,
+            path,
+            "cascadeLifecycle",
+            cascadeLifecycle.HasValue ? cascadeLifecycle.Value ? "true" : "false" : null);
+        return builder?.ToString() ?? path;
+    }
+
+    private static void AppendQueryParameter(
+        ref StringBuilder? builder,
+        string path,
+        string name,
+        string? value)
+    {
+        if (value is null)
+            return;
+
+        builder ??= new StringBuilder(path);
+        builder.Append(builder.Length == path.Length ? '?' : '&');
+        builder.Append(Uri.EscapeDataString(name));
+        builder.Append('=');
+        builder.Append(Uri.EscapeDataString(value));
     }
 
     private static string? BoolQuery(bool value) => value ? "true" : null;
@@ -453,8 +507,14 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             SchemaRegistryJsonContext.Default.RegisterSchemaResponse, cancellationToken).ConfigureAwait(false);
 
         var id = result!.Id;
+        var schemaGuid = ParseSchemaGuid(result.Guid);
 
-        CacheSchema(id, subject, schema, effectiveNormalize);
+        CacheSchema(
+            id,
+            subject,
+            schema,
+            effectiveNormalize,
+            schemaGuid: effectiveNormalize ? null : schemaGuid);
 
         return id;
     }
@@ -481,13 +541,91 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         return schema;
     }
 
+    public async Task<Schema> GetSchemaByGuidAsync(
+        string guid,
+        string? format = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(guid);
+        if (!Guid.TryParse(guid, out var parsedGuid))
+            throw new ArgumentException("The schema GUID is not valid.", nameof(guid));
+
+        format = NormalizeFormat(format);
+        var cacheKey = (parsedGuid, format);
+        if (_schemaByGuidCache.TryGetValue(cacheKey, out var cached))
+            return cached;
+
+        using var response = await GetWithFailoverAsync(
+            WithQuery(
+                $"schemas/guids/{parsedGuid:D}",
+                ("format", format)),
+            cancellationToken).ConfigureAwait(false);
+
+        await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
+
+        var result = await response.Content.ReadFromJsonAsync<GetSchemaResponse>(
+            SchemaRegistryJsonContext.Default.GetSchemaResponse, cancellationToken).ConfigureAwait(false);
+        if (result is null)
+            throw new SchemaRegistryException((int)response.StatusCode, "Schema Registry returned an empty schema response");
+
+        var schema = CreateSchema(result);
+        CacheGuidSchema(parsedGuid, format, schema);
+        return schema;
+    }
+
     public bool TryGetCachedSchema(int id, out Schema schema)
         => _schemaByIdCache.TryGetValue(id, out schema!);
 
-    public async Task<RegisteredSchema> GetSchemaBySubjectAsync(string subject, string version = "latest", CancellationToken cancellationToken = default)
+    public bool TryGetCachedSchema(Guid guid, string? format, out Schema schema)
+        => _schemaByGuidCache.TryGetValue((guid, NormalizeFormat(format)), out schema!);
+
+    public async Task<Schema> GetSchemaAsync(
+        int id,
+        string subject,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(subject);
+        var key = (id, subject);
+        if (_schemaBySubjectAndIdCache.TryGetValue(key, out var cached))
+            return cached;
+
+        using var response = await GetWithFailoverAsync(
+            WithQuery(
+                $"schemas/ids/{id.ToString(CultureInfo.InvariantCulture)}",
+                ("subject", subject)),
+            cancellationToken).ConfigureAwait(false);
+
+        await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
+
+        var result = await response.Content.ReadFromJsonAsync<GetSchemaResponse>(
+            SchemaRegistryJsonContext.Default.GetSchemaResponse, cancellationToken).ConfigureAwait(false);
+        if (result is null)
+            throw new SchemaRegistryException((int)response.StatusCode, "Schema Registry returned an empty schema response");
+
+        var schema = CreateSchema(result);
+        CacheSubjectSchema(id, subject, schema);
+        return schema;
+    }
+
+    public bool TryGetCachedSchema(int id, string subject, out Schema schema)
+        => _schemaBySubjectAndIdCache.TryGetValue((id, subject), out schema!);
+
+    public Task<RegisteredSchema> GetSchemaBySubjectAsync(
+        string subject,
+        string version = "latest",
+        CancellationToken cancellationToken = default) =>
+        GetSchemaBySubjectAsync(subject, version, ignoreDeletedSchemas: true, cancellationToken);
+
+    public async Task<RegisteredSchema> GetSchemaBySubjectAsync(
+        string subject,
+        string version,
+        bool ignoreDeletedSchemas,
+        CancellationToken cancellationToken = default)
     {
         using var response = await GetWithFailoverAsync(
-            $"subjects/{Uri.EscapeDataString(subject)}/versions/{Uri.EscapeDataString(version)}",
+            WithQuery(
+                $"subjects/{Uri.EscapeDataString(subject)}/versions/{Uri.EscapeDataString(version)}",
+                ("deleted", ignoreDeletedSchemas ? null : "true")),
             cancellationToken).ConfigureAwait(false);
 
         await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
@@ -498,12 +636,14 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             throw new SchemaRegistryException((int)response.StatusCode, "Schema Registry returned an empty schema response");
 
         var schema = CreateSchema(result);
+        var schemaGuid = ParseSchemaGuid(result.Guid);
 
-        CacheSchema(result.Id, subject: null, schema);
+        CacheSchema(result.Id, subject: null, schema, schemaGuid: schemaGuid);
 
         return new RegisteredSchema
         {
             Id = result.Id,
+            Guid = schemaGuid?.ToString("D"),
             Subject = result.Subject,
             Version = result.Version,
             Schema = schema
@@ -539,16 +679,19 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             throw new SchemaRegistryException((int)response.StatusCode, "Schema Registry returned an empty schema response");
 
         var registeredSchema = CreateSchema(result);
+        var schemaGuid = ParseSchemaGuid(result.Guid);
         CacheSchema(
             result.Id,
             ignoreDeletedSchemas ? subject : null,
             schema,
             effectiveNormalize,
-            schemaById: registeredSchema);
+            schemaById: registeredSchema,
+            schemaGuid: schemaGuid);
 
         return new RegisteredSchema
         {
             Id = result.Id,
+            Guid = schemaGuid?.ToString("D"),
             Subject = result.Subject,
             Version = result.Version,
             Schema = registeredSchema
@@ -599,7 +742,14 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             throw new SchemaRegistryException((int)response.StatusCode, "Schema Registry returned an empty schema response");
 
         var registeredSchema = CreateSchema(result);
-        CacheSchema(result.Id, subject, schema, effectiveNormalize, schemaById: registeredSchema);
+        var schemaGuid = ParseSchemaGuid(result.Guid);
+        CacheSchema(
+            result.Id,
+            subject,
+            schema,
+            effectiveNormalize,
+            schemaById: registeredSchema,
+            schemaGuid: schemaGuid);
 
         return result.Id;
     }
@@ -609,18 +759,15 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         string? subject,
         Schema schema,
         bool normalize = false,
-        Schema? schemaById = null)
+        Schema? schemaById = null,
+        Guid? schemaGuid = null)
     {
         if (_maxCachedSchemas == 0)
             return;
 
         lock (_cacheLock)
         {
-            if (_schemaByIdCache.Count >= _maxCachedSchemas || _idBySchemaCache.Count >= _maxCachedSchemas)
-            {
-                _schemaByIdCache.Clear();
-                _idBySchemaCache.Clear();
-            }
+            ClearCachesIfFull();
 
             if (schemaById is not null)
                 _schemaByIdCache[id] = schemaById;
@@ -630,7 +777,67 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             {
                 _idBySchemaCache.TryAdd((subject, schema, normalize), id);
             }
+            if (schemaGuid is { } guid)
+                _schemaByGuidCache.TryAdd((guid, null), schemaById ?? schema);
         }
+    }
+
+    private void CacheSubjectSchema(int id, string subject, Schema schema)
+    {
+        if (_maxCachedSchemas == 0)
+            return;
+
+        lock (_cacheLock)
+        {
+            ClearCachesIfFull();
+
+            _schemaBySubjectAndIdCache[(id, subject)] = schema;
+        }
+    }
+
+    internal void CacheGuidSchema(Guid guid, string? format, Schema schema)
+    {
+        if (_maxCachedSchemas == 0)
+            return;
+
+        var cacheKey = (guid, NormalizeFormat(format));
+        lock (_cacheLock)
+        {
+            if (_schemaByGuidCache.ContainsKey(cacheKey))
+                return;
+
+            ClearCachesIfFull();
+
+            _schemaByGuidCache.TryAdd(cacheKey, schema);
+        }
+    }
+
+    private static string? NormalizeFormat(string? format) =>
+        string.IsNullOrEmpty(format) ? null : format;
+
+    private void ClearCachesIfFull()
+    {
+        if (_schemaByIdCache.Count < _maxCachedSchemas &&
+            _schemaBySubjectAndIdCache.Count < _maxCachedSchemas &&
+            _idBySchemaCache.Count < _maxCachedSchemas &&
+            _schemaByGuidCache.Count < _maxCachedSchemas)
+            return;
+
+        _schemaByIdCache.Clear();
+        _schemaBySubjectAndIdCache.Clear();
+        _idBySchemaCache.Clear();
+        _schemaByGuidCache.Clear();
+    }
+
+    private static Guid? ParseSchemaGuid(string? guid)
+    {
+        if (guid is null)
+            return null;
+
+        if (Guid.TryParse(guid, out var parsedGuid))
+            return parsedGuid;
+
+        throw new SchemaRegistryException(0, "Schema Registry returned an invalid schema GUID.");
     }
 
     public async Task<IReadOnlyList<string>> GetAllSubjectsAsync(CancellationToken cancellationToken = default)
@@ -739,6 +946,95 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
 
         return await response.Content.ReadFromJsonAsync<List<int>>(
             SchemaRegistryJsonContext.Default.ListInt32, cancellationToken).ConfigureAwait(false) ?? [];
+    }
+
+    public async Task<IReadOnlyList<Association>> GetAssociationsByResourceNameAsync(
+        string resourceName,
+        string resourceNamespace = "-",
+        string? resourceType = null,
+        IReadOnlyList<string>? associationTypes = null,
+        string? lifecycle = null,
+        int offset = 0,
+        int limit = -1,
+        CancellationToken cancellationToken = default)
+    {
+        AssociationValidation.ValidateGet(
+            resourceName,
+            resourceNamespace,
+            resourceType,
+            associationTypes,
+            lifecycle,
+            offset,
+            limit);
+
+        var path = WithAssociationQuery(
+            $"associations/resources/{Uri.EscapeDataString(resourceNamespace)}/{Uri.EscapeDataString(resourceName)}",
+            resourceType,
+            associationTypes,
+            lifecycle,
+            offset == 0 ? null : offset,
+            limit == -1 ? null : limit,
+            cascadeLifecycle: null);
+        using var response = await GetWithFailoverAsync(path, cancellationToken).ConfigureAwait(false);
+        await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
+
+        var result = await response.Content.ReadFromJsonAsync<List<AssociationDto>>(
+            SchemaRegistryJsonContext.Default.ListAssociationDto,
+            cancellationToken).ConfigureAwait(false);
+        if (result is null or { Count: 0 })
+            return [];
+
+        var associations = new Association[result.Count];
+        for (var index = 0; index < result.Count; index++)
+            associations[index] = ToAssociation(result[index]);
+        return associations;
+    }
+
+    public async Task<AssociationResponse> CreateAssociationAsync(
+        AssociationCreateOrUpdateRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        AssociationValidation.ValidateCreate(request);
+
+        using var response = await PostAsJsonWithFailoverAsync(
+            "associations",
+            ToAssociationRequestDto(request, _config.NormalizeSchemas),
+            SchemaRegistryJsonContext.Default.AssociationCreateOrUpdateRequestDto,
+            cancellationToken).ConfigureAwait(false);
+        await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
+
+        var result = await response.Content.ReadFromJsonAsync<AssociationResponseDto>(
+            SchemaRegistryJsonContext.Default.AssociationResponseDto,
+            cancellationToken).ConfigureAwait(false);
+        if (result is null)
+        {
+            throw new SchemaRegistryException(
+                (int)response.StatusCode,
+                "Schema Registry returned an empty association response");
+        }
+
+        return ToAssociationResponse(result);
+    }
+
+    public async Task DeleteAssociationsAsync(
+        string resourceId,
+        string? resourceType = null,
+        IReadOnlyList<string>? associationTypes = null,
+        bool cascadeLifecycle = false,
+        CancellationToken cancellationToken = default)
+    {
+        AssociationValidation.ValidateDelete(resourceId, resourceType, associationTypes);
+
+        var path = WithAssociationQuery(
+            $"associations/resources/{Uri.EscapeDataString(resourceId)}",
+            resourceType,
+            associationTypes,
+            lifecycle: null,
+            offset: null,
+            limit: null,
+            cascadeLifecycle);
+        using var response = await DeleteWithFailoverAsync(path, cancellationToken).ConfigureAwait(false);
+        await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
     }
 
     private static string GetCompatibilityPath(string? subject)
@@ -947,6 +1243,31 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         return ToDek(result);
     }
 
+    public async Task<Dek> GetDekAsync(
+        string kekName,
+        string subject,
+        int version,
+        DekAlgorithm algorithm,
+        bool deleted = false,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await GetWithFailoverAsync(
+            WithQuery(
+                $"dek-registry/v1/keks/{Uri.EscapeDataString(kekName)}/deks/{Uri.EscapeDataString(subject)}/versions/{version.ToString(CultureInfo.InvariantCulture)}",
+                ("algorithm", FormatDekAlgorithm(algorithm)),
+                ("deleted", BoolQuery(deleted))),
+            cancellationToken).ConfigureAwait(false);
+
+        await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
+
+        var result = await response.Content.ReadFromJsonAsync<DekDto>(
+            SchemaRegistryJsonContext.Default.DekDto, cancellationToken).ConfigureAwait(false);
+        if (result is null)
+            throw new SchemaRegistryException((int)response.StatusCode, "Schema Registry returned an empty DEK response");
+
+        return ToDek(result);
+    }
+
     public async Task<IReadOnlyList<int>> GetDekVersionsAsync(
         string kekName,
         string subject,
@@ -1014,6 +1335,76 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         Metadata = ToMetadataDto(schema.Metadata),
         RuleSet = ToRuleSetDto(schema.RuleSet)
     };
+
+    private static AssociationCreateOrUpdateRequestDto ToAssociationRequestDto(
+        AssociationCreateOrUpdateRequest request,
+        bool normalizeSchemas)
+    {
+        var associations = new List<AssociationCreateOrUpdateInfoDto>(request.Associations.Count);
+        for (var index = 0; index < request.Associations.Count; index++)
+        {
+            var association = request.Associations[index];
+            associations.Add(new AssociationCreateOrUpdateInfoDto
+            {
+                Subject = association.Subject,
+                AssociationType = association.AssociationType,
+                Lifecycle = association.Lifecycle,
+                Frozen = association.Frozen,
+                Schema = association.Schema is null ? null : CreateRegisterSchemaRequest(association.Schema),
+                Normalize = association.Schema is null
+                    ? association.Normalize
+                    : association.Normalize ?? normalizeSchemas
+            });
+        }
+
+        return new AssociationCreateOrUpdateRequestDto
+        {
+            ResourceName = request.ResourceName,
+            ResourceNamespace = request.ResourceNamespace,
+            ResourceId = request.ResourceId,
+            ResourceType = request.ResourceType,
+            Associations = associations
+        };
+    }
+
+    private static Association ToAssociation(AssociationDto association) => new()
+    {
+        Subject = association.Subject,
+        Guid = association.Guid,
+        ResourceName = association.ResourceName,
+        ResourceNamespace = association.ResourceNamespace,
+        ResourceId = association.ResourceId,
+        ResourceType = association.ResourceType,
+        AssociationType = association.AssociationType,
+        Lifecycle = association.Lifecycle,
+        Frozen = association.Frozen
+    };
+
+    private static AssociationResponse ToAssociationResponse(AssociationResponseDto response)
+    {
+        var associations = new AssociationInfo[response.Associations.Count];
+        for (var index = 0; index < response.Associations.Count; index++)
+        {
+            var association = response.Associations[index];
+            associations[index] = new AssociationInfo
+            {
+                Subject = association.Subject,
+                AssociationType = association.AssociationType,
+                Lifecycle = association.Lifecycle,
+                Frozen = association.Frozen,
+                Schema = association.Schema is null ? null : CreateSchema(association.Schema)
+            };
+        }
+
+        return new AssociationResponse
+        {
+            ResourceName = response.ResourceName,
+            ResourceNamespace = response.ResourceNamespace,
+            ResourceId = response.ResourceId,
+            ResourceType = response.ResourceType,
+            Associations = associations
+        };
+    }
 
     private static Schema CreateSchema(GetSchemaResponse response) => new()
     {
@@ -1103,12 +1494,18 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
 
         return new SchemaRuleSet
         {
-            MigrationRules = ruleSet.MigrationRules?.Select(ToRule).ToList(),
-            DomainRules = ruleSet.DomainRules?.Select(ToRule).ToList(),
-            EncodingRules = ruleSet.EncodingRules?.Select(ToRule).ToList(),
-            EnableAt = ruleSet.EnableAt
+            MigrationRules = ToReadOnlyRules(ruleSet.MigrationRules),
+            DomainRules = ToReadOnlyRules(ruleSet.DomainRules),
+            EncodingRules = ToReadOnlyRules(ruleSet.EncodingRules),
+            EnableAt = ruleSet.EnableAt,
+            HasFixedRuleCollections = true
         };
     }
+
+    private static IReadOnlyList<SchemaRule>? ToReadOnlyRules(IReadOnlyList<SchemaRuleDto>? rules) =>
+        rules is null
+            ? null
+            : Array.AsReadOnly(rules.Select(ToRule).ToArray());
 
     private static SchemaRuleDto ToRuleDto(SchemaRule rule) => new()
     {
@@ -1392,6 +1789,12 @@ public sealed class SchemaRegistryConfig
     /// Maximum number of schemas to cache.
     /// </summary>
     public int MaxCachedSchemas { get; init; } = 1000;
+
+    /// <summary>
+    /// TTL in seconds for caches holding latest schemas. Use -1 for no expiry.
+    /// Default is -1.
+    /// </summary>
+    public int LatestCacheTtlSecs { get; init; } = -1;
 
     /// <summary>
     /// Whether schema registration, lookup, and compatibility requests should

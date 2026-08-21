@@ -25,6 +25,8 @@ public sealed class SchemaRegistryHttpPipelineTests
 
         await Assert.That(handler.LastRequest).IsNotNull();
         await Assert.That(handler.LastRequest!.Headers.GetValues("X-Tenant").Single()).IsEqualTo("dekaf");
+        await Assert.That(handler.LastRequest.Headers.GetValues("Confluent-Accept-Unknown-Properties").Single())
+            .IsEqualTo("true");
         await Assert.That(handler.LastRequest.Headers.UserAgent.ToString()).StartsWith("Dekaf.SchemaRegistry/");
     }
 
@@ -130,6 +132,19 @@ public sealed class SchemaRegistryHttpPipelineTests
     }
 
     [Test]
+    public async Task Config_LatestCacheTtlBelowMinusOne_IsRejected()
+    {
+        var config = new SchemaRegistryConfig
+        {
+            Url = "http://schema-registry.local",
+            LatestCacheTtlSecs = -2
+        };
+
+        await Assert.That(() => new SchemaRegistryClient(config, new TrackingHandler()))
+            .Throws<ArgumentOutOfRangeException>();
+    }
+
+    [Test]
     public async Task Config_ContentHeader_IsRejected()
     {
         var config = new SchemaRegistryConfig
@@ -149,6 +164,22 @@ public sealed class SchemaRegistryHttpPipelineTests
         {
             Url = "http://schema-registry.local",
             DefaultHeaders = new Dictionary<string, string> { ["Accept"] = "application/json" }
+        };
+
+        await Assert.That(() => new SchemaRegistryClient(config, new TrackingHandler()))
+            .Throws<ArgumentException>();
+    }
+
+    [Test]
+    public async Task Config_AcceptUnknownPropertiesHeader_IsRejected()
+    {
+        var config = new SchemaRegistryConfig
+        {
+            Url = "http://schema-registry.local",
+            DefaultHeaders = new Dictionary<string, string>
+            {
+                ["Confluent-Accept-Unknown-Properties"] = "false"
+            }
         };
 
         await Assert.That(() => new SchemaRegistryClient(config, new TrackingHandler()))

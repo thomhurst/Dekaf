@@ -28,6 +28,10 @@ public sealed class ConsumerAssignmentFastPathTests
         "_lastPollTimestamp",
         BindingFlags.NonPublic | BindingFlags.Instance)
         ?? throw new InvalidOperationException("_lastPollTimestamp field not found.");
+    private static readonly FieldInfo CommittedOffsetGenerationField = typeof(KafkaConsumer<string, string>).GetField(
+        "_committedOffsetGeneration",
+        BindingFlags.NonPublic | BindingFlags.Instance)
+        ?? throw new InvalidOperationException("_committedOffsetGeneration field not found.");
 
     [Test]
     [Timeout(120_000)]
@@ -578,6 +582,278 @@ public sealed class ConsumerAssignmentFastPathTests
 
         await Assert.That(committed).IsEqualTo(20L);
         await Assert.That(requestedEpochs).IsEquivalentTo([1, 1, 2]);
+    }
+
+    [Test]
+    public async Task GetCommittedOffsetsAsync_FetchesAllPartitionsInOneRequest_WithLeaderEpochs()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        SetupFindCoordinator(connection);
+        OffsetFetchRequest? capturedRequest = null;
+        connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                capturedRequest = call.ArgAt<OffsetFetchRequest>(0);
+                return ValueTask.FromResult(CreateSuccessfulOffsetFetchResponse());
+            });
+
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager);
+        TopicPartition[] partitions =
+        [
+            new("test-topic", 0),
+            new("test-topic", 1),
+            new("test-topic", 2)
+        ];
+
+        var committed = await consumer.GetCommittedOffsetsAsync(partitions, CancellationToken.None);
+
+        await Assert.That(committed).Count().IsEqualTo(2);
+        await Assert.That(committed[partitions[0]])
+            .IsEqualTo(new TopicPartitionOffset("test-topic", 0, 10, leaderEpoch: 4)
+            {
+                Metadata = "checkpoint-a"
+            });
+        await Assert.That(committed[partitions[1]])
+            .IsEqualTo(new TopicPartitionOffset("test-topic", 1, 20, leaderEpoch: 5));
+        await Assert.That(committed).DoesNotContainKey(partitions[2]);
+        await Assert.That(capturedRequest).IsNotNull();
+        await Assert.That(capturedRequest!.Topics!.Single().PartitionIndexes)
+            .IsEquivalentTo([0, 1, 2]);
+        _ = connection.Received(1).SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+            Arg.Any<OffsetFetchRequest>(),
+            Arg.Any<short>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task GetCommittedOffsetsAsync_PreservesActiveFetchLeaderEpoch()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        SetupFindCoordinator(connection);
+        connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(CreateSuccessfulOffsetFetchResponse()));
+
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager);
+        var partition = new TopicPartition("test-topic", 0);
+        SetLastConsumedLeaderEpoch(consumer, partition, 9);
+
+        _ = await consumer.GetCommittedOffsetsAsync([partition], CancellationToken.None);
+
+        await Assert.That(GetLastConsumedLeaderEpoch(consumer, partition)).IsEqualTo(9);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task GetCommittedOffsetQueries_SeedLeaderEpochWithoutFetchProgress(bool bulk)
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        SetupFindCoordinator(connection);
+        connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(CreateSuccessfulOffsetFetchResponse()));
+
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager);
+        var partition = new TopicPartition("test-topic", 0);
+
+        await (bulk
+            ? (Task)consumer.GetCommittedOffsetsAsync([partition], CancellationToken.None).AsTask()
+            : consumer.GetCommittedOffsetAsync(partition, CancellationToken.None).AsTask());
+
+        await Assert.That(GetLastConsumedLeaderEpoch(consumer, partition)).IsEqualTo(4);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task GetCommittedOffsetQueries_DoNotSeedEpochWithActiveFetchProgress(bool bulk)
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        SetupFindCoordinator(connection);
+        connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(CreateSuccessfulOffsetFetchResponse()));
+
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager);
+        var partition = new TopicPartition("test-topic", 0);
+        GetFetchPositions(consumer)[partition] = 100;
+
+        await (bulk
+            ? (Task)consumer.GetCommittedOffsetsAsync([partition], CancellationToken.None).AsTask()
+            : consumer.GetCommittedOffsetAsync(partition, CancellationToken.None).AsTask());
+
+        await Assert.That(GetLastConsumedLeaderEpoch(consumer, partition)).IsEqualTo(-1);
+    }
+
+    [Test]
+    public async Task GetCommittedOffsetsAsync_MissingCommit_EvictsScalarCache()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        SetupFindCoordinator(connection);
+        var callCount = 0;
+        connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ => Interlocked.Increment(ref callCount) switch
+            {
+                1 => ValueTask.FromResult(CreateOffsetFetchResponse((0, 10))),
+                2 => ValueTask.FromResult(CreateOffsetFetchResponse((0, -1))),
+                _ => ValueTask.FromResult(CreateOffsetFetchResponse((0, 30)))
+            });
+
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager);
+        var partition = new TopicPartition("test-topic", 0);
+
+        await Assert.That(await consumer.GetCommittedOffsetAsync(partition)).IsEqualTo(10);
+        await Assert.That(await consumer.GetCommittedOffsetsAsync([partition])).IsEmpty();
+        await Assert.That(await consumer.GetCommittedOffsetAsync(partition)).IsEqualTo(30);
+        await Assert.That(callCount).IsEqualTo(3);
+    }
+
+    [Test]
+    [Arguments(10L)]
+    [Arguments(-1L)]
+    public async Task GetCommittedOffsetsAsync_StaleResponse_DoesNotOverwriteOrRemoveNewerCommit(
+        long fetchedOffset)
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        metadataManager.SetApiVersion(
+            ApiKey.OffsetCommit,
+            OffsetCommitRequest.LowestSupportedVersion,
+            9);
+        SetupFindCoordinator(connection);
+        var partition = new TopicPartition("test-topic", 0);
+        var fetchCaptured = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFetch = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call => CaptureOffsetFetchAsync(call.ArgAt<CancellationToken>(2)));
+        connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+                Arg.Any<OffsetCommitRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new OffsetCommitResponse { Topics = [] }));
+
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager);
+        var fetch = consumer.GetCommittedOffsetsAsync([partition]).AsTask();
+        await fetchCaptured.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+        try
+        {
+            await consumer.CommitAsync([new TopicPartitionOffset(partition.Topic, partition.Partition, 20)]);
+        }
+        finally
+        {
+            releaseFetch.TrySetResult();
+        }
+        var fetched = await fetch;
+
+        if (fetchedOffset < 0)
+            await Assert.That(fetched).IsEmpty();
+        else
+            await Assert.That(fetched[partition].Offset).IsEqualTo(fetchedOffset);
+        await Assert.That(await consumer.GetCommittedOffsetAsync(partition)).IsEqualTo(20);
+
+        async ValueTask<OffsetFetchResponse> CaptureOffsetFetchAsync(CancellationToken cancellationToken)
+        {
+            var captured = CreateOffsetFetchResponse((partition.Partition, fetchedOffset));
+            fetchCaptured.TrySetResult();
+            await releaseFetch.Task.WaitAsync(cancellationToken);
+            return captured;
+        }
+    }
+
+    [Test]
+    public async Task GetCommittedOffsetsAsync_OverlappingFetchesPublishInBrokerOrder()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        SetupFindCoordinator(connection);
+        var partition = new TopicPartition("test-topic", 0);
+        var firstFetchCaptured = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirstFetch = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var fetchCount = 0;
+        connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call => FetchOffsetsAsync(call.ArgAt<CancellationToken>(2)));
+
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager);
+        var firstFetch = consumer.GetCommittedOffsetsAsync([partition]).AsTask();
+        await firstFetchCaptured.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        var secondFetch = consumer.GetCommittedOffsetsAsync([partition]).AsTask();
+
+        try
+        {
+            releaseFirstFetch.TrySetResult();
+            var first = await firstFetch;
+            var second = await secondFetch;
+
+            await Assert.That(first[partition].Offset).IsEqualTo(10);
+            await Assert.That(second[partition].Offset).IsEqualTo(20);
+            await Assert.That(await consumer.GetCommittedOffsetAsync(partition)).IsEqualTo(20);
+            await Assert.That((long)CommittedOffsetGenerationField.GetValue(consumer)!).IsEqualTo(2);
+            await Assert.That(fetchCount).IsEqualTo(2);
+        }
+        finally
+        {
+            releaseFirstFetch.TrySetResult();
+        }
+
+        async ValueTask<OffsetFetchResponse> FetchOffsetsAsync(CancellationToken cancellationToken)
+        {
+            var fetch = Interlocked.Increment(ref fetchCount);
+            if (fetch == 1)
+            {
+                firstFetchCaptured.TrySetResult();
+                await releaseFirstFetch.Task.WaitAsync(cancellationToken);
+            }
+
+            return CreateOffsetFetchResponse((partition.Partition, fetch * 10L));
+        }
     }
 
     [Test]
@@ -1324,6 +1600,341 @@ public sealed class ConsumerAssignmentFastPathTests
     }
 
     [Test]
+    public async Task TopicIdentityChange_ResetsBeforeRequestingRejoin()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        metadataManager.SetApiVersion(
+            ApiKey.ListOffsets,
+            ListOffsetsRequest.LowestSupportedVersion,
+            ListOffsetsRequest.HighestSupportedVersion);
+        await using var consumer = CreateGroupConsumer(
+            connectionPool,
+            metadataManager,
+            autoOffsetReset: AutoOffsetReset.ByDuration,
+            autoOffsetResetDuration: TimeSpan.FromMinutes(1));
+        var partition = new TopicPartition("test-topic", 0);
+        consumer.IncrementalAssign([
+            new TopicPartitionOffset(partition.Topic, partition.Partition, 10)
+        ]);
+        await InvokeHandleTopicIdentityChangesAsync(consumer);
+
+        var coordinator = GetCoordinator(consumer);
+        SetCoordinatorState(coordinator, CoordinatorState.Stable);
+        var resetStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseReset = new TaskCompletionSource<ListOffsetsResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
+                Arg.Any<ListOffsetsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                resetStarted.TrySetResult();
+                return new ValueTask<ListOffsetsResponse>(releaseReset.Task);
+            });
+
+        metadataManager.Metadata.Update(CreateMetadataResponse(Guid.NewGuid(), partitionCount: 2));
+        var recovery = InvokeHandleTopicIdentityChangesAsync(consumer).AsTask();
+        await resetStarted.Task;
+
+        try
+        {
+            await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
+            await Assert.That(GetFetchPositions(consumer)[partition]).IsEqualTo(10L);
+        }
+        finally
+        {
+            releaseReset.TrySetResult(CreateListOffsetsResponse(partition.Partition, 100));
+            await recovery;
+        }
+
+        await Assert.That(GetFetchPositions(consumer)[partition]).IsEqualTo(100L);
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
+    }
+
+    [Test]
+    public async Task TopicIdentityChange_PreexistingRevocation_DoesNotSuppressReset()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        await using var consumer = CreateGroupConsumer(
+            connectionPool,
+            metadataManager,
+            autoOffsetReset: AutoOffsetReset.Earliest);
+        var partition = new TopicPartition("test-topic", 0);
+        consumer.IncrementalAssign([
+            new TopicPartitionOffset(partition.Topic, partition.Partition, 10)
+        ]);
+        await InvokeHandleTopicIdentityChangesAsync(consumer);
+
+        QueueCoordinatorRevokedPartitionsForFetchClear(consumer, [partition]);
+        metadataManager.Metadata.Update(CreateMetadataResponse(Guid.NewGuid(), partitionCount: 2));
+
+        await InvokeHandleTopicIdentityChangesAsync(consumer);
+
+        await Assert.That(GetFetchPositions(consumer)[partition]).IsEqualTo(-2L);
+    }
+
+    [Test]
+    public async Task TopicIdentityChange_ExplicitSeekMarker_DoesNotGetClaimed()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager);
+        var partition = new TopicPartition("test-topic", 0);
+        consumer.IncrementalAssign([
+            new TopicPartitionOffset(partition.Topic, partition.Partition, 10)
+        ]);
+        await InvokeHandleTopicIdentityChangesAsync(consumer);
+
+        GetPendingFetches(consumer).Enqueue(
+            CreateFetch(partition: partition.Partition, baseOffset: 10, value: "stale"));
+        consumer.SeekToBeginning(partition);
+        metadataManager.Metadata.Update(CreateMetadataResponse(Guid.NewGuid(), partitionCount: 2));
+
+        await InvokeHandleTopicIdentityChangesAsync(consumer);
+
+        await Assert.That(GetFetchPositions(consumer)[partition]).IsEqualTo(0L);
+    }
+
+    [Test]
+    public async Task TopicIdentityChange_PendingRevocationDrainDuringReset_DoesNotSuppressReset()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        metadataManager.SetApiVersion(
+            ApiKey.ListOffsets,
+            ListOffsetsRequest.LowestSupportedVersion,
+            ListOffsetsRequest.HighestSupportedVersion);
+        await using var consumer = CreateGroupConsumer(
+            connectionPool,
+            metadataManager,
+            autoOffsetReset: AutoOffsetReset.ByDuration,
+            autoOffsetResetDuration: TimeSpan.FromMinutes(1));
+        var partition = new TopicPartition("test-topic", 0);
+        consumer.IncrementalAssign([
+            new TopicPartitionOffset(partition.Topic, partition.Partition, 10)
+        ]);
+        await InvokeHandleTopicIdentityChangesAsync(consumer);
+
+        var resetStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseReset = new TaskCompletionSource<ListOffsetsResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
+                Arg.Any<ListOffsetsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                resetStarted.TrySetResult();
+                return new ValueTask<ListOffsetsResponse>(releaseReset.Task);
+            });
+
+        QueueCoordinatorRevokedPartitionsForFetchClear(consumer, [partition]);
+        metadataManager.Metadata.Update(CreateMetadataResponse(Guid.NewGuid(), partitionCount: 2));
+        var recovery = InvokeHandleTopicIdentityChangesAsync(consumer).AsTask();
+        await resetStarted.Task;
+
+        try
+        {
+            await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsFalse();
+        }
+        finally
+        {
+            releaseReset.TrySetResult(CreateListOffsetsResponse(partition.Partition, 100));
+            await recovery;
+        }
+
+        await Assert.That(GetFetchPositions(consumer)[partition]).IsEqualTo(100L);
+    }
+
+    [Test]
+    public async Task TopicIdentityChange_DivergingEpochStagedDuringReset_DoesNotGetOverwritten()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        metadataManager.SetApiVersion(
+            ApiKey.ListOffsets,
+            ListOffsetsRequest.LowestSupportedVersion,
+            ListOffsetsRequest.HighestSupportedVersion);
+        await using var consumer = CreateGroupConsumer(
+            connectionPool,
+            metadataManager,
+            autoOffsetReset: AutoOffsetReset.ByDuration,
+            autoOffsetResetDuration: TimeSpan.FromMinutes(1));
+        var partition = new TopicPartition("test-topic", 0);
+        consumer.IncrementalAssign([
+            new TopicPartitionOffset(partition.Topic, partition.Partition, 10)
+        ]);
+        await InvokeHandleTopicIdentityChangesAsync(consumer);
+
+        var resetStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseReset = new TaskCompletionSource<ListOffsetsResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
+                Arg.Any<ListOffsetsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                resetStarted.TrySetResult();
+                return new ValueTask<ListOffsetsResponse>(releaseReset.Task);
+            });
+
+        metadataManager.Metadata.Update(CreateMetadataResponse(Guid.NewGuid(), partitionCount: 2));
+        var recovery = InvokeHandleTopicIdentityChangesAsync(consumer).AsTask();
+        await resetStarted.Task;
+
+        try
+        {
+            var staged = StageDivergingEpochReset(
+                consumer,
+                partition,
+                endOffset: 5,
+                epoch: 7,
+                GetFetchBufferEpoch(consumer));
+            CompleteDivergingEpochResets(consumer);
+
+            await Assert.That(staged).IsTrue();
+        }
+        finally
+        {
+            releaseReset.TrySetResult(CreateListOffsetsResponse(partition.Partition, 100));
+            await recovery;
+        }
+
+        await Assert.That(GetFetchPositions(consumer)[partition]).IsEqualTo(10L);
+    }
+
+    [Test]
+    public async Task TopicIdentityChange_CoordinatorAbaDuringReset_DoesNotOverwriteReinitializedPosition()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        metadataManager.SetApiVersion(
+            ApiKey.ListOffsets,
+            ListOffsetsRequest.LowestSupportedVersion,
+            ListOffsetsRequest.HighestSupportedVersion);
+        await using var consumer = CreateGroupConsumer(
+            connectionPool,
+            metadataManager,
+            autoOffsetReset: AutoOffsetReset.ByDuration,
+            autoOffsetResetDuration: TimeSpan.FromMinutes(1));
+        var partition = new TopicPartition("test-topic", 1);
+        consumer.IncrementalAssign([
+            new TopicPartitionOffset(partition.Topic, partition.Partition, 10)
+        ]);
+        await InvokeHandleTopicIdentityChangesAsync(consumer);
+
+        var resetStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseReset = new TaskCompletionSource<ListOffsetsResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
+                Arg.Any<ListOffsetsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                var requestedPartition = call.ArgAt<ListOffsetsRequest>(0).Topics[0].Partitions[0].PartitionIndex;
+                if (requestedPartition != partition.Partition)
+                    return ValueTask.FromResult(CreateListOffsetsResponse(requestedPartition, 100));
+
+                resetStarted.TrySetResult();
+                return new ValueTask<ListOffsetsResponse>(releaseReset.Task);
+            });
+
+        metadataManager.Metadata.Update(CreateMetadataResponse(Guid.NewGuid(), partitionCount: 2));
+        var recovery = InvokeHandleTopicIdentityChangesAsync(consumer).AsTask();
+        await resetStarted.Task;
+
+        try
+        {
+            GetPendingFetches(consumer).Enqueue(
+                CreateFetch(partition: partition.Partition, baseOffset: 10, value: "stale"));
+            QueueCoordinatorRevokedPartitionsForFetchClear(consumer, [partition]);
+            await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
+            await Assert.That(GetPendingFetches(consumer)).IsEmpty();
+            PublishAssignmentSnapshot(consumer);
+            RemovePartitionState(consumer, [partition]);
+            SetPosition(consumer, partition, 20);
+            GetFetchPositions(consumer)[partition] = 20;
+
+            await Assert.That(consumer.Assignment).Contains(partition);
+            await Assert.That(GetFetchPositions(consumer)[partition]).IsEqualTo(20L);
+        }
+        finally
+        {
+            releaseReset.TrySetResult(CreateListOffsetsResponse(partition.Partition, 100));
+            await recovery;
+        }
+
+        await Assert.That(GetFetchPositions(consumer)[partition]).IsEqualTo(20L);
+    }
+
+    [Test]
+    public async Task TopicIdentityChange_UnrelatedAssignmentUpdateDuringReset_DoesNotSuppressReset()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        metadataManager.SetApiVersion(
+            ApiKey.ListOffsets,
+            ListOffsetsRequest.LowestSupportedVersion,
+            ListOffsetsRequest.HighestSupportedVersion);
+        await using var consumer = CreateGroupConsumer(
+            connectionPool,
+            metadataManager,
+            autoOffsetReset: AutoOffsetReset.ByDuration,
+            autoOffsetResetDuration: TimeSpan.FromMinutes(1));
+        var partition = new TopicPartition("test-topic", 0);
+        consumer.IncrementalAssign([
+            new TopicPartitionOffset(partition.Topic, partition.Partition, 10)
+        ]);
+        await InvokeHandleTopicIdentityChangesAsync(consumer);
+
+        var resetStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseReset = new TaskCompletionSource<ListOffsetsResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
+                Arg.Any<ListOffsetsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                resetStarted.TrySetResult();
+                return new ValueTask<ListOffsetsResponse>(releaseReset.Task);
+            });
+
+        metadataManager.Metadata.Update(CreateMetadataResponse(Guid.NewGuid(), partitionCount: 2));
+        var recovery = InvokeHandleTopicIdentityChangesAsync(consumer).AsTask();
+        await resetStarted.Task;
+
+        try
+        {
+            consumer.IncrementalAssign([
+                new TopicPartitionOffset("other-topic", 0, 0)
+            ]);
+        }
+        finally
+        {
+            releaseReset.TrySetResult(CreateListOffsetsResponse(partition.Partition, 100));
+            await recovery;
+        }
+
+        await Assert.That(GetFetchPositions(consumer)[partition]).IsEqualTo(100L);
+    }
+
+    [Test]
     public async Task TopicIdentityChange_AssignmentMutationDuringReset_IsReobserved()
     {
         var connectionPool = Substitute.For<IConnectionPool>();
@@ -1992,6 +2603,7 @@ public sealed class ConsumerAssignmentFastPathTests
                         PartitionIndex = 0,
                         CommittedOffset = 10,
                         CommittedLeaderEpoch = 4,
+                        Metadata = "checkpoint-a",
                         ErrorCode = ErrorCode.None
                     },
                     new OffsetFetchResponsePartition
@@ -2159,7 +2771,7 @@ public sealed class ConsumerAssignmentFastPathTests
         return (ConcurrentDictionary<TopicPartition, int>)field.GetValue(consumer)!;
     }
 
-    private static ConcurrentDictionary<TopicPartition, byte> GetCoordinatorRevokedPartitionsPendingFetchClear(
+    private static ConcurrentDictionary<TopicPartition, long> GetCoordinatorRevokedPartitionsPendingFetchClear(
         KafkaConsumer<string, string> consumer)
     {
         var field = typeof(KafkaConsumer<string, string>).GetField(
@@ -2167,7 +2779,7 @@ public sealed class ConsumerAssignmentFastPathTests
             BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("_coordinatorRevokedPartitionsPendingFetchClear field not found.");
 
-        return (ConcurrentDictionary<TopicPartition, byte>)field.GetValue(consumer)!;
+        return (ConcurrentDictionary<TopicPartition, long>)field.GetValue(consumer)!;
     }
 
     private static int GetCoordinatorRevokedPartitionsPendingFetchClearPending(
@@ -2313,6 +2925,19 @@ public sealed class ConsumerAssignmentFastPathTests
         return (int)method.Invoke(consumer, [partition])!;
     }
 
+    private static void SetLastConsumedLeaderEpoch(
+        KafkaConsumer<string, string> consumer,
+        TopicPartition partition,
+        int leaderEpoch)
+    {
+        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+            "SetLastConsumedLeaderEpoch",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("SetLastConsumedLeaderEpoch method not found.");
+
+        method.Invoke(consumer, [partition, leaderEpoch]);
+    }
+
     private static void QueueCoordinatorRevokedPartitionsForFetchClear(
         KafkaConsumer<string, string> consumer,
         TopicPartition[] partitions)
@@ -2337,7 +2962,30 @@ public sealed class ConsumerAssignmentFastPathTests
         method.Invoke(consumer, [partitions]);
     }
 
-    private static void StageDivergingEpochReset(
+    private static void PublishAssignmentSnapshot(KafkaConsumer<string, string> consumer)
+    {
+        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+            "PublishAssignmentSnapshot",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("PublishAssignmentSnapshot method not found.");
+
+        method.Invoke(consumer, []);
+    }
+
+    private static void SetPosition(
+        KafkaConsumer<string, string> consumer,
+        TopicPartition partition,
+        long position)
+    {
+        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+            "SetPosition",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("SetPosition method not found.");
+
+        method.Invoke(consumer, [partition, position, false]);
+    }
+
+    private static bool StageDivergingEpochReset(
         KafkaConsumer<string, string> consumer,
         TopicPartition partition,
         long endOffset,
@@ -2349,7 +2997,7 @@ public sealed class ConsumerAssignmentFastPathTests
             BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("StageDivergingEpochReset method not found.");
 
-        method.Invoke(consumer, [partition, endOffset, epoch, fetchBufferEpoch, true]);
+        return (bool)method.Invoke(consumer, [partition, endOffset, epoch, fetchBufferEpoch, true])!;
     }
 
     private static void CompleteDivergingEpochResets(KafkaConsumer<string, string> consumer)
@@ -2444,6 +3092,16 @@ public sealed class ConsumerAssignmentFastPathTests
             ?? throw new InvalidOperationException("_coordinator field not found.");
 
         return (ConsumerCoordinator)field.GetValue(consumer)!;
+    }
+
+    private static void SetCoordinatorState(ConsumerCoordinator coordinator, CoordinatorState state)
+    {
+        var field = typeof(ConsumerCoordinator).GetField(
+            "_state",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_state field not found.");
+
+        field.SetValue(coordinator, state);
     }
 
     private static long GetPollVersion(KafkaConsumer<string, string> consumer)

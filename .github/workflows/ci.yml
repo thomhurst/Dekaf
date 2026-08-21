@@ -1,8 +1,6 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -157,14 +155,18 @@ jobs:
         shell: pwsh
         run: ./scripts/Test-AgentLockTokenOwnership.ps1
 
+      - name: Test Worktree Cleanup Safety
+        shell: pwsh
+        run: ./scripts/Test-WorktreeCleanup.ps1
+
       - name: Install GitVersion
-        uses: gittools/actions/gitversion/setup@7417b1089e2c7de93510f1901d656ddf60bb024f # v4
+        uses: gittools/actions/gitversion/setup@7417b1089e2c7de93510f1901d656ddf60bb024f # v4.7.0
         with:
           versionSpec: '6.x'
 
       - name: Determine Version
         id: gitversion
-        uses: gittools/actions/gitversion/execute@7417b1089e2c7de93510f1901d656ddf60bb024f # v4
+        uses: gittools/actions/gitversion/execute@7417b1089e2c7de93510f1901d656ddf60bb024f # v4.7.0
         continue-on-error: true  # Don't fail if GitVersion has issues on PR branches
 
       - name: Expose GitHub Actions Runtime
@@ -187,6 +189,10 @@ jobs:
       - name: Test Public API Gate
         shell: pwsh
         run: ./scripts/Test-PublicApiGate.ps1
+
+      - name: Test Abstractions Binary Compatibility
+        shell: pwsh
+        run: ./scripts/Test-AbstractionsBinaryCompatibility.ps1
 
       - name: Replay protocol fuzz regression corpora
         run: >-
@@ -361,8 +367,8 @@ jobs:
 
   # Integration categories run via the shared group definitions in
   # integration-groups.yml against the prebuilt binaries (no rebuild).
-  # PRs run net10.0 only; pushes to main add net8.0. NuGet publish dispatches
-  # skip this job — the release-matrix jobs below cover a superset.
+  # PRs run net10.0 only; manual non-publish runs add net8.0. NuGet publish
+  # dispatches skip this job — the release-matrix jobs below cover a superset.
   integration:
     name: Integration (${{ matrix.framework }})
     needs: [changes, build]
@@ -374,6 +380,74 @@ jobs:
     uses: ./.github/workflows/integration-groups.yml
     with:
       framework: ${{ matrix.framework }}
+
+  # Event Hubs emulator coverage is broker-version independent. Keep one
+  # dedicated net10.0 lane instead of multiplying it through the Kafka matrix.
+  eventhubs-integration:
+    name: Event Hubs Emulator Integration
+    needs: [changes, build]
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: '10.0.x'
+          dotnet-quality: 'preview'
+
+      - name: Download test binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: test-binaries
+
+      - name: Extract test binaries
+        run: tar -xzf test-binaries.tar.gz
+
+      - name: Expose GitHub Actions Runtime
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env['ACTIONS_RUNTIME_TOKEN']);
+            core.exportVariable('ACTIONS_RESULTS_URL', process.env['ACTIONS_RESULTS_URL']);
+
+      - name: Pre-pull Event Hubs emulator images
+        run: |
+          bash scripts/prepull-kafka-images.sh \
+            "mcr.microsoft.com/azure-messaging/eventhubs-emulator:2.2.1@sha256:be413f0d59541621879e6d197d73f64f3b3ac5fa45861641fdc1430252b8b44b" \
+            "mcr.microsoft.com/azure-storage/azurite:3.36.0@sha256:76b8127d608fab8287a14a4bfeb9a5502cdcffb4bf1e86f09f324ebb0e70edba" \
+            "testcontainers/ryuk:0.14.0@sha256:7c1a8a9a47c780ed0f983770a662f80deb115d95cce3e2daa3d12115b8cd28f0"
+
+      - name: Run Event Hubs emulator integration tests
+        run: bash scripts/run-integration-categories.sh net10.0 "EventHubs"
+
+      - name: Upload Test Results
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: test-results-eventhubs-net10.0
+          path: |
+            **/TestResults/**
+            **/test-results/**
+          retention-days: 7
+
+      - name: Upload HangDump artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: hangdump-artifacts-eventhubs-net10.0
+          path: |
+            **/*.dmp
+          if-no-files-found: ignore
+          retention-days: 7
 
   # Release gate: a NuGet publish dispatch must pass the full matrix — both
   # frameworks across every supported broker version, plus the complete AOT
@@ -413,7 +487,7 @@ jobs:
     name: NativeAOT Smoke
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
 
     steps:
@@ -433,8 +507,10 @@ jobs:
           key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/Directory.Packages.props', '**/Directory.Build.props', '**/Directory.Build.targets') }}
           restore-keys: nuget-${{ runner.os }}-
 
-      - name: Install NativeAOT prerequisites
-        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+      - name: Verify NativeAOT prerequisites
+        run: |
+          clang-18 --version
+          test -f /usr/include/zlib.h
 
       - name: Publish and run core smoke test
         run: |
@@ -445,6 +521,7 @@ jobs:
             --self-contained true \
             --output artifacts/aot/core \
             -p:PublishAot=true \
+            -p:CppCompilerAndLinker=clang-18 \
             -p:ContinuousIntegrationBuild=true \
             -p:TreatWarningsAsErrors=true
           ./artifacts/aot/core/Dekaf.Tests.Aot
@@ -458,6 +535,7 @@ jobs:
             --self-contained true \
             --output artifacts/aot/dependency-injection \
             -p:PublishAot=true \
+            -p:CppCompilerAndLinker=clang-18 \
             -p:ContinuousIntegrationBuild=true \
             -p:TreatWarningsAsErrors=true
           ./artifacts/aot/dependency-injection/Dekaf.Tests.Aot.DependencyInjection
@@ -466,7 +544,7 @@ jobs:
     name: NativeAOT Integration Publish
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
 
     steps:
@@ -486,8 +564,10 @@ jobs:
           key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/Directory.Packages.props', '**/Directory.Build.props', '**/Directory.Build.targets') }}
           restore-keys: nuget-${{ runner.os }}-
 
-      - name: Install NativeAOT prerequisites
-        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+      - name: Verify NativeAOT prerequisites
+        run: |
+          clang-18 --version
+          test -f /usr/include/zlib.h
 
       - name: Publish NativeAOT integration executable
         run: |
@@ -498,6 +578,7 @@ jobs:
             --self-contained true \
             --output artifacts/aot/integration \
             -p:PublishAot=true \
+            -p:CppCompilerAndLinker=clang-18 \
             -p:ContinuousIntegrationBuild=true \
             -p:TreatWarningsAsErrors=true
 
@@ -611,7 +692,7 @@ jobs:
   # build job computed.
   publish:
     name: Publish NuGet
-    needs: [build, unit-net8, leak-gates-debug, aot-smoke, aot-integration-publish, release-matrix, release-matrix-aot, code-quality, nuget-audit]
+    needs: [build, unit-net8, leak-gates-debug, eventhubs-integration, aot-smoke, aot-integration-publish, release-matrix, release-matrix-aot, code-quality, nuget-audit]
     if: github.event_name == 'workflow_dispatch' && inputs.publish_nuget == true
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -647,13 +728,13 @@ jobs:
           restore-keys: nuget-${{ runner.os }}-
 
       - name: Install GitVersion
-        uses: gittools/actions/gitversion/setup@7417b1089e2c7de93510f1901d656ddf60bb024f # v4
+        uses: gittools/actions/gitversion/setup@7417b1089e2c7de93510f1901d656ddf60bb024f # v4.7.0
         with:
           versionSpec: '6.x'
 
       - name: Determine Version
         id: gitversion
-        uses: gittools/actions/gitversion/execute@7417b1089e2c7de93510f1901d656ddf60bb024f # v4
+        uses: gittools/actions/gitversion/execute@7417b1089e2c7de93510f1901d656ddf60bb024f # v4.7.0
         continue-on-error: true
 
       - name: Expose GitHub Actions Runtime
@@ -690,10 +771,10 @@ jobs:
 
   # Single required status check for branch protection. Succeeds when every
   # upstream job succeeded or was skipped (docs-only PRs skip everything;
-  # release-only jobs skip on PR/push runs).
+  # release-only jobs skip on PR runs).
   ci-passed:
     name: CI Passed
-    needs: [changes, build, unit-net8, leak-gates-debug, integration, aot-smoke, aot-integration-publish, aot-integration-smoke, release-matrix, release-matrix-aot, publish, code-quality, nuget-audit]
+    needs: [changes, build, unit-net8, leak-gates-debug, integration, eventhubs-integration, aot-smoke, aot-integration-publish, aot-integration-smoke, release-matrix, release-matrix-aot, publish, code-quality, nuget-audit]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

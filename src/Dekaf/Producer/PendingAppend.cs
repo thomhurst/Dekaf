@@ -22,7 +22,7 @@ namespace Dekaf.Producer;
 ///   <item><see cref="TryClaim"/> — called by <see cref="RecordAccumulator.DrainPendingAppends"/>
 ///   when buffer space is freed.</item>
 ///   <item>Timeout — <see cref="_timer"/> fires when max.block.ms deadline expires.</item>
-///   <item>Cancellation — <see cref="CancellationToken.Register"/> callback.</item>
+///   <item>Cancellation — <see cref="CancellationToken.Register(Action{object}, object)"/> callback.</item>
 ///   <item>Disposal — <see cref="TryFail"/> called during <see cref="RecordAccumulator.DisposeAsync"/>.</item>
 /// </list>
 /// </para>

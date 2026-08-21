@@ -170,8 +170,8 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// </summary>
     /// <param name="bufferMemory">The buffer memory limit in bytes.</param>
     /// <remarks>
-    /// When the buffer is full, <see cref="KafkaProducer{TKey,TValue}.ProduceAsync"/> will block
-    /// until space becomes available or the delivery timeout expires.
+    /// When the buffer is full, <see cref="KafkaProducer{TKey,TValue}.ProduceAsync(ProducerMessage{TKey,TValue}, CancellationToken)"/>
+    /// will block until space becomes available or the delivery timeout expires.
     /// Default is 256 MB.
     /// </remarks>
     public ProducerBuilder<TKey, TValue> WithBufferMemory(ulong bufferMemory)
@@ -1145,7 +1145,7 @@ public sealed class ProducerBuilder<TKey, TValue>
 
     /// <summary>
     /// Sets the application-level retry policy for produce operations.
-    /// When set, retriable exceptions from <see cref="IKafkaProducer{TKey,TValue}.ProduceAsync"/>
+    /// When set, retriable exceptions from <see cref="IKafkaProducer{TKey,TValue}.ProduceAsync(ProducerMessage{TKey,TValue}, CancellationToken)"/>
     /// will be retried according to this policy.
     /// </summary>
     /// <param name="retryPolicy">The retry policy to use.</param>
@@ -1290,7 +1290,7 @@ public sealed class ProducerBuilder<TKey, TValue>
 
     /// <summary>
     /// Builds and initializes the producer, ready for immediate use.
-    /// This is equivalent to calling <see cref="Build"/> followed by <see cref="IKafkaProducer{TKey,TValue}.InitializeAsync"/>.
+    /// This is equivalent to calling <see cref="Build"/> followed by <see cref="IInitializableKafkaClient.InitializeAsync"/>.
     /// </summary>
     /// <param name="cancellationToken">Cancellation token for the initialization.</param>
     /// <returns>An initialized producer ready to produce messages.</returns>
@@ -1654,11 +1654,14 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private IDeserializer<TValue>? _valueDeserializer;
     private IAsyncDeserializer<TKey>? _asyncKeyDeserializer;
     private IAsyncDeserializer<TValue>? _asyncValueDeserializer;
+    private IConsumerRecordFilter? _recordFilter;
     private bool _cacheStringValues;
     private int _maxCachedStringValueBytes = DefaultMaxCachedStringValueBytes;
     private int _maxCachedStringValueEntries = DefaultMaxCachedStringValueEntries;
     private IRebalanceListener? _rebalanceListener;
     private IConsumerAwareRebalanceListener? _consumerAwareRebalanceListener;
+    private List<IRebalanceListener>? _additionalRebalanceListeners;
+    private TimeSpan _partitionStopTimeout = TimeSpan.FromSeconds(5);
     private Microsoft.Extensions.Logging.ILoggerFactory? _loggerFactory;
     private bool _enablePartitionEof;
     private int _socketSendBufferBytes;
@@ -2462,6 +2465,19 @@ public sealed class ConsumerBuilder<TKey, TValue>
     }
 
     /// <summary>
+    /// Configures a synchronous, allocation-free predicate that runs before deserialization.
+    /// </summary>
+    /// <remarks>
+    /// Returning <see langword="false"/> skips delivery and advances the consumed position.
+    /// Filter exceptions propagate and leave the failed record unconsumed.
+    /// </remarks>
+    public ConsumerBuilder<TKey, TValue> WithRecordFilter(IConsumerRecordFilter filter)
+    {
+        _recordFilter = filter ?? throw new ArgumentNullException(nameof(filter));
+        return this;
+    }
+
+    /// <summary>
     /// Enables bounded caching for repeated built-in string values.
     /// </summary>
     /// <remarks>
@@ -2501,6 +2517,40 @@ public sealed class ConsumerBuilder<TKey, TValue>
     {
         _consumerAwareRebalanceListener = listener;
         _rebalanceListener = null;
+        return this;
+    }
+
+    /// <summary>
+    /// Adds a rebalance listener without replacing the listener configured by
+    /// <see cref="WithRebalanceListener(IRebalanceListener)"/> or
+    /// <see cref="WithRebalanceListener(IConsumerAwareRebalanceListener)"/>.
+    /// </summary>
+    /// <remarks>
+    /// Additive listeners run after the configured listener, in registration order.
+    /// Each callback is awaited before the next listener runs. Non-cancellation exceptions
+    /// are logged and do not prevent later listeners from running.
+    /// </remarks>
+    /// <param name="listener">The listener to add.</param>
+    /// <returns>This builder.</returns>
+    public ConsumerBuilder<TKey, TValue> AddRebalanceListener(IRebalanceListener listener)
+    {
+        ArgumentNullException.ThrowIfNull(listener);
+        (_additionalRebalanceListeners ??= []).Add(listener);
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the maximum time to await an <see cref="IPartitionStopListener"/> during
+    /// graceful <c>CloseAsync</c> or <c>DisposeAsync</c>. Default is 5 seconds.
+    /// </summary>
+    /// <param name="timeout">The partition-stop callback timeout. Must be at least one millisecond.</param>
+    public ConsumerBuilder<TKey, TValue> WithPartitionStopTimeout(TimeSpan timeout)
+    {
+        if (timeout < TimeSpan.FromMilliseconds(1))
+            throw new ArgumentOutOfRangeException(nameof(timeout), "Partition stop timeout must be at least one millisecond");
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
+
+        _partitionStopTimeout = timeout;
         return this;
     }
 
@@ -3090,7 +3140,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
 
     /// <summary>
     /// Builds and initializes the consumer, ready for immediate use.
-    /// This is equivalent to calling <see cref="Build"/> followed by <see cref="IKafkaConsumer{TKey,TValue}.InitializeAsync"/>.
+    /// This is equivalent to calling <see cref="Build"/> followed by <see cref="IInitializableKafkaClient.InitializeAsync"/>.
     /// </summary>
     /// <param name="cancellationToken">Cancellation token for the initialization.</param>
     /// <returns>An initialized consumer ready to consume messages.</returns>
@@ -3228,7 +3278,10 @@ public sealed class ConsumerBuilder<TKey, TValue>
             AwsMskIamConfig = _awsMskIamConfig,
             RebalanceListener = _rebalanceListener,
             ConsumerAwareRebalanceListener = _consumerAwareRebalanceListener,
+            AdditionalRebalanceListeners = _additionalRebalanceListeners?.ToArray(),
+            PartitionStopTimeout = _partitionStopTimeout,
             EnablePartitionEof = _enablePartitionEof,
+            RecordFilter = _recordFilter,
             SocketSendBufferBytes = _socketSendBufferBytes,
             SocketReceiveBufferBytes = _socketReceiveBufferBytes,
             QueuedMinMessages = _queuedMinMessages,

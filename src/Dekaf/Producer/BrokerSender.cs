@@ -448,6 +448,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     {
         private readonly Dictionary<TopicPartition, List<BatchReference>> _partitions = new();
         private int _count;
+        // Conservative lower bound: additions lower it immediately; removals may leave an
+        // earlier value until the next expiry sweep recomputes it from live entries.
+        private long _earliestCreatedTicks = long.MaxValue;
         private bool _mayContainUnreadyBatch;
         private TopicPartition _readdedPrefixPartition;
         private int _readdedPrefixCount;
@@ -476,8 +479,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             }
 
             GetOrCreateQueue(batchRef.Batch.TopicPartition).Add(batchRef);
-            _count++;
-            _mayContainUnreadyBatch |= !batchRef.Batch.IsPreSerialized;
+            TrackAddedBatch(batchRef);
         }
 
         /// <summary>
@@ -493,8 +495,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             }
 
             GetOrCreateQueue(batchRef.Batch.TopicPartition).Insert(0, batchRef);
-            _count++;
-            _mayContainUnreadyBatch |= !batchRef.Batch.IsPreSerialized;
+            TrackAddedBatch(batchRef);
         }
 
         /// <summary>
@@ -512,7 +513,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             }
 
             queue.Insert(_readdedPrefixCount++, batchRef);
-            _count++;
+            TrackAddedBatch(batchRef);
         }
 
         /// <summary>
@@ -540,8 +541,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 insertIdx++;
 
             queue.Insert(insertIdx, batchRef);
-            _count++;
-            _mayContainUnreadyBatch |= !batchRef.Batch.IsPreSerialized;
+            TrackAddedBatch(batchRef);
         }
 
         private void AddLoopExitRedelivery(BatchReference batchRef)
@@ -554,8 +554,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 insertIdx++;
 
             queue.Insert(insertIdx, batchRef);
-            _count++;
-            _mayContainUnreadyBatch |= !batchRef.Batch.IsPreSerialized;
+            TrackAddedBatch(batchRef);
         }
 
         /// <summary>
@@ -579,6 +578,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
 
                 _count = 0;
+                _earliestCreatedTicks = long.MaxValue;
                 return;
             }
 
@@ -612,6 +612,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             }
 
             _mayContainUnreadyBatch = hasUnreadyBatch;
+            if (_count == 0)
+                _earliestCreatedTicks = long.MaxValue;
         }
 
         public void Clear()
@@ -619,6 +621,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             foreach (var kvp in _partitions)
                 kvp.Value.Clear();
             _count = 0;
+            _earliestCreatedTicks = long.MaxValue;
             _mayContainUnreadyBatch = false;
         }
 
@@ -626,6 +629,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         {
             queue.RemoveAt(index);
             _count--;
+            if (_count == 0)
+                _earliestCreatedTicks = long.MaxValue;
         }
 
         /// <summary>Clears one partition's queue in a single pass, keeping the count in sync.</summary>
@@ -633,6 +638,30 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         {
             _count -= queue.Count;
             queue.Clear();
+            if (_count == 0)
+                _earliestCreatedTicks = long.MaxValue;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool MayContainExpiredBatch(long now, long deliveryTimeoutTicks)
+        {
+            var earliestCreatedTicks = _earliestCreatedTicks;
+            return earliestCreatedTicks != long.MaxValue
+                && now >= earliestCreatedTicks + deliveryTimeoutTicks;
+        }
+
+        public void SetEarliestCreatedTicks(long earliestCreatedTicks)
+            => _earliestCreatedTicks = earliestCreatedTicks;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void TrackAddedBatch(BatchReference batchRef)
+        {
+            var batch = batchRef.Batch;
+            _count++;
+            _mayContainUnreadyBatch |= !batch.IsPreSerialized;
+
+            var createdTicks = batch.StopwatchCreatedTicks;
+            _earliestCreatedTicks = Math.Min(_earliestCreatedTicks, createdTicks);
         }
 
         public bool HasRetry(TopicPartition topicPartition)
@@ -4555,12 +4584,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             var topicIdx = 0;
             var partIdx = 0;
             var runStart = 0;
+            var flexible = ProduceRequest.IsFlexibleVersion(apiVersion);
             var requestBodySizeHint = checked(
-                ProduceRequestSizeCalculator.CompactStringSize(_request.TransactionalId) +
+                ProduceRequestSizeCalculator.StringSize(_request.TransactionalId, flexible) +
                 2 + // Acks
                 4 + // TimeoutMs
-                ProduceRequestSizeCalculator.CompactArrayLengthSize(topicCount) +
-                1); // Request tagged fields
+                ProduceRequestSizeCalculator.ArrayLengthSize(topicCount, flexible) +
+                (flexible ? 1 : 0)); // Request tagged fields
 
             // Single pass: populate scratch topic and partition data from contiguous runs
             while (runStart < count)
@@ -4598,9 +4628,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     requestBodySizeHint +
                     (apiVersion >= ProduceRequest.TopicIdVersion
                         ? ProduceRequestSizeCalculator.TopicIdSize
-                        : ProduceRequestSizeCalculator.CompactStringSize(topicName)) +
-                    ProduceRequestSizeCalculator.CompactArrayLengthSize(partCount) +
-                    1); // Topic tagged fields
+                        : ProduceRequestSizeCalculator.StringSize(topicName, flexible)) +
+                    ProduceRequestSizeCalculator.ArrayLengthSize(partCount, flexible) +
+                    (flexible ? 1 : 0)); // Topic tagged fields
 
                 for (var p = 0; p < partCount; p++)
                 {
@@ -4612,9 +4642,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     requestBodySizeHint = checked(
                         requestBodySizeHint +
                         4 + // Partition index
-                        ProduceRequestSizeCalculator.CompactBytesLengthSize(batch.EncodedSize) +
+                        ProduceRequestSizeCalculator.BytesLengthSize(batch.EncodedSize, flexible) +
                         batch.EncodedSize +
-                        1); // Partition tagged fields
+                        (flexible ? 1 : 0)); // Partition tagged fields
                     partIdx++;
                 }
 
@@ -5196,6 +5226,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     {
         var now = _getTimestamp();
         var deliveryTimeoutTicks = _options.DeliveryTimeoutTicks;
+        if (!carryOver.MayContainExpiredBatch(now, deliveryTimeoutTicks))
+            return;
+
+        var earliestCreatedTicks = long.MaxValue;
 
         foreach (var kvp in carryOver.Partitions)
         {
@@ -5210,8 +5244,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
 
                 var batch = batchRef.Batch;
-                if (now < batch.StopwatchCreatedTicks + deliveryTimeoutTicks)
+                var createdTicks = batch.StopwatchCreatedTicks;
+                if (now < createdTicks + deliveryTimeoutTicks)
+                {
+                    if (createdTicks < earliestCreatedTicks)
+                        earliestCreatedTicks = createdTicks;
                     continue;
+                }
 
                 if (batch.IsRetry)
                 {
@@ -5232,6 +5271,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 carryOver.RemoveAt(queue, i);
             }
         }
+
+        carryOver.SetEarliestCreatedTicks(earliestCreatedTicks);
     }
 
     /// <summary>

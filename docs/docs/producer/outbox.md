@@ -1,5 +1,6 @@
 ---
 sidebar_position: 8
+description: "At-least-once publishing from your database to Kafka without distributed transactions, covering schema, ordering, deduplication, tuning, and custom stores."
 ---
 
 # Transactional Outbox

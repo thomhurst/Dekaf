@@ -1,6 +1,9 @@
 ---
 sidebar_position: 14
+description: "Long-running throughput and stability comparisons between Dekaf and Confluent.Kafka under sustained real-world load."
 ---
+
+import ComparisonChart, {ComparisonChartGrid} from '@site/src/components/ComparisonChart';
 
 # Stress Test Results
 
@@ -17,6 +20,25 @@ Tests measure sustained performance over 15+ minutes with real Kafka instances.
 ## At a glance
 
 Each row is a like-for-like comparison: both clients run the same sustained workload sequentially on the same VM, and repeated samples are aggregated with a geometric mean across both run orders.
+
+<ComparisonChartGrid>
+
+<ComparisonChart
+  title="Sustained throughput"
+  metric="Paired same-VM stress run"
+  description="Broker-confirmed messages per second for the same workload."
+  items={[{"label":"Produce — fire-and-forget","dekaf":1451115,"confluent":1174152,"dekafDisplay":"1.45M msg/s (1.2×)","confluentDisplay":"1.17M msg/s"},{"label":"Produce — fire-and-forget (3 brokers)","dekaf":1313915,"confluent":968735,"dekafDisplay":"1.31M msg/s (1.4×)","confluentDisplay":"968.74K msg/s"},{"label":"Produce — acks=all","dekaf":1552262,"confluent":1373448,"dekafDisplay":"1.55M msg/s (1.1×)","confluentDisplay":"1.37M msg/s"},{"label":"Produce — acks=all (3 brokers)","dekaf":1091599,"confluent":854849,"dekafDisplay":"1.09M msg/s (1.3×)","confluentDisplay":"854.85K msg/s"},{"label":"Produce — fire-and-forget, idempotent","dekaf":1553605,"confluent":1136261,"dekafDisplay":"1.55M msg/s (1.4×)","confluentDisplay":"1.14M msg/s"},{"label":"Produce — fire-and-forget, idempotent (3 brokers)","dekaf":1135456,"confluent":857910,"dekafDisplay":"1.14M msg/s (1.3×)","confluentDisplay":"857.91K msg/s"},{"label":"Produce + consume round-trip","dekaf":2254179,"confluent":1211189,"dekafDisplay":"2.25M msg/s (1.9×)","confluentDisplay":"1.21M msg/s"},{"label":"Produce — transactional (exactly-once) (3 brokers)","dekaf":1259,"confluent":172,"dekafDisplay":"1.26K msg/s (7.3×)","confluentDisplay":"172 msg/s"},{"label":"Consume — messages","dekaf":1643250,"confluent":1088637,"dekafDisplay":"1.64M msg/s (1.5×)","confluentDisplay":"1.09M msg/s"}]}
+/>
+
+<ComparisonChart
+  title="CPU cost per message"
+  metric="Median client CPU time"
+  description="CPU time needed to deliver one message; shorter bars are better."
+  better="lower"
+  items={[{"label":"Produce — fire-and-forget","dekaf":0.75,"confluent":1.49,"dekafDisplay":"0.75 μs/msg (2.0× less)","confluentDisplay":"1.49 μs/msg"},{"label":"Produce — fire-and-forget (3 brokers)","dekaf":0.9,"confluent":1.55,"dekafDisplay":"0.90 μs/msg (1.7× less)","confluentDisplay":"1.55 μs/msg"},{"label":"Produce — acks=all","dekaf":0.71,"confluent":1.31,"dekafDisplay":"0.71 μs/msg (1.8× less)","confluentDisplay":"1.31 μs/msg"},{"label":"Produce — acks=all (3 brokers)","dekaf":0.92,"confluent":1.8,"dekafDisplay":"0.92 μs/msg (2.0× less)","confluentDisplay":"1.80 μs/msg"},{"label":"Produce — fire-and-forget, idempotent","dekaf":0.71,"confluent":1.48,"dekafDisplay":"0.71 μs/msg (2.1× less)","confluentDisplay":"1.48 μs/msg"},{"label":"Produce — fire-and-forget, idempotent (3 brokers)","dekaf":0.88,"confluent":1.83,"dekafDisplay":"0.88 μs/msg (2.1× less)","confluentDisplay":"1.83 μs/msg"},{"label":"Produce + consume round-trip","dekaf":0.91,"confluent":2.34,"dekafDisplay":"0.91 μs/msg (2.6× less)","confluentDisplay":"2.34 μs/msg"},{"label":"Produce — transactional (exactly-once) (3 brokers)","dekaf":225.52,"confluent":292.34,"dekafDisplay":"225.52 μs/msg (1.3× less)","confluentDisplay":"292.34 μs/msg"},{"label":"Consume — messages","dekaf":0.8,"confluent":1.13,"dekafDisplay":"0.80 μs/msg (1.4× less)","confluentDisplay":"1.13 μs/msg"}]}
+/>
+
+</ComparisonChartGrid>
 
 | Scenario | Dekaf | Confluent | Throughput | CPU per message |
 |---|--:|--:|---|---|

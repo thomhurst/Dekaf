@@ -1,4 +1,6 @@
+#if !DEKAF_ABSTRACTIONS
 using Dekaf.Errors;
+#endif
 using Dekaf.Serialization;
 using Dekaf.Telemetry;
 #if NETSTANDARD2_0
@@ -11,6 +13,7 @@ using TopicPartitionSet = System.Collections.Generic.IReadOnlySet<Dekaf.TopicPar
 
 namespace Dekaf.Consumer;
 
+#if !DEKAF_ABSTRACTIONS
 /// <summary>
 /// Interface for Kafka consumer.
 /// </summary>
@@ -108,7 +111,8 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// Each batch contains all records from a single partition fetch response.
     /// Records within a batch are iterated synchronously (no async overhead per message).
     /// Position tracking is deferred to batch completion.
-    /// Partition EOF events are not surfaced by this method; use <see cref="ConsumeAsync"/> for EOF notification.
+    /// When partition EOF reporting is enabled, EOF is surfaced as a zero-record batch whose
+    /// <see cref="ConsumeBatch{TKey,TValue}.IsPartitionEof"/> property is <see langword="true"/>.
     /// </summary>
     /// <remarks>
     /// This is an intentionally long-lived stream. <see cref="ConsumerOptions.DefaultApiTimeoutMs"/>
@@ -120,7 +124,8 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// Consumes raw (undeserialized) messages in batches for maximum throughput.
     /// Records provide zero-copy <see cref="ReadOnlyMemory{T}"/> access to key/value data.
     /// No deserialization, header copying, interceptors, or tracing overhead.
-    /// Partition EOF events are not surfaced by this method; use <see cref="ConsumeAsync"/> for EOF notification.
+    /// When partition EOF reporting is enabled, EOF is surfaced as a zero-record batch whose
+    /// <see cref="ConsumeRawBatch.IsPartitionEof"/> property is <see langword="true"/>.
     /// </summary>
     /// <remarks>
     /// This is an intentionally long-lived stream. <see cref="ConsumerOptions.DefaultApiTimeoutMs"/>
@@ -148,6 +153,10 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// <exception cref="KafkaTimeoutException">
     /// The operation exceeds <see cref="ConsumerOptions.DefaultApiTimeoutMs"/>.
     /// </exception>
+    /// <exception cref="InvalidOperationException">
+    /// The consumer was built without a group ID. Configure one with
+    /// <see cref="ConsumerBuilder{TKey,TValue}.WithGroupId"/> before committing offsets.
+    /// </exception>
     ValueTask CommitAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -155,6 +164,10 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// </summary>
     /// <exception cref="KafkaTimeoutException">
     /// The operation exceeds <see cref="ConsumerOptions.DefaultApiTimeoutMs"/>.
+    /// </exception>
+    /// <exception cref="InvalidOperationException">
+    /// The consumer was built without a group ID. Configure one with
+    /// <see cref="ConsumerBuilder{TKey,TValue}.WithGroupId"/> before committing offsets.
     /// </exception>
     ValueTask CommitAsync(IEnumerable<TopicPartitionOffset> offsets, CancellationToken cancellationToken = default);
 
@@ -213,7 +226,9 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// </exception>
     ValueTask CloseAsync(ConsumerCloseOptions options, CancellationToken cancellationToken = default);
 }
+#endif
 
+#if DEKAF_ABSTRACTIONS
 /// <summary>
 /// Optional capability for allocation-free batch offset storage.
 /// </summary>
@@ -297,6 +312,26 @@ public interface IConsumerPositions
     /// Seeks to the end of partitions.
     /// </summary>
     void SeekToEnd(params TopicPartition[] partitions);
+}
+
+/// <summary>
+/// Bulk committed-offset lookup capability for a Kafka consumer.
+/// </summary>
+public interface IConsumerCommittedOffsets
+{
+    /// <summary>
+    /// Gets the committed offsets for the requested partitions in one coordinator request.
+    /// </summary>
+    /// <remarks>
+    /// The returned values include committed leader epochs. Partitions without a committed
+    /// offset are absent from the returned dictionary.
+    /// </remarks>
+    /// <exception cref="KafkaTimeoutException">
+    /// The operation exceeds <see cref="ConsumerOptions.DefaultApiTimeoutMs"/>.
+    /// </exception>
+    ValueTask<IReadOnlyDictionary<TopicPartition, TopicPartitionOffset>> GetCommittedOffsetsAsync(
+        IReadOnlyCollection<TopicPartition> partitions,
+        CancellationToken cancellationToken = default);
 }
 
 /// <summary>
@@ -419,7 +454,9 @@ public interface IConsumerOffsets
         TopicPartition topicPartition,
         CancellationToken cancellationToken = default);
 }
+#endif
 
+#if !DEKAF_ABSTRACTIONS
 /// <summary>
 /// Result of consuming a message.
 /// This is a struct to avoid heap allocations in the hot path.
@@ -440,6 +477,9 @@ public readonly struct ConsumeResult<TKey, TValue>
     // before passing to deserializers, avoiding any uninitialized state issues.
     [ThreadStatic]
     private static SerializationContext t_serializationContext;
+
+    [ThreadStatic]
+    private static Headers? t_callerOwnedSerializationHeaders;
 
     // Store raw Unix milliseconds instead of DateTimeOffset to avoid per-message
     // DateTimeOffset.FromUnixTimeMilliseconds() construction in the consume loop.
@@ -632,6 +672,12 @@ public readonly struct ConsumeResult<TKey, TValue>
         // Resolve the thread-static address once; each direct field access otherwise
         // emits another TLS lookup before setting or copying the context.
         ref var serializationContext = ref t_serializationContext;
+        var keyUsesCallerOwnedHeaders = keyDeserializer is ICallerOwnedHeaderDeserializer<TKey>;
+        var valueUsesCallerOwnedHeaders = valueDeserializer is ICallerOwnedHeaderDeserializer<TValue>;
+        var serializationHeaders = headers is not null
+                                   && (keyUsesCallerOwnedHeaders || valueUsesCallerOwnedHeaders)
+            ? GetCallerOwnedSerializationHeaders(headers)
+            : null;
 
         // Eagerly deserialize to avoid storing deserializer references (saves 16 bytes per struct)
         if (isPartitionEof || keyDeserializer is null)
@@ -647,11 +693,13 @@ public readonly struct ConsumeResult<TKey, TValue>
         {
             serializationContext.Topic = topic;
             serializationContext.Component = SerializationComponent.Key;
-            serializationContext.Headers = null;
+            serializationContext.Headers = keyUsesCallerOwnedHeaders ? serializationHeaders : null;
             serializationContext.KeyData = ReadOnlyMemory<byte>.Empty;
             serializationContext.IsNull = false;
 
-            Key = keyDeserializer.Deserialize(keyData, serializationContext);
+            Key = keyUsesCallerOwnedHeaders
+                ? RecordHeaderDeserializer.DeserializeCallerOwned(keyDeserializer, keyData, serializationContext)
+                : keyDeserializer.Deserialize(keyData, serializationContext);
         }
 
         if (isPartitionEof || valueDeserializer is null)
@@ -662,20 +710,96 @@ public readonly struct ConsumeResult<TKey, TValue>
         {
             serializationContext.Topic = topic;
             serializationContext.Component = SerializationComponent.Value;
-            serializationContext.Headers = null;
+            serializationContext.Headers = valueUsesCallerOwnedHeaders ? serializationHeaders : null;
             serializationContext.KeyData = SerializationContext.NormalizeKeyData(keyData, isKeyNull);
             serializationContext.IsNull = isValueNull;
 
-            Value = isValueNull
-                ? valueDeserializer.Deserialize(ReadOnlyMemory<byte>.Empty, serializationContext)
-                : valueDeserializer.Deserialize(valueData, serializationContext);
+            var deserializationData = isValueNull ? ReadOnlyMemory<byte>.Empty : valueData;
+            Value = valueUsesCallerOwnedHeaders
+                ? RecordHeaderDeserializer.DeserializeCallerOwned(
+                    valueDeserializer,
+                    deserializationData,
+                    serializationContext)
+                : valueDeserializer.Deserialize(deserializationData, serializationContext);
         }
+    }
+
+    internal static ConsumeResult<TKey, TValue> CreateWithHeaderRouting(
+        string topic,
+        int partition,
+        long offset,
+        ReadOnlyMemory<byte> keyData,
+        bool isKeyNull,
+        ReadOnlyMemory<byte> valueData,
+        bool isValueNull,
+        Header[]? pooledHeaders,
+        int pooledHeaderCount,
+        in RecordHeaderRoutingLookup headerRouting,
+        PendingFetchData headerOwner,
+        long timestampMs,
+        TimestampType timestampType,
+        int? leaderEpoch,
+        IDeserializer<TKey>? keyDeserializer,
+        IDeserializer<TValue>? valueDeserializer)
+    {
+        ref var serializationContext = ref t_serializationContext;
+        TKey? key = default;
+        if (!isKeyNull && keyDeserializer is not null)
+        {
+            serializationContext.Topic = topic;
+            serializationContext.Component = SerializationComponent.Key;
+            serializationContext.Headers = null;
+            serializationContext.KeyData = ReadOnlyMemory<byte>.Empty;
+            serializationContext.IsNull = false;
+            key = RecordHeaderDeserializer.Deserialize(
+                keyDeserializer,
+                keyData,
+                serializationContext,
+                in headerRouting);
+        }
+
+        TValue value = default!;
+        if (valueDeserializer is not null)
+        {
+            serializationContext.Topic = topic;
+            serializationContext.Component = SerializationComponent.Value;
+            serializationContext.Headers = null;
+            serializationContext.KeyData = SerializationContext.NormalizeKeyData(keyData, isKeyNull);
+            serializationContext.IsNull = isValueNull;
+            value = RecordHeaderDeserializer.Deserialize(
+                valueDeserializer,
+                isValueNull ? ReadOnlyMemory<byte>.Empty : valueData,
+                serializationContext,
+                in headerRouting);
+        }
+
+        return new ConsumeResult<TKey, TValue>(
+            topic,
+            partition,
+            offset,
+            key,
+            value,
+            pooledHeaders,
+            pooledHeaderCount,
+            headerOwner,
+            timestampMs,
+            timestampType,
+            leaderEpoch);
     }
 
     internal static DeserializationExceptionOrigin LastDeserializationOrigin
         => t_serializationContext.Component == SerializationComponent.Key
             ? DeserializationExceptionOrigin.Key
             : DeserializationExceptionOrigin.Value;
+
+    internal static Headers GetCallerOwnedSerializationHeaders(IReadOnlyList<Header> headers)
+    {
+        var serializationHeaders = t_callerOwnedSerializationHeaders ??= new Headers(headers.Count);
+        serializationHeaders.Clear();
+        for (var index = 0; index < headers.Count; index++)
+            serializationHeaders.Add(headers[index]);
+        return serializationHeaders;
+    }
 
     internal static RecordDeserializationException CreateDeserializationException(
         DeserializationExceptionOrigin origin,
@@ -846,3 +970,4 @@ public enum TimestampType
     /// </summary>
     LogAppendTime = 1
 }
+#endif

@@ -1,15 +1,24 @@
 using System.Collections;
 using System.Runtime.CompilerServices;
+using Dekaf.Serialization;
 
 namespace Dekaf.Consumer
 {
     /// <summary>
     /// Represents a raw (undeserialized) record from a batch.
     /// Provides zero-copy <see cref="ReadOnlyMemory{T}"/> access to key/value data
-    /// without any deserialization, header copying, interceptor, or tracing overhead.
+    /// and headers without any deserialization, header copying, interceptor, or tracing overhead.
     /// </summary>
+    /// <remarks>
+    /// Key, value, header, and header-value memory reference pooled fetch storage. Read or copy
+    /// them before advancing the outer <c>ConsumeRawBatchAsync</c> enumerator to another batch.
+    /// </remarks>
     public readonly struct ConsumeRawRecord
     {
+        private readonly Header[]? _headers;
+        private readonly int _headerCount;
+        private readonly uint _encodedLeaderEpoch;
+
         public long Offset { get; }
         public long TimestampMs { get; }
         public TimestampType TimestampType { get; }
@@ -18,10 +27,26 @@ namespace Dekaf.Consumer
         public bool IsKeyNull { get; }
         public bool IsValueNull { get; }
 
+        /// <summary>
+        /// Gets a zero-copy view of the record headers. The view and each header value share
+        /// the same pooled-storage lifetime as <see cref="Key"/> and <see cref="Value"/>.
+        /// </summary>
+        public ReadOnlyMemory<Header> Headers => _headers is null
+            ? ReadOnlyMemory<Header>.Empty
+            : _headers.AsMemory(0, _headerCount);
+
+        /// <summary>
+        /// Gets the partition leader epoch recorded by Kafka, or <see langword="null"/> when unavailable.
+        /// </summary>
+        public int? LeaderEpoch => _encodedLeaderEpoch == 0
+            ? null
+            : (int)(_encodedLeaderEpoch - 1);
+
         internal ConsumeRawRecord(
             long offset, long timestampMs, TimestampType timestampType,
             ReadOnlyMemory<byte> key, ReadOnlyMemory<byte> value,
-            bool isKeyNull, bool isValueNull)
+            bool isKeyNull, bool isValueNull,
+            Header[]? headers, int headerCount, int leaderEpoch)
         {
             Offset = offset;
             TimestampMs = timestampMs;
@@ -30,6 +55,9 @@ namespace Dekaf.Consumer
             Value = value;
             IsKeyNull = isKeyNull;
             IsValueNull = isValueNull;
+            _headers = headers;
+            _headerCount = headerCount;
+            _encodedLeaderEpoch = leaderEpoch >= 0 ? (uint)leaderEpoch + 1 : 0;
         }
     }
 
@@ -79,6 +107,17 @@ namespace Dekaf.Consumer
         /// This value is only accurate after the batch has been fully enumerated.
         /// </summary>
         public long Count => _count;
+
+        /// <summary>
+        /// Indicates whether this zero-record batch marks the current end offset of its partition.
+        /// Emitted only when partition EOF reporting is enabled.
+        /// </summary>
+        public bool IsPartitionEof => _pendingFetchData.IsPartitionEof;
+
+        /// <summary>
+        /// Gets the partition end offset for an EOF batch, or <see langword="null"/> for a data batch.
+        /// </summary>
+        public long? PartitionEofOffset => _pendingFetchData.PartitionEofOffset;
 
         /// <summary>
         /// Returns a struct enumerator that avoids boxing allocation.
@@ -176,7 +215,10 @@ namespace Dekaf.Consumer
                     key: record.IsKeyNull ? ReadOnlyMemory<byte>.Empty : record.Key,
                     value: record.IsValueNull ? ReadOnlyMemory<byte>.Empty : record.Value,
                     isKeyNull: record.IsKeyNull,
-                    isValueNull: record.IsValueNull);
+                    isValueNull: record.IsValueNull,
+                    headers: record.Headers,
+                    headerCount: record.HeaderCount,
+                    leaderEpoch: pending.CurrentPartitionLeaderEpoch);
 
                 var iterationStatus = _batch._iterationGuard.GetStatusAfterRead(
                     pending.TopicPartition,

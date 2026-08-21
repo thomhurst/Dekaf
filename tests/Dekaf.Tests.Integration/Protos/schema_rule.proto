@@ -1,0 +1,9 @@
+syntax = "proto3";
+
+package dekaf.tests.rules;
+
+option csharp_namespace = "Dekaf.Tests.Integration.Protos";
+
+message SchemaRuleMessage {
+  string value = 1;
+}

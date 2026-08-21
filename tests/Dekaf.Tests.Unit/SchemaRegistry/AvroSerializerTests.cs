@@ -120,6 +120,30 @@ public sealed class AvroSerializerTests
         }
         """;
 
+    internal const string SpecificMigrationRecordSchema = """
+        {
+            "type": "record",
+            "name": "SpecificMigrationRecord",
+            "namespace": "Dekaf.Tests.Unit.SchemaRegistry",
+            "fields": [
+                { "name": "name", "type": "string" },
+                { "name": "age", "type": "int" }
+            ]
+        }
+        """;
+
+    private const string SpecificMigrationReorderedSchema = """
+        {
+            "type": "record",
+            "name": "SpecificMigrationRecord",
+            "namespace": "Dekaf.Tests.Unit.SchemaRegistry",
+            "fields": [
+                { "name": "age", "type": "int" },
+                { "name": "name", "type": "string" }
+            ]
+        }
+        """;
+
     private const string AllFieldTypesSchema = """
         {
             "type": "record",
@@ -292,7 +316,7 @@ public sealed class AvroSerializerTests
             ReadOnlyMemory<byte> payload,
             SchemaRegistryRuleContext context)
         {
-            SerializeContext = context;
+            SerializeContext = SchemaRegistryRuleContextSnapshot.Capture(context);
             return serializedPayload ?? payload;
         }
 
@@ -300,7 +324,7 @@ public sealed class AvroSerializerTests
             ReadOnlyMemory<byte> payload,
             SchemaRegistryRuleContext context)
         {
-            DeserializeContext = context;
+            DeserializeContext = SchemaRegistryRuleContextSnapshot.Capture(context);
             return deserializedPayload ?? payload;
         }
     }
@@ -1296,6 +1320,7 @@ public sealed class AvroSerializerTests
         await Assert.That(executor.SerializeContext.Schema).IsNotNull();
         await Assert.That(executor.SerializeContext.Schema!.SchemaType).IsEqualTo(SchemaType.Avro);
         await Assert.That(executor.SerializeContext.Schema.SchemaString).IsEqualTo(schema!.ToString());
+        await Assert.That(schemaRegistry.GetSchemaCallCount).IsEqualTo(0);
     }
 
     [Test]
@@ -1380,7 +1405,7 @@ public sealed class AvroSerializerTests
             SchemaType = SchemaType.Avro,
             SchemaString = SimpleRecordSchema
         };
-        var schemaId = await schemaRegistry.RegisterSchemaAsync("test-topic-value", schemaObj);
+        var schemaId = await schemaRegistry.RegisterSchemaAsync("test-topic-test.SimpleRecord", schemaObj);
 
         var avroSchema = AvroSchema.Parse(SimpleRecordSchema) as Avro.RecordSchema;
         var replacement = new GenericRecord(avroSchema!);
@@ -1389,7 +1414,11 @@ public sealed class AvroSerializerTests
         var replacementPayload = SerializeAvroRecord(replacement, avroSchema!);
         var wireFormat = CreateWireFormat(schemaId, "encrypted"u8.ToArray());
         var executor = new CapturingRuleExecutor(deserializedPayload: replacementPayload);
-        var config = new AvroDeserializerConfig { RuleExecutor = executor };
+        var config = new AvroDeserializerConfig
+        {
+            SubjectNameStrategy = SubjectNameStrategy.TopicRecordName,
+            RuleExecutor = executor
+        };
         await using var deserializer = new AvroSchemaRegistryDeserializer<GenericRecord>(schemaRegistry, config);
 
         var result = deserializer.Deserialize(wireFormat, CreateContext());
@@ -1398,6 +1427,7 @@ public sealed class AvroSerializerTests
         await Assert.That((string)result["name"]!).IsEqualTo("plain");
         await Assert.That(executor.DeserializeContext).IsNotNull();
         await Assert.That(executor.DeserializeContext!.PayloadFormat).IsEqualTo(SchemaRegistryPayloadFormat.Avro);
+        await Assert.That(executor.DeserializeContext.Subject).IsEqualTo("test-topic-test.SimpleRecord");
         await Assert.That(executor.DeserializeContext.SchemaId).IsEqualTo(schemaId);
         await Assert.That(executor.DeserializeContext.Schema).IsSameReferenceAs(schemaObj);
     }
@@ -1840,6 +1870,28 @@ public sealed class AvroSerializerTests
     }
 
     [Test]
+    public async Task Deserializer_UseLatestVersion_SpecificRecordUsesGeneratedFieldIndexes()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        var writerId = await schemaRegistry.RegisterSchemaAsync(
+            "test-topic-value",
+            new RegistrySchema { SchemaType = SchemaType.Avro, SchemaString = SpecificMigrationRecordSchema });
+        await schemaRegistry.RegisterSchemaAsync(
+            "test-topic-value",
+            new RegistrySchema { SchemaType = SchemaType.Avro, SchemaString = SpecificMigrationReorderedSchema });
+        var record = new SpecificMigrationRecord { Name = "Ada", Age = 36 };
+        var wire = CreateWireFormat(writerId, SerializeSpecificAvroRecord(record));
+        await using var deserializer = new AvroSchemaRegistryDeserializer<SpecificMigrationRecord>(
+            schemaRegistry,
+            new AvroDeserializerConfig { UseLatestVersion = true });
+
+        var result = deserializer.Deserialize(wire, CreateContext());
+
+        await Assert.That(result.Name).IsEqualTo("Ada");
+        await Assert.That(result.Age).IsEqualTo(36);
+    }
+
+    [Test]
     public async Task Serializer_WarmupAsync_RetriesAfterTransientSchemaIdFailure()
     {
         using var schemaRegistry = new MockSchemaRegistryClient
@@ -1855,10 +1907,12 @@ public sealed class AvroSerializerTests
 
         await Assert.That(async () => await serializer.WarmupAsync("retry-topic", record))
             .Throws<SchemaRegistryException>();
+        await Assert.That(serializer.CachedSchemaIdCount).IsEqualTo(0);
 
         var schemaId = await serializer.WarmupAsync("retry-topic", record);
 
         await Assert.That(schemaId).IsGreaterThan(0);
+        await Assert.That(serializer.CachedSchemaIdCount).IsEqualTo(1);
         await Assert.That(schemaRegistry.GetOrRegisterSchemaCallCount).IsEqualTo(2);
     }
 
@@ -1949,6 +2003,53 @@ public sealed class AvroSerializerTests
 
         await Assert.That(schemaRegistry.GetOrRegisterSchemaCallCount).IsEqualTo(1);
         await Assert.That(buffer.WrittenCount).IsGreaterThan(5); // magic byte + 4-byte schema id + payload
+    }
+
+    [Test]
+    public async Task Serializer_PrepareAsync_WithRuleExecutor_CachesRegisteredRuleMetadata()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        var registeredSchema = new RegistrySchema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = SimpleRecordSchema,
+            RuleSet = new SchemaRuleSet
+            {
+                DomainRules =
+                [
+                    new SchemaRule
+                    {
+                        Name = "registered-rule",
+                        Kind = SchemaRuleKind.Transform,
+                        Mode = SchemaRuleMode.Write,
+                        Type = "TEST"
+                    }
+                ]
+            }
+        };
+        await schemaRegistry.RegisterSchemaAsync("prepare-rules-value", registeredSchema);
+        var ruleExecutor = new CapturingRuleExecutor();
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(
+            schemaRegistry,
+            new AvroSerializerConfig
+            {
+                AutoRegisterSchemas = false,
+                RuleExecutor = ruleExecutor
+            });
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(SimpleRecordSchema);
+        var record = new GenericRecord(schema);
+        record.Add("id", 1);
+        record.Add("name", "rules");
+        var context = CreateContext("prepare-rules");
+
+        await serializer.PrepareAsync(record, context);
+        var buffer = new ArrayBufferWriter<byte>();
+        serializer.Serialize(record, ref buffer, context);
+
+        await Assert.That(ruleExecutor.SerializeContext!.Schema).IsSameReferenceAs(registeredSchema);
+        // PrepareAsync resolves the registered subject and its rule metadata together, so no
+        // redundant schema-by-ID request is needed before the cached serialization path runs.
+        await Assert.That(schemaRegistry.GetSchemaCallCount).IsEqualTo(0);
     }
 
     [Test]
@@ -2329,5 +2430,36 @@ public sealed class AvroSerializerTests
             ? Name
             : throw new ArgumentOutOfRangeException(nameof(fieldPos));
         public void Put(int fieldPos, object fieldValue) => throw new NotSupportedException();
+    }
+}
+
+public sealed class SpecificMigrationRecord : ISpecificRecord
+{
+    public static readonly AvroSchema _SCHEMA = AvroSchema.Parse(AvroSerializerTests.SpecificMigrationRecordSchema);
+
+    public string Name { get; set; } = string.Empty;
+    public int Age { get; set; }
+    public AvroSchema Schema => _SCHEMA;
+
+    public object Get(int fieldPos) => fieldPos switch
+    {
+        0 => Name,
+        1 => Age,
+        _ => throw new ArgumentOutOfRangeException(nameof(fieldPos))
+    };
+
+    public void Put(int fieldPos, object fieldValue)
+    {
+        switch (fieldPos)
+        {
+            case 0:
+                Name = (string)fieldValue;
+                break;
+            case 1:
+                Age = (int)fieldValue;
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(fieldPos));
+        }
     }
 }

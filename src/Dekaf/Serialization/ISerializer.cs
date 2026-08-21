@@ -1,6 +1,152 @@
 using System.Buffers;
+using System.Runtime.CompilerServices;
 
 namespace Dekaf.Serialization;
+
+internal interface IRecordHeaderRoutingProvider
+{
+    void CollectHeaderNames(List<string> names);
+}
+
+internal sealed class RecordHeaderRoutingPlan
+{
+    internal const int FullyIndexedWithoutTail = -1;
+    internal const int InlineSlotsOnly = -2;
+
+    private readonly Dictionary<string, int> _slots;
+
+    private RecordHeaderRoutingPlan(List<string> names)
+    {
+        _slots = new Dictionary<string, int>(names.Count, StringComparer.Ordinal);
+        for (var index = 0; index < names.Count; index++)
+            _slots.Add(names[index], index);
+    }
+
+    internal int Count => _slots.Count;
+
+    internal bool TryGetSlot(string headerName, out int slot) =>
+        _slots.TryGetValue(headerName, out slot);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal int GetRoutingTailCapacity(int headerCount)
+    {
+        var indexedHeaderCount = Math.Min(Count - 2, headerCount);
+        if (indexedHeaderCount <= 0)
+            return 0;
+
+        var capacity = (uint)indexedHeaderCount * 2 - 1;
+        capacity |= capacity >> 1;
+        capacity |= capacity >> 2;
+        capacity |= capacity >> 4;
+        capacity |= capacity >> 8;
+        capacity |= capacity >> 16;
+        return (int)(capacity + 1);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static int GetRoutingTailBucket(int slot, int mask) =>
+        (int)((uint)slot * 2654435761U) & mask;
+
+    internal static RecordHeaderRoutingPlan? Create<TKey, TValue>(
+        IDeserializer<TKey>? keyDeserializer,
+        IDeserializer<TValue>? valueDeserializer)
+    {
+        List<string>? names = null;
+        Collect(keyDeserializer, ref names);
+        Collect(valueDeserializer, ref names);
+        return names is { Count: > 0 } ? new RecordHeaderRoutingPlan(names) : null;
+    }
+
+    private static void Collect<T>(IDeserializer<T>? deserializer, ref List<string>? names)
+    {
+        if (deserializer is not IRecordHeaderRoutingProvider provider)
+            return;
+
+        names ??= [];
+        provider.CollectHeaderNames(names);
+    }
+}
+
+internal readonly struct RecordHeaderRoutingLookup(
+    RecordHeaderRoutingPlan? plan,
+    Header[]? headers,
+    int headerCount,
+    int firstIndex,
+    int secondIndex,
+    int routedHeaderTailOffset)
+{
+    internal bool TryGetLast(string headerName, out Header header)
+    {
+        if (plan is not null && plan.TryGetSlot(headerName, out var slot))
+        {
+            var index = slot switch
+            {
+                0 => firstIndex,
+                1 => secondIndex,
+                _ => 0
+            } - 1;
+            if ((uint)index < (uint)headerCount && headers is not null)
+            {
+                header = headers[index];
+                return true;
+            }
+
+            if (slot >= 2 && routedHeaderTailOffset > 0 && headers is not null)
+            {
+                var capacity = plan.GetRoutingTailCapacity(headerCount);
+                var mask = capacity - 1;
+                var bucket = RecordHeaderRoutingPlan.GetRoutingTailBucket(slot, mask);
+                for (var probe = 0; probe < capacity; probe++)
+                {
+                    header = headers[routedHeaderTailOffset + bucket];
+                    if (header.Key is null)
+                        return false;
+                    if (string.Equals(header.Key, headerName, StringComparison.Ordinal))
+                        return true;
+                    bucket = (bucket + 1) & mask;
+                }
+
+                header = default;
+                return false;
+            }
+
+            // -1 means every configured slot was indexed inline; a positive value means
+            // the slots after the first two were indexed in the pooled header-array tail.
+            if (routedHeaderTailOffset == RecordHeaderRoutingPlan.FullyIndexedWithoutTail
+                || routedHeaderTailOffset > 0)
+            {
+                header = default;
+                return false;
+            }
+
+            // -2 is the compatibility form for an already-parsed record: the first two
+            // slots are indexed, while later slots use the cold linear fallback below.
+            if (routedHeaderTailOffset == RecordHeaderRoutingPlan.InlineSlotsOnly && slot < 2)
+            {
+                header = default;
+                return false;
+            }
+        }
+
+        // Records configured after parsing cannot reserve routing slots in their pooled
+        // header array. This cold compatibility path preserves nested-router correctness;
+        // network receive paths configure the plan before parsing and use the O(1) tail.
+        if (headers is not null)
+        {
+            for (var index = headerCount - 1; index >= 0; index--)
+            {
+                if (string.Equals(headers[index].Key, headerName, StringComparison.Ordinal))
+                {
+                    header = headers[index];
+                    return true;
+                }
+            }
+        }
+
+        header = default;
+        return false;
+    }
+}
 
 /// <summary>
 /// Interface for serializing values to bytes.
@@ -33,6 +179,64 @@ public interface IDeserializer<out T>
     /// Deserializes a value from the input data.
     /// </summary>
     T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context);
+}
+
+internal interface IRecordHeaderDeserializer<out T>
+{
+    T Deserialize(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        in RecordHeaderRoutingLookup headers);
+}
+
+internal interface ICallerOwnedHeaderDeserializer<out T>
+{
+    T DeserializeCallerOwned(ReadOnlyMemory<byte> data, SerializationContext context);
+}
+
+internal static class RecordHeaderDeserializer
+{
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static T DeserializeCallerOwned<T>(
+        IDeserializer<T> deserializer,
+        ReadOnlyMemory<byte> data,
+        SerializationContext context)
+    {
+        if (deserializer is ICallerOwnedHeaderDeserializer<T> callerOwned)
+            return callerOwned.DeserializeCallerOwned(data, context);
+
+        if (context.Headers is not null)
+            context.Headers = null;
+        return deserializer.Deserialize(data, context);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static T Deserialize<T>(
+        IDeserializer<T> deserializer,
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        in RecordHeaderRoutingLookup headers) =>
+        deserializer is IRecordHeaderDeserializer<T> headerDeserializer
+            ? headerDeserializer.Deserialize(
+                data,
+                context,
+                in headers)
+            : deserializer.Deserialize(data, context);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static T DeserializeChild<T>(
+        IDeserializer<T> deserializer,
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        in RecordHeaderRoutingLookup headers)
+    {
+        if (deserializer is IRecordHeaderDeserializer<T> nested)
+            return nested.Deserialize(data, context, in headers);
+
+        if (context.Headers is not null)
+            context.Headers = null;
+        return deserializer.Deserialize(data, context);
+    }
 }
 
 /// <summary>
@@ -96,6 +300,11 @@ public struct SerializationContext
     /// <summary>
     /// Headers associated with the record.
     /// </summary>
+    /// <remarks>
+    /// During consumption this instance may be cleared, refilled, and reused for later records.
+    /// It is valid only for the current <see cref="IDeserializer{T}.Deserialize"/> or async
+    /// deserializer call. Deserializers must not retain it; copy entries when a snapshot is needed.
+    /// </remarks>
     public Headers? Headers { get; set; }
 
     /// <summary>

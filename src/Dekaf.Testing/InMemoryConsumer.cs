@@ -15,6 +15,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     IKafkaConsumer<TKey, TValue>,
     IBoundedKafkaConsumer<TKey, TValue>,
     IConsumerPositions,
+    IConsumerCommittedOffsets,
     IConsumerPartitions,
     IConsumerOffsets,
     IConsumerBatchOffsetStore,
@@ -49,6 +50,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private bool _snapshotActive;
     private readonly string? _groupId;
     private readonly string? _memberId;
+    private int _consumerGroupGeneration = -1;
+    private long _consumerGroupRegistrationId;
     private string? _subscriptionPattern;
     private bool _disposed;
 
@@ -246,14 +249,23 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
     public string? MemberId => _memberId;
 
-    public ConsumerGroupMetadata? ConsumerGroupMetadata => _groupId is null || _memberId is null
-        ? null
-        : new ConsumerGroupMetadata
+    public ConsumerGroupMetadata? ConsumerGroupMetadata
+    {
+        get
         {
-            GroupId = _groupId,
-            GenerationId = 1,
-            MemberId = _memberId
-        };
+            lock (_gate)
+            {
+                return _groupId is null || _memberId is null || _consumerGroupGeneration < 0
+                    ? null
+                    : new ConsumerGroupMetadata
+                    {
+                        GroupId = _groupId,
+                        GenerationId = _consumerGroupGeneration,
+                        MemberId = _memberId
+                    };
+            }
+        }
+    }
 
     public IConsumerPositions Positions => this;
 
@@ -605,6 +617,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     {
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
+        _ = GetCommitGroupId();
 
         lock (_gate)
         {
@@ -624,12 +637,16 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         ArgumentNullException.ThrowIfNull(offsets);
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
+        var groupId = GetCommitGroupId();
 
-        if (_groupId is not null)
-            _cluster.CommitOffsets(_groupId, offsets);
+        _cluster.CommitOffsets(groupId, offsets);
 
         return ValueTask.CompletedTask;
     }
+
+    private string GetCommitGroupId() => _groupId
+        ?? throw new InvalidOperationException(
+            "Offset commits require a consumer group. Configure one with ConsumerBuilder.WithGroupId(...).");
 
     public void StoreOffset(ConsumeResult<TKey, TValue> result)
     {
@@ -741,6 +758,21 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             : _cluster.GetCommittedOffset(_groupId, partition);
 
         return ValueTask.FromResult(offset);
+    }
+
+    public ValueTask<IReadOnlyDictionary<TopicPartition, TopicPartitionOffset>> GetCommittedOffsetsAsync(
+        IReadOnlyCollection<TopicPartition> partitions,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(partitions);
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+
+        var offsets = _groupId is null
+            ? new Dictionary<TopicPartition, TopicPartitionOffset>()
+            : _cluster.GetCommittedOffsets(_groupId, partitions);
+
+        return ValueTask.FromResult<IReadOnlyDictionary<TopicPartition, TopicPartitionOffset>>(offsets);
     }
 
     public long? GetPosition(TopicPartition partition)
@@ -977,15 +1009,28 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         while (activePartitionIndex < partitions.Length)
         {
             var bound = partitions[activePartitionIndex];
-            if (_positions.TryGetValue(bound.Partition, out var position)
-                && position < bound.EndOffset
-                && _cluster.TryRead(bound.Partition, position, out var record)
-                && record.Offset < bound.EndOffset)
+            if (_positions.TryGetValue(bound.Partition, out var position) &&
+                position < bound.EndOffset)
             {
-                selectedPartition = bound.Partition;
-                selectedRecord = record;
-                selectedPosition = position;
-                return true;
+                if (_cluster.TryRead(
+                        bound.Partition,
+                        position,
+                        _options.IsolationLevel,
+                        out var record,
+                        out var blockedByOngoingTransaction) &&
+                    record.Offset < bound.EndOffset)
+                {
+                    selectedPartition = bound.Partition;
+                    selectedRecord = record;
+                    selectedPosition = position;
+                    return true;
+                }
+
+                if (blockedByOngoingTransaction)
+                {
+                    activePartitionIndex++;
+                    continue;
+                }
             }
 
             if (!_positions.TryGetValue(bound.Partition, out position)
@@ -1084,7 +1129,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 if (!_positions.TryGetValue(partition, out var position))
                     continue;
 
-                if (!_cluster.TryRead(partition, position, out var record))
+                if (!_cluster.TryRead(partition, position, _options.IsolationLevel, out var record))
                     continue;
 
                 selectedPartition = partition;
@@ -1235,6 +1280,10 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             {
                 Topic = topicPartition.Topic,
                 Component = SerializationComponent.Key,
+                Headers = _asyncKeyDeserializer is null
+                          && _keyDeserializer is ICallerOwnedHeaderDeserializer<TKey>
+                    ? ConsumeResult<TKey, TValue>.GetCallerOwnedSerializationHeaders(record.Headers)
+                    : null,
                 KeyData = ReadOnlyMemory<byte>.Empty,
                 IsNull = false
             };
@@ -1243,7 +1292,9 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             {
                 key = _asyncKeyDeserializer is not null
                     ? await _asyncKeyDeserializer.DeserializeAsync(record.Key, keyContext, cancellationToken).ConfigureAwait(false)
-                    : _keyDeserializer.Deserialize(record.Key, keyContext);
+                    : keyContext.Headers is not null
+                        ? RecordHeaderDeserializer.DeserializeCallerOwned(_keyDeserializer, record.Key, keyContext)
+                        : _keyDeserializer.Deserialize(record.Key, keyContext);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -1255,6 +1306,10 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         {
             Topic = topicPartition.Topic,
             Component = SerializationComponent.Value,
+            Headers = _asyncValueDeserializer is null
+                      && _valueDeserializer is ICallerOwnedHeaderDeserializer<TValue>
+                ? ConsumeResult<TKey, TValue>.GetCallerOwnedSerializationHeaders(record.Headers)
+                : null,
             KeyData = SerializationContext.NormalizeKeyData(record.Key, record.IsKeyNull),
             IsNull = record.IsValueNull
         };
@@ -1265,7 +1320,9 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         {
             value = _asyncValueDeserializer is not null
                 ? await _asyncValueDeserializer.DeserializeAsync(valueData, valueContext, cancellationToken).ConfigureAwait(false)
-                : _valueDeserializer.Deserialize(valueData, valueContext);
+                : valueContext.Headers is not null
+                    ? RecordHeaderDeserializer.DeserializeCallerOwned(_valueDeserializer, valueData, valueContext)
+                    : _valueDeserializer.Deserialize(valueData, valueContext);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -1398,10 +1455,18 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             return _assignment;
         }
 
+        if (_consumerGroupGeneration < 0 || _consumerGroupRegistrationId == 0)
+        {
+            consumerGroupGeneration = -1;
+            return new HashSet<TopicPartition>();
+        }
+
         var owned = _cluster.GetConsumerGroupAssignment(
             _groupId,
             _memberId,
+            _consumerGroupRegistrationId,
             out consumerGroupGeneration);
+        _consumerGroupGeneration = consumerGroupGeneration;
         return owned.Where(_assignment.Contains).ToHashSet();
     }
 
@@ -1410,7 +1475,11 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         if (_groupId is null || _memberId is null)
             return;
 
-        _cluster.RegisterConsumerGroupMember(_groupId, _memberId, _assignment);
+        _consumerGroupGeneration = _cluster.RegisterConsumerGroupMember(
+            _groupId,
+            _memberId,
+            _assignment,
+            out _consumerGroupRegistrationId);
     }
 
     private void UnregisterConsumerGroupMemberUnderLock()
@@ -1418,7 +1487,12 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         if (_groupId is null || _memberId is null)
             return;
 
-        _cluster.UnregisterConsumerGroupMember(_groupId, _memberId);
+        _cluster.UnregisterConsumerGroupMember(
+            _groupId,
+            _memberId,
+            _consumerGroupRegistrationId);
+        _consumerGroupGeneration = -1;
+        _consumerGroupRegistrationId = 0;
     }
 
     private void ThrowIfDisposed()

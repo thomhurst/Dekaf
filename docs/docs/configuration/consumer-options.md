@@ -1,5 +1,6 @@
 ---
 sidebar_position: 3
+description: "Complete reference for every consumer setting, covering connection, group coordination, offsets, fetch and session tuning, subscription, and rebalancing."
 ---
 
 # Consumer Options
@@ -97,8 +98,10 @@ Configuration is applied before the optional fluent callback, so fluent calls ca
 | `WithFetchMaxWait(...)` | `FetchMaxWaitMs` | Milliseconds |
 | `WithFetchSessions(...)` | `EnableFetchSessions` | Boolean |
 | `WithMaxPollRecords(...)` | `MaxPollRecords` | Integer |
+| `WithRecordFilter(...)` | Runtime callback | Allocation-free invocation path before key/value deserialization; user predicates must avoid allocations to preserve zero-allocation delivery. See [Filtering and routing](../consumer/filtering-and-routing.md) |
 | `WithSessionTimeout(...)` | `SessionTimeoutMs` | Milliseconds |
 | `WithHeartbeatInterval(...)` | `HeartbeatIntervalMs` | Milliseconds |
+| Runtime-configured | `RebalanceTimeoutMs` | Broker-visible KIP-848 rebalance window in milliseconds; default 60000 |
 | `WithIsolationLevel(...)` | `IsolationLevel` | `ReadUncommitted` or `ReadCommitted` |
 | `WithPartitionEof(...)` | `EnablePartitionEof` | Boolean |
 | `WithQueuedMinMessages(...)` | `QueuedMinMessages` | Integer |
@@ -308,15 +311,19 @@ auto-commit, `LeaveGroup`, assignment cleanup, and resource disposal:
 
 ```csharp
 .WithRebalanceListener(new MyRebalanceListener())
+.WithPartitionStopTimeout(TimeSpan.FromSeconds(30)) // Default: 5 seconds
 ```
 
-The same method accepts `IConsumerAwareRebalanceListener`. Its callbacks receive an
+`WithRebalanceListener` also accepts `IConsumerAwareRebalanceListener`. Its callbacks receive an
 `IRebalanceConsumer` view with safe commit, seek, pause/resume, metadata, and offset
 operations. The view is invalidated as soon as the callback completes.
 
-The stop callback is best-effort and bounded to five seconds. If it observes
-shutdown cancellation, Dekaf still completes local cleanup before rethrowing the
-cancellation from `CloseAsync`.
+`WithPartitionStopTimeout` bounds how long shutdown awaits the stop callback. When
+the timeout expires, Dekaf cancels the callback token and continues local cleanup;
+a callback that ignores cancellation can continue running after the consumer has
+closed. Caller cancellation or `WithDefaultApiTimeout` can shorten the available
+window. `ConsumerCloseOptions` only controls group-membership behavior and does not
+override this timeout.
 
 ## Networking
 

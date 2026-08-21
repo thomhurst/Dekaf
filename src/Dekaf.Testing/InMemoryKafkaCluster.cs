@@ -1,6 +1,9 @@
 using Dekaf.Admin;
+using Dekaf.Consumer;
+using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Protocol;
+using Dekaf.Protocol.Messages;
 using Dekaf.Producer;
 using Dekaf.Serialization;
 
@@ -14,29 +17,50 @@ public sealed class InMemoryKafkaCluster
     private readonly object _gate = new();
     private readonly Dictionary<string, TopicState> _topics = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<TopicPartition, TopicPartitionOffset>> _consumerGroupOffsets = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, Dictionary<string, HashSet<TopicPartition>>> _consumerGroupMembers = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Dictionary<string, ConsumerGroupMemberState>> _consumerGroupMembers = new(StringComparer.Ordinal);
     private readonly Dictionary<string, int> _consumerGroupGenerations = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<TopicPartition, Dictionary<long, ShareLeaseState>>> _shareLeases = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<TopicPartition, Dictionary<long, int>>> _shareDeliveryCounts = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Exception> _produceFailures = new(StringComparer.Ordinal);
+    private readonly Dictionary<PreparedTransactionState, IInMemoryPreparedTransaction> _preparedTransactions = [];
+    private readonly Dictionary<InMemoryTransactionMarker, List<PartitionState>> _transactionPartitions = [];
     private readonly InMemoryKafkaClusterOptions _options;
     private TaskCompletionSource _recordsChanged = NewRecordsChangedSource();
+    private long _nextProducerId;
+    private long _nextConsumerGroupRegistrationId;
     private TimeSpan _produceLatency;
 
     public InMemoryKafkaCluster()
-        : this(new InMemoryKafkaClusterOptions())
+        : this(new InMemoryKafkaClusterOptions(), new KafkaFaultPlan())
     {
     }
 
     public InMemoryKafkaCluster(InMemoryKafkaClusterOptions options)
+        : this(options, new KafkaFaultPlan())
+    {
+    }
+
+    public InMemoryKafkaCluster(IKafkaFaultPlan faultPlan)
+        : this(new InMemoryKafkaClusterOptions(), faultPlan)
+    {
+    }
+
+    public InMemoryKafkaCluster(InMemoryKafkaClusterOptions options, IKafkaFaultPlan faultPlan)
     {
         ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(faultPlan);
         ArgumentNullException.ThrowIfNull(options.SupportedFeatures);
         ArgumentOutOfRangeException.ThrowIfLessThan(options.DefaultPartitionCount, 1);
         _options = options;
+        FaultPlan = faultPlan;
     }
 
     public InMemoryKafkaClusterOptions Options => _options;
+
+    /// <summary>
+    /// Gets the deterministic fault plan consumed by in-memory client operations.
+    /// </summary>
+    public IKafkaFaultPlan FaultPlan { get; }
 
     public TimeSpan ProduceLatency
     {
@@ -105,10 +129,11 @@ public sealed class InMemoryKafkaCluster
         }
     }
 
-    internal void RegisterConsumerGroupMember(
+    internal int RegisterConsumerGroupMember(
         string groupId,
         string memberId,
-        IEnumerable<TopicPartition> subscribedPartitions)
+        IEnumerable<TopicPartition> subscribedPartitions,
+        out long registrationId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
         ArgumentException.ThrowIfNullOrWhiteSpace(memberId);
@@ -120,16 +145,22 @@ public sealed class InMemoryKafkaCluster
         {
             if (!_consumerGroupMembers.TryGetValue(groupId, out var members))
             {
-                members = new Dictionary<string, HashSet<TopicPartition>>(StringComparer.Ordinal);
+                members = new Dictionary<string, ConsumerGroupMemberState>(StringComparer.Ordinal);
                 _consumerGroupMembers[groupId] = members;
             }
 
-            members[memberId] = partitions;
-            _consumerGroupGenerations[groupId] = _consumerGroupGenerations.GetValueOrDefault(groupId) + 1;
+            registrationId = ++_nextConsumerGroupRegistrationId;
+            members[memberId] = new ConsumerGroupMemberState(registrationId, partitions);
+            var generation = _consumerGroupGenerations.GetValueOrDefault(groupId) + 1;
+            _consumerGroupGenerations[groupId] = generation;
+            return generation;
         }
     }
 
-    internal void UnregisterConsumerGroupMember(string groupId, string memberId)
+    internal void UnregisterConsumerGroupMember(
+        string groupId,
+        string memberId,
+        long registrationId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
         ArgumentException.ThrowIfNullOrWhiteSpace(memberId);
@@ -139,21 +170,24 @@ public sealed class InMemoryKafkaCluster
             if (!_consumerGroupMembers.TryGetValue(groupId, out var members))
                 return;
 
-            if (!members.Remove(memberId))
+            if (!members.TryGetValue(memberId, out var member) ||
+                member.RegistrationId != registrationId)
+            {
                 return;
+            }
+
+            members.Remove(memberId);
 
             _consumerGroupGenerations[groupId] = _consumerGroupGenerations.GetValueOrDefault(groupId) + 1;
             if (members.Count == 0)
-            {
                 _consumerGroupMembers.Remove(groupId);
-                _consumerGroupGenerations.Remove(groupId);
-            }
         }
     }
 
     internal IReadOnlySet<TopicPartition> GetConsumerGroupAssignment(
         string groupId,
         string memberId,
+        long registrationId,
         out int generation)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
@@ -161,6 +195,14 @@ public sealed class InMemoryKafkaCluster
 
         lock (_gate)
         {
+            if (!_consumerGroupMembers.TryGetValue(groupId, out var members) ||
+                !members.TryGetValue(memberId, out var member) ||
+                member.RegistrationId != registrationId)
+            {
+                generation = -1;
+                return new HashSet<TopicPartition>();
+            }
+
             generation = _consumerGroupGenerations.GetValueOrDefault(groupId);
             var assignments = BuildConsumerGroupAssignments(groupId);
             return assignments.TryGetValue(memberId, out var partitions)
@@ -186,11 +228,94 @@ public sealed class InMemoryKafkaCluster
         {
             var state = GetTopicForRead(topic);
             var partitionState = GetPartitionForRead(state, partition);
-            return partitionState.Records.Select(CloneRecord).ToArray();
+            var visible = new List<InMemoryRecord>(partitionState.Records.Count);
+            foreach (var record in partitionState.Records)
+            {
+                if (record.Offset >= partitionState.FirstUnstableOffset)
+                    break;
+                if (IsRecordVisibleUnderLock(record))
+                    visible.Add(CloneRecord(record));
+            }
+
+            return visible;
         }
     }
 
-    internal async ValueTask<RecordMetadata> AppendAsync(
+    internal static InMemoryTransactionMarker CreateTransactionMarker() => new();
+
+    internal long AllocateProducerId() => Interlocked.Increment(ref _nextProducerId);
+
+    internal void RegisterPreparedTransaction(
+        PreparedTransactionState state,
+        IInMemoryPreparedTransaction transaction)
+    {
+        ArgumentNullException.ThrowIfNull(transaction);
+        lock (_gate)
+            _preparedTransactions[state] = transaction;
+    }
+
+    internal IInMemoryPreparedTransaction? GetPreparedTransaction(PreparedTransactionState state)
+    {
+        lock (_gate)
+            return _preparedTransactions.GetValueOrDefault(state);
+    }
+
+    internal void CompleteTransaction(
+        InMemoryTransactionMarker transactionMarker,
+        bool committed,
+        IEnumerable<(
+            string GroupId,
+            IReadOnlyList<ConsumerGroupMetadata> MetadataSnapshots,
+            IReadOnlyList<TopicPartitionOffset> Offsets)> pendingOffsets,
+        PreparedTransactionState preparedState,
+        IInMemoryPreparedTransaction transaction)
+    {
+        ArgumentNullException.ThrowIfNull(pendingOffsets);
+        ArgumentNullException.ThrowIfNull(transactionMarker);
+        ArgumentNullException.ThrowIfNull(transaction);
+
+        TaskCompletionSource signal;
+        lock (_gate)
+        {
+            if (transactionMarker.State != InMemoryTransactionState.Ongoing)
+                throw new InvalidOperationException("The in-memory transaction is no longer active.");
+
+            if (committed)
+            {
+                foreach (var (groupId, metadataSnapshots, _) in pendingOffsets)
+                {
+                    for (var i = 0; i < metadataSnapshots.Count; i++)
+                        ValidateConsumerGroupMetadataUnderLock(groupId, metadataSnapshots[i]);
+                }
+
+                foreach (var (groupId, _, offsets) in pendingOffsets)
+                    CommitOffsetsUnderLock(groupId, offsets);
+            }
+
+            transactionMarker.State = committed
+                ? InMemoryTransactionState.Committed
+                : InMemoryTransactionState.Aborted;
+
+            if (_transactionPartitions.Remove(transactionMarker, out var transactionPartitions))
+            {
+                foreach (var partition in transactionPartitions)
+                    partition.CompleteTransaction(transactionMarker);
+            }
+
+            if (preparedState.HasTransaction &&
+                _preparedTransactions.TryGetValue(preparedState, out var registered) &&
+                ReferenceEquals(registered, transaction))
+            {
+                _preparedTransactions.Remove(preparedState);
+            }
+
+            signal = _recordsChanged;
+        }
+
+        signal.TrySetResult();
+    }
+
+    internal ValueTask<RecordMetadata> AppendAsync(
         string topic,
         int? partition,
         byte[] key,
@@ -199,13 +324,81 @@ public sealed class InMemoryKafkaCluster
         bool isValueNull,
         IReadOnlyList<Header>? headers,
         DateTimeOffset timestamp,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        KafkaFaultOperation faultOperation = KafkaFaultOperation.Produce,
+        InMemoryTransactionMarker? transactionMarker = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(topic);
         ArgumentNullException.ThrowIfNull(key);
         ArgumentNullException.ThrowIfNull(value);
+        cancellationToken.ThrowIfCancellationRequested();
 
-        var latency = GetProduceLatency(topic, out var failure);
+        TimeSpan latency;
+        Exception? failure;
+        TaskCompletionSource? signal = null;
+        RecordMetadata metadata = default;
+        var hasMatchingFault = FaultPlan is not KafkaFaultPlan indexedPlan ||
+                               indexedPlan.HasPotentialProduceMatch(faultOperation, topic);
+        lock (_gate)
+        {
+            failure = _produceFailures.GetValueOrDefault(topic);
+            latency = _produceLatency;
+            if (latency == TimeSpan.Zero && failure is null && !hasMatchingFault)
+            {
+                var state = GetOrAutoCreateTopic(topic);
+                var selectedPartition = SelectPartition(state, partition, key, isKeyNull);
+                metadata = AppendRecordUnderLock(
+                    topic,
+                    state,
+                    selectedPartition,
+                    key,
+                    isKeyNull,
+                    value,
+                    isValueNull,
+                    headers,
+                    timestamp,
+                    transactionMarker,
+                    out signal);
+            }
+        }
+
+        if (signal is not null)
+        {
+            signal.TrySetResult();
+            return new ValueTask<RecordMetadata>(metadata);
+        }
+
+        return AppendSlowAsync(
+            topic,
+            partition,
+            key,
+            isKeyNull,
+            value,
+            isValueNull,
+            headers,
+            timestamp,
+            faultOperation,
+            transactionMarker,
+            latency,
+            failure,
+            cancellationToken);
+    }
+
+    private async ValueTask<RecordMetadata> AppendSlowAsync(
+        string topic,
+        int? partition,
+        byte[] key,
+        bool isKeyNull,
+        byte[] value,
+        bool isValueNull,
+        IReadOnlyList<Header>? headers,
+        DateTimeOffset timestamp,
+        KafkaFaultOperation faultOperation,
+        InMemoryTransactionMarker? transactionMarker,
+        TimeSpan latency,
+        Exception? failure,
+        CancellationToken cancellationToken)
+    {
         if (latency > TimeSpan.Zero)
             await Task.Delay(latency, cancellationToken).ConfigureAwait(false);
 
@@ -214,53 +407,152 @@ public sealed class InMemoryKafkaCluster
         if (failure is not null)
             throw failure;
 
+        TopicState selectedTopic;
+        int selectedPartition;
+        lock (_gate)
+        {
+            selectedTopic = GetOrAutoCreateTopic(topic);
+            selectedPartition = SelectPartition(selectedTopic, partition, key, isKeyNull);
+        }
+
+        await FaultPlan.ApplyAsync(
+            new KafkaFaultScope(faultOperation, topic, selectedPartition),
+            cancellationToken).ConfigureAwait(false);
+
         TaskCompletionSource signal;
         RecordMetadata metadata;
         lock (_gate)
         {
-            var state = GetOrAutoCreateTopic(topic);
-            var selectedPartition = SelectPartition(state, partition, key, isKeyNull);
-            var partitionState = state.Partitions[selectedPartition];
-            var offset = partitionState.HighWatermark;
-            var timestampMs = timestamp.ToUnixTimeMilliseconds();
-
-            var record = new InMemoryRecord
+            if (!_topics.TryGetValue(topic, out var state) ||
+                !ReferenceEquals(state, selectedTopic) ||
+                (uint)selectedPartition >= (uint)state.Partitions.Count)
             {
-                Topic = topic,
-                Partition = selectedPartition,
-                Offset = offset,
-                Key = key,
-                IsKeyNull = isKeyNull,
-                Value = value,
-                IsValueNull = isValueNull,
-                Headers = CopyHeaders(headers),
-                TimestampMs = timestampMs
-            };
+                throw new ProduceException(
+                    ErrorCode.UnknownTopicOrPartition,
+                    $"Topic '{topic}' changed while the produce operation was paused.")
+                {
+                    Topic = topic,
+                    Partition = selectedPartition
+                };
+            }
 
-            partitionState.Records.Add(record);
-
-            metadata = new RecordMetadata
-            {
-                Topic = topic,
-                Partition = selectedPartition,
-                Offset = offset,
-                Timestamp = timestamp,
-                KeySize = isKeyNull ? 0 : key.Length,
-                ValueSize = isValueNull ? 0 : value.Length
-            };
-
-            signal = _recordsChanged;
+            metadata = AppendRecordUnderLock(
+                topic,
+                state,
+                selectedPartition,
+                key,
+                isKeyNull,
+                value,
+                isValueNull,
+                headers,
+                timestamp,
+                transactionMarker,
+                out signal);
         }
 
         signal.TrySetResult();
         return metadata;
     }
 
-    internal bool TryRead(TopicPartition topicPartition, long offset, out InMemoryRecord record)
+    private RecordMetadata AppendRecordUnderLock(
+        string topic,
+        TopicState state,
+        int selectedPartition,
+        byte[] key,
+        bool isKeyNull,
+        byte[] value,
+        bool isValueNull,
+        IReadOnlyList<Header>? headers,
+        DateTimeOffset timestamp,
+        InMemoryTransactionMarker? transactionMarker,
+        out TaskCompletionSource signal)
+    {
+        if (transactionMarker is { State: not InMemoryTransactionState.Ongoing })
+        {
+            throw new InvalidOperationException(
+                "The in-memory transaction completed while the produce operation was paused.");
+        }
+
+        var partitionState = state.Partitions[selectedPartition];
+        var offset = partitionState.HighWatermark;
+        var timestampMs = timestamp.ToUnixTimeMilliseconds();
+
+        var record = new InMemoryRecord
+        {
+            Topic = topic,
+            Partition = selectedPartition,
+            Offset = offset,
+            Key = key,
+            IsKeyNull = isKeyNull,
+            Value = value,
+            IsValueNull = isValueNull,
+            Headers = CopyHeaders(headers),
+            TimestampMs = timestampMs,
+            Transaction = transactionMarker
+        };
+
+        partitionState.Records.Add(record);
+        if (transactionMarker is not null &&
+            partitionState.RegisterTransaction(transactionMarker, offset))
+        {
+            if (!_transactionPartitions.TryGetValue(transactionMarker, out var transactionPartitions))
+            {
+                transactionPartitions = [];
+                _transactionPartitions.Add(transactionMarker, transactionPartitions);
+            }
+
+            transactionPartitions.Add(partitionState);
+        }
+
+        signal = _recordsChanged;
+        return new RecordMetadata
+        {
+            Topic = topic,
+            Partition = selectedPartition,
+            Offset = offset,
+            Timestamp = timestamp,
+            KeySize = isKeyNull ? 0 : key.Length,
+            ValueSize = isValueNull ? 0 : value.Length
+        };
+    }
+
+    internal bool TryRead(TopicPartition topicPartition, long offset, out InMemoryRecord record) =>
+        TryRead(topicPartition, offset, IsolationLevel.ReadCommitted, out record, out _);
+
+    internal bool TryRead(
+        TopicPartition topicPartition,
+        long offset,
+        IsolationLevel isolationLevel,
+        out InMemoryRecord record) =>
+        TryRead(topicPartition, offset, isolationLevel, out record, out _);
+
+    internal bool TryRead(
+        TopicPartition topicPartition,
+        long offset,
+        out InMemoryRecord record,
+        out bool blockedByOngoingTransaction) =>
+        TryRead(
+            topicPartition,
+            offset,
+            IsolationLevel.ReadCommitted,
+            out record,
+            out blockedByOngoingTransaction);
+
+    internal bool TryRead(
+        TopicPartition topicPartition,
+        long offset,
+        IsolationLevel isolationLevel,
+        out InMemoryRecord record,
+        out bool blockedByOngoingTransaction)
     {
         lock (_gate)
         {
-            if (!TryReadRecordUnderLock(topicPartition, offset, out var candidate))
+            if (!TryReadRecordUnderLock(
+                    topicPartition,
+                    offset,
+                    isolationLevel,
+                    out var candidate,
+                    out blockedByOngoingTransaction))
             {
                 record = null!;
                 return false;
@@ -284,7 +576,12 @@ public sealed class InMemoryKafkaCluster
 
         lock (_gate)
         {
-            if (!TryReadRecordUnderLock(topicPartition, offset, out var candidate))
+            if (!TryReadRecordUnderLock(
+                    topicPartition,
+                    offset,
+                    IsolationLevel.ReadCommitted,
+                    out var candidate,
+                    out _))
             {
                 record = null!;
                 deliveryCount = 0;
@@ -441,6 +738,26 @@ public sealed class InMemoryKafkaCluster
         }
     }
 
+    internal IReadOnlyDictionary<TopicPartition, TopicPartitionOffset> GetCommittedOffsets(
+        string groupId,
+        IReadOnlyCollection<TopicPartition> partitions)
+    {
+        lock (_gate)
+        {
+            var result = new Dictionary<TopicPartition, TopicPartitionOffset>(partitions.Count);
+            if (!_consumerGroupOffsets.TryGetValue(groupId, out var offsets))
+                return result;
+
+            foreach (var partition in partitions)
+            {
+                if (offsets.TryGetValue(partition, out var offset))
+                    result[partition] = offset;
+            }
+
+            return result;
+        }
+    }
+
     internal void CommitOffsets(string groupId, IEnumerable<TopicPartitionOffset> offsets)
     {
         lock (_gate)
@@ -553,15 +870,6 @@ public sealed class InMemoryKafkaCluster
         }
     }
 
-    private TimeSpan GetProduceLatency(string topic, out Exception? failure)
-    {
-        lock (_gate)
-        {
-            failure = _produceFailures.GetValueOrDefault(topic);
-            return _produceLatency;
-        }
-    }
-
     private TopicState GetOrAutoCreateTopic(string name)
     {
         if (_topics.TryGetValue(name, out var state))
@@ -573,27 +881,68 @@ public sealed class InMemoryKafkaCluster
         return EnsureTopic(name, _options.DefaultPartitionCount, configs: null);
     }
 
-    private bool TryReadRecordUnderLock(TopicPartition topicPartition, long offset, out InMemoryRecord record)
+    private bool TryReadRecordUnderLock(
+        TopicPartition topicPartition,
+        long offset,
+        IsolationLevel isolationLevel,
+        out InMemoryRecord record,
+        out bool blockedByOngoingTransaction)
     {
         if (!_topics.TryGetValue(topicPartition.Topic, out var topic) ||
             (uint)topicPartition.Partition >= (uint)topic.Partitions.Count)
         {
             record = null!;
+            blockedByOngoingTransaction = false;
             return false;
         }
 
         var partition = topic.Partitions[topicPartition.Partition];
         foreach (var candidate in partition.Records)
         {
-            if (candidate.Offset >= offset)
+            if (isolationLevel == IsolationLevel.ReadCommitted &&
+                candidate.Offset >= partition.FirstUnstableOffset)
+            {
+                record = null!;
+                blockedByOngoingTransaction = true;
+                return false;
+            }
+            if (candidate.Offset < offset)
+                continue;
+            if (isolationLevel == IsolationLevel.ReadUncommitted ||
+                IsRecordVisibleUnderLock(candidate))
             {
                 record = candidate;
+                blockedByOngoingTransaction = false;
                 return true;
             }
         }
 
         record = null!;
+        blockedByOngoingTransaction = isolationLevel == IsolationLevel.ReadCommitted &&
+            partition.FirstUnstableOffset != long.MaxValue;
         return false;
+    }
+
+    private static bool IsRecordVisibleUnderLock(InMemoryRecord record) =>
+        record.Transaction is not { } transaction ||
+        transaction.State == InMemoryTransactionState.Committed;
+
+    private void ValidateConsumerGroupMetadataUnderLock(
+        string groupId,
+        ConsumerGroupMetadata? metadata)
+    {
+        if (metadata is null)
+            return;
+
+        var generation = _consumerGroupGenerations.GetValueOrDefault(groupId);
+        if (generation != metadata.GenerationId ||
+            !_consumerGroupMembers.TryGetValue(groupId, out var members) ||
+            !members.ContainsKey(metadata.MemberId))
+        {
+            throw new FatalTransactionException(
+                ErrorCode.IllegalGeneration,
+                $"Consumer group metadata for '{groupId}' is no longer current.");
+        }
     }
 
     private Dictionary<string, HashSet<TopicPartition>> BuildConsumerGroupAssignments(string groupId)
@@ -607,7 +956,7 @@ public sealed class InMemoryKafkaCluster
 
         var partitions = members
             .Values
-            .SelectMany(static item => item)
+            .SelectMany(static item => item.SubscribedPartitions)
             .Distinct()
             .OrderBy(static item => item.Topic, StringComparer.Ordinal)
             .ThenBy(static item => item.Partition)
@@ -617,7 +966,7 @@ public sealed class InMemoryKafkaCluster
         {
             var partition = partitions[i];
             var eligibleMembers = members
-                .Where(member => member.Value.Contains(partition))
+                .Where(member => member.Value.SubscribedPartitions.Contains(partition))
                 .Select(static member => member.Key)
                 .Order(StringComparer.Ordinal)
                 .ToArray();
@@ -880,9 +1229,34 @@ public sealed class InMemoryKafkaCluster
 
     private sealed class PartitionState
     {
+        private readonly Dictionary<InMemoryTransactionMarker, long> _transactionOffsets = [];
+
         public List<InMemoryRecord> Records { get; } = [];
         public long LogStartOffset { get; set; }
         public long HighWatermark => Records.Count == 0 ? LogStartOffset : Records[^1].Offset + 1;
+        public long FirstUnstableOffset { get; private set; } = long.MaxValue;
+
+        public bool RegisterTransaction(InMemoryTransactionMarker transaction, long offset)
+        {
+            if (!_transactionOffsets.TryAdd(transaction, offset))
+                return false;
+
+            FirstUnstableOffset = Math.Min(FirstUnstableOffset, offset);
+            return true;
+        }
+
+        public void CompleteTransaction(InMemoryTransactionMarker transaction)
+        {
+            if (!_transactionOffsets.Remove(transaction, out var offset) ||
+                offset != FirstUnstableOffset)
+            {
+                return;
+            }
+
+            FirstUnstableOffset = long.MaxValue;
+            foreach (var remainingOffset in _transactionOffsets.Values)
+                FirstUnstableOffset = Math.Min(FirstUnstableOffset, remainingOffset);
+        }
     }
 
     private sealed class ShareLeaseState
@@ -894,4 +1268,8 @@ public sealed class InMemoryKafkaCluster
 
         public string MemberId { get; }
     }
+
+    private readonly record struct ConsumerGroupMemberState(
+        long RegistrationId,
+        HashSet<TopicPartition> SubscribedPartitions);
 }

@@ -1,5 +1,6 @@
 ---
 sidebar_position: 3
+description: "Confluent Schema Registry with Avro and Protobuf, JSON Schema validation, and client-side field-level encryption via AWS, Azure, GCP, or Vault KMS."
 ---
 
 # Schema Registry
@@ -71,9 +72,85 @@ For zero-allocation `GenericRecord` serialization, Avro map values must use
 because their enumeration can allocate per message. Value-type arrays and lists are specialized
 for Avro primitives and built-in logical types; unsupported value-type element representations
 fail instead of silently boxing each element. Custom logical branches in unions must declare one
-sealed CLR type and have at most one value-dependent candidate for that type. Assignable or
+sealed CLR type and exactly one effective value-dependent candidate for that type. Assignable or
 multi-candidate custom logical dispatch is rejected during writer construction because it would
 require a per-message candidate scan.
+
+### With source-generated POCOs
+
+`Dekaf.SchemaRegistry.Avro` includes source-generated POCO support for plain CLR models that do
+not implement Apache Avro's `ISpecificRecord`. Opt in with `[AvroRecord]` on a top-level `partial`
+class, record, or struct. The package's bundled source generator emits the schema and strongly
+typed codec at build time; serialization uses constrained static dispatch with no reflection,
+boxing, runtime schema walk, or codec lookup.
+
+```csharp
+using Dekaf.SchemaRegistry.Avro.Poco;
+
+[AvroRecord(Name = "Order", Namespace = "example.orders")]
+public sealed partial class Order
+{
+    [AvroField(Order = 0)]
+    public required string Id { get; init; }
+
+    [AvroField(Order = 1, Precision = 12, Scale = 2)]
+    public decimal Total { get; init; }
+
+    [AvroField(Order = 2, DefaultJson = "null")]
+    public string? Note { get; init; }
+}
+```
+
+```csharp
+using Dekaf;
+using Dekaf.SchemaRegistry;
+using Dekaf.SchemaRegistry.Avro.Poco;
+
+using var registry = new SchemaRegistryClient(new SchemaRegistryConfig
+{
+    Url = "http://localhost:8081"
+});
+
+await using var producer = await Kafka.CreateProducer<string, Order>()
+    .WithBootstrapServers("localhost:9092")
+    .UseAvroPocoSchemaRegistry(registry)
+    .BuildAsync();
+```
+
+Supported generated shapes are primitives, nullable members, enums, arrays, `List<T>`,
+`Dictionary<string,T>`, nested `[AvroRecord]` types, and explicit unions configured with
+`UnionTypes`. Only public fields and properties with public getters and setters are included;
+class inheritance is rejected so inherited state cannot be omitted silently. Explicit unions using
+an `object` or interface carrier accept reference-type branches only; value-type branches are
+rejected because assignment to the carrier would box on every read. Logical mappings are
+`DateOnly` → `date`, `TimeOnly`/`TimeSpan` → `time-micros`, `DateTime`/`DateTimeOffset` →
+`timestamp-micros`, `Guid` → `uuid`, and `decimal` → `decimal`. `TimeSpan` values must represent a
+time of day from zero through less than 24 hours. Generated `DateTime` fields must have
+`Kind == DateTimeKind.Utc`; local and unspecified values are rejected. Use `DateTimeOffset` when
+the source value carries an offset. Decimal members require
+`Precision` from 1 through 29 and `Scale` from 0 through the smaller of 28 and `Precision`.
+
+Use `Name`, `Aliases`, and `DefaultJson` for schema evolution. Defaults must match the first Avro
+union branch; nullable fields therefore use `DefaultJson = "null"`. Current generated defaults
+support null, primitive, string, bytes, and enum values. Invalid shapes, cycles, duplicate
+names/orders, ambiguous unions, and incompatible defaults fail compilation with `DKAVRO` diagnostics.
+
+Call `WarmupAsync` before measuring or entering a latency-sensitive path. After warmup,
+serialization is `0 B` per message for supported shapes. Deserialization allocates only the
+returned class/record and declared arrays, lists, dictionaries, strings, or byte arrays; cached
+schema-resolution plans add no per-message intermediate object graph. Rules remain opt-in and can
+allocate according to the configured rule executor. Generated and standard collection writers use
+one Avro block, allowing exact returned collection capacity. Valid external multi-block collections
+are also accepted and may grow their returned backing storage as later blocks arrive.
+
+A generated POCO deserializer needs the writer schema ID from each record before it can prepare a
+reader plan. Call its `WarmupAsync(schemaId)` when schema IDs are known in advance. Otherwise, the
+first record for each unseen schema ID is prepared asynchronously by `ConsumeAsync` or
+`ConsumeOneAsync`; no consumer thread blocks on the Schema Registry request. Later records use the
+cached synchronous plan. Direct `Deserialize` calls and synchronous batch iteration cannot await a
+cold plan and fail fast, so call `WarmupAsync(schemaId)` before using `ConsumeBatchAsync`. The
+generated consumer convenience extension cannot pre-warm unknown writer schema IDs before the
+first record arrives.
 
 ## Protobuf Serialization
 
@@ -142,10 +219,11 @@ var consumer = await Kafka.CreateConsumer<string, Order>()
     .BuildAsync();
 ```
 
-`JsonSchemaValidationMode.Serialize` validates plaintext JSON immediately after serialization and
-before write rules. `Deserialize` validates after read rules and before JSON deserialization. This
-ordering lets encryption and migration rules transform the wire payload without validating
-ciphertext or a pre-migration shape.
+`JsonSchemaValidationMode.Serialize` validates plaintext JSON after built-in domain rules and before
+encoding rules. Custom rule executors are validated before their transform because they do not
+expose phase boundaries. `Deserialize` validates after read rules and before JSON deserialization.
+This ordering lets domain rules establish the final logical shape and encoding rules transform the
+wire payload without validating ciphertext or a pre-migration shape.
 
 Streaming validators are compiled once per exact registered `Schema` object and weakly cached. The
 serializer fetches the complete registered schema after registration or lookup, so write validation
@@ -173,6 +251,104 @@ identify the failure. Exception messages never include payload contents. Validat
 CPU cost when enabled because each payload must be parsed and evaluated. Steady-state validation is
 zero-allocation; disabled serializers remain validation-neutral and do not load the optional JSON
 Schema package.
+
+## Migration rules
+
+Set `UseLatestVersion = true` on a deserializer config to select the subject's latest registered
+schema as the reader schema. Dekaf resolves the writer's exact subject version, walks every adjacent
+version, and executes active migration rules before deserializing with the reader schema:
+
+```csharp
+var rules = new SchemaRegistryRuleExecutor([migrationHandler]);
+
+var config = new AvroDeserializerConfig
+{
+    UseLatestVersion = true,
+    RuleExecutor = rules
+};
+
+var consumer = await Kafka.CreateConsumer<string, GenericRecord>()
+    .WithBootstrapServers("localhost:9092")
+    .WithGroupId("orders")
+    .UseAvroSchemaRegistry(registry, config)
+    .BuildAsync();
+```
+
+`SchemaRegistryDeserializerConfig`, `AvroDeserializerConfig`, and `ProtobufDeserializerConfig`
+all expose `UseLatestVersion`. Avro does not allow `UseLatestVersion` together with an explicit
+`ReaderSchema`.
+
+Ordering matches Schema Registry behavior. Read encoding rules run against the writer schema first;
+upgrade or downgrade rules then run for each version edge; read domain rules run against the final
+reader schema last. The higher schema owns each edge's migration rules. Upgrade paths visit versions
+and rules in ascending/forward order. Downgrade paths visit versions and rules in descending/reverse
+order. `UpDown` rules participate in both directions, and paired success/failure actions select the
+first action for upgrade and the second for downgrade. Disabled rules are skipped.
+
+Using the latest reader schema without active migration rules does not require a rule executor. If
+an active migration path exists, configure the built-in `SchemaRegistryRuleExecutor`; Dekaf fails
+closed instead of silently skipping the transform. Warm cached no-migration, disabled-migration, and
+active pass-through paths remain allocation-free, including interleaved writer schema IDs.
+
+Migration plans follow `SchemaRegistryConfig.LatestCacheTtlSecs`. The Confluent-compatible default
+is `-1`, which disables time-based expiry. Set a non-negative TTL to
+periodically re-resolve latest schemas; `0` refreshes on every use. Historical version lookup includes
+deleted versions so migration paths remain complete. Custom `ISchemaRegistryClient` implementations
+must override the deleted-version overload; its default implementation fails closed.
+
+### JSONata rules
+
+Install the optional `Dekaf.SchemaRegistry.Jsonata` package and register its handler when a data
+contract contains `JSONATA` rules:
+
+```csharp
+using Dekaf.SchemaRegistry.Jsonata;
+
+var rules = new SchemaRegistryRuleExecutor(
+[
+    new JsonataSchemaRegistryRuleHandler()
+]);
+```
+
+The handler compiles and caches each rule expression, then evaluates JSONata against JSON codec
+payloads for write, read, and migration transforms. For example,
+`$merge([$, {'fullName': first & ' ' & last}])` preserves the input object and adds `fullName`.
+JSONata dependencies remain isolated in the optional package; applications without the handler add
+no JSONata work or allocation.
+
+Transform results may be any JSON value, including `null`, numbers, objects, and collections.
+JSONata's standard sequence semantics apply: a singleton sequence collapses to its value; append
+`[]` when the output must remain an array. An undefined result (for example, a missing-field query)
+fails explicitly rather than emitting invalid JSON. Condition rules must return `true` or `false`;
+`false` fails the rule. Invalid expressions, malformed JSON, and non-JSON payload formats fail with
+`SchemaRegistryRuleException`. Error messages identify the rule and engine error, but never include
+the payload.
+
+Binary Avro and Protobuf codec payloads are not currently supported by the JSONata byte handler and
+are rejected explicitly. Their object-level transforms require codec-specific conversion before
+binary encoding.
+
+## Avro tagged-field encryption
+
+Avro domain rules with type `ENCRYPT` transform only fields whose `confluent:tags` overlap the
+rule's tags. Tags may be declared directly on an Avro field or supplied through Schema Registry
+metadata using the field's fully qualified name. Tagged `string` fields store Base64 ciphertext;
+tagged `bytes` fields store raw ciphertext. Arrays, maps, nullable unions, nested records, and
+bytes-backed decimal logical types preserve their Avro shape while their tagged string or bytes
+values are transformed.
+
+Fixed-width fields cannot hold variable-length ciphertext. Dekaf therefore rejects tagged Avro
+`fixed` fields, including fixed-backed decimal logical types, instead of rewriting the schema or
+silently encrypting the whole payload. Untagged fields remain byte-for-byte unchanged. After the
+schema and rule plan are cached, the field walker is allocation-free; the KMS provider still owns
+any algorithm- or key-management-specific costs.
+
+For caller-owned mutable schemas, Avro metadata tag values must use `FrozenSet<string>` or
+`IImmutableSet<string>`. To update them, remove and re-add the containing metadata dictionary entry;
+Dekaf observes the dictionary's structural version and rebuilds the cached plan. Mutable
+`HashSet<string>` and `SortedSet<string>` metadata values are rejected because detecting their
+in-place changes would require an O(n) scan on every message. Rule tag sets may remain mutable;
+their version is checked once per transform.
 
 ## Schema Registry Configuration
 
@@ -415,6 +591,57 @@ using var usKms = new AwsKmsProvider(RegionEndpoint.USEast1, type: "aws-kms-us-e
 var multiRegionCsfle = new SchemaRegistryCsfleRuleHandler(schemaRegistry, [euKms, usKms]);
 ```
 
+## Azure Key Vault KMS
+
+Install the opt-in Azure provider when Schema Registry client-side field-level encryption (CSFLE)
+uses an Azure Key Vault key:
+
+```bash
+dotnet add package Dekaf.SchemaRegistry.Kms.Azure
+```
+
+```csharp
+using Azure.Identity;
+using Dekaf.SchemaRegistry;
+using Dekaf.SchemaRegistry.Kms.Azure;
+
+var credential = new DefaultAzureCredential();
+var azureKms = new AzureKeyVaultKmsProvider(credential);
+var confluentAzureKms = new AzureKeyVaultKmsProvider(
+    credential,
+    type: AzureKeyVaultKmsProvider.ConfluentType);
+var csfle = new SchemaRegistryCsfleRuleHandler(
+    schemaRegistry,
+    [azureKms, confluentAzureKms]);
+```
+
+`DefaultAzureCredential` uses the standard Azure credential chain. Production applications can
+instead pass a specific credential such as `ManagedIdentityCredential` or
+`ClientSecretCredential`. The credential and any supplied `CryptographyClientOptions` are
+caller-owned. For complete client-construction control, implement
+`IAzureKeyVaultCryptographyClientFactory`.
+
+Use an absolute HTTPS key identifier with `/keys/<name>` or `/keys/<name>/<version>`, for example
+`https://payments.vault.azure.net/keys/orders-kek`. Azure public, US Government, and China Key Vault
+and Managed HSM DNS authorities are accepted; other authorities are rejected before credential use.
+Each provider instance registers one KMS type;
+register the default instance for `azure-kv`, the `ConfluentType` instance for Confluent-compatible
+`azure-kms`, or both as shown above. Matching `azure-kv://` and `azure-kms://` prefixes on the key
+identifier are optional. The provider uses RSA-OAEP-256. Prefer a versioned key identifier so
+existing data keeps decrypting after rotation. For a versionless key, set the KEK property
+`encrypt.azure.key.version.save=true` to embed the exact Azure key version in newly wrapped key
+material.
+
+For RBAC-enabled vaults, grant the identity the Key Vault Crypto User role. For vaults using legacy
+access policies, grant the `keys/wrapKey` and `keys/unwrapKey` permissions. Managed HSM uses its own
+local RBAC system: grant the identity the
+[Managed HSM Crypto User role](https://learn.microsoft.com/azure/key-vault/managed-hsm/role-management)
+at the `/keys` scope or the specific key's scope. One provider instance is safe for concurrent use.
+It bounds both its configured-key client cache and its ciphertext key-version client cache to 64
+entries.
+Cancellation is forwarded to Azure; provider error messages do not include service response text
+or key material.
+
 ## Consumer
 
 ```csharp
@@ -457,6 +684,36 @@ public class OrderV2
 
 The serializer automatically registers new schema versions and handles compatibility.
 
+For `GenericRecord`, the serializer keys writers, subjects, and schema IDs by the runtime Avro
+schema's logical identity. Equivalent schema instances reuse one cache entry, while different
+versions on the same `TopicName` subject retain their own IDs. Runtime-schema caches are bounded;
+configure the positive limit when applications intentionally produce many distinct schemas:
+
+```csharp
+var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry, new AvroSerializerConfig
+{
+    MaxCachedSchemas = 500 // Default: 1000
+});
+```
+
+After the primary strong-cache limit is reached, exact schema objects use weak-key entries and a
+second FIFO logical cache retains a bounded overflow working set. The overflow cache uses the same
+configured limit, with a minimum of three entries for short schema rotations. A two-entry hot set
+still gives repeated and alternating overflow schemas a lock-free reference fast path. Specific
+records share one stateless writer; generic records retain a writer per logical schema. Cache entries
+never retain individual `GenericRecord` values.
+
+Reuse parsed Avro `Schema` objects on the per-message path. A previously observed schema object uses
+the O(1) reference lookup. A newly parsed object is a first-seen identity even when it is logically
+equivalent to an existing schema; safely proving that equivalence requires a structural fingerprint
+or comparison. Parse and cache schemas during startup or producer setup instead of constructing a
+new runtime schema for every message.
+
+Each first-seen overflow schema identity gets a weak association with its logical cache entry. This
+adds metadata only on the cold first-seen path, does not retain the schema object, and lets any live
+equivalent instance reuse its writer after logical-cache and hot-set eviction. Repeated use of an
+observed schema identity remains allocation-free.
+
 ## Subject Naming Strategies
 
 ```csharp
@@ -476,7 +733,7 @@ These formats match Confluent serializers. Avro `GenericRecord` subjects use the
 record's runtime schema, JSON Schema subjects use the schema `title` when present, and Protobuf
 subjects use the message descriptor's full name.
 
-Avro generated `ISpecificRecord` types serialize without per-message allocations when their record
+Avro-generated `ISpecificRecord` types serialize without per-message allocations when their record
 fields are scalar `null`, `boolean`, `int`, `long`, `float`, `double`, `string`, or `bytes` fields
 exposed by matching public properties. Unsupported SpecificRecord shapes fail when the serializer is
 created instead of silently falling back to Apache Avro's allocating `Get(int): object` path. Use

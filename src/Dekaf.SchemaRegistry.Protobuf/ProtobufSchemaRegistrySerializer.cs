@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
 using Dekaf.Serialization;
 using Google.Protobuf;
 using Google.Protobuf.Reflection;
@@ -24,14 +25,16 @@ namespace Dekaf.SchemaRegistry.Protobuf;
 /// <typeparam name="T">The Protobuf message type to serialize.</typeparam>
 public sealed class ProtobufSchemaRegistrySerializer<
     [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>
-    : ISerializer<T>, IAsyncSerializerPreparer<T>, IAsyncDisposable
+    : ISerializer<T>, IAsyncSerializerPreparer<T>, IAsyncSerializerPreparationAdmission<T>, IAsyncDisposable
     where T : IMessage<T>
 {
     private const byte MagicByte = 0x00;
+    private const int MaxAssociatedNameInvalidationRetries = 4;
     private static readonly TimeSpan SchemaRegistryTimeout = TimeSpan.FromSeconds(30);
 
     private readonly ISchemaRegistryClient _schemaRegistry;
     private readonly ProtobufSerializerConfig _config;
+    private readonly IAsyncSubjectNameStrategy? _asyncSubjectNameStrategy;
     private readonly bool _ownsClient;
     private readonly MessageDescriptor _descriptor;
     private readonly SubjectSchemaIdCache _subjectSchemaIdCache = new();
@@ -40,6 +43,7 @@ public sealed class ProtobufSchemaRegistrySerializer<
     private readonly SchemaResolutionCache<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> _schemaResolutionCache = new();
     private readonly SchemaResolutionCache<RegisteredDependency> _referenceResolutionCache = new();
     private readonly Schema _resolutionIdentitySchema;
+    private SubjectSchemaIdCache? _associatedSubjectSchemaIdCache;
 
     /// <summary>
     /// Creates a new Protobuf Schema Registry serializer.
@@ -54,6 +58,13 @@ public sealed class ProtobufSchemaRegistrySerializer<
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _config = config ?? new ProtobufSerializerConfig();
+        if (_config.CustomSubjectNameStrategy is null)
+        {
+            _asyncSubjectNameStrategy = _config.AsyncSubjectNameStrategy
+                ?? (_config.SubjectNameStrategy == SubjectNameStrategy.AssociatedName
+                    ? new AssociatedNameStrategy(schemaRegistry)
+                    : null);
+        }
         _ownsClient = ownsClient;
 
         // Get the message descriptor from the type
@@ -71,6 +82,16 @@ public sealed class ProtobufSchemaRegistrySerializer<
         _encodedMessageIndexes = VarintEncoder.EncodeMessageIndexes(
             CalculateMessageIndexes(_descriptor),
             _config.UseDeprecatedFormat);
+        if (_asyncSubjectNameStrategy is not null)
+            _associatedSubjectSchemaIdCache = new SubjectSchemaIdCache();
+
+        if (_asyncSubjectNameStrategy is AssociatedNameStrategy associatedNameStrategy)
+        {
+            AssociatedNameCacheInvalidationTargetRegistration.Register(
+                this,
+                associatedNameStrategy,
+                InvalidateAssociatedSubjectSchemaCache);
+        }
     }
 
     /// <summary>
@@ -113,6 +134,26 @@ public sealed class ProtobufSchemaRegistrySerializer<
             _ = await preparation.ConfigureAwait(false);
     }
 
+    ValueTask<SerializerPreparationAdmission>
+        IAsyncSerializerPreparationAdmission<T>.PrepareForSerializationAsync(
+            T value,
+            SerializationContext context,
+            CancellationToken cancellationToken)
+    {
+        var preparation = PrepareAsync(
+            context.Topic,
+            value,
+            context.Component == SerializationComponent.Key,
+            cancellationToken);
+        return preparation.IsCompletedSuccessfully
+            ? new ValueTask<SerializerPreparationAdmission>(ToAdmission(preparation.Result))
+            : AwaitAdmissionAsync(preparation);
+
+        static async ValueTask<SerializerPreparationAdmission> AwaitAdmissionAsync(
+            ValueTask<ResolvedSchemaContext> pending) =>
+            ToAdmission(await pending.ConfigureAwait(false));
+    }
+
     /// <inheritdoc />
     public void Serialize<TWriter>(T value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>
@@ -129,17 +170,88 @@ public sealed class ProtobufSchemaRegistrySerializer<
         ReadOnlyMemory<byte> transformedPayload = default;
         if (_config.RuleExecutor is not null)
         {
-            transformedPayload = _config.RuleExecutor.TransformSerializedPayload(
-                value.ToByteArray(),
-                new SchemaRegistryRuleContext
-                {
-                    Topic = context.Topic,
-                    Component = context.Component,
-                    SchemaId = schemaId,
-                    Subject = schemaEntry.Subject,
-                    Schema = schemaEntry.Schema,
-                    PayloadFormat = SchemaRegistryPayloadFormat.Protobuf
-                });
+            var ruleContext = SchemaRegistryRuleContext.Rent(
+                context.Topic,
+                context.Component,
+                schemaId,
+                schemaEntry.Subject,
+                schemaEntry.Schema,
+                SchemaRegistryPayloadFormat.Protobuf);
+            try
+            {
+                transformedPayload = _config.RuleExecutor.TransformSerializedPayload(value.ToByteArray(), ruleContext);
+            }
+            finally
+            {
+                ruleContext.Return();
+            }
+        }
+
+        var protobufPayloadLength = _config.RuleExecutor is null ? protoSize : transformedPayload.Length;
+        var totalSize = 1 + 4 + _encodedMessageIndexes.Length + protobufPayloadLength;
+        var span = destination.GetSpan(totalSize);
+        span[0] = MagicByte;
+        BinaryPrimitives.WriteInt32BigEndian(span.Slice(1, 4), schemaId);
+
+        var offset = 5;
+        _encodedMessageIndexes.CopyTo(span.Slice(offset));
+        offset += _encodedMessageIndexes.Length;
+
+        if (_config.RuleExecutor is null)
+            value.WriteTo(span.Slice(offset, protoSize));
+        else
+            transformedPayload.Span.CopyTo(span.Slice(offset, transformedPayload.Length));
+
+        destination.Advance(totalSize);
+    }
+
+    void IAsyncSerializerPreparationAdmission<T>.SerializePrepared<TWriter>(
+        T value,
+        ref TWriter destination,
+        SerializationContext context,
+        in SerializerPreparationAdmission admission)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        var schemaEntry = SubjectSchemaIdCache.FromAdmission(
+            context.Topic,
+            context.Component == SerializationComponent.Key,
+            admission);
+        SerializeCore(value, ref destination, context, schemaEntry);
+    }
+
+    // Keep the public Serialize body inline; routing it through this helper measured 5.5% slower.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void SerializeCore<TWriter>(
+        T value,
+        ref TWriter destination,
+        SerializationContext context,
+        SubjectSchemaIdCache.SubjectSchemaIdCacheEntry schemaEntry)
+        where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+        , allows ref struct
+#endif
+    {
+        var schemaId = schemaEntry.SchemaId;
+
+        var protoSize = value.CalculateSize();
+        ReadOnlyMemory<byte> transformedPayload = default;
+        if (_config.RuleExecutor is not null)
+        {
+            var ruleContext = SchemaRegistryRuleContext.Rent(
+                context.Topic,
+                context.Component,
+                schemaId,
+                schemaEntry.Subject,
+                schemaEntry.Schema,
+                SchemaRegistryPayloadFormat.Protobuf);
+            try
+            {
+                transformedPayload = _config.RuleExecutor.TransformSerializedPayload(value.ToByteArray(), ruleContext);
+            }
+            finally
+            {
+                ruleContext.Return();
+            }
         }
 
         // Total size: magic byte + schema ID + indexes + message
@@ -166,13 +278,40 @@ public sealed class ProtobufSchemaRegistrySerializer<
         destination.Advance(totalSize);
     }
 
-    private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry GetSchemaForContext(string topic, bool isKey) =>
-        _subjectSchemaIdCache.GetOrAdd(
+    private static SerializerPreparationAdmission ToAdmission(
+        in ResolvedSchemaContext context) =>
+        new(context.Subject, context.SchemaId, context.Schema);
+
+    private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry GetSchemaForContext(string topic, bool isKey)
+    {
+        if (_subjectSchemaIdCache.TryGet(topic, isKey, out var cached))
+            return cached;
+
+        return GetSchemaForContextSlow(topic, isKey);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry GetSchemaForContextSlow(string topic, bool isKey)
+    {
+        var cache = _asyncSubjectNameStrategy is null
+            ? _subjectSchemaIdCache
+            : Volatile.Read(ref _associatedSubjectSchemaIdCache)!;
+        if (cache.TryGet(topic, isKey, out var cached))
+            return cached;
+
+        if (_asyncSubjectNameStrategy is not null)
+        {
+            throw new InvalidOperationException(
+                "The asynchronous subject-name strategy requires PrepareAsync before serialization.");
+        }
+
+        return cache.GetOrAdd(
             topic,
             isKey,
             this,
             static (serializer, resolvedTopic, resolvedIsKey) =>
                 serializer.ResolveSchemaSync(resolvedTopic, resolvedIsKey));
+    }
 
     private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry ResolveSchemaSync(string topic, bool isKey)
     {
@@ -195,6 +334,20 @@ public sealed class ProtobufSchemaRegistrySerializer<
         bool isKey,
         CancellationToken cancellationToken)
     {
+        if (_asyncSubjectNameStrategy is not null)
+        {
+            var cache = Volatile.Read(ref _associatedSubjectSchemaIdCache)!;
+            if (cache.TryGet(topic, isKey, out var cached))
+                return new ValueTask<ResolvedSchemaContext>(ToResolvedContext(cached));
+
+            return PrepareAssociatedCoreAsync(
+                topic,
+                isKey,
+                cache,
+                cancellationToken);
+        }
+
+        var standardCache = _subjectSchemaIdCache;
         var subject = GetSubjectName(topic, isKey);
         var resolved = ResolveSchemaSharedAsync(
             subject,
@@ -205,7 +358,7 @@ public sealed class ProtobufSchemaRegistrySerializer<
         {
             var value = resolved.Result;
             return new ValueTask<ResolvedSchemaContext>(ToResolvedContext(
-                _subjectSchemaIdCache.CacheEntry(
+                standardCache.CacheEntry(
                     topic,
                     isKey,
                     subject,
@@ -213,23 +366,59 @@ public sealed class ProtobufSchemaRegistrySerializer<
                     value.Schema!)));
         }
 
-        return AwaitSchemaAsync(this, topic, isKey, subject, resolved);
+        return AwaitSchemaAsync(topic, isKey, subject, standardCache, resolved);
 
         static async ValueTask<ResolvedSchemaContext> AwaitSchemaAsync(
-            ProtobufSchemaRegistrySerializer<T> serializer,
             string topic,
             bool isKey,
             string subject,
+            SubjectSchemaIdCache cache,
             ValueTask<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> resolved)
         {
             var value = await resolved.ConfigureAwait(false);
-            return ToResolvedContext(serializer._subjectSchemaIdCache.CacheEntry(
+            return ToResolvedContext(cache.CacheEntry(
                 topic,
                 isKey,
                 subject,
                 value.SchemaId,
                 value.Schema!));
         }
+    }
+
+    private async ValueTask<ResolvedSchemaContext> PrepareAssociatedCoreAsync(
+        string topic,
+        bool isKey,
+        SubjectSchemaIdCache cache,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; attempt < MaxAssociatedNameInvalidationRetries; attempt++)
+        {
+            var subject = await _asyncSubjectNameStrategy!.GetSubjectNameAsync(
+                topic,
+                _descriptor.FullName,
+                isKey,
+                cancellationToken).ConfigureAwait(false);
+            var value = await ResolveSchemaSharedAsync(subject, topic, isKey, cancellationToken)
+                .ConfigureAwait(false);
+            if (ReferenceEquals(cache, Volatile.Read(ref _associatedSubjectSchemaIdCache)))
+            {
+                var cached = cache.CacheEntry(
+                    topic,
+                    isKey,
+                    subject,
+                    value.SchemaId,
+                    value.Schema!);
+                if (ReferenceEquals(cache, Volatile.Read(ref _associatedSubjectSchemaIdCache)))
+                    return ToResolvedContext(cached);
+            }
+
+            cache = Volatile.Read(ref _associatedSubjectSchemaIdCache)!;
+            if (cache.TryGet(topic, isKey, out var current))
+                return ToResolvedContext(current);
+        }
+
+        throw new InvalidOperationException(
+            "Associated-name cache changed repeatedly while preparing the Protobuf serializer.");
     }
 
     private ValueTask<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> ResolveSchemaSharedAsync(
@@ -323,7 +512,10 @@ public sealed class ProtobufSchemaRegistrySerializer<
                     subject,
                     schema,
                     cancellationToken).ConfigureAwait(false);
-            return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(id, schema);
+            var executionSchema = _config.RuleExecutor is SchemaRegistryRuleExecutor
+                ? await _schemaRegistry.GetSchemaAsync(id, subject, cancellationToken).ConfigureAwait(false)
+                : schema;
+            return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(id, executionSchema);
         }
 
         var registered = await _schemaRegistry.LookupSchemaAsync(
@@ -606,5 +798,10 @@ public sealed class ProtobufSchemaRegistrySerializer<
         if (_ownsClient)
             _schemaRegistry.Dispose();
         return ValueTask.CompletedTask;
+    }
+
+    private void InvalidateAssociatedSubjectSchemaCache()
+    {
+        Volatile.Write(ref _associatedSubjectSchemaIdCache, new SubjectSchemaIdCache());
     }
 }

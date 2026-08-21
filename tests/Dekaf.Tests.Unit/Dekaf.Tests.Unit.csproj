@@ -12,12 +12,17 @@
     <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Kms.Gcp\Dekaf.SchemaRegistry.Kms.Gcp.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Kms.Vault\Dekaf.SchemaRegistry.Kms.Vault.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Kms.Aws\Dekaf.SchemaRegistry.Kms.Aws.csproj" />
+    <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Kms.Azure\Dekaf.SchemaRegistry.Kms.Azure.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Json\Dekaf.SchemaRegistry.Json.csproj" />
+    <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Jsonata\Dekaf.SchemaRegistry.Jsonata.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Protobuf\Dekaf.SchemaRegistry.Protobuf.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.Compression.Lz4\Dekaf.Compression.Lz4.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.Compression.Zstd\Dekaf.Compression.Zstd.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.Compression.Brotli\Dekaf.Compression.Brotli.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Avro\Dekaf.SchemaRegistry.Avro.csproj" />
+    <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Avro.Poco.Generator\Dekaf.SchemaRegistry.Avro.Poco.Generator.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="true" />
     <ProjectReference Include="..\..\src\Dekaf.Serialization.Json\Dekaf.Serialization.Json.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.Serialization.Routing\Dekaf.Serialization.Routing.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.Testing\Dekaf.Testing.csproj" />
@@ -43,6 +48,7 @@
     <PackageReference Include="OpenTelemetry" />
     <PackageReference Include="Microsoft.Extensions.Configuration" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" PrivateAssets="all" />
     <PackageReference Include="Microsoft.Testing.Extensions.HangDump" />
     <PackageReference Include="NSubstitute" />
     <PackageReference Include="TUnit" />

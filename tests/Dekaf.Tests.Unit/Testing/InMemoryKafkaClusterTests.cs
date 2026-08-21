@@ -1,10 +1,12 @@
 using System.Reflection;
+using System.Text;
 using Dekaf.Admin;
 using Dekaf.Consumer;
 using Dekaf.Errors;
 using Dekaf.Producer;
 using Dekaf.Protocol;
 using Dekaf.Serialization;
+using Dekaf.Serialization.Routing;
 using Dekaf.ShareConsumer;
 using Dekaf.Testing;
 using Microsoft.Extensions.DependencyInjection;
@@ -107,6 +109,80 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
+    public async Task Consumer_HeaderRoutingDeserializerUsesCallerOwnedHeaders()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        var headerRouter = new HeaderRoutingDeserializer<string>(
+            "event-type",
+            new PrefixDeserializer("fallback"),
+            new HeaderDeserializerRoute<string>(
+                "created"u8.ToArray(),
+                new PrefixDeserializer("created")));
+        var router = new TopicRoutingDeserializer<string>()
+            .Register("events", headerRouter)
+            .Freeze();
+        var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new HeaderPresenceDeserializer(),
+            router,
+            new InMemoryConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest });
+
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = "events",
+            Key = "key",
+            Value = "payload",
+            Headers = Headers.Create("event-type", "created")
+        });
+        consumer.Subscribe("events");
+
+        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1));
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(result!.Value.Key).IsEqualTo("no-headers");
+        await Assert.That(result.Value.Value).IsEqualTo("created:payload");
+        await Assert.That(result.Value.Headers).Count().IsEqualTo(1);
+        await Assert.That(result.Value.Headers[0].Key).IsEqualTo("event-type");
+        await Assert.That(result.Value.Headers[0].GetValueAsString()).IsEqualTo("created");
+    }
+
+    [Test]
+    public async Task Consumer_AsyncPathHeaderRoutingDeserializerUsesCallerOwnedHeaders()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        var headerRouter = new HeaderRoutingDeserializer<string>(
+            "event-type",
+            new PrefixDeserializer("fallback"),
+            new HeaderDeserializerRoute<string>(
+                "created"u8.ToArray(),
+                new PrefixDeserializer("created")));
+        var router = new TopicRoutingDeserializer<string>()
+            .Register("events", headerRouter)
+            .Freeze();
+        var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new AsyncStringDeserializer(),
+            router,
+            new InMemoryConsumerOptions { AutoOffsetReset = AutoOffsetReset.Earliest });
+
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = "events",
+            Key = "key",
+            Value = "payload",
+            Headers = Headers.Create("event-type", "created")
+        });
+        consumer.Subscribe("events");
+
+        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1));
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(result!.Value.Value).IsEqualTo("created:payload");
+    }
+
+    [Test]
     public async Task Consumer_EmptyGroupId_BehavesAsNoGroup()
     {
         var cluster = new InMemoryKafkaCluster();
@@ -122,6 +198,22 @@ public sealed class InMemoryKafkaClusterTests
         await Assert.That(consumer.ConsumerGroupMetadata).IsNull();
         await Assert.That(consumer.MemberId).IsNull();
         await Assert.That(((IConsumerCommitConfiguration)consumer).HasConsumerGroup).IsFalse();
+    }
+
+    [Test]
+    public async Task Consumer_WithoutGroup_CommitOverloadsThrow()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var consumer = new InMemoryConsumer<string, string>(cluster);
+
+        await Assert.That(async () => await consumer.CommitAsync(CancellationToken.None))
+            .Throws<InvalidOperationException>()
+            .And.HasMessageContaining("WithGroupId");
+        await Assert.That(async () => await consumer.CommitAsync(
+                [new TopicPartitionOffset("orders", 0, 1)],
+                CancellationToken.None))
+            .Throws<InvalidOperationException>()
+            .And.HasMessageContaining("WithGroupId");
     }
 
     [Test]
@@ -191,6 +283,39 @@ public sealed class InMemoryKafkaClusterTests
         var offsets = await admin.ListConsumerGroupOffsetsAsync("workers");
 
         await Assert.That(offsets[new TopicPartition("jobs", 0)]).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task Consumer_GetCommittedOffsetsAsync_ReturnsSelectedOffsetsAndLeaderEpochs()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        IKafkaConsumer<string, string> consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions
+            {
+                GroupId = "workers",
+                OffsetCommitMode = OffsetCommitMode.Manual
+            });
+        var jobs = new TopicPartition("jobs", 0);
+        var tasks = new TopicPartition("tasks", 1);
+        var missing = new TopicPartition("missing", 2);
+        var unrequested = new TopicPartition("other", 3);
+        await consumer.CommitAsync(
+        [
+            new TopicPartitionOffset(jobs.Topic, jobs.Partition, 12, leaderEpoch: 3),
+            new TopicPartitionOffset(tasks.Topic, tasks.Partition, 34, leaderEpoch: 5),
+            new TopicPartitionOffset(unrequested.Topic, unrequested.Partition, 56, leaderEpoch: 7)
+        ]);
+
+        var offsets = await consumer.GetCommittedOffsetsAsync([jobs, tasks, missing]);
+
+        await Assert.That(offsets).Count().IsEqualTo(2);
+        await Assert.That(offsets[jobs])
+            .IsEqualTo(new TopicPartitionOffset(jobs.Topic, jobs.Partition, 12, leaderEpoch: 3));
+        await Assert.That(offsets[tasks])
+            .IsEqualTo(new TopicPartitionOffset(tasks.Topic, tasks.Partition, 34, leaderEpoch: 5));
+        await Assert.That(offsets).DoesNotContainKey(missing);
+        await Assert.That(offsets).DoesNotContainKey(unrequested);
     }
 
     [Test]
@@ -539,6 +664,22 @@ public sealed class InMemoryKafkaClusterTests
         await Assert.That(cluster.ReadRecords("purge").Count).IsEqualTo(1);
         await producer.PurgeAsync((PurgeOptions)8);
         await Assert.That(cluster.ReadRecords("purge").Count).IsEqualTo(1);
+    }
+
+    [Test]
+    [Arguments(PurgeOptions.Queue)]
+    [Arguments(PurgeOptions.InFlight)]
+    [Arguments(PurgeOptions.All)]
+    public async Task Producer_PurgeAsync_RejectsActiveTransaction(PurgeOptions options)
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await using var transaction = producer.BeginTransaction();
+
+        await producer.PurgeAsync(PurgeOptions.None);
+        var action = async () => await producer.PurgeAsync(options);
+
+        await Assert.That(action).Throws<InvalidOperationException>();
     }
 
     [Test]
@@ -911,6 +1052,27 @@ public sealed class InMemoryKafkaClusterTests
             default:
                 throw new ArgumentOutOfRangeException(nameof(seekOperation), seekOperation, null);
         }
+    }
+
+    private sealed class PrefixDeserializer(string prefix) : IDeserializer<string>
+    {
+        public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
+            $"{prefix}:{Encoding.UTF8.GetString(data.Span)}";
+    }
+
+    private sealed class HeaderPresenceDeserializer : IDeserializer<string>
+    {
+        public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
+            context.Headers is null ? "no-headers" : "headers";
+    }
+
+    private sealed class AsyncStringDeserializer : IAsyncDeserializer<string>
+    {
+        public ValueTask<string> DeserializeAsync(
+            ReadOnlyMemory<byte> data,
+            SerializationContext context,
+            CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult(Encoding.UTF8.GetString(data.Span));
     }
 
     private readonly struct StructOffsetList(TopicPartitionOffset[] offsets) : IReadOnlyList<TopicPartitionOffset>

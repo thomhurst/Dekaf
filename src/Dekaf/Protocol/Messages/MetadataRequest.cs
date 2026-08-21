@@ -7,8 +7,11 @@ namespace Dekaf.Protocol.Messages;
 public sealed class MetadataRequest : IKafkaRequest<MetadataResponse>
 {
     public static ApiKey ApiKey => ApiKey.Metadata;
-    public static short LowestSupportedVersion => 9;
+    public static short LowestSupportedVersion => 5;
     public static short HighestSupportedVersion => 13;
+    public static bool IsFlexibleVersion(short version) => version >= 9;
+    public static short GetRequestHeaderVersion(short version) => IsFlexibleVersion(version) ? (short)2 : (short)1;
+    public static short GetResponseHeaderVersion(short version) => IsFlexibleVersion(version) ? (short)1 : (short)0;
 
     /// <summary>
     /// Topics to fetch metadata for. Null means all topics.
@@ -32,6 +35,24 @@ public sealed class MetadataRequest : IKafkaRequest<MetadataResponse>
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
+        if (!IsFlexibleVersion(version))
+        {
+            writer.WriteNullableArray(
+                Topics,
+                static (ref KafkaProtocolWriter w, MetadataRequestTopic topic) =>
+                    w.WriteString(topic.Name ?? throw new InvalidOperationException(
+                        "Metadata v5-v8 requires topic names.")));
+            writer.WriteBoolean(AllowAutoTopicCreation);
+
+            if (version >= 8)
+            {
+                writer.WriteBoolean(IncludeClusterAuthorizedOperations);
+                writer.WriteBoolean(IncludeTopicAuthorizedOperations);
+            }
+
+            return;
+        }
+
         if (Topics is null)
         {
             // Null array means fetch all topics

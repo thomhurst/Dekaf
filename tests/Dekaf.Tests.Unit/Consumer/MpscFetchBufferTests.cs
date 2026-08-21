@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Reflection;
+using System.Runtime.ExceptionServices;
 using Dekaf.Consumer;
 using Dekaf.Protocol.Records;
 
@@ -320,32 +322,54 @@ public class MpscFetchBufferTests
     [Test]
     public async Task WaitToReadAsync_StaleTimeoutCannotCompleteNextWait()
     {
-        using var timeoutEntered = new ManualResetEventSlim();
-        using var releaseTimeout = new ManualResetEventSlim();
-        using var timeoutExited = new ManualResetEventSlim();
+        var timeoutEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseTimeout = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var timeoutExited = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var timeoutThreadFinished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var buffer = new MpscFetchBuffer(
             capacity: 4,
             afterProducerWaiterCountIncrementedForTesting: null,
             beforeConsumerTimeoutForTesting: () =>
             {
-                timeoutEntered.Set();
-                releaseTimeout.Wait();
+                timeoutEntered.TrySetResult();
+                releaseTimeout.Task.GetAwaiter().GetResult();
             },
-            afterConsumerTimeoutForTesting: timeoutExited.Set);
+            afterConsumerTimeoutForTesting: () => timeoutExited.TrySetResult());
         var item = CreateDummy();
+        Thread? timeoutThread = null;
 
         try
         {
-            var firstWait = buffer.WaitToReadAsync(1, CancellationToken.None).AsTask();
-            await Assert.That(timeoutEntered.Wait(TimeSpan.FromSeconds(5))).IsTrue();
+            // Keep the real timer dormant and run its callback on a dedicated thread so
+            // the stale-timeout gate cannot occupy or starve a ThreadPool worker.
+            var firstWait = buffer.WaitToReadAsync(30_000, CancellationToken.None).AsTask();
+            timeoutThread = new Thread(() =>
+            {
+                try
+                {
+                    TriggerConsumerTimeout(buffer);
+                    timeoutThreadFinished.TrySetResult();
+                }
+                catch (Exception exception)
+                {
+                    timeoutThreadFinished.TrySetException(exception);
+                }
+            })
+            {
+                IsBackground = true
+            };
+            timeoutThread.Start();
+
+            await timeoutEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
             await Assert.That(buffer.TryWrite(item)).IsTrue();
             await Assert.That(await firstWait).IsTrue();
             await Assert.That(buffer.TryRead(out var read)).IsTrue();
             await Assert.That(read).IsSameReferenceAs(item);
 
             var nextWait = buffer.WaitToReadAsync(Timeout.Infinite, CancellationToken.None).AsTask();
-            releaseTimeout.Set();
-            await Assert.That(timeoutExited.Wait(TimeSpan.FromSeconds(5))).IsTrue();
+            releaseTimeout.TrySetResult();
+            await timeoutExited.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await timeoutThreadFinished.Task.WaitAsync(TimeSpan.FromSeconds(5));
             await Assert.That(nextWait.IsCompleted).IsFalse();
 
             buffer.Complete();
@@ -353,9 +377,17 @@ public class MpscFetchBufferTests
         }
         finally
         {
-            releaseTimeout.Set();
-            item.Dispose();
-            buffer.Dispose();
+            releaseTimeout.TrySetResult();
+            try
+            {
+                if (timeoutThread is not null)
+                    await timeoutThreadFinished.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            finally
+            {
+                item.Dispose();
+                buffer.Dispose();
+            }
         }
     }
 
@@ -400,59 +432,50 @@ public class MpscFetchBufferTests
     [Test]
     public async Task WaitToReadAsync_TimeoutDoesNotRunContinuationInline()
     {
-        var timeoutEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        using var releaseTimeout = new ManualResetEventSlim();
-        var continuationEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        using var releaseContinuation = new ManualResetEventSlim();
-        var continuationFinished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var continuationFinished = new TaskCompletionSource<(bool RanInline, bool Result)>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         var timeoutCallbackExited = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var timeoutThreadId = 0;
+        var timeoutCallbackActive = 0;
         var buffer = new MpscFetchBuffer(
             capacity: 4,
             afterProducerWaiterCountIncrementedForTesting: null,
             beforeConsumerTimeoutForTesting: () =>
             {
-                timeoutEntered.TrySetResult();
-                releaseTimeout.Wait();
+                Volatile.Write(ref timeoutThreadId, Environment.CurrentManagedThreadId);
+                Volatile.Write(ref timeoutCallbackActive, 1);
             },
-            afterConsumerTimeoutForTesting: () => timeoutCallbackExited.TrySetResult());
-        var result = true;
-        Exception? continuationException = null;
+            afterConsumerTimeoutForTesting: () =>
+            {
+                Volatile.Write(ref timeoutCallbackActive, 0);
+                timeoutCallbackExited.TrySetResult();
+            });
 
         try
         {
             var awaiter = buffer.WaitToReadAsync(1, CancellationToken.None).GetAwaiter();
             awaiter.UnsafeOnCompleted(() =>
             {
-                continuationEntered.TrySetResult();
-                releaseContinuation.Wait();
+                var ranInline = Volatile.Read(ref timeoutCallbackActive) != 0
+                    && Environment.CurrentManagedThreadId == Volatile.Read(ref timeoutThreadId);
                 try
                 {
-                    result = awaiter.GetResult();
+                    continuationFinished.TrySetResult((ranInline, awaiter.GetResult()));
                 }
                 catch (Exception exception)
                 {
-                    continuationException = exception;
-                }
-                finally
-                {
-                    continuationFinished.TrySetResult();
+                    continuationFinished.TrySetException(exception);
                 }
             });
 
-            await timeoutEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
-            releaseTimeout.Set();
-            await continuationEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var completion = await continuationFinished.Task.WaitAsync(TimeSpan.FromSeconds(5));
             await timeoutCallbackExited.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-            releaseContinuation.Set();
-            await continuationFinished.Task.WaitAsync(TimeSpan.FromSeconds(5));
-            await Assert.That(continuationException).IsNull();
-            await Assert.That(result).IsFalse();
+            await Assert.That(completion.RanInline).IsFalse();
+            await Assert.That(completion.Result).IsFalse();
         }
         finally
         {
-            releaseTimeout.Set();
-            releaseContinuation.Set();
             buffer.Dispose();
         }
     }
@@ -828,7 +851,8 @@ public class MpscFetchBufferTests
     [Test]
     public async Task LaterProducer_DoesNotWaitForEarlierReservedSlotToCommit()
     {
-        using var firstReserved = new ManualResetEventSlim();
+        var firstReserved = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         using var allowFirstCommit = new ManualResetEventSlim();
         var buffer = new MpscFetchBuffer(
             capacity: 2,
@@ -837,24 +861,28 @@ public class MpscFetchBufferTests
             {
                 if (sequence == 0)
                 {
-                    firstReserved.Set();
+                    firstReserved.TrySetResult();
                     allowFirstCommit.Wait();
                 }
             });
         var first = CreateDummy("topic", 1);
         var second = CreateDummy("topic", 2);
 
-        var firstWrite = Task.Run(() => buffer.TryWrite(first));
+        var firstWrite = StartDedicatedWrite(buffer, first);
+        Task<bool>? secondWrite = null;
         Task<bool>? waitForReadable = null;
+        Exception? firstWriteFailure = null;
+        Exception? secondWriteFailure = null;
+        var firstWritten = false;
         try
         {
-            await Assert.That(firstReserved.Wait(TimeSpan.FromSeconds(5))).IsTrue();
+            await firstReserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
             waitForReadable = buffer.WaitToReadAsync(30_000, CancellationToken.None).AsTask();
             await TestWait.UntilAsync(
                 () => GetConsumerWaiting(buffer) == 1 && IsReadWaiterActive(buffer),
                 TimeSpan.FromSeconds(5));
 
-            var secondWrite = Task.Run(() => buffer.TryWrite(second));
+            secondWrite = StartDedicatedWrite(buffer, second);
             await Assert.That(await secondWrite.WaitAsync(TimeSpan.FromSeconds(5))).IsTrue();
             await Assert.That(buffer.Count).IsEqualTo(2);
             await Assert.That(waitForReadable.IsCompleted).IsFalse();
@@ -862,9 +890,18 @@ public class MpscFetchBufferTests
         finally
         {
             allowFirstCommit.Set();
+            (firstWritten, firstWriteFailure) = await ObserveDedicatedWriteAsync(firstWrite);
+
+            if (secondWrite is not null)
+                (_, secondWriteFailure) = await ObserveDedicatedWriteAsync(secondWrite);
         }
 
-        await Assert.That(await firstWrite).IsTrue();
+        if (firstWriteFailure is not null)
+            ExceptionDispatchInfo.Capture(firstWriteFailure).Throw();
+        if (secondWriteFailure is not null)
+            ExceptionDispatchInfo.Capture(secondWriteFailure).Throw();
+
+        await Assert.That(firstWritten).IsTrue();
         await Assert.That(await waitForReadable!).IsTrue();
         await Assert.That(buffer.TryRead(out var firstRead)).IsTrue();
         await Assert.That(firstRead!.PartitionIndex).IsEqualTo(1);
@@ -872,6 +909,27 @@ public class MpscFetchBufferTests
         await Assert.That(buffer.TryRead(out var secondRead)).IsTrue();
         await Assert.That(secondRead!.PartitionIndex).IsEqualTo(2);
         secondRead.Dispose();
+    }
+
+    private static Task<bool> StartDedicatedWrite(
+        MpscFetchBuffer buffer,
+        PendingFetchData item) =>
+        Task.Factory.StartNew(
+            () => buffer.TryWrite(item),
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default);
+
+    private static async Task<(bool Result, Exception? Failure)> ObserveDedicatedWriteAsync(
+        Task<bool> write)
+    {
+        var wait = write.WaitAsync(TimeSpan.FromSeconds(5));
+        Task observation = wait;
+        await observation.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+
+        return wait.IsCompletedSuccessfully
+            ? (wait.GetAwaiter().GetResult(), null)
+            : (false, wait.Exception?.InnerException ?? new TaskCanceledException(wait));
     }
 
     #endregion
@@ -931,5 +989,22 @@ public class MpscFetchBufferTests
             "_readWaiterActive",
             BindingFlags.NonPublic | BindingFlags.Instance)!;
         return (bool)field.GetValue(buffer)!;
+    }
+
+    private static void TriggerConsumerTimeout(MpscFetchBuffer buffer)
+    {
+        var readWaiterField = typeof(MpscFetchBuffer).GetField(
+            "_readWaiter",
+            BindingFlags.NonPublic | BindingFlags.Instance)!;
+        var readWaiter = readWaiterField.GetValue(buffer)!;
+        var timeoutDeadlineField = readWaiter.GetType().GetField(
+            "_timeoutDeadline",
+            BindingFlags.NonPublic | BindingFlags.Instance)!;
+        var onTimeout = readWaiter.GetType().GetMethod(
+            "OnTimeout",
+            BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+        timeoutDeadlineField.SetValue(readWaiter, Stopwatch.GetTimestamp() - Stopwatch.Frequency);
+        onTimeout.Invoke(readWaiter, null);
     }
 }

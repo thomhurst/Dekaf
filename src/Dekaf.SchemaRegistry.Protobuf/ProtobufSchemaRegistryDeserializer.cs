@@ -16,18 +16,31 @@ namespace Dekaf.SchemaRegistry.Protobuf;
 /// <para>
 /// The blocking call includes a timeout to prevent indefinite hangs.
 /// </para>
+/// <para>
+/// Kafka value tombstones return <see langword="default"/> without reading Confluent framing
+/// or contacting Schema Registry. This is <see langword="null"/> for reference and nullable
+/// types; non-nullable value types receive their normal default value.
+/// </para>
 /// </remarks>
 /// <typeparam name="T">The Protobuf message type to deserialize.</typeparam>
-public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisposable
+public sealed class ProtobufSchemaRegistryDeserializer<T> :
+    IDeserializer<T>,
+    IAsyncDeserializerPreparer<T>,
+    IAsyncDeserializerPreparationRequirement,
+    IAsyncDisposable
     where T : IMessage<T>, IBufferMessage, new()
 {
     private const byte MagicByte = 0x00;
     private static readonly TimeSpan SchemaRegistryTimeout = TimeSpan.FromSeconds(30);
+    private static readonly string RecordName = new T().Descriptor.FullName;
 
     private readonly ISchemaRegistryClient _schemaRegistry;
     private readonly ProtobufDeserializerConfig _config;
     private readonly bool _ownsClient;
+    private readonly ISchemaRegistryRuleExecutor? _ruleExecutor;
     private readonly MessageParser<T> _parser;
+    private readonly DeserializerSubjectNameCache? _subjectNames;
+    private readonly SchemaRegistryMigrationRunner? _migrationRunner;
 
     /// <summary>
     /// Creates a new Protobuf Schema Registry deserializer.
@@ -42,17 +55,93 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IA
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _config = config ?? new ProtobufDeserializerConfig();
+        _ruleExecutor = _config.RuleExecutor;
         _ownsClient = ownsClient;
         _parser = new MessageParser<T>(() => new T());
+        _subjectNames = DeserializerSubjectNameCache.Create(
+            schemaRegistry,
+            _config.SubjectNameStrategy,
+            _config.CustomSubjectNameStrategy,
+            _config.AsyncSubjectNameStrategy,
+            _config.UseLegacySubjectNames);
+        if (_config.UseLatestVersion)
+        {
+            (_migrationRunner, _ruleExecutor) = SchemaRegistryMigrationRunner.Create(
+                schemaRegistry,
+                _config.RuleExecutor,
+                SchemaRegistryTimeout);
+        }
+    }
+
+    bool IAsyncDeserializerPreparationRequirement.RequiresPreparation =>
+        _ruleExecutor is not null && _subjectNames is { RequiresPreparation: true };
+
+    ValueTask IAsyncDeserializerPreparer<T>.PrepareAsync(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        CancellationToken cancellationToken)
+    {
+        if (_ruleExecutor is null
+            || _subjectNames is not { RequiresPreparation: true }
+            || !DeserializerSubjectNameCache.TryReadSchemaId(data, out var schemaId))
+        {
+            return default;
+        }
+
+        return _subjectNames.PrepareAsync(
+            _schemaRegistry,
+            schemaId,
+            context.Topic,
+            context.Component == SerializationComponent.Key,
+            RecordName,
+            cancellationToken);
+    }
+
+    bool IAsyncDeserializerPreparer<T>.TryDeserialize(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        out T value)
+    {
+        string? preparedSubject = null;
+        if (_ruleExecutor is not null
+            && _subjectNames is { RequiresPreparation: true } subjectNames
+            && DeserializerSubjectNameCache.TryReadSchemaId(data, out var schemaId))
+        {
+            if (!subjectNames.TryGetPreparedSubject(
+                    schemaId,
+                    context.Topic,
+                    context.Component == SerializationComponent.Key,
+                    out var prepared))
+            {
+                value = default!;
+                return false;
+            }
+
+            preparedSubject = prepared.Subject;
+        }
+
+        value = DeserializeCore(data, context, preparedSubject);
+        return true;
     }
 
     /// <inheritdoc />
-    public T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
+    public T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
+        DeserializeCore(data, context, preparedSubject: null);
+
+    private T DeserializeCore(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        string? preparedSubject)
     {
         var span = data.Span;
 
         if (span.Length < 5)
+        {
+            if (context is { IsNull: true, Component: SerializationComponent.Value })
+                return default!;
+
             throw new InvalidOperationException("Message too short to contain Schema Registry wire format");
+        }
 
         // Verify magic byte
         if (span[0] != MagicByte)
@@ -63,10 +152,27 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IA
 
         // Optionally validate the schema exists (with timeout to prevent indefinite hang)
         Schema? schema = null;
-        if (!_config.SkipSchemaValidation)
+        string? ruleSubject = null;
+        if (!_config.SkipSchemaValidation || _config.RuleExecutor is SchemaRegistryRuleExecutor || _migrationRunner is not null)
         {
-            schema = _schemaRegistry.GetSchemaSync(schemaId, SchemaRegistryTimeout);
-            if (schema.SchemaType != SchemaType.Protobuf)
+            if (preparedSubject is not null)
+            {
+                ruleSubject = preparedSubject;
+                schema = _schemaRegistry.GetSchemaSync(schemaId, ruleSubject, SchemaRegistryTimeout);
+            }
+            else if (_config.RuleExecutor is not null && _subjectNames is null)
+            {
+                ruleSubject = SubjectNameResolver.GetTopicSubjectName(
+                    context.Topic,
+                    context.Component == SerializationComponent.Key);
+                schema = _schemaRegistry.GetSchemaSync(schemaId, ruleSubject, SchemaRegistryTimeout);
+            }
+            else
+            {
+                schema = _schemaRegistry.GetSchemaSync(schemaId, SchemaRegistryTimeout);
+            }
+
+            if (!_config.SkipSchemaValidation && schema.SchemaType != SchemaType.Protobuf)
                 throw new InvalidOperationException($"Schema {schemaId} is not a Protobuf schema (type: {schema.SchemaType})");
         }
 
@@ -88,23 +194,57 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IA
 
         // The rest is the protobuf message
         var protobufData = payloadMemory.Slice(bytesRead);
-        if (_config.RuleExecutor is not null)
+        if (_ruleExecutor is not null)
         {
-            protobufData = _config.RuleExecutor.TransformDeserializedPayload(
-                protobufData,
-                new SchemaRegistryRuleContext
+            var subject = ruleSubject ?? GetSubjectName(schemaId, schema, context);
+            if (schema is not null && ruleSubject is null)
+                schema = _schemaRegistry.GetSchemaSync(schemaId, subject, SchemaRegistryTimeout);
+            if (_migrationRunner is null)
+            {
+                var ruleContext = SchemaRegistryRuleContext.Rent(
+                    context.Topic,
+                    context.Component,
+                    schemaId,
+                    subject,
+                    schema,
+                    SchemaRegistryPayloadFormat.Protobuf);
+                try
                 {
-                    Topic = context.Topic,
-                    Component = context.Component,
-                    SchemaId = schemaId,
-                    Schema = schema,
-                    PayloadFormat = SchemaRegistryPayloadFormat.Protobuf
-                });
+                    protobufData = _ruleExecutor.TransformDeserializedPayload(protobufData, ruleContext);
+                }
+                finally
+                {
+                    ruleContext.Return();
+                }
+            }
+            else
+            {
+                var migration = _migrationRunner.Transform(
+                    protobufData,
+                    schemaId,
+                    subject,
+                    schema!,
+                    context,
+                    SchemaRegistryPayloadFormat.Protobuf);
+                protobufData = migration.Payload;
+            }
         }
 
         // Parse directly from span — zero allocation (Google.Protobuf 3.21+).
         // IBufferMessage constraint is enforced at compile time.
         return _parser.ParseFrom(protobufData.Span);
+    }
+
+    private string GetSubjectName(int schemaId, Schema? schema, SerializationContext context)
+    {
+        var isKey = context.Component == SerializationComponent.Key;
+        return _subjectNames?.GetSubjectName(
+                schemaId,
+                schema,
+                context.Topic,
+                isKey,
+                RecordName)
+            ?? SubjectNameResolver.GetTopicSubjectName(context.Topic, isKey);
     }
 
     private static (int value, int bytesRead) ReadVarint(ReadOnlySpan<byte> data, bool useDeprecatedFormat)

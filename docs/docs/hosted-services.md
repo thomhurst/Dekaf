@@ -1,5 +1,6 @@
 ---
 sidebar_position: 12
+description: "KafkaConsumerService runs a consumer for your application's lifetime, handling scoped dependencies, failure handling, and shutdown behaviour."
 ---
 
 # Hosted Consumer Services
@@ -77,6 +78,36 @@ builder.Services.AddDekaf(dekaf =>
         .WithBootstrapServers("localhost:9092").WithGroupId("payments"));
 });
 ```
+
+### Scale Out One Consumer Workload In-Process
+
+You can also register the same hosted service type more than once to increase consumer-group
+parallelism within one process. Give each registration a unique service key and the same
+`GroupId`. Each registration creates a separate hosted-service singleton with its own consumer:
+
+```csharp
+builder.Services.AddDekaf(dekaf =>
+{
+    dekaf.AddConsumerService<OrderProcessorService, string, Order>("orders-1", consumer => consumer
+        .WithBootstrapServers("localhost:9092")
+        .WithGroupId("order-workers"));
+
+    dekaf.AddConsumerService<OrderProcessorService, string, Order>("orders-2", consumer => consumer
+        .WithBootstrapServers("localhost:9092")
+        .WithGroupId("order-workers"));
+});
+```
+
+Kafka assigns each partition to at most one consumer in the group at a time, so these service
+instances normally process different records. Committed offsets belong to the consumer group,
+not an individual service instance; after a shutdown or rebalance, a new partition owner resumes
+from the group's committed offset. Uncommitted records can be delivered again, so processing
+must remain idempotent. If there are more service instances than partitions, the extra instances
+remain idle.
+
+This is competing-consumer scale-out, not broadcast fan-out. To have every service receive every
+record independently, give each registration a different `GroupId`; each group then maintains its
+own offsets.
 
 When a DLQ callback is supplied, registration verifies at service construction that your subclass actually forwards `DeadLetterOptions` to the base constructor, and fails fast with a clear error if the constructor omits it — a forgotten parameter cannot silently disable dead-lettering.
 
@@ -176,6 +207,14 @@ When you supply a DLQ callback to `AddConsumerService`, it passes the registered
 | `ShutdownTimeout` | 30 seconds | Cap on draining and on consumer disposal. |
 
 The full stop sequence is: cancel the consume loop → drain buffered messages (if enabled) → commit final offsets → flush and dispose the DLQ producer → dispose the consumer. One safety exception: if shutdown interrupted a record mid-handling — whether it cancelled your `ProcessAsync`, an in-place retry, or an in-flight DLQ/retry-topic write, in the consume loop or during the drain itself — both draining and the final explicit commit are skipped, because pulling more records would mark the interrupted record processed and an explicit commit vouches for it directly. The consumer's close path still commits everything *proven* processed, so only the interrupted record is left uncommitted and redelivered on restart. This follows the consumer's [delivery contract](consumer/delivery-semantics.md): a record whose processing threw is never committed. One configuration is exempt: strict manual commit mode (`WithOffsetCommitMode(OffsetCommitMode.Manual)` + `WithAutoOffsetStore(false)`) still runs the final commit, because there it covers exactly the offsets your code explicitly stored — never the interrupted record. The service implements `IAsyncDisposable`; when registered via `AddHostedService`, the generic host uses the async path automatically, so shutdown never blocks a thread pool thread.
+
+If the consumer's rebalance listener implements `IPartitionStopListener`, configure
+its close callback with `WithPartitionStopTimeout` (default: 5 seconds).
+`KafkaConsumerServiceOptions.ShutdownTimeout` is an independent outer wait cap for
+draining and consumer disposal. Set it long enough for draining, final commit, DLQ
+flush, the partition-stop timeout, and remaining consumer cleanup when shutdown
+must await the callback. The generic host's own shutdown timeout may impose another
+outer cap.
 
 ## Delivery Semantics
 

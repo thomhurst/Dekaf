@@ -723,6 +723,7 @@ public sealed partial class KafkaConnection :
     private async ValueTask<KafkaConnectionCapabilities> NegotiateCapabilitiesAsync(
         CancellationToken cancellationToken)
     {
+        const short broadlyCompatibleApiVersionsVersion = 3;
         var expectedIdentity = _metadataClusterIdentity?.GetExpectedBrokerIdentity(BrokerId);
         var request = new ApiVersionsRequest
         {
@@ -737,7 +738,7 @@ public sealed partial class KafkaConnection :
         {
             response = await SendAsyncCore<ApiVersionsRequest, ApiVersionsResponse>(
                 request,
-                ApiVersionsRequest.HighestSupportedVersion,
+                broadlyCompatibleApiVersionsVersion,
                 requireReady: false,
                 cancellationToken).ConfigureAwait(false);
 
@@ -761,6 +762,22 @@ public sealed partial class KafkaConnection :
                         "negotiation is limited to one retry.");
                 }
             }
+
+            var capabilities = KafkaConnectionCapabilities.Create(response);
+            if (expectedIdentity is not null &&
+                capabilities.SupportsVersion(ApiKey.ApiVersions, ApiVersionsRequest.HighestSupportedVersion))
+            {
+                var identityResponse = await SendAsyncCore<ApiVersionsRequest, ApiVersionsResponse>(
+                    request,
+                    ApiVersionsRequest.HighestSupportedVersion,
+                    requireReady: false,
+                    cancellationToken).ConfigureAwait(false);
+                ThrowIfRebootstrapRequired(identityResponse);
+                if (identityResponse.ErrorCode == ErrorCode.None)
+                    capabilities = KafkaConnectionCapabilities.Create(identityResponse);
+            }
+
+            return capabilities;
         }
         catch (TimeoutException ex)
         {
@@ -769,8 +786,6 @@ public sealed partial class KafkaConnection :
                 $"ApiVersions negotiation timed out for {_host}:{_port}",
                 ex);
         }
-
-        return KafkaConnectionCapabilities.Create(response);
     }
 
     private void ThrowIfRebootstrapRequired(ApiVersionsResponse response)
@@ -1868,19 +1883,34 @@ public sealed partial class KafkaConnection :
         header.Write(ref writer);
         var headerLength = writer.BytesWritten;
 
-        writer.WriteCompactNullableString(request.TransactionalId);
+        var flexible = ProduceRequest.IsFlexibleVersion(apiVersion);
+        if (flexible)
+            writer.WriteCompactNullableString(request.TransactionalId);
+        else
+            writer.WriteString(request.TransactionalId);
         writer.WriteInt16(request.Acks);
         writer.WriteInt32(request.TimeoutMs);
-        writer.WriteUnsignedVarInt(2); // one topic, compact count is item count + 1
+        if (flexible)
+            writer.WriteUnsignedVarInt(2); // one topic, compact count is item count + 1
+        else
+            writer.WriteInt32(1);
         if (apiVersion >= ProduceRequest.TopicIdVersion)
             writer.WriteUuid(topic.TopicId);
-        else
+        else if (flexible)
             writer.WriteCompactString(topic.Name);
-        writer.WriteUnsignedVarInt(2); // one partition
+        else
+            writer.WriteString(topic.Name);
+        if (flexible)
+            writer.WriteUnsignedVarInt(2); // one partition
+        else
+            writer.WriteInt32(1);
         writer.WriteInt32(partition.Index);
 
         var encodedBatchSize = batch.GetEncodedSize(partition.Compression);
-        writer.WriteUnsignedVarInt(checked(encodedBatchSize + 1));
+        if (flexible)
+            writer.WriteUnsignedVarInt(checked(encodedBatchSize + 1));
+        else
+            writer.WriteInt32(encodedBatchSize);
         if (!batch.TryWriteSegmentedHeader(
                 metadataWriter,
                 partition.Compression,
@@ -1912,9 +1942,12 @@ public sealed partial class KafkaConnection :
 
         writer.AddBytesWritten(encodedBatchSize);
         prefixLength = metadataWriter.WrittenCount;
-        writer.WriteEmptyTaggedFields(); // partition
-        writer.WriteEmptyTaggedFields(); // topic
-        writer.WriteEmptyTaggedFields(); // request
+        if (flexible)
+        {
+            writer.WriteEmptyTaggedFields(); // partition
+            writer.WriteEmptyTaggedFields(); // topic
+            writer.WriteEmptyTaggedFields(); // request
+        }
         suffixOffset = prefixLength;
         suffixLength = metadataWriter.WrittenCount - prefixLength;
 
@@ -2006,7 +2039,7 @@ public sealed partial class KafkaConnection :
     /// <summary>
     /// Writes one complete frame while holding the write lock, then releases the lock and
     /// returns the serialization buffer. The socket write is deliberately not cancellable:
-    /// cancelling <see cref="Stream.WriteAsync(ReadOnlyMemory{byte}, CancellationToken)"/>
+    /// cancelling the underlying <see cref="Stream"/> write
     /// mid-frame can leave a partial frame on the wire, desyncing the outgoing stream so the
     /// broker misparses it (broker-side InvalidRequestException on PRODUCE followed by a socket
     /// close). Callers that time out abandon the await instead (<see cref="AwaitFrameWriteAsync"/>);
@@ -2207,7 +2240,7 @@ public sealed partial class KafkaConnection :
 
     /// <summary>
     /// Marks the connection unusable after a frame write faulted or stayed stuck past its grace
-    /// period. A faulted <see cref="Stream.WriteAsync(ReadOnlyMemory{byte}, CancellationToken)"/>
+    /// period. A faulted <see cref="Stream"/> write
     /// can have transmitted part of the frame, so the outgoing stream is no longer frame-aligned:
     /// any further request written to it is misparsed by the broker (surfacing as broker-side
     /// InvalidRequestException on PRODUCE, after which the broker closes the socket while the

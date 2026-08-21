@@ -187,6 +187,8 @@ internal sealed class ProgressWatchdog : IDisposable
             _captureManagedStackReport,
             _diagnosticsCaptureTimeout);
 
+    internal bool WaitForWorkerExit(TimeSpan timeout) => _thread.Join(timeout);
+
     public void Dispose()
     {
         lock (_sync)
@@ -236,7 +238,10 @@ internal sealed class ProgressWatchdog : IDisposable
             }
 
             if (action == StallAction.CaptureAndExit)
+            {
                 _exitProcess(1);
+                return;
+            }
         }
     }
 

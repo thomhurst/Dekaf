@@ -8,6 +8,12 @@ namespace Dekaf.SchemaRegistry;
 public interface ISchemaRegistryClient : IDisposable
 {
     /// <summary>
+    /// TTL in seconds for cached latest-schema resolutions, or -1 for no expiry.
+    /// The default is -1.
+    /// </summary>
+    int LatestCacheTtlSecs => -1;
+
+    /// <summary>
     /// Registers a schema under a subject. If the schema is already registered,
     /// returns the existing schema ID.
     /// </summary>
@@ -44,6 +50,35 @@ public interface ISchemaRegistryClient : IDisposable
     Task<Schema> GetSchemaAsync(int id, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Gets a schema by its globally unique identifier.
+    /// </summary>
+    /// <param name="guid">The Schema Registry GUID.</param>
+    /// <param name="format">Optional schema output format, such as <c>serialized</c>.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The schema.</returns>
+    Task<Schema> GetSchemaByGuidAsync(
+        string guid,
+        string? format = null,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException(
+            $"{GetType().Name} does not support schema GUID lookup. Implement {nameof(GetSchemaByGuidAsync)} to consume GUID-framed records.");
+
+    /// <summary>
+    /// Gets a schema by global ID using the consumed subject to resolve subject-scoped metadata and rules.
+    /// </summary>
+    /// <param name="id">The schema ID.</param>
+    /// <param name="subject">The subject the message was consumed from.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The schema registered for the subject and ID.</returns>
+    Task<Schema> GetSchemaAsync(
+        int id,
+        string subject,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException(
+            $"{GetType().Name} does not support subject-scoped schema lookup. " +
+            $"Implement {nameof(GetSchemaAsync)}(int, string, CancellationToken) to execute Schema Registry rules safely.");
+
+    /// <summary>
     /// Gets the schema registered under a subject at a specific version.
     /// </summary>
     /// <param name="subject">The subject name.</param>
@@ -51,6 +86,29 @@ public interface ISchemaRegistryClient : IDisposable
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>The registered schema with metadata.</returns>
     Task<RegisteredSchema> GetSchemaBySubjectAsync(string subject, string version = "latest", CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Gets the schema registered under a subject at a specific version, optionally including deleted versions.
+    /// </summary>
+    /// <param name="subject">The subject name.</param>
+    /// <param name="version">The version number, or "latest" for latest.</param>
+    /// <param name="ignoreDeletedSchemas">Whether deleted schemas are excluded.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The registered schema with metadata.</returns>
+    Task<RegisteredSchema> GetSchemaBySubjectAsync(
+        string subject,
+        string version,
+        bool ignoreDeletedSchemas,
+        CancellationToken cancellationToken = default)
+    {
+        if (!ignoreDeletedSchemas)
+        {
+            throw new NotSupportedException(
+                $"This {nameof(ISchemaRegistryClient)} implementation does not support looking up deleted schema versions.");
+        }
+
+        return GetSchemaBySubjectAsync(subject, version, cancellationToken);
+    }
 
     /// <summary>
     /// Looks up an exact schema under a subject without registering it.
@@ -303,6 +361,25 @@ public interface ISchemaRegistryClient : IDisposable
         => throw new NotSupportedException("This Schema Registry client does not support DEK Registry DEK operations.");
 
     /// <summary>
+    /// Gets a Data Encryption Key (DEK) by version and algorithm.
+    /// </summary>
+    /// <param name="kekName">KEK name.</param>
+    /// <param name="subject">DEK subject.</param>
+    /// <param name="version">DEK version.</param>
+    /// <param name="algorithm">DEK algorithm.</param>
+    /// <param name="deleted">Whether to include soft-deleted DEKs.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The DEK.</returns>
+    Task<Dek> GetDekAsync(
+        string kekName,
+        string subject,
+        int version,
+        DekAlgorithm algorithm,
+        bool deleted = false,
+        CancellationToken cancellationToken = default)
+        => GetDekAsync(kekName, subject, version, deleted, cancellationToken);
+
+    /// <summary>
     /// Lists Data Encryption Key (DEK) versions for a KEK and subject.
     /// </summary>
     /// <param name="kekName">KEK name.</param>
@@ -356,6 +433,56 @@ public interface ISchemaRegistryClient : IDisposable
         bool permanent = false,
         CancellationToken cancellationToken = default)
         => throw new NotSupportedException("This Schema Registry client does not support DEK Registry DEK operations.");
+
+    /// <summary>
+    /// Gets subject associations for an external resource name.
+    /// </summary>
+    /// <param name="resourceName">The resource name, such as a Kafka topic name.</param>
+    /// <param name="resourceNamespace">The resource namespace, or <c>-</c> as a wildcard.</param>
+    /// <param name="resourceType">Optional resource-type filter.</param>
+    /// <param name="associationTypes">Optional repeated association-type filters.</param>
+    /// <param name="lifecycle">Optional lifecycle-policy filter.</param>
+    /// <param name="offset">Zero-based pagination offset.</param>
+    /// <param name="limit">Maximum result count, or -1 for no limit.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>Associations matching the resource and filters.</returns>
+    Task<IReadOnlyList<Association>> GetAssociationsByResourceNameAsync(
+        string resourceName,
+        string resourceNamespace = "-",
+        string? resourceType = null,
+        IReadOnlyList<string>? associationTypes = null,
+        string? lifecycle = null,
+        int offset = 0,
+        int limit = -1,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("This Schema Registry client does not support association operations.");
+
+    /// <summary>
+    /// Creates or updates subject associations for an external resource.
+    /// </summary>
+    /// <param name="request">Association create-or-update request.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The associations acknowledged by Schema Registry.</returns>
+    Task<AssociationResponse> CreateAssociationAsync(
+        AssociationCreateOrUpdateRequest request,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("This Schema Registry client does not support association operations.");
+
+    /// <summary>
+    /// Deletes subject associations for an external resource.
+    /// </summary>
+    /// <param name="resourceId">The resource identifier.</param>
+    /// <param name="resourceType">Optional resource-type filter.</param>
+    /// <param name="associationTypes">Optional repeated association-type filters.</param>
+    /// <param name="cascadeLifecycle">Whether to cascade lifecycle changes to associated schemas.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    Task DeleteAssociationsAsync(
+        string resourceId,
+        string? resourceType = null,
+        IReadOnlyList<string>? associationTypes = null,
+        bool cascadeLifecycle = false,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("This Schema Registry client does not support association operations.");
 }
 
 /// <summary>
@@ -370,6 +497,32 @@ public interface ISchemaRegistryCache
     /// <param name="schema">The cached schema, when found.</param>
     /// <returns>True when the schema is already cached.</returns>
     bool TryGetCachedSchema(int id, out Schema schema);
+
+    /// <summary>
+    /// Attempts to get a schema by GUID and output format from the local cache without allocating.
+    /// </summary>
+    /// <param name="guid">The Schema Registry GUID.</param>
+    /// <param name="format">Optional schema output format.</param>
+    /// <param name="schema">The cached schema, when found.</param>
+    /// <returns>True when the schema is already cached.</returns>
+    bool TryGetCachedSchema(Guid guid, string? format, out Schema schema)
+    {
+        schema = null!;
+        return false;
+    }
+
+    /// <summary>
+    /// Attempts to get subject-scoped schema metadata by ID without allocating.
+    /// </summary>
+    /// <param name="id">The schema ID.</param>
+    /// <param name="subject">The subject the message was consumed from.</param>
+    /// <param name="schema">The cached schema, when found.</param>
+    /// <returns>True when the subject-scoped schema is already cached.</returns>
+    bool TryGetCachedSchema(int id, string subject, out Schema schema)
+    {
+        schema = null!;
+        return false;
+    }
 }
 
 /// <summary>
@@ -434,6 +587,11 @@ public sealed class RegisteredSchema
     /// The global schema ID.
     /// </summary>
     public required int Id { get; init; }
+
+    /// <summary>
+    /// The globally unique schema identifier, when supplied by Schema Registry.
+    /// </summary>
+    public string? Guid { get; init; }
 
     /// <summary>
     /// The subject this schema is registered under.
@@ -667,6 +825,10 @@ public sealed class SchemaMetadata
 /// </summary>
 public sealed class SchemaRuleSet
 {
+    private IReadOnlyList<SchemaRule>? _domainRules;
+    private IReadOnlyList<SchemaRule>? _encodingRules;
+    private bool _hasFixedDomainOrEncodingRules;
+
     /// <summary>
     /// Rules used when migrating between schema versions.
     /// </summary>
@@ -675,17 +837,54 @@ public sealed class SchemaRuleSet
     /// <summary>
     /// Rules used for validation or transforms on the current schema.
     /// </summary>
-    public IReadOnlyList<SchemaRule>? DomainRules { get; init; }
+    // Preserve the CompilerGenerated attributes emitted by the previously shipped auto-property.
+    public IReadOnlyList<SchemaRule>? DomainRules
+    {
+        [CompilerGenerated]
+        get => _domainRules;
+
+        [CompilerGenerated]
+        init
+        {
+            _domainRules = value;
+            UpdateFixedRuleState();
+        }
+    }
 
     /// <summary>
     /// Rules used for encoding transforms such as field-level encryption.
     /// </summary>
-    public IReadOnlyList<SchemaRule>? EncodingRules { get; init; }
+    // Preserve the CompilerGenerated attributes emitted by the previously shipped auto-property.
+    public IReadOnlyList<SchemaRule>? EncodingRules
+    {
+        [CompilerGenerated]
+        get => _encodingRules;
+
+        [CompilerGenerated]
+        init
+        {
+            _encodingRules = value;
+            UpdateFixedRuleState();
+        }
+    }
 
     /// <summary>
     /// Optional Schema Registry activation marker.
     /// </summary>
     public string? EnableAt { get; init; }
+
+    internal bool HasDomainOrEncodingRules =>
+        // Schema Registry responses use fixed-length arrays, so the common no-rules path is one
+        // cached branch. Preserve live Count semantics for caller-supplied mutable list types.
+        HasFixedRuleCollections
+            ? _hasFixedDomainOrEncodingRules
+            : _domainRules is { Count: > 0 } || _encodingRules is { Count: > 0 };
+
+    internal bool HasFixedRuleCollections { get; init; }
+
+    private void UpdateFixedRuleState() =>
+        _hasFixedDomainOrEncodingRules = _domainRules is { Count: > 0 } || _encodingRules is { Count: > 0 };
+
 }
 
 /// <summary>

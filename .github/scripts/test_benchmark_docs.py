@@ -109,6 +109,63 @@ class BenchmarkDocsTests(unittest.TestCase):
             comparisons[0]["parameters"],
         )
 
+    def test_changed_producer_guarantees_start_new_history_series(self):
+        prefix = "Dekaf.Benchmarks.Benchmarks.Client.ProducerBenchmarks"
+        parameters = "(MessageSize: 100, BatchSize: 100)"
+        entries = [
+            {
+                "benches": [
+                    benchmark(f"{prefix}.Dekaf_ProduceBatch{parameters}", 40),
+                    benchmark(f"{prefix}.Confluent_ProduceBatch{parameters}", 100),
+                ]
+            },
+            {
+                "benches": [
+                    benchmark(
+                        f"{prefix}.Dekaf_ProduceBatchAllIdempotent{parameters}", 50
+                    ),
+                    benchmark(
+                        f"{prefix}.Confluent_ProduceBatchAllIdempotent{parameters}",
+                        100,
+                    ),
+                ]
+            },
+        ]
+
+        comparisons = rolling_comparisons(entries)
+
+        self.assertEqual(1, len(comparisons))
+        self.assertEqual("ProduceBatchAllIdempotent", comparisons[0]["operation"])
+        self.assertEqual(1, comparisons[0]["runs"])
+        self.assertEqual(0.5, comparisons[0]["median"])
+
+    def test_legacy_producer_labels_describe_each_clients_guarantees(self):
+        prefix = "Dekaf.Benchmarks.Benchmarks.Client.ProducerBenchmarks"
+        parameters = "(MessageSize: 100, BatchSize: 100)"
+        entries = [
+            {
+                "benches": [
+                    benchmark(f"{prefix}.Dekaf_ProduceBatch{parameters}", 40),
+                    benchmark(f"{prefix}.Confluent_ProduceBatch{parameters}", 100),
+                    benchmark(f"{prefix}.Dekaf_FireAndForget{parameters}", 40),
+                    benchmark(f"{prefix}.Confluent_FireAndForget{parameters}", 100),
+                ]
+            }
+        ]
+
+        table = format_summary_table(
+            summarize_scenarios(rolling_comparisons(entries)), {}
+        )
+
+        self.assertIn(
+            "Produce — batches (legacy: Dekaf acks=all/idempotent; Confluent acks=leader/non-idempotent)",
+            table[2],
+        )
+        self.assertIn(
+            "Produce — fire-and-forget (legacy: Dekaf acks=all/idempotent; Confluent acks=leader/non-idempotent)",
+            table[3],
+        )
+
     def test_latest_ratio_sd_is_visibly_flagged(self):
         table = [
             "| Method | Ratio | RatioSD |",
@@ -176,10 +233,22 @@ class BenchmarkDocsTests(unittest.TestCase):
         entries = [
             {
                 "benches": [
-                    benchmark(f"{prefix}.Dekaf_ProduceBatch(BatchSize: 100)", 40),
-                    benchmark(f"{prefix}.Confluent_ProduceBatch(BatchSize: 100)", 100),
-                    benchmark(f"{prefix}.Dekaf_ProduceBatch(BatchSize: 1000)", 110),
-                    benchmark(f"{prefix}.Confluent_ProduceBatch(BatchSize: 1000)", 100),
+                    benchmark(
+                        f"{prefix}.Dekaf_ProduceBatchAllIdempotent(BatchSize: 100)",
+                        40,
+                    ),
+                    benchmark(
+                        f"{prefix}.Confluent_ProduceBatchAllIdempotent(BatchSize: 100)",
+                        100,
+                    ),
+                    benchmark(
+                        f"{prefix}.Dekaf_ProduceBatchAllIdempotent(BatchSize: 1000)",
+                        110,
+                    ),
+                    benchmark(
+                        f"{prefix}.Confluent_ProduceBatchAllIdempotent(BatchSize: 1000)",
+                        100,
+                    ),
                 ]
             }
         ] * 2
@@ -189,11 +258,34 @@ class BenchmarkDocsTests(unittest.TestCase):
         self.assertEqual(1, len(summaries))
         summary = summaries[0]
         self.assertEqual("ProducerBenchmarks", summary["group"])
-        self.assertEqual("ProduceBatch", summary["operation"])
+        self.assertEqual("ProduceBatchAllIdempotent", summary["operation"])
         self.assertEqual(0.4, summary["best"])
         self.assertEqual(1.1, summary["worst"])
         self.assertEqual(2, summary["stable_rows"])
         self.assertEqual(2, summary["total_rows"])
+
+    def test_single_produce_linger_controls_are_separate_scenarios(self):
+        prefix = "Dekaf.Benchmarks.Benchmarks.Client.ProducerSingleBenchmarks"
+        entries = [
+            {
+                "benches": [
+                    benchmark(f"{prefix}.Dekaf_ProduceSingleNoLinger(MessageSize: 100)", 80),
+                    benchmark(f"{prefix}.Confluent_ProduceSingleNoLinger(MessageSize: 100)", 100),
+                    benchmark(f"{prefix}.Dekaf_ProduceSingleLinger5(MessageSize: 100)", 10),
+                    benchmark(f"{prefix}.Confluent_ProduceSingleLinger5(MessageSize: 100)", 100),
+                ]
+            }
+        ] * 2
+
+        summaries = summarize_scenarios(rolling_comparisons(entries))
+
+        self.assertEqual(
+            ["ProduceSingleNoLinger", "ProduceSingleLinger5"],
+            [summary["operation"] for summary in summaries],
+        )
+        table = format_summary_table(summaries, {})
+        self.assertIn("Produce — serial awaited (linger=0)", table[2])
+        self.assertIn("Produce — serial awaited (linger=5 ms)", table[3])
 
     def test_latest_alloc_ratios_reads_dekaf_rows(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -217,7 +309,7 @@ class BenchmarkDocsTests(unittest.TestCase):
 
         self.assertIn("No comparable history yet", table[2])
 
-    def test_document_contains_rolling_and_latest_confidence_context(self):
+    def test_document_contains_context_and_only_comparison_reports(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             history_path = root / "data.js"
@@ -236,11 +328,24 @@ class BenchmarkDocsTests(unittest.TestCase):
             results = root / "results" / "Client" / "results"
             results.mkdir(parents=True)
             (results / "ConsumerPollBenchmarks-report-github.md").write_text(
-                "| Method | Ratio | RatioSD |\n"
-                "|---|---:|---:|\n"
-                "| Dekaf_PollSingle | 2.20 | 0.31 |\n",
+                "| Method | MessageSize | Mean | Allocated | Ratio | RatioSD | Alloc Ratio |\n"
+                "|---|---:|---:|---:|---:|---:|---:|\n"
+                "| Confluent_PollSingle | 1000 | 100.00 μs | 1000 B | 1.00 | 0.00 | 1.00 |\n"
+                "| Dekaf_PollSingle | 1000 | 200.00 μs | 500 B | 2.20 | 0.31 | 0.50 |\n",
                 encoding="utf-8",
             )
+            for name, method in (
+                ("ProducerBenchmarks", "Dekaf_ComparisonBatch"),
+                ("ProducerSingleBenchmarks", "Dekaf_ComparisonSingle"),
+                ("ProducerModeBenchmarks", "Dekaf_InternalMode"),
+                ("AsyncProducerSerdePoolingBenchmarks", "Dekaf_InternalSerde"),
+            ):
+                (results / f"{name}-report-github.md").write_text(
+                    "| Method | Mean |\n"
+                    "|---|---:|\n"
+                    f"| {method} | 1.00 ns |\n",
+                    encoding="utf-8",
+                )
 
             document = generate_document(
                 root / "results",
@@ -249,7 +354,18 @@ class BenchmarkDocsTests(unittest.TestCase):
             )
 
         self.assertIn("## At a glance", document)
+        self.assertIn("import ComparisonChart, {ComparisonChartGrid}", document)
+        self.assertIn('title="Execution time"', document)
+        self.assertIn('title="Managed allocations"', document)
+        self.assertIn("200.00 μs (2.0× slower)", document)
+        self.assertIn("500 B (2.0× less)", document)
         self.assertIn("Consume — poll a single message", document)
+        self.assertIn(
+            ":::note Reading producer results\n"
+            "The `linger=0` scenario is the matched client comparison. The `linger=5 ms` scenario intentionally measures each client's app-limited batching policy and should not be read as general producer throughput. Legacy serial-awaited rows, when present, send a sole Dekaf record immediately while Confluent applies the configured linger; the old benchmark's unused `BatchSize` parameter also duplicated each payload result. Legacy batch and fire-and-forget rows, when present, use `acks=all` with idempotence for Dekaf and `acks=leader` without idempotence for Confluent.\n"
+            ":::",
+            document,
+        )
         self.assertIn("2.1× slower", document)
         self.assertIn("<details>", document)
         self.assertIn(
@@ -257,6 +373,10 @@ class BenchmarkDocsTests(unittest.TestCase):
             document,
         )
         self.assertIn("ConsumerPollBenchmarks.PollSingle", document)
+        self.assertIn("Dekaf_ComparisonBatch", document)
+        self.assertIn("Dekaf_ComparisonSingle", document)
+        self.assertNotIn("Dekaf_InternalMode", document)
+        self.assertNotIn("Dekaf_InternalSerde", document)
         self.assertIn("<summary>Latest run — consumer benchmarks</summary>", document)
         self.assertIn("⚠ Low", document)
         self.assertIn("RatioSD", document)

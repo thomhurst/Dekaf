@@ -2,6 +2,7 @@ using System.Reflection;
 using System.Text;
 using Dekaf.Consumer;
 using Dekaf.Producer;
+using Dekaf.Protocol.Messages;
 using Dekaf.Serialization;
 using Dekaf.Testing;
 
@@ -320,6 +321,36 @@ public sealed class InMemoryBoundedConsumerTests
 
         await Assert.That(values).IsEmpty();
         await Assert.That(consumer.GetPosition(partition)).IsEqualTo(10L);
+    }
+
+    [Test]
+    public async Task ConsumeSnapshotAsync_OngoingTransactionBeforePositionPreservesPosition()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var transactionalProducer = new InMemoryProducer<string, string>(cluster);
+        await using var transaction = transactionalProducer.BeginTransaction();
+        _ = await transaction.ProduceAsync("events", "key-0", "pending");
+        var producer = new InMemoryProducer<string, string>(cluster);
+        _ = await producer.ProduceAsync("events", "key-1", "after");
+        await using var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions
+            {
+                AutoOffsetReset = AutoOffsetReset.Earliest,
+                IsolationLevel = IsolationLevel.ReadCommitted
+            });
+        var partition = new TopicPartition("events", 0);
+        consumer.Assign(partition);
+        consumer.Seek(new TopicPartitionOffset("events", 0, 1));
+
+        var snapshot = await CollectValuesAsync(consumer.ConsumeSnapshotAsync());
+
+        await Assert.That(snapshot).IsEmpty();
+        await Assert.That(consumer.GetPosition(partition)).IsEqualTo(1L);
+
+        await transaction.CommitAsync();
+        var resumed = await consumer.ConsumeOneAsync(TimeSpan.Zero);
+        await Assert.That(resumed!.Value.Value).IsEqualTo("after");
     }
 
     [Test]

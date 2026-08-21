@@ -6,6 +6,14 @@ namespace Dekaf.SchemaRegistry.Avro;
 public sealed class AvroSerializerConfig
 {
     /// <summary>
+    /// Maximum number of runtime schemas retained strongly by each serializer cache.
+    /// Additional runtime schemas use weak exact-reference entries plus a bounded logical overflow
+    /// cache, so repeated schema rotations remain reusable without unbounded serializer retention.
+    /// Must be greater than zero. Default is 1000.
+    /// </summary>
+    public int MaxCachedSchemas { get; init; } = 1000;
+
+    /// <summary>
     /// Whether to automatically register schemas with the Schema Registry.
     /// Default is true.
     /// </summary>
@@ -23,6 +31,13 @@ public sealed class AvroSerializerConfig
     /// Default is null (uses enum-based strategy).
     /// </summary>
     public ISubjectNameStrategy? CustomSubjectNameStrategy { get; init; }
+
+    /// <summary>
+    /// Custom asynchronous subject-name strategy. Used when
+    /// <see cref="CustomSubjectNameStrategy" /> is null and takes precedence over
+    /// <see cref="SubjectNameStrategy" />.
+    /// </summary>
+    public IAsyncSubjectNameStrategy? AsyncSubjectNameStrategy { get; init; }
 
     /// <summary>
     /// Whether <see cref="SubjectNameStrategy.RecordName"/> and
@@ -57,6 +72,32 @@ public sealed class AvroSerializerConfig
 /// </summary>
 public sealed class AvroDeserializerConfig
 {
+    /// <summary>
+    /// Whether to use the latest registered subject version as the reader schema and execute
+    /// any migration rules between the writer and reader versions.
+    /// </summary>
+    public bool UseLatestVersion { get; init; }
+
+    /// <summary>
+    /// Subject-name strategy used when deserialization rules execute.
+    /// </summary>
+    public SubjectNameStrategy SubjectNameStrategy { get; init; } = SubjectNameStrategy.TopicName;
+
+    /// <summary>
+    /// Custom subject-name strategy used when deserialization rules execute.
+    /// </summary>
+    public ISubjectNameStrategy? CustomSubjectNameStrategy { get; init; }
+
+    /// <summary>
+    /// Custom asynchronous subject-name strategy used during deserializer preparation.
+    /// </summary>
+    public IAsyncSubjectNameStrategy? AsyncSubjectNameStrategy { get; init; }
+
+    /// <summary>
+    /// Whether record-based strategies retain Dekaf's legacy -key/-value suffix.
+    /// </summary>
+    public bool UseLegacySubjectNames { get; init; }
+
     /// <summary>
     /// Whether to use a specific reader schema instead of inferring it from the .NET type.
     /// When null, the reader schema is derived from the type T.

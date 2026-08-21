@@ -79,6 +79,7 @@ public sealed class SchemaRegistryJsonAotTests
               "subject": "orders-value",
               "version": 3,
               "id": 42,
+              "guid": "01234567-89ab-cdef-0123-456789abcdef",
               "schema": "{}",
               "schemaType": "JSON",
               "references": [
@@ -123,6 +124,35 @@ public sealed class SchemaRegistryJsonAotTests
         var updateCompatibility = JsonSerializer.Deserialize(
             """{ "compatibility": "FORWARD" }""",
             SchemaRegistryJsonContext.Default.UpdateCompatibilityResponse);
+        var associationJson = JsonSerializer.SerializeToUtf8Bytes(
+            new AssociationCreateOrUpdateRequestDto
+            {
+                ResourceName = "orders",
+                ResourceNamespace = "lkc-123",
+                ResourceId = "lkc-123:orders",
+                ResourceType = "topic",
+                Associations =
+                [
+                    new AssociationCreateOrUpdateInfoDto
+                    {
+                        Subject = "orders-value",
+                        AssociationType = "value",
+                        Lifecycle = "STRONG"
+                    }
+                ]
+            },
+            SchemaRegistryJsonContext.Default.AssociationCreateOrUpdateRequestDto);
+        var associationResponse = JsonSerializer.Deserialize(
+            """
+            {
+              "resourceName": "orders",
+              "resourceNamespace": "lkc-123",
+              "resourceId": "lkc-123:orders",
+              "resourceType": "topic",
+              "associations": []
+            }
+            """,
+            SchemaRegistryJsonContext.Default.AssociationResponseDto);
         var errorJson = JsonSerializer.SerializeToUtf8Bytes(
             new ErrorResponse { ErrorCode = 40401, Message = "missing" },
             SchemaRegistryJsonContext.Default.ErrorResponse);
@@ -135,6 +165,7 @@ public sealed class SchemaRegistryJsonAotTests
         await Assert.That(roundTrippedRequest.Metadata!.Tags!["$.name"]).Contains("PII");
         await Assert.That(roundTrippedRequest.RuleSet!.EncodingRules![0].Params!["encrypt.kek.name"]).IsEqualTo("payments-kek");
         await Assert.That(subjectResponse!.Subject).IsEqualTo("orders-value");
+        await Assert.That(subjectResponse.Guid).IsEqualTo("01234567-89ab-cdef-0123-456789abcdef");
         await Assert.That(subjectResponse.References!.Count).IsEqualTo(1);
         await Assert.That(subjectResponse.Metadata!.Properties!["owner"]).IsEqualTo("payments");
         await Assert.That(subjectResponse.RuleSet!.EncodingRules![0].Mode).IsEqualTo("WRITEREAD");
@@ -143,6 +174,10 @@ public sealed class SchemaRegistryJsonAotTests
             .IsEqualTo("FULL_TRANSITIVE");
         await Assert.That(getCompatibility!.CompatibilityLevel).IsEqualTo("BACKWARD");
         await Assert.That(updateCompatibility!.Compatibility).IsEqualTo("FORWARD");
+        using var associationDocument = JsonDocument.Parse(associationJson);
+        await Assert.That(associationDocument.RootElement.GetProperty("associations")[0]
+            .GetProperty("subject").GetString()).IsEqualTo("orders-value");
+        await Assert.That(associationResponse!.ResourceId).IsEqualTo("lkc-123:orders");
         await Assert.That(errorDocument.RootElement.TryGetProperty("error_code", out _)).IsTrue();
     }
 

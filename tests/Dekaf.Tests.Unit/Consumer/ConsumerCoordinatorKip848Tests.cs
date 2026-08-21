@@ -114,7 +114,8 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         int maxPollIntervalMs = 300000,
         int retryBackoffMs = 100,
         int retryBackoffMaxMs = 1000,
-        IConsumerAwareRebalanceListener? consumerAwareRebalanceListener = null) => new()
+        IConsumerAwareRebalanceListener? consumerAwareRebalanceListener = null,
+        IRebalanceListener[]? additionalRebalanceListeners = null) => new()
         {
             BootstrapServers = ["localhost:9092"],
             GroupId = groupId,
@@ -123,6 +124,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             ClientRack = clientRack,
             RebalanceListener = rebalanceListener,
             ConsumerAwareRebalanceListener = consumerAwareRebalanceListener,
+            AdditionalRebalanceListeners = additionalRebalanceListeners,
             HeartbeatIntervalMs = heartbeatIntervalMs,
             RebalanceTimeoutMs = rebalanceTimeoutMs,
             MaxPollIntervalMs = maxPollIntervalMs,
@@ -454,7 +456,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
-    public async Task ConsumerProtocol_InitialJoin_SendsMaxPollIntervalAsRebalanceTimeout()
+    public async Task ConsumerProtocol_InitialJoin_SendsConfiguredRebalanceTimeout()
     {
         SetupSuccessfulConsumerProtocolJoin();
         var options = CreateConsumerProtocolOptions(
@@ -465,7 +467,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
 
         await _connection.Received().SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
-            Arg.Is<ConsumerGroupHeartbeatRequest>(request => request != null && request.RebalanceTimeoutMs == 12_345),
+            Arg.Is<ConsumerGroupHeartbeatRequest>(request => request != null && request.RebalanceTimeoutMs == 30_000),
             Arg.Any<short>(),
             Arg.Any<CancellationToken>());
     }
@@ -2389,6 +2391,146 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
 
         await Assert.That(assignedPartitions).Count().IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task ConsumerProtocol_Assignment_InvokesAdditiveListenersInOrderAndIsolatesFailure()
+    {
+        var assignment = CreateAssignment(TestTopicId, 0);
+        SetupSuccessfulConsumerProtocolJoin(assignment: assignment);
+        var calls = new List<string>();
+        var configured = CreateListener("configured");
+        var failing = CreateListener("failing", fail: true);
+        var additional = CreateListener("additional");
+        var runtime = CreateListener("runtime");
+        var options = CreateConsumerProtocolOptions(
+            rebalanceListener: configured,
+            additionalRebalanceListeners: [failing, additional]);
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+        using var runtimeRegistration = coordinator.RegisterRuntimeRebalanceListener(runtime);
+
+        await coordinator.EnsureActiveGroupAsync(
+            new HashSet<string> { "test-topic" },
+            CancellationToken.None);
+
+        await Assert.That(calls).Count().IsEqualTo(4);
+        await Assert.That(calls[0]).IsEqualTo("configured");
+        await Assert.That(calls[1]).IsEqualTo("failing");
+        await Assert.That(calls[2]).IsEqualTo("additional");
+        await Assert.That(calls[3]).IsEqualTo("runtime");
+
+        IRebalanceListener CreateListener(string name, bool fail = false)
+        {
+            var listener = Substitute.For<IRebalanceListener>();
+            listener.OnPartitionsAssignedAsync(
+                    Arg.Any<IEnumerable<TopicPartition>>(),
+                    Arg.Any<CancellationToken>())
+                .Returns(_ =>
+                {
+                    calls.Add(name);
+                    return fail
+                        ? ValueTask.FromException(new InvalidOperationException("listener failed"))
+                        : ValueTask.CompletedTask;
+                });
+            return listener;
+        }
+    }
+
+    [Test]
+    public async Task ConsumerProtocol_Revocation_InvokesAllAdditiveListenersInOrder()
+    {
+        SetupFindCoordinator();
+        var heartbeatCount = 0;
+        _connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                var count = Interlocked.Increment(ref heartbeatCount);
+                return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                {
+                    ErrorCode = ErrorCode.None,
+                    MemberId = "member-1",
+                    MemberEpoch = count,
+                    HeartbeatIntervalMs = 60_000,
+                    Assignment = count == 1
+                        ? CreateAssignment(TestTopicId, 0, 1)
+                        : CreateAssignment(TestTopicId, 1)
+                });
+            });
+        var calls = new List<string>();
+        var options = CreateConsumerProtocolOptions(
+            heartbeatIntervalMs: 60_000,
+            rebalanceListener: CreateListener("configured"),
+            additionalRebalanceListeners:
+            [
+                CreateListener("first"),
+                CreateListener("second")
+            ]);
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+
+        await coordinator.EnsureActiveGroupAsync(
+            new HashSet<string> { "test-topic" },
+            CancellationToken.None);
+        await coordinator.StopHeartbeatAsync();
+        await InvokeSteadyConsumerGroupHeartbeatAsync(coordinator);
+
+        await Assert.That(calls).Count().IsEqualTo(3);
+        await Assert.That(calls[0]).IsEqualTo("configured");
+        await Assert.That(calls[1]).IsEqualTo("first");
+        await Assert.That(calls[2]).IsEqualTo("second");
+
+        IRebalanceListener CreateListener(string name)
+        {
+            var listener = Substitute.For<IRebalanceListener>();
+            listener.OnPartitionsRevokedAsync(
+                    Arg.Any<IEnumerable<TopicPartition>>(),
+                    Arg.Any<CancellationToken>())
+                .Returns(_ =>
+                {
+                    calls.Add(name);
+                    return ValueTask.CompletedTask;
+                });
+            return listener;
+        }
+    }
+
+    [Test]
+    public async Task ConsumerProtocol_Lost_InvokesAllAdditiveListenersInOrder()
+    {
+        var calls = new List<string>();
+        var options = CreateConsumerProtocolOptions(
+            rebalanceListener: CreateListener("configured"),
+            additionalRebalanceListeners:
+            [
+                CreateListener("first"),
+                CreateListener("second")
+            ]);
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+
+        await InvokePartitionsLostAsync(
+            coordinator,
+            [new TopicPartition("test-topic", 0)]);
+
+        await Assert.That(calls).Count().IsEqualTo(3);
+        await Assert.That(calls[0]).IsEqualTo("configured");
+        await Assert.That(calls[1]).IsEqualTo("first");
+        await Assert.That(calls[2]).IsEqualTo("second");
+
+        IRebalanceListener CreateListener(string name)
+        {
+            var listener = Substitute.For<IRebalanceListener>();
+            listener.OnPartitionsLostAsync(
+                    Arg.Any<IEnumerable<TopicPartition>>(),
+                    Arg.Any<CancellationToken>())
+                .Returns(_ =>
+                {
+                    calls.Add(name);
+                    return ValueTask.CompletedTask;
+                });
+            return listener;
+        }
     }
 
     [Test]

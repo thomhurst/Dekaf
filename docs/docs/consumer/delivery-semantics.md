@@ -1,5 +1,6 @@
 ---
 sidebar_position: 2
+description: "The definitive reference for what happens to a message when processing fails, how Dekaf's default compares to other clients, and how to choose a guarantee."
 ---
 
 # Delivery Semantics
@@ -52,6 +53,10 @@ for the next record. Dekaf uses that request as the acknowledgment signal:
 
 The same "a new call proves the previous record" contract applies to `ConsumeOneAsync` and to
 `ConsumeBatchAsync` (where the unit of proof is the whole batch).
+
+Records rejected by a [pre-deserialization filter](filtering-and-routing.md) are different: they
+are never delivered to application code, so they are proven immediately. The consumer position
+advances and automatic offset storage can commit them without waiting for another pull.
 
 This is the same contract as the Java client's poll-loop auto-commit — commits only ever cover
 records from *completed* loop iterations — but tracked per record rather than per poll.

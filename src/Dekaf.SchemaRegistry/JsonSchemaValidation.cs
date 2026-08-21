@@ -14,7 +14,7 @@ public enum JsonSchemaValidationMode
     None = 0,
 
     /// <summary>
-    /// Validate serialized JSON before Schema Registry rules are applied.
+    /// Validate serialized JSON after domain rules and before encoding rules are applied.
     /// </summary>
     Serialize = 1,
 

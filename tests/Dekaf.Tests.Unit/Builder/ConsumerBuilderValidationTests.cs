@@ -1,4 +1,5 @@
 using Dekaf.Consumer;
+using NSubstitute;
 
 namespace Dekaf.Tests.Unit.Builder;
 
@@ -464,6 +465,65 @@ public class ConsumerBuilderValidationTests
             .Throws<ArgumentOutOfRangeException>();
         await Assert.That(() => builder.WithDefaultApiTimeout(TimeSpan.FromMilliseconds((double)int.MaxValue + 1)))
             .Throws<ArgumentOutOfRangeException>();
+    }
+
+    [Test]
+    public async Task WithPartitionStopTimeout_SetsOptions()
+    {
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithPartitionStopTimeout(TimeSpan.FromSeconds(12))
+            .Build();
+
+        var options = GetConsumerOptions(consumer);
+        await Assert.That(options.PartitionStopTimeout).IsEqualTo(TimeSpan.FromSeconds(12));
+    }
+
+    [Test]
+    public async Task WithPartitionStopTimeout_OutsideMillisecondRange_ThrowsArgumentOutOfRangeException()
+    {
+        var builder = Kafka.CreateConsumer<string, string>();
+
+        await Assert.That(() => builder.WithPartitionStopTimeout(TimeSpan.Zero))
+            .Throws<ArgumentOutOfRangeException>();
+        await Assert.That(() => builder.WithPartitionStopTimeout(TimeSpan.FromMilliseconds(-1)))
+            .Throws<ArgumentOutOfRangeException>();
+        await Assert.That(() => builder.WithPartitionStopTimeout(TimeSpan.FromTicks(1)))
+            .Throws<ArgumentOutOfRangeException>();
+        await Assert.That(() => builder.WithPartitionStopTimeout(TimeSpan.FromMilliseconds((double)int.MaxValue + 1)))
+            .Throws<ArgumentOutOfRangeException>();
+    }
+
+    [Test]
+    public async Task AddRebalanceListener_AccumulatesWithoutReplacingConfiguredListener()
+    {
+        var configured = Substitute.For<IRebalanceListener>();
+        var first = Substitute.For<IRebalanceListener>();
+        var second = Substitute.For<IRebalanceListener>();
+        var builder = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithRebalanceListener(configured);
+
+        var result = builder
+            .AddRebalanceListener(first)
+            .AddRebalanceListener(second);
+        await using var consumer = result.Build();
+        var options = GetConsumerOptions(consumer);
+
+        await Assert.That(result).IsSameReferenceAs(builder);
+        await Assert.That(options.RebalanceListener).IsSameReferenceAs(configured);
+        await Assert.That(options.AdditionalRebalanceListeners).Count().IsEqualTo(2);
+        await Assert.That(options.AdditionalRebalanceListeners![0]).IsSameReferenceAs(first);
+        await Assert.That(options.AdditionalRebalanceListeners[1]).IsSameReferenceAs(second);
+    }
+
+    [Test]
+    public async Task AddRebalanceListener_Null_ThrowsArgumentNullException()
+    {
+        var builder = Kafka.CreateConsumer<string, string>();
+
+        await Assert.That(() => builder.AddRebalanceListener(null!))
+            .Throws<ArgumentNullException>();
     }
 
     [Test]

@@ -776,6 +776,10 @@ class StressReportTests(unittest.TestCase):
         self.assertTrue(page.startswith("---\nsidebar_position: 14\n---"))
         self.assertIn("**Last Updated:** 2026-08-04 17:32 UTC", page)
         self.assertIn("## At a glance", page)
+        self.assertIn("import ComparisonChart, {ComparisonChartGrid}", page)
+        self.assertIn('title="Sustained throughput"', page)
+        self.assertIn('title="CPU cost per message"', page)
+        self.assertIn('better="lower"', page)
         self.assertIn("<summary>Methodology — how these numbers are produced</summary>", page)
         self.assertNotIn("## No Results Available", page)
 
@@ -783,6 +787,7 @@ class StressReportTests(unittest.TestCase):
         page = generate_docs_page([], "2026-08-04 17:32 UTC")
 
         self.assertIn("## No Results Available", page)
+        self.assertNotIn('title="Sustained throughput"', page)
         self.assertIn("<summary>Methodology — how these numbers are produced</summary>", page)
 
 

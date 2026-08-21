@@ -1,5 +1,6 @@
 ---
 sidebar_position: 1
+description: "Ready-made producer and consumer configurations for common scenarios, how to override individual values, and how to define your own preset."
 ---
 
 # Configuration Presets
