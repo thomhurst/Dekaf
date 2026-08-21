@@ -424,6 +424,14 @@ public sealed class AliCloudKmsProvider : ISchemaRegistryKmsProvider
                 "Alibaba Cloud KMS access key ID and secret must be configured together.");
         }
 
+        if (credentialType == CredentialKind.RamRoleArn
+            && securityToken is not null
+            && accessKeyId is null)
+        {
+            throw new SchemaRegistryKmsException(
+                "Alibaba Cloud KMS access key ID and secret must be configured together when a RAM role security token is provided.");
+        }
+
         if (credentialType is CredentialKind.AccessKey or CredentialKind.Sts
             && (accessKeyId is null || accessKeySecret is null))
         {

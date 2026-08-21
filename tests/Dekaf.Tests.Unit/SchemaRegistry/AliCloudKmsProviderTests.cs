@@ -343,6 +343,25 @@ public sealed class AliCloudKmsProviderTests
     }
 
     [Test]
+    public async Task RamRoleSecurityTokenWithoutSourceAccessKeys_IsRejected()
+    {
+        var properties = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            [AliCloudKmsProvider.RoleArnProperty] = "acs:ram::123:role/csfle",
+            [AliCloudKmsProvider.SecurityTokenProperty] = "token"
+        };
+        var factory = new RecordingFactory(_ => new XorClient());
+        var provider = CreateProvider(factory);
+
+        await Assert.That(async () => await provider.WrapKeyAsync(
+                new byte[] { 1 },
+                CreateReference(properties: properties)))
+            .Throws<SchemaRegistryKmsException>()
+            .WithMessageContaining("must be configured together");
+        await Assert.That(factory.CreateCount).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task RamRoleExpirationBelowMinimum_IsRejected()
     {
         var factory = new RecordingFactory(_ => new XorClient());
@@ -406,18 +425,33 @@ public sealed class AliCloudKmsProviderTests
     }
 
     [Test]
-    public async Task CaFileReadFailure_IsWrappedAndSkipsClientCreation()
+    public async Task CaFileReadFailure_IsWrappedAndRetryRecovers()
     {
         var caFile = Path.Combine(Path.GetTempPath(), $"missing-{Guid.NewGuid():N}.pem");
-        var factory = new RecordingFactory(_ => new XorClient());
-        var provider = CreateProvider(factory, new AliCloudKmsProviderOptions { CaFile = caFile });
+        try
+        {
+            var factory = new RecordingFactory(_ => new XorClient());
+            var provider = CreateProvider(factory, new AliCloudKmsProviderOptions { CaFile = caFile });
 
-        var exception = await Assert.ThrowsAsync<SchemaRegistryKmsException>(
-            () => provider.WrapKeyAsync(new byte[] { 1 }, CreateReference()).AsTask());
+            var exception = await Assert.ThrowsAsync<SchemaRegistryKmsException>(
+                () => provider.WrapKeyAsync(new byte[] { 1 }, CreateReference()).AsTask());
 
-        await Assert.That(exception!.Message).IsEqualTo("Alibaba Cloud KMS CA file could not be read.");
-        await Assert.That(exception.InnerException).IsTypeOf<FileNotFoundException>();
-        await Assert.That(factory.CreateCount).IsEqualTo(0);
+            await Assert.That(exception!.Message).IsEqualTo("Alibaba Cloud KMS CA file could not be read.");
+            await Assert.That(exception.InnerException).IsTypeOf<FileNotFoundException>();
+            await Assert.That(factory.CreateCount).IsEqualTo(0);
+
+            await File.WriteAllTextAsync(
+                caFile,
+                "-----BEGIN CERTIFICATE-----\nfixture\n-----END CERTIFICATE-----");
+            await provider.WrapKeyAsync(new byte[] { 1 }, CreateReference());
+
+            await Assert.That(factory.CreateCount).IsEqualTo(1);
+        }
+        finally
+        {
+            if (File.Exists(caFile))
+                File.Delete(caFile);
+        }
     }
 
     [Test]
