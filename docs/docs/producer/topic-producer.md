@@ -33,7 +33,7 @@ using Dekaf;
 await using var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithAcks(Acks.All)
-    .EnableIdempotence()
+    .WithIdempotence(true)
     .BuildForTopicAsync("orders");
 
 await producer.ProduceAsync("order-123", orderJson);

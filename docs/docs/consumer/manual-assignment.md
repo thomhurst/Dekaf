@@ -170,6 +170,18 @@ consumer.Partitions.Unassign();
 ```csharp
 using Dekaf;
 
+// Usage: Read messages 100-200 from partition 0
+var reader = new PartitionReader();
+await reader.ReadPartitionAsync(
+    "localhost:9092",
+    "my-topic",
+    partition: 0,
+    startOffset: 100,
+    endOffset: 200,
+    async msg => Console.WriteLine(msg.Value),
+    cancellationToken
+);
+
 public class PartitionReader
 {
     public async Task ReadPartitionAsync(
@@ -202,18 +214,6 @@ public class PartitionReader
         }
     }
 }
-
-// Usage: Read messages 100-200 from partition 0
-var reader = new PartitionReader();
-await reader.ReadPartitionAsync(
-    "localhost:9092",
-    "my-topic",
-    partition: 0,
-    startOffset: 100,
-    endOffset: 200,
-    async msg => Console.WriteLine(msg.Value),
-    cancellationToken
-);
 ```
 
 ## Complete Example: Multi-Partition Worker

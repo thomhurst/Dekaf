@@ -104,7 +104,7 @@ using Dekaf;
 
 var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
-    .WithLingerMs(5)       // Wait up to 5ms to collect more messages
+    .WithLinger(TimeSpan.FromMilliseconds(5)) // Wait up to 5ms to collect more messages
     .WithBatchSize(65536)  // Maximum batch size in bytes
     .BuildAsync();
 ```
@@ -147,7 +147,7 @@ using Dekaf;
 
 var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
-    .EnableIdempotence()
+    .WithIdempotence(true)
     .BuildAsync();
 ```
 

@@ -128,7 +128,7 @@ using Dekaf;
 var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .UseLz4Compression()
-    .WithLingerMs(5)        // Wait up to 5ms to fill batches
+    .WithLinger(TimeSpan.FromMilliseconds(5)) // Wait up to 5ms to fill batches
     .WithBatchSize(65536)   // 64KB batches
     .BuildAsync();
 ```

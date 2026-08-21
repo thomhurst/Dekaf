@@ -135,9 +135,9 @@ var producer = await Kafka.CreateProducer<string, string>()
 var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithAcks(Acks.Leader)           // Don't wait for all replicas
-    .WithLingerMs(5)                  // Batch for 5ms
+    .WithLinger(TimeSpan.FromMilliseconds(5)) // Batch for 5ms
     .WithBatchSize(65536)             // 64KB batches
-    .WithCompression(CompressionType.Lz4)  // Fast compression
+    .UseCompression(CompressionType.Lz4) // Fast compression
     .BuildAsync();
 ```
 
@@ -157,7 +157,7 @@ var producer = await Kafka.CreateProducer<string, string>()
 var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithAcks(Acks.Leader)
-    .WithLingerMs(0)      // Send immediately
+    .WithLinger(TimeSpan.Zero) // Send immediately
     .WithBatchSize(16384) // Smaller batches
     .BuildAsync();
 ```
@@ -255,7 +255,7 @@ using Dekaf;
 // LZ4 for balanced performance
 var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
-    .WithCompression(CompressionType.Lz4)
+    .UseCompression(CompressionType.Lz4)
     .BuildAsync();
 ```
 
@@ -383,11 +383,11 @@ The default batch settings are conservative. If you can tolerate some latency, b
 
 ```csharp
 // High latency tolerance, maximize throughput
-.WithLingerMs(100)
+.WithLinger(TimeSpan.FromMilliseconds(100))
 .WithBatchSize(1048576)
 
 // Low latency required
-.WithLingerMs(0)
+.WithLinger(TimeSpan.Zero)
 .WithBatchSize(16384)
 ```
 

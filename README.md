@@ -373,6 +373,15 @@ dotnet add package Dekaf.Extensions.Hosting
 ```
 
 ```csharp
+services.AddDekaf(dekaf =>
+{
+    dekaf.AddConsumerService<OrderProcessor, string, Order>(
+        consumer => consumer
+            .WithBootstrapServers("localhost:9092")
+            .WithGroupId("orders-service"),
+        dlq => dlq.WithRetryTopics(TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(30)));  // optional DLQ + retry tiers
+});
+
 public sealed class OrderProcessor : KafkaConsumerService<string, Order>
 {
     public OrderProcessor(
@@ -391,15 +400,6 @@ public sealed class OrderProcessor : KafkaConsumerService<string, Order>
         await HandleOrderAsync(result.Value, cancellationToken);
     }
 }
-
-services.AddDekaf(dekaf =>
-{
-    dekaf.AddConsumerService<OrderProcessor, string, Order>(
-        consumer => consumer
-            .WithBootstrapServers("localhost:9092")
-            .WithGroupId("orders-service"),
-        dlq => dlq.WithRetryTopics(TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(30)));  // optional DLQ + retry tiers
-});
 ```
 
 Failed messages flow `orders` → `orders-retry-5s` → `orders-retry-30s` → `orders.DLQ`, carrying headers with the source offset and failure details. See the [Hosted Consumer Services](https://thomhurst.github.io/Dekaf/docs/hosted-services) and [Dead Letter Queues](https://thomhurst.github.io/Dekaf/docs/consumer/dead-letter-queues) docs.
