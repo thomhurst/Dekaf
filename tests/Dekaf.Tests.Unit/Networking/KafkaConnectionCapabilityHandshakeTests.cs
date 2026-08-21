@@ -488,6 +488,7 @@ public class KafkaConnectionCapabilityHandshakeTests
                 var buffer = new byte[1];
                 while (await stream.ReadAsync(buffer, cancellationToken) != 0)
                 {
+                    // Drain until the client closes or aborts the socket.
                 }
             }
             catch (IOException exception) when (exception.InnerException is SocketException)
