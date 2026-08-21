@@ -9,6 +9,7 @@ using Avro.Generic;
 using Avro.IO;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Avro;
+using Dekaf.SchemaRegistry.Kms.AliCloud;
 using Dekaf.Serialization;
 using AvroSchema = Avro.Schema;
 
@@ -2100,6 +2101,50 @@ public sealed class SchemaRegistryCsfleRuleTests
     }
 
     [Test]
+    [Arguments(SchemaType.Avro)]
+    [Arguments(SchemaType.Json)]
+    [Arguments(SchemaType.Protobuf)]
+    public async Task AliCloudKms_WholePayloadCsfle_IsSchemaFormatAgnostic(SchemaType schemaType)
+    {
+        var client = new FakeDekRegistryClient();
+        client.AddKek(new Kek
+        {
+            Name = "alicloud-kek",
+            KmsType = AliCloudKmsProvider.DefaultType,
+            KmsKeyId = "alicloud-kms://cn-chengdu/alias%2Fcsfle"
+        });
+        var rule = CreateRule(parameters: new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["encrypt.kek.name"] = "alicloud-kek"
+        });
+        var schema = new Schema
+        {
+            SchemaType = schemaType,
+            SchemaString = "{}",
+            RuleSet = new SchemaRuleSet { EncodingRules = [rule] }
+        };
+        var context = CreateHandlerContext(rule, schema);
+        // Rule handlers receive bytes after format serialization. This verifies AliCloud provider
+        // dispatch remains independent of schema type; serializer hooks are covered above.
+        var payload = "format-independent-secret"u8.ToArray();
+        var factory = new AliCloudTestClientFactory();
+        var writer = new SchemaRegistryCsfleRuleHandler(
+            client,
+            [new AliCloudKmsProvider(factory)]);
+
+        var encrypted = writer.TransformSerializedPayload(payload, context);
+        var reader = new SchemaRegistryCsfleRuleHandler(
+            client,
+            [new AliCloudKmsProvider(factory)]);
+        var decrypted = reader.TransformDeserializedPayload(encrypted, context);
+
+        await Assert.That(decrypted.ToArray()).IsEquivalentTo(payload);
+        await Assert.That(encrypted.ToArray()).IsNotEquivalentTo(payload);
+        await Assert.That(factory.EncryptCount).IsEqualTo(1);
+        await Assert.That(factory.DecryptCount).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task TransformSerializedPayload_MissingKekName_ThrowsRuleException()
     {
         var handler = CreateHandler(CreateDekClient());
@@ -2185,6 +2230,44 @@ public sealed class SchemaRegistryCsfleRuleTests
         {
             ["local://payments"] = KekMaterial
         })]);
+
+    private sealed class AliCloudTestClientFactory : IAliCloudKmsClientFactory, IAliCloudKmsClient
+    {
+        private int _encryptCount;
+        private int _decryptCount;
+
+        internal int EncryptCount => Volatile.Read(ref _encryptCount);
+        internal int DecryptCount => Volatile.Read(ref _decryptCount);
+
+        public IAliCloudKmsClient CreateClient(AliCloudKmsClientConfiguration configuration) => this;
+
+        public ValueTask<byte[]> EncryptAsync(
+            string keyId,
+            ReadOnlyMemory<byte> plaintext,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Interlocked.Increment(ref _encryptCount);
+            return ValueTask.FromResult(Transform(plaintext.Span));
+        }
+
+        public ValueTask<byte[]> DecryptAsync(
+            ReadOnlyMemory<byte> ciphertext,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Interlocked.Increment(ref _decryptCount);
+            return ValueTask.FromResult(Transform(ciphertext.Span));
+        }
+
+        private static byte[] Transform(ReadOnlySpan<byte> input)
+        {
+            var output = input.ToArray();
+            for (var index = 0; index < output.Length; index++)
+                output[index] ^= 0x5a;
+            return output;
+        }
+    }
 
     private sealed class TestAvroTaggedRuleHandler(
         string type,

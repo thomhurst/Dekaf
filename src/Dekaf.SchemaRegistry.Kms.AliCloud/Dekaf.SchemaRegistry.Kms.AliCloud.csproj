@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>Dekaf.SchemaRegistry.Kms.AliCloud</PackageId>
+    <Description>Alibaba Cloud KMS provider for Dekaf Schema Registry client-side field-level encryption</Description>
+    <PackageTags>kafka;schema-registry;encryption;alibaba-cloud;alicloud;kms</PackageTags>
+    <PackageValidationBaselineVersion></PackageValidationBaselineVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="AlibabaCloud.SDK.Kms20160120" />
+    <PackageReference Include="Aliyun.Credentials" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Dekaf.SchemaRegistry\Dekaf.SchemaRegistry.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Dekaf.Tests.Unit" />
+  </ItemGroup>
+
+</Project>
