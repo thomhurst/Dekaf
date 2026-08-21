@@ -142,7 +142,8 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
                 new GuidTopicKey(
                     schemaGuid,
                     context.Topic,
-                    context.Component == SerializationComponent.Key),
+                    context.Component == SerializationComponent.Key,
+                    _subjectNames?.Generation ?? 0),
                 context,
                 cancellationToken)
             .ConfigureAwait(false);
@@ -176,7 +177,8 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
                 new GuidTopicKey(
                     schemaGuid,
                     context.Topic,
-                    context.Component == SerializationComponent.Key),
+                    context.Component == SerializationComponent.Key,
+                    _subjectNames?.Generation ?? 0),
                 context,
                 cancellationToken);
         }
@@ -270,7 +272,8 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
             var key = new GuidTopicKey(
                 schemaGuid,
                 context.Topic,
-                context.Component == SerializationComponent.Key);
+                context.Component == SerializationComponent.Key,
+                _subjectNames?.Generation ?? 0);
             if (!_guidSchemaCache.TryGetValue(key, out var guidResolution)
                 || !guidResolution.IsValueCreated
                 || !guidResolution.Value.IsCompletedSuccessfully)
@@ -460,7 +463,8 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
             new GuidTopicKey(
                 identity.SchemaGuid!.Value,
                 context.Topic,
-                context.Component == SerializationComponent.Key));
+                context.Component == SerializationComponent.Key,
+                _subjectNames?.Generation ?? 0));
         var payload = data[payloadOffset..];
         if (_ruleExecutor is null)
         {
@@ -1165,7 +1169,11 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         _ => throw new ArgumentOutOfRangeException(nameof(component), component, "Unknown serialization component.")
     };
 
-    private readonly record struct GuidTopicKey(Guid SchemaGuid, string Topic, bool IsKey);
+    private readonly record struct GuidTopicKey(
+        Guid SchemaGuid,
+        string Topic,
+        bool IsKey,
+        int SubjectGeneration);
 
     private sealed record GuidResolvedSchema(int SchemaId);
 

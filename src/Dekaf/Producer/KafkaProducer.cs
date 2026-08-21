@@ -838,7 +838,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     // so this only runs when preparation itself throws or faults. No-op when tracing is disabled.
     private static void RecordActivityFault(Activity? activity, Headers? headers, Exception ex)
     {
-        headers?.RemoveDeferredTraceContext();
+        headers?.RemoveDeferredTraceContext(activity);
         if (activity is null)
         {
             return;
@@ -1550,14 +1550,14 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             }
             catch (KafkaTimeoutException)
             {
-                headers?.RemoveDeferredTraceContext();
+                headers?.RemoveDeferredTraceContext(activity);
                 activity?.Dispose();
                 throw;
             }
             catch (Exception ex)
             {
                 LogFireAndForgetProduceFailed(ex, message.Topic);
-                headers?.RemoveDeferredTraceContext();
+                headers?.RemoveDeferredTraceContext(activity);
                 activity?.Dispose();
                 return default;
             }
@@ -1630,7 +1630,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             {
                 // BufferMemory backpressure timeout must propagate
                 if (activity is not null) Diagnostics.DekafDiagnostics.RecordException(activity, ex);
-                headers?.RemoveDeferredTraceContext();
+                headers?.RemoveDeferredTraceContext(activity);
                 activity?.Dispose();
                 throw;
             }
@@ -1638,7 +1638,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             {
                 // Fire-and-forget: swallow exception but log
                 LogFireAndForgetProduceFailed(ex, message.Topic);
-                headers?.RemoveDeferredTraceContext();
+                headers?.RemoveDeferredTraceContext(activity);
                 activity?.Dispose();
                 return default;
             }
@@ -2009,7 +2009,6 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         catch (Exception ex)
         {
             RecordAccumulator.ReturnPooledHeaders(pooledHeaderArray, headerCount);
-            headers?.RemoveDeferredTraceContext();
             RestoreCustomPartitionerKeyBuffer(cache, ref customPartitionerKeyBuffer);
             if (ex is not ObjectDisposedException)
                 completion.TrySetException(ex);
@@ -2366,7 +2365,6 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             key.Return();
             value.Return();
             RecordAccumulator.ReturnPooledHeaders(pooledHeaderArray, headerCount);
-            headers?.RemoveDeferredTraceContext();
             throw;
         }
         finally
@@ -5033,7 +5031,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         }
         finally
         {
-            headers?.RemoveDeferredTraceContext();
+            headers?.RemoveDeferredTraceContext(activity);
             activity?.Dispose();
         }
     }
@@ -6070,7 +6068,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
         {
             RestoreAsyncSerializationHeaders(
                 serializationHeaders, in headerCheckpoint, usesHeaderWorkspace);
-            headers?.RemoveDeferredTraceContext();
+            headers?.RemoveDeferredTraceContext(activity);
             activity?.Dispose();
         }
     }

@@ -1203,11 +1203,35 @@ public sealed class JsonSchemaRegistrySerializer<T> :
     {
         if (!JsonNode.DeepEquals(
                 JsonNode.Parse(selectedSchema.SchemaString),
-                JsonNode.Parse(configuredSchema.SchemaString)))
+                JsonNode.Parse(configuredSchema.SchemaString)) ||
+            !HaveEquivalentReferences(selectedSchema.References, configuredSchema.References))
         {
             throw new InvalidOperationException(
                 $"Schema ID {schemaId} does not match the configured JSON schema.");
         }
+    }
+
+    private static bool HaveEquivalentReferences(
+        IReadOnlyList<SchemaReference>? selected,
+        IReadOnlyList<SchemaReference>? configured)
+    {
+        var selectedCount = selected?.Count ?? 0;
+        if (selectedCount != (configured?.Count ?? 0))
+            return false;
+
+        for (var index = 0; index < selectedCount; index++)
+        {
+            var left = selected![index];
+            var right = configured![index];
+            if (!string.Equals(left.Name, right.Name, StringComparison.Ordinal) ||
+                !string.Equals(left.Subject, right.Subject, StringComparison.Ordinal) ||
+                left.Version != right.Version)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static ResolvedSchemaContext ToResolvedContext(
@@ -1559,7 +1583,8 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
                 new GuidTopicKey(
                     schemaGuid,
                     context.Topic,
-                    context.Component == SerializationComponent.Key),
+                    context.Component == SerializationComponent.Key,
+                    _subjectNames.Generation),
                 cancellationToken));
         }
 
@@ -1630,7 +1655,8 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
                 var key = new GuidTopicKey(
                     schemaGuid,
                     context.Topic,
-                    context.Component == SerializationComponent.Key);
+                    context.Component == SerializationComponent.Key,
+                    subjectNames.Generation);
                 if (!HasResolvedGuidSchema(key))
                 {
                     value = default!;
@@ -1799,7 +1825,8 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
         var key = new GuidTopicKey(
             schemaGuid,
             context.Topic,
-            context.Component == SerializationComponent.Key);
+            context.Component == SerializationComponent.Key,
+            _subjectNames?.Generation ?? 0);
         if (!_guidSchemaCache.TryGetValue(key, out var lazy))
         {
             lazy = _guidSchemaCache.GetOrAdd(
@@ -1963,7 +1990,11 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
             ? header
             : null;
 
-    private readonly record struct GuidTopicKey(Guid SchemaGuid, string Topic, bool IsKey);
+    private readonly record struct GuidTopicKey(
+        Guid SchemaGuid,
+        string Topic,
+        bool IsKey,
+        int SubjectGeneration);
 
     private sealed record GuidResolvedSchema(int SchemaId, string Subject, Schema Schema);
 

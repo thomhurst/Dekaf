@@ -13,6 +13,24 @@ public sealed class AssociatedNameStrategyTests
     private const string ClusterId = "lkc-test";
 
     [Test]
+    public async Task ClearCache_AdvancesDeserializerSubjectGeneration()
+    {
+        using var client = new MockSchemaRegistryClient();
+        var strategy = CreateResolver(client);
+        var cache = DeserializerSubjectNameCache.Create(
+            client,
+            SubjectNameStrategy.AssociatedName,
+            customStrategy: null,
+            strategy,
+            useLegacySubjectNames: false)!;
+        var generation = cache.Generation;
+
+        strategy.ClearCache();
+
+        await Assert.That(cache.Generation).IsGreaterThan(generation);
+    }
+
+    [Test]
     public async Task GetSubjectNameAsync_AssociationCachesSynchronousWarmResult()
     {
         using var client = new MockSchemaRegistryClient();

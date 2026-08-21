@@ -196,6 +196,28 @@ public class HeadersTests
     }
 
     [Test]
+    public async Task Restore_NestedCheckpointRestoresOuterDeferredTraceContext()
+    {
+        var headers = new Headers().Add("caller", "value");
+        headers.AddDeferredTraceContext(new object(), "outer=state");
+        var outerTraceparent = headers[1];
+        var outerTracestate = headers[2];
+        headers.BeginRecordHeaderStaging();
+        headers.Add(new Header("identity", "outer"u8.ToArray()));
+
+        headers.AddDeferredTraceContext(new object(), "inner=state");
+        var checkpoint = headers.CaptureCheckpoint();
+        headers.BeginRecordHeaderStaging();
+        headers.Add(new Header("identity", "inner"u8.ToArray()));
+        headers.Remove("traceparent");
+        headers.Restore(in checkpoint);
+
+        await Assert.That(headers.Count).IsEqualTo(3);
+        await Assert.That(headers[1]).IsEqualTo(outerTraceparent);
+        await Assert.That(headers[2]).IsEqualTo(outerTracestate);
+    }
+
+    [Test]
     public async Task Indexer_ReturnsCorrectHeader()
     {
         var headers = new Headers();

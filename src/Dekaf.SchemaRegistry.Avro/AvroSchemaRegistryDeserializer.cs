@@ -356,7 +356,8 @@ public sealed class AvroSchemaRegistryDeserializer<
         var key = new GuidTopicKey(
             schemaGuid,
             context.Topic,
-            context.Component == SerializationComponent.Key);
+            context.Component == SerializationComponent.Key,
+            _subjectNames?.Generation ?? 0);
         if (!_guidSchemaCache.TryGetValue(key, out var lazy))
         {
             lazy = _guidSchemaCache.GetOrAdd(
@@ -464,7 +465,11 @@ public sealed class AvroSchemaRegistryDeserializer<
         _ => throw new ArgumentOutOfRangeException(nameof(component), component, "Unknown serialization component.")
     };
 
-    private readonly record struct GuidTopicKey(Guid SchemaGuid, string Topic, bool IsKey);
+    private readonly record struct GuidTopicKey(
+        Guid SchemaGuid,
+        string Topic,
+        bool IsKey,
+        int SubjectGeneration);
 
     private sealed record GuidResolvedSchema(
         int SchemaId,

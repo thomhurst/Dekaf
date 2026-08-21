@@ -18,6 +18,11 @@ public sealed class Headers : IEnumerable<Header>
     private readonly List<Header> _headers;
     private int _deferredTraceparentIndex = -1;
     private int _deferredTracestateIndex = -1;
+    private int _deferredTraceContextVersion;
+    private int _nextDeferredTraceContextVersion;
+    private DeferredTraceContextCheckpoint _previousDeferredTraceContext;
+    private DeferredTraceContextCheckpoint[]? _deferredTraceContextStack;
+    private int _deferredTraceContextDepth;
     private int _keySchemaIdentityIndex = -1;
     private int _valueSchemaIdentityIndex = -1;
     private Header _stagedHeader0;
@@ -233,10 +238,12 @@ public sealed class Headers : IEnumerable<Header>
         _headers.Clear();
         _deferredTraceparentIndex = -1;
         _deferredTracestateIndex = -1;
+        _deferredTraceContextVersion = 0;
         _keySchemaIdentityIndex = -1;
         _valueSchemaIdentityIndex = -1;
         EndRecordHeaderStaging();
         ClearPreviousStagedRecordHeaders();
+        ClearPreviousDeferredTraceContexts();
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -252,13 +259,20 @@ public sealed class Headers : IEnumerable<Header>
     internal Checkpoint CaptureCheckpoint() => new(
         CountWithoutDeferredTraceContext,
         _keySchemaIdentityIndex,
-        _valueSchemaIdentityIndex);
+        _valueSchemaIdentityIndex,
+        _deferredTraceContextVersion);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void Restore(in Checkpoint checkpoint)
     {
         EndRecordHeaderStaging();
         RestorePreviousStagedRecordHeaders();
+        if (checkpoint.DeferredTraceContextVersion != 0)
+        {
+            RestoreTraceAware(in checkpoint);
+            return;
+        }
+
         if ((uint)checkpoint.Count > (uint)_headers.Count)
             throw new ArgumentOutOfRangeException(nameof(checkpoint));
 
@@ -269,6 +283,29 @@ public sealed class Headers : IEnumerable<Header>
         _deferredTracestateIndex = -1;
         _keySchemaIdentityIndex = checkpoint.KeySchemaIdentityIndex;
         _valueSchemaIdentityIndex = checkpoint.ValueSchemaIdentityIndex;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void RestoreTraceAware(in Checkpoint checkpoint)
+    {
+        RemoveDeferredTraceContext(checkpoint.DeferredTraceContextVersion);
+        var countWithoutTraceContext = CountWithoutDeferredTraceContext;
+        if ((uint)checkpoint.Count > (uint)countWithoutTraceContext)
+            throw new ArgumentOutOfRangeException(nameof(checkpoint));
+
+        if (checkpoint.Count != countWithoutTraceContext)
+            RemoveNonTraceHeaders(checkpoint.Count, countWithoutTraceContext - checkpoint.Count);
+
+        _keySchemaIdentityIndex = checkpoint.KeySchemaIdentityIndex;
+        _valueSchemaIdentityIndex = checkpoint.ValueSchemaIdentityIndex;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void RemoveNonTraceHeaders(int index, int count)
+    {
+        _headers.RemoveRange(index, count);
+        _deferredTraceparentIndex = AdjustTrackedIndex(_deferredTraceparentIndex, index, count);
+        _deferredTracestateIndex = AdjustTrackedIndex(_deferredTracestateIndex, index, count);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -296,10 +333,18 @@ public sealed class Headers : IEnumerable<Header>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void AddDeferredTraceContext(object activity, string? traceState)
     {
-        if (_deferredTraceparentIndex >= 0 || _deferredTracestateIndex >= 0)
-            RemoveDeferredTraceContext();
+        if (_deferredTraceContextVersion != 0)
+        {
+            PushDeferredTraceContext();
+            RemoveCurrentDeferredTraceContext();
+        }
 
         _deferredTraceparentIndex = _headers.Count;
+        var version = unchecked(_nextDeferredTraceContextVersion + 1);
+        if (version == 0)
+            version = 1;
+        _nextDeferredTraceContextVersion = version;
+        _deferredTraceContextVersion = version;
         _headers.Add(Header.CreateDeferredTraceparent("traceparent", activity));
         if (string.IsNullOrEmpty(traceState))
             return;
@@ -311,8 +356,38 @@ public sealed class Headers : IEnumerable<Header>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void RemoveDeferredTraceContext()
     {
+        RemoveCurrentDeferredTraceContext();
+        RestorePreviousDeferredTraceContext();
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void RemoveDeferredTraceContext(object? expectedTraceparentToken)
+    {
+        if (expectedTraceparentToken is null ||
+            (uint)_deferredTraceparentIndex >= (uint)_headers.Count ||
+            !ReferenceEquals(
+                expectedTraceparentToken,
+                _headers[_deferredTraceparentIndex].DeferredTraceparentToken))
+        {
+            return;
+        }
+
+        RemoveDeferredTraceContext();
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void RemoveDeferredTraceContext(int expectedVersion)
+    {
+        if (expectedVersion == _deferredTraceContextVersion)
+            RemoveDeferredTraceContext();
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void RemoveCurrentDeferredTraceContext()
+    {
         var traceparentIndex = _deferredTraceparentIndex;
         var tracestateIndex = _deferredTracestateIndex;
+        _deferredTraceContextVersion = 0;
         if (traceparentIndex < 0 && tracestateIndex < 0)
             return;
 
@@ -325,6 +400,87 @@ public sealed class Headers : IEnumerable<Header>
         if ((uint)traceparentIndex < (uint)_headers.Count
             && _headers[traceparentIndex].HasDeferredTraceparent)
             RemoveAt(traceparentIndex);
+    }
+
+    private void PushDeferredTraceContext()
+    {
+        var checkpoint = new DeferredTraceContextCheckpoint(
+            (uint)_deferredTraceparentIndex < (uint)_headers.Count
+                ? _headers[_deferredTraceparentIndex]
+                : default,
+            (uint)_deferredTracestateIndex < (uint)_headers.Count
+                ? _headers[_deferredTracestateIndex]
+                : default,
+            _deferredTraceContextVersion);
+        var depth = _deferredTraceContextDepth;
+        if (depth == 0)
+        {
+            _previousDeferredTraceContext = checkpoint;
+        }
+        else
+        {
+            var stackIndex = depth - 1;
+            var stack = _deferredTraceContextStack;
+            if (stack is null)
+            {
+                stack = new DeferredTraceContextCheckpoint[2];
+                _deferredTraceContextStack = stack;
+            }
+            else if (stackIndex == stack.Length)
+            {
+                Array.Resize(ref stack, stack.Length * 2);
+                _deferredTraceContextStack = stack;
+            }
+
+            stack[stackIndex] = checkpoint;
+        }
+
+        _deferredTraceContextDepth = depth + 1;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void RestorePreviousDeferredTraceContext()
+    {
+        var depth = _deferredTraceContextDepth;
+        if (depth == 0)
+            return;
+
+        depth--;
+        DeferredTraceContextCheckpoint checkpoint;
+        if (depth == 0)
+        {
+            checkpoint = _previousDeferredTraceContext;
+            _previousDeferredTraceContext = default;
+        }
+        else
+        {
+            var stackIndex = depth - 1;
+            checkpoint = _deferredTraceContextStack![stackIndex];
+            _deferredTraceContextStack[stackIndex] = default;
+        }
+
+        _deferredTraceContextDepth = depth;
+        _deferredTraceparentIndex = -1;
+        _deferredTracestateIndex = -1;
+        _deferredTraceContextVersion = checkpoint.Version;
+        if (!checkpoint.Traceparent.HasDeferredTraceparent)
+            return;
+
+        _deferredTraceparentIndex = _headers.Count;
+        _headers.Add(checkpoint.Traceparent);
+        if (checkpoint.Tracestate.Key is null)
+            return;
+
+        _deferredTracestateIndex = _headers.Count;
+        _headers.Add(checkpoint.Tracestate);
+    }
+
+    private void ClearPreviousDeferredTraceContexts()
+    {
+        _previousDeferredTraceContext = default;
+        if (_deferredTraceContextStack is not null)
+            Array.Clear(_deferredTraceContextStack, 0, _deferredTraceContextStack.Length);
+        _deferredTraceContextDepth = 0;
     }
 
     private void RemoveAt(int index)
@@ -587,10 +743,24 @@ public sealed class Headers : IEnumerable<Header>
     private static int AdjustTrackedIndex(int trackedIndex, int removedIndex) =>
         trackedIndex == removedIndex ? -1 : trackedIndex > removedIndex ? trackedIndex - 1 : trackedIndex;
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int AdjustTrackedIndex(int trackedIndex, int removedIndex, int removedCount) =>
+        trackedIndex < removedIndex
+            ? trackedIndex
+            : trackedIndex < removedIndex + removedCount
+                ? -1
+                : trackedIndex - removedCount;
+
     internal readonly record struct Checkpoint(
         int Count,
         int KeySchemaIdentityIndex,
-        int ValueSchemaIdentityIndex);
+        int ValueSchemaIdentityIndex,
+        int DeferredTraceContextVersion);
+
+    private readonly record struct DeferredTraceContextCheckpoint(
+        Header Traceparent,
+        Header Tracestate,
+        int Version);
 
     private readonly record struct StagedRecordHeadersCheckpoint(
         Header Header0,
@@ -719,6 +889,7 @@ public readonly record struct Header
         new(key, traceState);
 
     internal bool HasDeferredTraceparent => _deferredValue is not null and not string;
+    internal object? DeferredTraceparentToken => HasDeferredTraceparent ? _deferredValue : null;
 
     /// <summary>
     /// The header key.

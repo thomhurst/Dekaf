@@ -166,8 +166,16 @@ public class KafkaProducerFastPathTests
     }
 
     [Test]
-    public async Task FireAsync_CustomPartitionerReusingCallerHeaders_PreservesOuterStagedKeyHeader()
+    public async Task FireAsync_CustomPartitionerReusingCallerHeaders_PreservesOuterStagedHeaders()
     {
+        var startedActivityCount = 0;
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name == DekafDiagnostics.ActivitySourceName,
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData,
+            ActivityStarted = _ => startedActivityCount++
+        };
+        ActivitySource.AddActivityListener(listener);
         var partitioner = new ReentrantPartitioner();
         var options = new ProducerOptions
         {
@@ -191,6 +199,8 @@ public class KafkaProducerFastPathTests
         SetInstanceField(producer, "_initialized", true);
         AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(producer.RecordAccumulator);
         var headers = new Headers();
+        var restoredHeaderCount = -1;
+        string? restoredHeaderKey = null;
 
         partitioner.OnFirstPartition = () =>
         {
@@ -203,6 +213,8 @@ public class KafkaProducerFastPathTests
             });
             if (!innerProduce.IsCompletedSuccessfully)
                 throw new InvalidOperationException("Expected the reentrant hot path to complete synchronously.");
+            restoredHeaderCount = headers.Count;
+            restoredHeaderKey = headers.Count > 0 ? headers[0].Key : null;
         };
 
         await producer.FireAsync(new ProducerMessage<string, string>
@@ -214,11 +226,16 @@ public class KafkaProducerFastPathTests
         });
 
         var readyBatch = CompleteCurrentBatch(producer.RecordAccumulator, new TopicPartition(Topic, 0));
+        await Assert.That(startedActivityCount).IsEqualTo(2);
+        await Assert.That(restoredHeaderCount).IsEqualTo(1);
+        await Assert.That(restoredHeaderKey).IsEqualTo("traceparent");
         await Assert.That(readyBatch.RecordBatch.Records.Count).IsEqualTo(2);
         await Assert.That(GetNamedHeaderValueString(readyBatch.RecordBatch.Records[0], "identity"))
             .IsEqualTo("inner");
+        _ = GetNamedHeaderValueString(readyBatch.RecordBatch.Records[0], "traceparent");
         await Assert.That(GetNamedHeaderValueString(readyBatch.RecordBatch.Records[1], "identity"))
             .IsEqualTo("outer");
+        _ = GetNamedHeaderValueString(readyBatch.RecordBatch.Records[1], "traceparent");
         await Assert.That(headers.Count).IsEqualTo(0);
     }
 

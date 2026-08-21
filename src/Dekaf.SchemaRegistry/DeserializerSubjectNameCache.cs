@@ -101,6 +101,7 @@ internal sealed class DeserializerSubjectNameCache : IAssociatedNameCacheInvalid
     }
 
     internal bool RequiresPreparation => _asyncStrategy is not null;
+    internal int Generation => Volatile.Read(ref _state).Generation;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static bool TryReadSchemaId(ReadOnlyMemory<byte> data, out int schemaId)

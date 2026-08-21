@@ -159,6 +159,39 @@ public sealed class SchemaIdentityFramingTests
     }
 
     [Test]
+    public async Task JsonSerializer_UseSchemaIdWithDifferentReferences_Throws()
+    {
+        const string topic = "json-wrong-references";
+        const string schemaText = "{\"type\":\"string\"}";
+        using var registry = new MockSchemaRegistryClient();
+        var schemaId = await registry.RegisterSchemaAsync(
+            $"{topic}-value",
+            new Schema
+            {
+                SchemaType = SchemaType.Json,
+                SchemaString = schemaText,
+                References =
+                [
+                    new SchemaReference
+                    {
+                        Name = "shared.json",
+                        Subject = "other-contract",
+                        Version = 1
+                    }
+                ]
+            });
+        await using var serializer = new JsonSchemaRegistrySerializer<string>(
+            registry,
+            schemaText,
+            jsonOptions: null,
+            new JsonSchemaSerializerConfig { UseSchemaId = schemaId });
+
+        await Assert.That(async () => await serializer.PrepareAsync(topic, "value"))
+            .Throws<InvalidOperationException>()
+            .WithMessageContaining("does not match");
+    }
+
+    [Test]
     public async Task JsonSerializer_LookupWithOnlyAvroSchema_ThrowsNotFound()
     {
         const string topic = "json-lookup-wrong-format";
