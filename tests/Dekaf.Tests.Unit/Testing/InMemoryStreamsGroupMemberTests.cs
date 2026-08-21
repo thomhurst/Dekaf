@@ -24,6 +24,7 @@ public sealed class InMemoryStreamsGroupMemberTests
     public async Task JoinAsync_WithoutTopologyThrowsArgumentException()
     {
         await using var member = CreateMember();
+        await member.InitializeAsync();
 
         var exception = Assert.Throws<ArgumentException>(() =>
             member.JoinAsync(new StreamsGroupMemberUpdate()));
@@ -41,6 +42,7 @@ public sealed class InMemoryStreamsGroupMemberTests
             InstanceId = "instance-a",
             RackId = "rack-a"
         });
+        await member.InitializeAsync();
         var activeTasks = new[]
         {
             new StreamsGroupTaskSet { SubtopologyId = "sub-0", Partitions = [0, 1] }
@@ -80,6 +82,7 @@ public sealed class InMemoryStreamsGroupMemberTests
     public async Task UpdateAndReportOffsets_PreserveUnchangedAssignment()
     {
         await using var member = CreateMember();
+        await member.InitializeAsync();
         await member.JoinAsync(new StreamsGroupMemberUpdate
         {
             Topology = CreateTopology()
@@ -114,6 +117,7 @@ public sealed class InMemoryStreamsGroupMemberTests
     public async Task UpdateAsync_TopologyRejoinClearsOmittedAssignment()
     {
         await using var member = CreateMember();
+        await member.InitializeAsync();
         await member.JoinAsync(new StreamsGroupMemberUpdate
         {
             Topology = CreateTopology()
@@ -143,6 +147,7 @@ public sealed class InMemoryStreamsGroupMemberTests
     public async Task UpdateAsync_TopologyRejoinIgnoresSuppliedAssignment()
     {
         await using var member = CreateMember();
+        await member.InitializeAsync();
         await member.JoinAsync(new StreamsGroupMemberUpdate
         {
             Topology = CreateTopology(),
@@ -169,6 +174,7 @@ public sealed class InMemoryStreamsGroupMemberTests
     public async Task UpdateAsync_DeepCopiesPublishedTaskSets()
     {
         await using var member = CreateMember();
+        await member.InitializeAsync();
         await member.JoinAsync(new StreamsGroupMemberUpdate { Topology = CreateTopology() });
         var activePartitions = new List<int> { 0, 1 };
         var activeTasks = new List<StreamsGroupTaskSet>
@@ -212,6 +218,7 @@ public sealed class InMemoryStreamsGroupMemberTests
             GroupId = "streams-group",
             InstanceId = instanceId
         });
+        await member.InitializeAsync();
         await member.JoinAsync(new StreamsGroupMemberUpdate { Topology = CreateTopology() });
         var closeOptions = new StreamsGroupCloseOptions
         {
@@ -231,10 +238,34 @@ public sealed class InMemoryStreamsGroupMemberTests
     public async Task UpdateAsync_BeforeJoin_Throws()
     {
         await using var member = CreateMember();
+        await member.InitializeAsync();
 
         var action = async () => await member.UpdateAsync(new StreamsGroupMemberUpdate());
 
         await Assert.That(action).Throws<InvalidOperationException>();
+    }
+
+    [Test]
+    public async Task Operations_BeforeInitialize_Throw()
+    {
+        await using var member = CreateMember();
+        var update = new StreamsGroupMemberUpdate { Topology = CreateTopology() };
+
+        var joinException = Assert.Throws<InvalidOperationException>(() => member.JoinAsync(update));
+        var updateException = Assert.Throws<InvalidOperationException>(() =>
+            member.UpdateAsync(new StreamsGroupMemberUpdate()));
+        var reportException = Assert.Throws<InvalidOperationException>(() =>
+            member.ReportTaskOffsetsAsync(new StreamsGroupTaskOffsetReport
+            {
+                TaskOffsets = [],
+                TaskEndOffsets = []
+            }));
+
+        const string message =
+            "The Streams group member is not initialized. Call InitializeAsync() before joining.";
+        await Assert.That(joinException.Message).IsEqualTo(message);
+        await Assert.That(updateException.Message).IsEqualTo(message);
+        await Assert.That(reportException.Message).IsEqualTo(message);
     }
 
     private static InMemoryStreamsGroupMember CreateMember() =>
