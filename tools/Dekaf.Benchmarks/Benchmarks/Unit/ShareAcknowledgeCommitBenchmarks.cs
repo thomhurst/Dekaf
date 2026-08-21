@@ -4,11 +4,12 @@ using Dekaf.Testing;
 namespace Dekaf.Benchmarks.Benchmarks.Unit;
 
 [MemoryDiagnoser(displayGenColumns: false)]
-[ShortRunJob]
+[SimpleJob(launchCount: 1, warmupCount: 3, iterationCount: 10)]
 public class ShareAcknowledgeCommitBenchmarks
 {
     private const string Topic = "shared";
     private const string GroupId = "workers";
+    private const int BatchSize = 4096;
 
     private InMemoryKafkaCluster _matchingCluster = null!;
     private InMemoryKafkaCluster _nonMatchingCluster = null!;
@@ -80,15 +81,15 @@ public class ShareAcknowledgeCommitBenchmarks
         _emptyProducer.DisposeAsync().AsTask().GetAwaiter().GetResult();
     }
 
-    [Benchmark]
+    [Benchmark(OperationsPerInvoke = BatchSize)]
     [InvocationCount(1)]
     public void CommitMatchingPlan() => _matchingConsumer.CommitAsync().GetAwaiter().GetResult();
 
-    [Benchmark]
+    [Benchmark(OperationsPerInvoke = BatchSize)]
     [InvocationCount(1)]
     public void CommitNonMatchingPlan() => _nonMatchingConsumer.CommitAsync().GetAwaiter().GetResult();
 
-    [Benchmark]
+    [Benchmark(OperationsPerInvoke = BatchSize)]
     [InvocationCount(1)]
     public void CommitEmptyPlan() => _emptyConsumer.CommitAsync().GetAwaiter().GetResult();
 
@@ -96,7 +97,7 @@ public class ShareAcknowledgeCommitBenchmarks
     {
         var consumer = new InMemoryShareConsumer<string, string>(
             cluster,
-            new InMemoryShareConsumerOptions { GroupId = GroupId });
+            new InMemoryShareConsumerOptions { GroupId = GroupId, MaxPollRecords = BatchSize });
         consumer.Subscribe(Topic);
         return consumer;
     }
@@ -105,8 +106,23 @@ public class ShareAcknowledgeCommitBenchmarks
         InMemoryProducer<string, string> producer,
         InMemoryShareConsumer<string, string> consumer)
     {
-        producer.ProduceAsync(Topic, "key", "value").GetAwaiter().GetResult();
-        var record = consumer.PollAsync().FirstAsync().AsTask().GetAwaiter().GetResult();
-        consumer.Acknowledge(record);
+        for (var index = 0; index < BatchSize; index++)
+            producer.ProduceAsync(Topic, "key", "value").GetAwaiter().GetResult();
+
+        var enumerator = consumer.PollAsync().GetAsyncEnumerator();
+        try
+        {
+            for (var index = 0; index < BatchSize; index++)
+            {
+                if (!enumerator.MoveNextAsync().AsTask().GetAwaiter().GetResult())
+                    throw new InvalidOperationException("Share poll ended before the benchmark batch was prepared.");
+
+                consumer.Acknowledge(enumerator.Current);
+            }
+        }
+        finally
+        {
+            enumerator.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        }
     }
 }

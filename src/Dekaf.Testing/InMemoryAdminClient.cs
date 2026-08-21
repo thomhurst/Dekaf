@@ -538,13 +538,13 @@ public sealed class InMemoryAdminClient :
     {
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
-        var renewerList = renewers?.ToArray() ?? [];
-        await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
-
         var lifetime = ValidateDelegationTokenDuration(
             maxLifetime,
             nameof(maxLifetime),
             DefaultDelegationTokenLifetime);
+        var renewerList = renewers?.ToArray() ?? [];
+        await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+
         var now = DateTimeOffset.UtcNow;
         var maxTimestamp = now + lifetime;
         var hmac = Guid.NewGuid().ToByteArray();
@@ -574,12 +574,12 @@ public sealed class InMemoryAdminClient :
         ArgumentNullException.ThrowIfNull(hmac);
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
-        await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
-
         var period = ValidateDelegationTokenDuration(
             renewPeriod,
             nameof(renewPeriod),
             DefaultDelegationTokenLifetime);
+        await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+
         var key = DelegationTokenKey(hmac);
 
         return UpdateDelegationTokenExpiry(key, period);
@@ -593,12 +593,12 @@ public sealed class InMemoryAdminClient :
         ArgumentNullException.ThrowIfNull(hmac);
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
-        await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
-
         var period = ValidateDelegationTokenDuration(
             expiryTimePeriod,
             nameof(expiryTimePeriod),
             TimeSpan.Zero);
+        await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+
         var key = DelegationTokenKey(hmac);
 
         return UpdateDelegationTokenExpiry(key, period);

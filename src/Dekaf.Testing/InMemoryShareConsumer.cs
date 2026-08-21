@@ -381,6 +381,8 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
                     cancellationToken);
                 if (!apply.IsCompletedSuccessfully)
                     return AwaitCommitFaultAsync(apply, index + 1, snapshotCount, cancellationToken);
+
+                apply.GetAwaiter().GetResult();
             }
 
             CompleteFaultedRecords(snapshotCount);
