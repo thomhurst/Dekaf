@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using Avro.Generic;
 using Avro.Specific;
@@ -766,12 +767,7 @@ public sealed class AvroSchemaRegistrySerializer<
                 .ConfigureAwait(false);
         }
 
-        var existing = await _schemaRegistry.LookupSchemaAsync(
-                subject,
-                registrySchema,
-                ignoreDeletedSchemas: true,
-                normalize: _config.NormalizeSchemas,
-                cancellationToken)
+        var existing = await LookupWriterSchemaAsync(subject, registrySchema, cancellationToken)
             .ConfigureAwait(false);
         return await CreateResolvedValueAsync(
                 subject,
@@ -780,6 +776,47 @@ public sealed class AvroSchemaRegistrySerializer<
                 existing,
                 cancellationToken)
             .ConfigureAwait(false);
+    }
+
+    private async Task<RegisteredSchema> LookupWriterSchemaAsync(
+        string subject,
+        RegistrySchema writerSchema,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await _schemaRegistry.LookupSchemaAsync(
+                    subject,
+                    writerSchema,
+                    ignoreDeletedSchemas: true,
+                    normalize: _config.NormalizeSchemas,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (SchemaRegistryException exception) when (exception.ErrorCode is 404 or 40403)
+        {
+            // Schema Registry includes metadata and rules in lookup equality. Runtime Avro
+            // schemas do not carry those fields, so recover the exact semantic schema and
+            // retain its registered rule metadata on this cached cold path.
+            var parsedWriterSchema = AvroSchema.Parse(writerSchema.SchemaString);
+            var versions = await _schemaRegistry.GetVersionsAsync(subject, cancellationToken)
+                .ConfigureAwait(false);
+            for (var index = versions.Count - 1; index >= 0; index--)
+            {
+                var candidate = await _schemaRegistry.GetSchemaBySubjectAsync(
+                        subject,
+                        versions[index].ToString(CultureInfo.InvariantCulture),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                if (await MatchesWriterSchemaAsync(candidate.Schema, parsedWriterSchema, cancellationToken)
+                        .ConfigureAwait(false))
+                {
+                    return candidate;
+                }
+            }
+
+            throw;
+        }
     }
 
     private Task<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> CreateResolvedValueAsync(
@@ -813,6 +850,22 @@ public sealed class AvroSchemaRegistrySerializer<
         int schemaId,
         CancellationToken cancellationToken)
     {
+        var writer = AvroSchema.Parse(writerSchema.SchemaString);
+        if (!await MatchesWriterSchemaAsync(selectedSchema, writer, cancellationToken).ConfigureAwait(false))
+        {
+            throw new InvalidOperationException(
+                $"Schema ID {schemaId} does not match the Avro writer schema.");
+        }
+    }
+
+    private async Task<bool> MatchesWriterSchemaAsync(
+        RegistrySchema selectedSchema,
+        AvroSchema writerSchema,
+        CancellationToken cancellationToken)
+    {
+        if (selectedSchema.SchemaType != SchemaType.Avro)
+            return false;
+
         var names = selectedSchema.References is { Count: > 0 }
             ? await AvroSchemaReferenceResolver.ResolveAsync(
                     _schemaRegistry,
@@ -823,12 +876,7 @@ public sealed class AvroSchemaRegistrySerializer<
         var selected = names is null
             ? AvroSchema.Parse(selectedSchema.SchemaString)
             : AvroSchema.Parse(selectedSchema.SchemaString, names);
-        var writer = AvroSchema.Parse(writerSchema.SchemaString);
-        if (!writer.Equals(selected))
-        {
-            throw new InvalidOperationException(
-                $"Schema ID {schemaId} does not match the Avro writer schema.");
-        }
+        return writerSchema.Equals(selected);
     }
 
     private static AvroSchema GetSchemaFromValue(T value) =>
