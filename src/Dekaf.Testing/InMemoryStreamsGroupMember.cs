@@ -25,6 +25,7 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember
     private StreamsGroupMemberUpdate? _lastUpdate;
     private StreamsGroupTaskOffsetReport? _lastTaskOffsetReport;
     private StreamsGroupCloseOptions? _lastCloseOptions;
+    private bool _initialized;
 
     public InMemoryStreamsGroupMember(StreamsGroupMemberOptions options)
     {
@@ -87,6 +88,7 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember
         lock (_gate)
         {
             ThrowIfClosed();
+            _initialized = true;
         }
 
         return ValueTask.CompletedTask;
@@ -105,6 +107,7 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember
         lock (_gate)
         {
             ThrowIfClosed();
+            ThrowIfNotInitialized();
             if (_snapshot.IsJoined)
                 throw new InvalidOperationException("The Streams group member has already joined.");
 
@@ -275,8 +278,18 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember
     private void EnsureJoined()
     {
         ThrowIfClosed();
+        ThrowIfNotInitialized();
         if (!_snapshot.IsJoined)
             throw new InvalidOperationException("The Streams group member has not joined.");
+    }
+
+    private void ThrowIfNotInitialized()
+    {
+        if (!_initialized)
+        {
+            throw new InvalidOperationException(
+                "The Streams group member is not initialized. Call InitializeAsync() before joining.");
+        }
     }
 
     private void ThrowIfClosed() => ObjectDisposedException.ThrowIf(_snapshot.IsClosed, this);
