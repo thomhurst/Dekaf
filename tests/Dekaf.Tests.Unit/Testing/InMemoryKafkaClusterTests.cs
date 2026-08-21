@@ -137,6 +137,53 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
+    public async Task Producer_RecordHeaderSerializerWithReusedCallerHeaders_IsolatesEachRecord()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("orders");
+        await using var producer = new InMemoryProducer<string, string>(
+            cluster,
+            Serializers.String,
+            new RecordHeaderStringSerializer());
+        await using var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions
+            {
+                GroupId = "orders-service",
+                AutoOffsetReset = AutoOffsetReset.Earliest
+            });
+        var callerHeaders = Headers.Create("trace-id", "abc");
+
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = "orders",
+            Key = "order-1",
+            Value = "created",
+            Headers = callerHeaders
+        });
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = "orders",
+            Key = "order-2",
+            Value = "updated",
+            Headers = callerHeaders
+        });
+        consumer.Subscribe("orders");
+
+        var first = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1));
+        var second = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1));
+
+        await Assert.That(callerHeaders).Count().IsEqualTo(1);
+        await Assert.That(callerHeaders[0].Key).IsEqualTo("trace-id");
+        await Assert.That(first).IsNotNull();
+        await Assert.That(first!.Value.Headers).Count().IsEqualTo(2);
+        await Assert.That(first.Value.Headers[1].GetValueAsString()).IsEqualTo("created");
+        await Assert.That(second).IsNotNull();
+        await Assert.That(second!.Value.Headers).Count().IsEqualTo(2);
+        await Assert.That(second.Value.Headers[1].GetValueAsString()).IsEqualTo("updated");
+    }
+
+    [Test]
     public async Task Consumer_HeaderRoutingDeserializerUsesCallerOwnedHeaders()
     {
         var cluster = new InMemoryKafkaCluster();
