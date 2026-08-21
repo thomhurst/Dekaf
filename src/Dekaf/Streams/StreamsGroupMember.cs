@@ -35,6 +35,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
     private readonly CancellationTokenSource _commandAdmissionCancellation = new();
     private readonly SemaphoreSlim _initializeLock = new(1, 1);
     private readonly StreamsGroupHeartbeatRequestCache _steadyRequestCache = new();
+    private readonly Action _requestWriteStartedCallback;
     private readonly Timer _heartbeatTimer;
     private readonly Task _workerTask;
     private readonly int _retryBackoffMs;
@@ -55,6 +56,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
     private int _memberEpoch;
     private int _heartbeatIntervalMs = 5_000;
     private bool _ambiguousMembership;
+    private bool _requestWriteStarted;
 
     private StreamsGroupHeartbeatTopology? _topology;
     private IReadOnlyList<StreamsGroupHeartbeatTaskIds>? _activeTasks;
@@ -93,6 +95,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         ExponentialRetryBackoff.Validate(retryBackoffMs, retryBackoffMaxMs);
         _retryBackoffMs = retryBackoffMs;
         _retryBackoffMaxMs = retryBackoffMaxMs;
+        _requestWriteStartedCallback = MarkRequestWriteStarted;
         _heartbeatTimer = new Timer(
             static state => ((StreamsGroupMember)state!).QueueHeartbeat(),
             this,
@@ -370,7 +373,11 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
 
                     try
                     {
-                        var result = await ProcessOperationAsync(command).ConfigureAwait(false);
+                        using var operationCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                            command.CancellationToken,
+                            _commandAdmissionCancellation.Token);
+                        var result = await ProcessOperationAsync(command, operationCancellation.Token)
+                            .ConfigureAwait(false);
                         command.Completion.TrySetResult(result);
                     }
                     catch (Exception exception)
@@ -443,7 +450,9 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
             command.Completion.TrySetException(disposed);
     }
 
-    private async ValueTask<StreamsGroupHeartbeatResult> ProcessOperationAsync(MemberCommand command)
+    private async ValueTask<StreamsGroupHeartbeatResult> ProcessOperationAsync(
+        MemberCommand command,
+        CancellationToken cancellationToken)
     {
         if (command.Kind != MemberCommandKind.Join && _memberEpoch <= 0)
             throw new InvalidOperationException("JoinAsync must complete before updating a Streams group member.");
@@ -466,10 +475,11 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
                 case MemberCommandKind.Update:
                     var update = command.Update!;
                     ApplyUpdate(update);
+                    var topologyJoinEpoch = InstanceId is null ? 0 : -2;
                     request = update.Topology is null
                         ? CreateDeltaRequest(update)
-                        : CreateJoinRequest(shutdownApplication: update.ShutdownApplication);
-                    recoveryJoinEpoch = update.Topology is not null ? 0 : null;
+                        : CreateJoinRequest(topologyJoinEpoch, update.ShutdownApplication);
+                    recoveryJoinEpoch = update.Topology is not null ? topologyJoinEpoch : null;
                     break;
                 case MemberCommandKind.ReportOffsets:
                     _taskOffsets = MapTaskOffsets(command.OffsetReport!.TaskOffsets);
@@ -482,7 +492,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
 
             response = await SendWithRecoveryAsync(
                     request,
-                    command.CancellationToken,
+                    cancellationToken,
                     recoveryJoinEpoch: recoveryJoinEpoch,
                     trackAmbiguousRequestFailure: true)
                 .ConfigureAwait(false);
@@ -658,7 +668,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
                     await FindCoordinatorAsync(cancellationToken).ConfigureAwait(false);
 
                 StreamsGroupHeartbeatResponse response;
-                var requestAttempted = false;
+                _requestWriteStarted = false;
                 try
                 {
                     using var lease = await _connectionPool.LeaseConnectionAsync(_coordinatorId, cancellationToken)
@@ -676,15 +686,30 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
                         ApiKey.StreamsGroupHeartbeat,
                         StreamsGroupHeartbeatRequest.LowestSupportedVersion,
                         StreamsGroupHeartbeatRequest.HighestSupportedVersion);
-                    requestAttempted = true;
-                    response = await connection.SendAsync<StreamsGroupHeartbeatRequest, StreamsGroupHeartbeatResponse>(
-                        request,
-                        version,
-                        cancellationToken).ConfigureAwait(false);
+                    if (connection is IKafkaRequestWriteObserverConnection writeObserverConnection)
+                    {
+                        response = await writeObserverConnection
+                            .SendWithWriteObservationAsync<StreamsGroupHeartbeatRequest, StreamsGroupHeartbeatResponse>(
+                                request,
+                                version,
+                                _requestWriteStartedCallback,
+                                cancellationToken)
+                            .ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        _requestWriteStarted = true;
+                        response = await connection
+                            .SendAsync<StreamsGroupHeartbeatRequest, StreamsGroupHeartbeatResponse>(
+                                request,
+                                version,
+                                cancellationToken)
+                            .ConfigureAwait(false);
+                    }
                 }
                 catch (Exception exception) when (
                     trackAmbiguousRequestFailure
-                    && requestAttempted
+                    && _requestWriteStarted
                     && exception is OperationCanceledException
                     && cancellationToken.IsCancellationRequested)
                 {
@@ -696,7 +721,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
                     && (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested))
                 {
                     _coordinatorId = -1;
-                    if (trackAmbiguousRequestFailure && requestAttempted)
+                    if (trackAmbiguousRequestFailure && _requestWriteStarted)
                     {
                         // Later retry responses cannot prove whether an earlier request
                         // reached the broker when its completion was lost.
@@ -798,6 +823,8 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         _ambiguousMembership = false;
         ResetTaskAssignment(markUnjoined: true);
     }
+
+    private void MarkRequestWriteStarted() => _requestWriteStarted = true;
 
     private void ResetTaskAssignment(bool markUnjoined)
     {

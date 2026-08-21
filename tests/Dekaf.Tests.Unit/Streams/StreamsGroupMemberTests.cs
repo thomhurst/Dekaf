@@ -137,6 +137,20 @@ public sealed class StreamsGroupMemberTests
     }
 
     [Test]
+    public async Task UpdateAsync_StaticTopologyChangeUsesStaticRejoinEpoch()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1));
+        connection.EnqueueHeartbeat(Success(epoch: 2));
+        await using var fixture = CreateFixture(connection, instanceId: "instance-1");
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+
+        await fixture.Member.UpdateAsync(CreateInitialUpdate(topologyEpoch: 2));
+
+        await Assert.That(connection.HeartbeatRequests[1].MemberEpoch).IsEqualTo(-2);
+    }
+
+    [Test]
     public async Task UpdateAsync_FencedOnFinalOrdinaryAttemptStillSendsRecoveryJoin()
     {
         var connection = new ScriptedConnection();
@@ -660,9 +674,8 @@ public sealed class StreamsGroupMemberTests
         await Assert.That(QueueHeartbeat(fixture.Member)).IsFalse();
 
         var close = fixture.Member.CloseAsync().AsTask();
-        pendingUpdate.SetResult(Success(epoch: 2));
 
-        _ = await update;
+        _ = await Assert.ThrowsAsync<OperationCanceledException>(() => update);
         await close.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
@@ -995,6 +1008,29 @@ public sealed class StreamsGroupMemberTests
         await Assert.That(recovery.MemberEpoch).IsEqualTo(0);
         await Assert.That(recovery.ProcessId).IsEqualTo("process-2");
         await Assert.That(result.MemberEpoch).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task UpdateAsync_PreWriteTransportFailureThenRejectionRestoresState()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1));
+        connection.EnqueueHeartbeat(new StreamsGroupHeartbeatResponse
+        {
+            ErrorCode = ErrorCode.StreamsInvalidTopology,
+            MemberId = "member-1"
+        });
+        await using var fixture = CreateFixture(connection);
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+        connection.EnqueuePreWriteHeartbeatFailure(new ObjectDisposedException("KafkaConnection"));
+
+        var failure = await Assert.ThrowsAsync<GroupException>(async () =>
+            await fixture.Member.UpdateAsync(new StreamsGroupMemberUpdate { ProcessId = "process-2" }));
+
+        await Assert.That(failure!.ErrorCode).IsEqualTo(ErrorCode.StreamsInvalidTopology);
+        await Assert.That(connection.HeartbeatRequests).Count().IsEqualTo(2);
+        await Assert.That(fixture.Member.Snapshot.IsJoined).IsTrue();
+        await Assert.That(fixture.Member.Snapshot.MemberEpoch).IsEqualTo(1);
     }
 
     [Test]
@@ -1441,9 +1477,8 @@ public sealed class StreamsGroupMemberTests
         for (var index = 0; index < queued.Length; index++)
             _ = await Assert.ThrowsAsync<OperationCanceledException>(() => queued[index]);
         var close = fixture.Member.CloseAsync().AsTask();
-        blockedUpdate.SetResult(Success(epoch: 2));
 
-        await activeUpdate.WaitAsync(TimeSpan.FromSeconds(5));
+        _ = await Assert.ThrowsAsync<OperationCanceledException>(() => activeUpdate);
         await close.WaitAsync(TimeSpan.FromSeconds(5));
         await Assert.That(connection.HeartbeatRequests).Count().IsEqualTo(3);
     }
@@ -1472,6 +1507,28 @@ public sealed class StreamsGroupMemberTests
         await Assert.That(connection.HeartbeatRequests).Count().IsEqualTo(3);
         await Assert.That(connection.HeartbeatRequests[2].MemberEpoch).IsEqualTo(-1);
         await Assert.That(fixture.Member.Snapshot.IsClosed).IsTrue();
+    }
+
+    [Test]
+    public async Task CloseAsync_CancelsInFlightForegroundHeartbeat()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1));
+        connection.EnqueueHeartbeat(new TaskCompletionSource<StreamsGroupHeartbeatResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously).Task);
+        connection.EnqueueHeartbeat(Success(epoch: -1));
+        await using var fixture = CreateFixture(connection);
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+
+        var update = fixture.Member.UpdateAsync(
+            new StreamsGroupMemberUpdate { ProcessId = "blocked" }).AsTask();
+        await connection.SecondHeartbeatStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await fixture.Member.CloseAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+
+        _ = await Assert.ThrowsAsync<OperationCanceledException>(() => update);
+        await Assert.That(connection.HeartbeatRequests).Count().IsEqualTo(3);
+        await Assert.That(connection.HeartbeatRequests[2].MemberEpoch).IsEqualTo(-1);
     }
 
     private static Fixture CreateFixture(ScriptedConnection connection, string? instanceId = null)
@@ -1617,10 +1674,11 @@ public sealed class StreamsGroupMemberTests
         }
     }
 
-    private sealed class ScriptedConnection : IKafkaConnection
+    private sealed class ScriptedConnection : IKafkaConnection, IKafkaRequestWriteObserverConnection
     {
         private readonly Queue<Task<FindCoordinatorResponse>> _findCoordinatorResponses = new();
         private readonly Queue<Task<StreamsGroupHeartbeatResponse>> _heartbeatResponses = new();
+        private readonly Queue<Exception> _preWriteHeartbeatFailures = new();
 
         public int BrokerId => 1;
         public string Host => "localhost";
@@ -1648,6 +1706,33 @@ public sealed class StreamsGroupMemberTests
 
         public void EnqueueHeartbeat(Task<StreamsGroupHeartbeatResponse> response) =>
             _heartbeatResponses.Enqueue(response);
+
+        public void EnqueuePreWriteHeartbeatFailure(Exception exception) =>
+            _preWriteHeartbeatFailures.Enqueue(exception);
+
+        public ValueTask<TResponse> SendWithWriteObservationAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            Action requestWriteStarted,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse
+        {
+            if (request is StreamsGroupHeartbeatRequest && _preWriteHeartbeatFailures.TryDequeue(out var exception))
+                return ValueTask.FromException<TResponse>(exception);
+
+            requestWriteStarted();
+            return SendAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);
+        }
+
+        public ValueTask<PipelinedResponse<TResponse>> SendPipelinedWithWriteObservationAfterWriteAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            Action requestWriteStarted,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse =>
+            throw new NotSupportedException();
 
         public async ValueTask<TResponse> SendAsync<TRequest, TResponse>(
             TRequest request,
