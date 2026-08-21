@@ -28,7 +28,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private readonly record struct PendingAutoCommitAdvancement(
         long Position,
         bool ResumePartition,
-        TaskCompletionSource Completion);
+        TaskCompletionSource Completion,
+        TopicPartitionOffset[]? CapturedOffsets);
 
     private readonly record struct ConsumerSelectionVersion(
         int ConsumerState,
@@ -620,6 +621,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 if (!TryPrepareSnapshotOnDeliveryAutoCommitFault(
                         partition,
                         position,
+                        record.Offset + 1,
                         consumerStateVersion,
                         consumerGroupGeneration,
                         cancellationToken,
@@ -1604,6 +1606,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             if (!TryPrepareOnDeliveryAutoCommitFault(
                     partition,
                     position,
+                    record.Offset + 1,
                     cancellationToken,
                     out var hasAutoCommitReservation,
                     out var autoCommitFaultApplication))
@@ -1802,7 +1805,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                         in selectionVersion))
                     return false;
 
-                AdvancePositionUnderLock(partition, record);
+                AdvancePositionUnderLock(partition, record, pending.CapturedOffsets);
                 return true;
             }
             finally
@@ -1844,7 +1847,10 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                currentPosition == expectedPosition;
     }
 
-    private void AdvancePositionUnderLock(TopicPartition partition, InMemoryRecord record)
+    private void AdvancePositionUnderLock(
+        TopicPartition partition,
+        InMemoryRecord record,
+        TopicPartitionOffset[]? capturedOffsets = null)
     {
         _positions[partition] = record.Offset + 1;
         if (_options.OffsetStoreTiming == OffsetStoreTiming.OnDelivery)
@@ -1852,7 +1858,12 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             if (_options.EnableAutoOffsetStore)
                 StoreOffsetUnderLock(partition, record.Offset + 1);
             if (_options.OffsetCommitMode == OffsetCommitMode.Auto)
-                CommitStoredOffsets();
+            {
+                if (capturedOffsets is null)
+                    CommitStoredOffsets();
+                else
+                    CommitCapturedOffsetsUnderLock(capturedOffsets);
+            }
         }
         else
         {
@@ -1914,7 +1925,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 // The commit barrier already ran for this fully materialized record. Finish
                 // publishing it if only the group generation changed while the barrier was held;
                 // post-yield validation reports that change on the next iterator step.
-                AdvancePositionUnderLock(partition, record);
+                AdvancePositionUnderLock(partition, record, pending.CapturedOffsets);
                 return true;
             }
             finally
@@ -2267,6 +2278,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private bool TryPrepareOnDeliveryAutoCommitFault(
         TopicPartition partition,
         long expectedPosition,
+        long nextOffset,
         CancellationToken cancellationToken,
         out bool hasReservation,
         out ValueTask faultApplication)
@@ -2275,6 +2287,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             return TryPrepareOnDeliveryAutoCommitFaultUnderLock(
                 partition,
                 expectedPosition,
+                nextOffset,
                 cancellationToken,
                 out hasReservation,
                 out faultApplication);
@@ -2283,6 +2296,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private bool TryPrepareSnapshotOnDeliveryAutoCommitFault(
         TopicPartition partition,
         long expectedPosition,
+        long nextOffset,
         int consumerStateVersion,
         int consumerGroupGeneration,
         CancellationToken cancellationToken,
@@ -2297,6 +2311,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             return TryPrepareOnDeliveryAutoCommitFaultUnderLock(
                 partition,
                 expectedPosition,
+                nextOffset,
                 cancellationToken,
                 out hasReservation,
                 out faultApplication);
@@ -2306,6 +2321,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private bool TryPrepareOnDeliveryAutoCommitFaultUnderLock(
         TopicPartition partition,
         long expectedPosition,
+        long nextOffset,
         CancellationToken cancellationToken,
         out bool hasReservation,
         out ValueTask faultApplication)
@@ -2344,12 +2360,17 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 cancellationToken,
                 out faultApplication))
         {
+            var capturedOffsets = CaptureCommitOffsetsUnderLock(
+                _options.EnableAutoOffsetStore
+                    ? new TopicPartitionOffset(partition.Topic, partition.Partition, nextOffset)
+                    : null);
             _paused.Add(partition);
 
             (_pendingAutoCommitAdvancements ??= [])[partition] = new PendingAutoCommitAdvancement(
                 expectedPosition,
                 ResumePartition: true,
-                new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously));
+                new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously),
+                capturedOffsets);
             hasReservation = true;
         }
 
@@ -2451,7 +2472,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             (_pendingAutoCommitAdvancements ??= [])[inDoubtPartition] = new PendingAutoCommitAdvancement(
                 inDoubtNextOffset,
                 resumePartition,
-                new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously));
+                new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously),
+                CapturedOffsets: null);
         }
 
         return ApplyInDoubtAutoCommitFaultAndClearAsync(

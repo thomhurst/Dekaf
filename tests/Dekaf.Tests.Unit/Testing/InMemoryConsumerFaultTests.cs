@@ -540,6 +540,39 @@ public sealed class InMemoryConsumerFaultTests
     }
 
     [Test]
+    public async Task OnDeliveryAutoCommit_BarrierCommitsExactCapturedOffsets()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic(Topic, partitionCount: 2);
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Partition = 0,
+            Key = "key",
+            Value = "value"
+        });
+        await using var consumer = CreateConsumer(
+            cluster,
+            enableAutoOffsetStore: true,
+            offsetCommitMode: OffsetCommitMode.Auto);
+        var secondPartition = new TopicPartition(Topic, 1);
+        consumer.Assign(Partition, secondPartition);
+        consumer.StoreOffset(new TopicPartitionOffset(Topic, 1, 1));
+        var barrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, Topic, 0, GroupId));
+
+        var consume = consumer.ConsumeOneAsync(TimeSpan.Zero).AsTask();
+        await barrier.WaitUntilEnteredAsync();
+        consumer.StoreOffset(new TopicPartitionOffset(Topic, 1, 9));
+        await Assert.That(barrier.Release()).IsTrue();
+        _ = await consume;
+
+        await Assert.That(cluster.GetCommittedOffset(GroupId, Partition)).IsEqualTo(1);
+        await Assert.That(cluster.GetCommittedOffset(GroupId, secondPartition)).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task CommitAsync_InjectedPlanPreservesStoredResourceBeforeGroupOrder()
     {
         var innerPlan = new KafkaFaultPlan();
