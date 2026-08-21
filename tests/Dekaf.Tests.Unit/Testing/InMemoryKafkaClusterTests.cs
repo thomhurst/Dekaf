@@ -171,7 +171,7 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
-    public async Task StreamsGroupManagement_DeleteOffsetsRejectsSubscribedPartitionAndPreservesOffset()
+    public async Task StreamsGroupManagement_DeleteOffsetsRejectsSubscribedTopicAndPreservesOffsets()
     {
         var cluster = new InMemoryKafkaCluster();
         cluster.CreateTopic("input", partitionCount: 2);
@@ -198,16 +198,17 @@ public sealed class InMemoryKafkaClusterTests
             });
 
         await Assert.That(deletion[subscribed].ErrorCode).IsEqualTo(ErrorCode.GroupSubscribedToTopic);
-        await Assert.That(deletion[inactive].ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(deletion[inactive].ErrorCode).IsEqualTo(ErrorCode.GroupSubscribedToTopic);
         await Assert.That(offsetsAfterRejection[groupId].Offsets[subscribed].Offset).IsEqualTo(42);
-        await Assert.That(offsetsAfterRejection[groupId].Offsets.ContainsKey(inactive)).IsFalse();
+        await Assert.That(offsetsAfterRejection[groupId].Offsets[inactive].Offset).IsEqualTo(84);
 
         consumer.Unassign();
-        var inactiveDeletion = await admin.DeleteStreamsGroupOffsetsAsync(groupId, [subscribed]);
+        var inactiveDeletion = await admin.DeleteStreamsGroupOffsetsAsync(groupId, [subscribed, inactive]);
         var offsetsAfterDeletion = await admin.ListStreamsGroupOffsetsAsync(
             new Dictionary<string, ListStreamsGroupOffsetsSpec> { [groupId] = new() });
 
         await Assert.That(inactiveDeletion[subscribed].ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(inactiveDeletion[inactive].ErrorCode).IsEqualTo(ErrorCode.None);
         await Assert.That(offsetsAfterDeletion[groupId].Offsets).IsEmpty();
     }
 

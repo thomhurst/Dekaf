@@ -144,7 +144,24 @@ public sealed partial class AdminClient
                 if (results.ContainsKey(groupId))
                     continue;
 
-                var coordinatorId = await FindGroupCoordinatorAsync(groupId, cancellationToken).ConfigureAwait(false);
+                int coordinatorId;
+                try
+                {
+                    coordinatorId = await FindGroupCoordinatorAsync(groupId, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Errors.GroupException exception) when (
+                    exception.ErrorCode is { } errorCode &&
+                    !errorCode.IsRetriable() &&
+                    !errorCode.RequiresMetadataRefresh())
+                {
+                    results[groupId] = new StreamsGroupOffsetsResult
+                    {
+                        GroupId = groupId,
+                        ErrorCode = errorCode,
+                        Offsets = new Dictionary<TopicPartition, StreamsGroupOffsetDescription>()
+                    };
+                    continue;
+                }
                 if (!groupsByCoordinator.TryGetValue(coordinatorId, out var coordinatorGroups))
                 {
                     coordinatorGroups = [];
@@ -419,7 +436,18 @@ public sealed partial class AdminClient
             return await WithRetryAsync<IReadOnlyDictionary<TopicPartition, StreamsGroupOffsetOperationResult>>(async () =>
             {
                 retryErrors.Clear();
-                var coordinatorId = await FindGroupCoordinatorAsync(groupId, cancellationToken).ConfigureAwait(false);
+                int coordinatorId;
+                try
+                {
+                    coordinatorId = await FindGroupCoordinatorAsync(groupId, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Errors.GroupException exception) when (
+                    exception.ErrorCode is { } errorCode &&
+                    !errorCode.IsRetriable() &&
+                    !errorCode.RequiresMetadataRefresh())
+                {
+                    return CompletePartitionResults(requestedPartitions, results, errorCode);
+                }
                 using var connectionLease = await _connectionPool.LeaseConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
                 var connection = connectionLease.Connection;
                 var apiVersion = _metadataManager.GetNegotiatedApiVersion(
@@ -516,7 +544,7 @@ public sealed partial class AdminClient
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
         var results = new Dictionary<TopicPartition, StreamsGroupOffsetOperationResult>(partitions.Count);
         var retryErrors = new Dictionary<TopicPartition, Protocol.ErrorCode>(partitions.Count);
-        var deleteMayHaveApplied = false;
+        var ambiguousPartitions = new HashSet<TopicPartition>();
 
         try
         {
@@ -524,7 +552,18 @@ public sealed partial class AdminClient
             {
                 retryErrors.Clear();
                 var pending = partitions.Where(partition => !results.ContainsKey(partition)).ToArray();
-                var coordinatorId = await FindGroupCoordinatorAsync(groupId, cancellationToken).ConfigureAwait(false);
+                int coordinatorId;
+                try
+                {
+                    coordinatorId = await FindGroupCoordinatorAsync(groupId, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Errors.GroupException exception) when (
+                    exception.ErrorCode is { } errorCode &&
+                    !errorCode.IsRetriable() &&
+                    !errorCode.RequiresMetadataRefresh())
+                {
+                    return CompletePartitionResults(partitions, results, errorCode);
+                }
                 using var connectionLease = await _connectionPool.LeaseConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
                 var connection = connectionLease.Connection;
                 var apiVersion = _metadataManager.GetNegotiatedApiVersion(
@@ -549,7 +588,7 @@ public sealed partial class AdminClient
                     RetryHelper.IsRetriableRequestFailure(exception) &&
                     !cancellationToken.IsCancellationRequested)
                 {
-                    deleteMayHaveApplied = true;
+                    ambiguousPartitions.UnionWith(pending);
                     var errorCode = GetRetryErrorCode(exception);
                     foreach (var topicPartition in pending)
                         retryErrors[topicPartition] = errorCode;
@@ -557,14 +596,10 @@ public sealed partial class AdminClient
                 }
 
                 var groupError = response.ErrorCode;
-                var ambiguousDeletionConfirmed = groupError == Protocol.ErrorCode.GroupIdNotFound && deleteMayHaveApplied;
-                if (ambiguousDeletionConfirmed)
-                    groupError = Protocol.ErrorCode.None;
-
                 if (groupError.IsRetriable() || groupError.RequiresMetadataRefresh())
                 {
                     if (groupError == Protocol.ErrorCode.RequestTimedOut)
-                        deleteMayHaveApplied = true;
+                        ambiguousPartitions.UnionWith(pending);
 
                     foreach (var topicPartition in pending)
                         retryErrors[topicPartition] = groupError;
@@ -579,10 +614,16 @@ public sealed partial class AdminClient
                 }
 
                 Exception? retryFailure = null;
-                if (groupError != Protocol.ErrorCode.None || ambiguousDeletionConfirmed)
+                if (groupError != Protocol.ErrorCode.None)
                 {
                     foreach (var topicPartition in pending)
-                        results[topicPartition] = PartitionResult(topicPartition, groupError);
+                    {
+                        var errorCode = groupError == Protocol.ErrorCode.GroupIdNotFound &&
+                                        ambiguousPartitions.Contains(topicPartition)
+                            ? Protocol.ErrorCode.None
+                            : groupError;
+                        results[topicPartition] = PartitionResult(topicPartition, errorCode);
+                    }
                 }
                 else
                 {
@@ -597,7 +638,7 @@ public sealed partial class AdminClient
 
                             if (partition.ErrorCode.IsRetriable() || partition.ErrorCode.RequiresMetadataRefresh())
                             {
-                                deleteMayHaveApplied = true;
+                                ambiguousPartitions.Add(topicPartition);
                                 retryErrors[topicPartition] = partition.ErrorCode;
                                 retryFailure ??= new Errors.GroupException(
                                     partition.ErrorCode,

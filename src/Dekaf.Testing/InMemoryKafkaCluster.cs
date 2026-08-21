@@ -1239,11 +1239,17 @@ public sealed class InMemoryKafkaCluster
                 {
                     foreach (var member in members.Values)
                     {
-                        if (!member.SubscribedPartitions.Contains(partition))
-                            continue;
+                        foreach (var subscribedPartition in member.SubscribedPartitions)
+                        {
+                            if (subscribedPartition.Topic != partition.Topic)
+                                continue;
 
-                        isSubscribed = true;
-                        break;
+                            isSubscribed = true;
+                            break;
+                        }
+
+                        if (isSubscribed)
+                            break;
                     }
                 }
 
