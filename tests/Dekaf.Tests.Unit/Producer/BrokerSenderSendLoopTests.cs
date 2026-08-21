@@ -906,7 +906,6 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             enableDeliveryDiagnostics: true);
         var accumulator = new RecordAccumulator(options);
         var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
-        var injectSibling = 0;
         BrokerSender? sender = null;
         sender = CreateSender(
             pool,
@@ -914,35 +913,27 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             accumulator,
             (_, _, _, _, _) => { },
             onWaveCoalesceStarted: () =>
-            {
-                if (Volatile.Read(ref injectSibling) != 0)
-                    sender!.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 1));
-            });
+                sender!.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 1)));
 
-        // EnqueueBulk publishes separate channel events. Seed the known wave width before
-        // publishing so the live sender cannot dispatch the first event before its sibling
-        // has been written and thereby turn setup timing into an extra request.
-        var knownPartitions = (HashSet<TopicPartition>)typeof(BrokerSender).GetField(
-            "_knownPartitions",
-            BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(sender)!;
-        knownPartitions.Add(new TopicPartition("test-topic", 0));
-        knownPartitions.Add(new TopicPartition("test-topic", 1));
+        SeedKnownPartitions(
+            sender,
+            new TopicPartition("test-topic", 0),
+            new TopicPartition("test-topic", 1));
 
         try
         {
-            sender.EnqueueBulk(
-            [
-                CreateTestBatch(valueTaskSourcePool, "test-topic", 0),
-                CreateTestBatch(valueTaskSourcePool, "test-topic", 1)
-            ]);
-            await WaitUntilAsync(
-                () => Volatile.Read(ref connection.SendPipelinedAfterWriteCalls) == 1,
-                cancellationToken);
-
-            Volatile.Write(ref injectSibling, 1);
             sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 0));
             await WaitUntilAsync(
-                () => Volatile.Read(ref connection.SendPipelinedAfterWriteCalls) == 2,
+                () => Volatile.Read(ref connection.SendPipelinedAfterWriteCalls) == 1
+                    && accumulator.GetDeliveryDiagnosticsSnapshot().CoalesceWidthHistogram
+                        .Single(bucket => bucket.MinimumWidth == 2).RequestCount == 1,
+                cancellationToken);
+
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 0));
+            await WaitUntilAsync(
+                () => Volatile.Read(ref connection.SendPipelinedAfterWriteCalls) == 2
+                    && accumulator.GetDeliveryDiagnosticsSnapshot().CoalesceWidthHistogram
+                        .Single(bucket => bucket.MinimumWidth == 2).RequestCount == 2,
                 cancellationToken);
 
             await Assert.That(firstResponse.Task.IsCompleted).IsFalse();
