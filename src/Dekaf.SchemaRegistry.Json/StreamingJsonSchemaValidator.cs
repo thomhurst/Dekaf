@@ -130,6 +130,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         List<ValidationRuleError>? violations = null;
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var compositionMatches = new ValidationCompositionMatchCache(payload.Span);
+        var valueSlice = new ValidationValueSlice();
         try
         {
             WalkValidationRules(
@@ -141,7 +142,8 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
                 now,
                 failFast,
                 ref violations,
-                ref compositionMatches);
+                ref compositionMatches,
+                ref valueSlice);
         }
         finally
         {
@@ -161,12 +163,13 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         bool failFast,
         ref List<ValidationRuleError>? violations,
         scoped ref ValidationCompositionMatchCache compositionMatches,
+        scoped ref ValidationValueSlice valueSlice,
         int referenceDepth = 0)
     {
         var rules = node.ValidationRules;
         if (reader.TokenType != JsonTokenType.Null && rules.Length != 0)
         {
-            var value = GetCurrentValue(ref reader, payload);
+            var value = valueSlice.GetOrCreate(ref reader, payload);
             var memberCount = node.ValidationRuleMembers?.Count ?? 0;
             var memberValues = memberCount == 0
                 ? default
@@ -221,6 +224,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
                     failFast,
                     ref violations,
                     ref compositionMatches,
+                    ref valueSlice,
                     referenceDepth + 1))
                 return false;
             if (!node.HasLocalValidationTraversal)
@@ -246,6 +250,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
                         failFast,
                         ref violations,
                         ref compositionMatches,
+                        ref valueSlice,
                         referenceDepth))
                     return false;
                 traversedReader = branchReader;
@@ -275,6 +280,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
                 failFast,
                 ref violations,
                 ref compositionMatches,
+                ref valueSlice,
                 referenceDepth))
             return false;
         if (node.HasOneOf && !WalkMatchingBranches(
@@ -289,6 +295,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
                 failFast,
                 ref violations,
                 ref compositionMatches,
+                ref valueSlice,
                 referenceDepth))
             return false;
 
@@ -330,6 +337,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         bool failFast,
         ref List<ValidationRuleError>? violations,
         scoped ref ValidationCompositionMatchCache compositionMatches,
+        scoped ref ValidationValueSlice valueSlice,
         int referenceDepth)
     {
         if (!compositionMatches.HasPendingMatches && !requiresCompositionMatchCache)
@@ -373,6 +381,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
                         failFast,
                         ref violations,
                         ref compositionMatches,
+                        ref valueSlice,
                         referenceDepth))
                     return false;
             }
@@ -397,6 +406,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
                 failFast,
                 ref violations,
                 ref compositionMatches,
+                ref valueSlice,
                 referenceDepth);
         }
 
@@ -448,6 +458,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
                             failFast,
                             ref violations,
                             ref compositionMatches,
+                            ref valueSlice,
                             referenceDepth))
                         return false;
                 }
@@ -476,6 +487,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
             failFast,
             ref violations,
             ref compositionMatches,
+            ref valueSlice,
             referenceDepth);
         compositionMatches.SkipTo(compositionEnd);
         return completed;
@@ -593,6 +605,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
                 var child = property?.IsDeclared == true ? property.Schema : node.AdditionalProperties;
                 if (child is not null)
                 {
+                    var childValueSlice = new ValidationValueSlice();
                     var validationReader = reader;
                     var validationPathMark = path.Length;
                     var compositionCheckpoint = compositionMatches.CaptureCheckpoint();
@@ -607,6 +620,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
                             failFast: true,
                             ref violations,
                             ref compositionMatches,
+                            ref childValueSlice,
                             referenceDepth);
                     path.Truncate(validationPathMark);
                     if (isValid)
@@ -653,6 +667,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
                                     failFast: false,
                                     ref violations,
                                     ref compositionMatches,
+                                    ref childValueSlice,
                                     referenceDepth))
                                 return false;
                         }
@@ -745,6 +760,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
                 var child = property?.IsDeclared == true ? property.Schema : node.AdditionalProperties;
                 if (child is not null)
                 {
+                    var childValueSlice = new ValidationValueSlice();
                     if (!WalkValidationRules(
                             ref reader,
                             payload,
@@ -755,6 +771,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
                             failFast: true,
                             ref violations,
                             ref compositionMatches,
+                            ref childValueSlice,
                             referenceDepth))
                         return false;
                 }
@@ -792,6 +809,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
             path.AppendIndex(index);
             if (child is not null)
             {
+                var childValueSlice = new ValidationValueSlice();
                 if (!WalkValidationRules(
                         ref reader,
                         payload,
@@ -802,6 +820,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
                         failFast,
                         ref violations,
                         ref compositionMatches,
+                        ref childValueSlice,
                         referenceDepth))
                     return false;
             }
@@ -823,6 +842,21 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         var endReader = reader;
         endReader.Skip();
         return payload.Slice(start, checked((int)endReader.BytesConsumed) - start);
+    }
+
+    private struct ValidationValueSlice
+    {
+        private ReadOnlyMemory<byte> _value;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public ReadOnlyMemory<byte> GetOrCreate(
+            ref Utf8JsonReader reader,
+            ReadOnlyMemory<byte> payload)
+        {
+            if (_value.IsEmpty)
+                _value = GetCurrentValue(ref reader, payload);
+            return _value;
+        }
     }
 
     private static bool ValidateNode(
