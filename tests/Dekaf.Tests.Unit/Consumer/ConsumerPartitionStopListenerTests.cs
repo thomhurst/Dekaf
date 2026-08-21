@@ -128,10 +128,11 @@ public sealed class ConsumerPartitionStopListenerTests
             partitionStopTimeout: TimeSpan.FromMilliseconds(50));
         var partition = new TopicPartition("topic-a", 0);
         consumer.Assign(partition);
+        Task? close = null;
 
         try
         {
-            var close = consumer.CloseAsync(CancellationToken.None).AsTask();
+            close = consumer.CloseAsync(CancellationToken.None).AsTask();
 
             await close.WaitAsync(testTimeout);
 
@@ -142,6 +143,8 @@ public sealed class ConsumerPartitionStopListenerTests
         finally
         {
             releaseListener.TrySetResult();
+            if (close is not null)
+                await close.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
             await consumer.DisposeAsync();
             if (!testTimeout.IsCancellationRequested)
                 await listenerCompleted.Task.WaitAsync(testTimeout);
