@@ -24,7 +24,7 @@ public class KafkaConnectionCapabilityHandshakeTests
         var releaseResponse = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseServer = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        var serverTask = Task.Run(async () =>
+        var serverTask = StartServerEagerly(async () =>
         {
             using var socket = await listener.AcceptSocketAsync(cancellationToken);
             await using var stream = new NetworkStream(socket, ownsSocket: false);
@@ -43,7 +43,7 @@ public class KafkaConnectionCapabilityHandshakeTests
                 new ApiVersion(ApiKey.Produce, 3, 7));
             await stream.WriteAsync(response, cancellationToken);
             await releaseServer.Task.WaitAsync(cancellationToken);
-        }, cancellationToken);
+        });
 
         await using var connection = new KafkaConnection(1, "127.0.0.1", port);
         var connectTask = connection.ConnectAsync(cancellationToken);
@@ -75,7 +75,7 @@ public class KafkaConnectionCapabilityHandshakeTests
         var requestReceived = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
-        var serverTask = Task.Run(async () =>
+        var serverTask = StartServerEagerly(async () =>
         {
             using var socket = await listener.AcceptSocketAsync(cancellationToken);
             await using var stream = new NetworkStream(socket, ownsSocket: false);
@@ -92,7 +92,7 @@ public class KafkaConnectionCapabilityHandshakeTests
             {
                 // Windows commonly reports the intentional client-side abort as a reset.
             }
-        }, cancellationToken);
+        });
 
         var connection = new KafkaConnection(1, "127.0.0.1", port);
         var connectTask = connection.ConnectAsync(cancellationToken).AsTask();
@@ -126,7 +126,7 @@ public class KafkaConnectionCapabilityHandshakeTests
         var port = ((IPEndPoint)listener.LocalEndpoint).Port;
         var releaseServer = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        var serverTask = Task.Run(async () =>
+        var serverTask = StartServerEagerly(async () =>
         {
             using var socket = await listener.AcceptSocketAsync(cancellationToken);
             await using var stream = new NetworkStream(socket, ownsSocket: false);
@@ -154,7 +154,7 @@ public class KafkaConnectionCapabilityHandshakeTests
                     new ApiVersion(ApiKey.Metadata, 5, 12)),
                 cancellationToken);
             await releaseServer.Task.WaitAsync(cancellationToken);
-        }, cancellationToken);
+        });
 
         await using var connection = new KafkaConnection(
             1,
@@ -195,7 +195,7 @@ public class KafkaConnectionCapabilityHandshakeTests
         listener.Start();
         var port = ((IPEndPoint)listener.LocalEndpoint).Port;
 
-        var serverTask = Task.Run(async () =>
+        var serverTask = StartServerEagerly(async () =>
         {
             using var socket = await listener.AcceptSocketAsync(cancellationToken);
             await using var stream = new NetworkStream(socket, ownsSocket: false);
@@ -207,7 +207,7 @@ public class KafkaConnectionCapabilityHandshakeTests
                     ErrorCode.UnsupportedVersion,
                     new ApiVersion(ApiKey.ApiVersions, brokerMinVersion, brokerMaxVersion)),
                 cancellationToken);
-        }, cancellationToken);
+        });
 
         await using var connection = new KafkaConnection(
             1,
@@ -233,7 +233,7 @@ public class KafkaConnectionCapabilityHandshakeTests
         listener.Start();
         var port = ((IPEndPoint)listener.LocalEndpoint).Port;
 
-        var serverTask = Task.Run(async () =>
+        var serverTask = StartServerEagerly(async () =>
         {
             using var socket = await listener.AcceptSocketAsync(cancellationToken);
             await using var stream = new NetworkStream(socket, ownsSocket: false);
@@ -242,7 +242,7 @@ public class KafkaConnectionCapabilityHandshakeTests
             await stream.WriteAsync(
                 BuildV0Response(correlationId, ErrorCode.UnsupportedVersion),
                 cancellationToken);
-        }, cancellationToken);
+        });
 
         await using var connection = new KafkaConnection(
             1,
@@ -268,7 +268,7 @@ public class KafkaConnectionCapabilityHandshakeTests
         listener.Start();
         var port = ((IPEndPoint)listener.LocalEndpoint).Port;
 
-        var serverTask = Task.Run(async () =>
+        var serverTask = StartServerEagerly(async () =>
         {
             using var socket = await listener.AcceptSocketAsync(cancellationToken);
             await using var stream = new NetworkStream(socket, ownsSocket: false);
@@ -291,7 +291,7 @@ public class KafkaConnectionCapabilityHandshakeTests
                     ErrorCode.UnsupportedVersion,
                     new ApiVersion(ApiKey.ApiVersions, 0, 2)),
                 cancellationToken);
-        }, cancellationToken);
+        });
 
         await using var connection = new KafkaConnection(
             1,
@@ -317,7 +317,7 @@ public class KafkaConnectionCapabilityHandshakeTests
         listener.Start();
         var port = ((IPEndPoint)listener.LocalEndpoint).Port;
 
-        var serverTask = Task.Run(async () =>
+        var serverTask = StartServerEagerly(async () =>
         {
             using var socket = await listener.AcceptSocketAsync(cancellationToken);
             await using var stream = new NetworkStream(socket, ownsSocket: false);
@@ -326,7 +326,7 @@ public class KafkaConnectionCapabilityHandshakeTests
             await stream.WriteAsync(
                 BuildResponse(correlationId, ErrorCode.InvalidRequest),
                 cancellationToken);
-        }, cancellationToken);
+        });
 
         await using var connection = new KafkaConnection(1, "127.0.0.1", port);
 
@@ -350,7 +350,7 @@ public class KafkaConnectionCapabilityHandshakeTests
         identity.Configure(enabled: true);
         identity.UpdateClusterId("cluster-a");
 
-        var serverTask = Task.Run(async () =>
+        var serverTask = StartServerEagerly(async () =>
         {
             using var socket = await listener.AcceptSocketAsync(cancellationToken);
             await using var stream = new NetworkStream(socket, ownsSocket: false);
@@ -374,7 +374,7 @@ public class KafkaConnectionCapabilityHandshakeTests
             var correlationId = BinaryPrimitives.ReadInt32BigEndian(request.AsSpan(4));
             await stream.WriteAsync(BuildResponse(correlationId, ErrorCode.None), cancellationToken);
             await releaseServer.Task.WaitAsync(cancellationToken);
-        }, cancellationToken);
+        });
 
         await using var connection = new KafkaConnection(
             7,
@@ -409,7 +409,7 @@ public class KafkaConnectionCapabilityHandshakeTests
         var port = ((IPEndPoint)listener.LocalEndpoint).Port;
         var releaseServer = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        var serverTask = Task.Run(async () =>
+        var serverTask = StartServerEagerly(async () =>
         {
             using var socket = await listener.AcceptSocketAsync(cancellationToken);
             await using var stream = new NetworkStream(socket, ownsSocket: false);
@@ -429,7 +429,7 @@ public class KafkaConnectionCapabilityHandshakeTests
                 BuildResponse(identityCorrelationId, ErrorCode.InvalidRequest),
                 cancellationToken);
             await releaseServer.Task.WaitAsync(cancellationToken);
-        }, cancellationToken);
+        });
 
         await using var connection = new KafkaConnection(
             7,
@@ -469,7 +469,7 @@ public class KafkaConnectionCapabilityHandshakeTests
         var identityRequestReceived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseServer = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        var serverTask = Task.Run(async () =>
+        var serverTask = StartServerEagerly(async () =>
         {
             using var socket = await listener.AcceptSocketAsync(cancellationToken);
             await using var stream = new NetworkStream(socket, ownsSocket: false);
@@ -485,7 +485,7 @@ public class KafkaConnectionCapabilityHandshakeTests
             _ = await ReadFrameAsync(stream, cancellationToken);
             identityRequestReceived.TrySetResult();
             await releaseServer.Task.WaitAsync(cancellationToken);
-        }, cancellationToken);
+        });
 
         await using var connection = new KafkaConnection(
             7,
@@ -528,7 +528,7 @@ public class KafkaConnectionCapabilityHandshakeTests
         identity.Configure(enabled: true);
         identity.UpdateClusterId("cluster-a");
 
-        var serverTask = Task.Run(async () =>
+        var serverTask = StartServerEagerly(async () =>
         {
             using var socket = await listener.AcceptSocketAsync(cancellationToken);
             await using var stream = new NetworkStream(socket, ownsSocket: false);
@@ -538,7 +538,7 @@ public class KafkaConnectionCapabilityHandshakeTests
             var correlationId = BinaryPrimitives.ReadInt32BigEndian(request.AsSpan(4));
             await stream.WriteAsync(BuildResponse(correlationId, ErrorCode.None), cancellationToken);
             await releaseServer.Task.WaitAsync(cancellationToken);
-        }, cancellationToken);
+        });
 
         await using var connection = new KafkaConnection(
             -1,
@@ -574,7 +574,7 @@ public class KafkaConnectionCapabilityHandshakeTests
         identity.Configure(enabled: true);
         identity.UpdateClusterId("cluster-a");
 
-        var serverTask = Task.Run(async () =>
+        var serverTask = StartServerEagerly(async () =>
         {
             using var socket = await listener.AcceptSocketAsync(cancellationToken);
             await using var stream = new NetworkStream(socket, ownsSocket: false);
@@ -592,7 +592,7 @@ public class KafkaConnectionCapabilityHandshakeTests
             await stream.WriteAsync(
                 BuildResponse(correlationId, ErrorCode.RebootstrapRequired),
                 cancellationToken);
-        }, cancellationToken);
+        });
 
         await using var connection = new KafkaConnection(
             7,
@@ -690,7 +690,7 @@ public class KafkaConnectionCapabilityHandshakeTests
         var releaseFirstGeneration = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseSecondGeneration = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        var serverTask = Task.Run(async () =>
+        var serverTask = StartServerEagerly(async () =>
         {
             await ServeFeatureGenerationAsync(
                 listener,
@@ -709,7 +709,7 @@ public class KafkaConnectionCapabilityHandshakeTests
                 transactionVersion: 2,
                 [new ApiVersion(ApiKey.Metadata, 9, 13)],
                 cancellationToken);
-        }, cancellationToken);
+        });
 
         await using var pool = new ConnectionPool(connectionOptions: new ConnectionOptions
         {
@@ -776,7 +776,7 @@ public class KafkaConnectionCapabilityHandshakeTests
         var port = ((IPEndPoint)listener.LocalEndpoint).Port;
         var releaseSuccessfulConnection = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        var serverTask = Task.Run(async () =>
+        var serverTask = StartServerEagerly(async () =>
         {
             using (var failedSocket = await listener.AcceptSocketAsync(cancellationToken))
             await using (var failedStream = new NetworkStream(failedSocket, ownsSocket: false))
@@ -793,7 +793,7 @@ public class KafkaConnectionCapabilityHandshakeTests
                     new ApiVersion(ApiKey.Metadata, 9, 13));
                 await successfulGenerationTask;
             }
-        }, cancellationToken);
+        });
 
         await using var pool = new ConnectionPool(connectionOptions: new ConnectionOptions
         {
@@ -848,6 +848,9 @@ public class KafkaConnectionCapabilityHandshakeTests
             cancellationToken);
         await releaseConnection.WaitAsync(cancellationToken);
     }
+
+    // Invoke inline so the first socket accept is registered before client startup.
+    private static Task StartServerEagerly(Func<Task> server) => server();
 
     private static async Task WaitUntilAsync(
         Func<bool> predicate,
