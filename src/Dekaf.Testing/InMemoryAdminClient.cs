@@ -1150,9 +1150,7 @@ public sealed class InMemoryAdminClient :
             results[groupId] = new DeleteShareGroupResult
             {
                 GroupId = groupId,
-                ErrorCode = _cluster.TryDeleteShareGroup(groupId)
-                    ? ErrorCode.None
-                    : ErrorCode.NonEmptyGroup
+                ErrorCode = _cluster.DeleteShareGroup(groupId)
             };
         }
 

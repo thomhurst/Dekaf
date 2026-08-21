@@ -890,23 +890,27 @@ public sealed class InMemoryKafkaCluster
         }
     }
 
-    internal bool TryDeleteShareGroup(string groupId)
+    internal ErrorCode DeleteShareGroup(string groupId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
 
         lock (_gate)
         {
-            if ((_shareGroupMembers.TryGetValue(groupId, out var members) && members.Count > 0) ||
-                (_shareLeases.TryGetValue(groupId, out var leases) && leases.Count > 0))
-            {
-                return false;
-            }
+            var hasOffsets = _shareGroupOffsets.ContainsKey(groupId);
+            var hasMembers = _shareGroupMembers.TryGetValue(groupId, out var members);
+            var hasLeases = _shareLeases.TryGetValue(groupId, out var leases);
+            var hasDeliveryCounts = _shareDeliveryCounts.ContainsKey(groupId);
+            if (!hasOffsets && !hasMembers && !hasLeases && !hasDeliveryCounts)
+                return ErrorCode.GroupIdNotFound;
+
+            if (members is { Count: > 0 } || leases is { Count: > 0 })
+                return ErrorCode.NonEmptyGroup;
 
             _shareGroupOffsets.Remove(groupId);
             _shareGroupMembers.Remove(groupId);
             _shareLeases.Remove(groupId);
             _shareDeliveryCounts.Remove(groupId);
-            return true;
+            return ErrorCode.None;
         }
     }
 
