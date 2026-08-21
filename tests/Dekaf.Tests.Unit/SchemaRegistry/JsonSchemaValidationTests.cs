@@ -1290,16 +1290,20 @@ public sealed class JsonSchemaValidationTests
     }
 
     [Test]
-    [Arguments(true)]
-    [Arguments(false)]
-    public void InlineRules_AggregateManyDuplicatePropertiesUseFinalValues(bool declaredProperties)
+    [Arguments(true, true)]
+    [Arguments(true, false)]
+    [Arguments(false, true)]
+    [Arguments(false, false)]
+    public void InlineRules_AggregateManyDuplicatePropertiesUseFinalValues(
+        bool declaredProperties,
+        bool failFast)
     {
         var (schemaText, payload) = CreateManyDuplicateRuleCase(
             propertyCount: 16,
             declaredProperties);
         var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
 
-        validator.ValidateRules(payload, 25, failFast: false);
+        validator.ValidateRules(payload, 25, failFast);
     }
 
     [Test]
