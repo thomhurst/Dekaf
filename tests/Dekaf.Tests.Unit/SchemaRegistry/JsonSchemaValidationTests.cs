@@ -2519,10 +2519,13 @@ public sealed class JsonSchemaValidationTests
     }
 
     [Test]
-    [Arguments(false)]
-    [Arguments(true)]
+    [Arguments(false, false)]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
     public async Task MigrationRunner_NoOpReaderDomainTransformRetainsWriterPayloadSchema(
-        bool validateBeforeDomain)
+        bool validateBeforeDomain,
+        bool copyPayload)
     {
         const string writerSchemaText = """{ "required": ["id"] }""";
         const string readerSchemaText = """{ "required": ["latest"] }""";
@@ -2541,7 +2544,51 @@ public sealed class JsonSchemaValidationTests
         _ = await registry.RegisterSchemaAsync("validation-value", readerSchema);
         var runner = new SchemaRegistryMigrationRunner(
             registry,
-            new SchemaRegistryRuleExecutor([new PassThroughRuleHandler("PASSTHROUGH")]),
+            new SchemaRegistryRuleExecutor([new PassThroughRuleHandler("PASSTHROUGH", copyPayload)]),
+            TimeSpan.FromSeconds(1));
+        var payload = """{"id":7}"""u8.ToArray();
+
+        var result = validateBeforeDomain
+            ? runner.TransformWithBeforeDomainValidation(
+                payload,
+                writerSchemaId,
+                "validation-value",
+                writerSchema,
+                Context,
+                SchemaRegistryPayloadFormat.Json,
+                new StreamingJsonSchemaValidatorFactory(registry),
+                validationRulesFailFast: false)
+            : runner.Transform(
+                payload,
+                writerSchemaId,
+                "validation-value",
+                writerSchema,
+                Context,
+                SchemaRegistryPayloadFormat.Json);
+
+        await Assert.That(result.PayloadSchemaId).IsEqualTo(writerSchemaId);
+        await Assert.That(result.PayloadSchema).IsSameReferenceAs(writerSchema);
+        await Assert.That(result.Payload).IsEquivalentTo(payload);
+    }
+
+    [Test]
+    [Arguments(false, false)]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task MigrationRunner_CustomNoOpTransformRetainsWriterPayloadSchema(
+        bool validateBeforeDomain,
+        bool copyPayload)
+    {
+        const string writerSchemaText = """{ "required": ["id"] }""";
+        const string readerSchemaText = """{ "required": ["latest"] }""";
+        using var registry = new MockSchemaRegistryClient();
+        var writerSchema = CreateSchema(writerSchemaText);
+        var writerSchemaId = await registry.RegisterSchemaAsync("validation-value", writerSchema);
+        _ = await registry.RegisterSchemaAsync("validation-value", CreateSchema(readerSchemaText));
+        var runner = new SchemaRegistryMigrationRunner(
+            registry,
+            new PassThroughLegacyRuleExecutor(copyPayload),
             TimeSpan.FromSeconds(1));
         var payload = """{"id":7}"""u8.ToArray();
 
@@ -2715,17 +2762,28 @@ public sealed class JsonSchemaValidationTests
             SchemaRegistryRuleContext context) => payload;
     }
 
-    private sealed class PassThroughRuleHandler(string type) : ISchemaRegistryRuleHandler
+    private sealed class PassThroughRuleHandler(string type, bool copyPayload = false) : ISchemaRegistryRuleHandler
     {
         public string Type => type;
 
         public ReadOnlyMemory<byte> TransformSerializedPayload(
             ReadOnlyMemory<byte> payload,
-            SchemaRegistryRuleHandlerContext context) => payload;
+            SchemaRegistryRuleHandlerContext context) => copyPayload ? payload.ToArray() : payload;
 
         public ReadOnlyMemory<byte> TransformDeserializedPayload(
             ReadOnlyMemory<byte> payload,
-            SchemaRegistryRuleHandlerContext context) => payload;
+            SchemaRegistryRuleHandlerContext context) => copyPayload ? payload.ToArray() : payload;
+    }
+
+    private sealed class PassThroughLegacyRuleExecutor(bool copyPayload) : ISchemaRegistryRuleExecutor
+    {
+        public ReadOnlyMemory<byte> TransformSerializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleContext context) => copyPayload ? payload.ToArray() : payload;
+
+        public ReadOnlyMemory<byte> TransformDeserializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleContext context) => copyPayload ? payload.ToArray() : payload;
     }
 
     private sealed class ReplacingLegacyRuleExecutor(ReadOnlyMemory<byte> replacement)

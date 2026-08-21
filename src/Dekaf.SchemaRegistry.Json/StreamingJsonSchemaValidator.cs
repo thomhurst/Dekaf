@@ -256,6 +256,8 @@ internal sealed class StreamingJsonSchemaValidator(
             }
         }
 
+        var hasValueTraversal = node.Properties is not null || node.AdditionalProperties is not null ||
+            node.Items is not null || node.PrefixItems.Length != 0;
         if (node.AllOf is { Length: > 0 } allOf)
         {
             var traversedReader = reader;
@@ -281,9 +283,7 @@ internal sealed class StreamingJsonSchemaValidator(
             // An allOf-only wrapper has no remaining work on this value. Preserve one branch's
             // final position instead of walking the same object or array again at every nesting
             // level. Multiple branches still run independently because each may contain rules.
-            if (!node.HasAnyOf && !node.HasOneOf &&
-                node.Properties is null && node.AdditionalProperties is null &&
-                node.Items is null && node.PrefixItems.Length == 0)
+            if (!node.HasAnyOf && !node.HasOneOf && !hasValueTraversal)
             {
                 reader = traversedReader;
                 return true;
@@ -296,6 +296,7 @@ internal sealed class StreamingJsonSchemaValidator(
                 node.AnyOf,
                 oneOnly: false,
                 node.AnyOfRequiresCompositionMatchCache,
+                preserveAdvancedReader: !node.HasOneOf && !hasValueTraversal,
                 schemaId,
                 ref path,
                 now,
@@ -311,6 +312,7 @@ internal sealed class StreamingJsonSchemaValidator(
                 node.OneOf,
                 oneOnly: true,
                 node.OneOfRequiresCompositionMatchCache,
+                preserveAdvancedReader: !hasValueTraversal,
                 schemaId,
                 ref path,
                 now,
@@ -349,6 +351,7 @@ internal sealed class StreamingJsonSchemaValidator(
         CompiledSchemaNode[] branches,
         bool oneOnly,
         bool requiresCompositionMatchCache,
+        bool preserveAdvancedReader,
         int schemaId,
         scoped ref ValidationPathBuilder path,
         long now,
@@ -361,6 +364,7 @@ internal sealed class StreamingJsonSchemaValidator(
         if (!compositionMatches.HasPendingMatches && !requiresCompositionMatchCache)
         {
             var directMatchingBranch = -1;
+            var directTraversedReader = reader;
             for (var index = 0; index < branches.Length; index++)
             {
                 var branchReader = reader;
@@ -406,6 +410,7 @@ internal sealed class StreamingJsonSchemaValidator(
                         ref valueSlice,
                         referenceDepth))
                     return false;
+                directTraversedReader = branchReader;
             }
 
             if (!oneOnly)
@@ -416,6 +421,8 @@ internal sealed class StreamingJsonSchemaValidator(
                         schemaId,
                         "anyOf",
                         ref path);
+                if (preserveAdvancedReader)
+                    reader = directTraversedReader;
                 return true;
             }
             if (directMatchingBranch < 0)
@@ -426,7 +433,7 @@ internal sealed class StreamingJsonSchemaValidator(
                     ref path);
 
             var directSelectedReader = reader;
-            return WalkValidationRules(
+            var directCompleted = WalkValidationRules(
                 ref directSelectedReader,
                 payload,
                 branches[directMatchingBranch],
@@ -438,6 +445,9 @@ internal sealed class StreamingJsonSchemaValidator(
                 ref compositionMatches,
                 ref valueSlice,
                 referenceDepth);
+            if (directCompleted && preserveAdvancedReader)
+                reader = directSelectedReader;
+            return directCompleted;
         }
 
         if (!compositionMatches.HasPendingMatches)
@@ -459,6 +469,7 @@ internal sealed class StreamingJsonSchemaValidator(
 
         var matchingBranch = -1;
         var selectedMatchIndex = -1;
+        var traversedReader = reader;
         var compositionEnd = compositionMatches.ReadIndex;
         for (var index = 0; index < branches.Length; index++)
         {
@@ -495,6 +506,7 @@ internal sealed class StreamingJsonSchemaValidator(
                             ref valueSlice,
                             referenceDepth))
                         return false;
+                    traversedReader = branchReader;
                 }
             }
             compositionMatches.SkipTo(match.EndIndex);
@@ -508,6 +520,8 @@ internal sealed class StreamingJsonSchemaValidator(
                     schemaId,
                     "anyOf",
                     ref path);
+            if (preserveAdvancedReader)
+                reader = traversedReader;
             return true;
         }
         if (matchingBranch < 0)
@@ -532,6 +546,8 @@ internal sealed class StreamingJsonSchemaValidator(
             ref valueSlice,
             referenceDepth);
         compositionMatches.SkipTo(compositionEnd);
+        if (completed && preserveAdvancedReader)
+            reader = selectedReader;
         return completed;
     }
 
