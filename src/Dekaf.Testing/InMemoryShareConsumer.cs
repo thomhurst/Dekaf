@@ -304,35 +304,30 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
     public ValueTask CommitAsync(CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        ThrowIfDisposed();
 
         lock (_gate)
         {
-            if (_pending.Count == 0)
-                return ValueTask.CompletedTask;
-
-            var pending = _pending.Values.ToArray();
-            var offsets = BuildCommitOffsets(pending);
-            var completedRecords = BuildCompletedRecords(pending);
-
-            _cluster.CompleteShareRecords(_options.GroupId, _memberId, completedRecords, offsets);
-            _pending.Clear();
+            ThrowIfDisposed();
+            CompletePendingUnderLock();
         }
 
         return ValueTask.CompletedTask;
     }
 
-    public async ValueTask CloseAsync(CancellationToken cancellationToken = default)
+    public ValueTask CloseAsync(CancellationToken cancellationToken = default)
     {
-        if (_disposed)
-            return;
-
-        await CommitAsync(cancellationToken).ConfigureAwait(false);
         lock (_gate)
         {
+            if (_disposed)
+                return ValueTask.CompletedTask;
+
+            cancellationToken.ThrowIfCancellationRequested();
+            CompletePendingUnderLock();
             UnregisterShareGroupMemberUnderLock();
             _disposed = true;
         }
+
+        return ValueTask.CompletedTask;
     }
 
     public async ValueTask DisposeAsync()
@@ -443,9 +438,16 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
         var pending = new PendingShareRecord(partition, record.Offset, record.Offset + 1);
 
         lock (_gate)
-            _pending[result] = pending;
+        {
+            if (!_disposed)
+            {
+                _pending[result] = pending;
+                return result;
+            }
+        }
 
-        return result;
+        ReleaseAcquiredRecord(partition, record);
+        throw new ObjectDisposedException(GetType().FullName);
     }
 
     private async ValueTask<ShareConsumeResult<TKey, TValue>> ToShareResultAsync(
@@ -559,6 +561,19 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             return;
 
         _cluster.ReleaseShareRecords(_options.GroupId, _memberId, BuildCompletedRecords(_pending.Values));
+        _pending.Clear();
+    }
+
+    private void CompletePendingUnderLock()
+    {
+        if (_pending.Count == 0)
+            return;
+
+        var pending = _pending.Values.ToArray();
+        var offsets = BuildCommitOffsets(pending);
+        var completedRecords = BuildCompletedRecords(pending);
+
+        _cluster.CompleteShareRecords(_options.GroupId, _memberId, completedRecords, offsets);
         _pending.Clear();
     }
 

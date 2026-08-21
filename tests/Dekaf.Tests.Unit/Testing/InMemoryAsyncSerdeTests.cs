@@ -4,6 +4,7 @@ using Dekaf.Admin;
 using Dekaf.Consumer;
 using Dekaf.Errors;
 using Dekaf.Producer;
+using Dekaf.Protocol;
 using Dekaf.Serialization;
 using Dekaf.ShareConsumer;
 using Dekaf.Testing;
@@ -380,6 +381,42 @@ public sealed class InMemoryAsyncSerdeTests
     }
 
     [Test]
+    public async Task ShareConsumer_CloseDuringAsyncDeserialization_ReleasesAcquiredRecord()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        var deserializer = new BlockingAsyncDeserializer();
+        var consumer = new InMemoryShareConsumer<string, string>(
+            cluster,
+            Serializers.String,
+            deserializer,
+            new InMemoryShareConsumerOptions { GroupId = "share-close-race" });
+        var admin = new InMemoryAdminClient(cluster);
+
+        await producer.ProduceAsync("shared", "k", "v");
+        consumer.Subscribe("shared");
+
+        var poll = consumer.PollAsync().FirstAsync().AsTask();
+        try
+        {
+            await deserializer.Entered.WaitAsync(TimeSpan.FromSeconds(5));
+            await consumer.CloseAsync();
+
+            var activeDeletion = await admin.DeleteShareGroupsAsync(["share-close-race"]);
+            await Assert.That(activeDeletion["share-close-race"].ErrorCode).IsEqualTo(ErrorCode.NonEmptyGroup);
+        }
+        finally
+        {
+            deserializer.Release();
+        }
+
+        await Assert.That(async () => await poll).Throws<ObjectDisposedException>();
+
+        var deletion = await admin.DeleteShareGroupsAsync(["share-close-race"]);
+        await Assert.That(deletion["share-close-race"].ErrorCode).IsEqualTo(ErrorCode.None);
+    }
+
+    [Test]
     public async Task ShareConsumer_SyncDeserializerFailure_ReleasesRecordForOtherMembers()
     {
         var cluster = new InMemoryKafkaCluster();
@@ -444,6 +481,28 @@ public sealed class InMemoryAsyncSerdeTests
             Context = context;
             return Encoding.UTF8.GetString(data.Span);
         }
+    }
+
+    private sealed class BlockingAsyncDeserializer : IAsyncDeserializer<string>
+    {
+        private readonly TaskCompletionSource _entered = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _release = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task Entered => _entered.Task;
+
+        public async ValueTask<string> DeserializeAsync(
+            ReadOnlyMemory<byte> data,
+            SerializationContext context,
+            CancellationToken cancellationToken = default)
+        {
+            _entered.TrySetResult();
+            await _release.Task.WaitAsync(cancellationToken);
+            return Encoding.UTF8.GetString(data.Span);
+        }
+
+        public void Release() => _release.TrySetResult();
     }
 
     /// <summary>
