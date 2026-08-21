@@ -766,9 +766,11 @@ public sealed class AvroSchemaRegistrySerializer<
                 .ConfigureAwait(false);
         }
 
-        var existing = await _schemaRegistry.GetSchemaBySubjectAsync(
+        var existing = await _schemaRegistry.LookupSchemaAsync(
                 subject,
-                "latest",
+                registrySchema,
+                ignoreDeletedSchemas: true,
+                normalize: _config.NormalizeSchemas,
                 cancellationToken)
             .ConfigureAwait(false);
         return await CreateResolvedValueAsync(

@@ -404,6 +404,50 @@ public sealed class AvroSerializerTests
     }
 
     [Test]
+    public async Task HeaderStrategy_LookupMode_UsesRuntimeGenericRecordSchema()
+    {
+        const string subject = "avro-lookup-value";
+        const string writerSchemaText =
+            """
+            {"type":"record","name":"LookupRecord","fields":[{"name":"id","type":"int"}]}
+            """;
+        const string latestSchemaText =
+            """
+            {"type":"record","name":"LookupRecord","fields":[{"name":"id","type":"int"},{"name":"name","type":"string","default":""}]}
+            """;
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        var writerSchemaId = await schemaRegistry.RegisterSchemaAsync(
+            subject,
+            new RegistrySchema { SchemaType = SchemaType.Avro, SchemaString = writerSchemaText });
+        _ = await schemaRegistry.RegisterSchemaAsync(
+            subject,
+            new RegistrySchema { SchemaType = SchemaType.Avro, SchemaString = latestSchemaText });
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(
+            schemaRegistry,
+            new AvroSerializerConfig
+            {
+                AutoRegisterSchemas = false,
+                SchemaIdStrategy = SchemaIdSerializerStrategy.Header
+            });
+        var writerSchema = (Avro.RecordSchema)AvroSchema.Parse(writerSchemaText);
+        var record = new GenericRecord(writerSchema);
+        record.Add("id", 42);
+        var destination = new ArrayBufferWriter<byte>();
+        var headers = new Headers();
+
+        serializer.Serialize(record, ref destination, new SerializationContext
+        {
+            Topic = "avro-lookup",
+            Component = SerializationComponent.Value,
+            Headers = headers
+        });
+
+        var expectedFrame = SchemaIdentityFraming.CreateSchemaGuidFrame(
+            new Guid(writerSchemaId, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0));
+        await Assert.That(headers.Single().Value.ToArray()).IsEquivalentTo(expectedFrame);
+    }
+
+    [Test]
     [Arguments(SchemaIdDeserializerStrategy.Header)]
     [Arguments(SchemaIdDeserializerStrategy.Dual)]
     public async Task GuidStrategy_ReferencedGenericRecord_ResolvesWriterReferences(
