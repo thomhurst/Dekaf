@@ -456,6 +456,8 @@ public class SchemaRegistryRuleContextBenchmarks
 public class SchemaRegistryMigrationBenchmarks
 {
     private static readonly byte[] Payload = "benchmark-payload"u8.ToArray();
+    private static readonly byte[] LargePayload = Enumerable.Repeat((byte)'x', 64 * 1024).ToArray();
+    private static readonly byte[] LargePayloadCopy = LargePayload.ToArray();
     private static readonly SerializationContext Context = new()
     {
         Topic = "benchmark-topic",
@@ -466,6 +468,10 @@ public class SchemaRegistryMigrationBenchmarks
     private SchemaRegistryMigrationRunner _disabledMigration = null!;
     private SchemaRegistryMigrationRunner _activeMigration = null!;
     private SchemaRegistryMigrationRunner _alternatingMigration = null!;
+    private SchemaRegistryMigrationRunner _legacyReaderDomain = null!;
+    private SchemaRegistryMigrationRunner _reportedReaderDomain = null!;
+    private Schema _legacyReaderDomainWriter = null!;
+    private Schema _reportedReaderDomainWriter = null!;
     private Schema _noMigrationWriter = null!;
     private Schema _disabledWriter = null!;
     private Schema _activeWriter = null!;
@@ -488,12 +494,18 @@ public class SchemaRegistryMigrationBenchmarks
             sameVersion: false);
         (_alternatingMigration, _alternatingWriterOne, _alternatingWriterTwo) =
             CreateAlternatingRunner(executor);
+        (_legacyReaderDomain, _legacyReaderDomainWriter) =
+            CreateReaderDomainRunner(LegacyCopyingRuleHandler.Instance);
+        (_reportedReaderDomain, _reportedReaderDomainWriter) =
+            CreateReaderDomainRunner(ReportedCopyingRuleHandler.Instance);
 
         _ = NoMigration();
         _ = DisabledMigration();
         _ = ActiveMigration();
         _ = AlternatingWriterSchemas();
         _ = AlternatingWriterSchemas();
+        _ = LegacyReaderDomainNoOp();
+        _ = ReportedReaderDomainNoOp();
     }
 
     [Benchmark(Baseline = true)]
@@ -541,6 +553,26 @@ public class SchemaRegistryMigrationBenchmarks
             SchemaRegistryPayloadFormat.Json).Payload;
     }
 
+    [Benchmark]
+    public ReadOnlyMemory<byte> LegacyReaderDomainNoOp() =>
+        _legacyReaderDomain.Transform(
+            LargePayload,
+            1,
+            "benchmark-topic-value",
+            _legacyReaderDomainWriter,
+            Context,
+            SchemaRegistryPayloadFormat.Json).Payload;
+
+    [Benchmark]
+    public ReadOnlyMemory<byte> ReportedReaderDomainNoOp() =>
+        _reportedReaderDomain.Transform(
+            LargePayload,
+            1,
+            "benchmark-topic-value",
+            _reportedReaderDomainWriter,
+            Context,
+            SchemaRegistryPayloadFormat.Json).Payload;
+
     private static (SchemaRegistryMigrationRunner Runner, Schema Writer) CreateRunner(
         SchemaRegistryRuleExecutor executor,
         SchemaRule? targetRule,
@@ -571,6 +603,37 @@ public class SchemaRegistryMigrationBenchmarks
             writerTwo);
     }
 
+    private static (SchemaRegistryMigrationRunner Runner, Schema Writer) CreateReaderDomainRunner(
+        ISchemaRegistryRuleHandler handler)
+    {
+        var writer = new Schema { SchemaType = SchemaType.Json, SchemaString = "writer" };
+        var reader = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = "reader",
+            RuleSet = new SchemaRuleSet
+            {
+                DomainRules =
+                [
+                    new SchemaRule
+                    {
+                        Name = "reader-domain",
+                        Kind = SchemaRuleKind.Transform,
+                        Mode = SchemaRuleMode.Read,
+                        Type = handler.Type
+                    }
+                ]
+            }
+        };
+        var client = new MigrationBenchmarkRegistryClient(writer, reader);
+        return (
+            new SchemaRegistryMigrationRunner(
+                client,
+                new SchemaRegistryRuleExecutor([handler]),
+                TimeSpan.FromSeconds(1)),
+            writer);
+    }
+
     private static SchemaRule CreateMigrationRule(bool disabled) =>
         new()
         {
@@ -595,6 +658,38 @@ public class SchemaRegistryMigrationBenchmarks
         public ReadOnlyMemory<byte> TransformDeserializedPayload(
             ReadOnlyMemory<byte> payload,
             SchemaRegistryRuleHandlerContext context) => payload;
+    }
+
+    private sealed class LegacyCopyingRuleHandler : ISchemaRegistryRuleHandler
+    {
+        internal static LegacyCopyingRuleHandler Instance { get; } = new();
+        public string Type => "LEGACY-COPY";
+        public ReadOnlyMemory<byte> TransformSerializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleHandlerContext context) => payload;
+        public ReadOnlyMemory<byte> TransformDeserializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleHandlerContext context) => LargePayloadCopy;
+    }
+
+    private sealed class ReportedCopyingRuleHandler : ISchemaRegistryRuleTransformResultHandler
+    {
+        internal static ReportedCopyingRuleHandler Instance { get; } = new();
+        public string Type => "REPORTED-COPY";
+        public ReadOnlyMemory<byte> TransformSerializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleHandlerContext context) => payload;
+        public ReadOnlyMemory<byte> TransformDeserializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleHandlerContext context) => LargePayloadCopy;
+        public ReadOnlyMemory<byte> TransformDeserializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleHandlerContext context,
+            out bool payloadChanged)
+        {
+            payloadChanged = false;
+            return LargePayloadCopy;
+        }
     }
 
     private sealed class MigrationBenchmarkRegistryClient(

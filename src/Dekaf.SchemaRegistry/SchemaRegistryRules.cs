@@ -475,6 +475,26 @@ public interface ISchemaRegistryRuleHandler
 }
 
 /// <summary>
+/// Reports whether a read-side rule transform changed the payload representation.
+/// </summary>
+/// <remarks>
+/// Implement this optional interface when the handler can determine the result while transforming.
+/// It avoids a second full-payload comparison on deserialization hot paths. Implementations must set
+/// <c>payloadChanged</c> to <see langword="false" /> when the returned bytes have the
+/// same representation, including when they are stored in different memory.
+/// </remarks>
+public interface ISchemaRegistryRuleTransformResultHandler : ISchemaRegistryRuleHandler
+{
+    /// <summary>
+    /// Applies a read-side transform and reports whether the payload representation changed.
+    /// </summary>
+    ReadOnlyMemory<byte> TransformDeserializedPayload(
+        ReadOnlyMemory<byte> payload,
+        SchemaRegistryRuleHandlerContext context,
+        out bool payloadChanged);
+}
+
+/// <summary>
 /// Runs a configured Schema Registry rule success or failure action.
 /// </summary>
 public interface ISchemaRegistryRuleAction
@@ -963,6 +983,8 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         if (rules is null || rules.Count == 0)
             return payload;
 
+        var input = payload;
+        var requiresContentComparison = false;
         var isWrite = direction == SchemaRegistryRuleDirection.Write;
         var index = isWrite ? 0 : rules.Count - 1;
         var end = isWrite ? rules.Count : -1;
@@ -974,12 +996,25 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
                 continue;
 
             _handlers.TryGetValue(rule.Type, out var handler);
-            if (ApplyRule(ref payload, context, rule, handler, direction)
-                && rule.Kind == SchemaRuleKind.Transform)
+            if (ApplyRule(
+                    ref payload,
+                    context,
+                    rule,
+                    handler,
+                    direction,
+                    trackPayloadChange: true,
+                    out var payloadChanged) &&
+                rule.Kind == SchemaRuleKind.Transform)
             {
-                payloadWasTransformed = true;
+                if (payloadChanged is { } changed)
+                    payloadWasTransformed |= changed;
+                else
+                    requiresContentComparison = true;
             }
         }
+
+        if (requiresContentComparison)
+            payloadWasTransformed = PayloadContentChanged(input, payload);
 
         return payload;
     }
@@ -1019,16 +1054,31 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         out bool payloadWasTransformed)
     {
         payloadWasTransformed = false;
+        var input = payload;
+        var requiresContentComparison = false;
         var end = start + count;
         for (var i = start; i < end; i++)
         {
             ref readonly var step = ref steps[i];
-            if (ApplyRule(ref payload, context, step.Rule, step.Handler, direction)
-                && step.Rule.Kind == SchemaRuleKind.Transform)
+            if (ApplyRule(
+                    ref payload,
+                    context,
+                    step.Rule,
+                    step.Handler,
+                    direction,
+                    trackPayloadChange: true,
+                    out var payloadChanged) &&
+                step.Rule.Kind == SchemaRuleKind.Transform)
             {
-                payloadWasTransformed = true;
+                if (payloadChanged is { } changed)
+                    payloadWasTransformed |= changed;
+                else
+                    requiresContentComparison = true;
             }
         }
+
+        if (requiresContentComparison)
+            payloadWasTransformed = PayloadContentChanged(input, payload);
 
         return payload;
     }
@@ -1049,8 +1099,26 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         SchemaRegistryRuleContext context,
         SchemaRule rule,
         ISchemaRegistryRuleHandler? handler,
-        SchemaRegistryRuleDirection direction)
+        SchemaRegistryRuleDirection direction) =>
+        ApplyRule(
+            ref payload,
+            context,
+            rule,
+            handler,
+            direction,
+            trackPayloadChange: false,
+            out _);
+
+    private bool ApplyRule(
+        ref ReadOnlyMemory<byte> payload,
+        SchemaRegistryRuleContext context,
+        SchemaRule rule,
+        ISchemaRegistryRuleHandler? handler,
+        SchemaRegistryRuleDirection direction,
+        bool trackPayloadChange,
+        out bool? payloadChanged)
     {
+        payloadChanged = false;
         var handlerContext = RentHandlerContext(context, rule, direction);
         try
         {
@@ -1065,9 +1133,30 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
             {
                 try
                 {
-                    transformedPayload = direction == SchemaRegistryRuleDirection.Write
-                        ? handler.TransformSerializedPayload(payload, handlerContext)
-                        : handler.TransformDeserializedPayload(payload, handlerContext);
+                    if (trackPayloadChange &&
+                        direction == SchemaRegistryRuleDirection.Read &&
+                        rule.Kind == SchemaRuleKind.Transform)
+                    {
+                        if (handler is ISchemaRegistryRuleTransformResultHandler resultHandler)
+                        {
+                            transformedPayload = resultHandler.TransformDeserializedPayload(
+                                payload,
+                                handlerContext,
+                                out var changed);
+                            payloadChanged = changed;
+                        }
+                        else
+                        {
+                            transformedPayload = handler.TransformDeserializedPayload(payload, handlerContext);
+                            payloadChanged = null;
+                        }
+                    }
+                    else
+                    {
+                        transformedPayload = direction == SchemaRegistryRuleDirection.Write
+                            ? handler.TransformSerializedPayload(payload, handlerContext)
+                            : handler.TransformDeserializedPayload(payload, handlerContext);
+                    }
                 }
                 catch (SchemaRegistryRuleException ex)
                 {
@@ -1098,6 +1187,12 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
             ReturnHandlerContext(handlerContext);
         }
     }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool PayloadContentChanged(
+        ReadOnlyMemory<byte> input,
+        ReadOnlyMemory<byte> output) =>
+        !input.Equals(output) && !input.Span.SequenceEqual(output.Span);
 
     private RuleExecutionPlan CreateExecutionPlan(SchemaRuleSet ruleSet)
     {
