@@ -958,6 +958,9 @@ public sealed class InMemoryKafkaCluster
 
             foreach (var partition in partitions)
                 offsets.Remove(partition);
+
+            if (offsets.Count == 0)
+                _shareGroupOffsets.Remove(groupId);
         }
     }
 
