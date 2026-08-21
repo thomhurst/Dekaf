@@ -9,7 +9,7 @@ namespace Dekaf.Testing;
 /// <summary>
 /// In-memory <see cref="IAdminClient"/> for common topic and group-offset test operations.
 /// </summary>
-public sealed class InMemoryAdminClient : IAdminClient, IReplicaLogDirAdminClient
+public sealed class InMemoryAdminClient : IAdminClient, IReplicaLogDirAdminClient, ITopicIdAdminClient
 {
     private static readonly TimeSpan DefaultDelegationTokenLifetime = TimeSpan.FromHours(24);
 
@@ -96,6 +96,27 @@ public sealed class InMemoryAdminClient : IAdminClient, IReplicaLogDirAdminClien
         return ValueTask.CompletedTask;
     }
 
+    public ValueTask DeleteTopicsAsync(
+        IEnumerable<Guid> topicIds,
+        DeleteTopicsOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(topicIds);
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+
+        foreach (var topicId in topicIds.Distinct())
+        {
+            if (topicId == Guid.Empty)
+                throw new ArgumentException("Topic IDs cannot contain the empty UUID.", nameof(topicIds));
+
+            if (!_cluster.DeleteTopic(topicId))
+                throw new KafkaException(ErrorCode.UnknownTopicId, $"Topic ID '{topicId}' does not exist.");
+        }
+
+        return ValueTask.CompletedTask;
+    }
+
     public ValueTask<IReadOnlyList<TopicListing>> ListTopicsAsync(
         ListTopicsOptions? options = null,
         CancellationToken cancellationToken = default)
@@ -113,6 +134,16 @@ public sealed class InMemoryAdminClient : IAdminClient, IReplicaLogDirAdminClien
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
         return ValueTask.FromResult(_cluster.DescribeTopics(topicNames));
+    }
+
+    public ValueTask<IReadOnlyDictionary<Guid, TopicDescription>> DescribeTopicsAsync(
+        IEnumerable<Guid> topicIds,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(topicIds);
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+        return ValueTask.FromResult(_cluster.DescribeTopics(topicIds));
     }
 
     public ValueTask<IReadOnlyDictionary<string, TopicDescription>> DescribeTopicPartitionsAsync(

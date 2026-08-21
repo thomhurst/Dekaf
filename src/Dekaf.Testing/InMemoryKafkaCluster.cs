@@ -110,6 +110,27 @@ public sealed class InMemoryKafkaCluster
             return _topics.Remove(name);
     }
 
+    internal bool DeleteTopic(Guid topicId)
+    {
+        if (topicId == Guid.Empty)
+            return false;
+
+        lock (_gate)
+        {
+            string? topicName = null;
+            foreach (var topic in _topics.Values)
+            {
+                if (topic.TopicId == topicId)
+                {
+                    topicName = topic.Name;
+                    break;
+                }
+            }
+
+            return topicName is not null && _topics.Remove(topicName);
+        }
+    }
+
     public IReadOnlyList<string> ListTopics()
     {
         lock (_gate)
@@ -856,6 +877,44 @@ public sealed class InMemoryKafkaCluster
             {
                 var topic = GetTopicForRead(name);
                 result[name] = DescribeTopic(topic);
+            }
+
+            return result;
+        }
+    }
+
+    internal IReadOnlyDictionary<Guid, TopicDescription> DescribeTopics(IEnumerable<Guid> topicIds)
+    {
+        lock (_gate)
+        {
+            var result = new Dictionary<Guid, TopicDescription>();
+            foreach (var topicId in topicIds)
+            {
+                if (topicId == Guid.Empty)
+                    throw new ArgumentException("Topic IDs cannot contain the empty UUID.", nameof(topicIds));
+
+                if (result.ContainsKey(topicId))
+                    continue;
+
+                TopicState? found = null;
+                foreach (var topic in _topics.Values)
+                {
+                    if (topic.TopicId == topicId)
+                    {
+                        found = topic;
+                        break;
+                    }
+                }
+
+                result[topicId] = found is not null
+                    ? DescribeTopic(found)
+                    : new TopicDescription
+                    {
+                        Name = string.Empty,
+                        TopicId = topicId,
+                        Partitions = [],
+                        ErrorCode = ErrorCode.UnknownTopicId
+                    };
             }
 
             return result;
