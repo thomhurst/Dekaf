@@ -28,7 +28,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private readonly record struct PendingAutoCommitAdvancement(
         long Position,
         bool ResumePartition,
-        TaskCompletionSource Completion,
+        TaskCompletionSource<TopicPartitionOffset[]?> Completion,
         TopicPartitionOffset[]? CapturedOffsets);
 
     private readonly record struct ConsumerSelectionVersion(
@@ -446,11 +446,12 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 // Resuming after the yield proves that the caller processed this record.
                 // Do this before the loop observes cancellation, matching KafkaConsumer.
                 ThrowIfDisposed();
-                await ApplyInDoubtAutoCommitFaultAsync(CancellationToken.None).ConfigureAwait(false);
+                var capturedOffsets = await ApplyInDoubtAutoCommitFaultAsync(
+                    CancellationToken.None).ConfigureAwait(false);
                 ThrowIfDisposed();
                 lock (_gate)
                 {
-                    ProveInDoubtRecordUnderLock();
+                    ProveInDoubtRecordUnderLock(capturedOffsets);
                 }
             }
         }
@@ -515,7 +516,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                await ApplyInDoubtAutoCommitFaultAsync(cancellationToken).ConfigureAwait(false);
+                var capturedOffsets = await ApplyInDoubtAutoCommitFaultAsync(
+                    cancellationToken).ConfigureAwait(false);
 
                 TopicPartition partition;
                 InMemoryRecord record;
@@ -528,7 +530,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                         consumerStateVersion,
                         consumerGroupGeneration);
 
-                    ProveInDoubtRecordUnderLock();
+                    ProveInDoubtRecordUnderLock(capturedOffsets);
                     if (!TrySelectSnapshotRecordUnderLock(
                             partitions,
                             ref activePartitionIndex,
@@ -558,14 +560,14 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
                 if (complete)
                 {
-                    TopicPartitionOffset[] capturedOffsets;
+                    TopicPartitionOffset[] completionOffsets;
                     ValueTask commitFaultApplication;
                     lock (_gate)
                     {
                         ThrowIfSnapshotStateChangedUnderLock(
                             consumerStateVersion,
                             consumerGroupGeneration);
-                        capturedOffsets = CaptureStoredAutoCommitOffsetsUnderLock(
+                        completionOffsets = CaptureStoredAutoCommitOffsetsUnderLock(
                             cancellationToken,
                             out commitFaultApplication);
                     }
@@ -576,7 +578,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                         ThrowIfSnapshotStateChangedUnderLock(
                             consumerStateVersion,
                             consumerGroupGeneration);
-                        CommitCapturedOffsetsUnderLock(capturedOffsets);
+                        CommitCapturedOffsetsUnderLock(completionOffsets);
                     }
 
                     yield break;
@@ -1131,7 +1133,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 foreach (var (partition, pending) in _pendingAutoCommitAdvancements)
                 {
                     _paused.Remove(partition);
-                    pending.Completion.TrySetResult();
+                    pending.Completion.TrySetResult(pending.CapturedOffsets);
                 }
 
                 _pendingAutoCommitAdvancements = null;
@@ -1578,7 +1580,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     /// </summary>
     private async ValueTask<ConsumeResult<TKey, TValue>?> TryConsumeOneAsync(CancellationToken cancellationToken)
     {
-        await ApplyInDoubtAutoCommitFaultAsync(cancellationToken).ConfigureAwait(false);
+        var capturedOffsets = await ApplyInDoubtAutoCommitFaultAsync(
+            cancellationToken).ConfigureAwait(false);
         ThrowIfDisposed();
 
         var previousRecordProven = false;
@@ -1586,6 +1589,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         {
             if (!TrySelectRecordWithVersion(
                     ref previousRecordProven,
+                    capturedOffsets,
                     out var partition,
                     out var record,
                     out var position,
@@ -1712,6 +1716,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
     private bool TrySelectRecordWithVersion(
         ref bool previousRecordProven,
+        TopicPartitionOffset[]? capturedOffsets,
         out TopicPartition selectedPartition,
         out InMemoryRecord selectedRecord,
         out long selectedPosition,
@@ -1723,7 +1728,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             {
                 // A new consume call proves the previously delivered record was processed
                 // (poll contract) — stage it before selecting the next one.
-                ProveInDoubtRecordUnderLock();
+                ProveInDoubtRecordUnderLock(capturedOffsets);
                 if (IsInDoubtAutoCommitAdvancementPendingUnderLock())
                 {
                     selectedPartition = default;
@@ -1997,7 +2002,9 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     /// Stages (and under Auto mode commits) the in-doubt record's offset. Called when the
     /// application demonstrably moved past it: a subsequent consume call or explicit commit.
     /// </summary>
-    private void ProveInDoubtRecordUnderLock(bool commitAutomatically = true)
+    private void ProveInDoubtRecordUnderLock(
+        TopicPartitionOffset[]? capturedOffsets = null,
+        bool commitAutomatically = true)
     {
         if (_inDoubtNextOffset < 0)
             return;
@@ -2011,7 +2018,12 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         _inDoubtNextOffset = -1;
 
         if (commitAutomatically && _options.OffsetCommitMode == OffsetCommitMode.Auto)
-            CommitStoredOffsets();
+        {
+            if (capturedOffsets is null)
+                CommitStoredOffsets();
+            else
+                CommitCapturedOffsetsUnderLock(capturedOffsets);
+        }
     }
 
     private bool IsInDoubtAutoCommitAdvancementPendingUnderLock() =>
@@ -2398,7 +2410,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             (_pendingAutoCommitAdvancements ??= [])[partition] = new PendingAutoCommitAdvancement(
                 expectedPosition,
                 resumePartition,
-                new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously),
+                new TaskCompletionSource<TopicPartitionOffset[]?>(
+                    TaskCreationOptions.RunContinuationsAsynchronously),
                 capturedOffsets);
             hasReservation = true;
         }
@@ -2485,7 +2498,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         if (_pendingAutoCommitAdvancements.Count == 0)
             _pendingAutoCommitAdvancements = null;
 
-        pending.Completion.TrySetResult();
+        pending.Completion.TrySetResult(pending.CapturedOffsets);
         _cluster.SignalRecordsChanged();
     }
 
@@ -2498,19 +2511,21 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         }
     }
 
-    private ValueTask ApplyInDoubtAutoCommitFaultAsync(CancellationToken cancellationToken)
+    private ValueTask<TopicPartitionOffset[]?> ApplyInDoubtAutoCommitFaultAsync(
+        CancellationToken cancellationToken)
     {
         if (_options.OffsetCommitMode != OffsetCommitMode.Auto)
-            return ValueTask.CompletedTask;
+            return default;
 
         TopicPartition inDoubtPartition;
         long inDoubtNextOffset;
+        TopicPartitionOffset[] capturedOffsets;
         ValueTask faultApplication;
         lock (_gate)
         {
             ThrowIfDisposed();
             if (_inDoubtNextOffset < 0)
-                return ValueTask.CompletedTask;
+                return default;
 
             inDoubtPartition = _inDoubtPartition;
             inDoubtNextOffset = _inDoubtNextOffset;
@@ -2518,19 +2533,23 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 _pendingAutoCommitAdvancements.TryGetValue(inDoubtPartition, out var pending) &&
                 pending.Position == inDoubtNextOffset)
             {
-                return new ValueTask(pending.Completion.Task.WaitAsync(cancellationToken));
+                return new ValueTask<TopicPartitionOffset[]?>(
+                    pending.Completion.Task.WaitAsync(cancellationToken));
             }
 
             var inDoubtOffset = _options.EnableAutoOffsetStore
-                ? inDoubtPartition
-                : (TopicPartition?)null;
-            if (!TryApplyMatchingCommitFaultUnderLock(
+                ? new TopicPartitionOffset(
+                    inDoubtPartition.Topic,
+                    inDoubtPartition.Partition,
+                    inDoubtNextOffset)
+                : (TopicPartitionOffset?)null;
+            if (!TryCaptureAndApplyMatchingCommitFaultUnderLock(
                     inDoubtOffset,
-                    requireInDoubtRecord: true,
                     cancellationToken,
+                    out capturedOffsets,
                     out faultApplication))
             {
-                return ValueTask.CompletedTask;
+                return default;
             }
 
             var resumePartition = _paused.Add(inDoubtPartition);
@@ -2539,24 +2558,28 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             (_pendingAutoCommitAdvancements ??= [])[inDoubtPartition] = new PendingAutoCommitAdvancement(
                 inDoubtNextOffset,
                 resumePartition,
-                new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously),
-                CapturedOffsets: null);
+                new TaskCompletionSource<TopicPartitionOffset[]?>(
+                    TaskCreationOptions.RunContinuationsAsynchronously),
+                capturedOffsets);
         }
 
         return ApplyInDoubtAutoCommitFaultAndClearAsync(
             faultApplication,
             inDoubtPartition,
-            inDoubtNextOffset);
+            inDoubtNextOffset,
+            capturedOffsets);
     }
 
-    private async ValueTask ApplyInDoubtAutoCommitFaultAndClearAsync(
+    private async ValueTask<TopicPartitionOffset[]?> ApplyInDoubtAutoCommitFaultAndClearAsync(
         ValueTask faultApplication,
         TopicPartition partition,
-        long expectedPosition)
+        long expectedPosition,
+        TopicPartitionOffset[] capturedOffsets)
     {
         try
         {
             await faultApplication.ConfigureAwait(false);
+            return capturedOffsets;
         }
         finally
         {
@@ -2585,92 +2608,6 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     {
         if (_groupId is not null && offsets.Length != 0)
             _cluster.CommitOffsets(_groupId, offsets);
-    }
-
-    private bool TryApplyMatchingCommitFaultUnderLock(
-        TopicPartition? pendingOffset,
-        bool requireInDoubtRecord,
-        CancellationToken cancellationToken,
-        out ValueTask faultApplication)
-    {
-        faultApplication = ValueTask.CompletedTask;
-        if (_groupId is null || (requireInDoubtRecord && _inDoubtNextOffset < 0))
-            return false;
-
-        if (_cluster.FaultPlan is KafkaFaultPlan indexedPlan)
-        {
-            if (!indexedPlan.HasPotentialMatch(KafkaFaultOperation.Commit, _groupId))
-                return false;
-
-            if (pendingOffset is { } onlyPending && _storedOffsets.Count == 0)
-            {
-                var faultScope = new KafkaFaultScope(
-                    KafkaFaultOperation.Commit,
-                    onlyPending.Topic,
-                    onlyPending.Partition,
-                    _groupId);
-                return indexedPlan.TryApplyFirstMatchingFault(
-                    [faultScope],
-                    out faultApplication,
-                    cancellationToken);
-            }
-
-            if (_storedOffsets.Count == 0)
-                return false;
-
-            var currentAssignment = GetCurrentAssignmentUnderLock();
-            return indexedPlan.TryApplyFirstMatchingCommitFault(
-                _groupId,
-                pendingOffset,
-                _storedOffsets,
-                currentAssignment,
-                out faultApplication,
-                cancellationToken);
-        }
-
-        var faultPlan = _cluster.FaultPlan;
-        if (faultPlan.Count == 0)
-            return false;
-
-        var assignment = GetCurrentAssignmentUnderLock();
-        var resourceCount = pendingOffset is null ? 0 : 1;
-        foreach (var partition in _storedOffsets.Keys)
-        {
-            if (assignment.Contains(partition) && partition != pendingOffset)
-                resourceCount++;
-        }
-
-        if (resourceCount == 0)
-            return false;
-
-        var candidateScopes = new KafkaFaultScope[resourceCount + 1];
-        candidateScopes[0] = new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: _groupId);
-        var candidateIndex = 1;
-        if (pendingOffset is { } pendingPartition)
-        {
-            candidateScopes[candidateIndex++] = new KafkaFaultScope(
-                KafkaFaultOperation.Commit,
-                pendingPartition.Topic,
-                pendingPartition.Partition,
-                _groupId);
-        }
-
-        foreach (var partition in _storedOffsets.Keys)
-        {
-            if (!assignment.Contains(partition) || partition == pendingOffset)
-                continue;
-
-            candidateScopes[candidateIndex++] = new KafkaFaultScope(
-                KafkaFaultOperation.Commit,
-                partition.Topic,
-                partition.Partition,
-                _groupId);
-        }
-
-        return faultPlan.TryApplyFirstMatchingFault(
-            candidateScopes,
-            out faultApplication,
-            cancellationToken);
     }
 
     private bool HasPotentialConsumerFault() =>

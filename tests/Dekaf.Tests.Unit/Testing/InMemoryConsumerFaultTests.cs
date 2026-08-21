@@ -1679,6 +1679,36 @@ public sealed class InMemoryConsumerFaultTests
     }
 
     [Test]
+    public async Task AutoCommit_AfterProcessingFaultObserverCannotWidenCapturedOffsets()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic(Topic, partitionCount: 2);
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync(Topic, "key", "value");
+        await using var consumer = CreateConsumer(
+            cluster,
+            enableAutoOffsetStore: true,
+            offsetCommitMode: OffsetCommitMode.Auto,
+            offsetStoreTiming: OffsetStoreTiming.AfterProcessing);
+        var secondPartition = new TopicPartition(Topic, 1);
+        consumer.Assign(Partition, secondPartition);
+        consumer.StoreOffset(new TopicPartitionOffset(Topic, 1, 1));
+        _ = await consumer.ConsumeOneAsync(TimeSpan.Zero);
+        var barrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, Topic, 0, GroupId));
+        cluster.FaultPlan.FaultConsumed += _ =>
+            consumer.StoreOffset(new TopicPartitionOffset(Topic, 1, 9));
+
+        var consume = consumer.ConsumeOneAsync(TimeSpan.Zero).AsTask();
+        await barrier.WaitUntilEnteredAsync();
+        await Assert.That(barrier.Release()).IsTrue();
+        _ = await consume;
+
+        await Assert.That(await consumer.GetCommittedOffsetAsync(Partition)).IsEqualTo(1);
+        await Assert.That(await consumer.GetCommittedOffsetAsync(secondPartition)).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task AutoCommit_AfterProcessingBarrierPreservesCallerPause()
     {
         var cluster = new InMemoryKafkaCluster();
