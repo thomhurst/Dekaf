@@ -544,6 +544,155 @@ public sealed class AdminClientTransactionIntrospectionTests
     }
 
     [Test]
+    public async Task ForceTerminateTransactionAsync_UsesTransactionCoordinatorAndFencesProducer()
+    {
+        var (admin, connections) = CreateAdminWithMockConnections(initProducerIdMaxVersion: 6);
+        SetupTransactionCoordinatorLookup(connections[1], coordinatorId: 2);
+        connections[2].SendAsync<InitProducerIdRequest, InitProducerIdResponse>(
+                Arg.Any<InitProducerIdRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new InitProducerIdResponse
+            {
+                ErrorCode = ErrorCode.None,
+                ProducerId = 202,
+                ProducerEpoch = 4
+            }));
+
+        var result = await admin.ForceTerminateTransactionAsync(
+            "tx-force",
+            new ForceTerminateTransactionOptions { TimeoutMs = 12345 });
+
+        await Assert.That(result.TransactionalId).IsEqualTo("tx-force");
+        await Assert.That(result.ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(result.IsRetriable).IsFalse();
+        await Assert.That(result.ProducerId).IsEqualTo(202);
+        await Assert.That(result.ProducerEpoch).IsEqualTo((short)4);
+        await connections[1].Received(1).SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+            Arg.Is<FindCoordinatorRequest>(request =>
+                request != null &&
+                request.Key == "tx-force" &&
+                request.KeyType == CoordinatorType.Transaction),
+            5,
+            Arg.Any<CancellationToken>());
+        await connections[2].Received(1).SendAsync<InitProducerIdRequest, InitProducerIdResponse>(
+            Arg.Is<InitProducerIdRequest>(request =>
+                request != null &&
+                request.TransactionalId == "tx-force" &&
+                request.TransactionTimeoutMs == 12345 &&
+                request.ProducerId == -1 &&
+                request.ProducerEpoch == -1 &&
+                !request.EnableTwoPhaseCommit &&
+                !request.KeepPreparedTransaction),
+            6,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task ForceTerminateTransactionAsync_WithoutTimeout_UsesRequestTimeout()
+    {
+        var (admin, connections) = CreateAdminWithMockConnections(requestTimeoutMs: 4321);
+        SetupTransactionCoordinatorLookup(connections[1], coordinatorId: 2);
+        connections[2].SendAsync<InitProducerIdRequest, InitProducerIdResponse>(
+                Arg.Any<InitProducerIdRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new InitProducerIdResponse { ErrorCode = ErrorCode.None }));
+
+        _ = await admin.ForceTerminateTransactionAsync("tx-default-timeout");
+
+        await connections[2].Received(1).SendAsync<InitProducerIdRequest, InitProducerIdResponse>(
+            Arg.Is<InitProducerIdRequest>(request =>
+                request != null &&
+                request.TransactionTimeoutMs == 4321),
+            Arg.Any<short>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task ForceTerminateTransactionAsync_PreservesNonRetriableBrokerError()
+    {
+        var (admin, connections) = CreateAdminWithMockConnections();
+        SetupTransactionCoordinatorLookup(connections[1], coordinatorId: 1);
+        connections[1].SendAsync<InitProducerIdRequest, InitProducerIdResponse>(
+                Arg.Any<InitProducerIdRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new InitProducerIdResponse
+            {
+                ErrorCode = ErrorCode.TransactionalIdAuthorizationFailed
+            }));
+
+        var result = await admin.ForceTerminateTransactionAsync("tx-denied");
+
+        await Assert.That(result.ErrorCode).IsEqualTo(ErrorCode.TransactionalIdAuthorizationFailed);
+        await Assert.That(result.IsRetriable).IsFalse();
+        await Assert.That(result.ProducerId).IsEqualTo(-1);
+        await Assert.That(result.ProducerEpoch).IsEqualTo((short)-1);
+    }
+
+    [Arguments(null)]
+    [Arguments("")]
+    [Arguments("   ")]
+    [Test]
+    public async Task ForceTerminateTransactionAsync_RejectsInvalidTransactionalId(string? transactionalId)
+    {
+        var (admin, _) = CreateAdminWithMockConnections();
+
+        _ = await Assert.ThrowsAsync<ArgumentException>(() =>
+            admin.ForceTerminateTransactionAsync(transactionalId!).AsTask());
+    }
+
+    [Arguments(0)]
+    [Arguments(-1)]
+    [Test]
+    public async Task ForceTerminateTransactionAsync_RejectsInvalidTimeout(int timeoutMs)
+    {
+        var (admin, _) = CreateAdminWithMockConnections();
+
+        _ = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            admin.ForceTerminateTransactionAsync(
+                "tx-timeout",
+                new ForceTerminateTransactionOptions { TimeoutMs = timeoutMs }).AsTask());
+    }
+
+    [Test]
+    public async Task ForceTerminateTransactionAsync_HonorsCancellation()
+    {
+        var (admin, connections) = CreateAdminWithMockConnections();
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        _ = await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            admin.ForceTerminateTransactionAsync("tx-cancelled", cancellationToken: cancellation.Token).AsTask());
+
+        await connections[1].DidNotReceive().SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+            Arg.Any<FindCoordinatorRequest>(),
+            Arg.Any<short>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task ForceTerminateTransactionAsync_WhenApiKeyMissing_ThrowsBrokerVersionException()
+    {
+        var (admin, connections) = CreateAdminWithMockConnections(includeInitProducerIdApi: false);
+        SetupTransactionCoordinatorLookup(connections[1], coordinatorId: 1);
+
+        _ = await Assert.ThrowsAsync<BrokerVersionException>(() =>
+            admin.ForceTerminateTransactionAsync("tx-unsupported").AsTask());
+    }
+
+    [Test]
+    public async Task ForceTerminateTransactionAsync_UnsupportedAdminClient_ThrowsNotSupportedException()
+    {
+        var admin = Substitute.For<IAdminClient>();
+
+        async Task Act() => await admin.ForceTerminateTransactionAsync("tx-unsupported-client");
+
+        await Assert.That(Act).Throws<NotSupportedException>();
+    }
+
+    [Test]
     public async Task AbortTransactionAsync_SendsAbortMarkerToPartitionLeader()
     {
         var (admin, connections) = CreateAdminWithMockConnections();
@@ -721,7 +870,9 @@ public sealed class AdminClientTransactionIntrospectionTests
         bool includeInitProducerIdApi = true,
         bool includeWriteTxnMarkersApi = true,
         short listTransactionsMaxVersion = 2,
-        short describeTransactionsMaxVersion = 1)
+        short describeTransactionsMaxVersion = 1,
+        short initProducerIdMaxVersion = 5,
+        int requestTimeoutMs = 30000)
     {
         var connections = new Dictionary<int, IKafkaConnection>
         {
@@ -754,12 +905,16 @@ public sealed class AdminClientTransactionIntrospectionTests
         if (includeDescribeProducersApi)
             metadataManager.SetApiVersion(ApiKey.DescribeProducers, 0, 0);
         if (includeInitProducerIdApi)
-            metadataManager.SetApiVersion(ApiKey.InitProducerId, 2, 5);
+            metadataManager.SetApiVersion(ApiKey.InitProducerId, 2, initProducerIdMaxVersion);
         if (includeWriteTxnMarkersApi)
             metadataManager.SetApiVersion(ApiKey.WriteTxnMarkers, 1, 2);
 
         var admin = new AdminClient(
-            new AdminClientOptions { BootstrapServers = ["localhost:9092"] },
+            new AdminClientOptions
+            {
+                BootstrapServers = ["localhost:9092"],
+                RequestTimeoutMs = requestTimeoutMs
+            },
             pool,
             metadataManager);
 

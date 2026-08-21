@@ -9,7 +9,11 @@ namespace Dekaf.Testing;
 /// <summary>
 /// In-memory <see cref="IAdminClient"/> for common topic and group-offset test operations.
 /// </summary>
-public sealed class InMemoryAdminClient : IAdminClient, IReplicaLogDirAdminClient, ITopicIdAdminClient
+public sealed class InMemoryAdminClient :
+    IAdminClient,
+    IReplicaLogDirAdminClient,
+    ITopicIdAdminClient,
+    ITransactionRemediationAdminClient
 {
     private static readonly TimeSpan DefaultDelegationTokenLifetime = TimeSpan.FromHours(24);
 
@@ -898,6 +902,24 @@ public sealed class InMemoryAdminClient : IAdminClient, IReplicaLogDirAdminClien
             StringComparer.Ordinal);
 
         return ValueTask.FromResult<IReadOnlyDictionary<string, FenceProducersResultInfo>>(result);
+    }
+
+    public ValueTask<ForceTerminateTransactionResultInfo> ForceTerminateTransactionAsync(
+        string transactionalId,
+        ForceTerminateTransactionOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(transactionalId);
+        if (options?.TimeoutMs is { } timeoutMs)
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(timeoutMs);
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+
+        return ValueTask.FromResult(new ForceTerminateTransactionResultInfo
+        {
+            TransactionalId = transactionalId,
+            ErrorCode = ErrorCode.TransactionalIdNotFound
+        });
     }
 
     public ValueTask<AbortTransactionResultInfo> AbortTransactionAsync(

@@ -875,6 +875,29 @@ public sealed class FenceProducersResultInfo
 }
 
 /// <summary>
+/// Options for forcefully terminating an active transaction.
+/// </summary>
+public sealed class ForceTerminateTransactionOptions
+{
+    /// <summary>
+    /// Timeout in milliseconds used by the transaction coordinator while terminating.
+    /// </summary>
+    public int? TimeoutMs { get; init; }
+}
+
+/// <summary>
+/// Result of forcefully terminating a transaction by transactional ID.
+/// </summary>
+public sealed class ForceTerminateTransactionResultInfo
+{
+    public required string TransactionalId { get; init; }
+    public Protocol.ErrorCode ErrorCode { get; init; }
+    public bool IsRetriable => Protocol.ErrorCodeExtensions.IsRetriable(ErrorCode);
+    public long ProducerId { get; init; } = -1;
+    public short ProducerEpoch { get; init; } = -1;
+}
+
+/// <summary>
 /// Specification for forcefully aborting an open transaction on a topic partition.
 /// </summary>
 public sealed class AbortTransactionSpec
