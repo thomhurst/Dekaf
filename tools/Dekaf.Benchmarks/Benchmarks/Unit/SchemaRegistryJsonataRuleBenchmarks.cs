@@ -19,9 +19,21 @@ public class SchemaRegistryJsonataRuleBenchmarks
     private readonly SchemaRegistryRuleContext _withoutRules = CreateContext(rule: null);
     private readonly SchemaRegistryRuleContext _disabledRule = CreateContext(CreateRule(disabled: true));
     private readonly SchemaRegistryRuleContext _activeRule = CreateContext(CreateRule(disabled: false));
+    private readonly SchemaRegistryRuleContext _identityReadRule = CreateContext(new SchemaRule
+    {
+        Name = "jsonata-identity-benchmark",
+        Kind = SchemaRuleKind.Transform,
+        Mode = SchemaRuleMode.Read,
+        Type = JsonataSchemaRegistryRuleHandler.RuleType,
+        Expr = "$"
+    });
 
     [GlobalSetup]
-    public void WarmEnabledPath() => _ = ActiveJsonataRule();
+    public void WarmEnabledPath()
+    {
+        _ = ActiveJsonataRule();
+        _ = IdentityJsonataReadRule();
+    }
 
     [Benchmark(Baseline = true)]
     public ReadOnlyMemory<byte> NoJsonataRule() =>
@@ -34,6 +46,10 @@ public class SchemaRegistryJsonataRuleBenchmarks
     [Benchmark]
     public ReadOnlyMemory<byte> ActiveJsonataRule() =>
         _executor.TransformSerializedPayload(Payload, _activeRule);
+
+    [Benchmark]
+    public ReadOnlyMemory<byte> IdentityJsonataReadRule() =>
+        _executor.TransformDeserializedPayload(Payload, _identityReadRule);
 
     private static SchemaRegistryRuleContext CreateContext(SchemaRule? rule) =>
         new()
