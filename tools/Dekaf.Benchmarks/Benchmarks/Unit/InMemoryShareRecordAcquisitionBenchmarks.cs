@@ -5,7 +5,8 @@ using Dekaf.Testing;
 namespace Dekaf.Benchmarks.Benchmarks.Unit;
 
 [MemoryDiagnoser]
-[SimpleJob(RunStrategy.Throughput, launchCount: 1, warmupCount: 5, iterationCount: 10)]
+[MinIterationTime(500)]
+[SimpleJob(RunStrategy.Throughput, launchCount: 3, warmupCount: 8, iterationCount: 12)]
 public class InMemoryShareRecordAcquisitionBenchmarks
 {
     private const int OperationsPerInvoke = 1024;
