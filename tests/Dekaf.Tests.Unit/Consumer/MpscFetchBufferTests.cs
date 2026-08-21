@@ -437,6 +437,8 @@ public class MpscFetchBufferTests
         var timeoutCallbackExited = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var timeoutThreadId = 0;
         var timeoutCallbackActive = 0;
+        Exception? failure = null;
+        Exception? timeoutThreadException = null;
         Thread? timeoutThread = null;
         var buffer = new MpscFetchBuffer(
             capacity: 4,
@@ -471,7 +473,22 @@ public class MpscFetchBufferTests
                 }
             });
 
-            timeoutThread = new Thread(() => TriggerConsumerTimeout(buffer));
+            timeoutThread = new Thread(() =>
+            {
+                try
+                {
+                    TriggerConsumerTimeout(buffer);
+                }
+                catch (Exception exception)
+                {
+                    timeoutThreadException = exception;
+                    continuationFinished.TrySetException(exception);
+                    timeoutCallbackExited.TrySetException(exception);
+                }
+            })
+            {
+                IsBackground = true
+            };
             timeoutThread.Start();
             var completion = await continuationFinished.Task.WaitAsync(TimeSpan.FromSeconds(5));
             await timeoutCallbackExited.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -479,17 +496,25 @@ public class MpscFetchBufferTests
             await Assert.That(completion.RanInline).IsFalse();
             await Assert.That(completion.Result).IsFalse();
         }
+        catch (Exception exception)
+        {
+            failure = exception;
+        }
         finally
         {
-            try
+            if (timeoutThread is not null && !timeoutThread.Join(TimeSpan.FromSeconds(5)))
             {
-                timeoutThread?.Join(TimeSpan.FromSeconds(5));
+                failure = new TimeoutException("The consumer-timeout callback thread did not exit.", failure);
             }
-            finally
+            else
             {
                 buffer.Dispose();
+                failure = timeoutThreadException ?? failure;
             }
         }
+
+        if (failure is not null)
+            ExceptionDispatchInfo.Capture(failure).Throw();
     }
 
     [Test]
