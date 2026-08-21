@@ -383,6 +383,128 @@ public sealed class StreamsGroupMemberTests
         await Assert.That(connection.HeartbeatRequests[2].MemberEpoch).IsEqualTo(-1);
     }
 
+    [Arguments(null, StreamsGroupMembershipOperation.Default, -1)]
+    [Arguments("instance-1", StreamsGroupMembershipOperation.Default, -2)]
+    [Arguments("instance-1", StreamsGroupMembershipOperation.LeaveGroup, -1)]
+    [Test]
+    public async Task CloseAsync_AmbiguousMembershipStillSendsTerminalHeartbeat(
+        string? instanceId,
+        StreamsGroupMembershipOperation operation,
+        int expectedEpoch)
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1));
+        var pendingUpdate = new TaskCompletionSource<StreamsGroupHeartbeatResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.EnqueueHeartbeat(pendingUpdate.Task);
+        connection.EnqueueHeartbeat(Success(epoch: expectedEpoch));
+        await using var fixture = CreateFixture(connection, instanceId);
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+        using var cancellation = new CancellationTokenSource();
+
+        var update = fixture.Member.UpdateAsync(
+            new StreamsGroupMemberUpdate { ProcessId = "process-2" },
+            cancellation.Token).AsTask();
+        await connection.SecondHeartbeatStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        cancellation.Cancel();
+        _ = await Assert.ThrowsAsync<OperationCanceledException>(() => update);
+
+        await fixture.Member.CloseAsync(new StreamsGroupCloseOptions
+        {
+            GroupMembershipOperation = operation
+        });
+
+        await Assert.That(connection.HeartbeatRequests).Count().IsEqualTo(3);
+        await Assert.That(connection.HeartbeatRequests[2].MemberEpoch).IsEqualTo(expectedEpoch);
+    }
+
+    [Test]
+    public async Task CloseAsync_AmbiguousJoinStillSendsTerminalHeartbeat()
+    {
+        var connection = new ScriptedConnection();
+        var pendingJoin = new TaskCompletionSource<StreamsGroupHeartbeatResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.EnqueueHeartbeat(pendingJoin.Task);
+        connection.EnqueueHeartbeat(Success(epoch: -1));
+        await using var fixture = CreateFixture(connection);
+        using var cancellation = new CancellationTokenSource();
+
+        var join = fixture.Member.JoinAsync(CreateInitialUpdate(), cancellation.Token).AsTask();
+        await connection.FirstHeartbeatStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        cancellation.Cancel();
+        _ = await Assert.ThrowsAsync<OperationCanceledException>(() => join);
+
+        await fixture.Member.CloseAsync();
+
+        await Assert.That(connection.HeartbeatRequests).Count().IsEqualTo(2);
+        await Assert.That(connection.HeartbeatRequests[1].MemberEpoch).IsEqualTo(-1);
+    }
+
+    [Arguments(null, StreamsGroupMembershipOperation.Default, ErrorCode.UnknownMemberId)]
+    [Arguments(null, StreamsGroupMembershipOperation.Default, ErrorCode.FencedMemberEpoch)]
+    [Arguments("instance-1", StreamsGroupMembershipOperation.LeaveGroup, ErrorCode.UnknownMemberId)]
+    [Arguments("instance-1", StreamsGroupMembershipOperation.LeaveGroup, ErrorCode.FencedMemberEpoch)]
+    [Test]
+    public async Task CloseAsync_AmbiguousLeaveMembershipLossCompletesSuccessfully(
+        string? instanceId,
+        StreamsGroupMembershipOperation operation,
+        ErrorCode errorCode)
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1));
+        connection.EnqueueHeartbeat(Task.FromException<StreamsGroupHeartbeatResponse>(
+            new IOException("response lost")));
+        connection.EnqueueHeartbeat(new StreamsGroupHeartbeatResponse
+        {
+            ErrorCode = errorCode,
+            MemberId = "member-1"
+        });
+        await using var fixture = CreateFixture(connection, instanceId);
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+
+        await fixture.Member.CloseAsync(new StreamsGroupCloseOptions
+        {
+            GroupMembershipOperation = operation
+        });
+
+        await Assert.That(connection.HeartbeatRequests).Count().IsEqualTo(3);
+        await Assert.That(fixture.Member.Snapshot.IsClosed).IsTrue();
+        await Assert.That(fixture.Member.Snapshot.IsJoined).IsFalse();
+    }
+
+    [Arguments(StreamsGroupMembershipOperation.Default, false, -2, ErrorCode.FencedMemberEpoch)]
+    [Arguments(StreamsGroupMembershipOperation.RemainInGroup, true, 1, ErrorCode.UnknownMemberId)]
+    [Test]
+    public async Task CloseAsync_RetainedMembershipLossStillThrowsAfterRetry(
+        StreamsGroupMembershipOperation operation,
+        bool shutdownApplication,
+        int expectedEpoch,
+        ErrorCode errorCode)
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1));
+        connection.EnqueueHeartbeat(Task.FromException<StreamsGroupHeartbeatResponse>(
+            new IOException("response lost")));
+        connection.EnqueueHeartbeat(new StreamsGroupHeartbeatResponse
+        {
+            ErrorCode = errorCode,
+            MemberId = "member-1"
+        });
+        await using var fixture = CreateFixture(connection, instanceId: "instance-1");
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+
+        var failure = await Assert.ThrowsAsync<GroupException>(async () =>
+            await fixture.Member.CloseAsync(new StreamsGroupCloseOptions
+            {
+                GroupMembershipOperation = operation,
+                ShutdownApplication = shutdownApplication
+            }));
+
+        await Assert.That(failure!.ErrorCode).IsEqualTo(errorCode);
+        await Assert.That(connection.HeartbeatRequests[1].MemberEpoch).IsEqualTo(expectedEpoch);
+        await Assert.That(connection.HeartbeatRequests[2].MemberEpoch).IsEqualTo(expectedEpoch);
+    }
+
     [Test]
     public async Task CloseAsync_RetiredConnectionRediscoversAndRetries()
     {
@@ -1347,7 +1469,8 @@ public sealed class StreamsGroupMemberTests
 
         _ = await Assert.ThrowsAsync<OperationCanceledException>(() => update);
         await fixture.Member.CloseAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
-        await Assert.That(connection.HeartbeatRequests).Count().IsEqualTo(2);
+        await Assert.That(connection.HeartbeatRequests).Count().IsEqualTo(3);
+        await Assert.That(connection.HeartbeatRequests[2].MemberEpoch).IsEqualTo(-1);
         await Assert.That(fixture.Member.Snapshot.IsClosed).IsTrue();
     }
 
@@ -1505,6 +1628,8 @@ public sealed class StreamsGroupMemberTests
         public bool IsConnected => true;
         public int FindCoordinatorRequestCount { get; private set; }
         public List<StreamsGroupHeartbeatRequest> HeartbeatRequests { get; } = [];
+        public TaskCompletionSource FirstHeartbeatStarted { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource SecondHeartbeatStarted { get; } = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource SecondHeartbeatCompleted { get; } = new(
@@ -1543,6 +1668,8 @@ public sealed class StreamsGroupMemberTests
             if (request is StreamsGroupHeartbeatRequest heartbeat)
             {
                 HeartbeatRequests.Add(heartbeat);
+                if (HeartbeatRequests.Count == 1)
+                    FirstHeartbeatStarted.TrySetResult();
                 if (HeartbeatRequests.Count == 2)
                     SecondHeartbeatStarted.TrySetResult();
                 if (HeartbeatRequests.Count == 3)
