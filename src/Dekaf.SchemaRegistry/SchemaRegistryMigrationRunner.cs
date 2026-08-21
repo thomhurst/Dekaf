@@ -178,6 +178,7 @@ internal sealed class SchemaRegistryMigrationRunner
                 payloadFormat,
                 taggedFieldTransformers,
                 taggedFieldSchema: writerSchema);
+            var legacyReaderDomainInput = payload;
             try
             {
                 payload = _ruleExecutor.TransformDeserializedPayload(payload, readerContext);
@@ -187,11 +188,13 @@ internal sealed class SchemaRegistryMigrationRunner
                 readerContext.Return();
             }
 
-            return new MigrationResult(
-                payload,
-                plan.ReaderSchema,
-                plan.ReaderSchema.Id,
-                plan.ReaderSchema.Schema);
+            return PayloadContentChanged(legacyReaderDomainInput, payload)
+                ? new MigrationResult(
+                    payload,
+                    plan.ReaderSchema,
+                    plan.ReaderSchema.Id,
+                    plan.ReaderSchema.Schema)
+                : new MigrationResult(payload, plan.ReaderSchema, schemaId, writerSchema);
         }
 
         var steps = plan.Steps;
@@ -262,7 +265,7 @@ internal sealed class SchemaRegistryMigrationRunner
             context.Return();
         }
 
-        readerDomainTransformed &= !payload.Equals(readerDomainInput);
+        readerDomainTransformed = readerDomainTransformed && PayloadContentChanged(readerDomainInput, payload);
 
         return readerDomainTransformed && payloadFormat == SchemaRegistryPayloadFormat.Json
             ? new MigrationResult(
@@ -336,6 +339,7 @@ internal sealed class SchemaRegistryMigrationRunner
                 payloadFormat,
                 taggedFieldTransformers,
                 taggedFieldSchema: writerSchema);
+            var legacyReaderDomainInput = payload;
             try
             {
                 payload = _ruleExecutor.TransformDeserializedPayload(payload, readerContext);
@@ -345,17 +349,20 @@ internal sealed class SchemaRegistryMigrationRunner
                 readerContext.Return();
             }
 
+            var legacyReaderDomainTransformed = PayloadContentChanged(legacyReaderDomainInput, payload);
             ValidateBeforeDomainRules(
                 payload,
-                plan.ReaderSchema.Id,
-                plan.ReaderSchema.Schema,
+                legacyReaderDomainTransformed ? plan.ReaderSchema.Id : schemaId,
+                legacyReaderDomainTransformed ? plan.ReaderSchema.Schema : writerSchema,
                 validationRulesFactory,
                 validationRulesFailFast);
-            return new MigrationResult(
-                payload,
-                plan.ReaderSchema,
-                plan.ReaderSchema.Id,
-                plan.ReaderSchema.Schema);
+            return legacyReaderDomainTransformed
+                ? new MigrationResult(
+                    payload,
+                    plan.ReaderSchema,
+                    plan.ReaderSchema.Id,
+                    plan.ReaderSchema.Schema)
+                : new MigrationResult(payload, plan.ReaderSchema, schemaId, writerSchema);
         }
 
         var steps = plan.Steps;
@@ -448,7 +455,7 @@ internal sealed class SchemaRegistryMigrationRunner
             context.Return();
         }
 
-        readerDomainTransformed &= !payload.Equals(readerDomainInput);
+        readerDomainTransformed = readerDomainTransformed && PayloadContentChanged(readerDomainInput, payload);
 
         return readerDomainTransformed && payloadFormat == SchemaRegistryPayloadFormat.Json
             ? new MigrationResult(
@@ -458,6 +465,12 @@ internal sealed class SchemaRegistryMigrationRunner
                 plan.ReaderSchema.Schema)
             : new MigrationResult(payload, plan.ReaderSchema, payloadSchemaId, payloadSchema);
     }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool PayloadContentChanged(
+        ReadOnlyMemory<byte> input,
+        ReadOnlyMemory<byte> output) =>
+        !input.Equals(output) && !input.Span.SequenceEqual(output.Span);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static void ValidateBeforeDomainRules(
