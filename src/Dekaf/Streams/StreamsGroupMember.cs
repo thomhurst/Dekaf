@@ -203,7 +203,10 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
                     ObserveFault(command.Completion.Task);
                     throw;
                 }
-                CompleteRejectedClose();
+                finally
+                {
+                    CompleteRejectedClose();
+                }
             }
         }
 
@@ -464,7 +467,10 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         try
         {
             StreamsGroupHeartbeatRequest request;
-            var joinEpoch = InstanceId is not null && _snapshot.MemberId is not null ? -2 : 0;
+            var joinEpoch = InstanceId is not null &&
+                (_snapshot.MemberId is not null || _ambiguousMembership)
+                    ? -2
+                    : 0;
             int? recoveryJoinEpoch = command.Kind == MemberCommandKind.Join ? joinEpoch : null;
             switch (command.Kind)
             {

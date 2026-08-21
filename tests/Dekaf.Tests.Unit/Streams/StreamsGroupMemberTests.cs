@@ -724,6 +724,33 @@ public sealed class StreamsGroupMemberTests
     }
 
     [Test]
+    public async Task CloseAsync_FaultedWorkerCompletesSharedCloseCommand()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1));
+        var workerFailure = new InvalidOperationException("unexpected worker failure");
+        var fixture = CreateFixture(connection);
+        try
+        {
+            await fixture.Member.JoinAsync(CreateInitialUpdate());
+            await Assert.That(CompleteCommandWriter(fixture.Member)).IsTrue();
+            await GetWorkerTask(fixture.Member).WaitAsync(TimeSpan.FromSeconds(5));
+            WorkerTaskField.SetValue(fixture.Member, Task.FromException(workerFailure));
+
+            var initialFailure = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                fixture.Member.CloseAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)));
+            _ = await Assert.ThrowsAsync<ObjectDisposedException>(() =>
+                fixture.Member.CloseAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)));
+
+            await Assert.That(initialFailure).IsSameReferenceAs(workerFailure);
+        }
+        finally
+        {
+            await fixture.DisposeMemberAndMetadataAsync();
+        }
+    }
+
+    [Test]
     public async Task DisposeAsync_WaitsForInFlightHeartbeatWithoutDeadlock()
     {
         var connection = new ScriptedConnection();
@@ -1024,6 +1051,29 @@ public sealed class StreamsGroupMemberTests
         await Assert.That(recovery.MemberEpoch).IsEqualTo(expectedEpoch);
         await Assert.That(recovery.ProcessId).IsEqualTo("process-2");
         await Assert.That(result.MemberEpoch).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task JoinAsync_StaticAmbiguousInitialJoinReclaimsInstance()
+    {
+        var connection = new ScriptedConnection();
+        var pendingJoin = new TaskCompletionSource<StreamsGroupHeartbeatResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.EnqueueHeartbeat(pendingJoin.Task);
+        connection.EnqueueHeartbeat(Success(epoch: 1));
+        connection.EnqueueHeartbeat(Success(epoch: -2));
+        await using var fixture = CreateFixture(connection, instanceId: "instance-1");
+        using var cancellation = new CancellationTokenSource();
+
+        var join = fixture.Member.JoinAsync(CreateInitialUpdate(), cancellation.Token).AsTask();
+        await connection.FirstHeartbeatStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        cancellation.Cancel();
+        _ = await Assert.ThrowsAsync<OperationCanceledException>(() => join);
+
+        var result = await fixture.Member.JoinAsync(CreateInitialUpdate());
+
+        await Assert.That(connection.HeartbeatRequests[1].MemberEpoch).IsEqualTo(-2);
+        await Assert.That(result.MemberEpoch).IsEqualTo(1);
     }
 
     [Test]
