@@ -1788,6 +1788,34 @@ public sealed class AdminClient : IAdminClient, IReplicaLogDirAdminClient, ITopi
         }, cancellationToken).ConfigureAwait(false);
     }
 
+    public async ValueTask<ForceTerminateTransactionResultInfo> ForceTerminateTransactionAsync(
+        string transactionalId,
+        ForceTerminateTransactionOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(transactionalId);
+        if (options?.TimeoutMs is { } timeoutMs)
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(timeoutMs);
+
+        // Validate the public operation against controller-only bootstrap before delegating
+        // to the single-ID producer fencing path used by Kafka's Admin client.
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        var results = await FenceProducersAsync(
+            [transactionalId],
+            options?.TimeoutMs is { } configuredTimeoutMs
+                ? new FenceProducersOptions { TimeoutMs = configuredTimeoutMs }
+                : null,
+            cancellationToken).ConfigureAwait(false);
+        var result = results[transactionalId];
+        return new ForceTerminateTransactionResultInfo
+        {
+            TransactionalId = result.TransactionalId,
+            ErrorCode = result.ErrorCode,
+            ProducerId = result.ProducerId,
+            ProducerEpoch = result.ProducerEpoch
+        };
+    }
+
     public async ValueTask<AbortTransactionResultInfo> AbortTransactionAsync(
         AbortTransactionSpec transaction,
         AbortTransactionOptions? options = null,

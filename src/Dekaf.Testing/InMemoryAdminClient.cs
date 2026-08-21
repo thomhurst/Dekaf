@@ -900,6 +900,24 @@ public sealed class InMemoryAdminClient : IAdminClient, IReplicaLogDirAdminClien
         return ValueTask.FromResult<IReadOnlyDictionary<string, FenceProducersResultInfo>>(result);
     }
 
+    public ValueTask<ForceTerminateTransactionResultInfo> ForceTerminateTransactionAsync(
+        string transactionalId,
+        ForceTerminateTransactionOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(transactionalId);
+        if (options?.TimeoutMs is { } timeoutMs)
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(timeoutMs);
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+
+        return ValueTask.FromResult(new ForceTerminateTransactionResultInfo
+        {
+            TransactionalId = transactionalId,
+            ErrorCode = ErrorCode.TransactionalIdNotFound
+        });
+    }
+
     public ValueTask<AbortTransactionResultInfo> AbortTransactionAsync(
         AbortTransactionSpec transaction,
         AbortTransactionOptions? options = null,

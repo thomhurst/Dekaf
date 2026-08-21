@@ -292,6 +292,22 @@ public sealed class AdminClientControllerBootstrapTests
     }
 
     [Test]
+    public async Task ForceTerminateTransactionAsync_ControllerBootstrap_RejectsCoordinatorOperation()
+    {
+        await using var context = new ControllerAdminContext();
+
+        var exception = await Assert.That(async () =>
+                await context.Client.ForceTerminateTransactionAsync("tx-controller"))
+            .Throws<KafkaException>();
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.UnsupportedEndpointType);
+        await Assert.That(exception.Message).Contains(nameof(IAdminClient.ForceTerminateTransactionAsync));
+        await Assert.That(context.DiscoveryRequests).IsEqualTo(0);
+        await context.ActiveController.DidNotReceiveWithAnyArgs()
+            .SendAsync<InitProducerIdRequest, InitProducerIdResponse>(default!, default, default);
+    }
+
+    [Test]
     public async Task MetadataOnlyBrokerOperation_ControllerBootstrap_RejectsInsteadOfReturningEmptyData()
     {
         await using var context = new ControllerAdminContext();

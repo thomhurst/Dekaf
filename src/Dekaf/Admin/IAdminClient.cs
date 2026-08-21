@@ -131,6 +131,14 @@ public interface IAdminClient : IAsyncDisposable
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Forcefully terminates the active transaction for a transactional ID.
+    /// </summary>
+    ValueTask<ForceTerminateTransactionResultInfo> ForceTerminateTransactionAsync(
+        string transactionalId,
+        ForceTerminateTransactionOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Forcefully aborts an open transaction on a topic partition.
     /// </summary>
     ValueTask<AbortTransactionResultInfo> AbortTransactionAsync(
@@ -870,6 +878,29 @@ public sealed class FenceProducersResultInfo
 {
     public required string TransactionalId { get; init; }
     public Protocol.ErrorCode ErrorCode { get; init; }
+    public long ProducerId { get; init; } = -1;
+    public short ProducerEpoch { get; init; } = -1;
+}
+
+/// <summary>
+/// Options for forcefully terminating an active transaction.
+/// </summary>
+public sealed class ForceTerminateTransactionOptions
+{
+    /// <summary>
+    /// Timeout in milliseconds used by the transaction coordinator while terminating.
+    /// </summary>
+    public int? TimeoutMs { get; init; }
+}
+
+/// <summary>
+/// Result of forcefully terminating a transaction by transactional ID.
+/// </summary>
+public sealed class ForceTerminateTransactionResultInfo
+{
+    public required string TransactionalId { get; init; }
+    public Protocol.ErrorCode ErrorCode { get; init; }
+    public bool IsRetriable => Protocol.ErrorCodeExtensions.IsRetriable(ErrorCode);
     public long ProducerId { get; init; } = -1;
     public short ProducerEpoch { get; init; } = -1;
 }
