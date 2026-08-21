@@ -132,6 +132,25 @@ public sealed class AdminClientTopicIdTests
     }
 
     [Test]
+    public async Task DeleteTopicsAsync_PartialRetriableError_RetriesOnlyUnresolvedIds()
+    {
+        await using var context = new AdminTestContext();
+        context.EnqueueDeleteResponse(DeleteResponse(
+            DeleteResult("orders", TopicId, ErrorCode.None),
+            DeleteResult("pending", UnknownTopicId, ErrorCode.RequestTimedOut)));
+        context.EnqueueDeleteResponse(DeleteResponse(
+            DeleteResult("pending", UnknownTopicId, ErrorCode.None)));
+
+        await context.Client.DeleteTopicsAsync([TopicId, UnknownTopicId]);
+
+        await Assert.That(context.DeleteRequests.Count).IsEqualTo(2);
+        await Assert.That(context.DeleteRequests[0].Topics!.Select(topic => topic.TopicId))
+            .IsEquivalentTo([TopicId, UnknownTopicId]);
+        await Assert.That(context.DeleteRequests[1].Topics!.Select(topic => topic.TopicId))
+            .IsEquivalentTo([UnknownTopicId]);
+    }
+
+    [Test]
     public async Task DeleteTopicsAsync_BrokerBeforeV6_ThrowsBrokerVersionException()
     {
         await using var context = new AdminTestContext(deleteMaxVersion: 5);

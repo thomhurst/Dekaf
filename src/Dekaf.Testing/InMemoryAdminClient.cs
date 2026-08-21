@@ -105,11 +105,13 @@ public sealed class InMemoryAdminClient : IAdminClient, IReplicaLogDirAdminClien
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
 
-        foreach (var topicId in topicIds.Distinct())
-        {
+        var ids = topicIds.Distinct().ToList();
+        foreach (var topicId in ids)
             if (topicId == Guid.Empty)
                 throw new ArgumentException("Topic IDs cannot contain the empty UUID.", nameof(topicIds));
 
+        foreach (var topicId in ids)
+        {
             if (!_cluster.DeleteTopic(topicId))
                 throw new KafkaException(ErrorCode.UnknownTopicId, $"Topic ID '{topicId}' does not exist.");
         }

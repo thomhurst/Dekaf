@@ -579,15 +579,20 @@ public sealed class AdminClient : IAdminClient, IReplicaLogDirAdminClient, ITopi
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
         var opts = options ?? new DeleteTopicsOptions();
-        var topics = new DeleteTopicState[ids.Count];
-        for (var i = 0; i < ids.Count; i++)
-            topics[i] = new DeleteTopicState { TopicId = ids[i] };
-
+        var unresolvedIds = new HashSet<Guid>(ids);
         var deleteMayHaveApplied = false;
 
         await WithRetryAsync(async () =>
         {
             var isRetryAttempt = deleteMayHaveApplied;
+            var topics = new DeleteTopicState[unresolvedIds.Count];
+            for (int sourceIndex = 0, destinationIndex = 0; sourceIndex < ids.Count; sourceIndex++)
+            {
+                var topicId = ids[sourceIndex];
+                if (unresolvedIds.Contains(topicId))
+                    topics[destinationIndex++] = new DeleteTopicState { TopicId = topicId };
+            }
+
             using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.DeleteTopics, cancellationToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
             const short minimumTopicIdVersion = 6;
@@ -615,20 +620,27 @@ public sealed class AdminClient : IAdminClient, IReplicaLogDirAdminClient, ITopi
                 throw;
             }
 
+            KafkaException? failure = null;
             for (var i = 0; i < response.Responses.Count; i++)
             {
                 var topic = response.Responses[i];
-                if (topic.ErrorCode != Protocol.ErrorCode.None &&
-                    !(isRetryAttempt && topic.ErrorCode == Protocol.ErrorCode.UnknownTopicId))
-                {
-                    var identifier = topic.TopicId;
-                    if (identifier == Guid.Empty && i < ids.Count)
-                        identifier = ids[i];
+                var identifier = topic.TopicId;
+                if (identifier == Guid.Empty && i < topics.Length)
+                    identifier = topics[i].TopicId;
 
-                    throw new KafkaException(topic.ErrorCode,
-                        $"Failed to delete topic '{topic.Name}' ({identifier}): {topic.ErrorMessage ?? topic.ErrorCode.ToString()}");
+                if (topic.ErrorCode == Protocol.ErrorCode.None ||
+                    (isRetryAttempt && topic.ErrorCode == Protocol.ErrorCode.UnknownTopicId))
+                {
+                    unresolvedIds.Remove(identifier);
+                    continue;
                 }
+
+                failure ??= new KafkaException(topic.ErrorCode,
+                    $"Failed to delete topic '{topic.Name}' ({identifier}): {topic.ErrorMessage ?? topic.ErrorCode.ToString()}");
             }
+
+            if (failure is not null)
+                throw failure;
         }, cancellationToken).ConfigureAwait(false);
 
         await _metadataManager.RefreshMetadataAsync(cancellationToken).ConfigureAwait(false);

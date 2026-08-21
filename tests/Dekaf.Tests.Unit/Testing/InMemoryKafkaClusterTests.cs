@@ -490,6 +490,20 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
+    public async Task Admin_DeleteTopicsById_ValidatesAllIdsBeforeDeleting()
+    {
+        var cluster = new InMemoryKafkaCluster(new InMemoryKafkaClusterOptions { AutoCreateTopics = false });
+        IAdminClient admin = new InMemoryAdminClient(cluster);
+        await admin.CreateTopicsAsync([new NewTopic { Name = "events", NumPartitions = 1 }]);
+        var topicId = (await admin.ListTopicsAsync()).Single().TopicId;
+
+        async Task Delete() => await admin.DeleteTopicsAsync([topicId, Guid.Empty]);
+
+        await Assert.That(Delete).Throws<ArgumentException>();
+        await Assert.That(await admin.ListTopicsAsync()).Contains(topic => topic.TopicId == topicId);
+    }
+
+    [Test]
     public async Task Admin_ClientQuotas_AlterDescribeAndRemoveRoundTrips()
     {
         var cluster = new InMemoryKafkaCluster();
