@@ -173,6 +173,12 @@ Create your own preset extensions for consistency across your application:
 ```csharp
 using Dekaf;
 
+// Usage
+var producer = await Kafka.CreateProducer<string, Order>()
+    .WithBootstrapServers("localhost:9092")
+    .ForOrderProcessing()
+    .BuildAsync();
+
 public static class DekafPresets
 {
     public static ProducerBuilder<TKey, TValue> ForOrderProcessing<TKey, TValue>(
@@ -193,12 +199,6 @@ public static class DekafPresets
             .ForLowLatency();
     }
 }
-
-// Usage
-var producer = await Kafka.CreateProducer<string, Order>()
-    .WithBootstrapServers("localhost:9092")
-    .ForOrderProcessing()
-    .BuildAsync();
 ```
 
 ## Choosing a Preset

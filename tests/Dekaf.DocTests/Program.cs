@@ -19,6 +19,7 @@ internal static partial class Program
         allowUnsafe: true,
         nullableContextOptions: NullableContextOptions.Enable);
 
+    // Shared context validates API shape for fragments; it does not prove standalone prerequisites.
     private static readonly string Prelude = """
         using System;
         using System.Buffers;
@@ -287,7 +288,7 @@ internal static partial class Program
             var source = new StringBuilder();
             for (lineIndex++; lineIndex < lines.Length && !FenceEndRegex().IsMatch(lines[lineIndex]); lineIndex++)
             {
-                source.AppendLine(lines[lineIndex]);
+                source.Append(lines[lineIndex]).Append('\n');
             }
 
             if (lineIndex == lines.Length)
@@ -327,24 +328,7 @@ internal static partial class Program
             source = BuildBuilderChain(snippet, source);
         }
 
-        source = MoveTopLevelStatementsBeforeDeclarations(source);
-
         return $"{Prelude}{Environment.NewLine}#line {snippet.StartLine} \"{snippet.Path}\"{Environment.NewLine}{source}";
-    }
-
-    private static string MoveTopLevelStatementsBeforeDeclarations(string source)
-    {
-        var root = CSharpSyntaxTree.ParseText(source, ParseOptions).GetCompilationUnitRoot();
-        if (!root.Members.Any(static member => member is Microsoft.CodeAnalysis.CSharp.Syntax.GlobalStatementSyntax)
-            || !root.Members.Any(static member => member is not Microsoft.CodeAnalysis.CSharp.Syntax.GlobalStatementSyntax))
-        {
-            return source;
-        }
-
-        var members = root.Members
-            .OrderBy(static member => member is Microsoft.CodeAnalysis.CSharp.Syntax.GlobalStatementSyntax ? 0 : 1)
-            .ToArray();
-        return root.WithMembers(Microsoft.CodeAnalysis.CSharp.SyntaxFactory.List(members)).ToFullString();
     }
 
     private static string BuildBuilderChain(Snippet snippet, string source)

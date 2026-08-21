@@ -17,7 +17,7 @@ The cluster stores serialized bytes, not typed values, so custom serializers and
 
 ## Documentation snippet gate
 
-CI extracts every C# fence from this documentation and the README, then compiles each snippet against the current source projects. Shell examples are checked against packable package IDs and existing project paths. New C# fences compile by default.
+CI extracts every C# fence from this documentation and the README, then compiles it against the current source projects. Shared imports and application context let fragments validate public API shape; this gate does not prove every fence is a standalone program. Shell examples are checked against packable package IDs and existing project paths. New C# fences compile by default.
 
 Run the gate locally with:
 

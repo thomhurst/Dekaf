@@ -85,6 +85,13 @@ Get notified when partitions are assigned, revoked, lost, or stopped during grac
 ```csharp
 using Dekaf;
 
+var consumer = await Kafka.CreateConsumer<string, string>()
+    .WithBootstrapServers("localhost:9092")
+    .WithGroupId("my-group")
+    .WithRebalanceListener(new MyRebalanceListener())
+    .WithPartitionStopTimeout(TimeSpan.FromSeconds(30))
+    .BuildAsync();
+
 public sealed class MyRebalanceListener : IRebalanceListener, IPartitionStopListener
 {
     public ValueTask OnPartitionsAssignedAsync(
@@ -123,13 +130,6 @@ public sealed class MyRebalanceListener : IRebalanceListener, IPartitionStopList
         return ValueTask.CompletedTask;
     }
 }
-
-var consumer = await Kafka.CreateConsumer<string, string>()
-    .WithBootstrapServers("localhost:9092")
-    .WithGroupId("my-group")
-    .WithRebalanceListener(new MyRebalanceListener())
-    .WithPartitionStopTimeout(TimeSpan.FromSeconds(30))
-    .BuildAsync();
 ```
 
 Callback semantics:

@@ -82,6 +82,7 @@ jobs:
               - 'Directory.Build.props'
               - 'Directory.Build.targets'
               - 'Directory.Packages.props'
+              - '.github/workflows/ci.yml'
 
   doc-snippets:
     name: Documentation Snippets

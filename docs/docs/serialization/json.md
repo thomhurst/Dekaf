@@ -190,16 +190,6 @@ var serializer = new JsonSerializer<Order>(OrderJsonContext.Default.Order);
 ```csharp
 using Dekaf;
 
-public record Order(
-    string Id,
-    string CustomerId,
-    decimal Total,
-    DateTimeOffset CreatedAt,
-    IReadOnlyList<OrderItem> Items
-);
-
-public record OrderItem(string ProductId, int Quantity, decimal Price);
-
 // Producer
 var jsonOptions = new JsonSerializerOptions
 {
@@ -237,4 +227,14 @@ await foreach (var msg in consumer.ConsumeAsync(ct))
 {
     Console.WriteLine($"Order {msg.Value.Id}: ${msg.Value.Total}");
 }
+
+public record Order(
+    string Id,
+    string CustomerId,
+    decimal Total,
+    DateTimeOffset CreatedAt,
+    IReadOnlyList<OrderItem> Items
+);
+
+public record OrderItem(string ProductId, int Quantity, decimal Price);
 ```
