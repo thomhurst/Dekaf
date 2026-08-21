@@ -193,13 +193,12 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember
 
     private StreamsGroupHeartbeatResult ApplyUpdate(StreamsGroupMemberUpdate update, bool isJoin)
     {
-        var activeTasks = CopyTaskSets(update.ActiveTasks);
-        var standbyTasks = CopyTaskSets(update.StandbyTasks);
-        var warmupTasks = CopyTaskSets(update.WarmupTasks);
+        var isTopologyRejoin = !isJoin && update.Topology is not null;
+        var activeTasks = isTopologyRejoin ? null : CopyTaskSets(update.ActiveTasks);
+        var standbyTasks = isTopologyRejoin ? null : CopyTaskSets(update.StandbyTasks);
+        var warmupTasks = isTopologyRejoin ? null : CopyTaskSets(update.WarmupTasks);
         var previous = _snapshot;
-        var fallbackAssignment = !isJoin && update.Topology is not null
-            ? EmptyAssignment
-            : previous.Assignment;
+        var fallbackAssignment = isTopologyRejoin ? EmptyAssignment : previous.Assignment;
         var assignment = new StreamsGroupAssignment
         {
             ActiveTasks = activeTasks ?? fallbackAssignment.ActiveTasks,
