@@ -1,4 +1,38 @@
 #nullable enable
+Dekaf.SchemaRegistry.JsonSchemaRegistrySerializer<T>.JsonSchemaRegistrySerializer(Dekaf.SchemaRegistry.ISchemaRegistryClient! schemaRegistry, Dekaf.SchemaRegistry.IAsyncSubjectNameStrategy! asyncSubjectNameStrategy, string! jsonSchema, System.Text.Json.JsonSerializerOptions? jsonOptions = null, bool autoRegisterSchemas = true, bool ownsClient = false, Dekaf.SchemaRegistry.ISchemaRegistryRuleExecutor? ruleExecutor = null, bool normalizeSchemas = false) -> void
+Dekaf.SchemaRegistry.JsonSchemaRegistrySerializer<T>.JsonSchemaRegistrySerializer(Dekaf.SchemaRegistry.ISchemaRegistryClient! schemaRegistry, Dekaf.SchemaRegistry.IAsyncSubjectNameStrategy! asyncSubjectNameStrategy, string! jsonSchema, System.Text.Json.JsonSerializerOptions? jsonOptions, Dekaf.SchemaRegistry.JsonSchemaValidationOptions! validationOptions, bool autoRegisterSchemas = true, bool ownsClient = false, Dekaf.SchemaRegistry.ISchemaRegistryRuleExecutor? ruleExecutor = null, bool normalizeSchemas = false) -> void
+Dekaf.SchemaRegistry.JsonSchemaRegistrySerializer<T>.JsonSchemaRegistrySerializer(Dekaf.SchemaRegistry.ISchemaRegistryClient! schemaRegistry, Dekaf.SchemaRegistry.IAsyncSubjectNameStrategy! asyncSubjectNameStrategy, string! jsonSchema, System.Text.Json.Serialization.Metadata.JsonTypeInfo<T>! jsonTypeInfo, bool autoRegisterSchemas = true, bool ownsClient = false, Dekaf.SchemaRegistry.ISchemaRegistryRuleExecutor? ruleExecutor = null, bool normalizeSchemas = false) -> void
+Dekaf.SchemaRegistry.JsonSchemaRegistrySerializer<T>.JsonSchemaRegistrySerializer(Dekaf.SchemaRegistry.ISchemaRegistryClient! schemaRegistry, Dekaf.SchemaRegistry.IAsyncSubjectNameStrategy! asyncSubjectNameStrategy, string! jsonSchema, System.Text.Json.Serialization.Metadata.JsonTypeInfo<T>! jsonTypeInfo, Dekaf.SchemaRegistry.JsonSchemaValidationOptions! validationOptions, bool autoRegisterSchemas = true, bool ownsClient = false, Dekaf.SchemaRegistry.ISchemaRegistryRuleExecutor? ruleExecutor = null, bool normalizeSchemas = false) -> void
+Dekaf.SchemaRegistry.SchemaRegistryDeserializerConfig.AsyncSubjectNameStrategy.get -> Dekaf.SchemaRegistry.IAsyncSubjectNameStrategy?
+Dekaf.SchemaRegistry.SchemaRegistryDeserializerConfig.AsyncSubjectNameStrategy.init -> void
+Dekaf.SchemaRegistry.SchemaRegistrySerializer<T>.SchemaRegistrySerializer(Dekaf.SchemaRegistry.ISchemaRegistryClient! schemaRegistry, System.Action<T, System.Buffers.IBufferWriter<byte>!>! serialize, Dekaf.SchemaRegistry.IAsyncSubjectNameStrategy! asyncSubjectNameStrategy, System.Func<string!, Dekaf.SchemaRegistry.Schema!>! getSchema, bool autoRegisterSchemas = true, bool ownsClient = false, Dekaf.SchemaRegistry.ISchemaRegistryRuleExecutor? ruleExecutor = null, bool normalizeSchemas = false) -> void
+Dekaf.SchemaRegistry.SchemaRegistrySerializer<T>.SchemaRegistrySerializer(Dekaf.SchemaRegistry.ISchemaRegistryClient! schemaRegistry, System.Action<T, System.Buffers.IBufferWriter<byte>!>! serialize, Dekaf.SchemaRegistry.IAsyncSubjectNameStrategy! asyncSubjectNameStrategy, System.Func<Dekaf.SchemaRegistry.Schema!>! getSchema, bool autoRegisterSchemas = true, bool ownsClient = false, Dekaf.SchemaRegistry.ISchemaRegistryRuleExecutor? ruleExecutor = null, bool normalizeSchemas = false) -> void
+Dekaf.SchemaRegistry.AssociatedNameFallbackStrategy
+Dekaf.SchemaRegistry.AssociatedNameFallbackStrategy.None = 3 -> Dekaf.SchemaRegistry.AssociatedNameFallbackStrategy
+Dekaf.SchemaRegistry.AssociatedNameFallbackStrategy.RecordName = 1 -> Dekaf.SchemaRegistry.AssociatedNameFallbackStrategy
+Dekaf.SchemaRegistry.AssociatedNameFallbackStrategy.TopicName = 0 -> Dekaf.SchemaRegistry.AssociatedNameFallbackStrategy
+Dekaf.SchemaRegistry.AssociatedNameFallbackStrategy.TopicRecordName = 2 -> Dekaf.SchemaRegistry.AssociatedNameFallbackStrategy
+Dekaf.SchemaRegistry.AssociatedNameStrategy
+Dekaf.SchemaRegistry.AssociatedNameStrategy.AssociatedNameStrategy(Dekaf.SchemaRegistry.ISchemaRegistryClient! schemaRegistry, Dekaf.SchemaRegistry.AssociatedNameStrategyOptions? options = null) -> void
+Dekaf.SchemaRegistry.AssociatedNameStrategy.CachedSubjectCount.get -> int
+Dekaf.SchemaRegistry.AssociatedNameStrategy.ClearCache() -> void
+Dekaf.SchemaRegistry.AssociatedNameStrategy.GetSubjectNameAsync(string! topic, string? recordType, bool isKey, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<string!>
+Dekaf.SchemaRegistry.AssociatedNameStrategy.Invalidate(string! topic, string? recordType, bool isKey) -> bool
+const Dekaf.SchemaRegistry.AssociatedNameStrategy.NamespaceWildcard = "-" -> string!
+Dekaf.SchemaRegistry.AssociatedNameStrategy.RefreshAsync(string! topic, string? recordType, bool isKey, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<string!>
+Dekaf.SchemaRegistry.AssociatedNameStrategyOptions
+Dekaf.SchemaRegistry.AssociatedNameStrategyOptions.AssociatedNameStrategyOptions() -> void
+Dekaf.SchemaRegistry.AssociatedNameStrategyOptions.FallbackStrategy.get -> Dekaf.SchemaRegistry.AssociatedNameFallbackStrategy
+Dekaf.SchemaRegistry.AssociatedNameStrategyOptions.FallbackStrategy.init -> void
+Dekaf.SchemaRegistry.AssociatedNameStrategyOptions.KafkaClusterId.get -> string?
+Dekaf.SchemaRegistry.AssociatedNameStrategyOptions.KafkaClusterId.init -> void
+Dekaf.SchemaRegistry.AssociatedNameStrategyOptions.LookupTimeout.get -> System.TimeSpan
+Dekaf.SchemaRegistry.AssociatedNameStrategyOptions.LookupTimeout.init -> void
+Dekaf.SchemaRegistry.AssociatedNameStrategyOptions.MaxCachedSubjects.get -> int
+Dekaf.SchemaRegistry.AssociatedNameStrategyOptions.MaxCachedSubjects.init -> void
+Dekaf.SchemaRegistry.IAsyncSubjectNameStrategy
+Dekaf.SchemaRegistry.IAsyncSubjectNameStrategy.GetSubjectNameAsync(string! topic, string? recordType, bool isKey, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<string!>
+Dekaf.SchemaRegistry.SubjectNameStrategy.AssociatedName = 3 -> Dekaf.SchemaRegistry.SubjectNameStrategy
 Dekaf.SchemaRegistry.ISchemaRegistryClient.LatestCacheTtlSecs.get -> int
 Dekaf.SchemaRegistry.SchemaRegistryClient.LatestCacheTtlSecs.get -> int
 Dekaf.SchemaRegistry.SchemaRegistryConfig.LatestCacheTtlSecs.get -> int

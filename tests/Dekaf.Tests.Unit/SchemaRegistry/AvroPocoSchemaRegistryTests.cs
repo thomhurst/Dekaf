@@ -10,6 +10,7 @@ using Dekaf.SchemaRegistry.Avro.Poco;
 using Dekaf.Serialization;
 using NSubstitute;
 using ISchemaRegistryRuleExecutor = Dekaf.SchemaRegistry.ISchemaRegistryRuleExecutor;
+using IAsyncSubjectNameStrategy = Dekaf.SchemaRegistry.IAsyncSubjectNameStrategy;
 using ISchemaRegistryRuleHandler = Dekaf.SchemaRegistry.ISchemaRegistryRuleHandler;
 using SchemaRegistryRuleContext = Dekaf.SchemaRegistry.SchemaRegistryRuleContext;
 using SchemaRegistryRuleExecutor = Dekaf.SchemaRegistry.SchemaRegistryRuleExecutor;
@@ -37,6 +38,109 @@ public sealed class AvroPocoSchemaRegistryTests
         0x02, 0x02, (byte)'a', 0x02, 0x02, (byte)'b', 0,
         0x02, 0x02, (byte)'x', 0x02, 0x02, 0x02, (byte)'y', 0x04, 0
     ];
+
+    [Test]
+    public async Task GeneratedSerializer_UsesConfiguredAsyncSubjectNameStrategy()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        var strategy = new FixedAsyncSubjectNameStrategy("poco-associated");
+        await using var serializer = PocoOrder.CreateAvroSerializer(
+            registry,
+            new AvroSerializerConfig { AsyncSubjectNameStrategy = strategy });
+
+        var resolved = await serializer.PrepareAsync("poco-orders");
+
+        await Assert.That(resolved.Subject).IsEqualTo("poco-associated");
+        await Assert.That(strategy.CallCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task GeneratedSerializer_PrepareAsync_ObservesAssociationCacheInvalidation()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        await SetPocoAssociationAsync(registry, "poco-orders", "poco-v1");
+        var strategy = new Dekaf.SchemaRegistry.AssociatedNameStrategy(registry);
+        await using var serializer = PocoOrder.CreateAvroSerializer(
+            registry,
+            new AvroSerializerConfig { AsyncSubjectNameStrategy = strategy });
+
+        var first = await serializer.PrepareAsync("poco-orders");
+        await registry.DeleteAssociationsAsync("poco-orders", "topic", ["value"]);
+        await SetPocoAssociationAsync(registry, "poco-orders", "poco-v2");
+        strategy.ClearCache();
+        var second = await serializer.PrepareAsync("poco-orders");
+
+        await Assert.That(first.Subject).IsEqualTo("poco-v1");
+        await Assert.That(second.Subject).IsEqualTo("poco-v2");
+    }
+
+    [Test]
+    public async Task GeneratedSerializer_InvalidationRejectsStaleSynchronousSerialization()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        await SetPocoAssociationAsync(registry, "poco-orders", "poco-v1");
+        var strategy = new Dekaf.SchemaRegistry.AssociatedNameStrategy(registry);
+        await using var serializer = PocoOrder.CreateAvroSerializer(
+            registry,
+            new AvroSerializerConfig { AsyncSubjectNameStrategy = strategy });
+        var prepared = await serializer.PrepareAsync("poco-orders");
+        var destination = new ArrayBufferWriter<byte>();
+        var context = new SerializationContext
+        {
+            Topic = "poco-orders",
+            Component = SerializationComponent.Value
+        };
+        var value = new PocoOrder
+        {
+            Id = 42,
+            Customer = "Ada",
+            Scores = [],
+            Tags = [],
+            Totals = [],
+            Address = new PocoAddress { City = "London", PostCode = "SW1" },
+            Created = DateTime.UnixEpoch
+        };
+        var admissionSerializer =
+            (IAsyncSerializerPreparationAdmission<PocoOrder>)serializer;
+        var admission = await admissionSerializer.PrepareForSerializationAsync(value, context);
+
+        await registry.DeleteAssociationsAsync("poco-orders", "topic", ["value"]);
+        await SetPocoAssociationAsync(registry, "poco-orders", "poco-v2");
+        strategy.ClearCache();
+        Assert.Throws<InvalidOperationException>(() =>
+            serializer.Serialize(value, ref destination, context));
+        var admittedDestination = new ArrayBufferWriter<byte>();
+        admissionSerializer.SerializePrepared(value, ref admittedDestination, context, in admission);
+        var refreshed = await serializer.PrepareAsync("poco-orders");
+        serializer.Serialize(value, ref destination, context);
+
+        await Assert.That(BinaryPrimitives.ReadInt32BigEndian(admittedDestination.WrittenSpan.Slice(1)))
+            .IsEqualTo(prepared.SchemaId);
+        await Assert.That(BinaryPrimitives.ReadInt32BigEndian(destination.WrittenSpan.Slice(1)))
+            .IsEqualTo(refreshed.SchemaId)
+            .And.IsNotEqualTo(prepared.SchemaId);
+    }
+
+    private static Task<Dekaf.SchemaRegistry.AssociationResponse> SetPocoAssociationAsync(
+        Dekaf.SchemaRegistry.ISchemaRegistryClient registry,
+        string topic,
+        string subject) =>
+        registry.CreateAssociationAsync(new Dekaf.SchemaRegistry.AssociationCreateOrUpdateRequest
+        {
+            ResourceName = topic,
+            ResourceNamespace = Dekaf.SchemaRegistry.AssociatedNameStrategy.NamespaceWildcard,
+            ResourceId = topic,
+            ResourceType = "topic",
+            Associations =
+            [
+                new Dekaf.SchemaRegistry.AssociationCreateOrUpdateInfo
+                {
+                    Subject = subject,
+                    AssociationType = "value",
+                    Lifecycle = "WEAK"
+                }
+            ]
+        });
 
     [Test]
     public async Task GeneratedCodec_RoundTripsSupportedShapes()
@@ -1191,6 +1295,7 @@ public sealed class AvroPocoSchemaRegistryTests
     }
 
     [Test]
+    [NotInParallel]
     public async Task GeneratedCodec_SerializationAllocatesZeroAfterWarmup()
     {
         using var registry = new MockSchemaRegistryClient();
@@ -3470,6 +3575,21 @@ public sealed class AvroPocoSchemaRegistryTests
         public ReadOnlyMemory<byte> TransformDeserializedPayload(
             ReadOnlyMemory<byte> payload,
             SchemaRegistryRuleContext context) => payload;
+    }
+
+    private sealed class FixedAsyncSubjectNameStrategy(string subject) : IAsyncSubjectNameStrategy
+    {
+        internal int CallCount { get; private set; }
+
+        public ValueTask<string> GetSubjectNameAsync(
+            string topic,
+            string? recordType,
+            bool isKey,
+            CancellationToken cancellationToken = default)
+        {
+            CallCount++;
+            return new ValueTask<string>(subject);
+        }
     }
 
     private sealed class ReentrantRuleExecutor : ISchemaRegistryRuleExecutor

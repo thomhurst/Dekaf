@@ -22,8 +22,8 @@ namespace Dekaf.Serialization;
 /// <para>
 /// This is an optimization, not a correctness requirement: <see cref="ISerializer{T}.Serialize"/> must still
 /// succeed if it is reached without a prior <see cref="PrepareAsync"/> (it will resolve the prerequisite
-/// itself, blocking on the first call for a subject). Fire-and-forget produce paths are synchronous and
-/// cannot await preparation, so callers that use them should pre-warm the serializer explicitly.
+/// itself, blocking on the first call for a subject). Produce and fire-and-forget paths invoke preparation;
+/// when preparation is incomplete, the returned <see cref="ValueTask"/> represents that asynchronous work.
 /// </para>
 /// </remarks>
 /// <typeparam name="T">The type the serializer handles.</typeparam>

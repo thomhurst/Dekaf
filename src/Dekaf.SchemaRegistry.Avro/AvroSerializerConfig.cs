@@ -33,6 +33,13 @@ public sealed class AvroSerializerConfig
     public ISubjectNameStrategy? CustomSubjectNameStrategy { get; init; }
 
     /// <summary>
+    /// Custom asynchronous subject-name strategy. Used when
+    /// <see cref="CustomSubjectNameStrategy" /> is null and takes precedence over
+    /// <see cref="SubjectNameStrategy" />.
+    /// </summary>
+    public IAsyncSubjectNameStrategy? AsyncSubjectNameStrategy { get; init; }
+
+    /// <summary>
     /// Whether <see cref="SubjectNameStrategy.RecordName"/> and
     /// <see cref="SubjectNameStrategy.TopicRecordName"/> should retain Dekaf's legacy
     /// -key/-value suffix. Enable this temporarily while migrating existing subjects.
@@ -80,6 +87,11 @@ public sealed class AvroDeserializerConfig
     /// Custom subject-name strategy used when deserialization rules execute.
     /// </summary>
     public ISubjectNameStrategy? CustomSubjectNameStrategy { get; init; }
+
+    /// <summary>
+    /// Custom asynchronous subject-name strategy used during deserializer preparation.
+    /// </summary>
+    public IAsyncSubjectNameStrategy? AsyncSubjectNameStrategy { get; init; }
 
     /// <summary>
     /// Whether record-based strategies retain Dekaf's legacy -key/-value suffix.

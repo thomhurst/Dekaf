@@ -327,3 +327,5 @@ static Dekaf.WatermarkOffsets.operator ==(Dekaf.WatermarkOffsets left, Dekaf.Wat
 Dekaf.Serialization.IAsyncDeserializerPreparer<T>
 Dekaf.Serialization.IAsyncDeserializerPreparer<T>.TryDeserialize(System.ReadOnlyMemory<byte> data, Dekaf.Serialization.SerializationContext context, out T value) -> bool
 Dekaf.Serialization.IAsyncDeserializerPreparer<T>.PrepareAsync(System.ReadOnlyMemory<byte> data, Dekaf.Serialization.SerializationContext context, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Serialization.IAsyncDeserializerPreparationRequirement
+Dekaf.Serialization.IAsyncDeserializerPreparationRequirement.RequiresPreparation.get -> bool

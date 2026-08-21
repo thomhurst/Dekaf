@@ -44,6 +44,7 @@ using Dekaf.Telemetry;
 [assembly: TypeForwardedTo(typeof(IAsyncSerde<>))]
 [assembly: TypeForwardedTo(typeof(IAsyncSerializerPreparer<>))]
 [assembly: TypeForwardedTo(typeof(IAsyncDeserializerPreparer<>))]
+[assembly: TypeForwardedTo(typeof(IAsyncDeserializerPreparationRequirement))]
 [assembly: TypeForwardedTo(typeof(SerializationContext))]
 [assembly: TypeForwardedTo(typeof(SerializationComponent))]
 [assembly: TypeForwardedTo(typeof(Headers))]

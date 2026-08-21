@@ -15,6 +15,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
 {
     private const byte MagicByte = 0;
     private const int WireHeaderSize = 5;
+    private const int MaxAssociatedNameInvalidationRetries = 4;
     private const int GeneratedSubjectCacheSchemaId = 0;
     private const int MaxCachedPreparedRuleStates = 1024;
     internal const int MaxCachedPlans = 256;
@@ -28,8 +29,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
     private readonly ConcurrentDictionary<int, PlanEntry> _inFlightPlans = new();
     private readonly ConcurrentQueue<KeyValuePair<int, AvroPocoReaderPlan>> _planEvictionQueue = new();
     private readonly ConcurrentDictionary<PreparedRuleKey, PreparedRuleState> _preparedRuleStates = new();
-    private readonly ConcurrentQueue<KeyValuePair<PreparedRuleKey, PreparedRuleState>>
-        _preparedRuleStateEvictionQueue = new();
+    private readonly ConcurrentQueue<PreparedRuleKey> _preparedRuleStateEvictionQueue = new();
     private readonly AvroTaggedFieldTransformerProvider _taggedFieldTransformers = new();
     private readonly SchemaRegistryMigrationRunner? _migrationRunner;
     private readonly ISchemaRegistryRuleExecutor? _ruleExecutor;
@@ -69,8 +69,10 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         if (_ruleExecutor is not null)
         {
             _subjectNames = DeserializerSubjectNameCache.Create(
+                schemaRegistry,
                 _config.SubjectNameStrategy,
                 _config.CustomSubjectNameStrategy,
+                _config.AsyncSubjectNameStrategy,
                 _config.UseLegacySubjectNames);
         }
 
@@ -94,10 +96,20 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         }
 
         var isKey = context.Component == SerializationComponent.Key;
-        var subject = GetSubjectName(context.Topic, isKey);
-        await PrepareRulesAsync(
+        if (_subjectNames is { RequiresPreparation: true })
+        {
+            await PrepareSubjectAndRulesAsync(schemaId, context, isKey, cancellationToken)
+                .ConfigureAwait(false);
+            return;
+        }
+
+        var preparedSubject = new DeserializerSubjectNameCache.PreparedSubject(
+            GetSubjectName(context.Topic, isKey),
+            Generation: 0,
+            State: null);
+        _ = await PrepareRulesAsync(
                 schemaId,
-                subject,
+                preparedSubject,
                 new PreparedRuleKey(schemaId, context.Topic, isKey),
                 cancellationToken)
             .ConfigureAwait(false);
@@ -121,10 +133,29 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         }
 
         var isKey = context.Component == SerializationComponent.Key;
-        var subject = GetSubjectName(context.Topic, isKey);
+        DeserializerSubjectNameCache.PreparedSubject preparedSubject;
+        if (_subjectNames is { RequiresPreparation: true } subjectNames)
+        {
+            if (!subjectNames.TryGetPreparedSubject(
+                    GeneratedSubjectCacheSchemaId,
+                    context.Topic,
+                    isKey,
+                    out preparedSubject))
+            {
+                return PrepareSubjectAndRulesAsync(schemaId, context, isKey, cancellationToken);
+            }
+        }
+        else
+        {
+            preparedSubject = new DeserializerSubjectNameCache.PreparedSubject(
+                GetSubjectName(context.Topic, isKey),
+                Generation: 0,
+                State: null);
+        }
+
         var preparedKey = new PreparedRuleKey(schemaId, context.Topic, isKey);
         if (TryGetCachedPlan(schemaId, out _) &&
-            TryGetPreparedRuleState(preparedKey, out var preparedState))
+            TryGetPreparedRuleState(preparedKey, preparedSubject.Generation, out var preparedState))
         {
             return _migrationRunner is null
                 ? default
@@ -134,7 +165,13 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
                     cancellationToken);
         }
 
-        return PrepareRulesAsync(schemaId, subject, preparedKey, cancellationToken);
+        return PrepareRulesWithRefreshAsync(
+            schemaId,
+            context,
+            isKey,
+            preparedKey,
+            preparedSubject,
+            cancellationToken);
     }
 
     bool IAsyncDeserializerPreparer<T>.TryDeserialize(
@@ -167,12 +204,30 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         if (_ruleExecutor is not null)
         {
             var isKey = context.Component == SerializationComponent.Key;
+            var subjectGeneration = 0;
+            if (_subjectNames is { RequiresPreparation: true } subjectNames)
+            {
+                if (!subjectNames.TryGetPreparedSubject(
+                        GeneratedSubjectCacheSchemaId,
+                        context.Topic,
+                        isKey,
+                        out var preparedSubject))
+                {
+                    value = default!;
+                    return false;
+                }
+
+                subjectGeneration = preparedSubject.Generation;
+            }
+
             var preparedState = Volatile.Read(ref _lastPreparedRuleState);
-            if (preparedState is null || !preparedState.Matches(schemaId, context.Topic, isKey))
+            if (preparedState is null ||
+                !preparedState.Matches(schemaId, context.Topic, isKey, subjectGeneration))
             {
                 if (!_preparedRuleStates.TryGetValue(
                         new PreparedRuleKey(schemaId, context.Topic, isKey),
-                        out preparedState))
+                        out preparedState) ||
+                    preparedState.Generation != subjectGeneration)
                 {
                     value = default!;
                     return false;
@@ -201,6 +256,67 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         var reader = new AvroValueReader(data.Span.Slice(WireHeaderSize));
         value = TCodec.Read(ref reader, plan);
         return true;
+    }
+
+    private async ValueTask PrepareSubjectAndRulesAsync(
+        int schemaId,
+        SerializationContext context,
+        bool isKey,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; attempt < MaxAssociatedNameInvalidationRetries; attempt++)
+        {
+            await _subjectNames!.PrepareAsync(
+                    _schemaRegistry,
+                    schemaId,
+                    context.Topic,
+                    isKey,
+                    TCodec.FullName,
+                    cancellationToken,
+                    cacheSchemaId: GeneratedSubjectCacheSchemaId)
+                .ConfigureAwait(false);
+            if (!_subjectNames.TryGetPreparedSubject(
+                    GeneratedSubjectCacheSchemaId,
+                    context.Topic,
+                    isKey,
+                    out var preparedSubject))
+            {
+                continue;
+            }
+
+            if (await PrepareRulesAsync(
+                    schemaId,
+                    preparedSubject,
+                    new PreparedRuleKey(schemaId, context.Topic, isKey),
+                    cancellationToken).ConfigureAwait(false))
+            {
+                return;
+            }
+        }
+
+        throw new InvalidOperationException(
+            "Associated-name cache changed repeatedly while preparing generated Avro rules.");
+    }
+
+    private async ValueTask PrepareRulesWithRefreshAsync(
+        int schemaId,
+        SerializationContext context,
+        bool isKey,
+        PreparedRuleKey preparedKey,
+        DeserializerSubjectNameCache.PreparedSubject preparedSubject,
+        CancellationToken cancellationToken)
+    {
+        if (await PrepareRulesAsync(
+                schemaId,
+                preparedSubject,
+                preparedKey,
+                cancellationToken).ConfigureAwait(false))
+        {
+            return;
+        }
+
+        await PrepareSubjectAndRulesAsync(schemaId, context, isKey, cancellationToken)
+            .ConfigureAwait(false);
     }
 
     private bool TryGetCachedPlan(
@@ -272,8 +388,10 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         SerializationContext context)
     {
         var isKey = context.Component == SerializationComponent.Key;
-        if (TryGetPreparedRuleState(
+        if (TryGetSubjectGeneration(context.Topic, isKey, out var subjectGeneration) &&
+            TryGetPreparedRuleState(
                 new PreparedRuleKey(schemaId, context.Topic, isKey),
+                subjectGeneration,
                 out var preparedState) &&
             (_migrationRunner is null ||
              _migrationRunner.TryUsePreparedPlan(schemaId, preparedState.Subject, preparedState.Schema)))
@@ -439,7 +557,11 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
                 context.Topic,
                 context.Component == SerializationComponent.Key);
             var plan = skipLatestRefresh &&
-                       TryGetPreparedRuleState(preparedKey, out var preparedState) &&
+                       TryGetSubjectGeneration(
+                           context.Topic,
+                           context.Component == SerializationComponent.Key,
+                           out var subjectGeneration) &&
+                       TryGetPreparedRuleState(preparedKey, subjectGeneration, out var preparedState) &&
                        preparedState.TryGetPlan(migration.PayloadSchemaId, out var preparedPlan)
                 ? preparedPlan
                 : GetOrBuildPlanCached(migration.PayloadSchemaId, migration.PayloadSchema);
@@ -463,14 +585,17 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
     private async ValueTask PreparePlanAsync(int schemaId, CancellationToken cancellationToken) =>
         _ = await GetPlanAsync(schemaId, cancellationToken).ConfigureAwait(false);
 
-    private async ValueTask PrepareRulesAsync(
+    private async ValueTask<bool> PrepareRulesAsync(
         int schemaId,
-        string subject,
+        DeserializerSubjectNameCache.PreparedSubject preparedSubject,
         PreparedRuleKey preparedKey,
         CancellationToken cancellationToken)
     {
         var plan = await GetPlanAsync(schemaId, cancellationToken).ConfigureAwait(false);
-        var scopedSchema = await _schemaRegistry.GetSchemaAsync(schemaId, subject, cancellationToken)
+        var scopedSchema = await _schemaRegistry.GetSchemaAsync(
+                schemaId,
+                preparedSubject.Subject,
+                cancellationToken)
             .ConfigureAwait(false);
         if (scopedSchema.RuleSet is not null || _migrationRunner is not null)
             PrepareTaggedTransformer(schemaId, scopedSchema, plan);
@@ -480,13 +605,18 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         {
             migrationPlans = await PrepareMigrationTargetPlansAsync(
                     schemaId,
-                    subject,
+                    preparedSubject.Subject,
                     scopedSchema,
                     cancellationToken)
                 .ConfigureAwait(false);
         }
 
-        CachePreparedRuleState(preparedKey, subject, scopedSchema, plan, migrationPlans);
+        return CachePreparedRuleState(
+            preparedKey,
+            preparedSubject,
+            scopedSchema,
+            plan,
+            migrationPlans);
     }
 
     private async ValueTask RefreshMigrationTargetsAsync(
@@ -531,41 +661,86 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         _ = _taggedFieldTransformers.GetResolved(schema, parsed);
     }
 
-    private bool TryGetPreparedRuleState(PreparedRuleKey key, out PreparedRuleState state)
+    private bool TryGetPreparedRuleState(
+        PreparedRuleKey key,
+        int subjectGeneration,
+        out PreparedRuleState state)
     {
         state = Volatile.Read(ref _lastPreparedRuleState)!;
-        if (state is not null && state.Matches(key.SchemaId, key.Topic, key.IsKey))
+        if (state is not null && state.Matches(key.SchemaId, key.Topic, key.IsKey, subjectGeneration))
             return true;
 
-        if (!_preparedRuleStates.TryGetValue(key, out state!))
+        if (!_preparedRuleStates.TryGetValue(key, out state!) || state.Generation != subjectGeneration)
             return false;
 
         Volatile.Write(ref _lastPreparedRuleState, state);
         return true;
     }
 
-    private void CachePreparedRuleState(
+    private bool CachePreparedRuleState(
         PreparedRuleKey key,
-        string subject,
+        DeserializerSubjectNameCache.PreparedSubject preparedSubject,
         Schema schema,
         AvroPocoReaderPlan plan,
         Dictionary<int, AvroPocoReaderPlan>? migrationPlans)
     {
-        var state = new PreparedRuleState(key, subject, schema, plan, migrationPlans);
+        if (_subjectNames is not null && !_subjectNames.IsCurrent(in preparedSubject))
+            return false;
+
+        var state = new PreparedRuleState(
+            key,
+            preparedSubject.Subject,
+            schema,
+            plan,
+            migrationPlans,
+            preparedSubject.Generation);
         if (!_preparedRuleStates.TryAdd(key, state))
         {
             if (_preparedRuleStates.TryGetValue(key, out var cached))
             {
-                cached.SetMigrationPlans(migrationPlans);
-                Volatile.Write(ref _lastPreparedRuleState, cached);
+                if (cached.Generation == preparedSubject.Generation)
+                {
+                    cached.SetMigrationPlans(migrationPlans);
+                    Volatile.Write(ref _lastPreparedRuleState, cached);
+                    return true;
+                }
+
+                if (_preparedRuleStates.TryUpdate(key, state, cached))
+                {
+                    Volatile.Write(ref _lastPreparedRuleState, state);
+                    return true;
+                }
             }
-            return;
+            return false;
         }
 
         Volatile.Write(ref _lastPreparedRuleState, state);
         Interlocked.Increment(ref _cachedPreparedRuleStateCount);
-        _preparedRuleStateEvictionQueue.Enqueue(new KeyValuePair<PreparedRuleKey, PreparedRuleState>(key, state));
+        _preparedRuleStateEvictionQueue.Enqueue(key);
         TrimPreparedRuleStateCache();
+        return true;
+    }
+
+    private bool TryGetSubjectGeneration(string topic, bool isKey, out int generation)
+    {
+        if (_subjectNames is { RequiresPreparation: true } subjectNames)
+        {
+            if (subjectNames.TryGetPreparedSubject(
+                    GeneratedSubjectCacheSchemaId,
+                    topic,
+                    isKey,
+                    out var preparedSubject))
+            {
+                generation = preparedSubject.Generation;
+                return true;
+            }
+
+            generation = 0;
+            return false;
+        }
+
+        generation = 0;
+        return true;
     }
 
     private void TrimPreparedRuleStateCache()
@@ -582,7 +757,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
             var removed = false;
             while (_preparedRuleStateEvictionQueue.TryDequeue(out var oldest))
             {
-                if (((ICollection<KeyValuePair<PreparedRuleKey, PreparedRuleState>>)_preparedRuleStates).Remove(oldest))
+                if (_preparedRuleStates.TryRemove(oldest, out _))
                 {
                     removed = true;
                     break;
@@ -788,12 +963,14 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         string subject,
         Schema schema,
         AvroPocoReaderPlan plan,
-        Dictionary<int, AvroPocoReaderPlan>? migrationPlans)
+        Dictionary<int, AvroPocoReaderPlan>? migrationPlans,
+        int generation)
     {
         internal PreparedRuleKey Key { get; } = key;
         internal string Subject { get; } = subject;
         internal Schema Schema { get; } = schema;
         internal AvroPocoReaderPlan Plan { get; } = plan;
+        internal int Generation { get; } = generation;
 
         private Dictionary<int, AvroPocoReaderPlan>? _migrationPlans = migrationPlans;
 
@@ -816,9 +993,10 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
             return false;
         }
 
-        internal bool Matches(int schemaId, string topic, bool isKey) =>
+        internal bool Matches(int schemaId, string topic, bool isKey, int generation) =>
             Key.SchemaId == schemaId &&
             Key.IsKey == isKey &&
+            Generation == generation &&
             (ReferenceEquals(Key.Topic, topic) || string.Equals(Key.Topic, topic, StringComparison.Ordinal));
     }
 }

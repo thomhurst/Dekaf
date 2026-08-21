@@ -1171,6 +1171,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private const int MaxConsecutivePrefetchErrors = 50;
     private const int MaxConsecutiveEmptyParsedFetches = 3;
     private const int MaxRepeatedDeterministicPrefetchFailures = 3;
+    private const int MaxDeserializerPreparationAttemptsPerComponent = 2;
     private const long FilterRefreshIntervalMilliseconds = 30_000;
     private readonly ConsumerOptions _options;
 
@@ -1773,8 +1774,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         _asyncKeyDeserializer = asyncKeyDeserializer;
         _asyncValueDeserializer = asyncValueDeserializer;
         _hasAsyncDeserializers = asyncKeyDeserializer is not null || asyncValueDeserializer is not null;
-        _keyDeserializerPreparer = _keyDeserializer as IAsyncDeserializerPreparer<TKey>;
-        _valueDeserializerPreparer = _valueDeserializer as IAsyncDeserializerPreparer<TValue>;
+        _keyDeserializerPreparer = _keyDeserializer is IAsyncDeserializerPreparer<TKey> keyDeserializerPreparer &&
+            _keyDeserializer is not IAsyncDeserializerPreparationRequirement { RequiresPreparation: false }
+                ? keyDeserializerPreparer
+                : null;
+        _valueDeserializerPreparer = _valueDeserializer is IAsyncDeserializerPreparer<TValue> valueDeserializerPreparer &&
+            _valueDeserializer is not IAsyncDeserializerPreparationRequirement { RequiresPreparation: false }
+                ? valueDeserializerPreparer
+                : null;
         _hasDeserializerPreparers = _keyDeserializerPreparer is not null || _valueDeserializerPreparer is not null;
 
         // Derive consumer pool sizes from configuration
@@ -3031,19 +3038,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                         ref preparedKey,
                                         out nextResult))
                                 {
-                                    for (var preparationAttempt = 0; ; preparationAttempt++)
+                                    var keyPreparationAttempts = 0;
+                                    var valuePreparationAttempts = 0;
+                                    while (true)
                                     {
-                                        if (preparationAttempt >= 2)
-                                        {
-                                            throw new InvalidOperationException(
-                                                "Deserializer remained unprepared after PrepareAsync completed.");
-                                        }
-
                                         var component = GetRequiredPreparationComponent(
                                             pending,
                                             offset,
                                             isKeyNull,
                                             preparedKey);
+                                        ReserveDeserializerPreparationAttempt(
+                                            component,
+                                            ref keyPreparationAttempts,
+                                            ref valuePreparationAttempts);
                                         await PrepareRecordDeserializerAsync(
                                                 pending,
                                                 offset,
@@ -6161,7 +6168,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         }
                         else
                         {
-                            for (var preparationAttempt = 0; ; preparationAttempt++)
+                            var keyPreparationAttempts = 0;
+                            var valuePreparationAttempts = 0;
+                            while (true)
                             {
                                 if (TryCreateResultAfterPreparation(
                                         pending,
@@ -6182,17 +6191,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                     break;
                                 }
 
-                                if (preparationAttempt >= 2)
-                                {
-                                    throw new InvalidOperationException(
-                                        "Deserializer remained unprepared after PrepareAsync completed.");
-                                }
-
                                 var component = GetRequiredPreparationComponent(
                                     pending,
                                     offset,
                                     isKeyNull,
                                     preparedKey);
+                                ReserveDeserializerPreparationAttempt(
+                                    component,
+                                    ref keyPreparationAttempts,
+                                    ref valuePreparationAttempts);
                                 await PrepareRecordDeserializerAsync(
                                         pending,
                                         offset,
@@ -6562,6 +6569,23 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             ? SerializationComponent.Value
             : SerializationComponent.Key;
 
+    private static void ReserveDeserializerPreparationAttempt(
+        SerializationComponent component,
+        ref int keyPreparationAttempts,
+        ref int valuePreparationAttempts)
+    {
+        ref var attempts = ref (component == SerializationComponent.Key
+            ? ref keyPreparationAttempts
+            : ref valuePreparationAttempts);
+        if (attempts >= MaxDeserializerPreparationAttemptsPerComponent)
+        {
+            throw new InvalidOperationException(
+                "Deserializer remained unprepared after PrepareAsync completed.");
+        }
+
+        attempts++;
+    }
+
     private async ValueTask PrepareRecordDeserializerAsync(
         PendingFetchData pending,
         long offset,
@@ -6691,15 +6715,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 }
                 else if (_keyDeserializerPreparer is { } keyPreparer)
                 {
-                    if (!keyPreparer.TryDeserialize(keyData, keyContext, out key))
+                    for (var preparationAttempt = 0;
+                         !keyPreparer.TryDeserialize(keyData, keyContext, out key);
+                         preparationAttempt++)
                     {
-                        await keyPreparer.PrepareAsync(keyData, keyContext, cancellationToken)
-                            .ConfigureAwait(false);
-                        if (!keyPreparer.TryDeserialize(keyData, keyContext, out key))
+                        if (preparationAttempt >= 2)
                         {
                             throw new InvalidOperationException(
                                 "Deserializer remained unprepared after PrepareAsync completed.");
                         }
+
+                        await keyPreparer.PrepareAsync(keyData, keyContext, cancellationToken)
+                            .ConfigureAwait(false);
                     }
                 }
                 else
@@ -6750,15 +6777,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
             else if (_valueDeserializerPreparer is { } valuePreparer)
             {
-                if (!valuePreparer.TryDeserialize(valueBytes, valueContext, out value))
+                for (var preparationAttempt = 0;
+                     !valuePreparer.TryDeserialize(valueBytes, valueContext, out value);
+                     preparationAttempt++)
                 {
-                    await valuePreparer.PrepareAsync(valueBytes, valueContext, cancellationToken)
-                        .ConfigureAwait(false);
-                    if (!valuePreparer.TryDeserialize(valueBytes, valueContext, out value))
+                    if (preparationAttempt >= 2)
                     {
                         throw new InvalidOperationException(
                             "Deserializer remained unprepared after PrepareAsync completed.");
                     }
+
+                    await valuePreparer.PrepareAsync(valueBytes, valueContext, cancellationToken)
+                        .ConfigureAwait(false);
                 }
             }
             else

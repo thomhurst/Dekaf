@@ -26,9 +26,12 @@ namespace Dekaf.SchemaRegistry;
 public sealed class SchemaRegistrySerializer<T> :
     ISerializer<T>,
     IAsyncSerializerPreparer<T>,
-    IAsyncDisposable
+    IAsyncSerializerPreparationAdmission<T>,
+    IAsyncDisposable,
+    IAssociatedNameCacheInvalidationTarget
 {
     private const byte MagicByte = 0x00;
+    private const int MaxAssociatedNameInvalidationRetries = 4;
 
     /// <summary>
     /// Default timeout for Schema Registry operations (30 seconds).
@@ -41,6 +44,7 @@ public sealed class SchemaRegistrySerializer<T> :
     private readonly bool _schemaFactoryIgnoresSubject;
     private readonly SubjectNameStrategy _subjectNameStrategy;
     private readonly ISubjectNameStrategy? _customSubjectNameStrategy;
+    private readonly IAsyncSubjectNameStrategy? _asyncSubjectNameStrategy;
     private readonly bool _autoRegisterSchemas;
     private readonly bool _normalizeSchemas;
     private readonly bool _useLegacySubjectNames;
@@ -50,7 +54,7 @@ public sealed class SchemaRegistrySerializer<T> :
 
     private readonly SchemaResolutionCache<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> _schemaResolutionCache = new();
     private readonly SubjectSchemaCache? _subjectSchemaCache;
-    private readonly SubjectSchemaIdCache _subjectSchemaIdCache = new();
+    private SubjectSchemaIdCache _subjectSchemaIdCache = new();
 
     /// <summary>
     /// Creates a new Schema Registry serializer.
@@ -105,11 +109,13 @@ public sealed class SchemaRegistrySerializer<T> :
         _getSchema = getSchema ?? throw new ArgumentNullException(nameof(getSchema));
         _subjectSchemaCache = new SubjectSchemaCache();
         _subjectNameStrategy = subjectNameStrategy;
+        _asyncSubjectNameStrategy = CreateAsyncSubjectNameStrategy(schemaRegistry, subjectNameStrategy);
         _autoRegisterSchemas = autoRegisterSchemas;
         _normalizeSchemas = normalizeSchemas;
         _useLegacySubjectNames = useLegacySubjectNames;
         _ownsClient = ownsClient;
         _ruleExecutor = ruleExecutor;
+        RegisterAssociatedNameInvalidation();
     }
 
     /// <summary>
@@ -157,11 +163,13 @@ public sealed class SchemaRegistrySerializer<T> :
         _getSchema = _ => getSchema();
         _schemaFactoryIgnoresSubject = true;
         _subjectNameStrategy = subjectNameStrategy;
+        _asyncSubjectNameStrategy = CreateAsyncSubjectNameStrategy(schemaRegistry, subjectNameStrategy);
         _autoRegisterSchemas = autoRegisterSchemas;
         _normalizeSchemas = normalizeSchemas;
         _useLegacySubjectNames = useLegacySubjectNames;
         _ownsClient = ownsClient;
         _ruleExecutor = ruleExecutor;
+        RegisterAssociatedNameInvalidation();
     }
 
     /// <summary>
@@ -197,6 +205,60 @@ public sealed class SchemaRegistrySerializer<T> :
     }
 
     /// <summary>
+    /// Creates a new Schema Registry serializer with an asynchronous subject-name strategy.
+    /// </summary>
+    public SchemaRegistrySerializer(
+        ISchemaRegistryClient schemaRegistry,
+        Action<T, IBufferWriter<byte>> serialize,
+        IAsyncSubjectNameStrategy asyncSubjectNameStrategy,
+        Func<string, Schema> getSchema,
+        bool autoRegisterSchemas = true,
+        bool ownsClient = false,
+        ISchemaRegistryRuleExecutor? ruleExecutor = null,
+        bool normalizeSchemas = false)
+    {
+        _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
+        _serialize = serialize ?? throw new ArgumentNullException(nameof(serialize));
+        _getSchema = getSchema ?? throw new ArgumentNullException(nameof(getSchema));
+        _subjectSchemaCache = new SubjectSchemaCache();
+        _asyncSubjectNameStrategy = asyncSubjectNameStrategy
+            ?? throw new ArgumentNullException(nameof(asyncSubjectNameStrategy));
+        _autoRegisterSchemas = autoRegisterSchemas;
+        _normalizeSchemas = normalizeSchemas;
+        _ownsClient = ownsClient;
+        _ruleExecutor = ruleExecutor;
+        RegisterAssociatedNameInvalidation();
+    }
+
+    /// <summary>
+    /// Creates a new Schema Registry serializer with a subject-independent schema factory and
+    /// an asynchronous subject-name strategy.
+    /// </summary>
+    public SchemaRegistrySerializer(
+        ISchemaRegistryClient schemaRegistry,
+        Action<T, IBufferWriter<byte>> serialize,
+        IAsyncSubjectNameStrategy asyncSubjectNameStrategy,
+        Func<Schema> getSchema,
+        bool autoRegisterSchemas = true,
+        bool ownsClient = false,
+        ISchemaRegistryRuleExecutor? ruleExecutor = null,
+        bool normalizeSchemas = false)
+    {
+        ArgumentNullException.ThrowIfNull(getSchema);
+        _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
+        _serialize = serialize ?? throw new ArgumentNullException(nameof(serialize));
+        _getSchema = _ => getSchema();
+        _schemaFactoryIgnoresSubject = true;
+        _asyncSubjectNameStrategy = asyncSubjectNameStrategy
+            ?? throw new ArgumentNullException(nameof(asyncSubjectNameStrategy));
+        _autoRegisterSchemas = autoRegisterSchemas;
+        _normalizeSchemas = normalizeSchemas;
+        _ownsClient = ownsClient;
+        _ruleExecutor = ruleExecutor;
+        RegisterAssociatedNameInvalidation();
+    }
+
+    /// <summary>
     /// Resolves and caches the subject, schema ID, and schema for a serialization context.
     /// </summary>
     public ValueTask<ResolvedSchemaContext> PrepareAsync(
@@ -205,10 +267,11 @@ public sealed class SchemaRegistrySerializer<T> :
         bool isKey = false,
         CancellationToken cancellationToken = default)
     {
-        if (_subjectSchemaIdCache.TryGet(topic, isKey, out var cached))
+        var cache = Volatile.Read(ref _subjectSchemaIdCache);
+        if (cache.TryGet(topic, isKey, out var cached))
             return new ValueTask<ResolvedSchemaContext>(ToResolvedContext(cached));
 
-        return PrepareCoreAsync(topic, isKey, cancellationToken);
+        return PrepareCoreAsync(topic, isKey, cache, cancellationToken);
     }
 
     /// <inheritdoc />
@@ -234,6 +297,26 @@ public sealed class SchemaRegistrySerializer<T> :
             _ = await preparation.ConfigureAwait(false);
     }
 
+    ValueTask<SerializerPreparationAdmission>
+        IAsyncSerializerPreparationAdmission<T>.PrepareForSerializationAsync(
+            T value,
+            SerializationContext context,
+            CancellationToken cancellationToken)
+    {
+        var preparation = PrepareAsync(
+            context.Topic,
+            value,
+            context.Component == SerializationComponent.Key,
+            cancellationToken);
+        return preparation.IsCompletedSuccessfully
+            ? new ValueTask<SerializerPreparationAdmission>(ToAdmission(preparation.Result))
+            : AwaitAdmissionAsync(preparation);
+
+        static async ValueTask<SerializerPreparationAdmission> AwaitAdmissionAsync(
+            ValueTask<ResolvedSchemaContext> pending) =>
+            ToAdmission(await pending.ConfigureAwait(false));
+    }
+
     public void Serialize<TWriter>(T value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>
 #if NET10_0_OR_GREATER
@@ -241,6 +324,67 @@ public sealed class SchemaRegistrySerializer<T> :
 #endif
     {
         var schemaEntry = GetSchemaForContext(context.Topic, context.Component == SerializationComponent.Key);
+        var schemaId = schemaEntry.SchemaId;
+
+        var payloadBuffer = SchemaRegistryBuffers.PayloadBuffer ??= new ArrayBufferWriter<byte>(initialCapacity: 4096);
+        payloadBuffer.ResetWrittenCount();
+        _serialize(value, payloadBuffer);
+        if (payloadBuffer.Capacity > 1024 * 1024)
+            SchemaRegistryBuffers.PayloadBuffer = null;
+
+        var payload = payloadBuffer.WrittenMemory;
+        if (_ruleExecutor is not null)
+        {
+            var ruleContext = SchemaRegistryRuleContext.Rent(
+                context.Topic,
+                context.Component,
+                schemaId,
+                schemaEntry.Subject,
+                schemaEntry.Schema,
+                SchemaRegistryPayloadFormat.Custom);
+            try
+            {
+                payload = _ruleExecutor.TransformSerializedPayload(payload, ruleContext);
+            }
+            finally
+            {
+                ruleContext.Return();
+            }
+        }
+
+        var totalSize = 1 + 4 + payload.Length;
+        var span = destination.GetSpan(totalSize);
+        span[0] = MagicByte;
+        BinaryPrimitives.WriteInt32BigEndian(span.Slice(1, 4), schemaId);
+        payload.Span.CopyTo(span.Slice(5));
+        destination.Advance(totalSize);
+    }
+
+    void IAsyncSerializerPreparationAdmission<T>.SerializePrepared<TWriter>(
+        T value,
+        ref TWriter destination,
+        SerializationContext context,
+        in SerializerPreparationAdmission admission)
+    {
+        var schemaEntry = SubjectSchemaIdCache.FromAdmission(
+            context.Topic,
+            context.Component == SerializationComponent.Key,
+            admission);
+        SerializeCore(value, ref destination, context, schemaEntry);
+    }
+
+    // Keep the public Serialize body inline; routing it through this helper measured 5.5% slower.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void SerializeCore<TWriter>(
+        T value,
+        ref TWriter destination,
+        SerializationContext context,
+        SubjectSchemaIdCache.SubjectSchemaIdCacheEntry schemaEntry)
+        where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+        , allows ref struct
+#endif
+    {
         var schemaId = schemaEntry.SchemaId;
 
         var payloadBuffer = SchemaRegistryBuffers.PayloadBuffer ??= new ArrayBufferWriter<byte>(initialCapacity: 4096);
@@ -281,12 +425,28 @@ public sealed class SchemaRegistrySerializer<T> :
         destination.Advance(totalSize);
     }
 
-    private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry GetSchemaForContext(string topic, bool isKey)
-        => _subjectSchemaIdCache.GetOrAdd(
+    private static SerializerPreparationAdmission ToAdmission(
+        in ResolvedSchemaContext context) =>
+        new(context.Subject, context.SchemaId, context.Schema);
+
+    private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry GetSchemaForContext(string topic, bool isKey) =>
+        Volatile.Read(ref _subjectSchemaIdCache).GetOrAdd(
             topic,
             isKey,
             this,
-            static (serializer, topic, isKey) => serializer.ResolveSchema(topic, isKey));
+            static (serializer, topic, isKey) => serializer.ResolveSchemaForContext(topic, isKey));
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry ResolveSchemaForContext(string topic, bool isKey)
+    {
+        if (_asyncSubjectNameStrategy is not null)
+        {
+            throw new InvalidOperationException(
+                "The asynchronous subject-name strategy requires PrepareAsync before serialization.");
+        }
+
+        return ResolveSchema(topic, isKey);
+    }
 
     private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry ResolveSchema(string topic, bool isKey)
     {
@@ -302,8 +462,12 @@ public sealed class SchemaRegistrySerializer<T> :
     private ValueTask<ResolvedSchemaContext> PrepareCoreAsync(
         string topic,
         bool isKey,
+        SubjectSchemaIdCache cache,
         CancellationToken cancellationToken)
     {
+        if (_asyncSubjectNameStrategy is not null)
+            return PrepareAssociatedCoreAsync(topic, isKey, cache, cancellationToken);
+
         var resolved = ResolveSubjectAndSchema(topic, isKey);
         var resolution = ResolveSchemaAsync(
             resolved.Subject,
@@ -313,7 +477,7 @@ public sealed class SchemaRegistrySerializer<T> :
         {
             var value = resolution.Result;
             return new ValueTask<ResolvedSchemaContext>(ToResolvedContext(
-                _subjectSchemaIdCache.CacheEntry(
+                cache.CacheEntry(
                     topic,
                     isKey,
                     resolved.Subject,
@@ -321,23 +485,90 @@ public sealed class SchemaRegistrySerializer<T> :
                     value.Schema!)));
         }
 
-        return AwaitSchemaAsync(this, topic, isKey, resolved.Subject, resolution);
+        return AwaitSchemaAsync(topic, isKey, resolved.Subject, cache, resolution);
 
         static async ValueTask<ResolvedSchemaContext> AwaitSchemaAsync(
-            SchemaRegistrySerializer<T> serializer,
             string topic,
             bool isKey,
             string subject,
+            SubjectSchemaIdCache cache,
             ValueTask<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> resolution)
         {
             var value = await resolution.ConfigureAwait(false);
-            return ToResolvedContext(serializer._subjectSchemaIdCache.CacheEntry(
+            return ToResolvedContext(cache.CacheEntry(
                 topic,
                 isKey,
                 subject,
                 value.SchemaId,
                 value.Schema!));
         }
+    }
+
+    private async ValueTask<ResolvedSchemaContext> PrepareAssociatedCoreAsync(
+        string topic,
+        bool isKey,
+        SubjectSchemaIdCache cache,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; attempt < MaxAssociatedNameInvalidationRetries; attempt++)
+        {
+            var resolved = await ResolveAssociatedSubjectAndSchemaAsync(topic, isKey, cancellationToken)
+                .ConfigureAwait(false);
+            var value = await ResolveSchemaAsync(resolved.Subject, resolved.Schema, cancellationToken)
+                .ConfigureAwait(false);
+            if (ReferenceEquals(cache, Volatile.Read(ref _subjectSchemaIdCache)))
+            {
+                var preparedEntry = cache.CacheEntry(
+                    topic,
+                    isKey,
+                    resolved.Subject,
+                    value.SchemaId,
+                    value.Schema!);
+                if (ReferenceEquals(cache, Volatile.Read(ref _subjectSchemaIdCache)))
+                    return ToResolvedContext(preparedEntry);
+            }
+
+            cache = Volatile.Read(ref _subjectSchemaIdCache);
+            if (cache.TryGet(topic, isKey, out var cached))
+                return ToResolvedContext(cached);
+        }
+
+        throw new InvalidOperationException(
+            "Associated-name cache changed repeatedly while preparing the serializer.");
+    }
+
+    private async ValueTask<ResolvedSubjectSchema> ResolveAssociatedSubjectAndSchemaAsync(
+        string topic,
+        bool isKey,
+        CancellationToken cancellationToken)
+    {
+        var fallbackRecordName = typeof(T).FullName ?? typeof(T).Name;
+        var subject = await _asyncSubjectNameStrategy!.GetSubjectNameAsync(
+            topic,
+            fallbackRecordName,
+            isKey,
+            cancellationToken).ConfigureAwait(false);
+
+        for (var attempt = 0; attempt < 4; attempt++)
+        {
+            var factorySchema = GetSchema(subject, fallbackRecordName);
+            var schema = factorySchema.Schema;
+            var recordName = factorySchema.RecordName;
+            var resolvedSubject = string.Equals(recordName, fallbackRecordName, StringComparison.Ordinal)
+                ? subject
+                : await _asyncSubjectNameStrategy.GetSubjectNameAsync(
+                    topic,
+                    recordName,
+                    isKey,
+                    cancellationToken).ConfigureAwait(false);
+
+            if (_schemaFactoryIgnoresSubject || string.Equals(resolvedSubject, subject, StringComparison.Ordinal))
+                return new ResolvedSubjectSchema(resolvedSubject, schema);
+
+            subject = resolvedSubject;
+        }
+
+        throw new InvalidOperationException("The schema callback did not resolve to a stable subject name.");
     }
 
     private ResolvedSubjectSchema ResolveSubjectAndSchema(string topic, bool isKey)
@@ -731,6 +962,24 @@ public sealed class SchemaRegistrySerializer<T> :
             _useLegacySubjectNames);
     }
 
+    private static IAsyncSubjectNameStrategy? CreateAsyncSubjectNameStrategy(
+        ISchemaRegistryClient schemaRegistry,
+        SubjectNameStrategy strategy) =>
+        strategy == SubjectNameStrategy.AssociatedName
+            ? new AssociatedNameStrategy(schemaRegistry)
+            : null;
+
+    private void RegisterAssociatedNameInvalidation()
+    {
+        if (_asyncSubjectNameStrategy is AssociatedNameStrategy strategy)
+            strategy.RegisterCacheInvalidationTarget(this);
+    }
+
+    void IAssociatedNameCacheInvalidationTarget.InvalidateAssociatedNameCache()
+    {
+        Volatile.Write(ref _subjectSchemaIdCache, new SubjectSchemaIdCache());
+    }
+
     public ValueTask DisposeAsync()
     {
         if (_ownsClient)
@@ -763,7 +1012,11 @@ internal static class SchemaRegistryBuffers
 /// </para>
 /// </remarks>
 /// <typeparam name="T">The type to deserialize.</typeparam>
-public sealed class SchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisposable
+public sealed class SchemaRegistryDeserializer<T> :
+    IDeserializer<T>,
+    IAsyncDeserializerPreparer<T>,
+    IAsyncDeserializerPreparationRequirement,
+    IAsyncDisposable
 {
     private const byte MagicByte = 0x00;
     private static readonly string FallbackRecordName = typeof(T).FullName ?? typeof(T).Name;
@@ -817,7 +1070,7 @@ public sealed class SchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisp
         _deserialize = deserialize ?? throw new ArgumentNullException(nameof(deserialize));
         _ownsClient = ownsClient;
         _ruleExecutor = ruleExecutor;
-        _subjectNames = DeserializerSubjectNameCache.Create(config);
+        _subjectNames = DeserializerSubjectNameCache.Create(schemaRegistry, config);
         if (config?.UseLatestVersion == true)
         {
             (_migrationRunner, _ruleExecutor) = SchemaRegistryMigrationRunner.Create(
@@ -825,6 +1078,59 @@ public sealed class SchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisp
                 ruleExecutor,
                 SchemaRegistryTimeout);
         }
+    }
+
+    bool IAsyncDeserializerPreparationRequirement.RequiresPreparation =>
+        _ruleExecutor is not null && _subjectNames is { RequiresPreparation: true };
+
+    ValueTask IAsyncDeserializerPreparer<T>.PrepareAsync(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        CancellationToken cancellationToken)
+    {
+        if (_ruleExecutor is null
+            || _subjectNames is not { RequiresPreparation: true }
+            || !DeserializerSubjectNameCache.TryReadSchemaId(data, out var schemaId))
+        {
+            return default;
+        }
+
+        return _subjectNames.PrepareAsync(
+            _schemaRegistry,
+            schemaId,
+            context.Topic,
+            context.Component == SerializationComponent.Key,
+            FallbackRecordName,
+            cancellationToken);
+    }
+
+    bool IAsyncDeserializerPreparer<T>.TryDeserialize(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        out T value)
+    {
+        string? preparedSubject = null;
+        if (_ruleExecutor is not null
+            && _subjectNames is { RequiresPreparation: true } subjectNames
+            && DeserializerSubjectNameCache.TryReadSchemaId(data, out var schemaId))
+        {
+            if (!subjectNames.TryGetPreparedSubject(
+                    schemaId,
+                    context.Topic,
+                    context.Component == SerializationComponent.Key,
+                    out var prepared))
+            {
+                value = default!;
+                return false;
+            }
+
+            preparedSubject = prepared.Subject;
+        }
+
+        value = preparedSubject is null
+            ? Deserialize(data, context)
+            : DeserializePrepared(data, context, preparedSubject);
+        return true;
     }
 
     public T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
@@ -891,6 +1197,56 @@ public sealed class SchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisp
         else
         {
             schema = _schemaRegistry.GetSchemaSync(schemaId, SchemaRegistryTimeout);
+        }
+
+        return _deserialize(payload, schema);
+    }
+
+    private T DeserializePrepared(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        string subject)
+    {
+        var span = data.Span;
+
+        if (span.Length < 5)
+            throw new InvalidOperationException("Message too short to contain Schema Registry wire format");
+
+        if (span[0] != MagicByte)
+            throw new InvalidOperationException($"Unknown magic byte: {span[0]}. Expected Schema Registry format.");
+
+        var schemaId = BinaryPrimitives.ReadInt32BigEndian(span.Slice(1, 4));
+        var payload = data.Slice(5);
+        var schema = _schemaRegistry.GetSchemaSync(schemaId, subject, SchemaRegistryTimeout);
+        if (_migrationRunner is null)
+        {
+            var ruleContext = SchemaRegistryRuleContext.Rent(
+                context.Topic,
+                context.Component,
+                schemaId,
+                subject,
+                schema,
+                SchemaRegistryPayloadFormat.Custom);
+            try
+            {
+                payload = _ruleExecutor!.TransformDeserializedPayload(payload, ruleContext);
+            }
+            finally
+            {
+                ruleContext.Return();
+            }
+        }
+        else
+        {
+            var migration = _migrationRunner.Transform(
+                payload,
+                schemaId,
+                subject,
+                schema,
+                context,
+                SchemaRegistryPayloadFormat.Custom);
+            payload = migration.Payload;
+            schema = migration.ReaderSchema.Schema;
         }
 
         return _deserialize(payload, schema);
@@ -969,5 +1325,11 @@ public enum SubjectNameStrategy
     /// <summary>
     /// Subject name is topic-recordname.
     /// </summary>
-    TopicRecordName
+    TopicRecordName,
+
+    /// <summary>
+    /// Resolve the subject asynchronously from a Schema Registry topic association.
+    /// A custom strategy takes precedence when both are configured.
+    /// </summary>
+    AssociatedName
 }
