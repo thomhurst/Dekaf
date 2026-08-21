@@ -5,6 +5,7 @@ using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Avro;
 using Dekaf.SchemaRegistry.Avro.Poco;
 using Dekaf.Serialization;
+using Dekaf.Serialization.Routing;
 using AvroSchema = Avro.Schema;
 
 namespace Dekaf.Tests.Integration;
@@ -40,7 +41,7 @@ public sealed class SchemaIdentityFramingIntegrationTests(
         """;
 
     [Test]
-    public async Task Avro_ExplicitIdHeaderFraming_RoundTripsWithoutCallerHeaders()
+    public async Task Avro_RoutedExplicitIdHeaderFraming_RoundTripsWithoutCallerHeaders()
     {
         var topic = await testInfra.CreateTestTopicAsync();
         using var registry = CreateRegistryClient();
@@ -67,10 +68,13 @@ public sealed class SchemaIdentityFramingIntegrationTests(
         var record = new GenericRecord(schema);
         record.Add("id", 84);
         record.Add("name", "Header Integration");
+        var routingSerializer = new TopicRoutingSerializer<GenericRecord>()
+            .Register(topic, serializer)
+            .Freeze();
 
         await using var producer = await Kafka.CreateProducer<string, GenericRecord>()
             .WithBootstrapServers(testInfra.BootstrapServers)
-            .WithValueSerializer(serializer)
+            .WithValueSerializer(routingSerializer)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
         await producer.ProduceAsync(topic, "header", record);
