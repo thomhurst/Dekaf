@@ -367,7 +367,7 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
             Topic = key.Topic,
             Component = key.IsKey ? SerializationComponent.Key : SerializationComponent.Value
         };
-        var subject = GetSubjectName(0, unscopedSchema, context);
+        var subject = GetUncachedSubjectName(unscopedSchema, context);
         var registered = await _schemaRegistry.LookupSchemaAsync(
                 subject,
                 unscopedSchema,
@@ -428,6 +428,13 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
                 context.Topic,
                 isKey,
                 RecordName)
+            ?? SubjectNameResolver.GetTopicSubjectName(context.Topic, isKey);
+    }
+
+    private string GetUncachedSubjectName(Schema schema, SerializationContext context)
+    {
+        var isKey = context.Component == SerializationComponent.Key;
+        return _subjectNames?.ResolveSubjectName(schema, context.Topic, isKey, RecordName)
             ?? SubjectNameResolver.GetTopicSubjectName(context.Topic, isKey);
     }
 

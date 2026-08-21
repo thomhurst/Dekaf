@@ -435,6 +435,41 @@ public class ProtobufSchemaIdentityTests
     }
 
     [Test]
+    public async Task Deserialize_Header_DistinctGuidsResolveSubjectsIndependently()
+    {
+        var firstSchema = CreateSchema();
+        var secondSchema = new Schema
+        {
+            SchemaType = SchemaType.Protobuf,
+            SchemaString = ReferenceGraphMessage.Descriptor.File.SerializedData.ToBase64()
+        };
+        var registry = new MockSchemaRegistryClient();
+        await registry.RegisterSchemaAsync("identity-first", firstSchema);
+        await registry.RegisterSchemaAsync("identity-second", secondSchema);
+        var firstRegistered = await registry.GetSchemaBySubjectAsync("identity-first");
+        var secondRegistered = await registry.GetSchemaBySubjectAsync("identity-second");
+        var firstGuid = Guid.Parse(firstRegistered.Guid!);
+        var secondGuid = Guid.Parse(secondRegistered.Guid!);
+        var subjectStrategy = new SequencedSubjectNameStrategy("identity-first", "identity-second");
+        var config = new ProtobufDeserializerConfig
+        {
+            SchemaIdStrategy = SchemaIdDeserializerStrategy.Header,
+            CustomSubjectNameStrategy = subjectStrategy,
+            RuleExecutor = new CapturingRuleExecutor(new TestMessage { Id = 42 }.ToByteArray())
+        };
+        await using var deserializer = new ProtobufSchemaRegistryDeserializer<TestMessage>(registry, config);
+
+        _ = deserializer.Deserialize(
+            new TestMessage { Id = 1 }.ToByteArray(),
+            CreateContext(headers: CreateIdentityHeaders(firstGuid, [0])));
+        _ = deserializer.Deserialize(
+            new TestMessage { Id = 2 }.ToByteArray(),
+            CreateContext(headers: CreateIdentityHeaders(secondGuid, [0])));
+
+        await Assert.That(subjectStrategy.CallCount).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task Deserialize_Prefix_IgnoresIdentityHeader()
     {
         var registry = new MockSchemaRegistryClient();
@@ -665,6 +700,19 @@ public class ProtobufSchemaIdentityTests
         {
             Context = SchemaRegistryRuleContextSnapshot.Capture(context);
             return replacement;
+        }
+    }
+
+    private sealed class SequencedSubjectNameStrategy(params string[] subjects) : ISubjectNameStrategy
+    {
+        private int _callCount;
+
+        internal int CallCount => Volatile.Read(ref _callCount);
+
+        public string GetSubjectName(string topic, string? recordType, bool isKey)
+        {
+            var index = Interlocked.Increment(ref _callCount) - 1;
+            return subjects[index];
         }
     }
 }
