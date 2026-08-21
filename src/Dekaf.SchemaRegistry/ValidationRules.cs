@@ -139,7 +139,10 @@ internal readonly record struct ValidationResult(
 internal sealed class CompiledValidationRule
 {
     [ThreadStatic]
-    private static ReadOnlyMemory<byte>[]? t_memberValues;
+    private static ValidationCelMemberSlot[]? t_memberValues;
+
+    [ThreadStatic]
+    private static uint t_memberGeneration;
 
     private readonly ValidationCelNode? _expression;
     private readonly string? _compilationError;
@@ -188,7 +191,7 @@ internal sealed class CompiledValidationRule
     internal ValidationResult Evaluate(
         ReadOnlyMemory<byte> value,
         long nowUnixMilliseconds,
-        ReadOnlyMemory<byte>[]? memberValues)
+        ValidationCelMemberValues memberValues)
     {
         if (_compilationError is not null)
             throw new SchemaRegistryRuleException(_compilationError);
@@ -216,19 +219,58 @@ internal sealed class CompiledValidationRule
         }
     }
 
-    internal static ReadOnlyMemory<byte>[] GetMemberValues(int count)
+    internal static ValidationCelMemberValues GetMemberValues(int count)
     {
         var values = t_memberValues;
         if (values is null || values.Length < count)
-            t_memberValues = values = new ReadOnlyMemory<byte>[Math.Max(count, 8)];
-        return values;
+            t_memberValues = values = new ValidationCelMemberSlot[Math.Max(count, 8)];
+
+        var generation = unchecked(++t_memberGeneration);
+        if (generation == 0)
+        {
+            Array.Clear(values);
+            generation = ++t_memberGeneration;
+        }
+        return new ValidationCelMemberValues(values, generation);
     }
 }
 
 internal readonly record struct ValidationCelContext(
     ReadOnlyMemory<byte> This,
     long NowUnixMilliseconds,
-    ReadOnlyMemory<byte>[]? MemberValues);
+    ValidationCelMemberValues MemberValues);
+
+internal struct ValidationCelMemberSlot
+{
+    internal int Start;
+    internal int Length;
+    internal uint Generation;
+}
+
+internal readonly struct ValidationCelMemberValues(
+    ValidationCelMemberSlot[] values,
+    uint generation)
+{
+    internal bool IsSet(int index) => values[index].Generation == generation;
+
+    internal ReadOnlyMemory<byte> Get(int index, ReadOnlyMemory<byte> source)
+    {
+        ref readonly var value = ref values[index];
+        return value.Generation == generation
+            ? source.Slice(value.Start, value.Length)
+            : default;
+    }
+
+    internal void Set(int index, int start, int length)
+    {
+        ref var value = ref values[index];
+        value.Start = start;
+        value.Length = length;
+        value.Generation = generation;
+    }
+
+    internal void Clear(int index) => values[index].Generation = 0;
+}
 
 internal static class ValidationCelJsonReader
 {
@@ -514,7 +556,7 @@ internal sealed class ValidationCelMemberTable
 
     internal int Count { get; }
 
-    internal void Resolve(ReadOnlyMemory<byte> json, ReadOnlyMemory<byte>[] values)
+    internal void Resolve(ReadOnlyMemory<byte> json, ValidationCelMemberValues values)
     {
         var reader = new Utf8JsonReader(json.Span, ValidationCelJsonReader.Options);
         if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject)
@@ -533,14 +575,14 @@ internal sealed class ValidationCelMemberTable
         private readonly int[] _valueIndexes = valueIndexes;
         private readonly MemberNode?[] _children = children;
         private readonly int[] _terminalValueIndexes = terminalValueIndexes;
-        // A non-default empty slice records a match while remaining a CEL missing value.
+        // A generation-stamped empty slice records a match while remaining a CEL missing value.
         private readonly int _markerValueIndex = terminalValueIndexes[0];
         private readonly int[] _buckets = CreateBuckets(names);
 
         internal void Resolve(
             ref Utf8JsonReader reader,
             ReadOnlyMemory<byte> json,
-            ReadOnlyMemory<byte>[] values)
+            ValidationCelMemberValues values)
         {
             while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
             {
@@ -552,14 +594,14 @@ internal sealed class ValidationCelMemberTable
                 var start = checked((int)reader.TokenStartIndex);
                 if (index >= 0 && _children[index] is { } child)
                 {
-                    if (!values[child._markerValueIndex].Equals(default(ReadOnlyMemory<byte>)))
+                    if (values.IsSet(child._markerValueIndex))
                         child.Clear(values);
                     if (reader.TokenType == JsonTokenType.StartObject)
                         child.Resolve(ref reader, json, values);
                     else
                         reader.Skip();
-                    if (values[child._markerValueIndex].Equals(default(ReadOnlyMemory<byte>)))
-                        values[child._markerValueIndex] = json[..0];
+                    if (!values.IsSet(child._markerValueIndex))
+                        values.Set(child._markerValueIndex, 0, 0);
                 }
                 else
                 {
@@ -568,17 +610,18 @@ internal sealed class ValidationCelMemberTable
 
                 if (index >= 0 && _valueIndexes[index] >= 0)
                 {
-                    values[_valueIndexes[index]] = json.Slice(
+                    values.Set(
+                        _valueIndexes[index],
                         start,
                         checked((int)reader.BytesConsumed) - start);
                 }
             }
         }
 
-        private void Clear(ReadOnlyMemory<byte>[] values)
+        private void Clear(ValidationCelMemberValues values)
         {
             for (var index = 0; index < _terminalValueIndexes.Length; index++)
-                values[_terminalValueIndexes[index]] = default;
+                values.Clear(_terminalValueIndexes[index]);
         }
 
         private int Find(ref Utf8JsonReader reader)
@@ -1184,7 +1227,8 @@ internal sealed class ValidationCelLiteralNode(ValidationCelValue value) : Valid
 internal sealed class ValidationCelThisNode(int memberIndex) : ValidationCelNode
 {
     internal override ValidationCelValue Evaluate(ValidationCelContext context) =>
-        ValidationCelValue.FromJson(memberIndex < 0 ? context.This : context.MemberValues![memberIndex]);
+        ValidationCelValue.FromJson(
+            memberIndex < 0 ? context.This : context.MemberValues.Get(memberIndex, context.This));
 }
 
 internal sealed class ValidationCelNowNode : ValidationCelNode
