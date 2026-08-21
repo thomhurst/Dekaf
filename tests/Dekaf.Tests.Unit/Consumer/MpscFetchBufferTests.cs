@@ -473,16 +473,22 @@ public class MpscFetchBufferTests
 
             timeoutThread = new Thread(() => TriggerConsumerTimeout(buffer));
             timeoutThread.Start();
-            var completion = await continuationFinished.Task;
-            await timeoutCallbackExited.Task;
+            var completion = await continuationFinished.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await timeoutCallbackExited.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
             await Assert.That(completion.RanInline).IsFalse();
             await Assert.That(completion.Result).IsFalse();
         }
         finally
         {
-            timeoutThread?.Join();
-            buffer.Dispose();
+            try
+            {
+                timeoutThread?.Join(TimeSpan.FromSeconds(5));
+            }
+            finally
+            {
+                buffer.Dispose();
+            }
         }
     }
 

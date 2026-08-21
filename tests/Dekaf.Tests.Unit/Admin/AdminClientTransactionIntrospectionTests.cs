@@ -683,6 +683,16 @@ public sealed class AdminClientTransactionIntrospectionTests
     }
 
     [Test]
+    public async Task ForceTerminateTransactionAsync_UnsupportedAdminClient_ThrowsNotSupportedException()
+    {
+        var admin = Substitute.For<IAdminClient>();
+
+        async Task Act() => await admin.ForceTerminateTransactionAsync("tx-unsupported-client");
+
+        await Assert.That(Act).Throws<NotSupportedException>();
+    }
+
+    [Test]
     public async Task AbortTransactionAsync_SendsAbortMarkerToPartitionLeader()
     {
         var (admin, connections) = CreateAdminWithMockConnections();

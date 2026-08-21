@@ -131,14 +131,6 @@ public interface IAdminClient : IAsyncDisposable
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Forcefully terminates the active transaction for a transactional ID.
-    /// </summary>
-    ValueTask<ForceTerminateTransactionResultInfo> ForceTerminateTransactionAsync(
-        string transactionalId,
-        ForceTerminateTransactionOptions? options = null,
-        CancellationToken cancellationToken = default);
-
-    /// <summary>
     /// Forcefully aborts an open transaction on a topic partition.
     /// </summary>
     ValueTask<AbortTransactionResultInfo> AbortTransactionAsync(

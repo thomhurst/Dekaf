@@ -301,7 +301,7 @@ public sealed class AdminClientControllerBootstrapTests
             .Throws<KafkaException>();
 
         await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.UnsupportedEndpointType);
-        await Assert.That(exception.Message).Contains(nameof(IAdminClient.ForceTerminateTransactionAsync));
+        await Assert.That(exception.Message).Contains(nameof(AdminClient.ForceTerminateTransactionAsync));
         await Assert.That(context.DiscoveryRequests).IsEqualTo(0);
         await context.ActiveController.DidNotReceiveWithAnyArgs()
             .SendAsync<InitProducerIdRequest, InitProducerIdResponse>(default!, default, default);

@@ -23,7 +23,10 @@ Dekaf.Admin.ForceTerminateTransactionResultInfo.ProducerId.get -> long
 Dekaf.Admin.ForceTerminateTransactionResultInfo.ProducerId.init -> void
 Dekaf.Admin.ForceTerminateTransactionResultInfo.TransactionalId.get -> string!
 Dekaf.Admin.ForceTerminateTransactionResultInfo.TransactionalId.init -> void
-Dekaf.Admin.IAdminClient.ForceTerminateTransactionAsync(string! transactionalId, Dekaf.Admin.ForceTerminateTransactionOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Admin.ForceTerminateTransactionResultInfo!>
+Dekaf.Admin.AdminClientTransactionRemediationExtensions
+Dekaf.Admin.ITransactionRemediationAdminClient
+Dekaf.Admin.ITransactionRemediationAdminClient.ForceTerminateTransactionAsync(string! transactionalId, Dekaf.Admin.ForceTerminateTransactionOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Admin.ForceTerminateTransactionResultInfo!>
+static Dekaf.Admin.AdminClientTransactionRemediationExtensions.ForceTerminateTransactionAsync(this Dekaf.Admin.IAdminClient! adminClient, string! transactionalId, Dekaf.Admin.ForceTerminateTransactionOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Admin.ForceTerminateTransactionResultInfo!>
 Dekaf.Admin.AdminClient.DescribeReplicaLogDirsAsync(System.Collections.Generic.IEnumerable<Dekaf.Admin.TopicPartitionReplica>! replicas, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<Dekaf.Admin.TopicPartitionReplica, Dekaf.Admin.DescribeReplicaLogDirResultInfo!>!>
 Dekaf.Admin.DescribeReplicaLogDirResultInfo
 Dekaf.Admin.DescribeReplicaLogDirResultInfo.CurrentReplicaLogDir.get -> string?
