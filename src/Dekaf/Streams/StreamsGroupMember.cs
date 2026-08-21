@@ -726,6 +726,9 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
                     or ErrorCode.CoordinatorNotAvailable
                     or ErrorCode.CoordinatorLoadInProgress)
                 {
+                    if (attempt == attemptLimit - 1)
+                        throw CreateGroupException(response);
+
                     if (response.ErrorCode != ErrorCode.CoordinatorLoadInProgress)
                         _coordinatorId = -1;
                     if (recoverFencing)
