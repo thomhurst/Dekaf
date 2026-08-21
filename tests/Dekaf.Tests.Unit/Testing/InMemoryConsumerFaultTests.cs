@@ -2059,6 +2059,41 @@ public sealed class InMemoryConsumerFaultTests
     }
 
     [Test]
+    [Arguments("Single")]
+    [Arguments("List")]
+    [Arguments("Span")]
+    public async Task StoreOffsets_FaultObserverClosePreventsDisposedMutationAndLaterFaultConsumption(
+        string overload)
+    {
+        var (cluster, consumer) = await CreateConsumerWithRecordAsync(enableAutoOffsetStore: false);
+        var firstOffset = new TopicPartitionOffset(Topic, 0, 1);
+        var secondOffset = new TopicPartitionOffset(Topic, 1, 2);
+        var firstBarrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.StoreOffset, Topic, 0, GroupId));
+        if (overload != "Single")
+        {
+            _ = cluster.FaultPlan.PauseNext(
+                new KafkaFaultScope(KafkaFaultOperation.StoreOffset, Topic, 1, GroupId));
+        }
+        await Assert.That(firstBarrier.Release()).IsTrue();
+        Task? closeTask = null;
+        cluster.FaultPlan.FaultConsumed += _ => closeTask ??= consumer.CloseAsync().AsTask();
+        Action store = overload switch
+        {
+            "Single" => () => consumer.StoreOffset(firstOffset),
+            "List" => () => consumer.StoreOffsets(new[] { firstOffset, secondOffset }),
+            "Span" => () => consumer.StoreOffsets(new[] { firstOffset, secondOffset }.AsSpan()),
+            _ => throw new ArgumentOutOfRangeException(nameof(overload), overload, null)
+        };
+
+        _ = Assert.Throws<ObjectDisposedException>(store);
+
+        await Assert.That(closeTask).IsNotNull();
+        await closeTask!;
+        await Assert.That(cluster.FaultPlan.Count).IsEqualTo(overload == "Single" ? 0 : 1);
+    }
+
+    [Test]
     [Arguments("Subscribe")]
     [Arguments("SubscribePattern")]
     [Arguments("Unsubscribe")]

@@ -977,9 +977,13 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             offset.Topic,
             offset.Partition,
             _groupId));
+        ThrowIfDisposed();
 
         lock (_gate)
+        {
+            ThrowIfDisposed();
             StoreOffsetUnderLock(offset);
+        }
     }
 
     public void StoreOffsets<TOffsets>(TOffsets offsets)
@@ -1006,10 +1010,12 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 offset.Topic,
                 offset.Partition,
                 _groupId));
+            ThrowIfDisposed();
         }
 
         lock (_gate)
         {
+            ThrowIfDisposed();
             for (var index = 0; index < count; index++)
                 StoreOffsetUnderLock(snapshot[index]);
         }
@@ -1031,10 +1037,12 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 offset.Topic,
                 offset.Partition,
                 _groupId));
+            ThrowIfDisposed();
         }
 
         lock (_gate)
         {
+            ThrowIfDisposed();
             for (var index = 0; index < snapshot.Length; index++)
                 StoreOffsetUnderLock(snapshot[index]);
         }
