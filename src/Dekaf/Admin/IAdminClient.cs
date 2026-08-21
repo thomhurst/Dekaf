@@ -486,15 +486,6 @@ public interface IAdminClient : IAsyncDisposable
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Deletes share groups and returns the result for every requested group.
-    /// </summary>
-    /// <param name="groupIds">The share group IDs to delete.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    ValueTask<IReadOnlyDictionary<string, DeleteShareGroupResult>> DeleteShareGroupsAsync(
-        IEnumerable<string> groupIds,
-        CancellationToken cancellationToken = default);
-
-    /// <summary>
     /// Describes share group offsets.
     /// </summary>
     /// <param name="groupId">The share group ID.</param>

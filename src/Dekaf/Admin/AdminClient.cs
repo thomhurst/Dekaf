@@ -25,6 +25,7 @@ public sealed class AdminClient :
     IReplicaLogDirAdminClient,
     ITopicIdAdminClient,
     ITransactionRemediationAdminClient,
+    IShareGroupDeletionAdminClient,
     IKafkaClientStatusProvider
 {
     private const string MetadataQuorumTopic = "__cluster_metadata";
@@ -4987,6 +4988,8 @@ public sealed class AdminClient :
 
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
+        // Both collections intentionally survive retry attempts: terminal results prevent
+        // resending completed groups, while ambiguity turns a later not-found response into success.
         var results = new Dictionary<string, DeleteShareGroupResult>(groupIdList.Length, StringComparer.Ordinal);
         var ambiguousGroups = new HashSet<string>(StringComparer.Ordinal);
 
@@ -5074,9 +5077,11 @@ public sealed class AdminClient :
                 {
                     if (!responseGroupIds.Contains(groupId))
                     {
-                        retryFailure ??= new KafkaException(
-                            Protocol.ErrorCode.UnknownServerError,
-                            $"DeleteShareGroups returned no result for group '{groupId}'.");
+                        results[groupId] = new DeleteShareGroupResult
+                        {
+                            GroupId = groupId,
+                            ErrorCode = Protocol.ErrorCode.UnknownServerError
+                        };
                     }
                 }
             }

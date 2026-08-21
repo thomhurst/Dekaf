@@ -435,4 +435,7 @@ Dekaf.Admin.DeleteShareGroupResult.ErrorCode.get -> Dekaf.Protocol.ErrorCode
 Dekaf.Admin.DeleteShareGroupResult.ErrorCode.init -> void
 Dekaf.Admin.DeleteShareGroupResult.GroupId.get -> string!
 Dekaf.Admin.DeleteShareGroupResult.GroupId.init -> void
-Dekaf.Admin.IAdminClient.DeleteShareGroupsAsync(System.Collections.Generic.IEnumerable<string!>! groupIds, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.DeleteShareGroupResult!>!>
+Dekaf.Admin.AdminClientShareGroupDeletionExtensions
+Dekaf.Admin.IShareGroupDeletionAdminClient
+Dekaf.Admin.IShareGroupDeletionAdminClient.DeleteShareGroupsAsync(System.Collections.Generic.IEnumerable<string!>! groupIds, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.DeleteShareGroupResult!>!>
+static Dekaf.Admin.AdminClientShareGroupDeletionExtensions.DeleteShareGroupsAsync(this Dekaf.Admin.IAdminClient! adminClient, System.Collections.Generic.IEnumerable<string!>! groupIds, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.DeleteShareGroupResult!>!>

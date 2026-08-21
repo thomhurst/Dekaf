@@ -19,6 +19,7 @@ public sealed class InMemoryKafkaCluster
     private readonly Dictionary<string, Dictionary<TopicPartition, TopicPartitionOffset>> _consumerGroupOffsets = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<string, ConsumerGroupMemberState>> _consumerGroupMembers = new(StringComparer.Ordinal);
     private readonly Dictionary<string, int> _consumerGroupGenerations = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, HashSet<string>> _shareGroupMembers = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<TopicPartition, Dictionary<long, ShareLeaseState>>> _shareLeases = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<TopicPartition, Dictionary<long, int>>> _shareDeliveryCounts = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Exception> _produceFailures = new(StringComparer.Ordinal);
@@ -814,6 +815,59 @@ public sealed class InMemoryKafkaCluster
     {
         lock (_gate)
             _consumerGroupOffsets.Remove(groupId);
+    }
+
+    internal void RegisterShareGroupMember(string groupId, string memberId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(memberId);
+
+        lock (_gate)
+        {
+            if (!_shareGroupMembers.TryGetValue(groupId, out var members))
+            {
+                members = new HashSet<string>(StringComparer.Ordinal);
+                _shareGroupMembers[groupId] = members;
+            }
+
+            members.Add(memberId);
+        }
+    }
+
+    internal void UnregisterShareGroupMember(string groupId, string memberId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(memberId);
+
+        lock (_gate)
+        {
+            if (!_shareGroupMembers.TryGetValue(groupId, out var members))
+                return;
+
+            members.Remove(memberId);
+            if (members.Count == 0)
+                _shareGroupMembers.Remove(groupId);
+        }
+    }
+
+    internal bool TryDeleteShareGroup(string groupId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
+
+        lock (_gate)
+        {
+            if ((_shareGroupMembers.TryGetValue(groupId, out var members) && members.Count > 0) ||
+                (_shareLeases.TryGetValue(groupId, out var leases) && leases.Count > 0))
+            {
+                return false;
+            }
+
+            _consumerGroupOffsets.Remove(groupId);
+            _shareGroupMembers.Remove(groupId);
+            _shareLeases.Remove(groupId);
+            _shareDeliveryCounts.Remove(groupId);
+            return true;
+        }
     }
 
     internal void DeleteGroupOffsets(string groupId, IEnumerable<TopicPartition> partitions)

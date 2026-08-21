@@ -141,6 +141,40 @@ public sealed class AdminClientDeleteShareGroupsTests
         await Assert.That(calls).IsEqualTo(2);
     }
 
+    [Test]
+    public async Task DeleteShareGroupsAsync_MissingResponseReturnsPerGroupError()
+    {
+        var (admin, connection) = CreateAdmin();
+        SetupFindCoordinator(connection);
+        connection.SendAsync<DeleteGroupsRequest, DeleteGroupsResponse>(
+                Arg.Any<DeleteGroupsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new DeleteGroupsResponse
+            {
+                Results = [Result(FirstGroupId, ErrorCode.None)]
+            }));
+
+        var results = await admin.DeleteShareGroupsAsync([FirstGroupId, SecondGroupId]);
+
+        await Assert.That(results[FirstGroupId].ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(results[SecondGroupId].ErrorCode).IsEqualTo(ErrorCode.UnknownServerError);
+        await connection.Received(1).SendAsync<DeleteGroupsRequest, DeleteGroupsResponse>(
+            Arg.Any<DeleteGroupsRequest>(),
+            2,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task DeleteShareGroupsAsync_UnsupportedAdminClient_ThrowsNotSupportedException()
+    {
+        var admin = Substitute.For<IAdminClient>();
+
+        async Task Act() => await admin.DeleteShareGroupsAsync([FirstGroupId]);
+
+        await Assert.That(Act).Throws<NotSupportedException>();
+    }
+
     private static DeleteGroupsResponseResult Result(string groupId, ErrorCode errorCode) => new()
     {
         GroupId = groupId,

@@ -822,6 +822,62 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
+    public async Task Admin_DeleteShareGroupsRejectsActiveGroup()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var admin = new InMemoryAdminClient(cluster);
+        var partition = new TopicPartition("shared", 0);
+        await admin.AlterShareGroupOffsetsAsync(
+            "share-active",
+            [new ShareGroupOffsetAlteration { TopicPartition = partition, StartOffset = 3 }]);
+        await using var consumer = new InMemoryShareConsumer<string, string>(
+            cluster,
+            new InMemoryShareConsumerOptions { GroupId = "share-active" });
+        consumer.Subscribe("shared");
+
+        var activeResult = await admin.DeleteShareGroupsAsync(["share-active"]);
+
+        await Assert.That(activeResult["share-active"].ErrorCode).IsEqualTo(ErrorCode.NonEmptyGroup);
+        await Assert.That((await admin.ListConsumerGroupOffsetsAsync("share-active"))[partition]).IsEqualTo(3);
+
+        await consumer.CloseAsync();
+        var inactiveResult = await admin.DeleteShareGroupsAsync(["share-active"]);
+
+        await Assert.That(inactiveResult["share-active"].ErrorCode).IsEqualTo(ErrorCode.None);
+    }
+
+    [Test]
+    public async Task Admin_DeleteShareGroupsClearsShareDeliveryCounts()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        var admin = new InMemoryAdminClient(cluster);
+        await producer.ProduceAsync("shared", "k", "v");
+
+        await using (var firstConsumer = new InMemoryShareConsumer<string, string>(
+                         cluster,
+                         new InMemoryShareConsumerOptions { GroupId = "share-recreated" }))
+        {
+            firstConsumer.Subscribe("shared");
+            var firstDelivery = await firstConsumer.PollAsync().FirstAsync();
+            await Assert.That(firstDelivery.DeliveryCount).IsEqualTo(1);
+            firstConsumer.Acknowledge(firstDelivery, AcknowledgeType.Release);
+            await firstConsumer.CommitAsync();
+        }
+
+        var deletion = await admin.DeleteShareGroupsAsync(["share-recreated"]);
+        await Assert.That(deletion["share-recreated"].ErrorCode).IsEqualTo(ErrorCode.None);
+
+        await using var recreatedConsumer = new InMemoryShareConsumer<string, string>(
+            cluster,
+            new InMemoryShareConsumerOptions { GroupId = "share-recreated" });
+        recreatedConsumer.Subscribe("shared");
+        var recreatedDelivery = await recreatedConsumer.PollAsync().FirstAsync();
+
+        await Assert.That(recreatedDelivery.DeliveryCount).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task ShareConsumer_ReleaseGapStopsContiguousCommit()
     {
         var cluster = new InMemoryKafkaCluster();
