@@ -532,7 +532,7 @@ public sealed class AssociatedNameStrategyTests
     }
 
     [Test]
-    public async Task AvroDeserializer_GuidHeader_UsesConfiguredAsyncSubject()
+    public async Task AvroDeserializer_GuidHeader_PreparesConfiguredAsyncSubjectFromRoutedHeaders()
     {
         const string subject = "configured-associated";
         const string schemaString =
@@ -549,26 +549,41 @@ public sealed class AssociatedNameStrategyTests
             new AvroDeserializerConfig
             {
                 SchemaIdStrategy = SchemaIdDeserializerStrategy.Header,
-                AsyncSubjectNameStrategy = strategy
+                AsyncSubjectNameStrategy = strategy,
+                RuleExecutor = new CapturingRuleExecutor()
             });
+        var identityHeader = new Header(
+            SchemaIdentityHeaderNames.Value,
+            SchemaIdentityFraming.CreateSchemaGuidFrame(
+                new Guid(schemaId, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)));
         var context = new SerializationContext
         {
             Topic = "orders",
             Component = SerializationComponent.Value,
-            Headers = new Headers().Add(
-                SchemaIdentityHeaderNames.Value,
-                SchemaIdentityFraming.CreateSchemaGuidFrame(
-                    new Guid(schemaId, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)))
+            Headers = null
         };
+        var headers = new[] { identityHeader };
+        var plan = RecordHeaderRoutingPlan.Create<string, GenericRecord>(null, deserializer)!;
+        var lookup = new RecordHeaderRoutingLookup(
+            plan,
+            headers,
+            headers.Length,
+            firstIndex: 0,
+            secondIndex: 1,
+            routedHeaderTailOffset: RecordHeaderRoutingPlan.FullyIndexedWithoutTail);
+        var preparer = (IRecordHeaderAsyncDeserializerPreparer<GenericRecord>)deserializer;
+        var data = new byte[] { 84 };
 
-        var value = deserializer.Deserialize(new byte[] { 84 }, context);
+        await Assert.That(preparer.TryDeserialize(data, context, in lookup, out _)).IsFalse();
+        await preparer.PrepareAsync(data, context, lookup, CancellationToken.None);
+        await Assert.That(preparer.TryDeserialize(data, context, in lookup, out var value)).IsTrue();
 
         await Assert.That(value["id"]).IsEqualTo(42);
         await Assert.That(strategy.CallCount).IsEqualTo(1);
     }
 
     [Test]
-    public async Task ProtobufDeserializer_GuidHeader_UsesConfiguredAsyncSubject()
+    public async Task ProtobufDeserializer_GuidHeader_PreparesConfiguredAsyncSubjectFromRoutedHeaders()
     {
         const string subject = "configured-associated";
         using var client = new MockSchemaRegistryClient();
@@ -594,10 +609,24 @@ public sealed class AssociatedNameStrategyTests
         {
             Topic = "orders",
             Component = SerializationComponent.Value,
-            Headers = new Headers().Add(SchemaIdentityHeaderNames.Value, identityAndIndexes)
+            Headers = null
         };
+        var identityHeader = new Header(SchemaIdentityHeaderNames.Value, identityAndIndexes);
+        var headers = new[] { identityHeader };
+        var plan = RecordHeaderRoutingPlan.Create<string, TestMessage>(null, deserializer)!;
+        var lookup = new RecordHeaderRoutingLookup(
+            plan,
+            headers,
+            headers.Length,
+            firstIndex: 0,
+            secondIndex: 1,
+            routedHeaderTailOffset: RecordHeaderRoutingPlan.FullyIndexedWithoutTail);
+        var preparer = (IRecordHeaderAsyncDeserializerPreparer<TestMessage>)deserializer;
+        var data = new byte[] { 8, 42 };
 
-        var value = deserializer.Deserialize(new byte[] { 8, 42 }, context);
+        await Assert.That(preparer.TryDeserialize(data, context, in lookup, out _)).IsFalse();
+        await preparer.PrepareAsync(data, context, lookup, CancellationToken.None);
+        await Assert.That(preparer.TryDeserialize(data, context, in lookup, out var value)).IsTrue();
 
         await Assert.That(value.Id).IsEqualTo(42);
         await Assert.That(strategy.CallCount).IsEqualTo(1);
