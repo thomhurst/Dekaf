@@ -108,6 +108,39 @@ public sealed class KafkaFaultPlanTests
     }
 
     [Test]
+    public async Task ShareIndex_MatchesWildcardSelectors()
+    {
+        var assignment = new HashSet<TopicPartition> { new("shared", 0) };
+        KafkaFaultScope[] scopes =
+        [
+            new(KafkaFaultOperation.ShareConsume),
+            new(KafkaFaultOperation.ShareConsume, topic: "shared"),
+            new(KafkaFaultOperation.ShareConsume, topic: "shared", partition: 0)
+        ];
+
+        for (var index = 0; index < scopes.Length; index++)
+        {
+            var plan = new KafkaFaultPlan();
+            var failure = new InvalidOperationException($"wildcard-{index}");
+            plan.Fail(scopes[index], failure);
+
+            await Assert.That(plan.HasPotentialShareMatch(
+                KafkaFaultOperation.ShareConsume,
+                "workers",
+                assignment)).IsTrue();
+            await Assert.That(plan.HasPotentialShareMatch(
+                KafkaFaultOperation.ShareConsume,
+                "shared",
+                0,
+                "workers")).IsTrue();
+            await AssertFaultAsync(
+                plan,
+                new KafkaFaultScope(KafkaFaultOperation.ShareConsume, "shared", 0, "workers"),
+                failure);
+        }
+    }
+
+    [Test]
     public async Task FailPersistently_RemainsUntilExactScopeIsCleared()
     {
         var plan = new KafkaFaultPlan();

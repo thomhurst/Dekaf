@@ -106,6 +106,8 @@ public sealed class InMemoryAdminClient :
         ThrowIfDisposed();
 
         var names = topicNames.ToArray();
+        if (names.Length == 0)
+            await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         for (var index = 0; index < names.Length; index++)
         {
             var topicName = names[index];
@@ -130,6 +132,8 @@ public sealed class InMemoryAdminClient :
             if (topicId == Guid.Empty)
                 throw new ArgumentException("Topic IDs cannot contain the empty UUID.", nameof(topicIds));
 
+        if (ids.Length == 0)
+            await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         foreach (var topicId in ids)
         {
             await ApplyAdminFaultAsync(
@@ -158,6 +162,8 @@ public sealed class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
         var names = topicNames.ToArray();
+        if (names.Length == 0)
+            await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         for (var index = 0; index < names.Length; index++)
             await ApplyAdminFaultAsync(cancellationToken, topic: names[index]).ConfigureAwait(false);
         return _cluster.DescribeTopics(names);
@@ -171,6 +177,8 @@ public sealed class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
         var ids = topicIds.Distinct().ToArray();
+        if (ids.Length == 0)
+            await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         for (var index = 0; index < ids.Length; index++)
         {
             await ApplyAdminFaultAsync(
@@ -198,6 +206,8 @@ public sealed class InMemoryAdminClient :
         ThrowIfDisposed();
 
         var names = topicNames.ToArray();
+        if (names.Length == 0)
+            await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         for (var index = 0; index < names.Length; index++)
             await ApplyAdminFaultAsync(cancellationToken, topic: names[index]).ConfigureAwait(false);
         return new DescribeTopicPartitionsPage
@@ -292,6 +302,8 @@ public sealed class InMemoryAdminClient :
         ThrowIfDisposed();
 
         var groups = groupIds.ToArray();
+        if (groups.Length == 0)
+            await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         for (var index = 0; index < groups.Length; index++)
             await ApplyAdminFaultAsync(cancellationToken, groupId: groups[index]).ConfigureAwait(false);
         var result = groups.ToDictionary(
@@ -337,6 +349,8 @@ public sealed class InMemoryAdminClient :
         ThrowIfDisposed();
 
         var groups = groupIds.ToArray();
+        if (groups.Length == 0)
+            await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         for (var index = 0; index < groups.Length; index++)
         {
             var groupId = groups[index];
@@ -417,6 +431,8 @@ public sealed class InMemoryAdminClient :
         ThrowIfDisposed();
         var offsetSnapshot = new Dictionary<TopicPartition, long>(offsets);
         var result = new Dictionary<TopicPartition, long>(offsetSnapshot.Count);
+        if (offsetSnapshot.Count == 0)
+            await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         foreach (var (partition, offset) in offsetSnapshot)
         {
             await ApplyAdminFaultAsync(
@@ -440,6 +456,8 @@ public sealed class InMemoryAdminClient :
         ThrowIfDisposed();
 
         var partitionCounts = newPartitionCounts.ToArray();
+        if (partitionCounts.Length == 0)
+            await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         foreach (var (topicName, partitionCount) in partitionCounts)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(topicName);
@@ -459,6 +477,8 @@ public sealed class InMemoryAdminClient :
         ThrowIfDisposed();
 
         var reassignmentList = reassignments.ToArray();
+        if (reassignmentList.Length == 0)
+            await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         foreach (var (topicPartition, reassignment) in reassignmentList)
         {
             ValidateTopicPartition(topicPartition);
@@ -486,6 +506,8 @@ public sealed class InMemoryAdminClient :
         var partitionList = partitions?.ToArray();
         if (partitionList is not null)
         {
+            if (partitionList.Length == 0)
+                await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
             foreach (var partition in partitionList)
             {
                 ValidateTopicPartition(partition);
@@ -637,6 +659,8 @@ public sealed class InMemoryAdminClient :
         ThrowIfDisposed();
 
         var resourceList = resources.ToArray();
+        if (resourceList.Length == 0)
+            await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         for (var index = 0; index < resourceList.Length; index++)
             await ApplyAdminResourceFaultAsync(resourceList[index], cancellationToken).ConfigureAwait(false);
         var result = resourceList.ToDictionary(
@@ -655,6 +679,8 @@ public sealed class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
         var resources = configs.Keys.ToArray();
+        if (resources.Length == 0)
+            await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         foreach (var resource in resources)
             await ApplyAdminResourceFaultAsync(resource, cancellationToken).ConfigureAwait(false);
     }
@@ -668,6 +694,8 @@ public sealed class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
         var resources = configs.Keys.ToArray();
+        if (resources.Length == 0)
+            await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         foreach (var resource in resources)
             await ApplyAdminResourceFaultAsync(resource, cancellationToken).ConfigureAwait(false);
     }
@@ -680,8 +708,8 @@ public sealed class InMemoryAdminClient :
         ArgumentNullException.ThrowIfNull(aclBindings);
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
-        if (aclBindings.Any())
-            await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        _ = aclBindings.Any();
+        await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask<IReadOnlyList<AclBinding>> DeleteAclsAsync(
@@ -692,8 +720,8 @@ public sealed class InMemoryAdminClient :
         ArgumentNullException.ThrowIfNull(filters);
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
-        if (filters.Any())
-            await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        _ = filters.Any();
+        await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         return Array.Empty<AclBinding>();
     }
 
@@ -745,6 +773,8 @@ public sealed class InMemoryAdminClient :
         ThrowIfDisposed();
 
         var specList = specs.ToArray();
+        if (specList.Length == 0)
+            await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         for (var index = 0; index < specList.Length; index++)
         {
             var partition = specList[index].TopicPartition;
@@ -940,10 +970,9 @@ public sealed class InMemoryAdminClient :
             return alteration;
         }).ToArray();
 
+        await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         if (materialized.Length == 0)
             return;
-
-        await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         if (options?.ValidateOnly == true)
             return;
 
@@ -978,8 +1007,7 @@ public sealed class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
         var ids = transactionalIds.ToArray();
-        if (ids.Length != 0)
-            await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
 
         var result = ids.ToDictionary(
             transactionalId => transactionalId,
@@ -1009,6 +1037,8 @@ public sealed class InMemoryAdminClient :
         ThrowIfDisposed();
 
         var partitionList = partitions.ToArray();
+        if (partitionList.Length == 0)
+            await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         for (var index = 0; index < partitionList.Length; index++)
         {
             var partition = partitionList[index];
@@ -1040,8 +1070,7 @@ public sealed class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
         var ids = transactionalIds.ToArray();
-        if (ids.Length != 0)
-            await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
 
         var result = ids.ToDictionary(
             transactionalId => transactionalId,
@@ -1110,10 +1139,13 @@ public sealed class InMemoryAdminClient :
         var targetPartitions = partitions?.Distinct().ToArray() ??
             _cluster.ListTopics().SelectMany(_cluster.GetTopicPartitions).ToArray();
         var targetBrokerIds = brokerIds.Distinct().Order().ToArray();
-        if (targetBrokerIds.Length == 0)
-            return new Dictionary<int, IReadOnlyDictionary<string, LogDirDescription>>();
         for (var index = 0; index < targetBrokerIds.Length; index++)
             ArgumentOutOfRangeException.ThrowIfNegative(targetBrokerIds[index]);
+        if (targetBrokerIds.Length == 0)
+        {
+            await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+            return new Dictionary<int, IReadOnlyDictionary<string, LogDirDescription>>();
+        }
 
         foreach (var partition in targetPartitions)
         {
@@ -1171,6 +1203,8 @@ public sealed class InMemoryAdminClient :
 
         var assignments = replicaAssignments.ToArray();
         var result = new Dictionary<TopicPartitionReplica, AlterReplicaLogDirResultInfo>(assignments.Length);
+        if (assignments.Length == 0)
+            await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         foreach (var (replica, logDir) in assignments)
         {
             ValidateTopicPartition(replica.TopicPartition);
@@ -1201,6 +1235,8 @@ public sealed class InMemoryAdminClient :
 
         var replicaList = replicas.ToArray();
         var result = new Dictionary<TopicPartitionReplica, DescribeReplicaLogDirResultInfo>(replicaList.Length);
+        if (replicaList.Length == 0)
+            await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         foreach (var replica in replicaList)
         {
             ValidateTopicPartition(replica.TopicPartition);
@@ -1233,6 +1269,8 @@ public sealed class InMemoryAdminClient :
         ThrowIfDisposed();
 
         var groups = groupIds.ToArray();
+        if (groups.Length == 0)
+            await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         for (var index = 0; index < groups.Length; index++)
             await ApplyAdminFaultAsync(cancellationToken, groupId: groups[index]).ConfigureAwait(false);
         var result = groups.ToDictionary(
@@ -1277,6 +1315,8 @@ public sealed class InMemoryAdminClient :
         ThrowIfDisposed();
 
         var groups = groupIds.ToArray();
+        if (groups.Length == 0)
+            await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         for (var index = 0; index < groups.Length; index++)
             await ApplyAdminFaultAsync(cancellationToken, groupId: groups[index]).ConfigureAwait(false);
         var result = groups.ToDictionary(
