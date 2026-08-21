@@ -32,6 +32,7 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
     internal Action? BeforeTryGetCachedSchema { get; set; }
     public int GetSchemaFailuresRemaining { get; set; }
     public int GetOrRegisterSchemaFailuresRemaining { get; set; }
+    public bool LookupRequiresRuleSetPresenceMatch { get; set; }
     public int AssociationLookupCallCount => Volatile.Read(ref _associationLookupCallCount);
     public int AssociationLookupFailuresRemaining { get; set; }
     public bool SupportsDeletedVersionLookup { get; init; }
@@ -309,7 +310,10 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
         if (!_schemasBySubject.TryGetValue(subject, out var list))
             throw new SchemaRegistryException(40401, $"Subject '{subject}' not found");
 
-        var entry = list.FirstOrDefault(candidate => SchemasAreEquivalent(candidate.Schema, schema));
+        var entry = list.FirstOrDefault(candidate =>
+            SchemasAreEquivalent(candidate.Schema, schema) &&
+            (!LookupRequiresRuleSetPresenceMatch ||
+             (candidate.Schema.RuleSet is null) == (schema.RuleSet is null)));
         if (entry == default)
             throw new SchemaRegistryException(40403, $"Schema not found under subject '{subject}'");
 

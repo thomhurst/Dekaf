@@ -415,10 +415,18 @@ public sealed class AvroSerializerTests
             """
             {"type":"record","name":"LookupRecord","fields":[{"name":"id","type":"int"},{"name":"name","type":"string","default":""}]}
             """;
-        using var schemaRegistry = new MockSchemaRegistryClient();
+        using var schemaRegistry = new MockSchemaRegistryClient
+        {
+            LookupRequiresRuleSetPresenceMatch = true
+        };
         var writerSchemaId = await schemaRegistry.RegisterSchemaAsync(
             subject,
-            new RegistrySchema { SchemaType = SchemaType.Avro, SchemaString = writerSchemaText });
+            new RegistrySchema
+            {
+                SchemaType = SchemaType.Avro,
+                SchemaString = writerSchemaText,
+                RuleSet = new SchemaRuleSet { DomainRules = [] }
+            });
         _ = await schemaRegistry.RegisterSchemaAsync(
             subject,
             new RegistrySchema { SchemaType = SchemaType.Avro, SchemaString = latestSchemaText });
@@ -2269,7 +2277,10 @@ public sealed class AvroSerializerTests
     [Test]
     public async Task Serializer_PrepareAsync_WithRuleExecutor_CachesRegisteredRuleMetadata()
     {
-        using var schemaRegistry = new MockSchemaRegistryClient();
+        using var schemaRegistry = new MockSchemaRegistryClient
+        {
+            LookupRequiresRuleSetPresenceMatch = true
+        };
         var registeredSchema = new RegistrySchema
         {
             SchemaType = SchemaType.Avro,
