@@ -271,16 +271,19 @@ public sealed partial class AdminClient
             retryFailure ??= failure;
         }
 
-        foreach (var groupId in groupIds)
+        if (retryFailure is null)
         {
-            if (!responseGroupIds.Contains(groupId))
+            foreach (var groupId in groupIds)
             {
-                results[groupId] = new StreamsGroupOffsetsResult
+                if (!responseGroupIds.Contains(groupId))
                 {
-                    GroupId = groupId,
-                    ErrorCode = Protocol.ErrorCode.UnknownServerError,
-                    Offsets = new Dictionary<TopicPartition, StreamsGroupOffsetDescription>()
-                };
+                    results[groupId] = new StreamsGroupOffsetsResult
+                    {
+                        GroupId = groupId,
+                        ErrorCode = Protocol.ErrorCode.UnknownServerError,
+                        Offsets = new Dictionary<TopicPartition, StreamsGroupOffsetDescription>()
+                    };
+                }
             }
         }
 
@@ -319,6 +322,7 @@ public sealed partial class AdminClient
         var requested = requestedPartitions?.ToHashSet();
         var offsets = new Dictionary<TopicPartition, StreamsGroupOffsetDescription>();
         var responseSnapshot = topicMap?.CaptureResponseSnapshot();
+        Exception? retryFailure = null;
         foreach (var topic in responseTopics)
         {
             var topicName = topicMap is null
@@ -334,6 +338,17 @@ public sealed partial class AdminClient
                 if (requested is not null && !requested.Contains(topicPartition))
                     continue;
 
+                if (partition.ErrorCode.IsRetriable() || partition.ErrorCode.RequiresMetadataRefresh())
+                {
+                    retryFailure ??= new Errors.GroupException(
+                        partition.ErrorCode,
+                        $"ListStreamsGroupOffsets failed for {topicName}-{partition.PartitionIndex}: {partition.ErrorCode}")
+                    {
+                        GroupId = groupId
+                    };
+                    continue;
+                }
+
                 offsets[topicPartition] = new StreamsGroupOffsetDescription
                 {
                     TopicPartition = topicPartition,
@@ -344,6 +359,9 @@ public sealed partial class AdminClient
                 };
             }
         }
+
+        if (retryFailure is not null)
+            return retryFailure;
 
         if (requested is not null)
         {
@@ -442,11 +460,11 @@ public sealed partial class AdminClient
                 }
             }
 
-            foreach (var topicPartition in pending)
-                results[topicPartition] = PartitionResult(topicPartition, Protocol.ErrorCode.UnknownServerError);
-
             if (retryFailure is not null)
                 throw retryFailure;
+
+            foreach (var topicPartition in pending)
+                results[topicPartition] = PartitionResult(topicPartition, Protocol.ErrorCode.UnknownServerError);
 
             return OrderPartitionResults(
                 offsets.Select(static offset => new TopicPartition(offset.Topic, offset.Partition)),
@@ -510,6 +528,7 @@ public sealed partial class AdminClient
                 };
             }
 
+            Exception? retryFailure = null;
             if (groupError != Protocol.ErrorCode.None || ambiguousDeletionConfirmed)
             {
                 foreach (var topicPartition in pending)
@@ -526,9 +545,23 @@ public sealed partial class AdminClient
                         if (!missing.Remove(topicPartition))
                             continue;
 
+                        if (partition.ErrorCode.IsRetriable() || partition.ErrorCode.RequiresMetadataRefresh())
+                        {
+                            retryFailure ??= new Errors.GroupException(
+                                partition.ErrorCode,
+                                $"DeleteStreamsGroupOffsets failed for {topic.Name}-{partition.PartitionIndex}: {partition.ErrorCode}")
+                            {
+                                GroupId = groupId
+                            };
+                            continue;
+                        }
+
                         results[topicPartition] = PartitionResult(topicPartition, partition.ErrorCode);
                     }
                 }
+
+                if (retryFailure is not null)
+                    throw retryFailure;
 
                 foreach (var topicPartition in missing)
                     results[topicPartition] = PartitionResult(topicPartition, Protocol.ErrorCode.UnknownServerError);
@@ -594,13 +627,11 @@ public sealed partial class AdminClient
                 }
 
                 var requested = new HashSet<string>(coordinatorGroups, StringComparer.Ordinal);
-                var returned = new HashSet<string>(StringComparer.Ordinal);
                 foreach (var groupResult in response.Results)
                 {
                     if (!requested.Contains(groupResult.GroupId))
                         continue;
 
-                    returned.Add(groupResult.GroupId);
                     var errorCode = groupResult.ErrorCode;
                     if (errorCode.IsRetriable() || errorCode.RequiresMetadataRefresh())
                     {
@@ -622,22 +653,22 @@ public sealed partial class AdminClient
                         ErrorCode = errorCode
                     };
                 }
-
-                foreach (var groupId in coordinatorGroups)
-                {
-                    if (!returned.Contains(groupId))
-                    {
-                        results[groupId] = new DeleteStreamsGroupResult
-                        {
-                            GroupId = groupId,
-                            ErrorCode = Protocol.ErrorCode.UnknownServerError
-                        };
-                    }
-                }
             }
 
             if (retryFailure is not null)
                 throw retryFailure;
+
+            foreach (var groupId in groupIds)
+            {
+                if (!results.ContainsKey(groupId))
+                {
+                    results[groupId] = new DeleteStreamsGroupResult
+                    {
+                        GroupId = groupId,
+                        ErrorCode = Protocol.ErrorCode.UnknownServerError
+                    };
+                }
+            }
 
             return OrderDeleteGroupResults(groupIds, results);
         }, cancellationToken).ConfigureAwait(false);

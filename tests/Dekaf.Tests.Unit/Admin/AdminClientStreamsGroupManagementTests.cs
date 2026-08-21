@@ -170,6 +170,33 @@ public sealed class AdminClientStreamsGroupManagementTests
     }
 
     [Test]
+    public async Task ListStreamsGroupOffsetsAsync_RetriesTransientPartitionErrors()
+    {
+        var (admin, connection) = CreateAdmin();
+        SetupFindCoordinator(connection);
+        connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(
+                ValueTask.FromResult(ListResponse(Offset(0, -1, ErrorCode.UnstableOffsetCommit))),
+                ValueTask.FromResult(ListResponse(Offset(0, 42, ErrorCode.None))));
+
+        var results = await admin.ListStreamsGroupOffsetsAsync(
+            new Dictionary<string, ListStreamsGroupOffsetsSpec>
+            {
+                [FirstGroup] = new() { TopicPartitions = [new TopicPartition(Topic, 0)] }
+            },
+            new ListStreamsGroupOffsetsOptions { RequireStable = true });
+
+        await Assert.That(results[FirstGroup].Offsets[new TopicPartition(Topic, 0)].Offset).IsEqualTo(42);
+        await connection.Received(2).SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+            Arg.Any<OffsetFetchRequest>(),
+            10,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
     public async Task AlterStreamsGroupOffsetsAsync_PreservesPartitionErrorsAndTopicIds()
     {
         var (admin, connection) = CreateAdmin();
@@ -202,6 +229,31 @@ public sealed class AdminClientStreamsGroupManagementTests
             .IsEqualTo(ErrorCode.TopicAuthorizationFailed);
         await connection.Received(1).SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
             Arg.Is<OffsetCommitRequest>(request => request != null && request.Topics[0].TopicId == TopicId),
+            10,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task AlterStreamsGroupOffsetsAsync_RetriesTransientAndMissingPartitions()
+    {
+        var (admin, connection) = CreateAdmin();
+        SetupFindCoordinator(connection);
+        connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+                Arg.Any<OffsetCommitRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(
+                ValueTask.FromResult(CommitResponse(Commit(0, ErrorCode.RequestTimedOut))),
+                ValueTask.FromResult(CommitResponse(
+                    Commit(0, ErrorCode.None),
+                    Commit(1, ErrorCode.None))));
+
+        var results = await admin.AlterStreamsGroupOffsetsAsync(FirstGroup,
+            [new TopicPartitionOffset(Topic, 0, 42), new TopicPartitionOffset(Topic, 1, 43)]);
+
+        await Assert.That(results.Values.All(result => result.ErrorCode == ErrorCode.None)).IsTrue();
+        await connection.Received(2).SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+            Arg.Any<OffsetCommitRequest>(),
             10,
             Arg.Any<CancellationToken>());
     }
@@ -245,6 +297,29 @@ public sealed class AdminClientStreamsGroupManagementTests
     }
 
     [Test]
+    public async Task DeleteStreamsGroupOffsetsAsync_RetriesTransientPartitionErrors()
+    {
+        var (admin, connection) = CreateAdmin();
+        SetupFindCoordinator(connection);
+        connection.SendAsync<OffsetDeleteRequest, OffsetDeleteResponse>(
+                Arg.Any<OffsetDeleteRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(
+                ValueTask.FromResult(DeleteOffsetsResponse(Deleted(0, ErrorCode.RequestTimedOut))),
+                ValueTask.FromResult(DeleteOffsetsResponse(Deleted(0, ErrorCode.None))));
+
+        var partition = new TopicPartition(Topic, 0);
+        var results = await admin.DeleteStreamsGroupOffsetsAsync(FirstGroup, [partition]);
+
+        await Assert.That(results[partition].ErrorCode).IsEqualTo(ErrorCode.None);
+        await connection.Received(2).SendAsync<OffsetDeleteRequest, OffsetDeleteResponse>(
+            Arg.Any<OffsetDeleteRequest>(),
+            0,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
     public async Task DeleteStreamsGroupsAsync_PreservesPerGroupErrors()
     {
         var (admin, connection) = CreateAdmin();
@@ -268,6 +343,38 @@ public sealed class AdminClientStreamsGroupManagementTests
         await Assert.That(results[SecondGroup].ErrorCode).IsEqualTo(ErrorCode.NonEmptyGroup);
         await connection.Received(1).SendAsync<DeleteGroupsRequest, DeleteGroupsResponse>(
             Arg.Is<DeleteGroupsRequest>(request => request != null && request.GroupsNames.Count == 2),
+            2,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task DeleteStreamsGroupsAsync_RetriesTransientAndMissingGroups()
+    {
+        var (admin, connection) = CreateAdmin();
+        SetupFindCoordinator(connection);
+        connection.SendAsync<DeleteGroupsRequest, DeleteGroupsResponse>(
+                Arg.Any<DeleteGroupsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(
+                ValueTask.FromResult(new DeleteGroupsResponse
+                {
+                    Results = [DeletedGroup(FirstGroup, ErrorCode.RequestTimedOut)]
+                }),
+                ValueTask.FromResult(new DeleteGroupsResponse
+                {
+                    Results =
+                    [
+                        DeletedGroup(FirstGroup, ErrorCode.None),
+                        DeletedGroup(SecondGroup, ErrorCode.None)
+                    ]
+                }));
+
+        var results = await admin.DeleteStreamsGroupsAsync([FirstGroup, SecondGroup]);
+
+        await Assert.That(results.Values.All(result => result.ErrorCode == ErrorCode.None)).IsTrue();
+        await connection.Received(2).SendAsync<DeleteGroupsRequest, DeleteGroupsResponse>(
+            Arg.Any<DeleteGroupsRequest>(),
             2,
             Arg.Any<CancellationToken>());
     }
@@ -306,16 +413,40 @@ public sealed class AdminClientStreamsGroupManagementTests
         ErrorCode = errorCode
     };
 
+    private static OffsetFetchResponse ListResponse(params OffsetFetchResponsePartition[] partitions) => new()
+    {
+        Groups =
+        [
+            new OffsetFetchResponseGroup
+            {
+                GroupId = FirstGroup,
+                ErrorCode = ErrorCode.None,
+                Topics = [new OffsetFetchResponseTopic { TopicId = TopicId, Partitions = partitions }]
+            }
+        ]
+    };
+
     private static OffsetCommitResponsePartition Commit(int partition, ErrorCode errorCode) => new()
     {
         PartitionIndex = partition,
         ErrorCode = errorCode
     };
 
+    private static OffsetCommitResponse CommitResponse(params OffsetCommitResponsePartition[] partitions) => new()
+    {
+        Topics = [new OffsetCommitResponseTopic { TopicId = TopicId, Partitions = partitions }]
+    };
+
     private static OffsetDeleteResponsePartition Deleted(int partition, ErrorCode errorCode) => new()
     {
         PartitionIndex = partition,
         ErrorCode = errorCode
+    };
+
+    private static OffsetDeleteResponse DeleteOffsetsResponse(params OffsetDeleteResponsePartition[] partitions) => new()
+    {
+        ErrorCode = ErrorCode.None,
+        Topics = [new OffsetDeleteResponseTopic { Name = Topic, Partitions = partitions }]
     };
 
     private static DeleteGroupsResponseResult DeletedGroup(string groupId, ErrorCode errorCode) => new()

@@ -75,6 +75,9 @@ public sealed partial class InMemoryAdminClient
                 throw new ArgumentException($"Partition '{partition.Topic}-{partition.Partition}' is duplicated.", nameof(offsets));
         }
 
+        if (offsetList.Length == 0)
+            return new ValueTask<IReadOnlyDictionary<TopicPartition, StreamsGroupOffsetOperationResult>>(results);
+
         _cluster.CommitOffsets(groupId, offsetList);
         return new ValueTask<IReadOnlyDictionary<TopicPartition, StreamsGroupOffsetOperationResult>>(results);
     }
