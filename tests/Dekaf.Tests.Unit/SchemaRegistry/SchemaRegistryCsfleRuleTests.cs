@@ -2796,7 +2796,7 @@ public sealed class SchemaRegistryCsfleRuleTests
                 {
                     var entry = versions[i];
                     if (!ReferenceEquals(entry.Schema, schema)
-                        && !string.Equals(entry.Schema.SchemaString, schema.SchemaString, StringComparison.Ordinal))
+                        && !SchemasAreEquivalent(entry.Schema, schema))
                     {
                         continue;
                     }
@@ -2812,6 +2812,30 @@ public sealed class SchemaRegistryCsfleRuleTests
             }
 
             throw new SchemaRegistryException(40403, $"Schema was not found under subject '{subject}'");
+        }
+
+        private static bool SchemasAreEquivalent(Schema left, Schema right)
+        {
+            if (left.SchemaType != right.SchemaType)
+                return false;
+            if (string.Equals(left.SchemaString, right.SchemaString, StringComparison.Ordinal))
+                return true;
+            if (left.SchemaType == SchemaType.Avro)
+            {
+                return AvroSchema.Parse(left.SchemaString)
+                    .Equals(AvroSchema.Parse(right.SchemaString));
+            }
+
+            try
+            {
+                using var leftDocument = JsonDocument.Parse(left.SchemaString);
+                using var rightDocument = JsonDocument.Parse(right.SchemaString);
+                return JsonElement.DeepEquals(leftDocument.RootElement, rightDocument.RootElement);
+            }
+            catch (JsonException)
+            {
+                return false;
+            }
         }
 
         public Task<int> GetOrRegisterSchemaAsync(string subject, Schema schema, CancellationToken cancellationToken = default)
