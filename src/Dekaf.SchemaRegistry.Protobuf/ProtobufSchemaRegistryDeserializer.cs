@@ -27,6 +27,7 @@ namespace Dekaf.SchemaRegistry.Protobuf;
 public sealed class ProtobufSchemaRegistryDeserializer<T>
     : IDeserializer<T>, IRecordHeaderDeserializer<T>, ICallerOwnedHeaderDeserializer<T>,
       IRecordHeaderRoutingProvider, IAsyncDeserializerPreparer<T>,
+      IRecordHeaderAsyncDeserializerPreparer<T>,
       IAsyncDeserializerPreparationRequirement, IAsyncDisposable
     where T : IMessage<T>, IBufferMessage, new()
 {
@@ -84,18 +85,62 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
     ValueTask IAsyncDeserializerPreparer<T>.PrepareAsync(
         ReadOnlyMemory<byte> data,
         SerializationContext context,
+        CancellationToken cancellationToken) =>
+        PrepareCoreAsync(data, context, FindCallerIdentityHeader(context), cancellationToken);
+
+    ValueTask IRecordHeaderAsyncDeserializerPreparer<T>.PrepareAsync(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        RecordHeaderRoutingLookup headers,
+        CancellationToken cancellationToken) =>
+        PrepareCoreAsync(data, context, FindRoutedIdentityHeader(context, in headers), cancellationToken);
+
+    private ValueTask PrepareCoreAsync(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        Header? identityHeader,
         CancellationToken cancellationToken)
     {
-        if (_ruleExecutor is null
-            || _subjectNames is not { RequiresPreparation: true }
-            || !DeserializerSubjectNameCache.TryReadSchemaId(data, out var schemaId))
+        if (context is { IsNull: true, Component: SerializationComponent.Value }
+            || _ruleExecutor is null
+            || _subjectNames is not { RequiresPreparation: true } subjectNames)
         {
             return default;
         }
 
-        return _subjectNames.PrepareAsync(
+        if (_config.SchemaIdStrategy == SchemaIdDeserializerStrategy.Prefix)
+        {
+            return DeserializerSubjectNameCache.TryReadSchemaId(data, out var prefixSchemaId)
+                ? subjectNames.PrepareAsync(
+                    _schemaRegistry,
+                    prefixSchemaId,
+                    context.Topic,
+                    context.Component == SerializationComponent.Key,
+                    RecordName,
+                    cancellationToken)
+                : default;
+        }
+
+        var identity = SchemaIdentityFraming.Read(
+            data.Span,
+            identityHeader,
+            _config.SchemaIdStrategy,
+            out _,
+            out _);
+        if (identity.SchemaGuid is { } schemaGuid)
+        {
+            return new ValueTask(GetGuidSchemaAsync(
+                new GuidTopicKey(
+                    schemaGuid,
+                    context.Topic,
+                    context.Component == SerializationComponent.Key,
+                    subjectNames.Generation),
+                cancellationToken));
+        }
+
+        return subjectNames.PrepareAsync(
             _schemaRegistry,
-            schemaId,
+            identity.SchemaId!.Value,
             context.Topic,
             context.Component == SerializationComponent.Key,
             RecordName,
@@ -105,49 +150,93 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
     bool IAsyncDeserializerPreparer<T>.TryDeserialize(
         ReadOnlyMemory<byte> data,
         SerializationContext context,
+        out T value) =>
+        TryDeserializeCore(data, context, FindCallerIdentityHeader(context), out value);
+
+    bool IRecordHeaderAsyncDeserializerPreparer<T>.TryDeserialize(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        in RecordHeaderRoutingLookup headers,
+        out T value) =>
+        TryDeserializeCore(data, context, FindRoutedIdentityHeader(context, in headers), out value);
+
+    private bool TryDeserializeCore(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        Header? identityHeader,
         out T value)
     {
-        string? preparedSubject = null;
-        if (_ruleExecutor is not null
-            && _subjectNames is { RequiresPreparation: true } subjectNames
-            && DeserializerSubjectNameCache.TryReadSchemaId(data, out var schemaId))
+        if (context is { IsNull: true, Component: SerializationComponent.Value })
         {
-            if (!subjectNames.TryGetPreparedSubject(
-                    schemaId,
-                    context.Topic,
-                    context.Component == SerializationComponent.Key,
-                    out var prepared))
-            {
-                value = default!;
-                return false;
-            }
-
-            preparedSubject = prepared.Subject;
+            value = default!;
+            return true;
         }
 
-        value = DeserializeCore(data, context, preparedSubject);
+        string? preparedSubject = null;
+        if (_ruleExecutor is not null
+            && _subjectNames is { RequiresPreparation: true } subjectNames)
+        {
+            if (_config.SchemaIdStrategy == SchemaIdDeserializerStrategy.Prefix)
+            {
+                if (DeserializerSubjectNameCache.TryReadSchemaId(data, out var prefixSchemaId))
+                {
+                    if (!subjectNames.TryGetPreparedSubject(
+                            prefixSchemaId,
+                            context.Topic,
+                            context.Component == SerializationComponent.Key,
+                            out var prepared))
+                    {
+                        value = default!;
+                        return false;
+                    }
+
+                    preparedSubject = prepared.Subject;
+                }
+            }
+            else
+            {
+                var identity = SchemaIdentityFraming.Read(
+                    data.Span,
+                    identityHeader,
+                    _config.SchemaIdStrategy,
+                    out _,
+                    out _);
+                if (identity.SchemaGuid is { } schemaGuid)
+                {
+                    var key = new GuidTopicKey(
+                        schemaGuid,
+                        context.Topic,
+                        context.Component == SerializationComponent.Key,
+                        subjectNames.Generation);
+                    if (!HasResolvedGuidSchema(key))
+                    {
+                        value = default!;
+                        return false;
+                    }
+                }
+                else if (!subjectNames.TryGetPreparedSubject(
+                             identity.SchemaId!.Value,
+                             context.Topic,
+                             context.Component == SerializationComponent.Key,
+                             out var prepared))
+                {
+                    value = default!;
+                    return false;
+                }
+                else
+                {
+                    preparedSubject = prepared.Subject;
+                }
+            }
+        }
+
+        value = DeserializeCore(data, context, identityHeader, preparedSubject);
         return true;
     }
 
     /// <inheritdoc />
     public T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
-        DeserializeCore(data, context, preparedSubject: null);
-
-    private T DeserializeCore(
-        ReadOnlyMemory<byte> data,
-        SerializationContext context,
-        string? preparedSubject)
-    {
-        Header? identityHeader = null;
-        if (_config.SchemaIdStrategy != SchemaIdDeserializerStrategy.Prefix
-            && context.Headers is { } callerHeaders
-            && callerHeaders.TryGetLastSchemaIdentity(context.Component, out var header))
-        {
-            identityHeader = header;
-        }
-
-        return DeserializeCore(data, context, identityHeader, preparedSubject);
-    }
+        DeserializeCore(data, context, FindCallerIdentityHeader(context), preparedSubject: null);
 
     T ICallerOwnedHeaderDeserializer<T>.DeserializeCallerOwned(
         ReadOnlyMemory<byte> data,
@@ -156,13 +245,12 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
     T IRecordHeaderDeserializer<T>.Deserialize(
         ReadOnlyMemory<byte> data,
         SerializationContext context,
-        in RecordHeaderRoutingLookup headers)
-    {
-        Header? identityHeader = headers.TryGetLast(GetIdentityHeaderName(context.Component), out var header)
-            ? header
-            : null;
-        return DeserializeCore(data, context, identityHeader, preparedSubject: null);
-    }
+        in RecordHeaderRoutingLookup headers) =>
+        DeserializeCore(
+            data,
+            context,
+            FindRoutedIdentityHeader(context, in headers),
+            preparedSubject: null);
 
     void IRecordHeaderRoutingProvider.CollectHeaderNames(List<string> names)
     {
@@ -319,6 +407,22 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
             : task.WaitAsync(SchemaRegistryTimeout).ConfigureAwait(false).GetAwaiter().GetResult();
     }
 
+    private bool HasResolvedGuidSchema(GuidTopicKey key) =>
+        _guidSchemaCache.TryGetValue(key, out var lazy)
+        && lazy.IsValueCreated
+        && lazy.Value.IsCompletedSuccessfully;
+
+    private Task<GuidResolvedSchema> GetGuidSchemaAsync(
+        GuidTopicKey key,
+        CancellationToken cancellationToken)
+    {
+        var lazy = _guidSchemaCache.GetOrAdd(
+            key,
+            static (cacheKey, deserializer) => deserializer.CreateGuidSchemaLazy(cacheKey),
+            this);
+        return lazy.Value.WaitAsync(cancellationToken);
+    }
+
     private Lazy<Task<GuidResolvedSchema>> CreateGuidSchemaLazy(GuidTopicKey key) =>
         new(() => FetchGuidSchemaAsync(key));
 
@@ -418,6 +522,26 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
         SerializationComponent.Value => SchemaIdentityHeaderNames.Value,
         _ => throw new ArgumentOutOfRangeException(nameof(component), component, "Unknown serialization component.")
     };
+
+    private Header? FindCallerIdentityHeader(SerializationContext context)
+    {
+        if (_config.SchemaIdStrategy == SchemaIdDeserializerStrategy.Prefix
+            || context.Headers is not { } headers
+            || !headers.TryGetLastSchemaIdentity(context.Component, out var header))
+        {
+            return null;
+        }
+
+        return header;
+    }
+
+    private Header? FindRoutedIdentityHeader(
+        SerializationContext context,
+        in RecordHeaderRoutingLookup headers) =>
+        _config.SchemaIdStrategy != SchemaIdDeserializerStrategy.Prefix
+        && headers.TryGetLast(GetIdentityHeaderName(context.Component), out var header)
+            ? header
+            : null;
 
     private readonly record struct GuidTopicKey(
         Guid SchemaGuid,

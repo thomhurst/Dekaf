@@ -65,7 +65,15 @@ public sealed class ProtobufSerializerIntegrationTests(KafkaWithAssociationSchem
             .BuildAsync();
         await producer.ProduceAsync(topic, "guid", person);
 
-        var consumed = await ConsumeOneAsync(topic, registryClient);
+        var consumed = await ConsumeOneAsync(
+            topic,
+            registryClient,
+            new ProtobufDeserializerConfig
+            {
+                SchemaIdStrategy = SchemaIdDeserializerStrategy.Header,
+                AsyncSubjectNameStrategy = TopicComponentAsyncSubjectNameStrategy.Instance,
+                RuleExecutor = PassThroughSchemaRegistryRuleExecutor.Instance
+            });
 
         await Assert.That(consumed.Id).IsEqualTo(person.Id);
         await Assert.That(consumed.Name).IsEqualTo(person.Name);
@@ -270,13 +278,16 @@ public sealed class ProtobufSerializerIntegrationTests(KafkaWithAssociationSchem
         await Assert.That(consumed.Email).IsEqualTo("");
     }
 
-    private async Task<TestPerson> ConsumeOneAsync(string topic, ISchemaRegistryClient registryClient)
+    private async Task<TestPerson> ConsumeOneAsync(
+        string topic,
+        ISchemaRegistryClient registryClient,
+        ProtobufDeserializerConfig? config = null)
     {
         await using var consumer = await Kafka.CreateConsumer<string, TestPerson>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithGroupId($"proto-identity-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .UseProtobufSchemaRegistry(registryClient)
+            .UseProtobufSchemaRegistry(registryClient, config)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
         consumer.Subscribe(topic);

@@ -59,7 +59,9 @@ public sealed class SchemaIdentityFramingIntegrationTests(
             registry,
             new AvroDeserializerConfig
             {
-                SchemaIdStrategy = SchemaIdDeserializerStrategy.Header
+                SchemaIdStrategy = SchemaIdDeserializerStrategy.Header,
+                AsyncSubjectNameStrategy = TopicComponentAsyncSubjectNameStrategy.Instance,
+                RuleExecutor = PassThroughSchemaRegistryRuleExecutor.Instance
             });
         var schema = (Avro.RecordSchema)AvroSchema.Parse(AvroSchemaText);
         var record = new GenericRecord(schema);
@@ -238,4 +240,29 @@ internal sealed partial class BatchIdentityRecord
 
     [AvroField(Name = "name", Order = 1)]
     public required string Name { get; init; }
+}
+
+internal sealed class TopicComponentAsyncSubjectNameStrategy : IAsyncSubjectNameStrategy
+{
+    internal static TopicComponentAsyncSubjectNameStrategy Instance { get; } = new();
+
+    public ValueTask<string> GetSubjectNameAsync(
+        string topic,
+        string? recordType,
+        bool isKey,
+        CancellationToken cancellationToken = default) =>
+        new($"{topic}-{(isKey ? "key" : "value")}");
+}
+
+internal sealed class PassThroughSchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
+{
+    internal static PassThroughSchemaRegistryRuleExecutor Instance { get; } = new();
+
+    public ReadOnlyMemory<byte> TransformSerializedPayload(
+        ReadOnlyMemory<byte> payload,
+        SchemaRegistryRuleContext context) => payload;
+
+    public ReadOnlyMemory<byte> TransformDeserializedPayload(
+        ReadOnlyMemory<byte> payload,
+        SchemaRegistryRuleContext context) => payload;
 }
