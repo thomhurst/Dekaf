@@ -479,6 +479,7 @@ public class MpscFetchBufferTests
                 {
                     TriggerConsumerTimeout(buffer);
                 }
+                // lgtm[cs/catch-of-all-exceptions] Transfer arbitrary callback failures to the test thread.
                 catch (Exception exception)
                 {
                     timeoutThreadException = exception;
@@ -496,6 +497,7 @@ public class MpscFetchBufferTests
             await Assert.That(completion.RanInline).IsFalse();
             await Assert.That(completion.Result).IsFalse();
         }
+        // lgtm[cs/catch-of-all-exceptions] Defer arbitrary test failures until the timeout thread is joined.
         catch (Exception exception)
         {
             failure = exception;
