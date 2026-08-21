@@ -27,7 +27,7 @@ public sealed class JsonataSchemaRegistryRuleHandler : ISchemaRegistryRuleTransf
     [ThreadStatic]
     private static byte[]? t_outputBuffer;
 
-    private readonly ConditionalWeakTable<SchemaRule, JsonataQuery> _queries = new();
+    private readonly ConditionalWeakTable<SchemaRule, CompiledRule> _rules = new();
 
     /// <inheritdoc />
     public string Type => RuleType;
@@ -71,8 +71,11 @@ public sealed class JsonataSchemaRegistryRuleHandler : ISchemaRegistryRuleTransf
         try
         {
             var input = JToken.Parse(StrictUtf8.GetString(payload.Span));
-            var query = _queries.GetValue(rule, static configuredRule => Compile(configuredRule));
-            result = query.Eval(input);
+            var compiledRule = _rules.GetValue(rule, static configuredRule => Compile(configuredRule));
+            if (compiledRule.PreservesPayloadRepresentation)
+                return payload;
+
+            result = compiledRule.Query.Eval(input);
         }
         catch (DecoderFallbackException exception)
         {
@@ -120,14 +123,17 @@ public sealed class JsonataSchemaRegistryRuleHandler : ISchemaRegistryRuleTransf
         return Encode(result.ToFlatString());
     }
 
-    private static JsonataQuery Compile(SchemaRule rule)
+    private static CompiledRule Compile(SchemaRule rule)
     {
         if (string.IsNullOrWhiteSpace(rule.Expr))
             throw new SchemaRegistryRuleException($"JSONata rule '{rule.Name}' has no expression.");
 
         try
         {
-            return new JsonataQuery(rule.Expr);
+            var expression = rule.Expr.AsSpan().Trim();
+            return new CompiledRule(
+                new JsonataQuery(rule.Expr),
+                rule.Kind == SchemaRuleKind.Transform && expression is ['$']);
         }
         catch (JsonataException exception)
         {
@@ -164,4 +170,6 @@ public sealed class JsonataSchemaRegistryRuleHandler : ISchemaRegistryRuleTransf
 
     private static string FormatType(JTokenType type) =>
         type.ToString().ToLowerInvariant();
+
+    private sealed record CompiledRule(JsonataQuery Query, bool PreservesPayloadRepresentation);
 }

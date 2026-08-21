@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json.Serialization;
@@ -166,6 +167,64 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
         var result = deserializer.Deserialize(wire, CreateContext(topic));
 
         await Assert.That(result.GetProperty("fullName").GetString()).IsEqualTo("Ada Lovelace");
+    }
+
+    [Test]
+    public async Task RegisteredJsonataIdentityRule_UseLatestVersion_ValidatesWriterRepresentation()
+    {
+        var topic = await testInfra.CreateTestTopicAsync();
+        var subject = $"{topic}-value";
+        using var registryClient = new SchemaRegistryClient(new SchemaRegistryConfig
+        {
+            Url = testInfra.RegistryUrl
+        });
+        await registryClient.UpdateCompatibilityAsync(SchemaCompatibilityLevel.None, subject);
+        var v1 = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = """{ "type": "object", "properties": { "legacy": { "type": "string" } }, "required": ["legacy"], "additionalProperties": false }"""
+        };
+        var v2 = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = """{ "type": "object", "properties": { "current": { "type": "string" } }, "required": ["current"], "additionalProperties": false }""",
+            RuleSet = new SchemaRuleSet
+            {
+                DomainRules =
+                [
+                    new SchemaRule
+                    {
+                        Name = "identity",
+                        Kind = SchemaRuleKind.Transform,
+                        Mode = SchemaRuleMode.Read,
+                        Type = JsonataSchemaRegistryRuleHandler.RuleType,
+                        Expr = "$"
+                    }
+                ]
+            }
+        };
+        var writerId = await registryClient.RegisterSchemaAsync(subject, v1);
+        await registryClient.RegisterSchemaAsync(subject, v2);
+        var executor = new SchemaRegistryRuleExecutor([new JsonataSchemaRegistryRuleHandler()]);
+        var validationOptions = new JsonSchemaValidationOptions
+        {
+            ValidatorFactory = new StreamingJsonSchemaValidatorFactory(registryClient),
+            Mode = JsonSchemaValidationMode.Deserialize
+        };
+        await using var deserializer = new JsonSchemaRegistryDeserializer<System.Text.Json.JsonElement>(
+            registryClient,
+            SchemaRegistryRuleJsonContext.Default.JsonElement,
+            validationOptions,
+            new SchemaRegistryDeserializerConfig { UseLatestVersion = true },
+            ruleExecutor: executor);
+        var payload = """{"legacy":"value"}"""u8;
+        var wire = new byte[5 + payload.Length];
+        BinaryPrimitives.WriteInt32BigEndian(wire.AsSpan(1, 4), writerId);
+        payload.CopyTo(wire.AsSpan(5));
+
+        var result = deserializer.Deserialize(wire, CreateContext(topic));
+
+        await Assert.That(result.GetProperty("legacy").GetString()).IsEqualTo("value");
     }
 
     [Test]

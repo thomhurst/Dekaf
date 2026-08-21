@@ -192,6 +192,29 @@ public sealed class JsonataSchemaRegistryRuleHandlerTests
         await Assert.That(result.ReaderSchema.Schema).IsSameReferenceAs(v2);
     }
 
+    [Test]
+    public async Task MigrationRunner_LatestReaderJsonataIdentity_KeepsWriterPayloadSchemaAndMemory()
+    {
+        var v1 = new Schema { SchemaType = SchemaType.Json, SchemaString = "v1" };
+        var v2 = CreateSchema("$", SchemaRuleMode.Read);
+        var registry = new MigrationRegistryClient(v1, v2);
+        var executor = new SchemaRegistryRuleExecutor([new JsonataSchemaRegistryRuleHandler()]);
+        var runner = new SchemaRegistryMigrationRunner(registry, executor, TimeSpan.FromSeconds(1));
+        var payload = """{"id":7}"""u8.ToArray();
+
+        var result = runner.Transform(
+            payload,
+            schemaId: 1,
+            "orders-value",
+            v1,
+            SerializationContext,
+            SchemaRegistryPayloadFormat.Json);
+
+        await Assert.That(result.PayloadSchemaId).IsEqualTo(1);
+        await Assert.That(result.Payload.Equals(payload.AsMemory())).IsTrue();
+        await Assert.That(result.ReaderSchema.Schema).IsSameReferenceAs(v2);
+    }
+
     private static ReadOnlyMemory<byte> Apply(
         string expression,
         byte[] payload,

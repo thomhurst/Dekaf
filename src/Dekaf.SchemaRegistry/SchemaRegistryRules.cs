@@ -479,9 +479,10 @@ public interface ISchemaRegistryRuleHandler
 /// </summary>
 /// <remarks>
 /// Implement this optional interface when the handler can determine the result while transforming.
-/// It avoids a second full-payload comparison on deserialization hot paths. Implementations must set
-/// <c>payloadChanged</c> to <see langword="false" /> when the returned bytes have the
-/// same representation, including when they are stored in different memory.
+/// It avoids a second full-payload comparison on deserialization hot paths. Implementations set
+/// <c>payloadChanged</c> to <see langword="false" /> only when they can certify that the transform
+/// preserved the input representation. A handler may report <see langword="true" /> when copied
+/// output happens to contain equal bytes but proving equality would require another payload scan.
 /// </remarks>
 public interface ISchemaRegistryRuleTransformResultHandler : ISchemaRegistryRuleHandler
 {
