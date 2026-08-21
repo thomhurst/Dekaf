@@ -125,6 +125,20 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
+    public async Task StreamsGroupManagement_DeleteMissingGroupReportsGroupIdNotFound()
+    {
+        IAdminClient admin = new InMemoryAdminClient(new InMemoryKafkaCluster());
+        const string groupId = "missing-streams";
+        var partition = new TopicPartition("input", 0);
+
+        var deletedOffsets = await admin.DeleteStreamsGroupOffsetsAsync(groupId, [partition]);
+        var deletedGroups = await admin.DeleteStreamsGroupsAsync([groupId]);
+
+        await Assert.That(deletedOffsets[partition].ErrorCode).IsEqualTo(ErrorCode.GroupIdNotFound);
+        await Assert.That(deletedGroups[groupId].ErrorCode).IsEqualTo(ErrorCode.GroupIdNotFound);
+    }
+
+    [Test]
     public async Task StreamsGroupManagement_RejectsNegativeOffsets()
     {
         IAdminClient admin = new InMemoryAdminClient(new InMemoryKafkaCluster());

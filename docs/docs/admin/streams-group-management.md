@@ -50,7 +50,7 @@ var deletedGroups = await admin.DeleteStreamsGroupsAsync(["orders-streams"]);
 
 Input validation and pre-cancellation happen before network access. Empty
 requests return empty results. Each options type has a client-side `TimeoutMs`;
-expiration throws `TimeoutException`, while caller cancellation preserves
+expiration throws `KafkaTimeoutException`, while caller cancellation preserves
 `OperationCanceledException`. Ambiguous offset/group deletion retries treat a
 subsequent `GroupIdNotFound` as success.
 

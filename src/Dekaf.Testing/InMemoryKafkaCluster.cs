@@ -820,21 +820,23 @@ public sealed class InMemoryKafkaCluster
             return _consumerGroupOffsets.Keys.Order(StringComparer.Ordinal).ToArray();
     }
 
-    internal void DeleteGroup(string groupId)
+    internal bool DeleteGroup(string groupId)
     {
         lock (_gate)
-            _consumerGroupOffsets.Remove(groupId);
+            return _consumerGroupOffsets.Remove(groupId);
     }
 
-    internal void DeleteGroupOffsets(string groupId, IEnumerable<TopicPartition> partitions)
+    internal bool DeleteGroupOffsets(string groupId, IEnumerable<TopicPartition> partitions)
     {
         lock (_gate)
         {
             if (!_consumerGroupOffsets.TryGetValue(groupId, out var offsets))
-                return;
+                return false;
 
             foreach (var partition in partitions)
                 offsets.Remove(partition);
+
+            return true;
         }
     }
 
