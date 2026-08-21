@@ -908,6 +908,7 @@ public class MpscFetchBufferTests
         var second = CreateDummy("topic", 2);
 
         var firstWrite = StartDedicatedWrite(buffer, first);
+        using var readableCts = new CancellationTokenSource();
         Task<bool>? secondWrite = null;
         Task<bool>? waitForReadable = null;
         Exception? firstWriteFailure = null;
@@ -915,44 +916,58 @@ public class MpscFetchBufferTests
         var firstWritten = false;
         try
         {
-            await firstReserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
-            // Keep the buffer timeout out of the ordering proof. Under full-suite load the
-            // test continuation may be delayed while slot 0 is intentionally blocked, so a
-            // wall-clock timeout can win before finally releases the producer.
-            waitForReadable = buffer.WaitToReadAsync(Timeout.Infinite, CancellationToken.None).AsTask();
-            await TestWait.UntilAsync(
-                () => GetConsumerWaiting(buffer) == 1 && IsReadWaiterActive(buffer),
-                TimeSpan.FromSeconds(5));
+            try
+            {
+                await firstReserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                // Keep the buffer timeout out of the ordering proof. Under full-suite load the
+                // test continuation may be delayed while slot 0 is intentionally blocked, so a
+                // wall-clock timeout can win before finally releases the producer.
+                waitForReadable = buffer.WaitToReadAsync(Timeout.Infinite, readableCts.Token).AsTask();
+                await TestWait.UntilAsync(
+                    () => GetConsumerWaiting(buffer) == 1 && IsReadWaiterActive(buffer),
+                    TimeSpan.FromSeconds(5));
 
-            secondWrite = StartDedicatedWrite(buffer, second);
-            await Assert.That(await secondWrite.WaitAsync(TimeSpan.FromSeconds(5))).IsTrue();
-            await Assert.That(buffer.Count).IsEqualTo(2);
-            await Assert.That(waitForReadable.IsCompleted).IsFalse();
+                secondWrite = StartDedicatedWrite(buffer, second);
+                await Assert.That(await secondWrite.WaitAsync(TimeSpan.FromSeconds(5))).IsTrue();
+                await Assert.That(buffer.Count).IsEqualTo(2);
+                await Assert.That(waitForReadable.IsCompleted).IsFalse();
+            }
+            finally
+            {
+                allowFirstCommit.Set();
+                (firstWritten, firstWriteFailure) = await ObserveDedicatedWriteAsync(firstWrite);
+
+                if (secondWrite is not null)
+                    (_, secondWriteFailure) = await ObserveDedicatedWriteAsync(secondWrite);
+            }
+
+            if (firstWriteFailure is not null)
+                ExceptionDispatchInfo.Capture(firstWriteFailure).Throw();
+            if (secondWriteFailure is not null)
+                ExceptionDispatchInfo.Capture(secondWriteFailure).Throw();
+
+            await Assert.That(firstWritten).IsTrue();
+            // firstWrite completion proves slot 0 was published and its reader wake was queued.
+            // Bound only the subsequent completion observation so a product wake bug still fails.
+            await Assert.That(await waitForReadable!.WaitAsync(TimeSpan.FromSeconds(30))).IsTrue();
+            await Assert.That(buffer.TryRead(out var firstRead)).IsTrue();
+            await Assert.That(firstRead!.PartitionIndex).IsEqualTo(1);
+            firstRead.Dispose();
+            await Assert.That(buffer.TryRead(out var secondRead)).IsTrue();
+            await Assert.That(secondRead!.PartitionIndex).IsEqualTo(2);
+            secondRead.Dispose();
         }
         finally
         {
-            allowFirstCommit.Set();
-            (firstWritten, firstWriteFailure) = await ObserveDedicatedWriteAsync(firstWrite);
+            readableCts.Cancel();
+            if (waitForReadable is not null)
+            {
+                Task readableObservation = waitForReadable;
+                await readableObservation.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+            }
 
-            if (secondWrite is not null)
-                (_, secondWriteFailure) = await ObserveDedicatedWriteAsync(secondWrite);
+            buffer.Dispose(secondWrite is null ? firstWrite : Task.WhenAll(firstWrite, secondWrite));
         }
-
-        if (firstWriteFailure is not null)
-            ExceptionDispatchInfo.Capture(firstWriteFailure).Throw();
-        if (secondWriteFailure is not null)
-            ExceptionDispatchInfo.Capture(secondWriteFailure).Throw();
-
-        await Assert.That(firstWritten).IsTrue();
-        // firstWrite completion proves slot 0 was published and its reader wake was queued.
-        // Bound only the subsequent completion observation so a product wake bug still fails.
-        await Assert.That(await waitForReadable!.WaitAsync(TimeSpan.FromSeconds(30))).IsTrue();
-        await Assert.That(buffer.TryRead(out var firstRead)).IsTrue();
-        await Assert.That(firstRead!.PartitionIndex).IsEqualTo(1);
-        firstRead.Dispose();
-        await Assert.That(buffer.TryRead(out var secondRead)).IsTrue();
-        await Assert.That(secondRead!.PartitionIndex).IsEqualTo(2);
-        secondRead.Dispose();
     }
 
     private static Task<bool> StartDedicatedWrite(
