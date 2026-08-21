@@ -836,6 +836,78 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
+    public async Task Admin_DeleteLastShareGroupOffsetRemovesGroupState()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var admin = new InMemoryAdminClient(cluster);
+        var partition = new TopicPartition("shared", 0);
+        await admin.AlterShareGroupOffsetsAsync(
+            "offset-only",
+            [new ShareGroupOffsetAlteration { TopicPartition = partition, StartOffset = 3 }]);
+
+        await admin.DeleteShareGroupOffsetsAsync("offset-only", [partition.Topic]);
+        var groups = await admin.ListShareGroupsAsync();
+        var deletion = await admin.DeleteShareGroupsAsync(["offset-only"]);
+
+        await Assert.That(groups).IsEmpty();
+        await Assert.That(deletion["offset-only"].ErrorCode).IsEqualTo(ErrorCode.GroupIdNotFound);
+    }
+
+    [Test]
+    public async Task ShareConsumer_SubscribeCannotRegisterAfterConcurrentClose()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        var admin = new InMemoryAdminClient(cluster);
+        var consumer = new InMemoryShareConsumer<string, string>(
+            cluster,
+            new InMemoryShareConsumerOptions { GroupId = "subscribe-close-race" });
+        await producer.ProduceAsync("shared", "k", "v");
+        var gate = typeof(InMemoryShareConsumer<string, string>).GetField(
+            "_gate",
+            BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(consumer)!;
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                consumer.Subscribe("shared");
+                completion.SetResult();
+            }
+            catch (Exception exception)
+            {
+                completion.SetException(exception);
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "in-memory-share-subscribe-test-worker"
+        };
+        var gateHeld = false;
+        bool subscribeReachedGate;
+        try
+        {
+            Monitor.Enter(gate, ref gateHeld);
+            thread.Start();
+            subscribeReachedGate = SpinWait.SpinUntil(
+                () => thread.ThreadState.HasFlag(System.Threading.ThreadState.WaitSleepJoin),
+                TimeSpan.FromSeconds(5));
+            consumer.CloseAsync().AsTask().GetAwaiter().GetResult();
+        }
+        finally
+        {
+            if (gateHeld)
+                Monitor.Exit(gate);
+        }
+
+        await Assert.That(subscribeReachedGate).IsTrue();
+        await Assert.That(async () => await completion.Task.WaitAsync(TimeSpan.FromSeconds(5)))
+            .Throws<ObjectDisposedException>();
+        var deletion = await admin.DeleteShareGroupsAsync(["subscribe-close-race"]);
+        await Assert.That(deletion["subscribe-close-race"].ErrorCode).IsEqualTo(ErrorCode.GroupIdNotFound);
+    }
+
+    [Test]
     public async Task Admin_DeleteShareGroupsValidatesBatchBeforeDeleting()
     {
         var cluster = new InMemoryKafkaCluster();
