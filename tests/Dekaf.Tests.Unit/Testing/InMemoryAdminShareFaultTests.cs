@@ -1,3 +1,4 @@
+using System.Threading.Tasks.Sources;
 using Dekaf.Admin;
 using Dekaf.Producer;
 using Dekaf.ShareConsumer;
@@ -157,6 +158,56 @@ public sealed class InMemoryAdminShareFaultTests
     }
 
     [Test]
+    public async Task AdminFault_InvalidCreateDelegationTokenDurationDoesNotConsumeScriptedFailure()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var admin = new InMemoryAdminClient(cluster);
+        var failure = new InvalidOperationException("blocked");
+        cluster.FaultPlan.Fail(new KafkaFaultScope(KafkaFaultOperation.Admin), failure);
+
+        _ = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            admin.CreateDelegationTokenAsync(maxLifetime: TimeSpan.FromSeconds(-1)).AsTask());
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            admin.CreateDelegationTokenAsync().AsTask());
+
+        await Assert.That(actual).IsSameReferenceAs(failure);
+    }
+
+    [Test]
+    public async Task AdminFault_InvalidRenewDelegationTokenDurationDoesNotConsumeScriptedFailure()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var admin = new InMemoryAdminClient(cluster);
+        var token = await admin.CreateDelegationTokenAsync();
+        var failure = new InvalidOperationException("blocked");
+        cluster.FaultPlan.Fail(new KafkaFaultScope(KafkaFaultOperation.Admin), failure);
+
+        _ = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            admin.RenewDelegationTokenAsync(token.Hmac, TimeSpan.FromSeconds(-1)).AsTask());
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            admin.RenewDelegationTokenAsync(token.Hmac).AsTask());
+
+        await Assert.That(actual).IsSameReferenceAs(failure);
+    }
+
+    [Test]
+    public async Task AdminFault_InvalidExpireDelegationTokenDurationDoesNotConsumeScriptedFailure()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var admin = new InMemoryAdminClient(cluster);
+        var token = await admin.CreateDelegationTokenAsync();
+        var failure = new InvalidOperationException("blocked");
+        cluster.FaultPlan.Fail(new KafkaFaultScope(KafkaFaultOperation.Admin), failure);
+
+        _ = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            admin.ExpireDelegationTokenAsync(token.Hmac, TimeSpan.FromSeconds(-1)).AsTask());
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            admin.ExpireDelegationTokenAsync(token.Hmac).AsTask());
+
+        await Assert.That(actual).IsSameReferenceAs(failure);
+    }
+
+    [Test]
     public async Task AdminFault_ClearLeavesGroupMutationAvailable()
     {
         var cluster = new InMemoryKafkaCluster();
@@ -303,5 +354,70 @@ public sealed class InMemoryAdminShareFaultTests
         await Task.WhenAll(first, second);
         await Assert.That(cluster.GetCommittedOffset("workers", new TopicPartition("shared", 0)))
             .IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task ShareAcknowledgeFault_ConsumesSynchronouslyCompletedValueTaskSource()
+    {
+        var faultPlan = new CompletedSourceFaultPlan();
+        var cluster = new InMemoryKafkaCluster(faultPlan);
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync("shared", "key", "value");
+        await using var consumer = new InMemoryShareConsumer<string, string>(
+            cluster,
+            new InMemoryShareConsumerOptions { GroupId = "workers" });
+        consumer.Subscribe("shared");
+        consumer.Acknowledge(await consumer.PollAsync().FirstAsync());
+
+        await consumer.CommitAsync();
+
+        await Assert.That(faultPlan.GetResultCount).IsEqualTo(1);
+    }
+
+    private sealed class CompletedSourceFaultPlan : IKafkaFaultPlan, IValueTaskSource
+    {
+        public event Action<KafkaFaultObservation>? FaultConsumed
+        {
+            add { }
+            remove { }
+        }
+
+        public int Count => 0;
+
+        public int GetResultCount { get; private set; }
+
+        public void Fail(KafkaFaultScope scope, Exception exception, int occurrenceCount = 1) =>
+            throw new NotSupportedException();
+
+        public void FailPersistently(KafkaFaultScope scope, Exception exception) =>
+            throw new NotSupportedException();
+
+        public KafkaFaultBarrier PauseNext(KafkaFaultScope scope) =>
+            throw new NotSupportedException();
+
+        public ValueTask ApplyAsync(
+            KafkaFaultScope operationScope,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return operationScope.Operation == KafkaFaultOperation.ShareAcknowledge
+                ? new ValueTask(this, token: 0)
+                : ValueTask.CompletedTask;
+        }
+
+        public int Clear(KafkaFaultScope scope) => 0;
+
+        public int Clear() => 0;
+
+        void IValueTaskSource.GetResult(short token) => GetResultCount++;
+
+        ValueTaskSourceStatus IValueTaskSource.GetStatus(short token) =>
+            ValueTaskSourceStatus.Succeeded;
+
+        void IValueTaskSource.OnCompleted(
+            Action<object?> continuation,
+            object? state,
+            short token,
+            ValueTaskSourceOnCompletedFlags flags) => throw new InvalidOperationException();
     }
 }
