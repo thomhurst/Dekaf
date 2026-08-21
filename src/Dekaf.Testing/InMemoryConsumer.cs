@@ -842,6 +842,13 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         var groupId = GetCommitGroupId();
         var faultPlan = _cluster.FaultPlan;
         IReadOnlyList<TopicPartitionOffset>? offsetList = offsets as IReadOnlyList<TopicPartitionOffset>;
+        if (faultPlan.Count == 0)
+        {
+            offsetList ??= offsets.ToArray();
+            _cluster.CommitOffsets(groupId, offsetList);
+            return;
+        }
+
         var faultApplied = false;
         if (faultPlan is KafkaFaultPlan indexedPlan &&
             offsetList is null &&
@@ -873,19 +880,27 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
         if (!faultApplied && faultPlan is KafkaFaultPlan orderedPlan)
         {
-            if (orderedPlan.HasPotentialMatch(KafkaFaultOperation.Commit, groupId) &&
-                orderedPlan.TryApplyFirstMatchingCommitFault(
-                    groupId,
-                    offsetList,
-                    out var faultApplication,
-                    cancellationToken))
+            if (orderedPlan.HasPotentialMatch(KafkaFaultOperation.Commit, groupId))
             {
-                await faultApplication.ConfigureAwait(false);
-                ThrowIfDisposed();
+                if (ReferenceEquals(offsetList, offsets))
+                    offsetList = offsetList.ToArray();
+
+                if (orderedPlan.TryApplyFirstMatchingCommitFault(
+                        groupId,
+                        offsetList,
+                        out var faultApplication,
+                        cancellationToken))
+                {
+                    await faultApplication.ConfigureAwait(false);
+                    ThrowIfDisposed();
+                }
             }
         }
         else if (!faultApplied && faultPlan.Count != 0)
         {
+            if (ReferenceEquals(offsetList, offsets))
+                offsetList = offsetList.ToArray();
+
             var candidateScopes = new KafkaFaultScope[offsetList.Count + 1];
             candidateScopes[0] = new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: groupId);
             for (var index = 0; index < offsetList.Count; index++)

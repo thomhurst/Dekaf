@@ -540,6 +540,25 @@ public sealed class InMemoryConsumerFaultTests
     }
 
     [Test]
+    public async Task CommitAsync_BarrierCommitsExactCallerOffsets()
+    {
+        var (cluster, consumer) = await CreateConsumerWithRecordAsync();
+        TopicPartitionOffset[] offsets = [new(Topic, 0, 1)];
+        var barrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, Topic, 0, GroupId));
+        cluster.FaultPlan.FaultConsumed += _ =>
+            offsets[0] = new TopicPartitionOffset(Topic, 0, 9);
+
+        var commit = consumer.CommitAsync(offsets).AsTask();
+        await barrier.WaitUntilEnteredAsync();
+        offsets[0] = new TopicPartitionOffset(Topic, 0, 10);
+        await Assert.That(barrier.Release()).IsTrue();
+        await commit;
+
+        await Assert.That(cluster.GetCommittedOffset(GroupId, Partition)).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task OnDeliveryAutoCommit_BarrierCommitsExactCapturedOffsets()
     {
         var cluster = new InMemoryKafkaCluster();
