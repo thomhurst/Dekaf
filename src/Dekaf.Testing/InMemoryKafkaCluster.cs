@@ -153,10 +153,7 @@ public sealed class InMemoryKafkaCluster
     internal bool ContainsTopicPartition(TopicPartition topicPartition)
     {
         lock (_gate)
-        {
-            return _topics.TryGetValue(topicPartition.Topic, out var topic)
-                && (uint)topicPartition.Partition < (uint)topic.Partitions.Count;
-        }
+            return ContainsTopicPartitionUnderLock(topicPartition);
     }
 
     internal int RegisterConsumerGroupMember(
@@ -804,27 +801,156 @@ public sealed class InMemoryKafkaCluster
         }
     }
 
+    internal IReadOnlyDictionary<TopicPartition, TopicPartitionOffset> GetGroupOffsetDetails(string groupId)
+    {
+        lock (_gate)
+        {
+            return _consumerGroupOffsets.TryGetValue(groupId, out var offsets)
+                ? new Dictionary<TopicPartition, TopicPartitionOffset>(offsets)
+                : new Dictionary<TopicPartition, TopicPartitionOffset>();
+        }
+    }
+
     internal IReadOnlyList<string> ListGroups()
     {
         lock (_gate)
-            return _consumerGroupOffsets.Keys.Order(StringComparer.Ordinal).ToArray();
+        {
+            var groups = new HashSet<string>(_consumerGroupOffsets.Keys, StringComparer.Ordinal);
+            groups.UnionWith(_consumerGroupGenerations.Keys);
+            return groups.Order(StringComparer.Ordinal).ToArray();
+        }
     }
 
-    internal void DeleteGroup(string groupId)
+    internal bool DeleteGroup(string groupId)
     {
         lock (_gate)
-            _consumerGroupOffsets.Remove(groupId);
+        {
+            if (_consumerGroupMembers.TryGetValue(groupId, out var members) && members.Count != 0)
+                return false;
+
+            return RemoveConsumerGroupUnderLock(groupId);
+        }
     }
 
-    internal void DeleteGroupOffsets(string groupId, IEnumerable<TopicPartition> partitions)
+    internal ErrorCode DeleteStreamsGroup(string groupId)
+    {
+        lock (_gate)
+        {
+            if (_consumerGroupMembers.TryGetValue(groupId, out var members) && members.Count != 0)
+                return ErrorCode.NonEmptyGroup;
+
+            return RemoveConsumerGroupUnderLock(groupId)
+                ? ErrorCode.None
+                : ErrorCode.GroupIdNotFound;
+        }
+    }
+
+    internal bool DeleteGroupOffsets(string groupId, IEnumerable<TopicPartition> partitions)
     {
         lock (_gate)
         {
             if (!_consumerGroupOffsets.TryGetValue(groupId, out var offsets))
-                return;
+                return false;
 
             foreach (var partition in partitions)
                 offsets.Remove(partition);
+
+            return true;
+        }
+    }
+
+    internal IReadOnlyDictionary<TopicPartition, ErrorCode> AlterStreamsGroupOffsets(
+        string groupId,
+        IReadOnlyList<TopicPartitionOffset> offsets)
+    {
+        lock (_gate)
+        {
+            var results = new Dictionary<TopicPartition, ErrorCode>(offsets.Count);
+            if (_consumerGroupMembers.TryGetValue(groupId, out var members) && members.Count != 0)
+            {
+                foreach (var offset in offsets)
+                    results[new TopicPartition(offset.Topic, offset.Partition)] = ErrorCode.UnknownMemberId;
+                return results;
+            }
+
+            Dictionary<TopicPartition, TopicPartitionOffset>? groupOffsets = null;
+            foreach (var offset in offsets)
+            {
+                var partition = new TopicPartition(offset.Topic, offset.Partition);
+                if (!ContainsTopicPartitionUnderLock(partition))
+                {
+                    results[partition] = ErrorCode.UnknownTopicOrPartition;
+                    continue;
+                }
+
+                groupOffsets ??= GetOrCreateConsumerGroupOffsetsUnderLock(groupId);
+                groupOffsets[partition] = offset;
+                results[partition] = ErrorCode.None;
+            }
+            return results;
+        }
+    }
+
+    internal IReadOnlyDictionary<TopicPartition, ErrorCode> DeleteStreamsGroupOffsets(
+        string groupId,
+        IReadOnlyList<TopicPartition> partitions)
+    {
+        lock (_gate)
+        {
+            var results = new Dictionary<TopicPartition, ErrorCode>(partitions.Count);
+            _consumerGroupOffsets.TryGetValue(groupId, out var offsets);
+            if (offsets is null && !_consumerGroupGenerations.ContainsKey(groupId))
+            {
+                foreach (var partition in partitions)
+                    results[partition] = ErrorCode.GroupIdNotFound;
+                return results;
+            }
+
+            _consumerGroupMembers.TryGetValue(groupId, out var members);
+            foreach (var partition in partitions)
+            {
+                if (!ContainsTopicPartitionUnderLock(partition))
+                {
+                    results[partition] = ErrorCode.UnknownTopicOrPartition;
+                    continue;
+                }
+
+                if (offsets is null)
+                {
+                    results[partition] = ErrorCode.None;
+                    continue;
+                }
+
+                var isSubscribed = false;
+                if (members is not null)
+                {
+                    foreach (var member in members.Values)
+                    {
+                        foreach (var subscribedPartition in member.SubscribedPartitions)
+                        {
+                            if (subscribedPartition.Topic != partition.Topic)
+                                continue;
+
+                            isSubscribed = true;
+                            break;
+                        }
+
+                        if (isSubscribed)
+                            break;
+                    }
+                }
+
+                if (isSubscribed)
+                {
+                    results[partition] = ErrorCode.GroupSubscribedToTopic;
+                    continue;
+                }
+
+                offsets.Remove(partition);
+                results[partition] = ErrorCode.None;
+            }
+
+            return results;
         }
     }
 
@@ -1051,14 +1177,31 @@ public sealed class InMemoryKafkaCluster
 
     private void CommitOffsetsUnderLock(string groupId, IEnumerable<TopicPartitionOffset> offsets)
     {
+        var groupOffsets = GetOrCreateConsumerGroupOffsetsUnderLock(groupId);
+        foreach (var offset in offsets)
+            groupOffsets[new TopicPartition(offset.Topic, offset.Partition)] = offset;
+    }
+
+    private Dictionary<TopicPartition, TopicPartitionOffset> GetOrCreateConsumerGroupOffsetsUnderLock(
+        string groupId)
+    {
         if (!_consumerGroupOffsets.TryGetValue(groupId, out var groupOffsets))
         {
             groupOffsets = [];
             _consumerGroupOffsets[groupId] = groupOffsets;
         }
 
-        foreach (var offset in offsets)
-            groupOffsets[new TopicPartition(offset.Topic, offset.Partition)] = offset;
+        return groupOffsets;
+    }
+
+    private bool ContainsTopicPartitionUnderLock(TopicPartition topicPartition) =>
+        _topics.TryGetValue(topicPartition.Topic, out var topic)
+        && (uint)topicPartition.Partition < (uint)topic.Partitions.Count;
+
+    private bool RemoveConsumerGroupUnderLock(string groupId)
+    {
+        var existed = _consumerGroupOffsets.Remove(groupId);
+        return _consumerGroupGenerations.Remove(groupId) || existed;
     }
 
     private Dictionary<long, ShareLeaseState>? GetShareLeasePartition(

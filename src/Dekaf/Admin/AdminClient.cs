@@ -20,10 +20,11 @@ namespace Dekaf.Admin;
 /// <summary>
 /// Kafka administrative client implementation.
 /// </summary>
-public sealed class AdminClient :
+public sealed partial class AdminClient :
     IAdminClient,
     IReplicaLogDirAdminClient,
     ITopicIdAdminClient,
+    IStreamsGroupManagementAdminClient,
     ITransactionRemediationAdminClient,
     IKafkaClientStatusProvider
 {

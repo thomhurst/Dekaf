@@ -12,6 +12,7 @@ const sidebars = {
         'admin/topic-identifiers',
         'admin/transaction-remediation',
         'admin/replica-log-directories',
+        'admin/streams-group-management',
       ],
     },
     {
