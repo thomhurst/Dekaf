@@ -894,6 +894,38 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
+    public async Task ConsumerGroup_DuplicateMemberIdFencesStaleRegistrationWithoutSpinning()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("duplicate-member-topic");
+        await using var first = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions
+            {
+                GroupId = "duplicate-members",
+                MemberId = "member",
+                AutoOffsetReset = AutoOffsetReset.Earliest
+            });
+        await using var replacement = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions
+            {
+                GroupId = "duplicate-members",
+                MemberId = "member",
+                AutoOffsetReset = AutoOffsetReset.Earliest
+            });
+        first.Subscribe("duplicate-member-topic");
+        replacement.Subscribe("duplicate-member-topic");
+
+        // Keep a generation-loop regression bounded instead of hanging the test process.
+        var result = await Task.Run(() => first.ConsumeOneAsync(TimeSpan.Zero).AsTask())
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        await Assert.That(result).IsNull();
+        await Assert.That(first.Assignment).IsEmpty();
+    }
+
+    [Test]
     public async Task ConsumerClose_RemainInGroup_DoesNotCreateImmortalInMemoryMember()
     {
         var cluster = new InMemoryKafkaCluster();

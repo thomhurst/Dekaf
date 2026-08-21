@@ -2369,11 +2369,13 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         {
             // Fault observers run synchronously and may re-enter this consumer.
             ThrowIfDisposed();
-            _paused.Add(partition);
+            var resumePartition = _paused.Add(partition);
+            if (resumePartition)
+                InvalidatePotentialFaultActiveResourcesUnderLock();
 
             (_pendingAutoCommitAdvancements ??= [])[partition] = new PendingAutoCommitAdvancement(
                 expectedPosition,
-                ResumePartition: true,
+                resumePartition,
                 new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously),
                 capturedOffsets);
             hasReservation = true;
@@ -2456,8 +2458,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         }
 
         _pendingAutoCommitAdvancements.Remove(partition);
-        if (pending.ResumePartition)
-            _paused.Remove(partition);
+        if (pending.ResumePartition && _paused.Remove(partition))
+            InvalidatePotentialFaultActiveResourcesUnderLock();
         if (_pendingAutoCommitAdvancements.Count == 0)
             _pendingAutoCommitAdvancements = null;
 
@@ -2510,6 +2512,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             }
 
             var resumePartition = _paused.Add(inDoubtPartition);
+            if (resumePartition)
+                InvalidatePotentialFaultActiveResourcesUnderLock();
             (_pendingAutoCommitAdvancements ??= [])[inDoubtPartition] = new PendingAutoCommitAdvancement(
                 inDoubtNextOffset,
                 resumePartition,
@@ -2751,6 +2755,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
             var assignment = GetCurrentAssignmentUnderLock(out var assignmentGeneration);
             if (_groupId is not null &&
+                assignmentGeneration >= 0 &&
                 assignmentGeneration != _cluster.GetConsumerGroupGeneration(_groupId))
             {
                 continue;
@@ -2779,6 +2784,12 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             _potentialFaultAssignmentConsumerGroupGeneration = consumerGroupGeneration;
             return assignment;
         }
+    }
+
+    private void InvalidatePotentialFaultActiveResourcesUnderLock()
+    {
+        Volatile.Write(ref _potentialFaultConsumerStateVersion, -1);
+        _potentialFaultAssignmentConsumerStateVersion = -1;
     }
 
     private bool HasCommittableStoredOffsetUnderLock(

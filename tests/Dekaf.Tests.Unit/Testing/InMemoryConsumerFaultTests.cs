@@ -607,6 +607,30 @@ public sealed class InMemoryConsumerFaultTests
     }
 
     [Test]
+    public async Task OnDeliveryAutoCommit_FaultObserverPauseRemainsPaused()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync(Topic, "key", "value");
+        await using var consumer = CreateConsumer(
+            cluster,
+            enableAutoOffsetStore: true,
+            offsetCommitMode: OffsetCommitMode.Auto);
+        consumer.Subscribe(Topic);
+        var failure = new InvalidOperationException("commit failed");
+        cluster.FaultPlan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId),
+            failure);
+        cluster.FaultPlan.FaultConsumed += _ => consumer.Pause(Partition);
+
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            consumer.ConsumeOneAsync(TimeSpan.Zero).AsTask());
+
+        await Assert.That(actual).IsSameReferenceAs(failure);
+        await Assert.That(consumer.Paused).Contains(Partition);
+    }
+
+    [Test]
     public async Task OnDeliveryAutoCommit_FaultObserverClosePreventsReservation()
     {
         var cluster = new InMemoryKafkaCluster();
@@ -1046,6 +1070,41 @@ public sealed class InMemoryConsumerFaultTests
 
         await Assert.That(result).IsNotNull();
         await Assert.That(result!.Value.Key).IsEqualTo("key");
+        await Assert.That(barrier.Release()).IsTrue();
+    }
+
+    [Test]
+    public async Task AutoCommit_BarrierCancellationInvalidatesPausedFaultCache()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync(Topic, "key", "value");
+        await using var consumer = CreateConsumer(
+            cluster,
+            enableAutoOffsetStore: true,
+            offsetCommitMode: OffsetCommitMode.Auto);
+        consumer.Subscribe(Topic);
+        var barrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId));
+        using var cancellation = new CancellationTokenSource();
+
+        var reservedConsume = consumer
+            .ConsumeOneAsync(Timeout.InfiniteTimeSpan, cancellation.Token)
+            .AsTask();
+        await barrier.WaitUntilEnteredAsync();
+        var failure = new InvalidOperationException("fetch failed");
+        cluster.FaultPlan.FailPersistently(
+            new KafkaFaultScope(KafkaFaultOperation.Fetch, Topic, 0, GroupId),
+            failure);
+
+        await Assert.That(await consumer.ConsumeOneAsync(TimeSpan.Zero)).IsNull();
+        cancellation.Cancel();
+        _ = await Assert.ThrowsAsync<OperationCanceledException>(() => reservedConsume);
+
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            consumer.ConsumeOneAsync(TimeSpan.Zero).AsTask());
+
+        await Assert.That(actual).IsSameReferenceAs(failure);
         await Assert.That(barrier.Release()).IsTrue();
     }
 
