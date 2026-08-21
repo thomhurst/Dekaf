@@ -277,8 +277,11 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 var paused = _paused.ToHashSet();
                 if (_pendingAutoCommitAdvancements is not null)
                 {
-                    foreach (var partition in _pendingAutoCommitAdvancements.Keys)
-                        paused.Remove(partition);
+                    foreach (var (partition, pending) in _pendingAutoCommitAdvancements)
+                    {
+                        if (pending.ResumePartition)
+                            paused.Remove(partition);
+                    }
                 }
 
                 return paused;
@@ -347,17 +350,16 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     {
         ArgumentNullException.ThrowIfNull(topics);
         ThrowIfDisposed();
-        ApplyGroupTransitionFaults();
-
-        var topicPartitions = topics
-            .Where(topic => !string.IsNullOrWhiteSpace(topic))
-            .Distinct(StringComparer.Ordinal)
-            .SelectMany(topic => _cluster.GetTopicPartitions(topic))
-            .ToArray();
 
         lock (_gate)
         {
             ThrowIfAutoCommitAdvancementPendingUnderLock();
+            ApplyGroupTransitionFaults();
+            var topicPartitions = topics
+                .Where(topic => !string.IsNullOrWhiteSpace(topic))
+                .Distinct(StringComparer.Ordinal)
+                .SelectMany(topic => _cluster.GetTopicPartitions(topic))
+                .ToArray();
             _subscriptionPattern = null;
             _subscription.Clear();
             foreach (var topic in topics.Where(topic => !string.IsNullOrWhiteSpace(topic)).Distinct(StringComparer.Ordinal))
@@ -397,11 +399,10 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             .SelectMany(topic => _cluster.GetTopicPartitions(topic))
             .ToArray();
 
-        ApplyGroupTransitionFaults();
-
         lock (_gate)
         {
             ThrowIfAutoCommitAdvancementPendingUnderLock();
+            ApplyGroupTransitionFaults();
             _subscriptionPattern = pattern;
             _subscription.Clear();
             ReplaceAssignment(topicPartitions);
@@ -412,12 +413,13 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     public void Unsubscribe()
     {
         ThrowIfDisposed();
-        if (_groupId is not null)
-            ApplySynchronousFault(new KafkaFaultScope(KafkaFaultOperation.Rebalance, groupId: _groupId));
 
         lock (_gate)
         {
             ThrowIfAutoCommitAdvancementPendingUnderLock();
+            if (_groupId is not null)
+                ApplySynchronousFault(new KafkaFaultScope(KafkaFaultOperation.Rebalance, groupId: _groupId));
+
             _subscriptionPattern = null;
             _subscription.Clear();
             _assignment.Clear();
@@ -965,12 +967,17 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         ThrowIfDisposed();
 
         var count = offsets.Count;
-        for (var index = 0; index < count; index++)
-            TopicPartitionOffsetValidator.Validate(offsets[index], nameof(offsets));
-
+        var snapshot = new TopicPartitionOffset[count];
         for (var index = 0; index < count; index++)
         {
             var offset = offsets[index];
+            TopicPartitionOffsetValidator.Validate(offset, nameof(offsets));
+            snapshot[index] = offset;
+        }
+
+        for (var index = 0; index < count; index++)
+        {
+            var offset = snapshot[index];
             ApplySynchronousFaultIfMatching(new KafkaFaultScope(
                 KafkaFaultOperation.StoreOffset,
                 offset.Topic,
@@ -981,7 +988,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         lock (_gate)
         {
             for (var index = 0; index < count; index++)
-                StoreOffsetUnderLock(offsets[index]);
+                StoreOffsetUnderLock(snapshot[index]);
         }
     }
 
@@ -989,12 +996,13 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     {
         ThrowIfDisposed();
 
+        var snapshot = offsets.ToArray();
         for (var index = 0; index < offsets.Length; index++)
-            TopicPartitionOffsetValidator.Validate(offsets[index], nameof(offsets));
+            TopicPartitionOffsetValidator.Validate(snapshot[index], nameof(offsets));
 
-        for (var index = 0; index < offsets.Length; index++)
+        for (var index = 0; index < snapshot.Length; index++)
         {
-            var offset = offsets[index];
+            var offset = snapshot[index];
             ApplySynchronousFaultIfMatching(new KafkaFaultScope(
                 KafkaFaultOperation.StoreOffset,
                 offset.Topic,
@@ -1004,8 +1012,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
         lock (_gate)
         {
-            for (var index = 0; index < offsets.Length; index++)
-                StoreOffsetUnderLock(offsets[index]);
+            for (var index = 0; index < snapshot.Length; index++)
+                StoreOffsetUnderLock(snapshot[index]);
         }
     }
 

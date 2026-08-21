@@ -650,6 +650,30 @@ public sealed class InMemoryConsumerFaultTests
     }
 
     [Test]
+    public async Task OnDeliveryAutoCommit_BarrierKeepsFaultObserverPauseVisible()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync(Topic, "key", "value");
+        await using var consumer = CreateConsumer(
+            cluster,
+            enableAutoOffsetStore: true,
+            offsetCommitMode: OffsetCommitMode.Auto);
+        consumer.Subscribe(Topic);
+        var barrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId));
+        cluster.FaultPlan.FaultConsumed += _ => consumer.Pause(Partition);
+
+        var consume = consumer.ConsumeOneAsync(TimeSpan.Zero).AsTask();
+        await barrier.WaitUntilEnteredAsync();
+
+        await Assert.That(consumer.Paused).Contains(Partition);
+        await Assert.That(barrier.Release()).IsTrue();
+        _ = await consume;
+        await Assert.That(consumer.Paused).Contains(Partition);
+    }
+
+    [Test]
     public async Task OnDeliveryAutoCommit_FaultObserverClosePreventsReservation()
     {
         var cluster = new InMemoryKafkaCluster();
@@ -1869,6 +1893,73 @@ public sealed class InMemoryConsumerFaultTests
 
         await Assert.That(cluster.FaultPlan.Count).IsEqualTo(1);
         await Assert.That(await consumer.GetCommittedOffsetAsync(Partition)).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task StoreOffsets_FaultObserverCannotMutateValidatedBatch()
+    {
+        var (cluster, consumer) = await CreateConsumerWithRecordAsync(enableAutoOffsetStore: false);
+        TopicPartitionOffset[] offsets = [new(Topic, 0, 1)];
+        var barrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.StoreOffset, Topic, 0, GroupId));
+        cluster.FaultPlan.FaultConsumed += _ =>
+        {
+            offsets[0] = new TopicPartitionOffset(Topic, 0, 9);
+            barrier.Release();
+        };
+
+        consumer.StoreOffsets(offsets);
+        await consumer.CommitAsync();
+
+        await Assert.That(await consumer.GetCommittedOffsetAsync(Partition)).IsEqualTo(1);
+    }
+
+    [Test]
+    [Arguments("Subscribe")]
+    [Arguments("SubscribePattern")]
+    [Arguments("Unsubscribe")]
+    public async Task GroupTransition_AutoCommitBarrierPreservesQueuedFault(string transition)
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic(Topic);
+        cluster.CreateTopic("payments");
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync(Topic, "key", "value");
+        await using var consumer = CreateConsumer(
+            cluster,
+            enableAutoOffsetStore: true,
+            offsetCommitMode: OffsetCommitMode.Auto);
+        consumer.Subscribe(Topic);
+        var commitBarrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId));
+        var consume = consumer.ConsumeOneAsync(TimeSpan.Zero).AsTask();
+        await commitBarrier.WaitUntilEnteredAsync();
+        var groupOperation = transition == "Unsubscribe"
+            ? KafkaFaultOperation.Rebalance
+            : KafkaFaultOperation.JoinGroup;
+        var groupFailure = new InvalidOperationException("group transition failed");
+        cluster.FaultPlan.Fail(
+            new KafkaFaultScope(groupOperation, groupId: GroupId),
+            groupFailure);
+        Action transitionAction = transition switch
+        {
+            "Subscribe" => () => consumer.Subscribe("payments"),
+            "SubscribePattern" => () => consumer.SubscribePattern("^payments$"),
+            "Unsubscribe" => consumer.Unsubscribe,
+            _ => throw new ArgumentOutOfRangeException(nameof(transition))
+        };
+
+        var pending = Assert.Throws<InvalidOperationException>(transitionAction);
+
+        await Assert.That(pending.Message).Contains("automatic commit fault");
+        await Assert.That(cluster.FaultPlan.Count).IsEqualTo(1);
+        await Assert.That(commitBarrier.Release()).IsTrue();
+        _ = await consume;
+
+        var actual = Assert.Throws<InvalidOperationException>(transitionAction);
+
+        await Assert.That(actual).IsSameReferenceAs(groupFailure);
+        await Assert.That(cluster.FaultPlan.Count).IsEqualTo(0);
     }
 
     [Test]
