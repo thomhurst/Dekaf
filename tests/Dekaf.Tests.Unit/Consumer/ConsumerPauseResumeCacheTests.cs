@@ -788,8 +788,9 @@ public sealed class ConsumerPauseResumeCacheTests
         prefetchBufferField.SetValue(consumer, prefetchBuffer);
         originalPrefetchBuffer.Dispose();
 
+        using var consumeCancellation = new CancellationTokenSource();
         await using var ownedConsumer = consumer;
-        await using var records = consumer.ConsumeAsync().GetAsyncEnumerator();
+        var records = consumer.ConsumeAsync(consumeCancellation.Token).GetAsyncEnumerator();
         var moveNext = Task.Run(() => records.MoveNextAsync().AsTask());
         var stagePendingClear = typeof(KafkaConsumer<string, string>).GetMethod(
             "StagePendingFetchClear",
@@ -802,16 +803,26 @@ public sealed class ConsumerPauseResumeCacheTests
             stagePendingClear.Invoke(consumer, [revokedPartition]);
             await Assert.That(prefetchBuffer.TryWrite(CreatePendingFetch(revokedPartition, 10, 1))).IsTrue();
             await Assert.That(prefetchBuffer.TryWrite(CreatePendingFetch(activePartition, 20, 1))).IsTrue();
+            releaseWait.Set();
+
+            await Assert.That(await moveNext.WaitAsync(TimeSpan.FromSeconds(5))).IsTrue();
+            await Assert.That(records.Current.Topic).IsEqualTo(activePartition.Topic);
+            await Assert.That(records.Current.Partition).IsEqualTo(activePartition.Partition);
+            await Assert.That(records.Current.Offset).IsEqualTo(20);
         }
         finally
         {
             releaseWait.Set();
+            consumeCancellation.Cancel();
+            try
+            {
+                await moveNext;
+            }
+            catch (OperationCanceledException) when (consumeCancellation.IsCancellationRequested)
+            {
+            }
+            await records.DisposeAsync();
         }
-
-        await Assert.That(await moveNext.WaitAsync(TimeSpan.FromSeconds(5))).IsTrue();
-        await Assert.That(records.Current.Topic).IsEqualTo(activePartition.Topic);
-        await Assert.That(records.Current.Partition).IsEqualTo(activePartition.Partition);
-        await Assert.That(records.Current.Offset).IsEqualTo(20);
     }
 
     [Test]
