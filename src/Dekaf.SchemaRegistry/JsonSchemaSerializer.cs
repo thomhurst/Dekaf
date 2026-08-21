@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -1154,12 +1155,7 @@ public sealed class JsonSchemaRegistrySerializer<T> :
                 .ConfigureAwait(false);
         }
 
-        var registered = await _schemaRegistry.LookupSchemaAsync(
-                subject,
-                schema,
-                ignoreDeletedSchemas: true,
-                normalize: _normalizeSchemas,
-                cancellationToken)
+        var registered = await LookupConfiguredSchemaAsync(subject, schema, cancellationToken)
             .ConfigureAwait(false);
         ValidateSchemaFormat(registered.Id, registered.Schema);
         return await CreateResolvedValueAsync(
@@ -1169,6 +1165,47 @@ public sealed class JsonSchemaRegistrySerializer<T> :
                 registered,
                 cancellationToken)
             .ConfigureAwait(false);
+    }
+
+    private async Task<RegisteredSchema> LookupConfiguredSchemaAsync(
+        string subject,
+        Schema configuredSchema,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await _schemaRegistry.LookupSchemaAsync(
+                    subject,
+                    configuredSchema,
+                    ignoreDeletedSchemas: true,
+                    normalize: _normalizeSchemas,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (SchemaRegistryException exception) when (exception.ErrorCode is 404 or 40403)
+        {
+            // Schema Registry includes metadata and rules in lookup equality. Constructor-created
+            // JSON schemas do not carry those fields, so recover the newest semantic match and
+            // retain its registered rule metadata on this cached cold path.
+            var configuredDocument = JsonNode.Parse(configuredSchema.SchemaString);
+            var versions = await _schemaRegistry.GetVersionsAsync(subject, cancellationToken)
+                .ConfigureAwait(false);
+            for (var index = versions.Count - 1; index >= 0; index--)
+            {
+                var candidate = await _schemaRegistry.GetSchemaBySubjectAsync(
+                        subject,
+                        versions[index].ToString(CultureInfo.InvariantCulture),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                if (candidate.Schema.SchemaType == SchemaType.Json &&
+                    JsonNode.DeepEquals(JsonNode.Parse(candidate.Schema.SchemaString), configuredDocument))
+                {
+                    return candidate;
+                }
+            }
+
+            throw;
+        }
     }
 
     private Task<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> CreateResolvedValueAsync(
@@ -1203,35 +1240,11 @@ public sealed class JsonSchemaRegistrySerializer<T> :
     {
         if (!JsonNode.DeepEquals(
                 JsonNode.Parse(selectedSchema.SchemaString),
-                JsonNode.Parse(configuredSchema.SchemaString)) ||
-            !HaveEquivalentReferences(selectedSchema.References, configuredSchema.References))
+                JsonNode.Parse(configuredSchema.SchemaString)))
         {
             throw new InvalidOperationException(
                 $"Schema ID {schemaId} does not match the configured JSON schema.");
         }
-    }
-
-    private static bool HaveEquivalentReferences(
-        IReadOnlyList<SchemaReference>? selected,
-        IReadOnlyList<SchemaReference>? configured)
-    {
-        var selectedCount = selected?.Count ?? 0;
-        if (selectedCount != (configured?.Count ?? 0))
-            return false;
-
-        for (var index = 0; index < selectedCount; index++)
-        {
-            var left = selected![index];
-            var right = configured![index];
-            if (!string.Equals(left.Name, right.Name, StringComparison.Ordinal) ||
-                !string.Equals(left.Subject, right.Subject, StringComparison.Ordinal) ||
-                left.Version != right.Version)
-            {
-                return false;
-            }
-        }
-
-        return true;
     }
 
     private static ResolvedSchemaContext ToResolvedContext(

@@ -341,7 +341,6 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
             new JsonSchemaSerializerConfig
             {
                 AutoRegisterSchemas = false,
-                UseLatestVersion = true,
                 RuleExecutor = ruleExecutor
             });
 
