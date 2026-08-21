@@ -806,6 +806,36 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
+    public async Task Admin_ListShareGroupsUsesOnlyShareState()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var admin = new InMemoryAdminClient(cluster);
+        var partition = new TopicPartition("shared", 0);
+        await admin.AlterShareGroupOffsetsAsync(
+            "offset-only",
+            [new ShareGroupOffsetAlteration { TopicPartition = partition, StartOffset = 3 }]);
+        await admin.AlterConsumerGroupOffsetsAsync(
+            "consumer-only",
+            [new TopicPartitionOffset(partition.Topic, partition.Partition, 7)]);
+        await using var consumer = new InMemoryShareConsumer<string, string>(
+            cluster,
+            new InMemoryShareConsumerOptions { GroupId = "member-only" });
+        consumer.Subscribe("shared");
+
+        var activeGroups = await admin.ListShareGroupsAsync();
+
+        await Assert.That(activeGroups.Select(static group => group.GroupId))
+            .IsEquivalentTo(["member-only", "offset-only"]);
+        await Assert.That(activeGroups.All(static group => group.ProtocolType == "share")).IsTrue();
+
+        await consumer.CloseAsync();
+        var inactiveGroups = await admin.ListShareGroupsAsync();
+
+        await Assert.That(inactiveGroups.Select(static group => group.GroupId))
+            .IsEquivalentTo(["offset-only"]);
+    }
+
+    [Test]
     public async Task Admin_DeleteShareGroupsValidatesBatchBeforeDeleting()
     {
         var cluster = new InMemoryKafkaCluster();

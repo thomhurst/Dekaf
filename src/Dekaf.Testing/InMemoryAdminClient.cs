@@ -1112,7 +1112,19 @@ public sealed class InMemoryAdminClient :
         ListShareGroupsOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        return ListConsumerGroupsAsync(null, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+
+        IReadOnlyList<GroupListing> result = _cluster.ListShareGroups()
+            .Select(groupId => new GroupListing
+            {
+                GroupId = groupId,
+                ProtocolType = "share",
+                State = "Stable"
+            })
+            .ToArray();
+
+        return ValueTask.FromResult(result);
     }
 
     public ValueTask<IReadOnlyDictionary<string, DeleteShareGroupResult>> DeleteShareGroupsAsync(
