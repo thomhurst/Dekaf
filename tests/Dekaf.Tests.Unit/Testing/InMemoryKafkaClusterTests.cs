@@ -139,6 +139,38 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
+    public async Task StreamsGroupManagement_DeleteActiveGroupReportsNonEmptyGroup()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("input");
+        IAdminClient admin = new InMemoryAdminClient(cluster);
+        const string groupId = "active-streams";
+        var partition = new TopicPartition("input", 0);
+        await using var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions { GroupId = groupId });
+        consumer.Subscribe("input");
+        _ = await admin.AlterStreamsGroupOffsetsAsync(
+            groupId,
+            [new TopicPartitionOffset(partition.Topic, partition.Partition, 42)]);
+
+        var activeDeletion = await admin.DeleteStreamsGroupsAsync([groupId]);
+        var offsetsAfterRejection = await admin.ListStreamsGroupOffsetsAsync(
+            new Dictionary<string, ListStreamsGroupOffsetsSpec>
+            {
+                [groupId] = new() { TopicPartitions = [partition] }
+            });
+
+        await Assert.That(activeDeletion[groupId].ErrorCode).IsEqualTo(ErrorCode.NonEmptyGroup);
+        await Assert.That(offsetsAfterRejection[groupId].Offsets[partition].Offset).IsEqualTo(42);
+
+        consumer.Unsubscribe();
+        var inactiveDeletion = await admin.DeleteStreamsGroupsAsync([groupId]);
+
+        await Assert.That(inactiveDeletion[groupId].ErrorCode).IsEqualTo(ErrorCode.None);
+    }
+
+    [Test]
     public async Task StreamsGroupManagement_RejectsNegativeOffsets()
     {
         IAdminClient admin = new InMemoryAdminClient(new InMemoryKafkaCluster());
