@@ -792,6 +792,7 @@ public sealed class ConsumerPauseResumeCacheTests
         await using var ownedConsumer = consumer;
         IAsyncEnumerator<ConsumeResult<string, string>>? records = null;
         Task<bool>? moveNext = null;
+        var testCompleted = false;
 
         try
         {
@@ -812,6 +813,7 @@ public sealed class ConsumerPauseResumeCacheTests
             await Assert.That(records.Current.Topic).IsEqualTo(activePartition.Topic);
             await Assert.That(records.Current.Partition).IsEqualTo(activePartition.Partition);
             await Assert.That(records.Current.Offset).IsEqualTo(20);
+            testCompleted = true;
         }
         finally
         {
@@ -821,16 +823,22 @@ public sealed class ConsumerPauseResumeCacheTests
             {
                 if (moveNext is not null)
                 {
-                    await ((Task)moveNext).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+                    if (testCompleted)
+                        await moveNext;
+                    else
+                        await ((Task)moveNext).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
                 }
             }
             finally
             {
                 if (records is not null)
                 {
-                    await records.DisposeAsync()
-                        .AsTask()
-                        .ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+                    if (testCompleted)
+                        await records.DisposeAsync();
+                    else
+                        await records.DisposeAsync()
+                            .AsTask()
+                            .ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
                 }
             }
         }
