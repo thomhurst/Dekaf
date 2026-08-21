@@ -1087,6 +1087,25 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
     }
 
     [Test]
+    public async Task DescribeAndDeleteTopicsAsync_ByTopicId_WorksTogether()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2).ConfigureAwait(false);
+        await using var admin = CreateAdminClient();
+        var byName = await admin.DescribeTopicsAsync([topic]).ConfigureAwait(false);
+        var topicId = byName[topic].TopicId;
+
+        var byId = await admin.DescribeTopicsAsync([topicId]).ConfigureAwait(false);
+
+        await Assert.That(topicId).IsNotEqualTo(Guid.Empty);
+        await Assert.That(byId).ContainsKey(topicId);
+        await Assert.That(byId[topicId].Name).IsEqualTo(topic);
+        await Assert.That(byId[topicId].TopicId).IsEqualTo(topicId);
+        await Assert.That(byId[topicId].Partitions.Count).IsEqualTo(2);
+
+        await admin.DeleteTopicsAsync([topicId]).ConfigureAwait(false);
+    }
+
+    [Test]
     [SupportsKafka(370)]
     public async Task DescribeTopicPartitionsAsync_WithPagination_ReturnsAllPartitions()
     {

@@ -151,21 +151,37 @@ class StressProfileWorkflowTests(unittest.TestCase):
         self.assertIn('.run_3conn = false', self.workflow)
         self.assertIn('.artifact_suffix = "-profile"', self.workflow)
 
-    def test_installs_pinned_tools_only_for_profile_dispatch(self):
+    def test_installs_manifest_pinned_tools_only_for_profile_dispatch(self):
         self.assertIn(
             "if: github.event_name == 'workflow_dispatch' && github.event.inputs.profile_mode != 'off'",
             self.workflow,
         )
         self.assertIn(
-            "dotnet tool install --global dotnet-counters --version 9.0.661903",
+            "diagnostics_manifest=.config/stress-diagnostics/dotnet-tools.json",
             self.workflow,
         )
         self.assertIn(
-            "dotnet tool install --global dotnet-trace --version 9.0.661903",
+            "counters_version=\"$(jq -er '.tools[\"dotnet-counters\"].version' \"$diagnostics_manifest\")\"",
             self.workflow,
         )
         self.assertIn(
-            "dotnet tool install --global dotnet-gcdump --version 9.0.661903",
+            'dotnet tool install --global dotnet-counters --version "$counters_version"',
+            self.workflow,
+        )
+        self.assertIn(
+            "trace_version=\"$(jq -er '.tools[\"dotnet-trace\"].version' \"$diagnostics_manifest\")\"",
+            self.workflow,
+        )
+        self.assertIn(
+            'dotnet tool install --global dotnet-trace --version "$trace_version"',
+            self.workflow,
+        )
+        self.assertIn(
+            "gcdump_version=\"$(jq -er '.tools[\"dotnet-gcdump\"].version' \"$diagnostics_manifest\")\"",
+            self.workflow,
+        )
+        self.assertIn(
+            'dotnet tool install --global dotnet-gcdump --version "$gcdump_version"',
             self.workflow,
         )
 

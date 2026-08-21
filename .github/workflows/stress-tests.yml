@@ -358,18 +358,24 @@ jobs:
 
       - name: Install stack diagnostics
         run: |
-          dotnet tool install --global dotnet-stack --version 9.0.661903
+          diagnostics_manifest=.config/stress-diagnostics/dotnet-tools.json
+          stack_version="$(jq -er '.tools["dotnet-stack"].version' "$diagnostics_manifest")"
+          dotnet tool install --global dotnet-stack --version "$stack_version"
           echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
 
       - name: Install profiling diagnostics
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.profile_mode != 'off'
         run: |
-          dotnet tool install --global dotnet-counters --version 9.0.661903
-          dotnet tool install --global dotnet-trace --version 9.0.661903
+          diagnostics_manifest=.config/stress-diagnostics/dotnet-tools.json
+          counters_version="$(jq -er '.tools["dotnet-counters"].version' "$diagnostics_manifest")"
+          trace_version="$(jq -er '.tools["dotnet-trace"].version' "$diagnostics_manifest")"
+          dotnet tool install --global dotnet-counters --version "$counters_version"
+          dotnet tool install --global dotnet-trace --version "$trace_version"
           if [ "${{ github.event.inputs.profile_mode }}" = "gc" ]; then
             # gc dispatches also capture per-window heap dumps (PROFILE_GCDUMP below);
             # other modes never run gcdump, so skip the install cost.
-            dotnet tool install --global dotnet-gcdump --version 9.0.661903
+            gcdump_version="$(jq -er '.tools["dotnet-gcdump"].version' "$diagnostics_manifest")"
+            dotnet tool install --global dotnet-gcdump --version "$gcdump_version"
           fi
 
       - name: Build Stress Tests (candidate)

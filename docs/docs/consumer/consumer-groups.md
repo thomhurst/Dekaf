@@ -291,6 +291,51 @@ revoke/lost/shutdown commits for you.
 
 Dekaf group subscriptions use Kafka's KIP-848 `consumer` group protocol, which requires Kafka 4.0 or later. KIP-848 assignment is server-side and every rebalance is incremental/cooperative: only partitions that move are revoked, while unaffected partitions continue processing.
 
+#### Classic protocol support decision
+
+Dekaf will not add Classic `JoinGroup` / `SyncGroup` membership. This is an intentional
+compatibility boundary, not a missing configuration switch:
+
+- KIP-848 has been generally available since Kafka 4.0, which is already Dekaf's broker
+  compatibility floor. It removes the group-wide synchronization barrier and moves assignment
+  state to the broker.
+- Apache Kafka's accepted
+  [KIP-1274](https://cwiki.apache.org/confluence/spaces/KAFKA/pages/406619710/KIP-1274%2BDeprecate%2Band%2Bremove%2Bsupport%2Bfor%2BClassic%2Brebalance%2Bprotocol%2Bin%2BKafkaConsumer)
+  recommends the Consumer protocol in Kafka 4.3, changes the Java consumer default and
+  deprecates Classic in Kafka 5.0, and removes public KafkaConsumer Classic support in Kafka
+  6.0. These are planned milestones under the accepted KIP-1274 roadmap, not fixed release
+  commitments. Adding a second coordinator now would target an upstream client protocol planned
+  for removal.
+- Kafka supports online upgrade and downgrade between compatible Classic and Consumer group
+  members. Dekaf tests both directions, so rolling migration does not require a permanent
+  Classic implementation in Dekaf.
+- One membership state machine avoids duplicating fencing, static-membership, commit,
+  rebalance-listener, and shutdown semantics. This keeps the supported path easier to audit and
+  optimize.
+
+Applications that require Kafka 3.x, custom client-side assignor metadata, or a broker with
+Consumer groups disabled should use a Classic-compatible client while migrating. Manual
+assignment bypasses group membership, but it does not lower Dekaf's supported Kafka 4.0 broker
+floor. `enforceRebalance` is also intentionally absent and has no direct KIP-848 equivalent.
+`Subscribe`, `SubscribePattern`, and `Unsubscribe` update the subscription and trigger normal
+broker reconciliation. `GroupRemoteAssignor` is configured when creating the consumer; recreate
+the consumer to change it. Recreating a member changes group membership but does not guarantee
+an assignment change, so it is not a force-rebalance replacement.
+
+Reconsider this decision only with explicit maintainer approval and concrete evidence that all
+of these are true:
+
+1. A supported deployment cannot use Kafka 4.0+ Consumer groups or Kafka's online migration.
+2. A broker-side assignor or temporary Classic-compatible client cannot cover the requirement.
+3. The demand justifies a second coordinator implementation and its full integration matrix.
+4. Apache Kafka's Classic removal roadmap has materially changed, or Dekaf intentionally adopts
+   a different long-term compatibility policy.
+
+See Apache Kafka's current
+[consumer rebalance protocol guide](https://kafka.apache.org/43/operations/consumer-rebalance-protocol/)
+for server settings, migration constraints, and configurations that no longer apply under
+KIP-848.
+
 Choose one of the broker's configured remote assignors with `WithGroupRemoteAssignor`:
 
 ```csharp

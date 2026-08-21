@@ -470,6 +470,40 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
+    public async Task Admin_DescribesAndDeletesTopicsByIdThroughInterface()
+    {
+        var cluster = new InMemoryKafkaCluster(new InMemoryKafkaClusterOptions { AutoCreateTopics = false });
+        IAdminClient admin = new InMemoryAdminClient(cluster);
+        await admin.CreateTopicsAsync([new NewTopic { Name = "events", NumPartitions = 3 }]);
+        var topicId = (await admin.ListTopicsAsync()).Single().TopicId;
+        var unknownId = Guid.NewGuid();
+
+        var descriptions = await admin.DescribeTopicsAsync([topicId, topicId, unknownId]);
+        await admin.DeleteTopicsAsync([topicId, topicId]);
+
+        await Assert.That(descriptions.Count).IsEqualTo(2);
+        await Assert.That(descriptions[topicId].Name).IsEqualTo("events");
+        await Assert.That(descriptions[topicId].TopicId).IsEqualTo(topicId);
+        await Assert.That(descriptions[topicId].Partitions.Count).IsEqualTo(3);
+        await Assert.That(descriptions[unknownId].ErrorCode).IsEqualTo(ErrorCode.UnknownTopicId);
+        await Assert.That(await admin.ListTopicsAsync()).IsEmpty();
+    }
+
+    [Test]
+    public async Task Admin_DeleteTopicsById_ValidatesAllIdsBeforeDeleting()
+    {
+        var cluster = new InMemoryKafkaCluster(new InMemoryKafkaClusterOptions { AutoCreateTopics = false });
+        IAdminClient admin = new InMemoryAdminClient(cluster);
+        await admin.CreateTopicsAsync([new NewTopic { Name = "events", NumPartitions = 1 }]);
+        var topicId = (await admin.ListTopicsAsync()).Single().TopicId;
+
+        async Task Delete() => await admin.DeleteTopicsAsync([topicId, Guid.Empty]);
+
+        await Assert.That(Delete).Throws<ArgumentException>();
+        await Assert.That(await admin.ListTopicsAsync()).Contains(topic => topic.TopicId == topicId);
+    }
+
+    [Test]
     public async Task Admin_ClientQuotas_AlterDescribeAndRemoveRoundTrips()
     {
         var cluster = new InMemoryKafkaCluster();
@@ -592,12 +626,16 @@ public sealed class InMemoryKafkaClusterTests
         var listings = await admin.ListTransactionsAsync();
         var descriptions = await admin.DescribeTransactionsAsync(["tx-1"]);
         var producers = await admin.DescribeProducersAsync([topicPartition]);
+        var termination = await admin.ForceTerminateTransactionAsync("tx-1");
 
         await Assert.That(listings.Transactions).IsEmpty();
         await Assert.That(listings.UnknownStateFilters).IsEmpty();
         await Assert.That(descriptions["tx-1"].ErrorCode).IsEqualTo(ErrorCode.TransactionalIdNotFound);
         await Assert.That(producers[topicPartition].ErrorCode).IsEqualTo(ErrorCode.None);
         await Assert.That(producers[topicPartition].ActiveProducers).IsEmpty();
+        await Assert.That(termination.TransactionalId).IsEqualTo("tx-1");
+        await Assert.That(termination.ErrorCode).IsEqualTo(ErrorCode.TransactionalIdNotFound);
+        await Assert.That(termination.IsRetriable).IsFalse();
     }
 
     [Test]

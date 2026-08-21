@@ -1,4 +1,32 @@
 #nullable enable
+Dekaf.Admin.AdminClient.DeleteTopicsAsync(System.Collections.Generic.IEnumerable<System.Guid>! topicIds, Dekaf.Admin.DeleteTopicsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Admin.AdminClient.DescribeTopicsAsync(System.Collections.Generic.IEnumerable<System.Guid>! topicIds, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<System.Guid, Dekaf.Admin.TopicDescription!>!>
+Dekaf.Admin.AdminClientTopicIdExtensions
+Dekaf.Admin.ITopicIdAdminClient
+Dekaf.Admin.ITopicIdAdminClient.DeleteTopicsAsync(System.Collections.Generic.IEnumerable<System.Guid>! topicIds, Dekaf.Admin.DeleteTopicsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+Dekaf.Admin.ITopicIdAdminClient.DescribeTopicsAsync(System.Collections.Generic.IEnumerable<System.Guid>! topicIds, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<System.Guid, Dekaf.Admin.TopicDescription!>!>
+static Dekaf.Admin.AdminClientTopicIdExtensions.DeleteTopicsAsync(this Dekaf.Admin.IAdminClient! adminClient, System.Collections.Generic.IEnumerable<System.Guid>! topicIds, Dekaf.Admin.DeleteTopicsOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
+static Dekaf.Admin.AdminClientTopicIdExtensions.DescribeTopicsAsync(this Dekaf.Admin.IAdminClient! adminClient, System.Collections.Generic.IEnumerable<System.Guid>! topicIds, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<System.Guid, Dekaf.Admin.TopicDescription!>!>
+Dekaf.Admin.AdminClient.ForceTerminateTransactionAsync(string! transactionalId, Dekaf.Admin.ForceTerminateTransactionOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Admin.ForceTerminateTransactionResultInfo!>
+Dekaf.Admin.ForceTerminateTransactionOptions
+Dekaf.Admin.ForceTerminateTransactionOptions.ForceTerminateTransactionOptions() -> void
+Dekaf.Admin.ForceTerminateTransactionOptions.TimeoutMs.get -> int?
+Dekaf.Admin.ForceTerminateTransactionOptions.TimeoutMs.init -> void
+Dekaf.Admin.ForceTerminateTransactionResultInfo
+Dekaf.Admin.ForceTerminateTransactionResultInfo.ErrorCode.get -> Dekaf.Protocol.ErrorCode
+Dekaf.Admin.ForceTerminateTransactionResultInfo.ErrorCode.init -> void
+Dekaf.Admin.ForceTerminateTransactionResultInfo.ForceTerminateTransactionResultInfo() -> void
+Dekaf.Admin.ForceTerminateTransactionResultInfo.IsRetriable.get -> bool
+Dekaf.Admin.ForceTerminateTransactionResultInfo.ProducerEpoch.get -> short
+Dekaf.Admin.ForceTerminateTransactionResultInfo.ProducerEpoch.init -> void
+Dekaf.Admin.ForceTerminateTransactionResultInfo.ProducerId.get -> long
+Dekaf.Admin.ForceTerminateTransactionResultInfo.ProducerId.init -> void
+Dekaf.Admin.ForceTerminateTransactionResultInfo.TransactionalId.get -> string!
+Dekaf.Admin.ForceTerminateTransactionResultInfo.TransactionalId.init -> void
+Dekaf.Admin.AdminClientTransactionRemediationExtensions
+Dekaf.Admin.ITransactionRemediationAdminClient
+Dekaf.Admin.ITransactionRemediationAdminClient.ForceTerminateTransactionAsync(string! transactionalId, Dekaf.Admin.ForceTerminateTransactionOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Admin.ForceTerminateTransactionResultInfo!>
+static Dekaf.Admin.AdminClientTransactionRemediationExtensions.ForceTerminateTransactionAsync(this Dekaf.Admin.IAdminClient! adminClient, string! transactionalId, Dekaf.Admin.ForceTerminateTransactionOptions? options = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Admin.ForceTerminateTransactionResultInfo!>
 Dekaf.Admin.AdminClient.DescribeReplicaLogDirsAsync(System.Collections.Generic.IEnumerable<Dekaf.Admin.TopicPartitionReplica>! replicas, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<Dekaf.Admin.TopicPartitionReplica, Dekaf.Admin.DescribeReplicaLogDirResultInfo!>!>
 Dekaf.Admin.DescribeReplicaLogDirResultInfo
 Dekaf.Admin.DescribeReplicaLogDirResultInfo.CurrentReplicaLogDir.get -> string?
