@@ -63,6 +63,84 @@ public sealed class KafkaFaultPlanTests
     }
 
     [Test]
+    public async Task ShareIndex_FiltersTopicPartitionAndGroupSelectors()
+    {
+        var plan = new KafkaFaultPlan();
+        var assignment = new HashSet<TopicPartition> { new("shared", 0) };
+        var failure = new InvalidOperationException("unrelated");
+        plan.FailPersistently(
+            new KafkaFaultScope(KafkaFaultOperation.ShareConsume, "other", 0, "workers"),
+            failure);
+        plan.FailPersistently(
+            new KafkaFaultScope(KafkaFaultOperation.ShareConsume, "shared", 1, "workers"),
+            failure);
+        plan.FailPersistently(
+            new KafkaFaultScope(KafkaFaultOperation.ShareConsume, "shared", 0, "other-group"),
+            failure);
+
+        await Assert.That(plan.HasPotentialShareMatch(
+            KafkaFaultOperation.ShareConsume,
+            "workers",
+            assignment)).IsFalse();
+        await Assert.That(plan.HasPotentialShareMatch(
+            KafkaFaultOperation.ShareConsume,
+            "shared",
+            0,
+            "workers")).IsFalse();
+
+        plan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.ShareConsume, "shared", 0, "workers"),
+            failure);
+
+        await Assert.That(plan.HasPotentialShareMatch(
+            KafkaFaultOperation.ShareConsume,
+            "workers",
+            assignment)).IsTrue();
+        await Assert.That(plan.HasPotentialShareMatch(
+            KafkaFaultOperation.ShareConsume,
+            "shared",
+            0,
+            "workers")).IsTrue();
+        await Assert.That(plan.HasPotentialShareMatch(
+            KafkaFaultOperation.ShareAcknowledge,
+            "workers",
+            assignment)).IsFalse();
+    }
+
+    [Test]
+    public async Task ShareIndex_MatchesWildcardSelectors()
+    {
+        var assignment = new HashSet<TopicPartition> { new("shared", 0) };
+        KafkaFaultScope[] scopes =
+        [
+            new(KafkaFaultOperation.ShareConsume),
+            new(KafkaFaultOperation.ShareConsume, topic: "shared"),
+            new(KafkaFaultOperation.ShareConsume, topic: "shared", partition: 0)
+        ];
+
+        for (var index = 0; index < scopes.Length; index++)
+        {
+            var plan = new KafkaFaultPlan();
+            var failure = new InvalidOperationException($"wildcard-{index}");
+            plan.Fail(scopes[index], failure);
+
+            await Assert.That(plan.HasPotentialShareMatch(
+                KafkaFaultOperation.ShareConsume,
+                "workers",
+                assignment)).IsTrue();
+            await Assert.That(plan.HasPotentialShareMatch(
+                KafkaFaultOperation.ShareConsume,
+                "shared",
+                0,
+                "workers")).IsTrue();
+            await AssertFaultAsync(
+                plan,
+                new KafkaFaultScope(KafkaFaultOperation.ShareConsume, "shared", 0, "workers"),
+                failure);
+        }
+    }
+
+    [Test]
     public async Task FailPersistently_RemainsUntilExactScopeIsCleared()
     {
         var plan = new KafkaFaultPlan();
