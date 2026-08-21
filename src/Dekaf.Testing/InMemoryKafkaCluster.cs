@@ -20,7 +20,7 @@ public sealed class InMemoryKafkaCluster
     private readonly Dictionary<string, Dictionary<TopicPartition, TopicPartitionOffset>> _shareGroupOffsets = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<string, ConsumerGroupMemberState>> _consumerGroupMembers = new(StringComparer.Ordinal);
     private readonly Dictionary<string, int> _consumerGroupGenerations = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, HashSet<string>> _shareGroupMembers = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Dictionary<string, int>> _shareGroupMembers = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<TopicPartition, Dictionary<long, ShareLeaseState>>> _shareLeases = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<TopicPartition, Dictionary<long, int>>> _shareDeliveryCounts = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Exception> _produceFailures = new(StringComparer.Ordinal);
@@ -866,11 +866,11 @@ public sealed class InMemoryKafkaCluster
         {
             if (!_shareGroupMembers.TryGetValue(groupId, out var members))
             {
-                members = new HashSet<string>(StringComparer.Ordinal);
+                members = new Dictionary<string, int>(StringComparer.Ordinal);
                 _shareGroupMembers[groupId] = members;
             }
 
-            members.Add(memberId);
+            members[memberId] = members.GetValueOrDefault(memberId) + 1;
         }
     }
 
@@ -884,7 +884,14 @@ public sealed class InMemoryKafkaCluster
             if (!_shareGroupMembers.TryGetValue(groupId, out var members))
                 return;
 
-            members.Remove(memberId);
+            if (!members.TryGetValue(memberId, out var registrationCount))
+                return;
+
+            if (registrationCount > 1)
+                members[memberId] = registrationCount - 1;
+            else
+                members.Remove(memberId);
+
             if (members.Count == 0)
                 _shareGroupMembers.Remove(groupId);
         }
