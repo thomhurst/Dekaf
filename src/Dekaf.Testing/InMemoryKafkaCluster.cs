@@ -752,6 +752,51 @@ public sealed class InMemoryKafkaCluster
             ReleaseShareLeasesUnderLock(groupId, memberId, registration, records);
     }
 
+    internal void RollbackShareRecordAcquisition(
+        string groupId,
+        string memberId,
+        TopicPartition topicPartition,
+        long offset)
+    {
+        lock (_gate)
+        {
+            if (!_shareLeases.TryGetValue(groupId, out var groupLeases) ||
+                !groupLeases.TryGetValue(topicPartition, out var partitionLeases) ||
+                !partitionLeases.TryGetValue(offset, out var lease) ||
+                !StringComparer.Ordinal.Equals(lease.MemberId, memberId))
+            {
+                return;
+            }
+
+            partitionLeases.Remove(offset);
+            if (partitionLeases.Count == 0)
+            {
+                groupLeases.Remove(topicPartition);
+                if (groupLeases.Count == 0)
+                    _shareLeases.Remove(groupId);
+            }
+
+            var partitionCounts = GetShareDeliveryCountPartition(groupId, topicPartition, create: false);
+            if (partitionCounts is null || !partitionCounts.TryGetValue(offset, out var deliveryCount))
+                return;
+
+            if (deliveryCount > 1)
+            {
+                partitionCounts[offset] = deliveryCount - 1;
+                return;
+            }
+
+            partitionCounts.Remove(offset);
+            if (partitionCounts.Count == 0 &&
+                _shareDeliveryCounts.TryGetValue(groupId, out var groupCounts))
+            {
+                groupCounts.Remove(topicPartition);
+                if (groupCounts.Count == 0)
+                    _shareDeliveryCounts.Remove(groupId);
+            }
+        }
+    }
+
     internal async Task WaitForRecordsAsync(TimeSpan timeout, CancellationToken cancellationToken)
     {
         Task task;

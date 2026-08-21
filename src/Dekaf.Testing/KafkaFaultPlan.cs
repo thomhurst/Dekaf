@@ -269,9 +269,13 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
     private readonly List<FaultEntry> _entries = [];
     private ProduceFaultIndex _produceFaultIndex = ProduceFaultIndex.Empty;
     private int _hasEntries;
+    private int _operationMask;
 
     internal bool HasPotentialProduceMatch(KafkaFaultOperation operation, string topic) =>
         Volatile.Read(ref _produceFaultIndex).Matches(operation, topic);
+
+    internal bool HasPotentialMatch(KafkaFaultOperation operation) =>
+        (Volatile.Read(ref _operationMask) & (1 << (int)operation)) != 0;
 
     /// <summary>
     /// Raised synchronously after a matching entry is consumed and before its action runs.
@@ -303,7 +307,7 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
         {
             _entries.Add(FaultEntry.Failure(scope, exception, occurrenceCount, isPersistent: false));
             Volatile.Write(ref _hasEntries, 1);
-            PublishProduceFaultIndexUnderLock();
+            PublishFaultIndexesUnderLock();
         }
     }
 
@@ -319,7 +323,7 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
         {
             _entries.Add(FaultEntry.Failure(scope, exception, remainingOccurrences: 0, isPersistent: true));
             Volatile.Write(ref _hasEntries, 1);
-            PublishProduceFaultIndexUnderLock();
+            PublishFaultIndexesUnderLock();
         }
     }
 
@@ -334,7 +338,7 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
         {
             _entries.Add(FaultEntry.Pause(scope, barrier));
             Volatile.Write(ref _hasEntries, 1);
-            PublishProduceFaultIndexUnderLock();
+            PublishFaultIndexesUnderLock();
         }
 
         return barrier;
@@ -372,7 +376,7 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
                         _entries.RemoveAt(i);
                         if (_entries.Count == 0)
                             Volatile.Write(ref _hasEntries, 0);
-                        PublishProduceFaultIndexUnderLock();
+                        PublishFaultIndexesUnderLock();
                     }
                 }
 
@@ -421,7 +425,7 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
             if (_entries.Count == 0)
                 Volatile.Write(ref _hasEntries, 0);
             if (removed != 0)
-                PublishProduceFaultIndexUnderLock();
+                PublishFaultIndexesUnderLock();
         }
 
         return removed;
@@ -440,18 +444,21 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
 
             _entries.Clear();
             Volatile.Write(ref _hasEntries, 0);
+            Volatile.Write(ref _operationMask, 0);
             Volatile.Write(ref _produceFaultIndex, ProduceFaultIndex.Empty);
             return removed;
         }
     }
 
-    private void PublishProduceFaultIndexUnderLock()
+    private void PublishFaultIndexesUnderLock()
     {
         var produceScopes = new ProduceScopeBuilder();
         var transactionProduceScopes = new ProduceScopeBuilder();
+        var operationMask = 0;
         for (var entryIndex = 0; entryIndex < _entries.Count; entryIndex++)
         {
             var scope = _entries[entryIndex].Scope;
+            operationMask |= 1 << (int)scope.Operation;
             if (scope.GroupId is not null)
                 continue;
 
@@ -466,6 +473,7 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
             }
         }
 
+        Volatile.Write(ref _operationMask, operationMask);
         Volatile.Write(
             ref _produceFaultIndex,
             new ProduceFaultIndex(

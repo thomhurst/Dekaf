@@ -275,7 +275,9 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
         for (var i = 0; i < _options.MaxPollRecords; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var record = _hasAsyncDeserializers
+            var record = HasPotentialFault(KafkaFaultOperation.ShareConsume)
+                ? await TryTakeAvailableRecordWithFaultAsync(cancellationToken).ConfigureAwait(false)
+                : _hasAsyncDeserializers
                 ? await TryTakeAvailableRecordAsync(cancellationToken).ConfigureAwait(false)
                 : TryTakeAvailableRecord();
             if (record is null)
@@ -305,6 +307,9 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
     {
         cancellationToken.ThrowIfCancellationRequested();
 
+        if (HasPotentialFault(KafkaFaultOperation.ShareAcknowledge))
+            return CommitWithFaultAsync(cancellationToken);
+
         lock (_gate)
         {
             ThrowIfDisposed();
@@ -314,20 +319,73 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
         return ValueTask.CompletedTask;
     }
 
-    public ValueTask CloseAsync(CancellationToken cancellationToken = default)
+    private async ValueTask CommitWithFaultAsync(CancellationToken cancellationToken)
     {
+        KeyValuePair<ShareConsumeResult<TKey, TValue>, PendingShareRecord>[] pending;
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            if (_pending.Count == 0)
+                return;
+
+            pending = _pending.ToArray();
+        }
+
+        for (var index = 0; index < pending.Length; index++)
+        {
+            var record = pending[index].Value;
+            await _cluster.FaultPlan.ApplyAsync(
+                new KafkaFaultScope(
+                    KafkaFaultOperation.ShareAcknowledge,
+                    record.TopicPartition.Topic,
+                    record.TopicPartition.Partition,
+                    _options.GroupId),
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        lock (_gate)
+        {
+            var current = new List<PendingShareRecord>(pending.Length);
+            for (var index = 0; index < pending.Length; index++)
+            {
+                var pair = pending[index];
+                if (_pending.TryGetValue(pair.Key, out var record) && ReferenceEquals(record, pair.Value))
+                    current.Add(record);
+            }
+
+            if (current.Count == 0)
+                return;
+
+            _cluster.CompleteShareRecords(
+                _options.GroupId,
+                _memberId,
+                _registration!,
+                BuildCompletedRecords(current),
+                BuildCommitOffsets(current));
+            for (var index = 0; index < pending.Length; index++)
+            {
+                var pair = pending[index];
+                if (_pending.TryGetValue(pair.Key, out var record) && ReferenceEquals(record, pair.Value))
+                    _pending.Remove(pair.Key);
+            }
+        }
+    }
+
+    public async ValueTask CloseAsync(CancellationToken cancellationToken = default)
+    {
+        if (_disposed)
+            return;
+
+        await CommitAsync(cancellationToken).ConfigureAwait(false);
         lock (_gate)
         {
             if (_disposed)
-                return ValueTask.CompletedTask;
+                return;
 
             cancellationToken.ThrowIfCancellationRequested();
-            CompletePendingUnderLock();
             UnregisterShareGroupMemberUnderLock();
             _disposed = true;
         }
-
-        return ValueTask.CompletedTask;
     }
 
     public async ValueTask DisposeAsync()
@@ -391,6 +449,57 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
 
         return null;
     }
+
+    private async ValueTask<ShareConsumeResult<TKey, TValue>?> TryTakeAvailableRecordWithFaultAsync(
+        CancellationToken cancellationToken)
+    {
+        foreach (var partition in OrderedAssignment())
+        {
+            if (!TryAcquireRecord(partition, out var record, out var deliveryCount))
+                continue;
+
+            try
+            {
+                await _cluster.FaultPlan.ApplyAsync(
+                    new KafkaFaultScope(
+                        KafkaFaultOperation.ShareConsume,
+                        partition.Topic,
+                        partition.Partition,
+                        _options.GroupId),
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                _cluster.RollbackShareRecordAcquisition(
+                    _options.GroupId,
+                    _memberId,
+                    partition,
+                    record.Offset);
+                throw;
+            }
+
+            ShareConsumeResult<TKey, TValue> result;
+            try
+            {
+                result = _hasAsyncDeserializers
+                    ? await ToShareResultAsync(record, deliveryCount, cancellationToken).ConfigureAwait(false)
+                    : ToShareResult(record, deliveryCount);
+            }
+            catch
+            {
+                ReleaseAcquiredRecord(partition, record);
+                throw;
+            }
+
+            return RegisterPending(partition, record, result);
+        }
+
+        return null;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool HasPotentialFault(KafkaFaultOperation operation) =>
+        _cluster.FaultPlan is not KafkaFaultPlan indexedPlan || indexedPlan.HasPotentialMatch(operation);
 
     private TopicPartition[] OrderedAssignment()
     {

@@ -50,25 +50,27 @@ public sealed class InMemoryAdminClient :
         ThrowIfDisposed();
     }
 
-    public ValueTask<IReadOnlyList<ClientMetricsResourceListing>> ListClientMetricsResourcesAsync(
+    public async ValueTask<IReadOnlyList<ClientMetricsResourceListing>> ListClientMetricsResourcesAsync(
         ListClientMetricsResourcesOptions? options = null,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
-        return ValueTask.FromResult<IReadOnlyList<ClientMetricsResourceListing>>(Array.Empty<ClientMetricsResourceListing>());
+        await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        return Array.Empty<ClientMetricsResourceListing>();
     }
 
-    public ValueTask<IReadOnlyList<ConfigResourceListing>> ListConfigResourcesAsync(
+    public async ValueTask<IReadOnlyList<ConfigResourceListing>> ListConfigResourcesAsync(
         ListConfigResourcesOptions? options = null,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
-        return ValueTask.FromResult<IReadOnlyList<ConfigResourceListing>>(Array.Empty<ConfigResourceListing>());
+        await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        return Array.Empty<ConfigResourceListing>();
     }
 
-    public ValueTask CreateTopicsAsync(
+    public async ValueTask CreateTopicsAsync(
         IEnumerable<NewTopic> topics,
         CreateTopicsOptions? options = null,
         CancellationToken cancellationToken = default)
@@ -77,16 +79,20 @@ public sealed class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
 
-        if (options?.ValidateOnly == true)
-            return ValueTask.CompletedTask;
+        var topicList = topics.ToArray();
+        for (var index = 0; index < topicList.Length; index++)
+        {
+            var topic = topicList[index];
+            await ApplyAdminFaultAsync(
+                cancellationToken,
+                topic: topic.Name).ConfigureAwait(false);
 
-        foreach (var topic in topics)
-            _cluster.CreateTopic(topic.Name, topic.NumPartitions, topic.Configs);
-
-        return ValueTask.CompletedTask;
+            if (options?.ValidateOnly != true)
+                _cluster.CreateTopic(topic.Name, topic.NumPartitions, topic.Configs);
+        }
     }
 
-    public ValueTask DeleteTopicsAsync(
+    public async ValueTask DeleteTopicsAsync(
         IEnumerable<string> topicNames,
         DeleteTopicsOptions? options = null,
         CancellationToken cancellationToken = default)
@@ -95,13 +101,18 @@ public sealed class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
 
-        foreach (var topicName in topicNames)
+        var names = topicNames.ToArray();
+        for (var index = 0; index < names.Length; index++)
+        {
+            var topicName = names[index];
+            await ApplyAdminFaultAsync(
+                cancellationToken,
+                topic: topicName).ConfigureAwait(false);
             _cluster.DeleteTopic(topicName);
-
-        return ValueTask.CompletedTask;
+        }
     }
 
-    public ValueTask DeleteTopicsAsync(
+    public async ValueTask DeleteTopicsAsync(
         IEnumerable<Guid> topicIds,
         DeleteTopicsOptions? options = null,
         CancellationToken cancellationToken = default)
@@ -110,47 +121,53 @@ public sealed class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
 
-        var ids = topicIds.Distinct().ToList();
+        var ids = topicIds.Distinct().ToArray();
         foreach (var topicId in ids)
             if (topicId == Guid.Empty)
                 throw new ArgumentException("Topic IDs cannot contain the empty UUID.", nameof(topicIds));
 
         foreach (var topicId in ids)
         {
+            await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
             if (!_cluster.DeleteTopic(topicId))
                 throw new KafkaException(ErrorCode.UnknownTopicId, $"Topic ID '{topicId}' does not exist.");
         }
-
-        return ValueTask.CompletedTask;
     }
 
-    public ValueTask<IReadOnlyList<TopicListing>> ListTopicsAsync(
+    public async ValueTask<IReadOnlyList<TopicListing>> ListTopicsAsync(
         ListTopicsOptions? options = null,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
-        return ValueTask.FromResult(_cluster.TopicListings(options?.ListInternal == true));
+        await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        return _cluster.TopicListings(options?.ListInternal == true);
     }
 
-    public ValueTask<IReadOnlyDictionary<string, TopicDescription>> DescribeTopicsAsync(
+    public async ValueTask<IReadOnlyDictionary<string, TopicDescription>> DescribeTopicsAsync(
         IEnumerable<string> topicNames,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(topicNames);
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
-        return ValueTask.FromResult(_cluster.DescribeTopics(topicNames));
+        var names = topicNames.ToArray();
+        for (var index = 0; index < names.Length; index++)
+            await ApplyAdminFaultAsync(cancellationToken, topic: names[index]).ConfigureAwait(false);
+        return _cluster.DescribeTopics(names);
     }
 
-    public ValueTask<IReadOnlyDictionary<Guid, TopicDescription>> DescribeTopicsAsync(
+    public async ValueTask<IReadOnlyDictionary<Guid, TopicDescription>> DescribeTopicsAsync(
         IEnumerable<Guid> topicIds,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(topicIds);
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
-        return ValueTask.FromResult(_cluster.DescribeTopics(topicIds));
+        var ids = topicIds.ToArray();
+        if (ids.Length != 0)
+            await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        return _cluster.DescribeTopics(ids);
     }
 
     public ValueTask<IReadOnlyDictionary<string, TopicDescription>> DescribeTopicPartitionsAsync(
@@ -161,7 +178,7 @@ public sealed class InMemoryAdminClient :
         return DescribeTopicsAsync(topicNames, cancellationToken);
     }
 
-    public ValueTask<DescribeTopicPartitionsPage> DescribeTopicPartitionsPageAsync(
+    public async ValueTask<DescribeTopicPartitionsPage> DescribeTopicPartitionsPageAsync(
         IEnumerable<string> topicNames,
         DescribeTopicPartitionsPageOptions? options = null,
         CancellationToken cancellationToken = default)
@@ -170,19 +187,23 @@ public sealed class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
 
-        return ValueTask.FromResult(new DescribeTopicPartitionsPage
+        var names = topicNames.ToArray();
+        for (var index = 0; index < names.Length; index++)
+            await ApplyAdminFaultAsync(cancellationToken, topic: names[index]).ConfigureAwait(false);
+        return new DescribeTopicPartitionsPage
         {
-            Topics = _cluster.DescribeTopics(topicNames),
+            Topics = _cluster.DescribeTopics(names),
             NextCursor = null
-        });
+        };
     }
 
-    public ValueTask<ClusterDescription> DescribeClusterAsync(CancellationToken cancellationToken = default)
+    public async ValueTask<ClusterDescription> DescribeClusterAsync(CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
+        await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
 
-        return ValueTask.FromResult(new ClusterDescription
+        return new ClusterDescription
         {
             ClusterId = _cluster.Options.ClusterId,
             ControllerId = 0,
@@ -195,18 +216,19 @@ public sealed class InMemoryAdminClient :
                     Port = 0
                 }
             ]
-        });
+        };
     }
 
-    public ValueTask<FeatureMetadata> DescribeFeaturesAsync(
+    public async ValueTask<FeatureMetadata> DescribeFeaturesAsync(
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
+        await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
 
         lock (_featureGate)
         {
-            return ValueTask.FromResult(new FeatureMetadata
+            return new FeatureMetadata
             {
                 FinalizedFeaturesEpoch = _finalizedFeaturesEpoch,
                 SupportedFeatures = new Dictionary<string, FeatureVersionRange>(
@@ -215,11 +237,11 @@ public sealed class InMemoryAdminClient :
                 FinalizedFeatures = new Dictionary<string, FeatureVersionRange>(
                     _finalizedFeatures,
                     StringComparer.Ordinal)
-            });
+            };
         }
     }
 
-    public ValueTask<IReadOnlyDictionary<string, FeatureUpdateResultInfo>> UpdateFeaturesAsync(
+    public async ValueTask<IReadOnlyDictionary<string, FeatureUpdateResultInfo>> UpdateFeaturesAsync(
         IReadOnlyDictionary<string, FeatureUpdate> updates,
         UpdateFeaturesOptions? options = null,
         CancellationToken cancellationToken = default)
@@ -227,12 +249,14 @@ public sealed class InMemoryAdminClient :
         ArgumentNullException.ThrowIfNull(updates);
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
+        var updateList = updates.ToArray();
+        await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
 
         if (options?.ValidateOnly != true)
         {
             lock (_featureGate)
             {
-                foreach (var update in updates)
+                foreach (var update in updateList)
                 {
                     _finalizedFeatures[update.Key] = new FeatureVersionRange(
                         update.Value.MaxVersionLevel,
@@ -243,14 +267,13 @@ public sealed class InMemoryAdminClient :
             }
         }
 
-        return ValueTask.FromResult<IReadOnlyDictionary<string, FeatureUpdateResultInfo>>(
-            updates.Keys.ToDictionary(
-                static feature => feature,
-                static _ => new FeatureUpdateResultInfo(),
-                StringComparer.Ordinal));
+        return updateList.ToDictionary(
+            static update => update.Key,
+            static _ => new FeatureUpdateResultInfo(),
+            StringComparer.Ordinal);
     }
 
-    public ValueTask<IReadOnlyDictionary<string, GroupDescription>> DescribeConsumerGroupsAsync(
+    public async ValueTask<IReadOnlyDictionary<string, GroupDescription>> DescribeConsumerGroupsAsync(
         IEnumerable<string> groupIds,
         CancellationToken cancellationToken = default)
     {
@@ -258,7 +281,10 @@ public sealed class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
 
-        var result = groupIds.ToDictionary(
+        var groups = groupIds.ToArray();
+        for (var index = 0; index < groups.Length; index++)
+            await ApplyAdminFaultAsync(cancellationToken, groupId: groups[index]).ConfigureAwait(false);
+        var result = groups.ToDictionary(
             groupId => groupId,
             groupId => new GroupDescription
             {
@@ -269,15 +295,16 @@ public sealed class InMemoryAdminClient :
             },
             StringComparer.Ordinal);
 
-        return ValueTask.FromResult<IReadOnlyDictionary<string, GroupDescription>>(result);
+        return result;
     }
 
-    public ValueTask<IReadOnlyList<GroupListing>> ListConsumerGroupsAsync(
+    public async ValueTask<IReadOnlyList<GroupListing>> ListConsumerGroupsAsync(
         ListConsumerGroupsOptions? options = null,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
+        await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
 
         IReadOnlyList<GroupListing> result = _cluster.ListGroups()
             .Select(groupId => new GroupListing
@@ -288,10 +315,10 @@ public sealed class InMemoryAdminClient :
             })
             .ToArray();
 
-        return ValueTask.FromResult(result);
+        return result;
     }
 
-    public ValueTask DeleteConsumerGroupsAsync(
+    public async ValueTask DeleteConsumerGroupsAsync(
         IEnumerable<string> groupIds,
         CancellationToken cancellationToken = default)
     {
@@ -299,13 +326,16 @@ public sealed class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
 
-        foreach (var groupId in groupIds)
+        var groups = groupIds.ToArray();
+        for (var index = 0; index < groups.Length; index++)
+        {
+            var groupId = groups[index];
+            await ApplyAdminFaultAsync(cancellationToken, groupId: groupId).ConfigureAwait(false);
             _cluster.DeleteGroup(groupId);
-
-        return ValueTask.CompletedTask;
+        }
     }
 
-    public ValueTask<RemoveMembersFromConsumerGroupResult> RemoveMembersFromConsumerGroupAsync(
+    public async ValueTask<RemoveMembersFromConsumerGroupResult> RemoveMembersFromConsumerGroupAsync(
         string groupId,
         IEnumerable<ConsumerGroupMemberToRemove> members,
         RemoveMembersFromConsumerGroupOptions? options = null,
@@ -315,32 +345,35 @@ public sealed class InMemoryAdminClient :
         ArgumentNullException.ThrowIfNull(members);
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
+        var memberList = members.ToArray();
+        await ApplyAdminFaultAsync(cancellationToken, groupId: groupId).ConfigureAwait(false);
 
-        var results = members.Select(member => new ConsumerGroupMemberRemovalResult
+        var results = memberList.Select(member => new ConsumerGroupMemberRemovalResult
         {
             GroupInstanceId = member.GroupInstanceId,
             MemberId = string.Empty,
             ErrorCode = Protocol.ErrorCode.None
         }).ToArray();
 
-        return ValueTask.FromResult(new RemoveMembersFromConsumerGroupResult
+        return new RemoveMembersFromConsumerGroupResult
         {
             GroupId = groupId,
             Members = results
-        });
+        };
     }
 
-    public ValueTask<IReadOnlyDictionary<TopicPartition, long>> ListConsumerGroupOffsetsAsync(
+    public async ValueTask<IReadOnlyDictionary<TopicPartition, long>> ListConsumerGroupOffsetsAsync(
         string groupId,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
-        return ValueTask.FromResult(_cluster.GetGroupOffsets(groupId));
+        await ApplyAdminFaultAsync(cancellationToken, groupId: groupId).ConfigureAwait(false);
+        return _cluster.GetGroupOffsets(groupId);
     }
 
-    public ValueTask AlterConsumerGroupOffsetsAsync(
+    public async ValueTask AlterConsumerGroupOffsetsAsync(
         string groupId,
         IEnumerable<TopicPartitionOffset> offsets,
         CancellationToken cancellationToken = default)
@@ -350,21 +383,45 @@ public sealed class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
 
-        _cluster.CommitOffsets(groupId, offsets);
-        return ValueTask.CompletedTask;
+        var offsetList = offsets.ToArray();
+        if (offsetList.Length == 0)
+            await ApplyAdminFaultAsync(cancellationToken, groupId: groupId).ConfigureAwait(false);
+        for (var index = 0; index < offsetList.Length; index++)
+        {
+            var offset = offsetList[index];
+            await ApplyAdminFaultAsync(
+                cancellationToken,
+                offset.Topic,
+                offset.Partition,
+                groupId).ConfigureAwait(false);
+            _cluster.CommitOffsets(groupId, [offset]);
+        }
     }
 
-    public ValueTask<IReadOnlyDictionary<TopicPartition, long>> DeleteRecordsAsync(
+    public async ValueTask<IReadOnlyDictionary<TopicPartition, long>> DeleteRecordsAsync(
         IReadOnlyDictionary<TopicPartition, long> offsets,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(offsets);
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
-        return ValueTask.FromResult(_cluster.DeleteRecords(offsets));
+        var offsetSnapshot = new Dictionary<TopicPartition, long>(offsets);
+        var result = new Dictionary<TopicPartition, long>(offsetSnapshot.Count);
+        foreach (var (partition, offset) in offsetSnapshot)
+        {
+            await ApplyAdminFaultAsync(
+                cancellationToken,
+                partition.Topic,
+                partition.Partition).ConfigureAwait(false);
+            var deleted = _cluster.DeleteRecords(
+                new Dictionary<TopicPartition, long>(1) { [partition] = offset });
+            result[partition] = deleted[partition];
+        }
+
+        return result;
     }
 
-    public ValueTask CreatePartitionsAsync(
+    public async ValueTask CreatePartitionsAsync(
         IReadOnlyDictionary<string, int> newPartitionCounts,
         CancellationToken cancellationToken = default)
     {
@@ -372,13 +429,15 @@ public sealed class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
 
-        foreach (var (topicName, partitionCount) in newPartitionCounts)
+        var partitionCounts = newPartitionCounts.ToArray();
+        foreach (var (topicName, partitionCount) in partitionCounts)
+        {
+            await ApplyAdminFaultAsync(cancellationToken, topic: topicName).ConfigureAwait(false);
             _cluster.CreatePartitions(topicName, partitionCount);
-
-        return ValueTask.CompletedTask;
+        }
     }
 
-    public ValueTask AlterPartitionReassignmentsAsync(
+    public async ValueTask AlterPartitionReassignmentsAsync(
         IReadOnlyDictionary<TopicPartition, Optional<NewPartitionReassignment>> reassignments,
         AlterPartitionReassignmentsOptions? options = null,
         CancellationToken cancellationToken = default)
@@ -387,7 +446,8 @@ public sealed class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
 
-        foreach (var (topicPartition, reassignment) in reassignments)
+        var reassignmentList = reassignments.ToArray();
+        foreach (var (topicPartition, reassignment) in reassignmentList)
         {
             ValidateTopicPartition(topicPartition);
             if (reassignment.HasValue)
@@ -395,12 +455,15 @@ public sealed class InMemoryAdminClient :
                 foreach (var replica in reassignment.Value.TargetReplicas)
                     ArgumentOutOfRangeException.ThrowIfNegative(replica);
             }
-        }
 
-        return ValueTask.CompletedTask;
+            await ApplyAdminFaultAsync(
+                cancellationToken,
+                topicPartition.Topic,
+                topicPartition.Partition).ConfigureAwait(false);
+        }
     }
 
-    public ValueTask<IReadOnlyDictionary<TopicPartition, PartitionReassignment>> ListPartitionReassignmentsAsync(
+    public async ValueTask<IReadOnlyDictionary<TopicPartition, PartitionReassignment>> ListPartitionReassignmentsAsync(
         IEnumerable<TopicPartition>? partitions = null,
         ListPartitionReassignmentsOptions? options = null,
         CancellationToken cancellationToken = default)
@@ -408,33 +471,45 @@ public sealed class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
 
-        if (partitions is not null)
+        var partitionList = partitions?.ToArray();
+        if (partitionList is not null)
         {
-            foreach (var partition in partitions)
+            foreach (var partition in partitionList)
+            {
                 ValidateTopicPartition(partition);
+                await ApplyAdminFaultAsync(
+                    cancellationToken,
+                    partition.Topic,
+                    partition.Partition).ConfigureAwait(false);
+            }
+        }
+        else
+        {
+            await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         }
 
-        return ValueTask.FromResult<IReadOnlyDictionary<TopicPartition, PartitionReassignment>>(
-            new Dictionary<TopicPartition, PartitionReassignment>());
+        return new Dictionary<TopicPartition, PartitionReassignment>();
     }
 
-    public ValueTask<IReadOnlyDictionary<string, IReadOnlyList<ScramCredentialInfo>>> DescribeUserScramCredentialsAsync(
+    public async ValueTask<IReadOnlyDictionary<string, IReadOnlyList<ScramCredentialInfo>>> DescribeUserScramCredentialsAsync(
         IEnumerable<string>? users = null,
         DescribeUserScramCredentialsOptions? options = null,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
+        var userList = users?.ToArray() ?? [];
+        await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
 
-        var result = (users ?? []).ToDictionary(
+        var result = userList.ToDictionary(
             user => user,
             _ => (IReadOnlyList<ScramCredentialInfo>)Array.Empty<ScramCredentialInfo>(),
             StringComparer.Ordinal);
 
-        return ValueTask.FromResult<IReadOnlyDictionary<string, IReadOnlyList<ScramCredentialInfo>>>(result);
+        return result;
     }
 
-    public ValueTask AlterUserScramCredentialsAsync(
+    public async ValueTask AlterUserScramCredentialsAsync(
         IEnumerable<UserScramCredentialAlteration> alterations,
         AlterUserScramCredentialsOptions? options = null,
         CancellationToken cancellationToken = default)
@@ -443,10 +518,10 @@ public sealed class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
         _ = alterations.Count();
-        return ValueTask.CompletedTask;
+        await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    public ValueTask<DelegationToken> CreateDelegationTokenAsync(
+    public async ValueTask<DelegationToken> CreateDelegationTokenAsync(
         DelegationTokenPrincipal? owner = null,
         IEnumerable<DelegationTokenPrincipal>? renewers = null,
         TimeSpan? maxLifetime = null,
@@ -454,6 +529,8 @@ public sealed class InMemoryAdminClient :
     {
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
+        var renewerList = renewers?.ToArray() ?? [];
+        await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
 
         var lifetime = ValidateDelegationTokenDuration(
             maxLifetime,
@@ -471,16 +548,16 @@ public sealed class InMemoryAdminClient :
             MaxTimestamp = maxTimestamp,
             TokenId = Guid.NewGuid().ToString("N"),
             Hmac = hmac,
-            Renewers = renewers?.ToArray() ?? []
+            Renewers = renewerList
         };
 
         lock (_delegationTokenGate)
             _delegationTokens[DelegationTokenKey(hmac)] = CloneDelegationToken(token);
 
-        return ValueTask.FromResult(token);
+        return token;
     }
 
-    public ValueTask<DateTimeOffset> RenewDelegationTokenAsync(
+    public async ValueTask<DateTimeOffset> RenewDelegationTokenAsync(
         byte[] hmac,
         TimeSpan? renewPeriod = null,
         CancellationToken cancellationToken = default)
@@ -488,6 +565,7 @@ public sealed class InMemoryAdminClient :
         ArgumentNullException.ThrowIfNull(hmac);
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
+        await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
 
         var period = ValidateDelegationTokenDuration(
             renewPeriod,
@@ -495,10 +573,10 @@ public sealed class InMemoryAdminClient :
             DefaultDelegationTokenLifetime);
         var key = DelegationTokenKey(hmac);
 
-        return ValueTask.FromResult(UpdateDelegationTokenExpiry(key, period));
+        return UpdateDelegationTokenExpiry(key, period);
     }
 
-    public ValueTask<DateTimeOffset> ExpireDelegationTokenAsync(
+    public async ValueTask<DateTimeOffset> ExpireDelegationTokenAsync(
         byte[] hmac,
         TimeSpan? expiryTimePeriod = null,
         CancellationToken cancellationToken = default)
@@ -506,6 +584,7 @@ public sealed class InMemoryAdminClient :
         ArgumentNullException.ThrowIfNull(hmac);
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
+        await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
 
         var period = ValidateDelegationTokenDuration(
             expiryTimePeriod,
@@ -513,17 +592,18 @@ public sealed class InMemoryAdminClient :
             TimeSpan.Zero);
         var key = DelegationTokenKey(hmac);
 
-        return ValueTask.FromResult(UpdateDelegationTokenExpiry(key, period));
+        return UpdateDelegationTokenExpiry(key, period);
     }
 
-    public ValueTask<IReadOnlyList<DelegationToken>> DescribeDelegationTokensAsync(
+    public async ValueTask<IReadOnlyList<DelegationToken>> DescribeDelegationTokensAsync(
         IEnumerable<DelegationTokenPrincipal>? owners = null,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
-
         var ownerFilter = owners?.ToHashSet();
+        await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+
         lock (_delegationTokenGate)
         {
             IReadOnlyList<DelegationToken> tokens = _delegationTokens.Values
@@ -531,11 +611,11 @@ public sealed class InMemoryAdminClient :
                 .Select(token => CloneDelegationToken(token))
                 .ToArray();
 
-            return ValueTask.FromResult(tokens);
+            return tokens;
         }
     }
 
-    public ValueTask<IReadOnlyDictionary<ConfigResource, IReadOnlyList<ConfigEntry>>> DescribeConfigsAsync(
+    public async ValueTask<IReadOnlyDictionary<ConfigResource, IReadOnlyList<ConfigEntry>>> DescribeConfigsAsync(
         IEnumerable<ConfigResource> resources,
         DescribeConfigsOptions? options = null,
         CancellationToken cancellationToken = default)
@@ -544,14 +624,17 @@ public sealed class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
 
-        var result = resources.ToDictionary(
+        var resourceList = resources.ToArray();
+        for (var index = 0; index < resourceList.Length; index++)
+            await ApplyAdminResourceFaultAsync(resourceList[index], cancellationToken).ConfigureAwait(false);
+        var result = resourceList.ToDictionary(
             resource => resource,
             _ => (IReadOnlyList<ConfigEntry>)Array.Empty<ConfigEntry>());
 
-        return ValueTask.FromResult<IReadOnlyDictionary<ConfigResource, IReadOnlyList<ConfigEntry>>>(result);
+        return result;
     }
 
-    public ValueTask AlterConfigsAsync(
+    public async ValueTask AlterConfigsAsync(
         IReadOnlyDictionary<ConfigResource, IReadOnlyList<ConfigEntry>> configs,
         AlterConfigsOptions? options = null,
         CancellationToken cancellationToken = default)
@@ -559,10 +642,12 @@ public sealed class InMemoryAdminClient :
         ArgumentNullException.ThrowIfNull(configs);
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
-        return ValueTask.CompletedTask;
+        var resources = configs.Keys.ToArray();
+        foreach (var resource in resources)
+            await ApplyAdminResourceFaultAsync(resource, cancellationToken).ConfigureAwait(false);
     }
 
-    public ValueTask IncrementalAlterConfigsAsync(
+    public async ValueTask IncrementalAlterConfigsAsync(
         IReadOnlyDictionary<ConfigResource, IReadOnlyList<ConfigAlter>> configs,
         IncrementalAlterConfigsOptions? options = null,
         CancellationToken cancellationToken = default)
@@ -570,10 +655,12 @@ public sealed class InMemoryAdminClient :
         ArgumentNullException.ThrowIfNull(configs);
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
-        return ValueTask.CompletedTask;
+        var resources = configs.Keys.ToArray();
+        foreach (var resource in resources)
+            await ApplyAdminResourceFaultAsync(resource, cancellationToken).ConfigureAwait(false);
     }
 
-    public ValueTask CreateAclsAsync(
+    public async ValueTask CreateAclsAsync(
         IEnumerable<AclBinding> aclBindings,
         CreateAclsOptions? options = null,
         CancellationToken cancellationToken = default)
@@ -581,10 +668,11 @@ public sealed class InMemoryAdminClient :
         ArgumentNullException.ThrowIfNull(aclBindings);
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
-        return ValueTask.CompletedTask;
+        if (aclBindings.Any())
+            await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    public ValueTask<IReadOnlyList<AclBinding>> DeleteAclsAsync(
+    public async ValueTask<IReadOnlyList<AclBinding>> DeleteAclsAsync(
         IEnumerable<AclBindingFilter> filters,
         DeleteAclsOptions? options = null,
         CancellationToken cancellationToken = default)
@@ -592,10 +680,12 @@ public sealed class InMemoryAdminClient :
         ArgumentNullException.ThrowIfNull(filters);
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
-        return ValueTask.FromResult<IReadOnlyList<AclBinding>>(Array.Empty<AclBinding>());
+        if (filters.Any())
+            await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        return Array.Empty<AclBinding>();
     }
 
-    public ValueTask<IReadOnlyList<AclBinding>> DescribeAclsAsync(
+    public async ValueTask<IReadOnlyList<AclBinding>> DescribeAclsAsync(
         AclBindingFilter filter,
         DescribeAclsOptions? options = null,
         CancellationToken cancellationToken = default)
@@ -603,10 +693,11 @@ public sealed class InMemoryAdminClient :
         ArgumentNullException.ThrowIfNull(filter);
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
-        return ValueTask.FromResult<IReadOnlyList<AclBinding>>(Array.Empty<AclBinding>());
+        await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        return Array.Empty<AclBinding>();
     }
 
-    public ValueTask DeleteConsumerGroupOffsetsAsync(
+    public async ValueTask DeleteConsumerGroupOffsetsAsync(
         string groupId,
         IEnumerable<TopicPartition> partitions,
         DeleteConsumerGroupOffsetsOptions? options = null,
@@ -617,11 +708,22 @@ public sealed class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
 
-        _cluster.DeleteGroupOffsets(groupId, partitions);
-        return ValueTask.CompletedTask;
+        var partitionList = partitions.ToArray();
+        if (partitionList.Length == 0)
+            await ApplyAdminFaultAsync(cancellationToken, groupId: groupId).ConfigureAwait(false);
+        for (var index = 0; index < partitionList.Length; index++)
+        {
+            var partition = partitionList[index];
+            await ApplyAdminFaultAsync(
+                cancellationToken,
+                partition.Topic,
+                partition.Partition,
+                groupId).ConfigureAwait(false);
+            _cluster.DeleteGroupOffsets(groupId, [partition]);
+        }
     }
 
-    public ValueTask<IReadOnlyDictionary<TopicPartition, ListOffsetsResultInfo>> ListOffsetsAsync(
+    public async ValueTask<IReadOnlyDictionary<TopicPartition, ListOffsetsResultInfo>> ListOffsetsAsync(
         IEnumerable<TopicPartitionOffsetSpec> specs,
         ListOffsetsOptions? options = null,
         CancellationToken cancellationToken = default)
@@ -630,7 +732,17 @@ public sealed class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
 
-        var result = specs.ToDictionary(
+        var specList = specs.ToArray();
+        for (var index = 0; index < specList.Length; index++)
+        {
+            var partition = specList[index].TopicPartition;
+            await ApplyAdminFaultAsync(
+                cancellationToken,
+                partition.Topic,
+                partition.Partition).ConfigureAwait(false);
+        }
+
+        var result = specList.ToDictionary(
             spec => spec.TopicPartition,
             spec =>
             {
@@ -650,10 +762,10 @@ public sealed class InMemoryAdminClient :
                 };
             });
 
-        return ValueTask.FromResult<IReadOnlyDictionary<TopicPartition, ListOffsetsResultInfo>>(result);
+        return result;
     }
 
-    public ValueTask<IReadOnlyDictionary<TopicPartition, ElectLeadersResultInfo>> ElectLeadersAsync(
+    public async ValueTask<IReadOnlyDictionary<TopicPartition, ElectLeadersResultInfo>> ElectLeadersAsync(
         ElectionType electionType,
         IEnumerable<TopicPartition>? partitions = null,
         ElectLeadersOptions? options = null,
@@ -662,7 +774,19 @@ public sealed class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
 
-        var result = (partitions ?? []).ToDictionary(
+        var partitionList = partitions?.ToArray() ?? [];
+        if (partitionList.Length == 0)
+            await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        for (var index = 0; index < partitionList.Length; index++)
+        {
+            var partition = partitionList[index];
+            await ApplyAdminFaultAsync(
+                cancellationToken,
+                partition.Topic,
+                partition.Partition).ConfigureAwait(false);
+        }
+
+        var result = partitionList.ToDictionary(
             partition => partition,
             partition => new ElectLeadersResultInfo
             {
@@ -670,15 +794,16 @@ public sealed class InMemoryAdminClient :
                 ErrorCode = ErrorCode.None
             });
 
-        return ValueTask.FromResult<IReadOnlyDictionary<TopicPartition, ElectLeadersResultInfo>>(result);
+        return result;
     }
 
-    public ValueTask<MetadataQuorumDescription> DescribeMetadataQuorumAsync(CancellationToken cancellationToken = default)
+    public async ValueTask<MetadataQuorumDescription> DescribeMetadataQuorumAsync(CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
+        await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
 
-        return ValueTask.FromResult(new MetadataQuorumDescription
+        return new MetadataQuorumDescription
         {
             LeaderId = 0,
             LeaderEpoch = 0,
@@ -708,10 +833,10 @@ public sealed class InMemoryAdminClient :
                     ]
                 }
             ]
-        });
+        };
     }
 
-    public ValueTask AddRaftVoterAsync(
+    public async ValueTask AddRaftVoterAsync(
         int voterId,
         Guid voterDirectoryId,
         IEnumerable<RaftVoterEndpoint> endpoints,
@@ -727,11 +852,10 @@ public sealed class InMemoryAdminClient :
         ValidateRaftVoterEndpoints(endpoints);
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
-
-        return ValueTask.CompletedTask;
+        await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    public ValueTask RemoveRaftVoterAsync(
+    public async ValueTask RemoveRaftVoterAsync(
         int voterId,
         Guid voterDirectoryId,
         RemoveRaftVoterOptions? options = null,
@@ -745,20 +869,18 @@ public sealed class InMemoryAdminClient :
 
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
-
-        return ValueTask.CompletedTask;
+        await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    public ValueTask UnregisterBrokerAsync(int brokerId, CancellationToken cancellationToken = default)
+    public async ValueTask UnregisterBrokerAsync(int brokerId, CancellationToken cancellationToken = default)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(brokerId);
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
-
-        return ValueTask.CompletedTask;
+        await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    public ValueTask<IReadOnlyDictionary<ClientQuotaEntity, IReadOnlyDictionary<string, double>>> DescribeClientQuotasAsync(
+    public async ValueTask<IReadOnlyDictionary<ClientQuotaEntity, IReadOnlyDictionary<string, double>>> DescribeClientQuotasAsync(
         ClientQuotaFilter filter,
         DescribeClientQuotasOptions? options = null,
         CancellationToken cancellationToken = default)
@@ -775,6 +897,7 @@ public sealed class InMemoryAdminClient :
             ArgumentNullException.ThrowIfNull(component);
             component.Validate();
         }
+        await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
 
         Dictionary<ClientQuotaEntity, IReadOnlyDictionary<string, double>> result;
         lock (_clientQuotas)
@@ -786,10 +909,10 @@ public sealed class InMemoryAdminClient :
                     quota => (IReadOnlyDictionary<string, double>)new Dictionary<string, double>(quota.Value, StringComparer.Ordinal));
         }
 
-        return ValueTask.FromResult<IReadOnlyDictionary<ClientQuotaEntity, IReadOnlyDictionary<string, double>>>(result);
+        return result;
     }
 
-    public ValueTask AlterClientQuotasAsync(
+    public async ValueTask AlterClientQuotasAsync(
         IEnumerable<ClientQuotaAlteration> alterations,
         AlterClientQuotasOptions? options = null,
         CancellationToken cancellationToken = default)
@@ -805,8 +928,12 @@ public sealed class InMemoryAdminClient :
             return alteration;
         }).ToArray();
 
+        if (materialized.Length == 0)
+            return;
+
+        await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         if (options?.ValidateOnly == true)
-            return ValueTask.CompletedTask;
+            return;
 
         lock (_clientQuotas)
         {
@@ -814,32 +941,35 @@ public sealed class InMemoryAdminClient :
                 ApplyClientQuotaAlteration(alteration);
         }
 
-        return ValueTask.CompletedTask;
     }
 
-    public ValueTask<ListTransactionsResult> ListTransactionsAsync(
+    public async ValueTask<ListTransactionsResult> ListTransactionsAsync(
         ListTransactionsOptions? options = null,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
+        await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
 
-        return ValueTask.FromResult(new ListTransactionsResult
+        return new ListTransactionsResult
         {
             UnknownStateFilters = [],
             Transactions = []
-        });
+        };
     }
 
-    public ValueTask<IReadOnlyDictionary<string, TransactionDescription>> DescribeTransactionsAsync(
+    public async ValueTask<IReadOnlyDictionary<string, TransactionDescription>> DescribeTransactionsAsync(
         IEnumerable<string> transactionalIds,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(transactionalIds);
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
+        var ids = transactionalIds.ToArray();
+        if (ids.Length != 0)
+            await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
 
-        var result = transactionalIds.ToDictionary(
+        var result = ids.ToDictionary(
             transactionalId => transactionalId,
             transactionalId => new TransactionDescription
             {
@@ -855,10 +985,10 @@ public sealed class InMemoryAdminClient :
             },
             StringComparer.Ordinal);
 
-        return ValueTask.FromResult<IReadOnlyDictionary<string, TransactionDescription>>(result);
+        return result;
     }
 
-    public ValueTask<IReadOnlyDictionary<TopicPartition, DescribeProducersResultInfo>> DescribeProducersAsync(
+    public async ValueTask<IReadOnlyDictionary<TopicPartition, DescribeProducersResultInfo>> DescribeProducersAsync(
         IEnumerable<TopicPartition> partitions,
         CancellationToken cancellationToken = default)
     {
@@ -866,13 +996,18 @@ public sealed class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
 
-        var result = partitions
-            .Select(partition =>
-            {
-                ValidateTopicPartition(partition);
-                return partition;
-            })
-            .ToDictionary(
+        var partitionList = partitions.ToArray();
+        for (var index = 0; index < partitionList.Length; index++)
+        {
+            var partition = partitionList[index];
+            ValidateTopicPartition(partition);
+            await ApplyAdminFaultAsync(
+                cancellationToken,
+                partition.Topic,
+                partition.Partition).ConfigureAwait(false);
+        }
+
+        var result = partitionList.ToDictionary(
                 partition => partition,
                 partition => new DescribeProducersResultInfo
                 {
@@ -881,10 +1016,10 @@ public sealed class InMemoryAdminClient :
                     ActiveProducers = []
                 });
 
-        return ValueTask.FromResult<IReadOnlyDictionary<TopicPartition, DescribeProducersResultInfo>>(result);
+        return result;
     }
 
-    public ValueTask<IReadOnlyDictionary<string, FenceProducersResultInfo>> FenceProducersAsync(
+    public async ValueTask<IReadOnlyDictionary<string, FenceProducersResultInfo>> FenceProducersAsync(
         IEnumerable<string> transactionalIds,
         FenceProducersOptions? options = null,
         CancellationToken cancellationToken = default)
@@ -892,8 +1027,11 @@ public sealed class InMemoryAdminClient :
         ArgumentNullException.ThrowIfNull(transactionalIds);
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
+        var ids = transactionalIds.ToArray();
+        if (ids.Length != 0)
+            await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
 
-        var result = transactionalIds.ToDictionary(
+        var result = ids.ToDictionary(
             transactionalId => transactionalId,
             transactionalId => new FenceProducersResultInfo
             {
@@ -902,10 +1040,10 @@ public sealed class InMemoryAdminClient :
             },
             StringComparer.Ordinal);
 
-        return ValueTask.FromResult<IReadOnlyDictionary<string, FenceProducersResultInfo>>(result);
+        return result;
     }
 
-    public ValueTask<ForceTerminateTransactionResultInfo> ForceTerminateTransactionAsync(
+    public async ValueTask<ForceTerminateTransactionResultInfo> ForceTerminateTransactionAsync(
         string transactionalId,
         ForceTerminateTransactionOptions? options = null,
         CancellationToken cancellationToken = default)
@@ -915,15 +1053,16 @@ public sealed class InMemoryAdminClient :
             ArgumentOutOfRangeException.ThrowIfNegativeOrZero(timeoutMs);
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
+        await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
 
-        return ValueTask.FromResult(new ForceTerminateTransactionResultInfo
+        return new ForceTerminateTransactionResultInfo
         {
             TransactionalId = transactionalId,
             ErrorCode = ErrorCode.TransactionalIdNotFound
-        });
+        };
     }
 
-    public ValueTask<AbortTransactionResultInfo> AbortTransactionAsync(
+    public async ValueTask<AbortTransactionResultInfo> AbortTransactionAsync(
         AbortTransactionSpec transaction,
         AbortTransactionOptions? options = null,
         CancellationToken cancellationToken = default)
@@ -932,18 +1071,22 @@ public sealed class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
         ValidateTopicPartition(transaction.TopicPartition);
+        await ApplyAdminFaultAsync(
+            cancellationToken,
+            transaction.TopicPartition.Topic,
+            transaction.TopicPartition.Partition).ConfigureAwait(false);
 
-        return ValueTask.FromResult(new AbortTransactionResultInfo
+        return new AbortTransactionResultInfo
         {
             TopicPartition = transaction.TopicPartition,
             ProducerId = transaction.ProducerId,
             ProducerEpoch = transaction.ProducerEpoch,
             CoordinatorEpoch = transaction.CoordinatorEpoch,
             ErrorCode = ErrorCode.None
-        });
+        };
     }
 
-    public ValueTask<IReadOnlyDictionary<int, IReadOnlyDictionary<string, LogDirDescription>>> DescribeLogDirsAsync(
+    public async ValueTask<IReadOnlyDictionary<int, IReadOnlyDictionary<string, LogDirDescription>>> DescribeLogDirsAsync(
         IEnumerable<int> brokerIds,
         IEnumerable<TopicPartition>? partitions = null,
         CancellationToken cancellationToken = default)
@@ -954,11 +1097,23 @@ public sealed class InMemoryAdminClient :
 
         var targetPartitions = partitions?.Distinct().ToArray() ??
             _cluster.ListTopics().SelectMany(_cluster.GetTopicPartitions).ToArray();
+        var targetBrokerIds = brokerIds.Distinct().Order().ToArray();
+        if (targetBrokerIds.Length == 0)
+            return new Dictionary<int, IReadOnlyDictionary<string, LogDirDescription>>();
+
         foreach (var partition in targetPartitions)
+        {
             ValidateTopicPartition(partition);
+            await ApplyAdminFaultAsync(
+                cancellationToken,
+                partition.Topic,
+                partition.Partition).ConfigureAwait(false);
+        }
+        if (targetPartitions.Length == 0)
+            await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
 
         var result = new Dictionary<int, IReadOnlyDictionary<string, LogDirDescription>>();
-        foreach (var brokerId in brokerIds.Distinct().Order())
+        foreach (var brokerId in targetBrokerIds)
         {
             ArgumentOutOfRangeException.ThrowIfNegative(brokerId);
 
@@ -991,10 +1146,10 @@ public sealed class InMemoryAdminClient :
             };
         }
 
-        return ValueTask.FromResult<IReadOnlyDictionary<int, IReadOnlyDictionary<string, LogDirDescription>>>(result);
+        return result;
     }
 
-    public ValueTask<IReadOnlyDictionary<TopicPartitionReplica, AlterReplicaLogDirResultInfo>> AlterReplicaLogDirsAsync(
+    public async ValueTask<IReadOnlyDictionary<TopicPartitionReplica, AlterReplicaLogDirResultInfo>> AlterReplicaLogDirsAsync(
         IReadOnlyDictionary<TopicPartitionReplica, string> replicaAssignments,
         CancellationToken cancellationToken = default)
     {
@@ -1002,12 +1157,17 @@ public sealed class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
 
-        var result = new Dictionary<TopicPartitionReplica, AlterReplicaLogDirResultInfo>(replicaAssignments.Count);
-        foreach (var (replica, logDir) in replicaAssignments)
+        var assignments = replicaAssignments.ToArray();
+        var result = new Dictionary<TopicPartitionReplica, AlterReplicaLogDirResultInfo>(assignments.Length);
+        foreach (var (replica, logDir) in assignments)
         {
             ValidateTopicPartition(replica.TopicPartition);
             ArgumentOutOfRangeException.ThrowIfNegative(replica.BrokerId);
             ArgumentException.ThrowIfNullOrWhiteSpace(logDir);
+            await ApplyAdminFaultAsync(
+                cancellationToken,
+                replica.TopicPartition.Topic,
+                replica.TopicPartition.Partition).ConfigureAwait(false);
 
             result[replica] = new AlterReplicaLogDirResultInfo
             {
@@ -1016,10 +1176,10 @@ public sealed class InMemoryAdminClient :
             };
         }
 
-        return ValueTask.FromResult<IReadOnlyDictionary<TopicPartitionReplica, AlterReplicaLogDirResultInfo>>(result);
+        return result;
     }
 
-    public ValueTask<IReadOnlyDictionary<TopicPartitionReplica, DescribeReplicaLogDirResultInfo>> DescribeReplicaLogDirsAsync(
+    public async ValueTask<IReadOnlyDictionary<TopicPartitionReplica, DescribeReplicaLogDirResultInfo>> DescribeReplicaLogDirsAsync(
         IEnumerable<TopicPartitionReplica> replicas,
         CancellationToken cancellationToken = default)
     {
@@ -1027,11 +1187,16 @@ public sealed class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
 
-        var result = new Dictionary<TopicPartitionReplica, DescribeReplicaLogDirResultInfo>();
-        foreach (var replica in replicas)
+        var replicaList = replicas.ToArray();
+        var result = new Dictionary<TopicPartitionReplica, DescribeReplicaLogDirResultInfo>(replicaList.Length);
+        foreach (var replica in replicaList)
         {
             ValidateTopicPartition(replica.TopicPartition);
             ArgumentOutOfRangeException.ThrowIfNegative(replica.BrokerId);
+            await ApplyAdminFaultAsync(
+                cancellationToken,
+                replica.TopicPartition.Topic,
+                replica.TopicPartition.Partition).ConfigureAwait(false);
 
             var exists = replica.BrokerId == 0 && _cluster.ContainsTopicPartition(replica.TopicPartition);
             result[replica] = new DescribeReplicaLogDirResultInfo
@@ -1044,10 +1209,10 @@ public sealed class InMemoryAdminClient :
             };
         }
 
-        return ValueTask.FromResult<IReadOnlyDictionary<TopicPartitionReplica, DescribeReplicaLogDirResultInfo>>(result);
+        return result;
     }
 
-    public ValueTask<IReadOnlyDictionary<string, StreamsGroupDescription>> DescribeStreamsGroupsAsync(
+    public async ValueTask<IReadOnlyDictionary<string, StreamsGroupDescription>> DescribeStreamsGroupsAsync(
         IEnumerable<string> groupIds,
         CancellationToken cancellationToken = default)
     {
@@ -1055,7 +1220,10 @@ public sealed class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
 
-        var result = groupIds.ToDictionary(
+        var groups = groupIds.ToArray();
+        for (var index = 0; index < groups.Length; index++)
+            await ApplyAdminFaultAsync(cancellationToken, groupId: groups[index]).ConfigureAwait(false);
+        var result = groups.ToDictionary(
             groupId => groupId,
             groupId => new StreamsGroupDescription
             {
@@ -1065,15 +1233,16 @@ public sealed class InMemoryAdminClient :
             },
             StringComparer.Ordinal);
 
-        return ValueTask.FromResult<IReadOnlyDictionary<string, StreamsGroupDescription>>(result);
+        return result;
     }
 
-    public ValueTask<IReadOnlyList<GroupListing>> ListStreamsGroupsAsync(
+    public async ValueTask<IReadOnlyList<GroupListing>> ListStreamsGroupsAsync(
         ListStreamsGroupsOptions? options = null,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
+        await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
 
         IReadOnlyList<GroupListing> result = _cluster.ListGroups()
             .Select(groupId => new GroupListing
@@ -1084,10 +1253,10 @@ public sealed class InMemoryAdminClient :
             })
             .ToArray();
 
-        return ValueTask.FromResult(result);
+        return result;
     }
 
-    public ValueTask<IReadOnlyDictionary<string, ShareGroupDescription>> DescribeShareGroupsAsync(
+    public async ValueTask<IReadOnlyDictionary<string, ShareGroupDescription>> DescribeShareGroupsAsync(
         IEnumerable<string> groupIds,
         CancellationToken cancellationToken = default)
     {
@@ -1095,11 +1264,14 @@ public sealed class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
 
+        var groups = groupIds.ToArray();
+        for (var index = 0; index < groups.Length; index++)
+            await ApplyAdminFaultAsync(cancellationToken, groupId: groups[index]).ConfigureAwait(false);
         var listedGroups = _cluster.ListShareGroups().ToDictionary(
             static group => group.GroupId,
             static group => group.HasActiveMembers,
             StringComparer.Ordinal);
-        var result = groupIds.ToDictionary(
+        var result = groups.ToDictionary(
             groupId => groupId,
             groupId => new ShareGroupDescription
             {
@@ -1111,15 +1283,16 @@ public sealed class InMemoryAdminClient :
             },
             StringComparer.Ordinal);
 
-        return ValueTask.FromResult<IReadOnlyDictionary<string, ShareGroupDescription>>(result);
+        return result;
     }
 
-    public ValueTask<IReadOnlyList<GroupListing>> ListShareGroupsAsync(
+    public async ValueTask<IReadOnlyList<GroupListing>> ListShareGroupsAsync(
         ListShareGroupsOptions? options = null,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
+        await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
 
         var groups = _cluster.ListShareGroups();
         var result = new List<GroupListing>(groups.Count);
@@ -1140,10 +1313,10 @@ public sealed class InMemoryAdminClient :
             });
         }
 
-        return ValueTask.FromResult<IReadOnlyList<GroupListing>>(result);
+        return result;
     }
 
-    public ValueTask<IReadOnlyDictionary<string, DeleteShareGroupResult>> DeleteShareGroupsAsync(
+    public async ValueTask<IReadOnlyDictionary<string, DeleteShareGroupResult>> DeleteShareGroupsAsync(
         IEnumerable<string> groupIds,
         CancellationToken cancellationToken = default)
     {
@@ -1161,8 +1334,11 @@ public sealed class InMemoryAdminClient :
         }
 
         var results = new Dictionary<string, DeleteShareGroupResult>(groupIdList.Length, StringComparer.Ordinal);
+        if (groupIdList.Length == 0)
+            await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         foreach (var groupId in groupIdList)
         {
+            await ApplyAdminFaultAsync(cancellationToken, groupId: groupId).ConfigureAwait(false);
             results[groupId] = new DeleteShareGroupResult
             {
                 GroupId = groupId,
@@ -1170,10 +1346,10 @@ public sealed class InMemoryAdminClient :
             };
         }
 
-        return ValueTask.FromResult<IReadOnlyDictionary<string, DeleteShareGroupResult>>(results);
+        return results;
     }
 
-    public ValueTask<IReadOnlyList<ShareGroupOffsetDescription>> DescribeShareGroupOffsetsAsync(
+    public async ValueTask<IReadOnlyList<ShareGroupOffsetDescription>> DescribeShareGroupOffsetsAsync(
         string groupId,
         IEnumerable<TopicPartition>? partitions = null,
         CancellationToken cancellationToken = default)
@@ -1184,6 +1360,17 @@ public sealed class InMemoryAdminClient :
 
         var groupOffsets = _cluster.GetShareGroupOffsets(groupId);
         var targetPartitions = partitions?.ToArray() ?? groupOffsets.Keys.ToArray();
+        if (targetPartitions.Length == 0)
+            await ApplyAdminFaultAsync(cancellationToken, groupId: groupId).ConfigureAwait(false);
+        for (var index = 0; index < targetPartitions.Length; index++)
+        {
+            var partition = targetPartitions[index];
+            await ApplyAdminFaultAsync(
+                cancellationToken,
+                partition.Topic,
+                partition.Partition,
+                groupId).ConfigureAwait(false);
+        }
         var result = targetPartitions
             .Select(partition =>
             {
@@ -1200,10 +1387,10 @@ public sealed class InMemoryAdminClient :
             })
             .ToArray();
 
-        return ValueTask.FromResult<IReadOnlyList<ShareGroupOffsetDescription>>(result);
+        return result;
     }
 
-    public ValueTask AlterShareGroupOffsetsAsync(
+    public async ValueTask AlterShareGroupOffsetsAsync(
         string groupId,
         IEnumerable<ShareGroupOffsetAlteration> offsets,
         CancellationToken cancellationToken = default)
@@ -1213,17 +1400,28 @@ public sealed class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
 
-        _cluster.CommitShareOffsets(
-            groupId,
-            offsets.Select(offset => new TopicPartitionOffset(
-                offset.TopicPartition.Topic,
-                offset.TopicPartition.Partition,
-                offset.StartOffset)));
-
-        return ValueTask.CompletedTask;
+        var offsetList = offsets.ToArray();
+        if (offsetList.Length == 0)
+            await ApplyAdminFaultAsync(cancellationToken, groupId: groupId).ConfigureAwait(false);
+        for (var index = 0; index < offsetList.Length; index++)
+        {
+            var offset = offsetList[index];
+            var partition = offset.TopicPartition;
+            await ApplyAdminFaultAsync(
+                cancellationToken,
+                partition.Topic,
+                partition.Partition,
+                groupId).ConfigureAwait(false);
+            _cluster.CommitShareOffsets(
+                groupId,
+                [new TopicPartitionOffset(
+                    partition.Topic,
+                    partition.Partition,
+                    offset.StartOffset)]);
+        }
     }
 
-    public ValueTask DeleteShareGroupOffsetsAsync(
+    public async ValueTask DeleteShareGroupOffsetsAsync(
         string groupId,
         IEnumerable<string> topics,
         CancellationToken cancellationToken = default)
@@ -1234,13 +1432,17 @@ public sealed class InMemoryAdminClient :
         ThrowIfDisposed();
 
         var topicSet = topics.ToHashSet(StringComparer.Ordinal);
-        var partitions = _cluster.GetShareGroupOffsets(groupId)
-            .Keys
-            .Where(partition => topicSet.Contains(partition.Topic))
-            .ToArray();
-
-        _cluster.DeleteShareGroupOffsets(groupId, partitions);
-        return ValueTask.CompletedTask;
+        if (topicSet.Count == 0)
+            await ApplyAdminFaultAsync(cancellationToken, groupId: groupId).ConfigureAwait(false);
+        foreach (var topic in topicSet)
+        {
+            await ApplyAdminFaultAsync(cancellationToken, topic, groupId: groupId).ConfigureAwait(false);
+            var partitions = _cluster.GetShareGroupOffsets(groupId)
+                .Keys
+                .Where(partition => StringComparer.Ordinal.Equals(partition.Topic, topic))
+                .ToArray();
+            _cluster.DeleteShareGroupOffsets(groupId, partitions);
+        }
     }
 
     public ValueTask DisposeAsync()
@@ -1248,6 +1450,27 @@ public sealed class InMemoryAdminClient :
         _disposed = true;
         return ValueTask.CompletedTask;
     }
+
+    private ValueTask ApplyAdminFaultAsync(
+        CancellationToken cancellationToken,
+        string? topic = null,
+        int? partition = null,
+        string? groupId = null) =>
+        _cluster.FaultPlan.ApplyAsync(
+            new KafkaFaultScope(KafkaFaultOperation.Admin, topic, partition, groupId),
+            cancellationToken);
+
+    private ValueTask ApplyAdminResourceFaultAsync(
+        ConfigResource resource,
+        CancellationToken cancellationToken) =>
+        resource.Type switch
+        {
+            ConfigResourceType.Topic =>
+                ApplyAdminFaultAsync(cancellationToken, topic: resource.Name),
+            ConfigResourceType.Group =>
+                ApplyAdminFaultAsync(cancellationToken, groupId: resource.Name),
+            _ => ApplyAdminFaultAsync(cancellationToken)
+        };
 
     private void ThrowIfDisposed()
     {
