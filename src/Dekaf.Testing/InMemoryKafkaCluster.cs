@@ -826,6 +826,19 @@ public sealed class InMemoryKafkaCluster
             return _consumerGroupOffsets.Remove(groupId);
     }
 
+    internal ErrorCode DeleteStreamsGroup(string groupId)
+    {
+        lock (_gate)
+        {
+            if (_consumerGroupMembers.TryGetValue(groupId, out var members) && members.Count != 0)
+                return ErrorCode.NonEmptyGroup;
+
+            return _consumerGroupOffsets.Remove(groupId)
+                ? ErrorCode.None
+                : ErrorCode.GroupIdNotFound;
+        }
+    }
+
     internal bool DeleteGroupOffsets(string groupId, IEnumerable<TopicPartition> partitions)
     {
         lock (_gate)

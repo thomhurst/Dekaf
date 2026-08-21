@@ -146,12 +146,13 @@ public sealed partial class InMemoryAdminClient
 
         foreach (var groupId in groupIdList)
         {
-            if (!_cluster.DeleteGroup(groupId))
+            var errorCode = _cluster.DeleteStreamsGroup(groupId);
+            if (errorCode != ErrorCode.None)
             {
                 results[groupId] = new DeleteStreamsGroupResult
                 {
                     GroupId = groupId,
-                    ErrorCode = ErrorCode.GroupIdNotFound
+                    ErrorCode = errorCode
                 };
             }
         }
