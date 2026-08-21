@@ -177,6 +177,25 @@ public sealed class AdminClientTopicIdTests
     }
 
     [Test]
+    public async Task DeleteTopicsAsync_NotControllerThenUnknown_RemainsAnError()
+    {
+        await using var context = new AdminTestContext();
+        context.EnqueueDeleteResponse(DeleteResponse(
+            DeleteResult("missing", UnknownTopicId, ErrorCode.NotController)));
+        for (var attempt = 1; attempt <= 3; attempt++)
+        {
+            context.EnqueueDeleteResponse(DeleteResponse(
+                DeleteResult("missing", UnknownTopicId, ErrorCode.UnknownTopicId)));
+        }
+
+        var exception = await Assert.ThrowsAsync<KafkaException>(async () =>
+            await context.Client.DeleteTopicsAsync([UnknownTopicId]));
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.UnknownTopicId);
+        await Assert.That(context.DeleteRequests.Count).IsEqualTo(4);
+    }
+
+    [Test]
     public async Task DeleteTopicsAsync_AmbiguousId_DoesNotMaskUnknownUnrelatedId()
     {
         await using var context = new AdminTestContext();
@@ -209,7 +228,7 @@ public sealed class AdminClientTopicIdTests
             DeleteResult("pending", TopicId, ErrorCode.RequestTimedOut),
             DeleteResult("denied", OtherTopicId, ErrorCode.TopicAuthorizationFailed)));
 
-        var exception = await Assert.ThrowsAsync<KafkaException>(async () =>
+        var exception = await Assert.ThrowsAsync<AuthorizationException>(async () =>
             await context.Client.DeleteTopicsAsync([TopicId, OtherTopicId]));
 
         await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.TopicAuthorizationFailed);

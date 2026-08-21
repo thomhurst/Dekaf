@@ -637,12 +637,13 @@ public sealed class AdminClient : IAdminClient, IReplicaLogDirAdminClient, ITopi
                 }
 
                 var isRetriable = topic.ErrorCode.IsRetriable();
-                if (isRetriable && topic.ErrorCode != Protocol.ErrorCode.UnknownTopicId)
+                if (topic.ErrorCode is Protocol.ErrorCode.RequestTimedOut
+                    or Protocol.ErrorCode.NetworkException)
                     ambiguousIds.Add(identifier);
 
                 if (failure is null || (failure.IsRetriable && !isRetriable))
                 {
-                    failure = new KafkaException(topic.ErrorCode,
+                    failure = KafkaException.FromErrorCode(topic.ErrorCode,
                         $"Failed to delete topic '{topic.Name}' ({identifier}): {topic.ErrorMessage ?? topic.ErrorCode.ToString()}");
                 }
             }
