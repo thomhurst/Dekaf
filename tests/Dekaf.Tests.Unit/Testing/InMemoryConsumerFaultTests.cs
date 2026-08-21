@@ -1313,7 +1313,7 @@ public sealed class InMemoryConsumerFaultTests
     }
 
     [Test]
-    public async Task Snapshot_GroupChangeDuringCommitBarrierPublishesRecordBeforeStateError()
+    public async Task Snapshot_GroupChangeDuringCommitBarrierThrowsBeforePublishingRecord()
     {
         var cluster = new InMemoryKafkaCluster();
         var producer = new InMemoryProducer<string, string>(cluster);
@@ -1333,13 +1333,10 @@ public sealed class InMemoryConsumerFaultTests
         joiningConsumer.Subscribe(Topic);
         await Assert.That(barrier.Release()).IsTrue();
 
-        await Assert.That(await moveNext).IsTrue();
-        await Assert.That(snapshot.Current.Key).IsEqualTo("key");
-        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            snapshot.MoveNextAsync().AsTask());
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() => moveNext);
 
         await Assert.That(actual!.Message).Contains("snapshot enumeration");
-        await Assert.That(consumer.GetPosition(Partition)).IsEqualTo(1);
+        await Assert.That(consumer.GetPosition(Partition)).IsEqualTo(0);
         await Assert.That(cluster.FaultPlan.Count).IsEqualTo(0);
     }
 

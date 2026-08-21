@@ -648,7 +648,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                         partition,
                         record,
                         position,
-                        consumerStateVersion)
+                        consumerStateVersion,
+                        consumerGroupGeneration)
                     : TryAdvanceSnapshotPosition(
                         partition,
                         record,
@@ -1906,7 +1907,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         TopicPartition partition,
         InMemoryRecord record,
         long expectedPosition,
-        int consumerStateVersion)
+        int consumerStateVersion,
+        int consumerGroupGeneration)
     {
         lock (_gate)
         {
@@ -1919,18 +1921,15 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
             try
             {
-                ThrowIfDisposed();
-                if (_consumerStateVersion != consumerStateVersion)
-                    ThrowSnapshotStateChanged();
+                ThrowIfSnapshotStateChangedUnderLock(
+                    consumerStateVersion,
+                    consumerGroupGeneration);
                 if (!_positions.TryGetValue(partition, out var currentPosition) ||
                     currentPosition != expectedPosition)
                 {
                     return false;
                 }
 
-                // The commit barrier already ran for this fully materialized record. Finish
-                // publishing it if only the group generation changed while the barrier was held;
-                // post-yield validation reports that change on the next iterator step.
                 AdvancePositionUnderLock(partition, record, pending.CapturedOffsets);
                 return true;
             }
