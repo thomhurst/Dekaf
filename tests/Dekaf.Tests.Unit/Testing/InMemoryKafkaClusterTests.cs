@@ -883,6 +883,37 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
+    public async Task Admin_DeleteShareGroupsWaitsForEverySharedMemberRegistration()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var admin = new InMemoryAdminClient(cluster);
+        var partition = new TopicPartition("shared", 0);
+        await admin.AlterShareGroupOffsetsAsync(
+            "shared-member-id",
+            [new ShareGroupOffsetAlteration { TopicPartition = partition, StartOffset = 3 }]);
+        await using var first = new InMemoryShareConsumer<string, string>(
+            cluster,
+            new InMemoryShareConsumerOptions { GroupId = "shared-member-id", MemberId = "worker" });
+        await using var second = new InMemoryShareConsumer<string, string>(
+            cluster,
+            new InMemoryShareConsumerOptions { GroupId = "shared-member-id", MemberId = "worker" });
+        first.Subscribe("shared");
+        second.Subscribe("shared");
+
+        await first.CloseAsync();
+        var activeResult = await admin.DeleteShareGroupsAsync(["shared-member-id"]);
+
+        await Assert.That(activeResult["shared-member-id"].ErrorCode).IsEqualTo(ErrorCode.NonEmptyGroup);
+        await Assert.That((await admin.DescribeShareGroupOffsetsAsync("shared-member-id")).Single().StartOffset)
+            .IsEqualTo(3);
+
+        await second.CloseAsync();
+        var inactiveResult = await admin.DeleteShareGroupsAsync(["shared-member-id"]);
+
+        await Assert.That(inactiveResult["shared-member-id"].ErrorCode).IsEqualTo(ErrorCode.None);
+    }
+
+    [Test]
     public async Task Admin_DeleteShareGroupsClearsShareDeliveryCounts()
     {
         var cluster = new InMemoryKafkaCluster();
