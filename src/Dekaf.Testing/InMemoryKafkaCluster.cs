@@ -608,6 +608,14 @@ public sealed class InMemoryKafkaCluster
 
         lock (_gate)
         {
+            if (!_shareGroupMembers.TryGetValue(groupId, out var members) ||
+                !members.ContainsKey(memberId))
+            {
+                record = null!;
+                deliveryCount = 0;
+                return false;
+            }
+
             if (!TryReadRecordUnderLock(
                     topicPartition,
                     offset,
