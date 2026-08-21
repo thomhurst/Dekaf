@@ -2,6 +2,7 @@
 Dekaf.SchemaRegistry.Jsonata.JsonataSchemaRegistryRuleHandler
 Dekaf.SchemaRegistry.Jsonata.JsonataSchemaRegistryRuleHandler.JsonataSchemaRegistryRuleHandler() -> void
 Dekaf.SchemaRegistry.Jsonata.JsonataSchemaRegistryRuleHandler.TransformDeserializedPayload(System.ReadOnlyMemory<byte> payload, Dekaf.SchemaRegistry.SchemaRegistryRuleHandlerContext! context) -> System.ReadOnlyMemory<byte>
+Dekaf.SchemaRegistry.Jsonata.JsonataSchemaRegistryRuleHandler.TransformDeserializedPayload(System.ReadOnlyMemory<byte> payload, Dekaf.SchemaRegistry.SchemaRegistryRuleHandlerContext! context, out bool payloadChanged) -> System.ReadOnlyMemory<byte>
 Dekaf.SchemaRegistry.Jsonata.JsonataSchemaRegistryRuleHandler.TransformSerializedPayload(System.ReadOnlyMemory<byte> payload, Dekaf.SchemaRegistry.SchemaRegistryRuleHandlerContext! context) -> System.ReadOnlyMemory<byte>
 Dekaf.SchemaRegistry.Jsonata.JsonataSchemaRegistryRuleHandler.Type.get -> string!
 const Dekaf.SchemaRegistry.Jsonata.JsonataSchemaRegistryRuleHandler.RuleType = "JSONATA" -> string!

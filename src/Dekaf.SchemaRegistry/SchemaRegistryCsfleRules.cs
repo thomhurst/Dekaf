@@ -19,7 +19,7 @@ namespace Dekaf.SchemaRegistry;
 /// The handler supports whole-payload encryption for every payload format and
 /// tagged field encryption for schema-aware payload formats.
 /// </remarks>
-public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
+public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleTransformResultHandler
 {
     /// <summary>
     /// Default Schema Registry CSFLE encrypt rule type.
@@ -114,6 +114,17 @@ public sealed class SchemaRegistryCsfleRuleHandler : ISchemaRegistryRuleHandler
         var settings = GetSettings(context);
         return TransformTaggedFields(payload, context, settings, encrypt: false) ??
             DecryptPayload(payload, context, settings);
+    }
+
+    /// <inheritdoc />
+    public ReadOnlyMemory<byte> TransformDeserializedPayload(
+        ReadOnlyMemory<byte> payload,
+        SchemaRegistryRuleHandlerContext context,
+        out bool payloadChanged)
+    {
+        var result = TransformDeserializedPayload(payload, context);
+        payloadChanged = context.Rule.Kind == SchemaRuleKind.Transform && !payload.Equals(result);
+        return result;
     }
 
     private ReadOnlyMemory<byte>? TransformTaggedFields(

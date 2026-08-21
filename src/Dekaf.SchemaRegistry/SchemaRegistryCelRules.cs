@@ -13,7 +13,7 @@ namespace Dekaf.SchemaRegistry;
 /// context and schema metadata. Unsupported CEL constructs fail closed with
 /// <see cref="SchemaRegistryRuleException" /> instead of being ignored.
 /// </remarks>
-public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleHandler
+public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleTransformResultHandler
 {
     private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
     private static readonly ConditionalWeakTable<SchemaRule, ParsedCelExpression> ParsedExpressions = new();
@@ -38,6 +38,17 @@ public sealed class CelSchemaRegistryRuleHandler : ISchemaRegistryRuleHandler
         ReadOnlyMemory<byte> payload,
         SchemaRegistryRuleHandlerContext context)
         => ApplyRule(payload, context);
+
+    /// <inheritdoc />
+    public ReadOnlyMemory<byte> TransformDeserializedPayload(
+        ReadOnlyMemory<byte> payload,
+        SchemaRegistryRuleHandlerContext context,
+        out bool payloadChanged)
+    {
+        var result = ApplyRule(payload, context);
+        payloadChanged = context.Rule.Kind == SchemaRuleKind.Transform && !payload.Equals(result);
+        return result;
+    }
 
     private static ReadOnlyMemory<byte> ApplyRule(
         ReadOnlyMemory<byte> payload,

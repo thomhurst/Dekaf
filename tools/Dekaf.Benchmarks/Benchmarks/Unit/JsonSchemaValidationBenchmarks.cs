@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Text;
 using BenchmarkDotNet.Attributes;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Json;
@@ -26,17 +27,227 @@ public class JsonSchemaValidationBenchmarks
         }
         """;
 
+    private const string InlineRulesJsonSchema = """
+        {
+          "type": "object",
+          "confluent:rules": [
+            { "name": "valid", "expr": "this.id > 0 && this.name.startsWith('bench')" }
+          ],
+          "properties": {
+            "id": { "type": "integer" },
+            "name": {
+              "type": "string",
+              "confluent:rules": [{ "name": "name", "expr": "size(this) > 0" }]
+            }
+          },
+          "required": ["id", "name"]
+        }
+        """;
+
+    private const string NestedInlineRulesJsonSchema = """
+        {
+          "properties": { "child": {
+            "properties": { "child": {
+              "properties": { "child": {
+                "properties": { "child": {
+                  "properties": { "child": {
+                    "properties": { "child": {
+                      "properties": { "child": {
+                        "properties": { "child": {
+                          "properties": { "value": {
+                            "type": "integer",
+                            "confluent:rules": [{ "name": "positive", "expr": "this > 0" }]
+                          } }
+                        } }
+                      } }
+                    } }
+                  } }
+                } }
+              } }
+            } }
+          } }
+        }
+        """;
+
+    private const string StructuralEqualityJsonSchema = """
+        {
+          "confluent:rules": [{
+            "name": "equal",
+            "expr": "this.left == this.right && this.values == this.expected"
+          }]
+        }
+        """;
+
+    private const string RepeatedStructuralEqualityJsonSchema = """
+        {
+          "confluent:rules": [
+            { "name": "a", "expr": "this.left == this.right" },
+            { "name": "b", "expr": "this.left == this.right" },
+            { "name": "c", "expr": "this.left == this.right" },
+            { "name": "d", "expr": "this.left == this.right" },
+            { "name": "e", "expr": "this.right == this.left" },
+            { "name": "f", "expr": "this.right == this.left" },
+            { "name": "g", "expr": "this.left != this.other" },
+            { "name": "h", "expr": "this.left != this.other" }
+          ]
+        }
+        """;
+
+    private const string SiblingInlineRulesJsonSchema = """
+        {
+          "confluent:rules": [
+            { "name": "a", "expr": "this.a > 0" },
+            { "name": "b", "expr": "this.b > 0" },
+            { "name": "c", "expr": "this.c > 0" },
+            { "name": "d", "expr": "this.d > 0" },
+            { "name": "e", "expr": "this.e > 0" },
+            { "name": "f", "expr": "this.f > 0" },
+            { "name": "g", "expr": "this.g > 0" },
+            { "name": "h", "expr": "this.h > 0" }
+          ]
+        }
+        """;
+
+    private const string NestedMemberInlineRulesJsonSchema = """
+        {
+          "confluent:rules": [
+            { "name": "a", "expr": "this.details.a > 0" },
+            { "name": "b", "expr": "this.details.b > 0" },
+            { "name": "c", "expr": "this.details.c > 0" },
+            { "name": "d", "expr": "this.details.d > 0" },
+            { "name": "e", "expr": "this.details.e > 0" },
+            { "name": "f", "expr": "this.details.f > 0" },
+            { "name": "g", "expr": "this.details.g > 0" },
+            { "name": "h", "expr": "this.details.h > 0" }
+          ]
+        }
+        """;
+
+    private const string DuplicatePropertyInlineRulesJsonSchema = """
+        {
+          "properties": {
+            "name": {
+              "confluent:rules": [{ "name": "final-value", "expr": "this == 'ok'" }]
+            }
+          }
+        }
+        """;
+
+    private const string DuplicateCompositionInlineRulesJsonSchema = """
+        {
+          "properties": {
+            "value": {
+              "anyOf": [
+                { "type": "integer" },
+                {
+                  "type": "string",
+                  "confluent:rules": [{ "name": "ok", "expr": "this == 'ok'" }]
+                }
+              ]
+            }
+          }
+        }
+        """;
+
+    private const string DecimalMinNegationInlineRulesJsonSchema = """
+        {
+          "confluent:rules": [{
+            "name": "decimal-boundary",
+            "expr": "-this == 79228162514264337593543950335 && -(-this) == this"
+          }]
+        }
+        """;
+
+    private const string MapSizeInlineRulesJsonSchema = """
+        {
+          "confluent:rules": [{ "name": "map-size", "expr": "size(this) == 1" }]
+        }
+        """;
+
+    private const string EscapedMapKeyInlineRulesJsonSchema = """
+        {
+          "additionalProperties": {
+            "confluent:rules": [{ "name": "positive", "expr": "this > 0" }]
+          }
+        }
+        """;
+
+    private const string SiblingMapSizeInlineRulesJsonSchema = """
+        {
+          "confluent:rules": [
+            { "name": "size-a", "expr": "size(this) == 8" },
+            { "name": "size-b", "expr": "size(this) > 7" },
+            { "name": "size-c", "expr": "size(this) < 9" },
+            { "name": "size-d", "expr": "size(this) != 0" },
+            { "name": "size-e", "expr": "size(this) >= 8" },
+            { "name": "size-f", "expr": "size(this) <= 8" },
+            { "name": "size-g", "expr": "size(this) == 8" },
+            { "name": "size-h", "expr": "size(this) == 8" }
+          ]
+        }
+        """;
+
     private ArrayBufferWriter<byte> _disabledDestination = new(256);
     private ArrayBufferWriter<byte> _enabledDestination = new(256);
+    private ArrayBufferWriter<byte> _inlineRulesDestination = new(256);
+    private ArrayBufferWriter<byte> _preparedInlineRulesDestination = new(256);
     private readonly BenchmarkPayload _value = new(7, "benchmark");
     private JsonSchemaRegistrySerializer<BenchmarkPayload> _disabledSerializer = null!;
     private JsonSchemaRegistrySerializer<BenchmarkPayload> _enabledSerializer = null!;
+    private JsonSchemaRegistrySerializer<BenchmarkPayload> _inlineRulesSerializer = null!;
+    private IAsyncSerializerPreparationAdmission<BenchmarkPayload> _preparedInlineRulesSerializer = null!;
+    private SerializerPreparationAdmission _inlineRulesAdmission;
     private JsonSchemaRegistryDeserializer<BenchmarkPayload> _disabledDeserializer = null!;
     private JsonSchemaRegistryDeserializer<BenchmarkPayload> _enabledDeserializer = null!;
+    private JsonSchemaRegistryDeserializer<BenchmarkPayload> _inlineRulesDeserializer = null!;
     private StreamingJsonSchemaValidatorFactory _validatorFactory = null!;
     private Schema _validatorSchema = null!;
     private ReadOnlyMemory<byte> _wirePayload;
     private ReadOnlyMemory<byte> _alternateWirePayload;
+    private ReadOnlyMemory<byte> _inlineRulesWirePayload;
+    private ReadOnlyMemory<byte> _inlineRulesJsonPayload;
+    private IJsonSchemaValidator _inlineRulesValidator = null!;
+    private ReadOnlyMemory<byte> _nestedInlineRulesJsonPayload;
+    private IJsonSchemaValidator _nestedInlineRulesValidator = null!;
+    private ReadOnlyMemory<byte> _nestedCompositionInlineRulesJsonPayload;
+    private IJsonSchemaValidator _nestedCompositionInlineRulesValidator = null!;
+    private ReadOnlyMemory<byte> _shallowCompositionInlineRulesJsonPayload;
+    private IJsonSchemaValidator _shallowCompositionInlineRulesValidator = null!;
+    private ReadOnlyMemory<byte> _nestedAllOfInlineRulesJsonPayload;
+    private IJsonSchemaValidator _nestedAllOfInlineRulesValidator = null!;
+    private ReadOnlyMemory<byte> _ruleBearingAllOfChainJsonPayload;
+    private IJsonSchemaValidator _ruleBearingAllOfChainValidator = null!;
+    private ReadOnlyMemory<byte> _sizeRuleBearingAllOfChainJsonPayload;
+    private IJsonSchemaValidator _sizeRuleBearingAllOfChainValidator = null!;
+    private ReadOnlyMemory<byte> _structuralEqualityJsonPayload;
+    private ReadOnlyMemory<byte> _deepStructuralEqualityJsonPayload;
+    private IJsonSchemaValidator _structuralEqualityValidator = null!;
+    private IJsonSchemaValidator _repeatedStructuralEqualityValidator = null!;
+    private ReadOnlyMemory<byte> _repeatedStructuralEqualityJsonPayload;
+    private ReadOnlyMemory<byte> _layeredStructuralEqualityJsonPayload;
+    private IJsonSchemaValidator _layeredStructuralEqualityValidator = null!;
+    private ReadOnlyMemory<byte> _siblingInlineRulesJsonPayload;
+    private IJsonSchemaValidator _siblingInlineRulesValidator = null!;
+    private ReadOnlyMemory<byte> _nestedMemberInlineRulesJsonPayload;
+    private ReadOnlyMemory<byte> _duplicateNestedMemberInlineRulesJsonPayload;
+    private ReadOnlyMemory<byte> _manyDuplicateNestedMemberInlineRulesJsonPayload;
+    private ReadOnlyMemory<byte> _manyDistinctDuplicateInlineRulesJsonPayload;
+    private IJsonSchemaValidator _manyDistinctDuplicateInlineRulesValidator = null!;
+    private IJsonSchemaValidator _nestedMemberInlineRulesValidator = null!;
+    private ReadOnlyMemory<byte> _duplicatePropertyInlineRulesJsonPayload;
+    private IJsonSchemaValidator _duplicatePropertyInlineRulesValidator = null!;
+    private ReadOnlyMemory<byte> _duplicateCompositionInlineRulesJsonPayload;
+    private IJsonSchemaValidator _duplicateCompositionInlineRulesValidator = null!;
+    private ReadOnlyMemory<byte> _decimalMinNegationInlineRulesJsonPayload;
+    private IJsonSchemaValidator _decimalMinNegationInlineRulesValidator = null!;
+    private ReadOnlyMemory<byte> _duplicateMapSizeInlineRulesJsonPayload;
+    private IJsonSchemaValidator _mapSizeInlineRulesValidator = null!;
+    private ReadOnlyMemory<byte> _escapedMapKeyInlineRulesJsonPayload;
+    private IJsonSchemaValidator _escapedMapKeyInlineRulesValidator = null!;
+    private ReadOnlyMemory<byte> _siblingMapSizeInlineRulesJsonPayload;
+    private IJsonSchemaValidator _siblingMapSizeInlineRulesValidator = null!;
+    private ReadOnlyMemory<byte> _terminalPrefixInlineRulesJsonPayload;
+    private IJsonSchemaValidator _terminalPrefixInlineRulesValidator = null!;
     private SerializationContext _context;
     private int _alternateSchemaIndex;
 
@@ -71,6 +282,24 @@ public class JsonSchemaValidationBenchmarks
             jsonOptions: null,
             validationOptions: validation);
 
+        var inlineRulesRegistry = new BenchmarkSchemaRegistryClient();
+        var inlineRulesFactory = new StreamingJsonSchemaValidatorFactory(inlineRulesRegistry);
+        var inlineRulesValidation = new JsonSchemaValidationOptions
+        {
+            ValidatorFactory = inlineRulesFactory,
+            Mode = JsonSchemaValidationMode.None,
+            ValidationRulesExecution = ValidationRulesExecution.AfterDomainRules
+        };
+        _inlineRulesSerializer = new JsonSchemaRegistrySerializer<BenchmarkPayload>(
+            inlineRulesRegistry,
+            InlineRulesJsonSchema,
+            jsonOptions: null,
+            validationOptions: inlineRulesValidation);
+        _inlineRulesDeserializer = new JsonSchemaRegistryDeserializer<BenchmarkPayload>(
+            inlineRulesRegistry,
+            jsonOptions: null,
+            validationOptions: inlineRulesValidation);
+
         _disabledSerializer.Serialize(_value, ref _disabledDestination, _context);
         _wirePayload = _disabledDestination.WrittenMemory.ToArray();
         var alternateWirePayload = _wirePayload.ToArray();
@@ -84,9 +313,248 @@ public class JsonSchemaValidationBenchmarks
         _disabledDestination.Clear();
         _enabledSerializer.Serialize(_value, ref _enabledDestination, _context);
         _enabledDestination.Clear();
+        _inlineRulesSerializer.Serialize(_value, ref _inlineRulesDestination, _context);
+        _inlineRulesWirePayload = _inlineRulesDestination.WrittenMemory.ToArray();
+        _preparedInlineRulesSerializer = _inlineRulesSerializer;
+        _inlineRulesAdmission = _preparedInlineRulesSerializer
+            .PrepareForSerializationAsync(_value, _context)
+            .GetAwaiter()
+            .GetResult();
+        _preparedInlineRulesSerializer.SerializePrepared(
+            _value,
+            ref _preparedInlineRulesDestination,
+            _context,
+            in _inlineRulesAdmission);
+        _preparedInlineRulesDestination.Clear();
+        _inlineRulesJsonPayload = _inlineRulesWirePayload[5..];
+        _inlineRulesValidator = inlineRulesFactory.GetOrCreate(inlineRulesRegistry.GetSchema(1));
+        _inlineRulesValidator.ValidateRules(_inlineRulesJsonPayload, 1, failFast: false);
+        _nestedInlineRulesJsonPayload =
+            """{"child":{"child":{"child":{"child":{"child":{"child":{"child":{"child":{"value":7}}}}}}}}}"""u8
+                .ToArray();
+        _nestedInlineRulesValidator = inlineRulesFactory.GetOrCreate(new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = NestedInlineRulesJsonSchema
+        });
+        _nestedInlineRulesValidator.ValidateRules(_nestedInlineRulesJsonPayload, 2, failFast: false);
+        var (nestedCompositionSchema, nestedCompositionPayload) = CreateNestedCompositionRule(depth: 12);
+        _nestedCompositionInlineRulesJsonPayload = nestedCompositionPayload;
+        _nestedCompositionInlineRulesValidator = inlineRulesFactory.GetOrCreate(new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = nestedCompositionSchema
+        });
+        _nestedCompositionInlineRulesValidator.ValidateRules(
+            _nestedCompositionInlineRulesJsonPayload,
+            7,
+            failFast: false);
+        var (shallowCompositionSchema, shallowCompositionPayload) = CreateNestedCompositionRule(depth: 1);
+        _shallowCompositionInlineRulesJsonPayload = shallowCompositionPayload;
+        _shallowCompositionInlineRulesValidator = inlineRulesFactory.GetOrCreate(new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = shallowCompositionSchema
+        });
+        _shallowCompositionInlineRulesValidator.ValidateRules(
+            _shallowCompositionInlineRulesJsonPayload,
+            8,
+            failFast: false);
+        var (nestedAllOfSchema, nestedAllOfPayload) = CreateNestedCompositionRule(depth: 12, "allOf");
+        _nestedAllOfInlineRulesJsonPayload = nestedAllOfPayload;
+        _nestedAllOfInlineRulesValidator = inlineRulesFactory.GetOrCreate(new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = nestedAllOfSchema
+        });
+        _nestedAllOfInlineRulesValidator.ValidateRules(
+            _nestedAllOfInlineRulesJsonPayload,
+            9,
+            failFast: false);
+        var (ruleBearingAllOfSchema, ruleBearingAllOfPayload) =
+            CreateRuleBearingAllOfChain(depth: 24, itemCount: 256);
+        _ruleBearingAllOfChainJsonPayload = ruleBearingAllOfPayload;
+        _ruleBearingAllOfChainValidator = inlineRulesFactory.GetOrCreate(new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = ruleBearingAllOfSchema
+        });
+        _ruleBearingAllOfChainValidator.ValidateRules(
+            _ruleBearingAllOfChainJsonPayload,
+            10,
+            failFast: false);
+        var (sizeRuleBearingAllOfSchema, sizeRuleBearingAllOfPayload) =
+            CreateSizeRuleBearingAllOfChain(depth: 24, itemCount: 256);
+        _sizeRuleBearingAllOfChainJsonPayload = sizeRuleBearingAllOfPayload;
+        _sizeRuleBearingAllOfChainValidator = inlineRulesFactory.GetOrCreate(new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = sizeRuleBearingAllOfSchema
+        });
+        _sizeRuleBearingAllOfChainValidator.ValidateRules(
+            _sizeRuleBearingAllOfChainJsonPayload,
+            15,
+            failFast: false);
+        _structuralEqualityJsonPayload =
+            """{"left":{"id":1,"name":"bench"},"right":{"name":"bench","id":1.0},"values":[1,"a"],"expected":[1.0,"\u0061"]}"""u8
+                .ToArray();
+        _structuralEqualityValidator = inlineRulesFactory.GetOrCreate(new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = StructuralEqualityJsonSchema
+        });
+        _structuralEqualityValidator.ValidateRules(_structuralEqualityJsonPayload, 3, failFast: false);
+        _deepStructuralEqualityJsonPayload = CreateDeepStructuralEqualityPayload(depth: 48);
+        _structuralEqualityValidator.ValidateRules(
+            _deepStructuralEqualityJsonPayload,
+            3,
+            failFast: false);
+        _repeatedStructuralEqualityJsonPayload = CreateRepeatedStructuralEqualityPayload(depth: 48);
+        _repeatedStructuralEqualityValidator = inlineRulesFactory.GetOrCreate(new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = RepeatedStructuralEqualityJsonSchema
+        });
+        _repeatedStructuralEqualityValidator.ValidateRules(
+            _repeatedStructuralEqualityJsonPayload,
+            17,
+            failFast: false);
+        var (layeredStructuralEqualitySchema, layeredStructuralEqualityPayload) =
+            CreateLayeredStructuralEqualitySchema(depth: 24, itemCount: 24);
+        _layeredStructuralEqualityJsonPayload = layeredStructuralEqualityPayload;
+        _layeredStructuralEqualityValidator = inlineRulesFactory.GetOrCreate(new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = layeredStructuralEqualitySchema
+        });
+        _layeredStructuralEqualityValidator.ValidateRules(
+            _layeredStructuralEqualityJsonPayload,
+            18,
+            failFast: false);
+        _siblingInlineRulesJsonPayload =
+            """{"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8}"""u8.ToArray();
+        _siblingInlineRulesValidator = inlineRulesFactory.GetOrCreate(new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = SiblingInlineRulesJsonSchema
+        });
+        _siblingInlineRulesValidator.ValidateRules(_siblingInlineRulesJsonPayload, 4, failFast: false);
+        _nestedMemberInlineRulesJsonPayload =
+            """{"details":{"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8}}"""u8.ToArray();
+        _nestedMemberInlineRulesValidator = inlineRulesFactory.GetOrCreate(new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = NestedMemberInlineRulesJsonSchema
+        });
+        _nestedMemberInlineRulesValidator.ValidateRules(
+            _nestedMemberInlineRulesJsonPayload,
+            5,
+            failFast: false);
+        _duplicateNestedMemberInlineRulesJsonPayload =
+            """{"details":{"a":0,"b":0,"c":0,"d":0,"e":0,"f":0,"g":0,"h":0},"details":{"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8}}"""u8
+                .ToArray();
+        _nestedMemberInlineRulesValidator.ValidateRules(
+            _duplicateNestedMemberInlineRulesJsonPayload,
+            5,
+            failFast: false);
+        _manyDuplicateNestedMemberInlineRulesJsonPayload =
+            CreateDuplicateNestedMemberPayload(duplicateCount: 32);
+        _nestedMemberInlineRulesValidator.ValidateRules(
+            _manyDuplicateNestedMemberInlineRulesJsonPayload,
+            5,
+            failFast: false);
+        var (manyDistinctDuplicateSchema, manyDistinctDuplicatePayload) =
+            CreateManyDistinctDuplicatePropertiesRule(propertyCount: 32);
+        _manyDistinctDuplicateInlineRulesJsonPayload = manyDistinctDuplicatePayload;
+        _manyDistinctDuplicateInlineRulesValidator = inlineRulesFactory.GetOrCreate(new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = manyDistinctDuplicateSchema
+        });
+        _manyDistinctDuplicateInlineRulesValidator.ValidateRules(
+            _manyDistinctDuplicateInlineRulesJsonPayload,
+            11,
+            failFast: false);
+        _duplicatePropertyInlineRulesJsonPayload =
+            """{"name":"bad","name":"ok"}"""u8.ToArray();
+        _duplicatePropertyInlineRulesValidator = inlineRulesFactory.GetOrCreate(new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = DuplicatePropertyInlineRulesJsonSchema
+        });
+        _duplicatePropertyInlineRulesValidator.ValidateRules(
+            _duplicatePropertyInlineRulesJsonPayload,
+            9,
+            failFast: false);
+        _duplicateCompositionInlineRulesJsonPayload =
+            """{"value":null,"value":"ok"}"""u8.ToArray();
+        _duplicateCompositionInlineRulesValidator = inlineRulesFactory.GetOrCreate(new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = DuplicateCompositionInlineRulesJsonSchema
+        });
+        _duplicateCompositionInlineRulesValidator.ValidateRules(
+            _duplicateCompositionInlineRulesJsonPayload,
+            12,
+            failFast: false);
+        _decimalMinNegationInlineRulesJsonPayload =
+            "-79228162514264337593543950335"u8.ToArray();
+        _decimalMinNegationInlineRulesValidator = inlineRulesFactory.GetOrCreate(new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = DecimalMinNegationInlineRulesJsonSchema
+        });
+        _decimalMinNegationInlineRulesValidator.ValidateRules(
+            _decimalMinNegationInlineRulesJsonPayload,
+            13,
+            failFast: false);
+        _duplicateMapSizeInlineRulesJsonPayload = """{"a":1,"a":2}"""u8.ToArray();
+        _mapSizeInlineRulesValidator = inlineRulesFactory.GetOrCreate(new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = MapSizeInlineRulesJsonSchema
+        });
+        _mapSizeInlineRulesValidator.ValidateRules(
+            _duplicateMapSizeInlineRulesJsonPayload,
+            10,
+            failFast: false);
+        _escapedMapKeyInlineRulesJsonPayload = """{"region\nname":1}"""u8.ToArray();
+        _escapedMapKeyInlineRulesValidator = inlineRulesFactory.GetOrCreate(new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = EscapedMapKeyInlineRulesJsonSchema
+        });
+        _escapedMapKeyInlineRulesValidator.ValidateRules(
+            _escapedMapKeyInlineRulesJsonPayload,
+            16,
+            failFast: false);
+        _siblingMapSizeInlineRulesJsonPayload =
+            """{"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8}"""u8.ToArray();
+        _siblingMapSizeInlineRulesValidator = inlineRulesFactory.GetOrCreate(new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = SiblingMapSizeInlineRulesJsonSchema
+        });
+        _siblingMapSizeInlineRulesValidator.ValidateRules(
+            _siblingMapSizeInlineRulesJsonPayload,
+            14,
+            failFast: false);
+        var (terminalPrefixSchema, terminalPrefixPayload) = CreateTerminalPrefixRule(depth: 32);
+        _terminalPrefixInlineRulesJsonPayload = terminalPrefixPayload;
+        _terminalPrefixInlineRulesValidator = inlineRulesFactory.GetOrCreate(new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = terminalPrefixSchema
+        });
+        _terminalPrefixInlineRulesValidator.ValidateRules(
+            _terminalPrefixInlineRulesJsonPayload,
+            6,
+            failFast: false);
+        _inlineRulesDestination.Clear();
         _ = _disabledDeserializer.Deserialize(_wirePayload, _context);
         _ = _enabledDeserializer.Deserialize(_wirePayload, _context);
         _ = _enabledDeserializer.Deserialize(_alternateWirePayload, _context);
+        _ = _inlineRulesDeserializer.Deserialize(_inlineRulesWirePayload, _context);
         _ = _validatorFactory.GetOrCreate(_validatorSchema);
     }
 
@@ -95,8 +563,10 @@ public class JsonSchemaValidationBenchmarks
     {
         await _disabledSerializer.DisposeAsync();
         await _enabledSerializer.DisposeAsync();
+        await _inlineRulesSerializer.DisposeAsync();
         await _disabledDeserializer.DisposeAsync();
         await _enabledDeserializer.DisposeAsync();
+        await _inlineRulesDeserializer.DisposeAsync();
     }
 
     [Benchmark(Baseline = true)]
@@ -114,12 +584,187 @@ public class JsonSchemaValidationBenchmarks
     }
 
     [Benchmark]
+    public void SerializeInlineRulesEnabled()
+    {
+        _inlineRulesDestination.Clear();
+        _inlineRulesSerializer.Serialize(_value, ref _inlineRulesDestination, _context);
+    }
+
+    [Benchmark]
+    public void SerializePreparedInlineRulesEnabled()
+    {
+        _preparedInlineRulesDestination.Clear();
+        _preparedInlineRulesSerializer.SerializePrepared(
+            _value,
+            ref _preparedInlineRulesDestination,
+            _context,
+            in _inlineRulesAdmission);
+    }
+
+    [Benchmark]
     public BenchmarkPayload DeserializeValidationDisabled() =>
         _disabledDeserializer.Deserialize(_wirePayload, _context);
 
     [Benchmark]
     public BenchmarkPayload DeserializeValidationEnabled() =>
         _enabledDeserializer.Deserialize(_wirePayload, _context);
+
+    [Benchmark]
+    public BenchmarkPayload DeserializeInlineRulesEnabled() =>
+        _inlineRulesDeserializer.Deserialize(_inlineRulesWirePayload, _context);
+
+    [Benchmark]
+    public void ValidateInlineRules() =>
+        _inlineRulesValidator.ValidateRules(_inlineRulesJsonPayload, 1, failFast: false);
+
+    [Benchmark]
+    public void ValidateInlineRulesFailFast() =>
+        _inlineRulesValidator.ValidateRules(_inlineRulesJsonPayload, 1, failFast: true);
+
+    [Benchmark]
+    public void ValidateNestedInlineRules() =>
+        _nestedInlineRulesValidator.ValidateRules(_nestedInlineRulesJsonPayload, 2, failFast: false);
+
+    [Benchmark]
+    public void ValidateNestedCompositionInlineRules() =>
+        _nestedCompositionInlineRulesValidator.ValidateRules(
+            _nestedCompositionInlineRulesJsonPayload,
+            7,
+            failFast: false);
+
+    [Benchmark]
+    public void ValidateShallowCompositionInlineRules() =>
+        _shallowCompositionInlineRulesValidator.ValidateRules(
+            _shallowCompositionInlineRulesJsonPayload,
+            8,
+            failFast: false);
+
+    [Benchmark]
+    public void ValidateNestedAllOfInlineRules() =>
+        _nestedAllOfInlineRulesValidator.ValidateRules(
+            _nestedAllOfInlineRulesJsonPayload,
+            9,
+            failFast: false);
+
+    [Benchmark]
+    public void ValidateRuleBearingAllOfChain() =>
+        _ruleBearingAllOfChainValidator.ValidateRules(
+            _ruleBearingAllOfChainJsonPayload,
+            10,
+            failFast: false);
+
+    [Benchmark]
+    public void ValidateSizeRuleBearingAllOfChain() =>
+        _sizeRuleBearingAllOfChainValidator.ValidateRules(
+            _sizeRuleBearingAllOfChainJsonPayload,
+            15,
+            failFast: false);
+
+    [Benchmark]
+    public void ValidateStructuralEquality() =>
+        _structuralEqualityValidator.ValidateRules(_structuralEqualityJsonPayload, 3, failFast: false);
+
+    [Benchmark]
+    public void ValidateDeepStructuralEquality() =>
+        _structuralEqualityValidator.ValidateRules(
+            _deepStructuralEqualityJsonPayload,
+            3,
+            failFast: false);
+
+    [Benchmark]
+    public void ValidateRepeatedStructuralEquality() =>
+        _repeatedStructuralEqualityValidator.ValidateRules(
+            _repeatedStructuralEqualityJsonPayload,
+            17,
+            failFast: false);
+
+    [Benchmark]
+    public void ValidateLayeredStructuralEquality() =>
+        _layeredStructuralEqualityValidator.ValidateRules(
+            _layeredStructuralEqualityJsonPayload,
+            18,
+            failFast: false);
+
+    [Benchmark]
+    public void ValidateSiblingInlineRules() =>
+        _siblingInlineRulesValidator.ValidateRules(_siblingInlineRulesJsonPayload, 4, failFast: false);
+
+    [Benchmark]
+    public void ValidateNestedMemberInlineRules() =>
+        _nestedMemberInlineRulesValidator.ValidateRules(
+            _nestedMemberInlineRulesJsonPayload,
+            5,
+            failFast: false);
+
+    [Benchmark]
+    public void ValidateDuplicateNestedMemberInlineRules() =>
+        _nestedMemberInlineRulesValidator.ValidateRules(
+            _duplicateNestedMemberInlineRulesJsonPayload,
+            5,
+            failFast: false);
+
+    [Benchmark]
+    public void ValidateManyDuplicateNestedMemberInlineRules() =>
+        _nestedMemberInlineRulesValidator.ValidateRules(
+            _manyDuplicateNestedMemberInlineRulesJsonPayload,
+            5,
+            failFast: false);
+
+    [Benchmark]
+    public void ValidateManyDistinctDuplicateInlineRules() =>
+        _manyDistinctDuplicateInlineRulesValidator.ValidateRules(
+            _manyDistinctDuplicateInlineRulesJsonPayload,
+            11,
+            failFast: false);
+
+    [Benchmark]
+    public void ValidateDuplicatePropertyFailFastInlineRules() =>
+        _duplicatePropertyInlineRulesValidator.ValidateRules(
+            _duplicatePropertyInlineRulesJsonPayload,
+            9,
+            failFast: true);
+
+    [Benchmark]
+    public void ValidateDuplicateCompositionInlineRules() =>
+        _duplicateCompositionInlineRulesValidator.ValidateRules(
+            _duplicateCompositionInlineRulesJsonPayload,
+            12,
+            failFast: false);
+
+    [Benchmark]
+    public void ValidateDecimalMinNegationInlineRules() =>
+        _decimalMinNegationInlineRulesValidator.ValidateRules(
+            _decimalMinNegationInlineRulesJsonPayload,
+            13,
+            failFast: false);
+
+    [Benchmark]
+    public void ValidateDuplicateMapSizeInlineRules() =>
+        _mapSizeInlineRulesValidator.ValidateRules(
+            _duplicateMapSizeInlineRulesJsonPayload,
+            10,
+            failFast: false);
+
+    [Benchmark]
+    public void ValidateEscapedMapKeyInlineRules() =>
+        _escapedMapKeyInlineRulesValidator.ValidateRules(
+            _escapedMapKeyInlineRulesJsonPayload,
+            16,
+            failFast: false);
+
+    [Benchmark]
+    public void ValidateSiblingMapSizeInlineRules() =>
+        _siblingMapSizeInlineRulesValidator.ValidateRules(
+            _siblingMapSizeInlineRulesJsonPayload,
+            14,
+            failFast: false);
+
+    [Benchmark]
+    public void ValidateTerminalPrefixInlineRules() =>
+        _terminalPrefixInlineRulesValidator.ValidateRules(
+            _terminalPrefixInlineRulesJsonPayload,
+            6,
+            failFast: false);
 
     [Benchmark]
     public BenchmarkPayload DeserializeValidationEnabledAlternatingSchemas()
@@ -136,11 +781,238 @@ public class JsonSchemaValidationBenchmarks
 
     public sealed record BenchmarkPayload(int Id, string Name);
 
+    private static byte[] CreateDeepStructuralEqualityPayload(int depth)
+    {
+        var json = new StringBuilder(depth * 24);
+        json.Append("{\"left\":");
+        AppendNestedValue(json, depth);
+        json.Append(",\"right\":");
+        AppendNestedValue(json, depth);
+        json.Append(",\"values\":[],\"expected\":[]}");
+        return Encoding.UTF8.GetBytes(json.ToString());
+    }
+
+    private static byte[] CreateRepeatedStructuralEqualityPayload(int depth)
+    {
+        var json = new StringBuilder(depth * 24);
+        json.Append("{\"left\":");
+        AppendNestedValue(json, depth);
+        json.Append(",\"right\":");
+        AppendNestedValue(json, depth);
+        json.Append(",\"other\":{\"different\":true}}");
+        return Encoding.UTF8.GetBytes(json.ToString());
+    }
+
+    private static (string Schema, byte[] Payload) CreateLayeredStructuralEqualitySchema(
+        int depth,
+        int itemCount) =>
+        (CreateLayeredStructuralEqualitySchema(depth), CreateMirroredIntegerArrays(itemCount));
+
+    private static string CreateLayeredStructuralEqualitySchema(int depth)
+    {
+        var schema = new StringBuilder(depth * 112);
+        for (var index = 0; index < depth; index++)
+        {
+            schema.Append(
+                "{\"confluent:rules\":[{\"name\":\"equal\",\"expr\":\"this.left == this.right\"}],\"allOf\":[");
+        }
+        schema.Append("{}");
+        for (var index = 0; index < depth; index++)
+            schema.Append("]}");
+        return schema.ToString();
+    }
+
+    private static byte[] CreateMirroredIntegerArrays(int itemCount)
+    {
+        var payload = new StringBuilder(itemCount * 8);
+        payload.Append("{\"left\":[");
+        AppendIntegerArray(payload, itemCount);
+        payload.Append("],\"right\":[");
+        AppendIntegerArray(payload, itemCount);
+        payload.Append("]}");
+        return Encoding.UTF8.GetBytes(payload.ToString());
+    }
+
+    private static void AppendIntegerArray(StringBuilder payload, int itemCount)
+    {
+        for (var index = 0; index < itemCount; index++)
+        {
+            if (index != 0)
+                payload.Append(',');
+            payload.Append(index);
+        }
+    }
+
+    private static byte[] CreateDuplicateNestedMemberPayload(int duplicateCount)
+    {
+        const string invalid = "\"details\":{\"a\":0,\"b\":0,\"c\":0,\"d\":0,\"e\":0,\"f\":0,\"g\":0,\"h\":0},";
+        var json = new StringBuilder(duplicateCount * invalid.Length + 80);
+        json.Append('{');
+        for (var index = 0; index < duplicateCount; index++)
+            json.Append(invalid);
+        json.Append("\"details\":{\"a\":1,\"b\":2,\"c\":3,\"d\":4,\"e\":5,\"f\":6,\"g\":7,\"h\":8}}");
+        return Encoding.UTF8.GetBytes(json.ToString());
+    }
+
+    private static (string Schema, byte[] Payload) CreateManyDistinctDuplicatePropertiesRule(int propertyCount)
+    {
+        var schema = new StringBuilder(propertyCount * 96);
+        var payload = new StringBuilder(propertyCount * 20);
+        schema.Append("{\"properties\":{");
+        payload.Append('{');
+        for (var index = 0; index < propertyCount; index++)
+            AppendDistinctDuplicateProperty(schema, payload, index);
+        schema.Append("}}");
+        for (var index = 0; index < propertyCount; index++)
+            payload.Append(",\"p").Append(index).Append("\":1");
+        payload.Append('}');
+        return (schema.ToString(), Encoding.UTF8.GetBytes(payload.ToString()));
+    }
+
+    private static void AppendDistinctDuplicateProperty(
+        StringBuilder schema,
+        StringBuilder payload,
+        int index)
+    {
+        if (index != 0)
+        {
+            schema.Append(',');
+            payload.Append(',');
+        }
+        schema.Append("\"p").Append(index)
+            .Append("\":{\"confluent:rules\":[{\"name\":\"p").Append(index)
+            .Append("\",\"expr\":\"this == 1\"}]}");
+        payload.Append("\"p").Append(index).Append("\":0");
+    }
+
+    private static void AppendNestedValue(StringBuilder json, int depth)
+    {
+        for (var index = 0; index < depth; index++)
+            json.Append("{\"value\":");
+        json.Append('1');
+        json.Append('}', depth);
+    }
+
+    private static (string Schema, byte[] Payload) CreateTerminalPrefixRule(int depth)
+    {
+        var expression = new StringBuilder(depth * depth * 4);
+        var path = new StringBuilder("this");
+        var payload = new StringBuilder(depth * 12);
+        for (var index = 0; index < depth; index++)
+            AppendTerminalPrefixLevel(expression, path, payload);
+        payload.Append("{}");
+        payload.Append('}', depth);
+        var schema = $$"""
+            {
+              "confluent:rules": [{ "name": "prefixes", "expr": "{{expression}}" }]
+            }
+            """;
+        return (schema, Encoding.UTF8.GetBytes(payload.ToString()));
+    }
+
+    private static void AppendTerminalPrefixLevel(
+        StringBuilder expression,
+        StringBuilder path,
+        StringBuilder payload)
+    {
+        path.Append(".child");
+        if (expression.Length != 0)
+            expression.Append(" && ");
+        expression.Append(path).Append(" != null");
+        payload.Append("{\"child\":");
+    }
+
+    private static (string Schema, byte[] Payload) CreateNestedCompositionRule(
+        int depth,
+        string keyword = "anyOf")
+    {
+        var schema = new StringBuilder(depth * 96);
+        var payload = new StringBuilder(depth * 12);
+        for (var index = 0; index < depth; index++)
+        {
+            schema.Append("{\"").Append(keyword).Append(
+                "\":[{\"type\":\"object\",\"required\":[\"child\"],\"properties\":{\"child\":");
+            payload.Append("{\"child\":");
+        }
+        schema.Append(
+            "{\"type\":\"integer\",\"confluent:rules\":[{\"name\":\"positive\",\"expr\":\"this > 0\"}]}");
+        for (var index = 0; index < depth; index++)
+            schema.Append("}}]}");
+        payload.Append('1');
+        payload.Append('}', depth);
+        return (schema.ToString(), Encoding.UTF8.GetBytes(payload.ToString()));
+    }
+
+    private static (string Schema, byte[] Payload) CreateRuleBearingAllOfChain(
+        int depth,
+        int itemCount)
+    {
+        var schema = new StringBuilder(depth * 96);
+        for (var index = 0; index < depth; index++)
+        {
+            schema.Append("{\"confluent:rules\":[{\"name\":\"valid\",\"expr\":\"this.member")
+                .Append(index)
+                .Append(" == ")
+                .Append(index)
+                .Append("\"}],\"allOf\":[");
+        }
+        schema.Append("{}");
+        for (var index = 0; index < depth; index++)
+            schema.Append("]}");
+
+        var payload = new StringBuilder(itemCount * 4);
+        payload.Append('{');
+        for (var index = 0; index < depth; index++)
+        {
+            if (index != 0)
+                payload.Append(',');
+            payload.Append("\"member").Append(index).Append("\":").Append(index);
+        }
+        payload.Append(",\"items\":[");
+        for (var index = 0; index < itemCount; index++)
+        {
+            if (index != 0)
+                payload.Append(',');
+            payload.Append(index);
+        }
+        payload.Append("]}");
+        return (schema.ToString(), Encoding.UTF8.GetBytes(payload.ToString()));
+    }
+
+    private static (string Schema, byte[] Payload) CreateSizeRuleBearingAllOfChain(
+        int depth,
+        int itemCount)
+    {
+        var schema = new StringBuilder(depth * 96);
+        for (var index = 0; index < depth; index++)
+        {
+            schema.Append("{\"confluent:rules\":[{\"name\":\"size\",\"expr\":\"size(this) == ")
+                .Append(itemCount)
+                .Append("\"}],\"allOf\":[");
+        }
+        schema.Append("{}");
+        for (var index = 0; index < depth; index++)
+            schema.Append("]}");
+
+        var payload = new StringBuilder(itemCount * 4);
+        payload.Append('[');
+        for (var index = 0; index < itemCount; index++)
+        {
+            if (index != 0)
+                payload.Append(',');
+            payload.Append(index);
+        }
+        payload.Append(']');
+        return (schema.ToString(), Encoding.UTF8.GetBytes(payload.ToString()));
+    }
+
     private sealed class BenchmarkSchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistryCache
     {
         private readonly Dictionary<int, Schema> _schemas = [];
 
         public void AddSchema(int id, Schema schema) => _schemas[id] = schema;
+
+        public Schema GetSchema(int id) => _schemas[id];
 
         public Task<int> RegisterSchemaAsync(
             string subject,

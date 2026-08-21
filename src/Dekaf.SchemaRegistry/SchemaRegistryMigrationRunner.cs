@@ -167,7 +167,7 @@ internal sealed class SchemaRegistryMigrationRunner
                     $"Migration rules require {nameof(SchemaRegistryRuleExecutor)}.");
             }
 
-            if (_ruleExecutor is null)
+            if (_ruleExecutor is null || ReferenceEquals(_ruleExecutor, MarkerRuleExecutor))
                 return new MigrationResult(payload, plan.ReaderSchema, schemaId, writerSchema);
 
             var readerContext = RentContext(
@@ -178,6 +178,7 @@ internal sealed class SchemaRegistryMigrationRunner
                 payloadFormat,
                 taggedFieldTransformers,
                 taggedFieldSchema: writerSchema);
+            var legacyReaderDomainInput = payload;
             try
             {
                 payload = _ruleExecutor.TransformDeserializedPayload(payload, readerContext);
@@ -187,7 +188,13 @@ internal sealed class SchemaRegistryMigrationRunner
                 readerContext.Return();
             }
 
-            return new MigrationResult(payload, plan.ReaderSchema, schemaId, writerSchema);
+            return PayloadContentChanged(legacyReaderDomainInput, payload)
+                ? new MigrationResult(
+                    payload,
+                    plan.ReaderSchema,
+                    plan.ReaderSchema.Id,
+                    plan.ReaderSchema.Schema)
+                : new MigrationResult(payload, plan.ReaderSchema, schemaId, writerSchema);
         }
 
         var steps = plan.Steps;
@@ -244,17 +251,231 @@ internal sealed class SchemaRegistryMigrationRunner
             payloadFormat,
             taggedFieldTransformers,
             taggedFieldSchema: payloadSchema);
+        bool readerDomainTransformed;
         try
         {
-            payload = _schemaRuleExecutor.TransformDeserializedDomainPayload(payload, context);
+            payload = _schemaRuleExecutor.TransformDeserializedDomainPayload(
+                payload,
+                context,
+                out readerDomainTransformed);
         }
         finally
         {
             context.Return();
         }
 
-        return new MigrationResult(payload, plan.ReaderSchema, payloadSchemaId, payloadSchema);
+        return readerDomainTransformed && payloadFormat == SchemaRegistryPayloadFormat.Json
+            ? new MigrationResult(
+                payload,
+                plan.ReaderSchema,
+                plan.ReaderSchema.Id,
+                plan.ReaderSchema.Schema)
+            : new MigrationResult(payload, plan.ReaderSchema, payloadSchemaId, payloadSchema);
     }
+
+    // Kept separate from Transform so inline JSON validation adds no branch or argument
+    // overhead to existing migration hot paths.
+    internal MigrationResult TransformWithBeforeDomainValidation(
+        ReadOnlyMemory<byte> payload,
+        int schemaId,
+        string subject,
+        Schema writerSchema,
+        SerializationContext serializationContext,
+        SchemaRegistryPayloadFormat payloadFormat,
+        IJsonSchemaValidatorFactory validationRulesFactory,
+        bool validationRulesFailFast,
+        ISchemaRegistryTaggedFieldTransformerProvider? taggedFieldTransformers = null,
+        bool skipLatestRefresh = false)
+    {
+        var isNewPlan = false;
+        var plan = Volatile.Read(ref _lastPlan);
+        if (plan is null ||
+            plan.WriterSchemaId != schemaId ||
+            !string.Equals(plan.Subject, subject, StringComparison.Ordinal))
+        {
+            if (!_plans.TryGet(subject, writerSchema, out plan))
+            {
+                plan = _plans.Resolve(subject, writerSchema, this, s_createPlan, _timeout);
+                isNewPlan = true;
+            }
+
+            Volatile.Write(ref _lastPlan, plan);
+        }
+
+        if (!isNewPlan && !skipLatestRefresh && IsExpired(plan))
+        {
+            _plans.TryRemove(subject, writerSchema, plan);
+            plan = _plans.Resolve(subject, writerSchema, this, s_createPlan, _timeout);
+            Volatile.Write(ref _lastPlan, plan);
+        }
+
+        if (_schemaRuleExecutor is null)
+        {
+            if (plan.Steps.Length != 0)
+            {
+                throw new SchemaRegistryRuleException(
+                    $"Migration rules require {nameof(SchemaRegistryRuleExecutor)}.");
+            }
+
+            if (_ruleExecutor is null || ReferenceEquals(_ruleExecutor, MarkerRuleExecutor))
+            {
+                ValidateBeforeDomainRules(
+                    payload,
+                    schemaId,
+                    writerSchema,
+                    validationRulesFactory,
+                    validationRulesFailFast);
+                return new MigrationResult(payload, plan.ReaderSchema, schemaId, writerSchema);
+            }
+
+            var readerContext = RentContext(
+                serializationContext,
+                plan.ReaderSchema.Id,
+                subject,
+                plan.ReaderSchema.Schema,
+                payloadFormat,
+                taggedFieldTransformers,
+                taggedFieldSchema: writerSchema);
+            var legacyReaderDomainInput = payload;
+            try
+            {
+                payload = _ruleExecutor.TransformDeserializedPayload(payload, readerContext);
+            }
+            finally
+            {
+                readerContext.Return();
+            }
+
+            var legacyReaderDomainTransformed = PayloadContentChanged(legacyReaderDomainInput, payload);
+            ValidateBeforeDomainRules(
+                payload,
+                legacyReaderDomainTransformed ? plan.ReaderSchema.Id : schemaId,
+                legacyReaderDomainTransformed ? plan.ReaderSchema.Schema : writerSchema,
+                validationRulesFactory,
+                validationRulesFailFast);
+            return legacyReaderDomainTransformed
+                ? new MigrationResult(
+                    payload,
+                    plan.ReaderSchema,
+                    plan.ReaderSchema.Id,
+                    plan.ReaderSchema.Schema)
+                : new MigrationResult(payload, plan.ReaderSchema, schemaId, writerSchema);
+        }
+
+        var steps = plan.Steps;
+        if (steps.Length == 0 &&
+            writerSchema.RuleSet?.HasDomainOrEncodingRules != true &&
+            plan.ReaderSchema.Schema.RuleSet?.HasDomainOrEncodingRules != true)
+        {
+            ValidateBeforeDomainRules(
+                payload,
+                schemaId,
+                writerSchema,
+                validationRulesFactory,
+                validationRulesFailFast);
+            return new MigrationResult(payload, plan.ReaderSchema, schemaId, writerSchema);
+        }
+
+        var context = RentContext(
+            serializationContext,
+            schemaId,
+            subject,
+            writerSchema,
+            payloadFormat,
+            taggedFieldTransformers);
+        try
+        {
+            payload = _schemaRuleExecutor.TransformDeserializedEncodingPayload(payload, context);
+        }
+        finally
+        {
+            context.Return();
+        }
+
+        ValidateBeforeDomainRules(
+            payload,
+            schemaId,
+            writerSchema,
+            validationRulesFactory,
+            validationRulesFailFast);
+
+        var payloadSchemaId = schemaId;
+        var payloadSchema = writerSchema;
+        if (steps.Length != 0)
+        {
+            var migrationComplete = TransformMigrationSteps(
+                ref payload,
+                ref payloadSchemaId,
+                ref payloadSchema,
+                schemaId,
+                subject,
+                serializationContext,
+                payloadFormat,
+                taggedFieldTransformers,
+                steps);
+            if (migrationComplete || payloadSchemaId != schemaId)
+            {
+                ValidateBeforeDomainRules(
+                    payload,
+                    payloadSchemaId,
+                    payloadSchema,
+                    validationRulesFactory,
+                    validationRulesFailFast);
+            }
+
+            if (!migrationComplete)
+                return new MigrationResult(payload, plan.ReaderSchema, payloadSchemaId, payloadSchema);
+        }
+
+        if (!plan.IsMigrationChainComplete)
+            return new MigrationResult(payload, plan.ReaderSchema, payloadSchemaId, payloadSchema);
+
+        context = RentContext(
+            serializationContext,
+            plan.ReaderSchema.Id,
+            subject,
+            plan.ReaderSchema.Schema,
+            payloadFormat,
+            taggedFieldTransformers,
+            taggedFieldSchema: payloadSchema);
+        bool readerDomainTransformed;
+        try
+        {
+            payload = _schemaRuleExecutor.TransformDeserializedDomainPayload(
+                payload,
+                context,
+                out readerDomainTransformed);
+        }
+        finally
+        {
+            context.Return();
+        }
+
+        return readerDomainTransformed && payloadFormat == SchemaRegistryPayloadFormat.Json
+            ? new MigrationResult(
+                payload,
+                plan.ReaderSchema,
+                plan.ReaderSchema.Id,
+                plan.ReaderSchema.Schema)
+            : new MigrationResult(payload, plan.ReaderSchema, payloadSchemaId, payloadSchema);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool PayloadContentChanged(
+        ReadOnlyMemory<byte> input,
+        ReadOnlyMemory<byte> output) =>
+        !input.Equals(output) && !input.Span.SequenceEqual(output.Span);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void ValidateBeforeDomainRules(
+        ReadOnlyMemory<byte> payload,
+        int schemaId,
+        Schema schema,
+        IJsonSchemaValidatorFactory validationRulesFactory,
+        bool validationRulesFailFast) =>
+        validationRulesFactory
+            .GetOrCreate(schema)
+            .ValidateRules(payload, schemaId, validationRulesFailFast);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool IsExpired(MigrationPlan plan) =>

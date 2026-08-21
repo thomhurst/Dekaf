@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json.Serialization;
@@ -6,6 +7,7 @@ using Avro.Generic;
 using Dekaf.Consumer;
 using Dekaf.Producer;
 using Dekaf.SchemaRegistry;
+using Dekaf.SchemaRegistry.Json;
 using Dekaf.SchemaRegistry.Jsonata;
 using Dekaf.SchemaRegistry.Avro;
 using Dekaf.SchemaRegistry.Protobuf;
@@ -165,6 +167,64 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
         var result = deserializer.Deserialize(wire, CreateContext(topic));
 
         await Assert.That(result.GetProperty("fullName").GetString()).IsEqualTo("Ada Lovelace");
+    }
+
+    [Test]
+    public async Task RegisteredJsonataIdentityRule_UseLatestVersion_ValidatesWriterRepresentation()
+    {
+        var topic = await testInfra.CreateTestTopicAsync();
+        var subject = $"{topic}-value";
+        using var registryClient = new SchemaRegistryClient(new SchemaRegistryConfig
+        {
+            Url = testInfra.RegistryUrl
+        });
+        await registryClient.UpdateCompatibilityAsync(SchemaCompatibilityLevel.None, subject);
+        var v1 = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = """{ "type": "object", "properties": { "legacy": { "type": "string" } }, "required": ["legacy"], "additionalProperties": false }"""
+        };
+        var v2 = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = """{ "type": "object", "properties": { "current": { "type": "string" } }, "required": ["current"], "additionalProperties": false }""",
+            RuleSet = new SchemaRuleSet
+            {
+                DomainRules =
+                [
+                    new SchemaRule
+                    {
+                        Name = "identity",
+                        Kind = SchemaRuleKind.Transform,
+                        Mode = SchemaRuleMode.Read,
+                        Type = JsonataSchemaRegistryRuleHandler.RuleType,
+                        Expr = "$"
+                    }
+                ]
+            }
+        };
+        var writerId = await registryClient.RegisterSchemaAsync(subject, v1);
+        await registryClient.RegisterSchemaAsync(subject, v2);
+        var executor = new SchemaRegistryRuleExecutor([new JsonataSchemaRegistryRuleHandler()]);
+        var validationOptions = new JsonSchemaValidationOptions
+        {
+            ValidatorFactory = new StreamingJsonSchemaValidatorFactory(registryClient),
+            Mode = JsonSchemaValidationMode.Deserialize
+        };
+        await using var deserializer = new JsonSchemaRegistryDeserializer<System.Text.Json.JsonElement>(
+            registryClient,
+            SchemaRegistryRuleJsonContext.Default.JsonElement,
+            validationOptions,
+            new SchemaRegistryDeserializerConfig { UseLatestVersion = true },
+            ruleExecutor: executor);
+        var payload = """{"legacy":"value"}"""u8;
+        var wire = new byte[5 + payload.Length];
+        BinaryPrimitives.WriteInt32BigEndian(wire.AsSpan(1, 4), writerId);
+        payload.CopyTo(wire.AsSpan(5));
+
+        var result = deserializer.Deserialize(wire, CreateContext(topic));
+
+        await Assert.That(result.GetProperty("legacy").GetString()).IsEqualTo("value");
     }
 
     [Test]
@@ -413,6 +473,88 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
         ]);
     }
 
+    [Test]
+    public async Task RegisteredJsonInlineRules_ProduceConsumeAndRejectInvalidPayload()
+    {
+        const string schemaText = """
+            {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "confluent:rules": [{ "name": "nameRequired", "expr": "size(this) > 0" }]
+                }
+              }
+            }
+            """;
+        var topic = await testInfra.CreateTestTopicAsync();
+        using var registryClient = new SchemaRegistryClient(new SchemaRegistryConfig
+        {
+            Url = testInfra.RegistryUrl
+        });
+        await registryClient.RegisterSchemaAsync($"{topic}-value", new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = schemaText
+        });
+        var validationOptions = new JsonSchemaValidationOptions
+        {
+            ValidatorFactory = new StreamingJsonSchemaValidatorFactory(registryClient),
+            Mode = JsonSchemaValidationMode.None,
+            ValidationRulesExecution = ValidationRulesExecution.AfterDomainRules
+        };
+        await using var serializer = new JsonSchemaRegistrySerializer<InlineValidationPayload>(
+            registryClient,
+            schemaText,
+            SchemaRegistryRuleJsonContext.Default.InlineValidationPayload,
+            validationOptions,
+            autoRegisterSchemas: false);
+        await using var deserializer = new JsonSchemaRegistryDeserializer<InlineValidationPayload>(
+            registryClient,
+            SchemaRegistryRuleJsonContext.Default.InlineValidationPayload,
+            validationOptions);
+        var context = CreateContext(topic);
+        var invalid = new ArrayBufferWriter<byte>();
+        Assert.Throws<ValidationRulesFailedException>(
+            () => serializer.Serialize(new InlineValidationPayload(string.Empty), ref invalid, context));
+
+        await using var producer = await Kafka.CreateProducer<string, InlineValidationPayload>()
+            .WithBootstrapServers(testInfra.BootstrapServers)
+            .WithValueSerializer(serializer)
+            .BuildAsync();
+        await Assert.That(async () => await producer.ProduceAsync(
+            new ProducerMessage<string, InlineValidationPayload>
+            {
+                Topic = topic,
+                Key = "invalid",
+                Value = new InlineValidationPayload(string.Empty)
+            }))
+            .Throws<ValidationRulesFailedException>();
+        await producer.ProduceAsync(new ProducerMessage<string, InlineValidationPayload>
+        {
+            Topic = topic,
+            Key = "key",
+            Value = new InlineValidationPayload("valid")
+        });
+
+        await using var consumer = await Kafka.CreateConsumer<string, InlineValidationPayload>()
+            .WithBootstrapServers(testInfra.BootstrapServers)
+            .WithGroupId($"inline-validation-{Guid.NewGuid():N}")
+            .WithValueDeserializer(deserializer)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .BuildAsync();
+        consumer.Subscribe(topic);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        InlineValidationPayload? consumed = null;
+        await foreach (var message in consumer.ConsumeAsync(timeout.Token))
+        {
+            consumed = message.Value;
+            break;
+        }
+
+        await Assert.That(consumed).IsEqualTo(new InlineValidationPayload("valid"));
+    }
+
     private static Schema CreateSchema(SchemaType schemaType, string schemaString) =>
         new()
         {
@@ -423,6 +565,8 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
                 DomainRules = [CreateRule("domain-xor", "DOMAIN-XOR")]
             }
         };
+
+    internal sealed record InlineValidationPayload(string Name);
 
     private static SerializationContext CreateContext(string topic) =>
         new()
@@ -643,6 +787,8 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
     }
 }
 
+[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 [JsonSerializable(typeof(string))]
 [JsonSerializable(typeof(System.Text.Json.JsonElement))]
+[JsonSerializable(typeof(SchemaRegistryRuleIntegrationTests.InlineValidationPayload))]
 internal sealed partial class SchemaRegistryRuleJsonContext : JsonSerializerContext;

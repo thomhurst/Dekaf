@@ -53,6 +53,9 @@ public sealed class JsonSchemaRegistrySerializer<T> :
     private readonly bool _ownsClient;
     private readonly ISchemaRegistryRuleExecutor? _ruleExecutor;
     private readonly IJsonSchemaValidatorFactory? _validatorFactory;
+    private readonly IJsonSchemaValidatorFactory? _validationRulesFactory;
+    private readonly ValidationRulesExecution _validationRulesExecution;
+    private readonly bool _validationRulesFailFast;
 
     private readonly SchemaResolutionCache<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> _schemaCache = new();
     private readonly SubjectSchemaIdCache _subjectSchemaIdCache = new();
@@ -112,6 +115,9 @@ public sealed class JsonSchemaRegistrySerializer<T> :
     {
         ArgumentNullException.ThrowIfNull(validationOptions);
         _validatorFactory = validationOptions.GetSerializerFactory();
+        _validationRulesFactory = validationOptions.GetValidationRulesFactory(ruleExecutor);
+        _validationRulesExecution = validationOptions.ValidationRulesExecution;
+        _validationRulesFailFast = validationOptions.ValidationRulesFailFast;
     }
 
     /// <summary>
@@ -209,6 +215,9 @@ public sealed class JsonSchemaRegistrySerializer<T> :
     {
         ArgumentNullException.ThrowIfNull(validationOptions);
         _validatorFactory = validationOptions.GetSerializerFactory();
+        _validationRulesFactory = validationOptions.GetValidationRulesFactory(ruleExecutor);
+        _validationRulesExecution = validationOptions.ValidationRulesExecution;
+        _validationRulesFailFast = validationOptions.ValidationRulesFailFast;
     }
 
     /// <summary>
@@ -280,6 +289,9 @@ public sealed class JsonSchemaRegistrySerializer<T> :
     {
         ArgumentNullException.ThrowIfNull(validationOptions);
         _validatorFactory = validationOptions.GetSerializerFactory();
+        _validationRulesFactory = validationOptions.GetValidationRulesFactory(ruleExecutor);
+        _validationRulesExecution = validationOptions.ValidationRulesExecution;
+        _validationRulesFailFast = validationOptions.ValidationRulesFailFast;
     }
 
     /// <summary>
@@ -346,6 +358,9 @@ public sealed class JsonSchemaRegistrySerializer<T> :
     {
         ArgumentNullException.ThrowIfNull(validationOptions);
         _validatorFactory = validationOptions.GetSerializerFactory();
+        _validationRulesFactory = validationOptions.GetValidationRulesFactory(ruleExecutor);
+        _validationRulesExecution = validationOptions.ValidationRulesExecution;
+        _validationRulesFailFast = validationOptions.ValidationRulesFailFast;
     }
 
     /// <summary>
@@ -446,6 +461,9 @@ public sealed class JsonSchemaRegistrySerializer<T> :
     {
         ArgumentNullException.ThrowIfNull(validationOptions);
         _validatorFactory = validationOptions.GetSerializerFactory();
+        _validationRulesFactory = validationOptions.GetValidationRulesFactory(ruleExecutor);
+        _validationRulesExecution = validationOptions.ValidationRulesExecution;
+        _validationRulesFailFast = validationOptions.ValidationRulesFailFast;
     }
 
     /// <summary>
@@ -506,6 +524,9 @@ public sealed class JsonSchemaRegistrySerializer<T> :
     {
         ArgumentNullException.ThrowIfNull(validationOptions);
         _validatorFactory = validationOptions.GetSerializerFactory();
+        _validationRulesFactory = validationOptions.GetValidationRulesFactory(ruleExecutor);
+        _validationRulesExecution = validationOptions.ValidationRulesExecution;
+        _validationRulesFailFast = validationOptions.ValidationRulesFailFast;
     }
 
     /// <summary>
@@ -602,9 +623,22 @@ public sealed class JsonSchemaRegistrySerializer<T> :
 
         var payload = payloadBuffer.WrittenMemory;
         var validator = _validatorFactory?.GetOrCreate(schemaEntry.Schema!);
+        var validationRules = _validationRulesFactory?.GetOrCreate(schemaEntry.Schema!);
+
         if (_ruleExecutor is null)
         {
-            validator?.Validate(payload.Span, schemaId);
+            if (validationRules is null)
+            {
+                validator?.Validate(payload.Span, schemaId);
+            }
+            else
+            {
+                if (_validationRulesExecution == ValidationRulesExecution.BeforeDomainRules)
+                    validationRules.ValidateRules(payload, schemaId, _validationRulesFailFast);
+                validator?.Validate(payload.Span, schemaId);
+                if (_validationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+                    validationRules.ValidateRules(payload, schemaId, _validationRulesFailFast);
+            }
         }
         else
         {
@@ -617,18 +651,28 @@ public sealed class JsonSchemaRegistrySerializer<T> :
                 SchemaRegistryPayloadFormat.Json);
             try
             {
-                if (_ruleExecutor is SchemaRegistryRuleExecutor builtInRuleExecutor && validator is not null)
+                if (_ruleExecutor is SchemaRegistryRuleExecutor builtInRuleExecutor &&
+                    (validator is not null || validationRules is not null))
                 {
                     payload = builtInRuleExecutor.TransformSerializedPayload(
                         payload,
                         ruleContext,
                         validator,
-                        schemaId);
+                        schemaId,
+                        validationRules,
+                        _validationRulesExecution,
+                        _validationRulesFailFast);
                 }
                 else
                 {
+                    if (validationRules is not null &&
+                        _validationRulesExecution == ValidationRulesExecution.BeforeDomainRules)
+                        validationRules.ValidateRules(payload, schemaId, _validationRulesFailFast);
                     validator?.Validate(payload.Span, schemaId);
                     payload = _ruleExecutor.TransformSerializedPayload(payload, ruleContext);
+                    if (validationRules is not null &&
+                        _validationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+                        validationRules.ValidateRules(payload, schemaId, _validationRulesFailFast);
                 }
             }
             finally
@@ -705,9 +749,21 @@ public sealed class JsonSchemaRegistrySerializer<T> :
 
         var payload = payloadBuffer.WrittenMemory;
         var validator = _validatorFactory?.GetOrCreate(schemaEntry.Schema!);
+        var validationRules = _validationRulesFactory?.GetOrCreate(schemaEntry.Schema!);
         if (_ruleExecutor is null)
         {
-            validator?.Validate(payload.Span, schemaId);
+            if (validationRules is null)
+            {
+                validator?.Validate(payload.Span, schemaId);
+            }
+            else
+            {
+                if (_validationRulesExecution == ValidationRulesExecution.BeforeDomainRules)
+                    validationRules.ValidateRules(payload, schemaId, _validationRulesFailFast);
+                validator?.Validate(payload.Span, schemaId);
+                if (_validationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+                    validationRules.ValidateRules(payload, schemaId, _validationRulesFailFast);
+            }
         }
         else
         {
@@ -720,18 +776,28 @@ public sealed class JsonSchemaRegistrySerializer<T> :
                 SchemaRegistryPayloadFormat.Json);
             try
             {
-                if (_ruleExecutor is SchemaRegistryRuleExecutor builtInRuleExecutor && validator is not null)
+                if (_ruleExecutor is SchemaRegistryRuleExecutor builtInRuleExecutor &&
+                    (validator is not null || validationRules is not null))
                 {
                     payload = builtInRuleExecutor.TransformSerializedPayload(
                         payload,
                         ruleContext,
                         validator,
-                        schemaId);
+                        schemaId,
+                        validationRules,
+                        _validationRulesExecution,
+                        _validationRulesFailFast);
                 }
                 else
                 {
+                    if (validationRules is not null &&
+                        _validationRulesExecution == ValidationRulesExecution.BeforeDomainRules)
+                        validationRules.ValidateRules(payload, schemaId, _validationRulesFailFast);
                     validator?.Validate(payload.Span, schemaId);
                     payload = _ruleExecutor.TransformSerializedPayload(payload, ruleContext);
+                    if (validationRules is not null &&
+                        _validationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+                        validationRules.ValidateRules(payload, schemaId, _validationRulesFailFast);
                 }
             }
             finally
@@ -925,7 +991,7 @@ public sealed class JsonSchemaRegistrySerializer<T> :
                     cancellationToken).ConfigureAwait(false);
             var registeredSchema = _ruleExecutor is SchemaRegistryRuleExecutor
                 ? await _schemaRegistry.GetSchemaAsync(schemaId, subject, cancellationToken).ConfigureAwait(false)
-                : _validatorFactory is not null
+                : _validatorFactory is not null || _validationRulesFactory is not null
                     ? await _schemaRegistry.GetSchemaAsync(schemaId, cancellationToken).ConfigureAwait(false)
                     : schema;
             return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(schemaId, registeredSchema);
@@ -1067,6 +1133,9 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
     private readonly bool _ownsClient;
     private readonly ISchemaRegistryRuleExecutor? _ruleExecutor;
     private readonly IJsonSchemaValidatorFactory? _validatorFactory;
+    private readonly IJsonSchemaValidatorFactory? _validationRulesFactory;
+    private readonly ValidationRulesExecution _validationRulesExecution;
+    private readonly bool _validationRulesFailFast;
     private readonly DeserializerSubjectNameCache? _subjectNames;
     private readonly SchemaRegistryMigrationRunner? _migrationRunner;
 
@@ -1129,7 +1198,11 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
         : this(schemaRegistry, jsonOptions, ownsClient, ruleExecutor)
     {
         ArgumentNullException.ThrowIfNull(validationOptions);
-        _validatorFactory = validationOptions.GetDeserializerFactory();
+        (_validatorFactory, _validationRulesFactory) = GetDeserializerValidationFactories(
+            validationOptions,
+            _ruleExecutor);
+        _validationRulesExecution = validationOptions.ValidationRulesExecution;
+        _validationRulesFailFast = validationOptions.ValidationRulesFailFast;
     }
 
     /// <summary>
@@ -1147,7 +1220,11 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
         : this(schemaRegistry, jsonOptions, config, ownsClient, ruleExecutor)
     {
         ArgumentNullException.ThrowIfNull(validationOptions);
-        _validatorFactory = validationOptions.GetDeserializerFactory();
+        (_validatorFactory, _validationRulesFactory) = GetDeserializerValidationFactories(
+            validationOptions,
+            _ruleExecutor);
+        _validationRulesExecution = validationOptions.ValidationRulesExecution;
+        _validationRulesFailFast = validationOptions.ValidationRulesFailFast;
     }
 
     /// <summary>
@@ -1203,7 +1280,11 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
         : this(schemaRegistry, jsonTypeInfo, ownsClient, ruleExecutor)
     {
         ArgumentNullException.ThrowIfNull(validationOptions);
-        _validatorFactory = validationOptions.GetDeserializerFactory();
+        (_validatorFactory, _validationRulesFactory) = GetDeserializerValidationFactories(
+            validationOptions,
+            _ruleExecutor);
+        _validationRulesExecution = validationOptions.ValidationRulesExecution;
+        _validationRulesFailFast = validationOptions.ValidationRulesFailFast;
     }
 
     /// <summary>
@@ -1219,7 +1300,11 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
         : this(schemaRegistry, jsonTypeInfo, config, ownsClient, ruleExecutor)
     {
         ArgumentNullException.ThrowIfNull(validationOptions);
-        _validatorFactory = validationOptions.GetDeserializerFactory();
+        (_validatorFactory, _validationRulesFactory) = GetDeserializerValidationFactories(
+            validationOptions,
+            _ruleExecutor);
+        _validationRulesExecution = validationOptions.ValidationRulesExecution;
+        _validationRulesFailFast = validationOptions.ValidationRulesFailFast;
     }
 
     bool IAsyncDeserializerPreparationRequirement.RequiresPreparation =>
@@ -1330,7 +1415,25 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
                     SchemaRegistryPayloadFormat.Json);
                 try
                 {
-                    payload = _ruleExecutor!.TransformDeserializedPayload(payload, ruleContext);
+                    var validationRules = _validationRulesFactory?.GetOrCreate(schema);
+                    if (_ruleExecutor is SchemaRegistryRuleExecutor builtInRuleExecutor && validationRules is not null)
+                    {
+                        payload = builtInRuleExecutor.TransformDeserializedPayload(
+                            payload,
+                            ruleContext,
+                            validationRules,
+                            schemaId,
+                            _validationRulesExecution,
+                            _validationRulesFailFast);
+                    }
+                    else
+                    {
+                        if (_validationRulesExecution == ValidationRulesExecution.BeforeDomainRules)
+                            validationRules!.ValidateRules(payload, schemaId, _validationRulesFailFast);
+                        payload = _ruleExecutor!.TransformDeserializedPayload(payload, ruleContext);
+                        if (_validationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+                            validationRules!.ValidateRules(payload, schemaId, _validationRulesFailFast);
+                    }
                 }
                 finally
                 {
@@ -1339,15 +1442,32 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
             }
             else
             {
-                var migration = _migrationRunner.Transform(
-                    payload,
-                    schemaId,
-                    subject,
-                    schema,
-                    context,
-                    SchemaRegistryPayloadFormat.Json);
+                var migration = _validationRulesExecution == ValidationRulesExecution.BeforeDomainRules
+                    ? _migrationRunner.TransformWithBeforeDomainValidation(
+                        payload,
+                        schemaId,
+                        subject,
+                        schema,
+                        context,
+                        SchemaRegistryPayloadFormat.Json,
+                        _validationRulesFactory!,
+                        _validationRulesFailFast)
+                    : _migrationRunner.Transform(
+                        payload,
+                        schemaId,
+                        subject,
+                        schema,
+                        context,
+                        SchemaRegistryPayloadFormat.Json);
                 payload = migration.Payload;
-                schema = migration.ReaderSchema.Schema;
+                schema = migration.PayloadSchema;
+                schemaId = migration.PayloadSchemaId;
+                if (_validationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+                {
+                    _validationRulesFactory!
+                        .GetOrCreate(schema)
+                        .ValidateRules(payload, schemaId, _validationRulesFailFast);
+                }
             }
         }
         else
@@ -1357,9 +1477,30 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
         }
 
         if (_validatorFactory is not null)
-            _validatorFactory.GetOrCreate(schema).Validate(payload.Span, schemaId);
+            _validatorFactory.GetOrCreate(schema).Validate(payload, schemaId);
 
         return _deserializePayload(payload.Span);
+    }
+
+    private static (
+        IJsonSchemaValidatorFactory? ValidatorFactory,
+        IJsonSchemaValidatorFactory? ValidationRulesFactory)
+        GetDeserializerValidationFactories(
+            JsonSchemaValidationOptions validationOptions,
+            ISchemaRegistryRuleExecutor? ruleExecutor)
+    {
+        var validatorFactory = validationOptions.GetDeserializerFactory();
+        var validationRulesFactory = validationOptions.GetValidationRulesFactory(ruleExecutor);
+        if (ruleExecutor is not null || validationRulesFactory is null)
+            return (validatorFactory, validationRulesFactory);
+
+        return (
+            new JsonSchemaValidationPipelineFactory(
+                validatorFactory,
+                validationRulesFactory,
+                validationOptions.ValidationRulesExecution,
+                validationOptions.ValidationRulesFailFast),
+            null);
     }
 
     private string GetSubjectName(int schemaId, Schema schema, SerializationContext context)
