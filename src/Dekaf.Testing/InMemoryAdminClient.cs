@@ -9,7 +9,11 @@ namespace Dekaf.Testing;
 /// <summary>
 /// In-memory <see cref="IAdminClient"/> for common topic and group-offset test operations.
 /// </summary>
-public sealed class InMemoryAdminClient : IAdminClient, IReplicaLogDirAdminClient, ITopicIdAdminClient
+public sealed class InMemoryAdminClient :
+    IAdminClient,
+    IReplicaLogDirAdminClient,
+    ITopicIdAdminClient,
+    IShareGroupDeletionAdminClient
 {
     private static readonly TimeSpan DefaultDelegationTokenLifetime = TimeSpan.FromHours(24);
 
@@ -1112,11 +1116,12 @@ public sealed class InMemoryAdminClient : IAdminClient, IReplicaLogDirAdminClien
         var results = new Dictionary<string, DeleteShareGroupResult>(groupIdList.Length, StringComparer.Ordinal);
         foreach (var groupId in groupIdList)
         {
-            _cluster.DeleteGroup(groupId);
             results[groupId] = new DeleteShareGroupResult
             {
                 GroupId = groupId,
-                ErrorCode = ErrorCode.None
+                ErrorCode = _cluster.TryDeleteShareGroup(groupId)
+                    ? ErrorCode.None
+                    : ErrorCode.NonEmptyGroup
             };
         }
 
