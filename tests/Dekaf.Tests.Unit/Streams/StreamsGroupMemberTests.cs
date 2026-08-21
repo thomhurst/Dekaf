@@ -983,6 +983,31 @@ public sealed class StreamsGroupMemberTests
     }
 
     [Test]
+    public async Task BackgroundHeartbeat_RetiredConnectionRediscoversAndRetries()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1, heartbeatIntervalMs: 1));
+        connection.EnqueueHeartbeat(Task.FromException<StreamsGroupHeartbeatResponse>(
+            new ObjectDisposedException("KafkaConnection")));
+        connection.EnqueueHeartbeat(Success(epoch: 2));
+        connection.EnqueueHeartbeat(Success(epoch: 3));
+        await using var fixture = CreateFixture(connection);
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+
+        await connection.ThirdHeartbeatStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await Assert.That(() => fixture.Member.Snapshot.MemberEpoch)
+            .Eventually(epoch => epoch.IsEqualTo(2), TimeSpan.FromSeconds(5));
+        var result = await fixture.Member.UpdateAsync(new StreamsGroupMemberUpdate
+        {
+            ProcessId = "process-2"
+        });
+
+        await Assert.That(connection.FindCoordinatorRequestCount).IsEqualTo(2);
+        await Assert.That(result.MemberEpoch).IsEqualTo(3);
+        await Assert.That(fixture.Member.Snapshot.IsJoined).IsTrue();
+    }
+
+    [Test]
     public async Task UpdateAsync_RejectedTopologyIsNotUsedForLaterFencedRecovery()
     {
         var connection = new ScriptedConnection();
