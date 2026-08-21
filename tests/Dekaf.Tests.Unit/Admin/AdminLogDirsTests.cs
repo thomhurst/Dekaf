@@ -27,7 +27,8 @@ public sealed class AdminLogDirsTests
         var existing = new TopicPartitionReplica("topic-a", 0, 1);
         var missing = new TopicPartitionReplica("topic-a", 1, 1);
 
-        var result = await context.Client.DescribeReplicaLogDirsAsync([existing, missing]);
+        IAdminClient client = context.Client;
+        var result = await client.DescribeReplicaLogDirsAsync([existing, missing]);
 
         var request = context.RequestsOfType<DescribeLogDirsRequest>().Single();
         await Assert.That(request.Topics).IsNotNull();
@@ -89,6 +90,16 @@ public sealed class AdminLogDirsTests
         async Task Act() => await context.Client.DescribeReplicaLogDirsAsync(null!);
 
         await Assert.That(Act).Throws<ArgumentNullException>();
+    }
+
+    [Test]
+    public async Task DescribeReplicaLogDirsAsync_UnsupportedAdminClient_ThrowsNotSupportedException()
+    {
+        var client = Substitute.For<IAdminClient>();
+
+        async Task Act() => await client.DescribeReplicaLogDirsAsync([]);
+
+        await Assert.That(Act).Throws<NotSupportedException>();
     }
 
     [Test]

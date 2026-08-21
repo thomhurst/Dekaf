@@ -20,7 +20,7 @@ namespace Dekaf.Admin;
 /// <summary>
 /// Kafka administrative client implementation.
 /// </summary>
-public sealed class AdminClient : IAdminClient, IKafkaClientStatusProvider
+public sealed class AdminClient : IAdminClient, IReplicaLogDirAdminClient, IKafkaClientStatusProvider
 {
     private const string MetadataQuorumTopic = "__cluster_metadata";
     private const int MetadataQuorumPartition = 0;

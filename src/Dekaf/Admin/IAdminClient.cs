@@ -448,16 +448,6 @@ public interface IAdminClient : IAsyncDisposable
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Describes the current and future log directories for selected replicas.
-    /// </summary>
-    /// <param name="replicas">The replicas to query.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>Results for each distinct requested replica.</returns>
-    ValueTask<IReadOnlyDictionary<TopicPartitionReplica, DescribeReplicaLogDirResultInfo>> DescribeReplicaLogDirsAsync(
-        IEnumerable<TopicPartitionReplica> replicas,
-        CancellationToken cancellationToken = default);
-
-    /// <summary>
     /// Alters replica log directories on their assigned brokers.
     /// </summary>
     /// <param name="replicaAssignments">Replica-to-log-directory assignments.</param>
