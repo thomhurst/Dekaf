@@ -73,6 +73,24 @@ public readonly struct KafkaFaultScope
             throw new ArgumentOutOfRangeException(nameof(partition), partition, "Partition cannot be negative.");
         if (groupId is not null)
             ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
+        if (operation is KafkaFaultOperation.JoinGroup or
+            KafkaFaultOperation.SyncGroup or
+            KafkaFaultOperation.Rebalance)
+        {
+            if (topic is not null)
+            {
+                throw new ArgumentException(
+                    "Consumer-group transition faults do not support topic selectors.",
+                    nameof(topic));
+            }
+
+            if (partition is not null)
+            {
+                throw new ArgumentException(
+                    "Consumer-group transition faults do not support partition selectors.",
+                    nameof(partition));
+            }
+        }
 
         Operation = operation;
         Topic = topic;
@@ -228,6 +246,45 @@ public interface IKafkaFaultPlan
     int Count { get; }
 
     /// <summary>
+    /// Gets a value that changes whenever the queued fault script changes.
+    /// </summary>
+    /// <remarks>
+    /// Implementations must expose this value thread-safely and change it whenever matching results can change.
+    /// </remarks>
+    long Version { get; }
+
+    /// <summary>
+    /// Returns whether the supplied concrete operation scope matches a queued entry.
+    /// </summary>
+    bool HasMatchingFault(in KafkaFaultScope operationScope);
+
+    /// <summary>
+    /// Returns whether an operation can match a queued entry for the supplied group and resources.
+    /// </summary>
+    bool HasPotentialFault(
+        KafkaFaultOperation operation,
+        string? groupId,
+        IReadOnlySet<TopicPartition> resources);
+
+    /// <summary>
+    /// Selects the supplied concrete operation scope matched by the earliest queued entry.
+    /// </summary>
+    bool TryGetFirstMatchingFaultScope(
+        ReadOnlySpan<KafkaFaultScope> operationScopes,
+        out KafkaFaultScope operationScope);
+
+    /// <summary>
+    /// Atomically consumes and applies the earliest entry matching any supplied operation scope.
+    /// </summary>
+    /// <returns>
+    /// True when an entry was consumed; when true, the caller must await <paramref name="application"/>.
+    /// </returns>
+    bool TryApplyFirstMatchingFault(
+        ReadOnlySpan<KafkaFaultScope> operationScopes,
+        out ValueTask application,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Appends a failure consumed by the next matching operations.
     /// </summary>
     void Fail(KafkaFaultScope scope, Exception exception, int occurrenceCount = 1);
@@ -268,6 +325,8 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
     private readonly object _gate = new();
     private readonly List<FaultEntry> _entries = [];
     private ProduceFaultIndex _produceFaultIndex = ProduceFaultIndex.Empty;
+    private FaultScopeIndex _scopeIndex = FaultScopeIndex.Empty;
+    private int _count;
     private int _hasEntries;
 
     internal bool HasPotentialProduceMatch(KafkaFaultOperation operation, string topic) =>
@@ -281,14 +340,7 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
     /// <summary>
     /// Gets the number of queued entries. A next-N failure is one entry.
     /// </summary>
-    public int Count
-    {
-        get
-        {
-            lock (_gate)
-                return _entries.Count;
-        }
-    }
+    public int Count => Volatile.Read(ref _count);
 
     /// <summary>
     /// Appends a failure consumed by the next matching operations.
@@ -302,8 +354,10 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
         lock (_gate)
         {
             _entries.Add(FaultEntry.Failure(scope, exception, occurrenceCount, isPersistent: false));
+            Volatile.Write(ref _count, _entries.Count);
             Volatile.Write(ref _hasEntries, 1);
             PublishProduceFaultIndexUnderLock();
+            PublishScopeIndexUnderLock();
         }
     }
 
@@ -318,8 +372,10 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
         lock (_gate)
         {
             _entries.Add(FaultEntry.Failure(scope, exception, remainingOccurrences: 0, isPersistent: true));
+            Volatile.Write(ref _count, _entries.Count);
             Volatile.Write(ref _hasEntries, 1);
             PublishProduceFaultIndexUnderLock();
+            PublishScopeIndexUnderLock();
         }
     }
 
@@ -333,8 +389,10 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
         lock (_gate)
         {
             _entries.Add(FaultEntry.Pause(scope, barrier));
+            Volatile.Write(ref _count, _entries.Count);
             Volatile.Write(ref _hasEntries, 1);
             PublishProduceFaultIndexUnderLock();
+            PublishScopeIndexUnderLock();
         }
 
         return barrier;
@@ -352,50 +410,61 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
         if (Volatile.Read(ref _hasEntries) == 0)
             return ValueTask.CompletedTask;
 
+        if (!TryConsumeFirstMatchingEntry(
+                operationScope,
+                out var entry,
+                out var observation,
+                out var observer))
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        return ApplyConsumedEntry(entry, observation, observer, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public bool TryApplyFirstMatchingFault(
+        ReadOnlySpan<KafkaFaultScope> operationScopes,
+        out ValueTask application,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        for (var i = 0; i < operationScopes.Length; i++)
+            operationScopes[i].Validate();
+
         FaultEntry? entry = null;
         KafkaFaultObservation observation = default;
         Action<KafkaFaultObservation>? observer = null;
         lock (_gate)
         {
-            for (var i = 0; i < _entries.Count; i++)
+            for (var entryIndex = 0; entryIndex < _entries.Count && entry is null; entryIndex++)
             {
-                var candidate = _entries[i];
-                if (!candidate.Scope.Matches(operationScope))
-                    continue;
-
-                entry = candidate;
-                if (!candidate.IsPersistent)
+                var candidate = _entries[entryIndex];
+                for (var scopeIndex = 0; scopeIndex < operationScopes.Length; scopeIndex++)
                 {
-                    candidate.RemainingOccurrences--;
-                    if (candidate.RemainingOccurrences == 0)
-                    {
-                        _entries.RemoveAt(i);
-                        if (_entries.Count == 0)
-                            Volatile.Write(ref _hasEntries, 0);
-                        PublishProduceFaultIndexUnderLock();
-                    }
-                }
+                    var operationScope = operationScopes[scopeIndex];
+                    if (!candidate.Scope.Matches(operationScope))
+                        continue;
 
-                observation = new KafkaFaultObservation(
-                    candidate.Scope,
-                    operationScope,
-                    candidate.Action,
-                    candidate.Exception,
-                    candidate.IsPersistent,
-                    candidate.IsPersistent ? null : candidate.RemainingOccurrences);
-                observer = FaultConsumed;
-                break;
+                    ConsumeEntryUnderLock(
+                        entryIndex,
+                        operationScope,
+                        out entry,
+                        out observation,
+                        out observer);
+                    break;
+                }
             }
         }
 
         if (entry is null)
-            return ValueTask.CompletedTask;
+        {
+            application = ValueTask.CompletedTask;
+            return false;
+        }
 
-        observer?.Invoke(observation);
-        if (entry.Exception is { } exception)
-            return ValueTask.FromException(exception);
-
-        return entry.Barrier!.EnterAsync(cancellationToken);
+        application = ApplyConsumedEntry(entry, observation, observer, cancellationToken);
+        return true;
     }
 
     /// <summary>
@@ -418,10 +487,14 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
                 removed++;
             }
 
+            Volatile.Write(ref _count, _entries.Count);
             if (_entries.Count == 0)
                 Volatile.Write(ref _hasEntries, 0);
             if (removed != 0)
+            {
                 PublishProduceFaultIndexUnderLock();
+                PublishScopeIndexUnderLock();
+            }
         }
 
         return removed;
@@ -439,8 +512,10 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
                 _entries[i].Barrier?.ClearBeforeEntry();
 
             _entries.Clear();
+            Volatile.Write(ref _count, 0);
             Volatile.Write(ref _hasEntries, 0);
             Volatile.Write(ref _produceFaultIndex, ProduceFaultIndex.Empty);
+            PublishScopeIndexUnderLock();
             return removed;
         }
     }
@@ -534,6 +609,482 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
             _ => false
         };
     }
+
+    /// <inheritdoc />
+    public long Version => Volatile.Read(ref _scopeIndex).Version;
+
+    internal bool HasPotentialMatch(KafkaFaultOperation operation, string? groupId) =>
+        Volatile.Read(ref _scopeIndex).HasPotentialMatch(operation, groupId);
+
+    /// <inheritdoc />
+    public bool HasMatchingFault(in KafkaFaultScope operationScope) =>
+        Volatile.Read(ref _scopeIndex).HasMatchingFault(operationScope);
+
+    /// <inheritdoc />
+    public bool HasPotentialFault(
+        KafkaFaultOperation operation,
+        string? groupId,
+        IReadOnlySet<TopicPartition> resources)
+    {
+        ArgumentNullException.ThrowIfNull(resources);
+        return Volatile.Read(ref _scopeIndex).HasPotentialMatch(operation, groupId, resources);
+    }
+
+    /// <inheritdoc />
+    public bool TryGetFirstMatchingFaultScope(
+        ReadOnlySpan<KafkaFaultScope> operationScopes,
+        out KafkaFaultScope operationScope) =>
+        Volatile.Read(ref _scopeIndex).TryGetFirstMatchingFaultScope(
+            operationScopes,
+            out operationScope);
+
+    internal bool TryApplyUnconditionalCommitFault(
+        string groupId,
+        out ValueTask application,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var operationScope = new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: groupId);
+        if (!TryConsumeFirstMatchingEntry(
+                operationScope,
+                out var entry,
+                out var observation,
+                out var observer))
+        {
+            application = ValueTask.CompletedTask;
+            return false;
+        }
+
+        application = ApplyConsumedEntry(entry, observation, observer, cancellationToken);
+        return true;
+    }
+
+    internal bool TryApplyLeadingUnconditionalCommitFault(
+        string groupId,
+        out ValueTask application,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        FaultEntry? entry = null;
+        KafkaFaultObservation observation = default;
+        Action<KafkaFaultObservation>? observer = null;
+        var operationScope = new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: groupId);
+        lock (_gate)
+        {
+            for (var entryIndex = 0; entryIndex < _entries.Count; entryIndex++)
+            {
+                var scope = _entries[entryIndex].Scope;
+                if (scope.Operation != KafkaFaultOperation.Commit ||
+                    scope.GroupId is not null && scope.GroupId != groupId)
+                {
+                    continue;
+                }
+
+                if (scope.Topic is not null || scope.Partition is not null)
+                    break;
+
+                ConsumeEntryUnderLock(
+                    entryIndex,
+                    operationScope,
+                    out entry,
+                    out observation,
+                    out observer);
+                break;
+            }
+        }
+
+        if (entry is null)
+        {
+            application = ValueTask.CompletedTask;
+            return false;
+        }
+
+        application = ApplyConsumedEntry(entry, observation, observer, cancellationToken);
+        return true;
+    }
+
+    internal bool TryApplyFirstMatchingCommitFault(
+        string groupId,
+        IReadOnlyList<TopicPartitionOffset> offsets,
+        out ValueTask application,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        FaultEntry? entry = null;
+        KafkaFaultObservation observation = default;
+        Action<KafkaFaultObservation>? observer = null;
+        lock (_gate)
+        {
+            for (var entryIndex = 0; entryIndex < _entries.Count && entry is null; entryIndex++)
+            {
+                var candidate = _entries[entryIndex];
+                if (candidate.Scope.Operation != KafkaFaultOperation.Commit ||
+                    candidate.Scope.GroupId is not null && candidate.Scope.GroupId != groupId)
+                {
+                    continue;
+                }
+
+                for (var offsetIndex = 0; offsetIndex < offsets.Count; offsetIndex++)
+                {
+                    var offset = offsets[offsetIndex];
+                    var operationScope = new KafkaFaultScope(
+                        KafkaFaultOperation.Commit,
+                        offset.Topic,
+                        offset.Partition,
+                        groupId);
+                    if (!candidate.Scope.Matches(operationScope))
+                        continue;
+
+                    ConsumeEntryUnderLock(
+                        entryIndex,
+                        operationScope,
+                        out entry,
+                        out observation,
+                        out observer);
+                    break;
+                }
+            }
+        }
+
+        if (entry is null)
+        {
+            application = ValueTask.CompletedTask;
+            return false;
+        }
+
+        application = ApplyConsumedEntry(entry, observation, observer, cancellationToken);
+        return true;
+    }
+
+    internal bool TryApplyFirstMatchingCommitFault(
+        string groupId,
+        TopicPartition? pendingOffset,
+        Dictionary<TopicPartition, TopicPartitionOffset> storedOffsets,
+        IReadOnlySet<TopicPartition> assignment,
+        out ValueTask application,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        FaultEntry? entry = null;
+        KafkaFaultObservation observation = default;
+        Action<KafkaFaultObservation>? observer = null;
+        lock (_gate)
+        {
+            for (var entryIndex = 0; entryIndex < _entries.Count && entry is null; entryIndex++)
+            {
+                var candidate = _entries[entryIndex];
+                if (candidate.Scope.Operation != KafkaFaultOperation.Commit ||
+                    candidate.Scope.GroupId is not null && candidate.Scope.GroupId != groupId)
+                {
+                    continue;
+                }
+
+                KafkaFaultScope operationScope;
+                if (pendingOffset is { } pendingPartition &&
+                    MatchesCommitResource(candidate.Scope, pendingPartition))
+                {
+                    operationScope = new KafkaFaultScope(
+                        KafkaFaultOperation.Commit,
+                        pendingPartition.Topic,
+                        pendingPartition.Partition,
+                        groupId);
+                }
+                else if (!TryGetMatchingStoredCommitScope(
+                             candidate.Scope,
+                             groupId,
+                             storedOffsets,
+                             assignment,
+                             out operationScope))
+                {
+                    continue;
+                }
+
+                ConsumeEntryUnderLock(
+                    entryIndex,
+                    operationScope,
+                    out entry,
+                    out observation,
+                    out observer);
+            }
+        }
+
+        if (entry is null)
+        {
+            application = ValueTask.CompletedTask;
+            return false;
+        }
+
+        application = ApplyConsumedEntry(entry, observation, observer, cancellationToken);
+        return true;
+    }
+
+    private static bool TryGetMatchingStoredCommitScope(
+        KafkaFaultScope ruleScope,
+        string groupId,
+        Dictionary<TopicPartition, TopicPartitionOffset> storedOffsets,
+        IReadOnlySet<TopicPartition> assignment,
+        out KafkaFaultScope operationScope)
+    {
+        foreach (var partition in storedOffsets.Keys)
+        {
+            if (assignment.Contains(partition) && MatchesCommitResource(ruleScope, partition))
+            {
+                operationScope = new KafkaFaultScope(
+                    KafkaFaultOperation.Commit,
+                    partition.Topic,
+                    partition.Partition,
+                    groupId);
+                return true;
+            }
+        }
+
+        operationScope = default;
+        return false;
+    }
+
+    private static bool MatchesCommitResource(KafkaFaultScope ruleScope, TopicPartition resource) =>
+        (ruleScope.Topic is null || ruleScope.Topic == resource.Topic) &&
+        (ruleScope.Partition is null || ruleScope.Partition == resource.Partition);
+
+    internal bool HasPotentialConsumerMatch(
+        string? groupId,
+        IReadOnlySet<TopicPartition> activeResources,
+        IReadOnlySet<TopicPartition> ownedResources,
+        bool includeCommit,
+        out long scopeVersion)
+    {
+        var index = Volatile.Read(ref _scopeIndex);
+        scopeVersion = index.Version;
+        return index.HasPotentialMatch(KafkaFaultOperation.Fetch, groupId, activeResources) ||
+               index.HasPotentialMatch(KafkaFaultOperation.Consume, groupId, activeResources) ||
+               includeCommit &&
+               index.HasPotentialMatch(KafkaFaultOperation.Commit, groupId, ownedResources);
+    }
+
+    private void PublishScopeIndexUnderLock()
+    {
+        var version = unchecked(Volatile.Read(ref _scopeIndex).Version + 1);
+        Volatile.Write(ref _scopeIndex, new FaultScopeIndex(_entries, version));
+    }
+
+    private void ConsumeEntryUnderLock(
+        int entryIndex,
+        KafkaFaultScope operationScope,
+        out FaultEntry entry,
+        out KafkaFaultObservation observation,
+        out Action<KafkaFaultObservation>? observer)
+    {
+        entry = _entries[entryIndex];
+        if (!entry.IsPersistent)
+        {
+            entry.RemainingOccurrences--;
+            if (entry.RemainingOccurrences == 0)
+            {
+                _entries.RemoveAt(entryIndex);
+                Volatile.Write(ref _count, _entries.Count);
+                if (_entries.Count == 0)
+                    Volatile.Write(ref _hasEntries, 0);
+                PublishProduceFaultIndexUnderLock();
+                PublishScopeIndexUnderLock();
+            }
+        }
+
+        observation = new KafkaFaultObservation(
+            entry.Scope,
+            operationScope,
+            entry.Action,
+            entry.Exception,
+            entry.IsPersistent,
+            entry.IsPersistent ? null : entry.RemainingOccurrences);
+        observer = FaultConsumed;
+    }
+
+    private bool TryConsumeFirstMatchingEntry(
+        KafkaFaultScope operationScope,
+        out FaultEntry entry,
+        out KafkaFaultObservation observation,
+        out Action<KafkaFaultObservation>? observer)
+    {
+        lock (_gate)
+        {
+            for (var entryIndex = 0; entryIndex < _entries.Count; entryIndex++)
+            {
+                if (!_entries[entryIndex].Scope.Matches(operationScope))
+                    continue;
+
+                ConsumeEntryUnderLock(
+                    entryIndex,
+                    operationScope,
+                    out entry,
+                    out observation,
+                    out observer);
+                return true;
+            }
+        }
+
+        entry = null!;
+        observation = default;
+        observer = null;
+        return false;
+    }
+
+    private static ValueTask ApplyConsumedEntry(
+        FaultEntry entry,
+        KafkaFaultObservation observation,
+        Action<KafkaFaultObservation>? observer,
+        CancellationToken cancellationToken)
+    {
+        observer?.Invoke(observation);
+        if (entry.Exception is { } exception)
+            return ValueTask.FromException(exception);
+
+        return entry.Barrier!.EnterAsync(cancellationToken);
+    }
+
+    private sealed class FaultScopeIndex
+    {
+        internal static readonly FaultScopeIndex Empty = new();
+
+        private readonly HashSet<OperationGroupKey> _operationGroups;
+        private readonly HashSet<ScopeKey> _scopes;
+        private readonly ScopeKey[] _orderedScopes;
+        private readonly ulong _operations;
+
+        private FaultScopeIndex()
+        {
+            _operationGroups = [];
+            _scopes = [];
+            _orderedScopes = [];
+        }
+
+        internal FaultScopeIndex(List<FaultEntry> entries, long version)
+        {
+            Version = version;
+            _operationGroups = new HashSet<OperationGroupKey>(entries.Count);
+            _scopes = new HashSet<ScopeKey>(entries.Count);
+            _orderedScopes = new ScopeKey[entries.Count];
+            for (var index = 0; index < entries.Count; index++)
+            {
+                var scope = entries[index].Scope;
+                _operations |= 1UL << (int)scope.Operation;
+                _operationGroups.Add(new OperationGroupKey(scope.Operation, scope.GroupId));
+                var key = new ScopeKey(
+                    scope.Operation,
+                    scope.Topic,
+                    scope.Partition,
+                    scope.GroupId);
+                _scopes.Add(key);
+                _orderedScopes[index] = key;
+            }
+        }
+
+        internal long Version { get; }
+
+        internal bool HasPotentialMatch(KafkaFaultOperation operation, string? groupId)
+        {
+            if ((_operations & (1UL << (int)operation)) == 0)
+                return false;
+
+            return _operationGroups.Contains(new OperationGroupKey(operation, null)) ||
+                   (groupId is not null &&
+                    _operationGroups.Contains(new OperationGroupKey(operation, groupId)));
+        }
+
+        internal bool HasPotentialMatch(
+            KafkaFaultOperation operation,
+            string? groupId,
+            IReadOnlySet<TopicPartition> assignment)
+        {
+            if (!HasPotentialMatch(operation, groupId))
+                return false;
+
+            foreach (var scope in _scopes)
+            {
+                if (scope.Operation != operation ||
+                    scope.GroupId is not null && scope.GroupId != groupId)
+                {
+                    continue;
+                }
+
+                if (scope.Topic is null && scope.Partition is null)
+                    return true;
+
+                foreach (var assigned in assignment)
+                {
+                    if ((scope.Topic is null || scope.Topic == assigned.Topic) &&
+                        (scope.Partition is null || scope.Partition == assigned.Partition))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        internal bool HasMatchingFault(in KafkaFaultScope operationScope)
+        {
+            if (!HasPotentialMatch(operationScope.Operation, operationScope.GroupId))
+                return false;
+
+            for (var selectors = 0; selectors < 8; selectors++)
+            {
+                var key = new ScopeKey(
+                    operationScope.Operation,
+                    (selectors & 1) == 0 ? null : operationScope.Topic,
+                    (selectors & 2) == 0 ? null : operationScope.Partition,
+                    (selectors & 4) == 0 ? null : operationScope.GroupId);
+                if (_scopes.Contains(key))
+                    return true;
+            }
+
+            return false;
+        }
+
+        internal bool TryGetFirstMatchingFaultScope(
+            ReadOnlySpan<KafkaFaultScope> operationScopes,
+            out KafkaFaultScope operationScope)
+        {
+            for (var scopeIndex = 0; scopeIndex < _orderedScopes.Length; scopeIndex++)
+            {
+                var ruleScope = _orderedScopes[scopeIndex];
+                for (var operationIndex = 0; operationIndex < operationScopes.Length; operationIndex++)
+                {
+                    var candidate = operationScopes[operationIndex];
+                    if (!Matches(ruleScope, candidate))
+                        continue;
+
+                    operationScope = candidate;
+                    return true;
+                }
+            }
+
+            operationScope = default;
+            return false;
+        }
+
+        private static bool Matches(ScopeKey ruleScope, KafkaFaultScope candidate)
+        {
+            if (ruleScope.Operation != candidate.Operation)
+                return false;
+            if (ruleScope.GroupId is not null && ruleScope.GroupId != candidate.GroupId)
+                return false;
+            if (ruleScope.Topic is not null && ruleScope.Topic != candidate.Topic)
+                return false;
+            return ruleScope.Partition is null || ruleScope.Partition == candidate.Partition;
+        }
+
+    }
+
+    private readonly record struct OperationGroupKey(
+        KafkaFaultOperation Operation,
+        string? GroupId);
+
+    private readonly record struct ScopeKey(
+        KafkaFaultOperation Operation,
+        string? Topic,
+        int? Partition,
+        string? GroupId);
 
     private sealed class FaultEntry
     {
