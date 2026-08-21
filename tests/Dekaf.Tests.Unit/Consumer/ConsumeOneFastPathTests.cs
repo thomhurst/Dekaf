@@ -456,6 +456,53 @@ public sealed class ConsumeOneFastPathTests
     }
 
     [Test]
+    public async Task ConsumeOneAsync_PreparationRetriesAreScopedPerComponent()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20, CreateRecord(0, "a", "one"))
+        ]);
+        var keyDeserializer = new InvalidatedPreparedStringDeserializer();
+        var valueDeserializer = new PreparedOnlyStringDeserializer();
+        await using var consumer = CreateInitializedConsumerWithDeserializers(
+            fetch,
+            keyDeserializer,
+            valueDeserializer);
+        MarkManualAssignmentCurrent(consumer);
+
+        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(10), CancellationToken.None);
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(result!.Value.Key).IsEqualTo("a");
+        await Assert.That(result.Value.Value).IsEqualTo("one");
+        await Assert.That(keyDeserializer.PrepareCount).IsEqualTo(2);
+        await Assert.That(valueDeserializer.PrepareCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task ConsumeAsync_PreparationRetriesAreScopedPerComponent()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20, CreateRecord(0, "a", "one"))
+        ]);
+        var keyDeserializer = new InvalidatedPreparedStringDeserializer();
+        var valueDeserializer = new PreparedOnlyStringDeserializer();
+        await using var consumer = CreateInitializedConsumerWithDeserializers(
+            fetch,
+            keyDeserializer,
+            valueDeserializer);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await using var records = consumer.ConsumeAsync(timeout.Token).GetAsyncEnumerator();
+
+        await Assert.That(await records.MoveNextAsync()).IsTrue();
+        await Assert.That(records.Current.Key).IsEqualTo("a");
+        await Assert.That(records.Current.Value).IsEqualTo("one");
+        await Assert.That(keyDeserializer.PrepareCount).IsEqualTo(2);
+        await Assert.That(valueDeserializer.PrepareCount).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task ConsumeOneAsync_CurrentBufferedAssignment_DoesNotRentTimeoutCts()
     {
         var fetch = PendingFetchData.Create(Topic, Partition,

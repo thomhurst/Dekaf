@@ -179,12 +179,7 @@ public sealed class AssociatedNameStrategy : IAsyncSubjectNameStrategy
         var key = new CacheKey(topic, recordType, isKey);
         lock (_gate)
         {
-            foreach (var (pendingKey, pending) in _pending)
-            {
-                if (IsAlias(pendingKey, key))
-                    _invalidatedPending.Add(pending);
-            }
-
+            InvalidatePendingAliasesUnderLock(key);
             var removed = InvalidateCachedAliasesUnderLock(key);
             InvalidateDependentCaches();
             return removed;
@@ -217,6 +212,9 @@ public sealed class AssociatedNameStrategy : IAsyncSubjectNameStrategy
         {
             if (!forceRefresh && _cache.TryGetValue(key, out var cached))
                 return new ValueTask<string>(cached);
+
+            if (forceRefresh)
+                InvalidatePendingAliasesUnderLock(key);
 
             if (!_pending.TryGetValue(key, out var pending)
                 || _invalidatedPending.Contains(pending)
@@ -391,6 +389,15 @@ public sealed class AssociatedNameStrategy : IAsyncSubjectNameStrategy
         }
 
         return removed;
+    }
+
+    private void InvalidatePendingAliasesUnderLock(CacheKey key)
+    {
+        foreach (var (pendingKey, pending) in _pending)
+        {
+            if (IsAlias(pendingKey, key))
+                _invalidatedPending.Add(pending);
+        }
     }
 
     private static bool IsAlias(in CacheKey candidate, in CacheKey key) =>

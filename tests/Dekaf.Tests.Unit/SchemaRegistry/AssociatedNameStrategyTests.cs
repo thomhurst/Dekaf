@@ -262,6 +262,32 @@ public sealed class AssociatedNameStrategyTests
     }
 
     [Test]
+    public async Task RefreshAsync_PreventsPendingAliasFromRepublishingStaleAssociation()
+    {
+        using var client = new MockSchemaRegistryClient();
+        var staleAliasResponse = new TaskCompletionSource<IReadOnlyList<Association>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        client.EnqueueAssociationLookup(staleAliasResponse.Task);
+        client.EnqueueAssociationLookup(Task.FromResult<IReadOnlyList<Association>>(
+            [CreateAssociation("orders", "orders-v2")]));
+        client.EnqueueAssociationLookup(Task.FromResult<IReadOnlyList<Association>>(
+            [CreateAssociation("orders", "orders-v2")]));
+        var resolver = CreateResolver(client);
+
+        var staleAliasLookup = resolver.GetSubjectNameAsync("orders", "OrderRecord", isKey: false);
+        await Assert.That(() => client.AssociationLookupCallCount)
+            .Eventually(count => count.IsEqualTo(1), TimeSpan.FromSeconds(5));
+        var refresh = resolver.RefreshAsync("orders", typeof(int).FullName, isKey: false);
+
+        await Assert.That(await refresh).IsEqualTo("orders-v2");
+        staleAliasResponse.SetResult([CreateAssociation("orders", "orders-v1")]);
+        await Assert.That(await staleAliasLookup).IsEqualTo("orders-v1");
+        await Assert.That(await resolver.GetSubjectNameAsync("orders", "OrderRecord", isKey: false))
+            .IsEqualTo("orders-v2");
+        await Assert.That(client.AssociationLookupCallCount).IsEqualTo(3);
+    }
+
+    [Test]
     public async Task GetSubjectNameAsync_InternalTimeoutClearsPendingLookup()
     {
         using var client = new MockSchemaRegistryClient();
