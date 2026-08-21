@@ -842,12 +842,19 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             });
 
         var options = CreateConsumerProtocolOptions(
-            heartbeatIntervalMs: 10,
-            maxPollIntervalMs: 50);
+            heartbeatIntervalMs: 60_000,
+            maxPollIntervalMs: 300_000);
         await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
 
         await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, cancellationToken);
-        await leaveAttempted.Task.WaitAsync(cancellationToken);
+        await coordinator.StopHeartbeatAsync();
+        SetCoordinatorLongField(
+            coordinator,
+            "_lastPollTimestamp",
+            Stopwatch.GetTimestamp() - (Stopwatch.Frequency * 600L));
+
+        await InvokeConsumerProtocolHeartbeatLoopAsync(coordinator, cancellationToken);
+        await Assert.That(leaveAttempted.Task.IsCompleted).IsTrue();
 
         var exception = await Assert.That(async () =>
                 await coordinator.CommitOffsetsAsync(
