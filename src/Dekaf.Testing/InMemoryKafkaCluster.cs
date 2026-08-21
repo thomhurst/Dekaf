@@ -853,6 +853,27 @@ public sealed class InMemoryKafkaCluster
         }
     }
 
+    internal IReadOnlyDictionary<TopicPartition, ErrorCode> AlterStreamsGroupOffsets(
+        string groupId,
+        IReadOnlyList<TopicPartitionOffset> offsets)
+    {
+        lock (_gate)
+        {
+            var results = new Dictionary<TopicPartition, ErrorCode>(offsets.Count);
+            if (_consumerGroupMembers.TryGetValue(groupId, out var members) && members.Count != 0)
+            {
+                foreach (var offset in offsets)
+                    results[new TopicPartition(offset.Topic, offset.Partition)] = ErrorCode.UnknownMemberId;
+                return results;
+            }
+
+            CommitOffsetsUnderLock(groupId, offsets);
+            foreach (var offset in offsets)
+                results[new TopicPartition(offset.Topic, offset.Partition)] = ErrorCode.None;
+            return results;
+        }
+    }
+
     internal IReadOnlyDictionary<TopicPartition, ErrorCode> DeleteStreamsGroupOffsets(
         string groupId,
         IReadOnlyList<TopicPartition> partitions)

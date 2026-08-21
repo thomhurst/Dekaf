@@ -12,6 +12,7 @@ public sealed class AdminClientStreamsGroupManagementTests
 {
     private const string FirstGroup = "streams-a";
     private const string SecondGroup = "streams-b";
+    private const string ThirdGroup = "streams-c";
     private const string Topic = "input";
     private static readonly Guid TopicId = Guid.Parse("00112233-4455-6677-8899-aabbccddeeff");
 
@@ -233,6 +234,67 @@ public sealed class AdminClientStreamsGroupManagementTests
 
         await Assert.That(results[FirstGroup].Offsets[new TopicPartition(Topic, 0)].Offset).IsEqualTo(42);
         await connection.Received(2).SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+            Arg.Any<OffsetFetchRequest>(),
+            10,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task ListStreamsGroupOffsetsAsync_ReturnsSiblingAndEachFinalRetriableGroupError()
+    {
+        var (admin, connection) = CreateAdmin();
+        SetupFindCoordinator(connection);
+        connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new OffsetFetchResponse
+            {
+                Groups =
+                [
+                    new OffsetFetchResponseGroup
+                    {
+                        GroupId = FirstGroup,
+                        ErrorCode = ErrorCode.None,
+                        Topics =
+                        [
+                            new OffsetFetchResponseTopic
+                            {
+                                TopicId = TopicId,
+                                Partitions = [Offset(0, 42, ErrorCode.None)]
+                            }
+                        ]
+                    },
+                    new OffsetFetchResponseGroup
+                    {
+                        GroupId = SecondGroup,
+                        ErrorCode = ErrorCode.RequestTimedOut,
+                        Topics = []
+                    },
+                    new OffsetFetchResponseGroup
+                    {
+                        GroupId = ThirdGroup,
+                        ErrorCode = ErrorCode.CoordinatorLoadInProgress,
+                        Topics = []
+                    }
+                ]
+            }));
+
+        var results = await admin.ListStreamsGroupOffsetsAsync(
+            new Dictionary<string, ListStreamsGroupOffsetsSpec>
+            {
+                [FirstGroup] = new() { TopicPartitions = [new TopicPartition(Topic, 0)] },
+                [SecondGroup] = new() { TopicPartitions = [new TopicPartition(Topic, 0)] },
+                [ThirdGroup] = new() { TopicPartitions = [new TopicPartition(Topic, 0)] }
+            });
+
+        await Assert.That(results[FirstGroup].ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(results[FirstGroup].Offsets[new TopicPartition(Topic, 0)].Offset).IsEqualTo(42);
+        await Assert.That(results[SecondGroup].ErrorCode).IsEqualTo(ErrorCode.RequestTimedOut);
+        await Assert.That(results[SecondGroup].Offsets).IsEmpty();
+        await Assert.That(results[ThirdGroup].ErrorCode).IsEqualTo(ErrorCode.CoordinatorLoadInProgress);
+        await Assert.That(results[ThirdGroup].Offsets).IsEmpty();
+        await connection.Received(4).SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
             Arg.Any<OffsetFetchRequest>(),
             10,
             Arg.Any<CancellationToken>());
