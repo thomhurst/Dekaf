@@ -437,6 +437,7 @@ public class MpscFetchBufferTests
         var timeoutCallbackExited = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var timeoutThreadId = 0;
         var timeoutCallbackActive = 0;
+        Thread? timeoutThread = null;
         var buffer = new MpscFetchBuffer(
             capacity: 4,
             afterProducerWaiterCountIncrementedForTesting: null,
@@ -453,7 +454,9 @@ public class MpscFetchBufferTests
 
         try
         {
-            var awaiter = buffer.WaitToReadAsync(1, CancellationToken.None).GetAwaiter();
+            // Keep the real timer dormant and invoke its callback on a dedicated thread.
+            // ThreadPool starvation must not decide whether this continuation contract passes.
+            var awaiter = buffer.WaitToReadAsync(30_000, CancellationToken.None).GetAwaiter();
             awaiter.UnsafeOnCompleted(() =>
             {
                 var ranInline = Volatile.Read(ref timeoutCallbackActive) != 0
@@ -468,14 +471,17 @@ public class MpscFetchBufferTests
                 }
             });
 
-            var completion = await continuationFinished.Task.WaitAsync(TimeSpan.FromSeconds(5));
-            await timeoutCallbackExited.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            timeoutThread = new Thread(() => TriggerConsumerTimeout(buffer));
+            timeoutThread.Start();
+            var completion = await continuationFinished.Task;
+            await timeoutCallbackExited.Task;
 
             await Assert.That(completion.RanInline).IsFalse();
             await Assert.That(completion.Result).IsFalse();
         }
         finally
         {
+            timeoutThread?.Join();
             buffer.Dispose();
         }
     }
