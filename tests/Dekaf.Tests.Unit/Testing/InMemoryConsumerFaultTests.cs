@@ -1757,6 +1757,72 @@ public sealed class InMemoryConsumerFaultTests
     }
 
     [Test]
+    public async Task Snapshot_AfterProcessingSharedWaiterFailsInsteadOfTruncating()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic(Topic, partitionCount: 2);
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Partition = 0,
+            Key = "snapshot-0",
+            Value = "value-0"
+        });
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Partition = 1,
+            Key = "concurrent",
+            Value = "value-1"
+        });
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Partition = 1,
+            Key = "remaining",
+            Value = "value-2"
+        });
+        var deserializer = new AsyncStringDeserializer();
+        await using var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            deserializer,
+            deserializer,
+            new InMemoryConsumerOptions
+            {
+                GroupId = GroupId,
+                AutoOffsetReset = AutoOffsetReset.Earliest,
+                OffsetCommitMode = OffsetCommitMode.Auto,
+                EnableAutoOffsetStore = true,
+                OffsetStoreTiming = OffsetStoreTiming.AfterProcessing
+            });
+        consumer.Assign(Partition, new TopicPartition(Topic, 1));
+        await using var snapshot = consumer.ConsumeSnapshotAsync().GetAsyncEnumerator();
+        await Assert.That(await snapshot.MoveNextAsync()).IsTrue();
+        await Assert.That(snapshot.Current.Key).IsEqualTo("snapshot-0");
+        var barrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId));
+
+        var provingConsume = consumer.ConsumeOneAsync(Timeout.InfiniteTimeSpan).AsTask();
+        await barrier.WaitUntilEnteredAsync();
+        var sharedMove = snapshot.MoveNextAsync().AsTask();
+        await Assert.That(sharedMove.IsCompleted).IsFalse();
+        await Assert.That(barrier.Release()).IsTrue();
+
+        var failure = await Assert.ThrowsAsync<InvalidOperationException>(() => sharedMove);
+        var concurrent = await provingConsume;
+
+        await Assert.That(failure!.Message).Contains("snapshot enumeration");
+        await Assert.That(concurrent).IsNotNull();
+        await Assert.That(concurrent!.Value.Key).IsEqualTo("concurrent");
+        await consumer.CommitAsync();
+        var remaining = new List<string>();
+        await foreach (var record in consumer.ConsumeSnapshotAsync())
+            remaining.Add(record.Key!);
+        await Assert.That(remaining).IsEquivalentTo(["remaining"]);
+    }
+
+    [Test]
     public async Task AutoCommit_AfterProcessingBarrierPreservesCallerPause()
     {
         var cluster = new InMemoryKafkaCluster();
@@ -2038,6 +2104,37 @@ public sealed class InMemoryConsumerFaultTests
 
         await Assert.That(actual).IsSameReferenceAs(groupFailure);
         await Assert.That(cluster.FaultPlan.Count).IsEqualTo(0);
+    }
+
+    [Arguments("Subscribe")]
+    [Arguments("SubscribePattern")]
+    [Test]
+    public async Task Subscribe_GroupTransitionObserverCloseCannotReregisterDisposedConsumer(
+        string transition)
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic(Topic);
+        cluster.CreateTopic("payments");
+        var consumer = CreateConsumer(cluster);
+        consumer.Subscribe(Topic);
+        var barrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.JoinGroup, groupId: GroupId));
+        await Assert.That(barrier.Release()).IsTrue();
+        Task? closeTask = null;
+        cluster.FaultPlan.FaultConsumed += _ => closeTask = consumer.CloseAsync().AsTask();
+        Action subscribe = transition == "Subscribe"
+            ? () => consumer.Subscribe("payments")
+            : () => consumer.SubscribePattern("^payments$");
+
+        _ = Assert.Throws<ObjectDisposedException>(subscribe);
+
+        await Assert.That(closeTask).IsNotNull();
+        await closeTask!;
+        await Assert.That(consumer.Assignment).IsEmpty();
+        await using var replacement = CreateConsumer(cluster);
+        replacement.Subscribe("payments");
+        await Assert.That(replacement.Assignment)
+            .IsEquivalentTo([new TopicPartition("payments", 0)]);
     }
 
     [Test]

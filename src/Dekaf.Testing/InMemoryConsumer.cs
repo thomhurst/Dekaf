@@ -365,6 +365,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         {
             ThrowIfAutoCommitAdvancementPendingUnderLock();
             ApplyGroupTransitionFaults();
+            ThrowIfDisposed();
             var topicPartitions = topics
                 .Where(topic => !string.IsNullOrWhiteSpace(topic))
                 .Distinct(StringComparer.Ordinal)
@@ -413,6 +414,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         {
             ThrowIfAutoCommitAdvancementPendingUnderLock();
             ApplyGroupTransitionFaults();
+            ThrowIfDisposed();
             _subscriptionPattern = pattern;
             _subscription.Clear();
             ReplaceAssignment(topicPartitions);
@@ -532,7 +534,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                     cancellationToken).ConfigureAwait(false);
                 ThrowIfDisposed();
                 if (capturedProof is { SharedWaiter: true })
-                    yield break;
+                    ThrowSnapshotStateChanged();
 
                 TopicPartition partition;
                 InMemoryRecord record;
