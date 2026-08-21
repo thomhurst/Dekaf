@@ -688,7 +688,7 @@ public sealed class AdaptiveScaleDownTests
             new UnboundedChannelOptions
             {
                 SingleReader = true,
-                SingleWriter = true
+                SingleWriter = false
             });
 
         var pool = Substitute.For<IConnectionPool>();
@@ -719,7 +719,8 @@ public sealed class AdaptiveScaleDownTests
             for (var i = 0; i < 512; i++)
                 sender.Enqueue(CreateTestBatch(vtPool, i % PartitionCount));
 
-            await scaleUpApplied.Task.WaitAsync(cancellationToken);
+            var scaledConnectionCount = await scaleUpApplied.Task.WaitAsync(cancellationToken);
+            await Assert.That(scaledConnectionCount).IsGreaterThan(options.ConnectionsPerBroker);
             await WaitForSuccessfulAcknowledgementsAsync(
                 acknowledgements.Reader, expectedCount: 512, cancellationToken);
 
@@ -737,9 +738,15 @@ public sealed class AdaptiveScaleDownTests
 
             await shrinkRequested.Task.WaitAsync(cancellationToken);
 
-            // Wave 2: continued traffic through and after the scale-down apply. Under the
-            // pre-fix code the send loop is already dead at this point and every one of
-            // these fails with ObjectDisposedException.
+            // A successful batch after the shrink request proves the next send-loop
+            // iteration completed ApplyScaleDown before the main post-shrink wave starts.
+            sender.Enqueue(CreateTestBatch(vtPool, PartitionCount - 1));
+            await WaitForSuccessfulAcknowledgementsAsync(
+                acknowledgements.Reader, expectedCount: 1, cancellationToken);
+
+            // Wave 2: continued traffic after the scale-down apply. Under the pre-fix code
+            // the send loop is already dead at this point and every one of these fails with
+            // ObjectDisposedException.
             for (var i = 0; i < 128; i++)
                 sender.Enqueue(CreateTestBatch(vtPool, i % PartitionCount));
 
