@@ -127,6 +127,43 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
         await Assert.That(replicaInfo.IsFuture).IsFalse();
     }
 
+    [Test]
+    public async Task DescribeReplicaLogDirsAsync_ReturnsSelectedReplicaInfo()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1).ConfigureAwait(false);
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-replica-log-dirs-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = topic,
+            Key = "key",
+            Value = "value"
+        }).ConfigureAwait(false);
+
+        await using var admin = CreateAdminClient();
+        var descriptions = await admin.DescribeTopicsAsync([topic]).ConfigureAwait(false);
+        var replica = new TopicPartitionReplica(
+            topic,
+            0,
+            descriptions[topic].Partitions.Single(static partition => partition.PartitionIndex == 0).LeaderId);
+
+        var results = await WaitForConditionAsync(
+            async () => await admin.DescribeReplicaLogDirsAsync([replica]).ConfigureAwait(false),
+            result => result[replica].CurrentReplicaLogDir is not null,
+            maxRetries: 8).ConfigureAwait(false);
+
+        await Assert.That(results.Keys).IsEquivalentTo([replica]);
+        await Assert.That(results[replica].ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(results[replica].CurrentReplicaLogDir).IsNotNull();
+        await Assert.That(results[replica].CurrentReplicaOffsetLag).IsGreaterThanOrEqualTo(0);
+        await Assert.That(results[replica].FutureReplicaLogDir).IsNull();
+        await Assert.That(results[replica].FutureReplicaOffsetLag).IsEqualTo(-1);
+    }
+
     #endregion
 
     #region AlterConfigs Tests
@@ -1047,6 +1084,25 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
         var description = descriptions[topic];
         await Assert.That(description.Name).IsEqualTo(topic);
         await Assert.That(description.Partitions.Count).IsEqualTo(3);
+    }
+
+    [Test]
+    public async Task DescribeAndDeleteTopicsAsync_ByTopicId_WorksTogether()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2).ConfigureAwait(false);
+        await using var admin = CreateAdminClient();
+        var byName = await admin.DescribeTopicsAsync([topic]).ConfigureAwait(false);
+        var topicId = byName[topic].TopicId;
+
+        var byId = await admin.DescribeTopicsAsync([topicId]).ConfigureAwait(false);
+
+        await Assert.That(topicId).IsNotEqualTo(Guid.Empty);
+        await Assert.That(byId).ContainsKey(topicId);
+        await Assert.That(byId[topicId].Name).IsEqualTo(topic);
+        await Assert.That(byId[topicId].TopicId).IsEqualTo(topicId);
+        await Assert.That(byId[topicId].Partitions.Count).IsEqualTo(2);
+
+        await admin.DeleteTopicsAsync([topicId]).ConfigureAwait(false);
     }
 
     [Test]

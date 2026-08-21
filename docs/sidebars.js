@@ -7,6 +7,15 @@ const sidebars = {
     'api-compatibility',
     {
       type: 'category',
+      label: 'Admin',
+      items: [
+        'admin/topic-identifiers',
+        'admin/transaction-remediation',
+        'admin/replica-log-directories',
+      ],
+    },
+    {
+      type: 'category',
       label: 'Producer',
       items: [
         'producer/basics',

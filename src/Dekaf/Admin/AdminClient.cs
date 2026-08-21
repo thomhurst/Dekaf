@@ -20,7 +20,12 @@ namespace Dekaf.Admin;
 /// <summary>
 /// Kafka administrative client implementation.
 /// </summary>
-public sealed class AdminClient : IAdminClient, IKafkaClientStatusProvider
+public sealed class AdminClient :
+    IAdminClient,
+    IReplicaLogDirAdminClient,
+    ITopicIdAdminClient,
+    ITransactionRemediationAdminClient,
+    IKafkaClientStatusProvider
 {
     private const string MetadataQuorumTopic = "__cluster_metadata";
     private const int MetadataQuorumPartition = 0;
@@ -563,6 +568,98 @@ public sealed class AdminClient : IAdminClient, IKafkaClientStatusProvider
         await _metadataManager.RefreshMetadataAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    /// <inheritdoc />
+    public async ValueTask DeleteTopicsAsync(
+        IEnumerable<Guid> topicIds,
+        DeleteTopicsOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(topicIds);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var ids = DistinctTopicIds(topicIds);
+        if (ids.Count == 0)
+            return;
+
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        var opts = options ?? new DeleteTopicsOptions();
+        var unresolvedIds = new HashSet<Guid>(ids);
+        var ambiguousIds = new HashSet<Guid>();
+
+        await WithRetryAsync(async () =>
+        {
+            var topics = new DeleteTopicState[unresolvedIds.Count];
+            for (int sourceIndex = 0, destinationIndex = 0; sourceIndex < ids.Count; sourceIndex++)
+            {
+                var topicId = ids[sourceIndex];
+                if (unresolvedIds.Contains(topicId))
+                    topics[destinationIndex++] = new DeleteTopicState { TopicId = topicId };
+            }
+
+            using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.DeleteTopics, cancellationToken).ConfigureAwait(false);
+            var controller = controllerLease.Connection;
+            const short minimumTopicIdVersion = 6;
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                controller,
+                Protocol.ApiKey.DeleteTopics,
+                minimumTopicIdVersion,
+                DeleteTopicsRequest.HighestSupportedVersion);
+
+            DeleteTopicsResponse response;
+            try
+            {
+                response = await controller.SendAsync<DeleteTopicsRequest, DeleteTopicsResponse>(
+                    new DeleteTopicsRequest
+                    {
+                        Topics = topics,
+                        TimeoutMs = opts.TimeoutMs
+                    },
+                    apiVersion,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                ambiguousIds.UnionWith(unresolvedIds);
+                throw;
+            }
+
+            KafkaException? failure = null;
+            for (var i = 0; i < response.Responses.Count; i++)
+            {
+                var topic = response.Responses[i];
+                var identifier = topic.TopicId;
+                if (identifier == Guid.Empty && i < topics.Length)
+                    identifier = topics[i].TopicId;
+
+                if (topic.ErrorCode == Protocol.ErrorCode.None ||
+                    (topic.ErrorCode == Protocol.ErrorCode.UnknownTopicId &&
+                     ambiguousIds.Contains(identifier)))
+                {
+                    unresolvedIds.Remove(identifier);
+                    ambiguousIds.Remove(identifier);
+                    continue;
+                }
+
+                var isRetriable = topic.ErrorCode.IsRetriable();
+                if (topic.ErrorCode is Protocol.ErrorCode.RequestTimedOut
+                    or Protocol.ErrorCode.NetworkException)
+                    ambiguousIds.Add(identifier);
+
+                if (failure is null || (failure.IsRetriable && !isRetriable))
+                {
+                    failure = KafkaException.FromErrorCode(topic.ErrorCode,
+                        $"Failed to delete topic '{topic.Name}' ({identifier}): {topic.ErrorMessage ?? topic.ErrorCode.ToString()}");
+                }
+            }
+
+            if (failure is not null)
+                throw failure;
+        }, cancellationToken).ConfigureAwait(false);
+
+        await _metadataManager.RefreshMetadataAsync(cancellationToken).ConfigureAwait(false);
+    }
+
     public async ValueTask<IReadOnlyList<TopicListing>> ListTopicsAsync(
         ListTopicsOptions? options = null,
         CancellationToken cancellationToken = default)
@@ -614,6 +711,58 @@ public sealed class AdminClient : IAdminClient, IKafkaClientStatusProvider
         }
 
         return result;
+    }
+
+    /// <inheritdoc />
+    public async ValueTask<IReadOnlyDictionary<Guid, TopicDescription>> DescribeTopicsAsync(
+        IEnumerable<Guid> topicIds,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(topicIds);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var ids = DistinctTopicIds(topicIds);
+        if (ids.Count == 0)
+            return new Dictionary<Guid, TopicDescription>();
+
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        var topics = new MetadataRequestTopic[ids.Count];
+        for (var i = 0; i < ids.Count; i++)
+            topics[i] = new MetadataRequestTopic { TopicId = ids[i] };
+
+        return await WithRetryAsync(async () =>
+        {
+            using var connectionLease = await LeaseAnyBrokerConnectionAsync(cancellationToken).ConfigureAwait(false);
+            var connection = connectionLease.Connection;
+            const short minimumTopicIdVersion = 10;
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                connection,
+                Protocol.ApiKey.Metadata,
+                minimumTopicIdVersion,
+                MetadataRequest.HighestSupportedVersion);
+
+            var response = await connection.SendAsync<MetadataRequest, MetadataResponse>(
+                new MetadataRequest
+                {
+                    Topics = topics,
+                    AllowAutoTopicCreation = false
+                },
+                apiVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            if (response.ErrorCode != Protocol.ErrorCode.None)
+                throw new KafkaException(response.ErrorCode, $"Failed to describe topics by ID: {response.ErrorCode}.");
+
+            var result = new Dictionary<Guid, TopicDescription>(response.Topics.Count);
+            foreach (var topic in response.Topics)
+            {
+                if (topic.TopicId != Guid.Empty)
+                    result[topic.TopicId] = ToTopicDescription(topic);
+            }
+
+            return (IReadOnlyDictionary<Guid, TopicDescription>)result;
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask<IReadOnlyDictionary<string, TopicDescription>> DescribeTopicPartitionsAsync(
@@ -964,6 +1113,41 @@ public sealed class AdminClient : IAdminClient, IKafkaClientStatusProvider
             ErrorCode = p.ErrorCode
         }).ToList()
     };
+
+    private static TopicDescription ToTopicDescription(TopicMetadata topic) => new()
+    {
+        Name = topic.Name,
+        TopicId = topic.TopicId,
+        IsInternal = topic.IsInternal,
+        ErrorCode = topic.ErrorCode,
+        TopicAuthorizedOperations = topic.TopicAuthorizedOperations,
+        Partitions = topic.Partitions.Select(static p => new PartitionInfo
+        {
+            PartitionIndex = p.PartitionIndex,
+            LeaderId = p.LeaderId,
+            LeaderEpoch = p.LeaderEpoch,
+            ReplicaNodes = p.ReplicaNodes,
+            IsrNodes = p.IsrNodes,
+            OfflineReplicas = p.OfflineReplicas,
+            ErrorCode = p.ErrorCode
+        }).ToList()
+    };
+
+    private static List<Guid> DistinctTopicIds(IEnumerable<Guid> topicIds)
+    {
+        var result = new List<Guid>();
+        var seen = new HashSet<Guid>();
+        foreach (var topicId in topicIds)
+        {
+            if (topicId == Guid.Empty)
+                throw new ArgumentException("Topic IDs cannot contain the empty UUID.", nameof(topicIds));
+
+            if (seen.Add(topicId))
+                result.Add(topicId);
+        }
+
+        return result;
+    }
 
     public async ValueTask<IReadOnlyDictionary<string, GroupDescription>> DescribeConsumerGroupsAsync(
         IEnumerable<string> groupIds,
@@ -1607,6 +1791,34 @@ public sealed class AdminClient : IAdminClient, IKafkaClientStatusProvider
 
             return result;
         }, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask<ForceTerminateTransactionResultInfo> ForceTerminateTransactionAsync(
+        string transactionalId,
+        ForceTerminateTransactionOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(transactionalId);
+        if (options?.TimeoutMs is { } timeoutMs)
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(timeoutMs);
+
+        // Validate the public operation against controller-only bootstrap before delegating
+        // to the single-ID producer fencing path used by Kafka's Admin client.
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        var results = await FenceProducersAsync(
+            [transactionalId],
+            options?.TimeoutMs is { } configuredTimeoutMs
+                ? new FenceProducersOptions { TimeoutMs = configuredTimeoutMs }
+                : null,
+            cancellationToken).ConfigureAwait(false);
+        var result = results[transactionalId];
+        return new ForceTerminateTransactionResultInfo
+        {
+            TransactionalId = result.TransactionalId,
+            ErrorCode = result.ErrorCode,
+            ProducerId = result.ProducerId,
+            ProducerEpoch = result.ProducerEpoch
+        };
     }
 
     public async ValueTask<AbortTransactionResultInfo> AbortTransactionAsync(
@@ -4072,6 +4284,145 @@ public sealed class AdminClient : IAdminClient, IKafkaClientStatusProvider
         }, cancellationToken).ConfigureAwait(false);
     }
 
+    public async ValueTask<IReadOnlyDictionary<TopicPartitionReplica, DescribeReplicaLogDirResultInfo>> DescribeReplicaLogDirsAsync(
+        IEnumerable<TopicPartitionReplica> replicas,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(replicas);
+
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        var distinctReplicas = new HashSet<TopicPartitionReplica>();
+        foreach (var replica in replicas)
+        {
+            ValidateTopicPartitionReplica(replica, nameof(replicas));
+            distinctReplicas.Add(replica);
+        }
+
+        if (distinctReplicas.Count == 0)
+        {
+            return new Dictionary<TopicPartitionReplica, DescribeReplicaLogDirResultInfo>();
+        }
+
+        var replicasByBroker = distinctReplicas.GroupBy(static replica => replica.BrokerId).ToArray();
+        return await WithRetryAsync<IReadOnlyDictionary<TopicPartitionReplica, DescribeReplicaLogDirResultInfo>>(async () =>
+        {
+            var brokerResults = await Task.WhenAll(replicasByBroker.Select(async brokerReplicas =>
+            {
+                var brokerId = brokerReplicas.Key;
+                var brokerReplicaList = brokerReplicas.ToArray();
+                using var connectionLease = await _connectionPool.LeaseConnectionAsync(brokerId, cancellationToken).ConfigureAwait(false);
+                var connection = connectionLease.Connection;
+                var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                    connection,
+                    Protocol.ApiKey.DescribeLogDirs,
+                    DescribeLogDirsRequest.LowestSupportedVersion,
+                    DescribeLogDirsRequest.HighestSupportedVersion);
+                var response = await connection.SendAsync<DescribeLogDirsRequest, DescribeLogDirsResponse>(
+                    new DescribeLogDirsRequest
+                    {
+                        Topics = BuildDescribeReplicaLogDirsTopics(brokerReplicaList)
+                    },
+                    apiVersion,
+                    cancellationToken).ConfigureAwait(false);
+
+                var replicaInfos = new Dictionary<TopicPartition, ReplicaLogDirAccumulator>(brokerReplicaList.Length);
+                foreach (var replica in brokerReplicaList)
+                {
+                    replicaInfos[replica.TopicPartition] = new ReplicaLogDirAccumulator();
+                }
+
+                if (response.ErrorCode == Protocol.ErrorCode.None)
+                {
+                    foreach (var directory in response.Results)
+                    {
+                        foreach (var topic in directory.Topics)
+                        {
+                            foreach (var partition in topic.Partitions)
+                            {
+                                var topicPartition = new TopicPartition(topic.Name, partition.PartitionIndex);
+                                if (!replicaInfos.TryGetValue(topicPartition, out var accumulator))
+                                {
+                                    continue;
+                                }
+
+                                if (directory.ErrorCode != Protocol.ErrorCode.None)
+                                {
+                                    accumulator.ErrorCode = directory.ErrorCode;
+                                }
+                                else if (partition.IsFutureKey)
+                                {
+                                    accumulator.FutureReplicaLogDir = directory.LogDir;
+                                    accumulator.FutureReplicaOffsetLag = partition.OffsetLag;
+                                }
+                                else
+                                {
+                                    accumulator.CurrentReplicaLogDir = directory.LogDir;
+                                    accumulator.CurrentReplicaOffsetLag = partition.OffsetLag;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                var brokerResult = new Dictionary<TopicPartitionReplica, DescribeReplicaLogDirResultInfo>(brokerReplicaList.Length);
+                foreach (var replica in brokerReplicaList)
+                {
+                    var accumulator = replicaInfos[replica.TopicPartition];
+                    brokerResult[replica] = new DescribeReplicaLogDirResultInfo
+                    {
+                        TopicPartitionReplica = replica,
+                        CurrentReplicaLogDir = accumulator.CurrentReplicaLogDir,
+                        CurrentReplicaOffsetLag = accumulator.CurrentReplicaOffsetLag,
+                        FutureReplicaLogDir = accumulator.FutureReplicaLogDir,
+                        FutureReplicaOffsetLag = accumulator.FutureReplicaOffsetLag,
+                        ErrorCode = response.ErrorCode == Protocol.ErrorCode.None
+                            ? accumulator.ErrorCode
+                            : response.ErrorCode
+                    };
+                }
+
+                return brokerResult;
+            })).ConfigureAwait(false);
+
+            var results = new Dictionary<TopicPartitionReplica, DescribeReplicaLogDirResultInfo>(distinctReplicas.Count);
+            foreach (var brokerResult in brokerResults)
+            {
+                foreach (var (replica, result) in brokerResult)
+                {
+                    results[replica] = result;
+                }
+            }
+
+            return results;
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static IReadOnlyList<DescribeLogDirsRequestTopic> BuildDescribeReplicaLogDirsTopics(
+        IReadOnlyList<TopicPartitionReplica> replicas)
+    {
+        var topics = new Dictionary<string, List<int>>(StringComparer.Ordinal);
+        for (var index = 0; index < replicas.Count; index++)
+        {
+            var replica = replicas[index];
+            if (!topics.TryGetValue(replica.Topic, out var partitions))
+            {
+                partitions = [];
+                topics[replica.Topic] = partitions;
+            }
+
+            partitions.Add(replica.Partition);
+        }
+
+        return topics
+            .Select(static topic => new DescribeLogDirsRequestTopic
+            {
+                Topic = topic.Key,
+                Partitions = topic.Value
+            })
+            .ToList();
+    }
+
     private static IReadOnlyList<DescribeLogDirsRequestTopic>? BuildDescribeLogDirsTopics(IEnumerable<TopicPartition>? partitions)
     {
         if (partitions is null)
@@ -4163,6 +4514,19 @@ public sealed class AdminClient : IAdminClient, IKafkaClientStatusProvider
     }
 
     private readonly record struct ReplicaLogDirAssignment(TopicPartitionReplica Replica, string LogDir);
+
+    private sealed class ReplicaLogDirAccumulator
+    {
+        public string? CurrentReplicaLogDir { get; set; }
+
+        public long CurrentReplicaOffsetLag { get; set; } = -1;
+
+        public string? FutureReplicaLogDir { get; set; }
+
+        public long FutureReplicaOffsetLag { get; set; } = -1;
+
+        public Protocol.ErrorCode ErrorCode { get; set; }
+    }
 
     public async ValueTask<IReadOnlyDictionary<string, StreamsGroupDescription>> DescribeStreamsGroupsAsync(
         IEnumerable<string> groupIds,

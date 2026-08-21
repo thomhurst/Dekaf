@@ -9,7 +9,11 @@ namespace Dekaf.Testing;
 /// <summary>
 /// In-memory <see cref="IAdminClient"/> for common topic and group-offset test operations.
 /// </summary>
-public sealed class InMemoryAdminClient : IAdminClient
+public sealed class InMemoryAdminClient :
+    IAdminClient,
+    IReplicaLogDirAdminClient,
+    ITopicIdAdminClient,
+    ITransactionRemediationAdminClient
 {
     private static readonly TimeSpan DefaultDelegationTokenLifetime = TimeSpan.FromHours(24);
 
@@ -96,6 +100,29 @@ public sealed class InMemoryAdminClient : IAdminClient
         return ValueTask.CompletedTask;
     }
 
+    public ValueTask DeleteTopicsAsync(
+        IEnumerable<Guid> topicIds,
+        DeleteTopicsOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(topicIds);
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+
+        var ids = topicIds.Distinct().ToList();
+        foreach (var topicId in ids)
+            if (topicId == Guid.Empty)
+                throw new ArgumentException("Topic IDs cannot contain the empty UUID.", nameof(topicIds));
+
+        foreach (var topicId in ids)
+        {
+            if (!_cluster.DeleteTopic(topicId))
+                throw new KafkaException(ErrorCode.UnknownTopicId, $"Topic ID '{topicId}' does not exist.");
+        }
+
+        return ValueTask.CompletedTask;
+    }
+
     public ValueTask<IReadOnlyList<TopicListing>> ListTopicsAsync(
         ListTopicsOptions? options = null,
         CancellationToken cancellationToken = default)
@@ -113,6 +140,16 @@ public sealed class InMemoryAdminClient : IAdminClient
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
         return ValueTask.FromResult(_cluster.DescribeTopics(topicNames));
+    }
+
+    public ValueTask<IReadOnlyDictionary<Guid, TopicDescription>> DescribeTopicsAsync(
+        IEnumerable<Guid> topicIds,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(topicIds);
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+        return ValueTask.FromResult(_cluster.DescribeTopics(topicIds));
     }
 
     public ValueTask<IReadOnlyDictionary<string, TopicDescription>> DescribeTopicPartitionsAsync(
@@ -867,6 +904,24 @@ public sealed class InMemoryAdminClient : IAdminClient
         return ValueTask.FromResult<IReadOnlyDictionary<string, FenceProducersResultInfo>>(result);
     }
 
+    public ValueTask<ForceTerminateTransactionResultInfo> ForceTerminateTransactionAsync(
+        string transactionalId,
+        ForceTerminateTransactionOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(transactionalId);
+        if (options?.TimeoutMs is { } timeoutMs)
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(timeoutMs);
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+
+        return ValueTask.FromResult(new ForceTerminateTransactionResultInfo
+        {
+            TransactionalId = transactionalId,
+            ErrorCode = ErrorCode.TransactionalIdNotFound
+        });
+    }
+
     public ValueTask<AbortTransactionResultInfo> AbortTransactionAsync(
         AbortTransactionSpec transaction,
         AbortTransactionOptions? options = null,
@@ -961,6 +1016,34 @@ public sealed class InMemoryAdminClient : IAdminClient
         }
 
         return ValueTask.FromResult<IReadOnlyDictionary<TopicPartitionReplica, AlterReplicaLogDirResultInfo>>(result);
+    }
+
+    public ValueTask<IReadOnlyDictionary<TopicPartitionReplica, DescribeReplicaLogDirResultInfo>> DescribeReplicaLogDirsAsync(
+        IEnumerable<TopicPartitionReplica> replicas,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(replicas);
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+
+        var result = new Dictionary<TopicPartitionReplica, DescribeReplicaLogDirResultInfo>();
+        foreach (var replica in replicas)
+        {
+            ValidateTopicPartition(replica.TopicPartition);
+            ArgumentOutOfRangeException.ThrowIfNegative(replica.BrokerId);
+
+            var exists = replica.BrokerId == 0 && _cluster.ContainsTopicPartition(replica.TopicPartition);
+            result[replica] = new DescribeReplicaLogDirResultInfo
+            {
+                TopicPartitionReplica = replica,
+                CurrentReplicaLogDir = exists ? "in-memory" : null,
+                CurrentReplicaOffsetLag = exists ? 0 : -1,
+                FutureReplicaOffsetLag = -1,
+                ErrorCode = ErrorCode.None
+            };
+        }
+
+        return ValueTask.FromResult<IReadOnlyDictionary<TopicPartitionReplica, DescribeReplicaLogDirResultInfo>>(result);
     }
 
     public ValueTask<IReadOnlyDictionary<string, StreamsGroupDescription>> DescribeStreamsGroupsAsync(

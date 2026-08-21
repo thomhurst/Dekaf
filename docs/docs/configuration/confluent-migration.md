@@ -195,6 +195,10 @@ partitioner values are `Random`, `Consistent`, `ConsistentRandom`, `Murmur2`, `M
 librdkafka delivery semantics, the adapter selects `OffsetStoreTiming.OnDelivery`. Configure
 Dekaf natively instead when you want its safer processing-completion semantics.
 
+`GroupProtocol=Classic` is rejected by design, not silently translated. See the
+[Classic protocol support decision](../consumer/consumer-groups.md#classic-protocol-support-decision)
+for the Kafka roadmap, migration alternatives, and reopen gates.
+
 ## CoreWCF Kafka migration
 
 CoreWCF's [Kafka transport binding](https://corewcf.github.io/blog/2023/10/21/kafkabinding)

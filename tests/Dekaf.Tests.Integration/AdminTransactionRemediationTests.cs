@@ -79,6 +79,38 @@ public sealed class AdminTransactionRemediationTests(KafkaTestContainer kafka) :
     }
 
     [Test]
+    public async Task ForceTerminateTransactionAsync_TerminatesActiveTransactionalProducer()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        var txnId = $"admin-force-terminate-{Guid.NewGuid():N}";
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithTransactionalId(txnId)
+            .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        await producer.InitTransactionsAsync();
+        await using var transaction = producer.BeginTransaction();
+        await transaction.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = topic,
+            Key = "terminated-key",
+            Value = "terminated-value"
+        }, CancellationToken.None);
+
+        await using var admin = KafkaContainer.CreateAdminClient();
+        var result = await admin.ForceTerminateTransactionAsync(txnId);
+
+        await Assert.That(result.TransactionalId).IsEqualTo(txnId);
+        await Assert.That(result.ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(result.ProducerId).IsGreaterThanOrEqualTo(0);
+        var commit = () => transaction.CommitAsync().AsTask();
+        await Assert.That(commit).Throws<FatalTransactionException>();
+    }
+
+    [Test]
     public async Task AbortTransactionAsync_WritesAbortMarkerForOpenTransaction()
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();

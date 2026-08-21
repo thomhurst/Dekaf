@@ -437,6 +437,9 @@ public class MpscFetchBufferTests
         var timeoutCallbackExited = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var timeoutThreadId = 0;
         var timeoutCallbackActive = 0;
+        Exception? failure = null;
+        Exception? timeoutThreadException = null;
+        Thread? timeoutThread = null;
         var buffer = new MpscFetchBuffer(
             capacity: 4,
             afterProducerWaiterCountIncrementedForTesting: null,
@@ -453,7 +456,9 @@ public class MpscFetchBufferTests
 
         try
         {
-            var awaiter = buffer.WaitToReadAsync(1, CancellationToken.None).GetAwaiter();
+            // Keep the real timer dormant and invoke its callback on a dedicated thread.
+            // ThreadPool starvation must not decide whether this continuation contract passes.
+            var awaiter = buffer.WaitToReadAsync(30_000, CancellationToken.None).GetAwaiter();
             awaiter.UnsafeOnCompleted(() =>
             {
                 var ranInline = Volatile.Read(ref timeoutCallbackActive) != 0
@@ -468,16 +473,50 @@ public class MpscFetchBufferTests
                 }
             });
 
+            timeoutThread = new Thread(() =>
+            {
+                try
+                {
+                    TriggerConsumerTimeout(buffer);
+                }
+                // lgtm[cs/catch-of-all-exceptions] Transfer arbitrary callback failures to the test thread.
+                catch (Exception exception)
+                {
+                    timeoutThreadException = exception;
+                    continuationFinished.TrySetException(exception);
+                    timeoutCallbackExited.TrySetException(exception);
+                }
+            })
+            {
+                IsBackground = true
+            };
+            timeoutThread.Start();
             var completion = await continuationFinished.Task.WaitAsync(TimeSpan.FromSeconds(5));
             await timeoutCallbackExited.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
             await Assert.That(completion.RanInline).IsFalse();
             await Assert.That(completion.Result).IsFalse();
         }
+        // lgtm[cs/catch-of-all-exceptions] Defer arbitrary test failures until the timeout thread is joined.
+        catch (Exception exception)
+        {
+            failure = exception;
+        }
         finally
         {
-            buffer.Dispose();
+            if (timeoutThread is not null && !timeoutThread.Join(TimeSpan.FromSeconds(5)))
+            {
+                failure = new TimeoutException("The consumer-timeout callback thread did not exit.", failure);
+            }
+            else
+            {
+                buffer.Dispose();
+                failure = timeoutThreadException ?? failure;
+            }
         }
+
+        if (failure is not null)
+            ExceptionDispatchInfo.Capture(failure).Throw();
     }
 
     [Test]
