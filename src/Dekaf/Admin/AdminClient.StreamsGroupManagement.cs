@@ -182,28 +182,45 @@ public sealed partial class AdminClient
 
                 foreach (var (coordinatorId, coordinatorGroups) in groupsByCoordinator)
                 {
-                    using var connectionLease = await _connectionPool.LeaseConnectionAsync(
-                        coordinatorId,
-                        cancellationToken).ConfigureAwait(false);
-                    var connection = connectionLease.Connection;
-                    var highestVersion = coordinatorGroups.Any(groupId => requests[groupId] is null)
-                        ? (short)(OffsetFetchRequest.TopicIdVersion - 1)
-                        : OffsetFetchRequest.HighestSupportedVersion;
-                    var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-                        connection,
-                        Protocol.ApiKey.OffsetFetch,
-                        requireStable
-                            ? OffsetFetchRequest.RequireStableVersion
-                            : OffsetFetchRequest.LowestSupportedVersion,
-                        highestVersion);
-
-                    if (apiVersion < 8)
+                    try
                     {
-                        foreach (var groupId in coordinatorGroups)
+                        using var connectionLease = await _connectionPool.LeaseConnectionAsync(
+                            coordinatorId,
+                            cancellationToken).ConfigureAwait(false);
+                        var connection = connectionLease.Connection;
+                        var highestVersion = coordinatorGroups.Any(groupId => requests[groupId] is null)
+                            ? (short)(OffsetFetchRequest.TopicIdVersion - 1)
+                            : OffsetFetchRequest.HighestSupportedVersion;
+                        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                            connection,
+                            Protocol.ApiKey.OffsetFetch,
+                            requireStable
+                                ? OffsetFetchRequest.RequireStableVersion
+                                : OffsetFetchRequest.LowestSupportedVersion,
+                            highestVersion);
+
+                        if (apiVersion < 8)
+                        {
+                            foreach (var groupId in coordinatorGroups)
+                            {
+                                var failure = await ListStreamsGroupOffsetsBatchAsync(
+                                    connection,
+                                    [groupId],
+                                    requests,
+                                    requireStable,
+                                    apiVersion,
+                                    results,
+                                    retryErrors,
+                                    retryResults,
+                                    cancellationToken).ConfigureAwait(false);
+                                retryFailure ??= failure;
+                            }
+                        }
+                        else
                         {
                             var failure = await ListStreamsGroupOffsetsBatchAsync(
                                 connection,
-                                [groupId],
+                                coordinatorGroups,
                                 requests,
                                 requireStable,
                                 apiVersion,
@@ -214,19 +231,17 @@ public sealed partial class AdminClient
                             retryFailure ??= failure;
                         }
                     }
-                    else
+                    catch (Exception exception) when (
+                        RetryHelper.IsRetriableRequestFailure(exception) &&
+                        !cancellationToken.IsCancellationRequested)
                     {
-                        var failure = await ListStreamsGroupOffsetsBatchAsync(
-                            connection,
-                            coordinatorGroups,
-                            requests,
-                            requireStable,
-                            apiVersion,
-                            results,
-                            retryErrors,
-                            retryResults,
-                            cancellationToken).ConfigureAwait(false);
-                        retryFailure ??= failure;
+                        var errorCode = GetRetryErrorCode(exception);
+                        foreach (var groupId in coordinatorGroups)
+                        {
+                            if (!results.ContainsKey(groupId))
+                                retryErrors[groupId] = errorCode;
+                        }
+                        retryFailure ??= exception;
                     }
                 }
 
@@ -775,65 +790,67 @@ public sealed partial class AdminClient
 
                 foreach (var (coordinatorId, coordinatorGroups) in groupsByCoordinator)
                 {
-                    using var connectionLease = await _connectionPool.LeaseConnectionAsync(
-                        coordinatorId,
-                        cancellationToken).ConfigureAwait(false);
-                    var connection = connectionLease.Connection;
-                    var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-                        connection,
-                        Protocol.ApiKey.DeleteGroups,
-                        DeleteGroupsRequest.LowestSupportedVersion,
-                        DeleteGroupsRequest.HighestSupportedVersion);
-
-                    DeleteGroupsResponse response;
+                    var requestMayHaveBeenSent = false;
                     try
                     {
-                        response = await connection.SendAsync<DeleteGroupsRequest, DeleteGroupsResponse>(
+                        using var connectionLease = await _connectionPool.LeaseConnectionAsync(
+                            coordinatorId,
+                            cancellationToken).ConfigureAwait(false);
+                        var connection = connectionLease.Connection;
+                        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                            connection,
+                            Protocol.ApiKey.DeleteGroups,
+                            DeleteGroupsRequest.LowestSupportedVersion,
+                            DeleteGroupsRequest.HighestSupportedVersion);
+
+                        requestMayHaveBeenSent = true;
+                        var response = await connection.SendAsync<DeleteGroupsRequest, DeleteGroupsResponse>(
                             new DeleteGroupsRequest { GroupsNames = coordinatorGroups },
                             apiVersion,
                             cancellationToken).ConfigureAwait(false);
+
+                        var requested = new HashSet<string>(coordinatorGroups, StringComparer.Ordinal);
+                        foreach (var groupResult in response.Results)
+                        {
+                            if (!requested.Contains(groupResult.GroupId))
+                                continue;
+
+                            var errorCode = groupResult.ErrorCode;
+                            if (errorCode.IsRetriable() || errorCode.RequiresMetadataRefresh())
+                            {
+                                if (errorCode == Protocol.ErrorCode.RequestTimedOut)
+                                    ambiguousGroups.Add(groupResult.GroupId);
+
+                                retryErrors[groupResult.GroupId] = errorCode;
+                                retryFailure ??= new Errors.GroupException(
+                                    errorCode,
+                                    $"DeleteStreamsGroups failed for group '{groupResult.GroupId}': {errorCode}",
+                                    isRetriable: true)
+                                {
+                                    GroupId = groupResult.GroupId
+                                };
+                                continue;
+                            }
+
+                            if (errorCode == Protocol.ErrorCode.GroupIdNotFound &&
+                                ambiguousGroups.Contains(groupResult.GroupId))
+                            {
+                                errorCode = Protocol.ErrorCode.None;
+                            }
+
+                            results[groupResult.GroupId] = DeleteGroupResult(groupResult.GroupId, errorCode);
+                        }
                     }
                     catch (Exception exception) when (
                         RetryHelper.IsRetriableRequestFailure(exception) &&
                         !cancellationToken.IsCancellationRequested)
                     {
-                        ambiguousGroups.UnionWith(coordinatorGroups);
+                        if (requestMayHaveBeenSent)
+                            ambiguousGroups.UnionWith(coordinatorGroups);
+                        var errorCode = GetRetryErrorCode(exception);
                         foreach (var groupId in coordinatorGroups)
-                            retryErrors[groupId] = GetRetryErrorCode(exception);
+                            retryErrors[groupId] = errorCode;
                         retryFailure ??= exception;
-                        continue;
-                    }
-
-                    var requested = new HashSet<string>(coordinatorGroups, StringComparer.Ordinal);
-                    foreach (var groupResult in response.Results)
-                    {
-                        if (!requested.Contains(groupResult.GroupId))
-                            continue;
-
-                        var errorCode = groupResult.ErrorCode;
-                        if (errorCode.IsRetriable() || errorCode.RequiresMetadataRefresh())
-                        {
-                            if (errorCode == Protocol.ErrorCode.RequestTimedOut)
-                                ambiguousGroups.Add(groupResult.GroupId);
-
-                            retryErrors[groupResult.GroupId] = errorCode;
-                            retryFailure ??= new Errors.GroupException(
-                                errorCode,
-                                $"DeleteStreamsGroups failed for group '{groupResult.GroupId}': {errorCode}",
-                                isRetriable: true)
-                            {
-                                GroupId = groupResult.GroupId
-                            };
-                            continue;
-                        }
-
-                        if (errorCode == Protocol.ErrorCode.GroupIdNotFound &&
-                            ambiguousGroups.Contains(groupResult.GroupId))
-                        {
-                            errorCode = Protocol.ErrorCode.None;
-                        }
-
-                        results[groupResult.GroupId] = DeleteGroupResult(groupResult.GroupId, errorCode);
                     }
                 }
 

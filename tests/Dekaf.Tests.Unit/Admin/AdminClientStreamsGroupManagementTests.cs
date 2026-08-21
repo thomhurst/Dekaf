@@ -180,6 +180,51 @@ public sealed class AdminClientStreamsGroupManagementTests
     }
 
     [Test]
+    public async Task ListStreamsGroupOffsetsAsync_ContinuesAfterSiblingCoordinatorSendFailure()
+    {
+        var (admin, connection) = CreateAdmin();
+        SetupSeparateCoordinators(connection);
+        connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                var request = call.ArgAt<OffsetFetchRequest>(0);
+                var groupId = request.Groups![0].GroupId;
+                return groupId == FirstGroup
+                    ? ValueTask.FromException<OffsetFetchResponse>(new IOException("Coordinator unavailable."))
+                    : ValueTask.FromResult(new OffsetFetchResponse
+                    {
+                        Groups =
+                        [
+                            new OffsetFetchResponseGroup
+                            {
+                                GroupId = groupId,
+                                ErrorCode = ErrorCode.None,
+                                Topics = []
+                            }
+                        ]
+                    });
+            });
+
+        var results = await admin.ListStreamsGroupOffsetsAsync(
+            new Dictionary<string, ListStreamsGroupOffsetsSpec>
+            {
+                [FirstGroup] = new(),
+                [SecondGroup] = new()
+            });
+
+        await Assert.That(results[FirstGroup].ErrorCode).IsEqualTo(ErrorCode.UnknownServerError);
+        await Assert.That(results[SecondGroup].ErrorCode).IsEqualTo(ErrorCode.None);
+        await connection.Received(1).SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+            Arg.Is<OffsetFetchRequest>(request =>
+                request.Groups!.Count == 1 && request.Groups[0].GroupId == SecondGroup),
+            9,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
     public async Task ListStreamsGroupOffsetsAsync_FetchAllNegotiatesV9()
     {
         var (admin, connection) = CreateAdmin();
@@ -905,6 +950,39 @@ public sealed class AdminClientStreamsGroupManagementTests
     }
 
     [Test]
+    public async Task DeleteStreamsGroupsAsync_ContinuesAfterSiblingCoordinatorLeaseFailure()
+    {
+        var (admin, connection, pool) = CreateAdminWithPool();
+        SetupSeparateCoordinators(connection);
+        pool.GetConnectionAsync(2, Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromException<IKafkaConnection>(new IOException("Coordinator unavailable.")));
+        connection.SendAsync<DeleteGroupsRequest, DeleteGroupsResponse>(
+                Arg.Any<DeleteGroupsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                var request = call.ArgAt<DeleteGroupsRequest>(0);
+                return ValueTask.FromResult(new DeleteGroupsResponse
+                {
+                    Results = request.GroupsNames
+                        .Select(groupId => DeletedGroup(groupId, ErrorCode.None))
+                        .ToList()
+                });
+            });
+
+        var results = await admin.DeleteStreamsGroupsAsync([FirstGroup, SecondGroup]);
+
+        await Assert.That(results[FirstGroup].ErrorCode).IsEqualTo(ErrorCode.UnknownServerError);
+        await Assert.That(results[SecondGroup].ErrorCode).IsEqualTo(ErrorCode.None);
+        await connection.Received(1).SendAsync<DeleteGroupsRequest, DeleteGroupsResponse>(
+            Arg.Is<DeleteGroupsRequest>(request =>
+                request.GroupsNames.Count == 1 && request.GroupsNames[0] == SecondGroup),
+            2,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
     public async Task DeleteStreamsGroupsAsync_ReturnsFinalRetriableErrors()
     {
         var (admin, connection) = CreateAdmin();
@@ -1062,14 +1140,33 @@ public sealed class AdminClientStreamsGroupManagementTests
             });
     }
 
-    private static FindCoordinatorResponse CoordinatorResponse(string groupId, ErrorCode errorCode) => new()
+    private static void SetupSeparateCoordinators(IKafkaConnection connection)
+    {
+        connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                Arg.Any<FindCoordinatorRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                var request = call.ArgAt<FindCoordinatorRequest>(0);
+                return ValueTask.FromResult(CoordinatorResponse(
+                    request.Key,
+                    ErrorCode.None,
+                    request.Key == FirstGroup ? 2 : 3));
+            });
+    }
+
+    private static FindCoordinatorResponse CoordinatorResponse(
+        string groupId,
+        ErrorCode errorCode,
+        int nodeId = 1) => new()
     {
         Coordinators =
         [
             new Coordinator
             {
                 Key = groupId,
-                NodeId = 1,
+                NodeId = nodeId,
                 Host = "localhost",
                 Port = 9092,
                 ErrorCode = errorCode
@@ -1078,6 +1175,13 @@ public sealed class AdminClientStreamsGroupManagementTests
     };
 
     private static (AdminClient Admin, IKafkaConnection Connection) CreateAdmin(
+        short offsetFetchMaxVersion = 10)
+    {
+        var (admin, connection, _) = CreateAdminWithPool(offsetFetchMaxVersion);
+        return (admin, connection);
+    }
+
+    private static (AdminClient Admin, IKafkaConnection Connection, IConnectionPool Pool) CreateAdminWithPool(
         short offsetFetchMaxVersion = 10)
     {
         var connection = Substitute.For<IKafkaConnection>();
@@ -1141,6 +1245,6 @@ public sealed class AdminClientStreamsGroupManagementTests
                 RetryBackoffMaxMs = 1
             },
             pool,
-            metadataManager), connection);
+            metadataManager), connection, pool);
     }
 }
