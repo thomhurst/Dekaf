@@ -196,6 +196,8 @@ internal sealed class StreamingJsonSchemaValidator(
                     ? valueSlice.GetOrCreateSizes(memberCount + 1)
                     : CompiledValidationRule.GetSizeValues(memberCount + 1)
                 : default;
+            if (node.ValidationRulesUseCachedEquality)
+                CompiledValidationRule.BeginEqualityResolution();
 
             for (var index = 0; index < rules.Length; index++)
             {
@@ -1962,9 +1964,11 @@ internal sealed class SchemaCompiler : IDisposable
         node.ValidationRules = CompileValidationRules(
             schema,
             out var validationRuleMemberIndexes,
-            out var validationRulesUseSize);
+            out var validationRulesUseSize,
+            out var validationRulesUseCachedEquality);
         node.ValidationRuleMemberIndexes = validationRuleMemberIndexes;
         node.ValidationRulesUseSize = validationRulesUseSize;
+        node.ValidationRulesUseCachedEquality = validationRulesUseCachedEquality;
 
         node.Types = ParseTypes(schema);
         node.MinProperties = GetNonNegativeInt32(schema, "minProperties", 0);
@@ -2042,10 +2046,12 @@ internal sealed class SchemaCompiler : IDisposable
     private CompiledValidationRule[] CompileValidationRules(
         JsonElement schema,
         out int[] memberIndexes,
-        out bool usesSize)
+        out bool usesSize,
+        out bool usesCachedEquality)
     {
         memberIndexes = [];
         usesSize = false;
+        usesCachedEquality = false;
         if (!schema.TryGetProperty("confluent:rules", out var rules))
             return [];
         if (rules.ValueKind != JsonValueKind.Array)
@@ -2081,6 +2087,7 @@ internal sealed class SchemaCompiler : IDisposable
                 _validationMemberPaths,
                 usedMemberIndexes);
             usesSize |= compiledRule.UsesSize;
+            usesCachedEquality |= compiledRule.UsesCachedEquality;
             compiled.Add(compiledRule);
         }
         if (usedMemberIndexes.Count != 0)
@@ -2709,6 +2716,7 @@ internal sealed class CompiledSchemaNode
     internal CompiledSchemaNode? Reference { get; set; }
     internal CompiledValidationRule[] ValidationRules { get; set; } = [];
     internal bool ValidationRulesUseSize { get; set; }
+    internal bool ValidationRulesUseCachedEquality { get; set; }
     internal bool SharesValidationRuleSizes { get; set; }
     internal int[] ValidationRuleMemberIndexes { get; set; } = [];
     internal ValidationCelMemberTable? ValidationRuleMembers { get; set; }

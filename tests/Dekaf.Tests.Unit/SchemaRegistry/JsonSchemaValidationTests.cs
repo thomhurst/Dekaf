@@ -1634,6 +1634,32 @@ public sealed class JsonSchemaValidationTests
     }
 
     [Test]
+    public async Task InlineRules_RepeatedStructuralEqualityCacheResetsPerPayload()
+    {
+        const string schemaText = """
+            {
+              "confluent:rules": [
+                { "name": "a", "expr": "this.left == this.right" },
+                { "name": "b", "expr": "this.left == this.right" },
+                { "name": "c", "expr": "this.right == this.left" },
+                { "name": "d", "expr": "this.left != this.other" }
+              ]
+            }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
+        var equal = """{"left":{"id":1},"right":{"id":1},"other":{"id":2}}"""u8.ToArray();
+        var unequal = """{"left":{"id":1},"right":{"id":2},"other":{"id":2}}"""u8.ToArray();
+
+        validator.ValidateRules(equal, 24, failFast: false);
+        var exception = Assert.Throws<ValidationRulesFailedException>(() =>
+            validator.ValidateRules(unequal, 24, failFast: false));
+        validator.ValidateRules(equal, 24, failFast: false);
+
+        await Assert.That(exception.Violations.Select(static violation => violation.Rule.Name!))
+            .IsEquivalentTo(["a", "b", "c"]);
+    }
+
+    [Test]
     public async Task InlineRules_MissingMembersRequireHasGuard()
     {
         const string schemaText = """
@@ -2492,6 +2518,56 @@ public sealed class JsonSchemaValidationTests
         await Assert.That(calls).IsEquivalentTo(["upgrade"]);
     }
 
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task MigrationRunner_NoOpReaderDomainTransformRetainsWriterPayloadSchema(
+        bool validateBeforeDomain)
+    {
+        const string writerSchemaText = """{ "required": ["id"] }""";
+        const string readerSchemaText = """{ "required": ["latest"] }""";
+        using var registry = new MockSchemaRegistryClient();
+        var writerSchema = CreateSchema(writerSchemaText);
+        var writerSchemaId = await registry.RegisterSchemaAsync("validation-value", writerSchema);
+        var readerSchema = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = readerSchemaText,
+            RuleSet = new SchemaRuleSet
+            {
+                DomainRules = [CreateRule("domain", "PASSTHROUGH", SchemaRuleMode.Read)]
+            }
+        };
+        _ = await registry.RegisterSchemaAsync("validation-value", readerSchema);
+        var runner = new SchemaRegistryMigrationRunner(
+            registry,
+            new SchemaRegistryRuleExecutor([new PassThroughRuleHandler("PASSTHROUGH")]),
+            TimeSpan.FromSeconds(1));
+        var payload = """{"id":7}"""u8.ToArray();
+
+        var result = validateBeforeDomain
+            ? runner.TransformWithBeforeDomainValidation(
+                payload,
+                writerSchemaId,
+                "validation-value",
+                writerSchema,
+                Context,
+                SchemaRegistryPayloadFormat.Json,
+                new StreamingJsonSchemaValidatorFactory(registry),
+                validationRulesFailFast: false)
+            : runner.Transform(
+                payload,
+                writerSchemaId,
+                "validation-value",
+                writerSchema,
+                Context,
+                SchemaRegistryPayloadFormat.Json);
+
+        await Assert.That(result.PayloadSchemaId).IsEqualTo(writerSchemaId);
+        await Assert.That(result.PayloadSchema).IsSameReferenceAs(writerSchema);
+        await Assert.That(result.Payload).IsEquivalentTo(payload);
+    }
+
     private static Schema CreateSchema(
         string schema,
         IReadOnlyList<SchemaReference>? references = null)
@@ -2637,6 +2713,19 @@ public sealed class JsonSchemaValidationTests
         public ReadOnlyMemory<byte> TransformDeserializedPayload(
             ReadOnlyMemory<byte> payload,
             SchemaRegistryRuleContext context) => payload;
+    }
+
+    private sealed class PassThroughRuleHandler(string type) : ISchemaRegistryRuleHandler
+    {
+        public string Type => type;
+
+        public ReadOnlyMemory<byte> TransformSerializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleHandlerContext context) => payload;
+
+        public ReadOnlyMemory<byte> TransformDeserializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleHandlerContext context) => payload;
     }
 
     private sealed class ReplacingLegacyRuleExecutor(ReadOnlyMemory<byte> replacement)
