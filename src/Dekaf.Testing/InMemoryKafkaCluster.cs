@@ -839,6 +839,18 @@ public sealed class InMemoryKafkaCluster
             return _consumerGroupOffsets.Keys.Order(StringComparer.Ordinal).ToArray();
     }
 
+    internal IReadOnlyList<string> ListShareGroups()
+    {
+        lock (_gate)
+        {
+            var groupIds = new HashSet<string>(_shareGroupOffsets.Keys, StringComparer.Ordinal);
+            groupIds.UnionWith(_shareGroupMembers.Keys);
+            groupIds.UnionWith(_shareLeases.Keys);
+            groupIds.UnionWith(_shareDeliveryCounts.Keys);
+            return groupIds.Order(StringComparer.Ordinal).ToArray();
+        }
+    }
+
     internal void DeleteGroup(string groupId)
     {
         lock (_gate)
