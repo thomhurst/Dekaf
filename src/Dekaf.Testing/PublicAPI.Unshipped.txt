@@ -28,6 +28,7 @@ Dekaf.Testing.InMemoryStreamsGroupMember.LastUpdate.get -> Dekaf.Streams.Streams
 Dekaf.Testing.InMemoryStreamsGroupMember.ReportTaskOffsetsAsync(Dekaf.Streams.StreamsGroupTaskOffsetReport! report, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Streams.StreamsGroupHeartbeatResult!>
 Dekaf.Testing.InMemoryStreamsGroupMember.Snapshot.get -> Dekaf.Streams.StreamsGroupMemberSnapshot!
 Dekaf.Testing.InMemoryStreamsGroupMember.UpdateAsync(Dekaf.Streams.StreamsGroupMemberUpdate! update, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.Streams.StreamsGroupHeartbeatResult!>
+Dekaf.Testing.InMemoryAdminClient.DeleteShareGroupsAsync(System.Collections.Generic.IEnumerable<string!>! groupIds, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.DeleteShareGroupResult!>!>
 Dekaf.Testing.KafkaFaultAction
 Dekaf.Testing.KafkaFaultAction.Pause = 1 -> Dekaf.Testing.KafkaFaultAction
 Dekaf.Testing.KafkaFaultAction.Throw = 0 -> Dekaf.Testing.KafkaFaultAction

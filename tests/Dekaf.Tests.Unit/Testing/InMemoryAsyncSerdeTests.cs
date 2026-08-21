@@ -4,6 +4,7 @@ using Dekaf.Admin;
 using Dekaf.Consumer;
 using Dekaf.Errors;
 using Dekaf.Producer;
+using Dekaf.Protocol;
 using Dekaf.Serialization;
 using Dekaf.ShareConsumer;
 using Dekaf.Testing;
@@ -297,13 +298,13 @@ public sealed class InMemoryAsyncSerdeTests
         shareConsumer.Acknowledge(record);
         await shareConsumer.CommitAsync();
 
-        var offsets = await admin.ListConsumerGroupOffsetsAsync("async-share");
+        var offsets = await admin.DescribeShareGroupOffsetsAsync("async-share");
 
         await Assert.That(record.Key).IsEqualTo("k");
         await Assert.That(record.Value).IsEqualTo("v");
         await Assert.That(Encoding.UTF8.GetString(serde.LastDeserializeContext.KeyData.Span)).IsEqualTo("v:k");
         await Assert.That(serde.LastDeserializeContext.IsKeyNull).IsFalse();
-        await Assert.That(offsets[new TopicPartition("shared", 0)]).IsEqualTo(1);
+        await Assert.That(offsets.Single().StartOffset).IsEqualTo(1);
     }
 
     [Test]
@@ -380,6 +381,85 @@ public sealed class InMemoryAsyncSerdeTests
     }
 
     [Test]
+    public async Task ShareConsumer_CloseDuringAsyncDeserialization_ReleasesAcquiredRecord()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        var deserializer = new BlockingAsyncDeserializer();
+        var consumer = new InMemoryShareConsumer<string, string>(
+            cluster,
+            Serializers.String,
+            deserializer,
+            new InMemoryShareConsumerOptions { GroupId = "share-close-race" });
+        var admin = new InMemoryAdminClient(cluster);
+
+        await producer.ProduceAsync("shared", "k", "v");
+        consumer.Subscribe("shared");
+
+        var poll = consumer.PollAsync().FirstAsync().AsTask();
+        try
+        {
+            await deserializer.Entered.WaitAsync(TimeSpan.FromSeconds(5));
+            await consumer.CloseAsync();
+
+            var activeDeletion = await admin.DeleteShareGroupsAsync(["share-close-race"]);
+            await Assert.That(activeDeletion["share-close-race"].ErrorCode).IsEqualTo(ErrorCode.NonEmptyGroup);
+        }
+        finally
+        {
+            deserializer.Release();
+        }
+
+        await Assert.That(async () => await poll).Throws<ObjectDisposedException>();
+
+        var deletion = await admin.DeleteShareGroupsAsync(["share-close-race"]);
+        await Assert.That(deletion["share-close-race"].ErrorCode).IsEqualTo(ErrorCode.None);
+    }
+
+    [Test]
+    public async Task ShareConsumer_UnsubscribeDuringAsyncDeserializationRejectsStaleRecord()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        var deserializer = new BlockingAsyncDeserializer();
+        await using var consumer = new InMemoryShareConsumer<string, string>(
+            cluster,
+            Serializers.String,
+            deserializer,
+            new InMemoryShareConsumerOptions { GroupId = "share-unsubscribe-race", MemberId = "first" });
+        var admin = new InMemoryAdminClient(cluster);
+
+        await producer.ProduceAsync("shared", "k", "v");
+        consumer.Subscribe("shared");
+        var poll = consumer.PollAsync().FirstAsync().AsTask();
+        try
+        {
+            await deserializer.Entered.WaitAsync(TimeSpan.FromSeconds(5));
+            consumer.Unsubscribe();
+        }
+        finally
+        {
+            deserializer.Release();
+        }
+
+        await Assert.That(async () => await poll).Throws<InvalidOperationException>();
+        await consumer.CommitAsync();
+        await Assert.That(await admin.DescribeShareGroupOffsetsAsync("share-unsubscribe-race")).IsEmpty();
+
+        await using var otherConsumer = new InMemoryShareConsumer<string, string>(
+            cluster,
+            new InMemoryShareConsumerOptions { GroupId = "share-unsubscribe-race", MemberId = "second" });
+        otherConsumer.Subscribe("shared");
+        var redelivery = await otherConsumer.PollAsync()
+            .FirstAsync()
+            .AsTask()
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        await Assert.That(redelivery.Offset).IsEqualTo(0);
+        await Assert.That(redelivery.DeliveryCount).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task ShareConsumer_SyncDeserializerFailure_ReleasesRecordForOtherMembers()
     {
         var cluster = new InMemoryKafkaCluster();
@@ -444,6 +524,28 @@ public sealed class InMemoryAsyncSerdeTests
             Context = context;
             return Encoding.UTF8.GetString(data.Span);
         }
+    }
+
+    private sealed class BlockingAsyncDeserializer : IAsyncDeserializer<string>
+    {
+        private readonly TaskCompletionSource _entered = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _release = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task Entered => _entered.Task;
+
+        public async ValueTask<string> DeserializeAsync(
+            ReadOnlyMemory<byte> data,
+            SerializationContext context,
+            CancellationToken cancellationToken = default)
+        {
+            _entered.TrySetResult();
+            await _release.Task.WaitAsync(cancellationToken);
+            return Encoding.UTF8.GetString(data.Span);
+        }
+
+        public void Release() => _release.TrySetResult();
     }
 
     /// <summary>

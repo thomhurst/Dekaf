@@ -37,6 +37,15 @@ public sealed class ListShareGroupsOptions
 }
 
 /// <summary>
+/// Result of deleting a share group.
+/// </summary>
+public sealed class DeleteShareGroupResult
+{
+    public required string GroupId { get; init; }
+    public Protocol.ErrorCode ErrorCode { get; init; }
+}
+
+/// <summary>
 /// Description of a share group's offset for a partition.
 /// </summary>
 public sealed class ShareGroupOffsetDescription

@@ -17,8 +17,10 @@ public sealed class InMemoryKafkaCluster
     private readonly object _gate = new();
     private readonly Dictionary<string, TopicState> _topics = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<TopicPartition, TopicPartitionOffset>> _consumerGroupOffsets = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Dictionary<TopicPartition, TopicPartitionOffset>> _shareGroupOffsets = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<string, ConsumerGroupMemberState>> _consumerGroupMembers = new(StringComparer.Ordinal);
     private readonly Dictionary<string, int> _consumerGroupGenerations = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Dictionary<string, int>> _shareGroupMembers = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<TopicPartition, Dictionary<long, ShareLeaseState>>> _shareLeases = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<TopicPartition, Dictionary<long, int>>> _shareDeliveryCounts = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Exception> _produceFailures = new(StringComparer.Ordinal);
@@ -596,6 +598,7 @@ public sealed class InMemoryKafkaCluster
     internal bool TryAcquireShareRecord(
         string groupId,
         string memberId,
+        ShareGroupMemberRegistration registration,
         TopicPartition topicPartition,
         long offset,
         out InMemoryRecord record,
@@ -606,6 +609,13 @@ public sealed class InMemoryKafkaCluster
 
         lock (_gate)
         {
+            if (!registration.IsActive)
+            {
+                record = null!;
+                deliveryCount = 0;
+                return false;
+            }
+
             if (!TryReadRecordUnderLock(
                     topicPartition,
                     offset,
@@ -664,7 +674,7 @@ public sealed class InMemoryKafkaCluster
             ReleaseShareLeasesUnderLock(groupId, memberId, completed);
             if (commits.Length > 0)
             {
-                CommitOffsetsUnderLock(groupId, commits);
+                CommitShareOffsetsUnderLock(groupId, commits);
                 foreach (var commitOffset in commits)
                     RemoveCommittedShareDeliveryCountsUnderLock(groupId, commitOffset);
             }
@@ -794,11 +804,38 @@ public sealed class InMemoryKafkaCluster
             CommitOffsetsUnderLock(groupId, offsets);
     }
 
+    internal long? GetCommittedShareOffset(string groupId, TopicPartition topicPartition)
+    {
+        lock (_gate)
+        {
+            return _shareGroupOffsets.TryGetValue(groupId, out var offsets) &&
+                   offsets.TryGetValue(topicPartition, out var offset)
+                ? offset.Offset
+                : null;
+        }
+    }
+
+    internal void CommitShareOffsets(string groupId, IEnumerable<TopicPartitionOffset> offsets)
+    {
+        lock (_gate)
+            CommitShareOffsetsUnderLock(groupId, offsets);
+    }
+
     internal IReadOnlyDictionary<TopicPartition, long> GetGroupOffsets(string groupId)
     {
         lock (_gate)
         {
             return _consumerGroupOffsets.TryGetValue(groupId, out var offsets)
+                ? offsets.ToDictionary(static item => item.Key, static item => item.Value.Offset)
+                : new Dictionary<TopicPartition, long>();
+        }
+    }
+
+    internal IReadOnlyDictionary<TopicPartition, long> GetShareGroupOffsets(string groupId)
+    {
+        lock (_gate)
+        {
+            return _shareGroupOffsets.TryGetValue(groupId, out var offsets)
                 ? offsets.ToDictionary(static item => item.Key, static item => item.Value.Offset)
                 : new Dictionary<TopicPartition, long>();
         }
@@ -810,10 +847,94 @@ public sealed class InMemoryKafkaCluster
             return _consumerGroupOffsets.Keys.Order(StringComparer.Ordinal).ToArray();
     }
 
+    internal IReadOnlyList<string> ListShareGroups()
+    {
+        lock (_gate)
+        {
+            var groupIds = new HashSet<string>(_shareGroupOffsets.Keys, StringComparer.Ordinal);
+            groupIds.UnionWith(_shareGroupMembers.Keys);
+            groupIds.UnionWith(_shareLeases.Keys);
+            groupIds.UnionWith(_shareDeliveryCounts.Keys);
+            return groupIds.Order(StringComparer.Ordinal).ToArray();
+        }
+    }
+
     internal void DeleteGroup(string groupId)
     {
         lock (_gate)
             _consumerGroupOffsets.Remove(groupId);
+    }
+
+    internal ShareGroupMemberRegistration RegisterShareGroupMember(string groupId, string memberId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(memberId);
+
+        lock (_gate)
+        {
+            if (!_shareGroupMembers.TryGetValue(groupId, out var members))
+            {
+                members = new Dictionary<string, int>(StringComparer.Ordinal);
+                _shareGroupMembers[groupId] = members;
+            }
+
+            members[memberId] = members.GetValueOrDefault(memberId) + 1;
+            return new ShareGroupMemberRegistration();
+        }
+    }
+
+    internal void UnregisterShareGroupMember(
+        string groupId,
+        string memberId,
+        ShareGroupMemberRegistration registration)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(memberId);
+
+        lock (_gate)
+        {
+            if (!registration.IsActive)
+                return;
+
+            registration.IsActive = false;
+            if (!_shareGroupMembers.TryGetValue(groupId, out var members))
+                return;
+
+            if (!members.TryGetValue(memberId, out var registrationCount))
+                return;
+
+            if (registrationCount > 1)
+                members[memberId] = registrationCount - 1;
+            else
+                members.Remove(memberId);
+
+            if (members.Count == 0)
+                _shareGroupMembers.Remove(groupId);
+        }
+    }
+
+    internal ErrorCode DeleteShareGroup(string groupId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
+
+        lock (_gate)
+        {
+            var hasOffsets = _shareGroupOffsets.ContainsKey(groupId);
+            var hasMembers = _shareGroupMembers.TryGetValue(groupId, out var members);
+            var hasLeases = _shareLeases.TryGetValue(groupId, out var leases);
+            var hasDeliveryCounts = _shareDeliveryCounts.ContainsKey(groupId);
+            if (!hasOffsets && !hasMembers && !hasLeases && !hasDeliveryCounts)
+                return ErrorCode.GroupIdNotFound;
+
+            if (members is { Count: > 0 } || leases is { Count: > 0 })
+                return ErrorCode.NonEmptyGroup;
+
+            _shareGroupOffsets.Remove(groupId);
+            _shareGroupMembers.Remove(groupId);
+            _shareLeases.Remove(groupId);
+            _shareDeliveryCounts.Remove(groupId);
+            return ErrorCode.None;
+        }
     }
 
     internal void DeleteGroupOffsets(string groupId, IEnumerable<TopicPartition> partitions)
@@ -825,6 +946,21 @@ public sealed class InMemoryKafkaCluster
 
             foreach (var partition in partitions)
                 offsets.Remove(partition);
+        }
+    }
+
+    internal void DeleteShareGroupOffsets(string groupId, IEnumerable<TopicPartition> partitions)
+    {
+        lock (_gate)
+        {
+            if (!_shareGroupOffsets.TryGetValue(groupId, out var offsets))
+                return;
+
+            foreach (var partition in partitions)
+                offsets.Remove(partition);
+
+            if (offsets.Count == 0)
+                _shareGroupOffsets.Remove(groupId);
         }
     }
 
@@ -1055,6 +1191,18 @@ public sealed class InMemoryKafkaCluster
         {
             groupOffsets = [];
             _consumerGroupOffsets[groupId] = groupOffsets;
+        }
+
+        foreach (var offset in offsets)
+            groupOffsets[new TopicPartition(offset.Topic, offset.Partition)] = offset;
+    }
+
+    private void CommitShareOffsetsUnderLock(string groupId, IEnumerable<TopicPartitionOffset> offsets)
+    {
+        if (!_shareGroupOffsets.TryGetValue(groupId, out var groupOffsets))
+        {
+            groupOffsets = [];
+            _shareGroupOffsets[groupId] = groupOffsets;
         }
 
         foreach (var offset in offsets)
@@ -1340,4 +1488,9 @@ public sealed class InMemoryKafkaCluster
     private readonly record struct ConsumerGroupMemberState(
         long RegistrationId,
         HashSet<TopicPartition> SubscribedPartitions);
+}
+
+internal sealed class ShareGroupMemberRegistration
+{
+    internal bool IsActive { get; set; } = true;
 }
