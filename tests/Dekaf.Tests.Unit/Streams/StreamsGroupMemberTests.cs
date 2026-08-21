@@ -345,6 +345,25 @@ public sealed class StreamsGroupMemberTests
     }
 
     [Test]
+    public async Task CloseAsync_RetiredConnectionRediscoversAndRetries()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1));
+        connection.EnqueueHeartbeat(Task.FromException<StreamsGroupHeartbeatResponse>(
+            new ObjectDisposedException("KafkaConnection")));
+        connection.EnqueueHeartbeat(Success(epoch: -1));
+        await using var fixture = CreateFixture(connection);
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+
+        await fixture.Member.CloseAsync();
+
+        await Assert.That(connection.FindCoordinatorRequestCount).IsEqualTo(2);
+        await Assert.That(connection.HeartbeatRequests[1].MemberEpoch).IsEqualTo(-1);
+        await Assert.That(connection.HeartbeatRequests[2].MemberEpoch).IsEqualTo(-1);
+        await Assert.That(fixture.Member.Snapshot.IsClosed).IsTrue();
+    }
+
+    [Test]
     public async Task CloseAsync_RemainInGroupSendsNoTerminalHeartbeat()
     {
         var connection = new ScriptedConnection();
