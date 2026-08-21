@@ -1142,6 +1142,26 @@ public sealed class JsonSchemaValidationTests
     }
 
     [Test]
+    public void InlineRules_MissingMembersDoNotReuseValuesFromEarlierPayloads()
+    {
+        const string schemaText = """
+            {
+              "confluent:rules": [
+                { "name": "members", "expr": "this.a == 1 && this.b == 2" }
+              ]
+            }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
+
+        validator.ValidateRules("""{"a":1,"b":2}"""u8.ToArray(), 25, failFast: false);
+
+        Assert.Throws<ValidationRulesFailedException>(() => validator.ValidateRules(
+            """{"a":1}"""u8.ToArray(),
+            25,
+            failFast: false));
+    }
+
+    [Test]
     public void InlineRules_DuplicateParentsUseFinalDescendantValues()
     {
         const string schemaText = """
@@ -1277,6 +1297,15 @@ public sealed class JsonSchemaValidationTests
         var (schemaText, payload) = CreateManyDuplicateRuleCase(
             propertyCount: 16,
             declaredProperties);
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
+
+        validator.ValidateRules(payload, 25, failFast: false);
+    }
+
+    [Test]
+    public void InlineRules_AggregateProbeGrowthPreservesCompositionCacheOwnership()
+    {
+        var (schemaText, payload) = CreateAggregateCompositionGrowthCase(branchCount: 40);
         var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
 
         validator.ValidateRules(payload, 25, failFast: false);
@@ -2201,6 +2230,21 @@ public sealed class JsonSchemaValidationTests
             }
             """;
         return (schema, Encoding.UTF8.GetBytes(payload.ToString()));
+    }
+
+    private static (string Schema, byte[] Payload) CreateAggregateCompositionGrowthCase(int branchCount)
+    {
+        var schema = new StringBuilder(branchCount * 112);
+        schema.Append("{\"properties\":{\"value\":{\"anyOf\":[");
+        for (var index = 0; index < branchCount; index++)
+        {
+            if (index != 0)
+                schema.Append(',');
+            schema.Append(
+                "{\"type\":\"integer\",\"confluent:rules\":[{\"name\":\"positive\",\"expr\":\"this > 0\"}]}");
+        }
+        schema.Append("]}}}");
+        return (schema.ToString(), """{"value":-1,"value":1}"""u8.ToArray());
     }
 
     private static byte[] CreateWirePayload(int schemaId, string json)

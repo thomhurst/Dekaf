@@ -78,6 +78,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
 {
     private const int MaxReferenceDepth = 128;
     private const int InitialCompositionMatchCapacity = 32;
+    private const int InitialRetainedCompositionStorageCapacity = 4;
     private const int MaxAggregatePropertyLookahead = 8;
 
     public void Validate(ReadOnlySpan<byte> payload, int schemaId)
@@ -168,48 +169,40 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
             var value = GetCurrentValue(ref reader, payload);
             var memberCount = node.ValidationRuleMembers?.Count ?? 0;
             var memberValues = memberCount == 0
-                ? null
+                ? default
                 : CompiledValidationRule.GetMemberValues(memberCount);
-            try
-            {
-                if (memberValues is not null)
-                    node.ValidationRuleMembers!.Resolve(value, memberValues);
+            if (memberCount != 0)
+                node.ValidationRuleMembers!.Resolve(value, memberValues);
 
-                for (var index = 0; index < rules.Length; index++)
+            for (var index = 0; index < rules.Length; index++)
+            {
+                var compiledRule = rules[index];
+                try
                 {
-                    var compiledRule = rules[index];
-                    try
-                    {
-                        var result = compiledRule.Evaluate(value, now, memberValues);
-                        if (result.Kind == ValidationResultKind.Boolean ? !result.Boolean : result.String!.Length != 0)
-                        {
-                            if (!compositionMatches.CollectViolations)
-                                return false;
-                            (violations ??= []).Add(new ValidationRuleError(
-                                compiledRule.Rule,
-                                path.ToString(),
-                                result.Kind == ValidationResultKind.String ? result.String : null));
-                            if (failFast)
-                                return false;
-                        }
-                    }
-                    catch (SchemaRegistryRuleException exception)
+                    var result = compiledRule.Evaluate(value, now, memberValues);
+                    if (result.Kind == ValidationResultKind.Boolean ? !result.Boolean : result.String!.Length != 0)
                     {
                         if (!compositionMatches.CollectViolations)
                             return false;
                         (violations ??= []).Add(new ValidationRuleError(
                             compiledRule.Rule,
                             path.ToString(),
-                            cause: exception));
+                            result.Kind == ValidationResultKind.String ? result.String : null));
                         if (failFast)
                             return false;
                     }
                 }
-            }
-            finally
-            {
-                if (memberValues is not null)
-                    Array.Clear(memberValues, 0, memberCount);
+                catch (SchemaRegistryRuleException exception)
+                {
+                    if (!compositionMatches.CollectViolations)
+                        return false;
+                    (violations ??= []).Add(new ValidationRuleError(
+                        compiledRule.Rule,
+                        path.ToString(),
+                        cause: exception));
+                    if (failFast)
+                        return false;
+                }
             }
         }
 
@@ -349,14 +342,16 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
                         ref branchReader,
                         branches[index],
                         referenceDepth,
-                        ref compositionMatches) &&
-                    !MatchesValidationShapeLastPropertyWins(
-                        ref branchReader,
-                        ref reader,
-                        branches[index],
-                        referenceDepth,
                         ref compositionMatches))
-                    continue;
+                {
+                    branchReader = reader;
+                    if (!MatchesValidationShapeLastPropertyWins(
+                            ref branchReader,
+                            branches[index],
+                            referenceDepth,
+                            ref compositionMatches))
+                        continue;
+                }
 
                 if (oneOnly)
                 {
@@ -506,12 +501,10 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
 
     private static bool MatchesValidationShapeLastPropertyWins(
         ref Utf8JsonReader reader,
-        ref Utf8JsonReader originalReader,
         CompiledSchemaNode node,
         int referenceDepth,
         scoped ref ValidationCompositionMatchCache compositionMatches)
     {
-        reader = originalReader;
         var path = new JsonPathBuilder();
         var lastPropertyWins = compositionMatches.LastPropertyWins;
         compositionMatches.LastPropertyWins = true;
@@ -618,6 +611,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
                     path.Truncate(validationPathMark);
                     if (isValid)
                     {
+                        compositionMatches.DiscardCheckpoint(compositionCheckpoint);
                         compositionMatches.CollectViolations = compositionCheckpoint.CollectViolations;
                         reader = validationReader;
                     }
@@ -1324,7 +1318,8 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         int ReadIndex,
         int ReadEnd,
         bool LastPropertyWins,
-        bool CollectViolations);
+        bool CollectViolations,
+        int Depth);
 
     private enum AggregatePropertyLookahead : byte
     {
@@ -1339,23 +1334,45 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         private ValidationCompositionBranchMatch _element0;
     }
 
+    private struct RetainedValidationCompositionStorage
+    {
+        internal ValidationCompositionBranchMatch[]? Matches;
+        internal int References;
+    }
+
+    [InlineArray(InitialRetainedCompositionStorageCapacity)]
+    private struct InitialRetainedValidationCompositionStorage
+    {
+        private RetainedValidationCompositionStorage _element0;
+    }
+
     private ref struct ValidationCompositionMatchCache
     {
         private readonly InitialValidationCompositionMatches _initialMatches;
+        private readonly InitialRetainedValidationCompositionStorage _initialRetainedStorage;
         private readonly ReadOnlySpan<byte> _source;
         private ValidationCompositionBranchMatch[]? _rentedMatches;
+        private RetainedValidationCompositionStorage[]? _rentedRetainedStorage;
         private int _count;
         private int _readIndex;
         private int _readEnd;
+        private int _checkpointDepth;
+        private int _currentStorageCheckpointReferences;
+        private int _retainedStorageCount;
 
         public ValidationCompositionMatchCache(ReadOnlySpan<byte> source, bool lastPropertyWins = false)
         {
             Unsafe.SkipInit(out _initialMatches);
+            Unsafe.SkipInit(out _initialRetainedStorage);
             _source = source;
             _rentedMatches = null;
+            _rentedRetainedStorage = null;
             _count = 0;
             _readIndex = 0;
             _readEnd = 0;
+            _checkpointDepth = 0;
+            _currentStorageCheckpointReferences = 0;
+            _retainedStorageCount = 0;
             LastPropertyWins = lastPropertyWins;
             CollectViolations = true;
         }
@@ -1366,29 +1383,33 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         internal readonly int ReadIndex => _readIndex;
         internal readonly bool HasPendingMatches => _readIndex < _readEnd;
 
-        internal readonly ValidationCompositionMatchCheckpoint CaptureCheckpoint() => new(
-            _rentedMatches,
-            _count,
-            _readIndex,
-            _readEnd,
-            LastPropertyWins,
-            CollectViolations);
+        internal ValidationCompositionMatchCheckpoint CaptureCheckpoint()
+        {
+            var depth = _checkpointDepth++;
+            if (_rentedMatches is not null)
+                _currentStorageCheckpointReferences++;
+            return new ValidationCompositionMatchCheckpoint(
+                _rentedMatches,
+                _count,
+                _readIndex,
+                _readEnd,
+                LastPropertyWins,
+                CollectViolations,
+                depth);
+        }
 
         internal void Restore(ValidationCompositionMatchCheckpoint checkpoint)
         {
-            if (_rentedMatches is not null &&
-                !ReferenceEquals(_rentedMatches, checkpoint.RentedMatches))
-            {
-                ArrayPool<ValidationCompositionBranchMatch>.Shared.Return(_rentedMatches);
-            }
-
-            _rentedMatches = checkpoint.RentedMatches;
+            ReleaseCheckpoint(checkpoint);
             _count = checkpoint.Count;
             _readIndex = checkpoint.ReadIndex;
             _readEnd = checkpoint.ReadEnd;
             LastPropertyWins = checkpoint.LastPropertyWins;
             CollectViolations = checkpoint.CollectViolations;
         }
+
+        internal void DiscardCheckpoint(ValidationCompositionMatchCheckpoint checkpoint) =>
+            ReleaseCheckpoint(checkpoint);
 
         internal int BeginBranch(int branchIndex)
         {
@@ -1450,8 +1471,20 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
 
         internal void Dispose()
         {
+            for (var index = 0; index < _retainedStorageCount; index++)
+            {
+                var matches = GetRetainedStorage(index).Matches;
+                if (matches is not null)
+                    ArrayPool<ValidationCompositionBranchMatch>.Shared.Return(matches);
+            }
             if (_rentedMatches is not null)
                 ArrayPool<ValidationCompositionBranchMatch>.Shared.Return(_rentedMatches);
+            if (_rentedRetainedStorage is not null)
+            {
+                ArrayPool<RetainedValidationCompositionStorage>.Shared.Return(
+                    _rentedRetainedStorage,
+                    clearArray: true);
+            }
         }
 
         private void EnsureCapacity()
@@ -1470,10 +1503,80 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
             else
             {
                 _rentedMatches.AsSpan(0, _count).CopyTo(rentedMatches);
-                ArrayPool<ValidationCompositionBranchMatch>.Shared.Return(_rentedMatches);
+                if (_currentStorageCheckpointReferences == 0)
+                    ArrayPool<ValidationCompositionBranchMatch>.Shared.Return(_rentedMatches);
+                else
+                    RetainStorage(_rentedMatches, _currentStorageCheckpointReferences);
             }
             _rentedMatches = rentedMatches;
+            _currentStorageCheckpointReferences = 0;
         }
+
+        private void ReleaseCheckpoint(ValidationCompositionMatchCheckpoint checkpoint)
+        {
+            if (checkpoint.Depth != _checkpointDepth - 1)
+                throw new InvalidOperationException("Composition checkpoints must be released in stack order.");
+
+            _checkpointDepth--;
+            if (checkpoint.RentedMatches is null)
+                return;
+            if (ReferenceEquals(checkpoint.RentedMatches, _rentedMatches))
+            {
+                _currentStorageCheckpointReferences--;
+                return;
+            }
+
+            for (var index = 0; index < _retainedStorageCount; index++)
+            {
+                ref var retained = ref GetRetainedStorage(index);
+                if (!ReferenceEquals(retained.Matches, checkpoint.RentedMatches))
+                    continue;
+                if (--retained.References != 0)
+                    return;
+
+                ArrayPool<ValidationCompositionBranchMatch>.Shared.Return(checkpoint.RentedMatches);
+                var lastIndex = --_retainedStorageCount;
+                if (index != lastIndex)
+                    retained = GetRetainedStorage(lastIndex);
+                GetRetainedStorage(lastIndex) = default;
+                return;
+            }
+
+            throw new InvalidOperationException("Composition checkpoint storage ownership was lost.");
+        }
+
+        private void RetainStorage(ValidationCompositionBranchMatch[] matches, int references)
+        {
+            EnsureRetainedStorageCapacity();
+            GetRetainedStorage(_retainedStorageCount++) = new RetainedValidationCompositionStorage
+            {
+                Matches = matches,
+                References = references
+            };
+        }
+
+        private void EnsureRetainedStorageCapacity()
+        {
+            var capacity = _rentedRetainedStorage?.Length ?? InitialRetainedCompositionStorageCapacity;
+            if (_retainedStorageCount < capacity)
+                return;
+
+            var storage = ArrayPool<RetainedValidationCompositionStorage>.Shared.Rent(capacity * 2);
+            for (var index = 0; index < _retainedStorageCount; index++)
+                storage[index] = GetRetainedStorage(index);
+            if (_rentedRetainedStorage is not null)
+            {
+                ArrayPool<RetainedValidationCompositionStorage>.Shared.Return(
+                    _rentedRetainedStorage,
+                    clearArray: true);
+            }
+            _rentedRetainedStorage = storage;
+        }
+
+        private ref RetainedValidationCompositionStorage GetRetainedStorage(int index) => ref
+            _rentedRetainedStorage is null
+                ? ref Unsafe.AsRef(in _initialRetainedStorage[index])
+                : ref _rentedRetainedStorage[index];
     }
 
     private static bool Fail(
