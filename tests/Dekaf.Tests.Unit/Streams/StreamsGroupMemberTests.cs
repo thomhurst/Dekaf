@@ -221,6 +221,35 @@ public sealed class StreamsGroupMemberTests
     }
 
     [Test]
+    public async Task JoinAsync_FinalCoordinatorErrorPreservesBrokerResponse()
+    {
+        var connection = new ScriptedConnection();
+        for (var attempt = 0; attempt < 4; attempt++)
+        {
+            connection.EnqueueHeartbeat(new StreamsGroupHeartbeatResponse
+            {
+                ErrorCode = ErrorCode.CoordinatorLoadInProgress,
+                MemberId = "member-1"
+            });
+        }
+
+        connection.EnqueueHeartbeat(new StreamsGroupHeartbeatResponse
+        {
+            ErrorCode = ErrorCode.NotCoordinator,
+            ErrorMessage = "final coordinator response",
+            MemberId = "member-1"
+        });
+        await using var fixture = CreateFixture(connection);
+
+        var exception = await Assert.ThrowsAsync<GroupException>(
+            async () => await fixture.Member.JoinAsync(CreateInitialUpdate()));
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.NotCoordinator);
+        await Assert.That(exception.Message).Contains("final coordinator response");
+        await Assert.That(connection.HeartbeatRequests).Count().IsEqualTo(5);
+    }
+
+    [Test]
     public async Task JoinAsync_WhenCoordinatorDiscoveryTransportFails_RetriesDiscovery()
     {
         var connection = new ScriptedConnection();
