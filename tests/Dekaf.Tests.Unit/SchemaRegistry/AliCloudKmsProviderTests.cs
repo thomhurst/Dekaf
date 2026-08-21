@@ -295,6 +295,54 @@ public sealed class AliCloudKmsProviderTests
     }
 
     [Test]
+    [Arguments(AliCloudKmsProvider.AccessKeyIdProperty, false)]
+    [Arguments(AliCloudKmsProvider.AccessKeySecretProperty, false)]
+    [Arguments(AliCloudKmsProvider.AccessKeyIdProperty, true)]
+    [Arguments(AliCloudKmsProvider.AccessKeySecretProperty, true)]
+    public async Task IncompleteInferredOrRamRoleAccessKeyPair_IsRejected(
+        string configuredProperty,
+        bool useRamRole)
+    {
+        var properties = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            [configuredProperty] = "configured-half"
+        };
+        if (useRamRole)
+        {
+            properties[AliCloudKmsProvider.RoleArnProperty] = "acs:ram::123:role/csfle";
+            properties[AliCloudKmsProvider.RoleSessionExpirationProperty] = "900";
+        }
+
+        var factory = new RecordingFactory(_ => new XorClient());
+        var provider = CreateProvider(factory);
+
+        await Assert.That(async () => await provider.WrapKeyAsync(
+                new byte[] { 1 },
+                CreateReference(properties: properties)))
+            .Throws<SchemaRegistryKmsException>()
+            .WithMessageContaining("must be configured together");
+        await Assert.That(factory.CreateCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task StsWithoutSecurityToken_ReportsMissingTokenProperty()
+    {
+        var properties = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            [AliCloudKmsProvider.CredentialTypeProperty] = "sts",
+            [AliCloudKmsProvider.AccessKeyIdProperty] = "id",
+            [AliCloudKmsProvider.AccessKeySecretProperty] = "secret"
+        };
+        var provider = CreateProvider(new RecordingFactory(_ => new XorClient()));
+
+        await Assert.That(async () => await provider.WrapKeyAsync(
+                new byte[] { 1 },
+                CreateReference(properties: properties)))
+            .Throws<SchemaRegistryKmsException>()
+            .WithMessageContaining(AliCloudKmsProvider.SecurityTokenProperty);
+    }
+
+    [Test]
     public async Task RamRoleExpirationBelowMinimum_IsRejected()
     {
         var factory = new RecordingFactory(_ => new XorClient());
@@ -332,6 +380,44 @@ public sealed class AliCloudKmsProviderTests
         {
             File.Delete(caFile);
         }
+    }
+
+    [Test]
+    public async Task CaFileContent_IsReadOncePerCachedClient()
+    {
+        var caFile = Path.GetTempFileName();
+        try
+        {
+            await File.WriteAllTextAsync(caFile, "-----BEGIN CERTIFICATE-----\nfixture\n-----END CERTIFICATE-----");
+            var factory = new RecordingFactory(_ => new XorClient());
+            var provider = CreateProvider(factory, new AliCloudKmsProviderOptions { CaFile = caFile });
+
+            await provider.WrapKeyAsync(new byte[] { 1 }, CreateReference());
+            File.Delete(caFile);
+            await provider.WrapKeyAsync(new byte[] { 2 }, CreateReference());
+
+            await Assert.That(factory.CreateCount).IsEqualTo(1);
+        }
+        finally
+        {
+            if (File.Exists(caFile))
+                File.Delete(caFile);
+        }
+    }
+
+    [Test]
+    public async Task CaFileReadFailure_IsWrappedAndSkipsClientCreation()
+    {
+        var caFile = Path.Combine(Path.GetTempPath(), $"missing-{Guid.NewGuid():N}.pem");
+        var factory = new RecordingFactory(_ => new XorClient());
+        var provider = CreateProvider(factory, new AliCloudKmsProviderOptions { CaFile = caFile });
+
+        var exception = await Assert.ThrowsAsync<SchemaRegistryKmsException>(
+            () => provider.WrapKeyAsync(new byte[] { 1 }, CreateReference()).AsTask());
+
+        await Assert.That(exception!.Message).IsEqualTo("Alibaba Cloud KMS CA file could not be read.");
+        await Assert.That(exception.InnerException).IsTypeOf<FileNotFoundException>();
+        await Assert.That(factory.CreateCount).IsEqualTo(0);
     }
 
     [Test]

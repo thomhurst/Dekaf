@@ -2104,7 +2104,7 @@ public sealed class SchemaRegistryCsfleRuleTests
     [Arguments(SchemaType.Avro)]
     [Arguments(SchemaType.Json)]
     [Arguments(SchemaType.Protobuf)]
-    public async Task AliCloudKms_WholePayloadCsfle_RoundTripsEverySchemaFormat(SchemaType schemaType)
+    public async Task AliCloudKms_WholePayloadCsfle_IsSchemaFormatAgnostic(SchemaType schemaType)
     {
         var client = new FakeDekRegistryClient();
         client.AddKek(new Kek
@@ -2124,6 +2124,8 @@ public sealed class SchemaRegistryCsfleRuleTests
             RuleSet = new SchemaRuleSet { EncodingRules = [rule] }
         };
         var context = CreateHandlerContext(rule, schema);
+        // Rule handlers receive bytes after format serialization. This verifies AliCloud provider
+        // dispatch remains independent of schema type; serializer hooks are covered above.
         var payload = "format-independent-secret"u8.ToArray();
         var factory = new AliCloudTestClientFactory();
         var writer = new SchemaRegistryCsfleRuleHandler(

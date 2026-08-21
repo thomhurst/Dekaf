@@ -417,6 +417,13 @@ public sealed class AliCloudKmsProvider : ISchemaRegistryKmsProvider
 
         var credentialType = ResolveCredentialType(properties, accessKeyId, accessKeySecret, securityToken, roleArn);
 
+        if (credentialType != CredentialKind.Default
+            && (accessKeyId is null) != (accessKeySecret is null))
+        {
+            throw new SchemaRegistryKmsException(
+                "Alibaba Cloud KMS access key ID and secret must be configured together.");
+        }
+
         if (credentialType is CredentialKind.AccessKey or CredentialKind.Sts
             && (accessKeyId is null || accessKeySecret is null))
         {
@@ -427,7 +434,7 @@ public sealed class AliCloudKmsProvider : ISchemaRegistryKmsProvider
         if (credentialType == CredentialKind.Sts && securityToken is null)
         {
             throw new SchemaRegistryKmsException(
-                "Alibaba Cloud KMS security token requires an access key ID and secret.");
+                $"Alibaba Cloud KMS credential type 'sts' requires property '{SecurityTokenProperty}'.");
         }
 
         if (credentialType == CredentialKind.RamRoleArn && roleArn is null)
@@ -464,23 +471,6 @@ public sealed class AliCloudKmsProvider : ISchemaRegistryKmsProvider
             LegacyCaFileProperty,
             _options.CaFile,
             "ALICLOUD_KMS_CA_FILE");
-        string? certificateAuthority = null;
-        if (caFile is not null)
-        {
-            try
-            {
-                certificateAuthority = File.ReadAllText(caFile);
-                if (string.IsNullOrWhiteSpace(certificateAuthority))
-                    throw new SchemaRegistryKmsException("Alibaba Cloud KMS CA file cannot be empty.");
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
-            {
-                throw new SchemaRegistryKmsException(
-                    "Alibaba Cloud KMS CA file could not be read.",
-                    ex);
-            }
-        }
-
         return new ClientCacheKey(
             regionId,
             ResolveValue(
@@ -489,7 +479,7 @@ public sealed class AliCloudKmsProvider : ISchemaRegistryKmsProvider
                 LegacyEndpointProperty,
                 _options.Endpoint,
                 "ALICLOUD_KMS_ENDPOINT"),
-            certificateAuthority,
+            caFile,
             CredentialTypeName(credentialType),
             accessKeyId,
             accessKeySecret,
@@ -569,7 +559,7 @@ public sealed class AliCloudKmsProvider : ISchemaRegistryKmsProvider
                 return CredentialKind.RamRoleArn;
             if (securityToken is not null)
                 return CredentialKind.Sts;
-            return accessKeyId is not null && accessKeySecret is not null
+            return accessKeyId is not null || accessKeySecret is not null
                 ? CredentialKind.AccessKey
                 : CredentialKind.Default;
         }
@@ -650,6 +640,31 @@ public sealed class AliCloudKmsProvider : ISchemaRegistryKmsProvider
 
     private static string? Normalize(string? value) => string.IsNullOrWhiteSpace(value) ? null : value;
 
+    private static string? ReadCertificateAuthority(string? file)
+    {
+        if (file is null)
+            return null;
+
+        try
+        {
+            var content = File.ReadAllText(file);
+            if (string.IsNullOrWhiteSpace(content))
+                throw new SchemaRegistryKmsException("Alibaba Cloud KMS CA file cannot be empty.");
+            return content;
+        }
+        catch (Exception ex) when (ex is
+            IOException
+            or UnauthorizedAccessException
+            or ArgumentException
+            or NotSupportedException
+            or System.Security.SecurityException)
+        {
+            throw new SchemaRegistryKmsException(
+                "Alibaba Cloud KMS CA file could not be read.",
+                ex);
+        }
+    }
+
     private static bool ContainsInvalidKeyCharacter(string keyId)
     {
         foreach (var character in keyId)
@@ -706,7 +721,7 @@ public sealed class AliCloudKmsProvider : ISchemaRegistryKmsProvider
     private sealed record ClientCacheKey(
         string RegionId,
         string? Endpoint,
-        string? CertificateAuthority,
+        string? CertificateAuthorityFile,
         string CredentialType,
         string? AccessKeyId,
         string? AccessKeySecret,
@@ -722,7 +737,7 @@ public sealed class AliCloudKmsProvider : ISchemaRegistryKmsProvider
         {
             RegionId = RegionId,
             Endpoint = Endpoint,
-            CertificateAuthority = CertificateAuthority,
+            CertificateAuthority = ReadCertificateAuthority(CertificateAuthorityFile),
             CredentialType = CredentialType,
             AccessKeyId = AccessKeyId,
             AccessKeySecret = AccessKeySecret,
