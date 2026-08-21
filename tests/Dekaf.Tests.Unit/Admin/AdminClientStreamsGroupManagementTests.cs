@@ -141,6 +141,44 @@ public sealed class AdminClientStreamsGroupManagementTests
     }
 
     [Test]
+    public async Task ListStreamsGroupOffsetsAsync_PreservesCoordinatorErrorAndListsSiblingGroup()
+    {
+        var (admin, connection) = CreateAdmin();
+        SetupSelectiveFindCoordinatorError(connection);
+        connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new OffsetFetchResponse
+            {
+                Groups =
+                [
+                    new OffsetFetchResponseGroup
+                    {
+                        GroupId = SecondGroup,
+                        ErrorCode = ErrorCode.None,
+                        Topics = []
+                    }
+                ]
+            }));
+        var specs = new Dictionary<string, ListStreamsGroupOffsetsSpec>
+        {
+            [FirstGroup] = new(),
+            [SecondGroup] = new()
+        };
+
+        var results = await admin.ListStreamsGroupOffsetsAsync(specs);
+
+        await Assert.That(results[FirstGroup].ErrorCode).IsEqualTo(ErrorCode.GroupAuthorizationFailed);
+        await Assert.That(results[SecondGroup].ErrorCode).IsEqualTo(ErrorCode.None);
+        await connection.Received(1).SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+            Arg.Is<OffsetFetchRequest>(request =>
+                request.Groups!.Count == 1 && request.Groups[0].GroupId == SecondGroup),
+            9,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
     public async Task ListStreamsGroupOffsetsAsync_FetchAllNegotiatesV9()
     {
         var (admin, connection) = CreateAdmin();
@@ -319,6 +357,30 @@ public sealed class AdminClientStreamsGroupManagementTests
         await connection.Received(1).SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
             Arg.Is<OffsetCommitRequest>(request => request != null && request.Topics[0].TopicId == TopicId),
             10,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task OffsetMutations_PreserveCoordinatorLookupErrors()
+    {
+        var (admin, connection) = CreateAdmin();
+        SetupFindCoordinatorError(connection, ErrorCode.GroupAuthorizationFailed);
+        var partition = new TopicPartition(Topic, 0);
+
+        var altered = await admin.AlterStreamsGroupOffsetsAsync(
+            FirstGroup,
+            [new TopicPartitionOffset(partition.Topic, partition.Partition, 42)]);
+        var deleted = await admin.DeleteStreamsGroupOffsetsAsync(FirstGroup, [partition]);
+
+        await Assert.That(altered[partition].ErrorCode).IsEqualTo(ErrorCode.GroupAuthorizationFailed);
+        await Assert.That(deleted[partition].ErrorCode).IsEqualTo(ErrorCode.GroupAuthorizationFailed);
+        await connection.DidNotReceive().SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+            Arg.Any<OffsetCommitRequest>(),
+            Arg.Any<short>(),
+            Arg.Any<CancellationToken>());
+        await connection.DidNotReceive().SendAsync<OffsetDeleteRequest, OffsetDeleteResponse>(
+            Arg.Any<OffsetDeleteRequest>(),
+            Arg.Any<short>(),
             Arg.Any<CancellationToken>());
     }
 
@@ -545,6 +607,31 @@ public sealed class AdminClientStreamsGroupManagementTests
     }
 
     [Test]
+    public async Task DeleteStreamsGroupOffsetsAsync_GroupMissingConfirmsOnlyAmbiguousPartitions()
+    {
+        var (admin, connection) = CreateAdmin();
+        SetupFindCoordinator(connection);
+        connection.SendAsync<OffsetDeleteRequest, OffsetDeleteResponse>(
+                Arg.Any<OffsetDeleteRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(
+                ValueTask.FromResult(DeleteOffsetsResponse(Deleted(0, ErrorCode.RequestTimedOut))),
+                ValueTask.FromResult(new OffsetDeleteResponse
+                {
+                    ErrorCode = ErrorCode.GroupIdNotFound,
+                    Topics = []
+                }));
+        var ambiguous = new TopicPartition(Topic, 0);
+        var omitted = new TopicPartition(Topic, 1);
+
+        var results = await admin.DeleteStreamsGroupOffsetsAsync(FirstGroup, [ambiguous, omitted]);
+
+        await Assert.That(results[ambiguous].ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(results[omitted].ErrorCode).IsEqualTo(ErrorCode.GroupIdNotFound);
+    }
+
+    [Test]
     public async Task DeleteStreamsGroupOffsetsAsync_GroupMissingAfterGroupTimeoutIsSuccess()
     {
         var (admin, connection) = CreateAdmin();
@@ -667,30 +754,7 @@ public sealed class AdminClientStreamsGroupManagementTests
     public async Task DeleteStreamsGroupsAsync_PreservesCoordinatorLookupErrors()
     {
         var (admin, connection) = CreateAdmin();
-        connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
-                Arg.Any<FindCoordinatorRequest>(),
-                Arg.Any<short>(),
-                Arg.Any<CancellationToken>())
-            .Returns(call =>
-            {
-                var request = call.ArgAt<FindCoordinatorRequest>(0);
-                return ValueTask.FromResult(new FindCoordinatorResponse
-                {
-                    Coordinators =
-                    [
-                        new Coordinator
-                        {
-                            Key = request.Key,
-                            NodeId = 1,
-                            Host = "localhost",
-                            Port = 9092,
-                            ErrorCode = request.Key == FirstGroup
-                                ? ErrorCode.GroupAuthorizationFailed
-                                : ErrorCode.None
-                        }
-                    ]
-                });
-            });
+        SetupSelectiveFindCoordinatorError(connection);
         connection.SendAsync<DeleteGroupsRequest, DeleteGroupsResponse>(
                 Arg.Any<DeleteGroupsRequest>(),
                 Arg.Any<short>(),
@@ -839,22 +903,52 @@ public sealed class AdminClientStreamsGroupManagementTests
             .Returns(call =>
             {
                 var request = call.ArgAt<FindCoordinatorRequest>(0);
-                return ValueTask.FromResult(new FindCoordinatorResponse
-                {
-                    Coordinators =
-                    [
-                        new Coordinator
-                        {
-                            Key = request.Key,
-                            NodeId = 1,
-                            Host = "localhost",
-                            Port = 9092,
-                            ErrorCode = ErrorCode.None
-                        }
-                    ]
-                });
+                return ValueTask.FromResult(CoordinatorResponse(request.Key, ErrorCode.None));
             });
     }
+
+    private static void SetupFindCoordinatorError(IKafkaConnection connection, ErrorCode errorCode)
+    {
+        connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                Arg.Any<FindCoordinatorRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                var request = call.ArgAt<FindCoordinatorRequest>(0);
+                return ValueTask.FromResult(CoordinatorResponse(request.Key, errorCode));
+            });
+    }
+
+    private static void SetupSelectiveFindCoordinatorError(IKafkaConnection connection)
+    {
+        connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                Arg.Any<FindCoordinatorRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                var request = call.ArgAt<FindCoordinatorRequest>(0);
+                return ValueTask.FromResult(CoordinatorResponse(
+                    request.Key,
+                    request.Key == FirstGroup ? ErrorCode.GroupAuthorizationFailed : ErrorCode.None));
+            });
+    }
+
+    private static FindCoordinatorResponse CoordinatorResponse(string groupId, ErrorCode errorCode) => new()
+    {
+        Coordinators =
+        [
+            new Coordinator
+            {
+                Key = groupId,
+                NodeId = 1,
+                Host = "localhost",
+                Port = 9092,
+                ErrorCode = errorCode
+            }
+        ]
+    };
 
     private static (AdminClient Admin, IKafkaConnection Connection) CreateAdmin(
         short offsetFetchMaxVersion = 10)
