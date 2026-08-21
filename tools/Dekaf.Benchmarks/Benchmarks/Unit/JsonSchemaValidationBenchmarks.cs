@@ -118,6 +118,31 @@ public class JsonSchemaValidationBenchmarks
         }
         """;
 
+    private const string DuplicateCompositionInlineRulesJsonSchema = """
+        {
+          "properties": {
+            "value": {
+              "anyOf": [
+                { "type": "integer" },
+                {
+                  "type": "string",
+                  "confluent:rules": [{ "name": "ok", "expr": "this == 'ok'" }]
+                }
+              ]
+            }
+          }
+        }
+        """;
+
+    private const string DecimalMinNegationInlineRulesJsonSchema = """
+        {
+          "confluent:rules": [{
+            "name": "decimal-boundary",
+            "expr": "-this == 79228162514264337593543950335 && -(-this) == this"
+          }]
+        }
+        """;
+
     private const string MapSizeInlineRulesJsonSchema = """
         {
           "confluent:rules": [{ "name": "map-size", "expr": "size(this) == 1" }]
@@ -164,6 +189,10 @@ public class JsonSchemaValidationBenchmarks
     private IJsonSchemaValidator _nestedMemberInlineRulesValidator = null!;
     private ReadOnlyMemory<byte> _duplicatePropertyInlineRulesJsonPayload;
     private IJsonSchemaValidator _duplicatePropertyInlineRulesValidator = null!;
+    private ReadOnlyMemory<byte> _duplicateCompositionInlineRulesJsonPayload;
+    private IJsonSchemaValidator _duplicateCompositionInlineRulesValidator = null!;
+    private ReadOnlyMemory<byte> _decimalMinNegationInlineRulesJsonPayload;
+    private IJsonSchemaValidator _decimalMinNegationInlineRulesValidator = null!;
     private ReadOnlyMemory<byte> _duplicateMapSizeInlineRulesJsonPayload;
     private IJsonSchemaValidator _mapSizeInlineRulesValidator = null!;
     private ReadOnlyMemory<byte> _terminalPrefixInlineRulesJsonPayload;
@@ -361,6 +390,28 @@ public class JsonSchemaValidationBenchmarks
             _duplicatePropertyInlineRulesJsonPayload,
             9,
             failFast: false);
+        _duplicateCompositionInlineRulesJsonPayload =
+            """{"value":null,"value":"ok"}"""u8.ToArray();
+        _duplicateCompositionInlineRulesValidator = inlineRulesFactory.GetOrCreate(new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = DuplicateCompositionInlineRulesJsonSchema
+        });
+        _duplicateCompositionInlineRulesValidator.ValidateRules(
+            _duplicateCompositionInlineRulesJsonPayload,
+            12,
+            failFast: false);
+        _decimalMinNegationInlineRulesJsonPayload =
+            "-79228162514264337593543950335"u8.ToArray();
+        _decimalMinNegationInlineRulesValidator = inlineRulesFactory.GetOrCreate(new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = DecimalMinNegationInlineRulesJsonSchema
+        });
+        _decimalMinNegationInlineRulesValidator.ValidateRules(
+            _decimalMinNegationInlineRulesJsonPayload,
+            13,
+            failFast: false);
         _duplicateMapSizeInlineRulesJsonPayload = """{"a":1,"a":2}"""u8.ToArray();
         _mapSizeInlineRulesValidator = inlineRulesFactory.GetOrCreate(new Schema
         {
@@ -525,6 +576,20 @@ public class JsonSchemaValidationBenchmarks
             failFast: true);
 
     [Benchmark]
+    public void ValidateDuplicateCompositionInlineRules() =>
+        _duplicateCompositionInlineRulesValidator.ValidateRules(
+            _duplicateCompositionInlineRulesJsonPayload,
+            12,
+            failFast: false);
+
+    [Benchmark]
+    public void ValidateDecimalMinNegationInlineRules() =>
+        _decimalMinNegationInlineRulesValidator.ValidateRules(
+            _decimalMinNegationInlineRulesJsonPayload,
+            13,
+            failFast: false);
+
+    [Benchmark]
     public void ValidateDuplicateMapSizeInlineRules() =>
         _mapSizeInlineRulesValidator.ValidateRules(
             _duplicateMapSizeInlineRulesJsonPayload,
@@ -582,22 +647,28 @@ public class JsonSchemaValidationBenchmarks
         schema.Append("{\"properties\":{");
         payload.Append('{');
         for (var index = 0; index < propertyCount; index++)
-        {
-            if (index != 0)
-            {
-                schema.Append(',');
-                payload.Append(',');
-            }
-            schema.Append("\"p").Append(index)
-                .Append("\":{\"confluent:rules\":[{\"name\":\"p").Append(index)
-                .Append("\",\"expr\":\"this == 1\"}]}");
-            payload.Append("\"p").Append(index).Append("\":0");
-        }
+            AppendDistinctDuplicateProperty(schema, payload, index);
         schema.Append("}}");
         for (var index = 0; index < propertyCount; index++)
             payload.Append(",\"p").Append(index).Append("\":1");
         payload.Append('}');
         return (schema.ToString(), Encoding.UTF8.GetBytes(payload.ToString()));
+    }
+
+    private static void AppendDistinctDuplicateProperty(
+        StringBuilder schema,
+        StringBuilder payload,
+        int index)
+    {
+        if (index != 0)
+        {
+            schema.Append(',');
+            payload.Append(',');
+        }
+        schema.Append("\"p").Append(index)
+            .Append("\":{\"confluent:rules\":[{\"name\":\"p").Append(index)
+            .Append("\",\"expr\":\"this == 1\"}]}");
+        payload.Append("\"p").Append(index).Append("\":0");
     }
 
     private static void AppendNestedValue(StringBuilder json, int depth)
@@ -614,13 +685,7 @@ public class JsonSchemaValidationBenchmarks
         var path = new StringBuilder("this");
         var payload = new StringBuilder(depth * 12);
         for (var index = 0; index < depth; index++)
-        {
-            path.Append(".child");
-            if (expression.Length != 0)
-                expression.Append(" && ");
-            expression.Append(path).Append(" != null");
-            payload.Append("{\"child\":");
-        }
+            AppendTerminalPrefixLevel(expression, path, payload);
         payload.Append("{}");
         payload.Append('}', depth);
         var schema = $$"""
@@ -629,6 +694,18 @@ public class JsonSchemaValidationBenchmarks
             }
             """;
         return (schema, Encoding.UTF8.GetBytes(payload.ToString()));
+    }
+
+    private static void AppendTerminalPrefixLevel(
+        StringBuilder expression,
+        StringBuilder path,
+        StringBuilder payload)
+    {
+        path.Append(".child");
+        if (expression.Length != 0)
+            expression.Append(" && ");
+        expression.Append(path).Append(" != null");
+        payload.Append("{\"child\":");
     }
 
     private static (string Schema, byte[] Payload) CreateNestedCompositionRule(

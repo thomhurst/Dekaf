@@ -704,6 +704,15 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         SchemaRegistryRuleContext context)
         => ApplyReadRuleCollection(payload, context, useEncodingRules: false);
 
+    internal ReadOnlyMemory<byte> TransformDeserializedDomainPayload(
+        ReadOnlyMemory<byte> payload,
+        SchemaRegistryRuleContext context,
+        out bool payloadWasTransformed)
+        => ApplyReadDomainRuleCollectionWithTransformResult(
+            payload,
+            context,
+            out payloadWasTransformed);
+
     internal SchemaRegistryMigrationTransformResult TransformMigrationPayload(
         ref ReadOnlyMemory<byte> payload,
         SchemaRegistryRuleContext context,
@@ -803,6 +812,39 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
             context,
             useEncodingRules ? ruleSet.EncodingRules : ruleSet.DomainRules,
             SchemaRegistryRuleDirection.Read);
+    }
+
+    private ReadOnlyMemory<byte> ApplyReadDomainRuleCollectionWithTransformResult(
+        ReadOnlyMemory<byte> payload,
+        SchemaRegistryRuleContext context,
+        out bool payloadWasTransformed)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+
+        payloadWasTransformed = false;
+        var ruleSet = context.Schema?.RuleSet;
+        if (ruleSet is null || !ruleSet.HasDomainOrEncodingRules || !ShouldExecute(ruleSet))
+            return payload;
+
+        if (ruleSet.HasFixedRuleCollections)
+        {
+            var plan = _executionPlans.GetValue(ruleSet, _createExecutionPlan);
+            return ApplyRulesWithTransformResult(
+                payload,
+                context,
+                plan.ReadSteps,
+                plan.ReadEncodingStepCount,
+                plan.ReadSteps.Length - plan.ReadEncodingStepCount,
+                SchemaRegistryRuleDirection.Read,
+                out payloadWasTransformed);
+        }
+
+        return ApplyRulesWithTransformResult(
+            payload,
+            context,
+            ruleSet.DomainRules,
+            SchemaRegistryRuleDirection.Read,
+            out payloadWasTransformed);
     }
 
     private ReadOnlyMemory<byte> ApplyRules(
@@ -910,6 +952,38 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         return payload;
     }
 
+    private ReadOnlyMemory<byte> ApplyRulesWithTransformResult(
+        ReadOnlyMemory<byte> payload,
+        SchemaRegistryRuleContext context,
+        IReadOnlyList<SchemaRule>? rules,
+        SchemaRegistryRuleDirection direction,
+        out bool payloadWasTransformed)
+    {
+        payloadWasTransformed = false;
+        if (rules is null || rules.Count == 0)
+            return payload;
+
+        var isWrite = direction == SchemaRegistryRuleDirection.Write;
+        var index = isWrite ? 0 : rules.Count - 1;
+        var end = isWrite ? rules.Count : -1;
+        var step = isWrite ? 1 : -1;
+        for (; index != end; index += step)
+        {
+            var rule = rules[index];
+            if (!IsActiveRule(rule, direction))
+                continue;
+
+            _handlers.TryGetValue(rule.Type, out var handler);
+            if (ApplyRule(ref payload, context, rule, handler, direction)
+                && rule.Kind == SchemaRuleKind.Transform)
+            {
+                payloadWasTransformed = true;
+            }
+        }
+
+        return payload;
+    }
+
     private ReadOnlyMemory<byte> ApplyRules(
         ReadOnlyMemory<byte> payload,
         SchemaRegistryRuleContext context,
@@ -930,6 +1004,30 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         {
             ref readonly var step = ref steps[i];
             payload = ApplyRule(payload, context, step.Rule, step.Handler, direction);
+        }
+
+        return payload;
+    }
+
+    private ReadOnlyMemory<byte> ApplyRulesWithTransformResult(
+        ReadOnlyMemory<byte> payload,
+        SchemaRegistryRuleContext context,
+        RuleExecutionStep[] steps,
+        int start,
+        int count,
+        SchemaRegistryRuleDirection direction,
+        out bool payloadWasTransformed)
+    {
+        payloadWasTransformed = false;
+        var end = start + count;
+        for (var i = start; i < end; i++)
+        {
+            ref readonly var step = ref steps[i];
+            if (ApplyRule(ref payload, context, step.Rule, step.Handler, direction)
+                && step.Rule.Kind == SchemaRuleKind.Transform)
+            {
+                payloadWasTransformed = true;
+            }
         }
 
         return payload;

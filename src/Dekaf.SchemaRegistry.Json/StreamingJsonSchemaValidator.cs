@@ -365,7 +365,11 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
                 if (oneOnly)
                 {
                     if (directMatchingBranch >= 0)
-                        ThrowFailure(schemaId, "oneOf", path.ToString(), innerException: null);
+                        return FailCompositionMatch(
+                            compositionMatches.CollectViolations,
+                            schemaId,
+                            "oneOf",
+                            ref path);
                     directMatchingBranch = index;
                     continue;
                 }
@@ -390,11 +394,19 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
             if (!oneOnly)
             {
                 if (directMatchingBranch < 0)
-                    ThrowFailure(schemaId, "anyOf", path.ToString(), innerException: null);
+                    return FailCompositionMatch(
+                        compositionMatches.CollectViolations,
+                        schemaId,
+                        "anyOf",
+                        ref path);
                 return true;
             }
             if (directMatchingBranch < 0)
-                ThrowFailure(schemaId, "oneOf", path.ToString(), innerException: null);
+                return FailCompositionMatch(
+                    compositionMatches.CollectViolations,
+                    schemaId,
+                    "oneOf",
+                    ref path);
 
             var directSelectedReader = reader;
             return WalkValidationRules(
@@ -440,7 +452,11 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
                 if (oneOnly)
                 {
                     if (matchingBranch >= 0)
-                        ThrowFailure(schemaId, "oneOf", path.ToString(), innerException: null);
+                        return FailCompositionMatch(
+                            compositionMatches.CollectViolations,
+                            schemaId,
+                            "oneOf",
+                            ref path);
                     matchingBranch = index;
                     selectedMatchIndex = matchIndex;
                 }
@@ -470,11 +486,19 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         if (!oneOnly)
         {
             if (matchingBranch < 0)
-                ThrowFailure(schemaId, "anyOf", path.ToString(), innerException: null);
+                return FailCompositionMatch(
+                    compositionMatches.CollectViolations,
+                    schemaId,
+                    "anyOf",
+                    ref path);
             return true;
         }
         if (matchingBranch < 0)
-            ThrowFailure(schemaId, "oneOf", path.ToString(), innerException: null);
+            return FailCompositionMatch(
+                compositionMatches.CollectViolations,
+                schemaId,
+                "oneOf",
+                ref path);
 
         compositionMatches.SkipTo(selectedMatchIndex + 1);
         var selectedReader = reader;
@@ -492,6 +516,18 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
             referenceDepth);
         compositionMatches.SkipTo(compositionEnd);
         return completed;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static bool FailCompositionMatch(
+        bool collectViolations,
+        int schemaId,
+        string keyword,
+        scoped ref ValidationPathBuilder path)
+    {
+        if (collectViolations)
+            ThrowFailure(schemaId, keyword, path.ToString(), innerException: null);
+        return false;
     }
 
     private static bool MatchesValidationShape(
@@ -2012,46 +2048,75 @@ internal sealed class SchemaCompiler : IDisposable
         if (_validationMemberPaths.Count == 0)
             return;
 
+        var parents = CreateValidationMemberParents();
+        UnionValidationMemberNodes(parents);
+        var membersByRoot = CollectValidationMembers(parents, out var memberNodeCounts);
+        var tablesByRoot = CreateValidationMemberTables(membersByRoot);
+        ApplyValidationMemberTables(parents, memberNodeCounts, tablesByRoot);
+    }
+
+    private int[] CreateValidationMemberParents()
+    {
         var parents = new int[_compiledNodeList.Count];
         for (var index = 0; index < parents.Length; index++)
             parents[index] = index;
+        return parents;
+    }
 
+    private void UnionValidationMemberNodes(int[] parents)
+    {
         for (var index = 0; index < _compiledNodeList.Count; index++)
         {
             var node = _compiledNodeList[index];
-            UnionNode(node.Reference);
-            UnionNodes(node.AllOf);
-            UnionNodes(node.AnyOf);
-            UnionNodes(node.OneOf);
-
-            void UnionNode(CompiledSchemaNode? other)
-            {
-                if (other is not null)
-                    UnionIndexes(index, other.CompilationIndex);
-            }
-
-            void UnionNodes(CompiledSchemaNode[] others)
-            {
-                for (var otherIndex = 0; otherIndex < others.Length; otherIndex++)
-                    UnionIndexes(index, others[otherIndex].CompilationIndex);
-            }
+            UnionValidationMemberNode(parents, index, node.Reference);
+            UnionValidationMemberNodes(parents, index, node.AllOf);
+            UnionValidationMemberNodes(parents, index, node.AnyOf);
+            UnionValidationMemberNodes(parents, index, node.OneOf);
         }
+    }
 
+    private static void UnionValidationMemberNode(
+        int[] parents,
+        int index,
+        CompiledSchemaNode? other)
+    {
+        if (other is not null)
+            UnionValidationMemberIndexes(parents, index, other.CompilationIndex);
+    }
+
+    private static void UnionValidationMemberNodes(
+        int[] parents,
+        int index,
+        CompiledSchemaNode[] others)
+    {
+        for (var otherIndex = 0; otherIndex < others.Length; otherIndex++)
+            UnionValidationMemberIndexes(parents, index, others[otherIndex].CompilationIndex);
+    }
+
+    private Dictionary<int, HashSet<int>> CollectValidationMembers(
+        int[] parents,
+        out Dictionary<int, int> memberNodeCounts)
+    {
         var membersByRoot = new Dictionary<int, HashSet<int>>();
-        var memberNodeCounts = new Dictionary<int, int>();
+        memberNodeCounts = new Dictionary<int, int>();
         for (var index = 0; index < _compiledNodeList.Count; index++)
         {
             var localMembers = _compiledNodeList[index].ValidationRuleMemberIndexes;
             if (localMembers.Length == 0)
                 continue;
 
-            var root = Find(index);
+            var root = FindValidationMemberRoot(parents, index);
             if (!membersByRoot.TryGetValue(root, out var groupMembers))
                 membersByRoot.Add(root, groupMembers = []);
             groupMembers.UnionWith(localMembers);
             memberNodeCounts[root] = memberNodeCounts.GetValueOrDefault(root) + 1;
         }
+        return membersByRoot;
+    }
 
+    private Dictionary<int, ValidationCelMemberTable> CreateValidationMemberTables(
+        Dictionary<int, HashSet<int>> membersByRoot)
+    {
         var tablesByRoot = new Dictionary<int, ValidationCelMemberTable>(membersByRoot.Count);
         foreach (var (root, members) in membersByRoot)
         {
@@ -2064,11 +2129,18 @@ internal sealed class SchemaCompiler : IDisposable
                     indexes,
                     _validationMemberPaths.Count));
         }
+        return tablesByRoot;
+    }
 
+    private void ApplyValidationMemberTables(
+        int[] parents,
+        Dictionary<int, int> memberNodeCounts,
+        Dictionary<int, ValidationCelMemberTable> tablesByRoot)
+    {
         for (var index = 0; index < _compiledNodeList.Count; index++)
         {
             var node = _compiledNodeList[index];
-            var root = Find(index);
+            var root = FindValidationMemberRoot(parents, index);
             if (node.ValidationRuleMemberIndexes.Length != 0 &&
                 tablesByRoot.TryGetValue(root, out var table))
             {
@@ -2078,28 +2150,28 @@ internal sealed class SchemaCompiler : IDisposable
             }
             node.ValidationRuleMemberIndexes = [];
         }
+    }
 
-        int Find(int index)
+    private static int FindValidationMemberRoot(int[] parents, int index)
+    {
+        var root = index;
+        while (parents[root] != root)
+            root = parents[root];
+        while (parents[index] != index)
         {
-            var root = index;
-            while (parents[root] != root)
-                root = parents[root];
-            while (parents[index] != index)
-            {
-                var parent = parents[index];
-                parents[index] = root;
-                index = parent;
-            }
-            return root;
+            var parent = parents[index];
+            parents[index] = root;
+            index = parent;
         }
+        return root;
+    }
 
-        void UnionIndexes(int left, int right)
-        {
-            var leftRoot = Find(left);
-            var rightRoot = Find(right);
-            if (leftRoot != rightRoot)
-                parents[rightRoot] = leftRoot;
-        }
+    private static void UnionValidationMemberIndexes(int[] parents, int left, int right)
+    {
+        var leftRoot = FindValidationMemberRoot(parents, left);
+        var rightRoot = FindValidationMemberRoot(parents, right);
+        if (leftRoot != rightRoot)
+            parents[rightRoot] = leftRoot;
     }
 
     private void CompileObjectKeywords(

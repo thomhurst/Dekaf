@@ -830,7 +830,9 @@ internal readonly record struct ValidationCelValue(
             throw Unsupported("CEL arithmetic operators require numeric operands.");
         return value with
         {
-            Number = value.Boolean ? -value.Number : value.Number,
+            Number = value.Boolean
+                ? value.Number == decimal.MinValue ? decimal.MaxValue : -value.Number
+                : value.Number,
             NumberNegated = (!value.Json.IsEmpty || !value.Utf8Literal.IsEmpty) &&
                 !value.NumberNegated
         };
