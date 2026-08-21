@@ -179,10 +179,7 @@ public sealed class InMemoryKafkaCluster
     internal bool ContainsTopicPartition(TopicPartition topicPartition)
     {
         lock (_gate)
-        {
-            return _topics.TryGetValue(topicPartition.Topic, out var topic)
-                && (uint)topicPartition.Partition < (uint)topic.Partitions.Count;
-        }
+            return ContainsTopicPartitionUnderLock(topicPartition);
     }
 
     internal int RegisterConsumerGroupMember(
@@ -1240,9 +1237,20 @@ public sealed class InMemoryKafkaCluster
                 return results;
             }
 
-            CommitOffsetsUnderLock(groupId, offsets);
+            Dictionary<TopicPartition, TopicPartitionOffset>? groupOffsets = null;
             foreach (var offset in offsets)
-                results[new TopicPartition(offset.Topic, offset.Partition)] = ErrorCode.None;
+            {
+                var partition = new TopicPartition(offset.Topic, offset.Partition);
+                if (!ContainsTopicPartitionUnderLock(partition))
+                {
+                    results[partition] = ErrorCode.UnknownTopicOrPartition;
+                    continue;
+                }
+
+                groupOffsets ??= GetOrCreateConsumerGroupOffsetsUnderLock(groupId);
+                groupOffsets[partition] = offset;
+                results[partition] = ErrorCode.None;
+            }
             return results;
         }
     }
@@ -1254,19 +1262,29 @@ public sealed class InMemoryKafkaCluster
         lock (_gate)
         {
             var results = new Dictionary<TopicPartition, ErrorCode>(partitions.Count);
-            if (!_consumerGroupOffsets.TryGetValue(groupId, out var offsets))
+            _consumerGroupOffsets.TryGetValue(groupId, out var offsets);
+            if (offsets is null && !_consumerGroupGenerations.ContainsKey(groupId))
             {
-                var errorCode = _consumerGroupGenerations.ContainsKey(groupId)
-                    ? ErrorCode.None
-                    : ErrorCode.GroupIdNotFound;
                 foreach (var partition in partitions)
-                    results[partition] = errorCode;
+                    results[partition] = ErrorCode.GroupIdNotFound;
                 return results;
             }
 
             _consumerGroupMembers.TryGetValue(groupId, out var members);
             foreach (var partition in partitions)
             {
+                if (!ContainsTopicPartitionUnderLock(partition))
+                {
+                    results[partition] = ErrorCode.UnknownTopicOrPartition;
+                    continue;
+                }
+
+                if (offsets is null)
+                {
+                    results[partition] = ErrorCode.None;
+                    continue;
+                }
+
                 var isSubscribed = false;
                 if (members is not null)
                 {
@@ -1523,14 +1541,21 @@ public sealed class InMemoryKafkaCluster
 
     private void CommitOffsetsUnderLock(string groupId, IEnumerable<TopicPartitionOffset> offsets)
     {
+        var groupOffsets = GetOrCreateConsumerGroupOffsetsUnderLock(groupId);
+        foreach (var offset in offsets)
+            groupOffsets[new TopicPartition(offset.Topic, offset.Partition)] = offset;
+    }
+
+    private Dictionary<TopicPartition, TopicPartitionOffset> GetOrCreateConsumerGroupOffsetsUnderLock(
+        string groupId)
+    {
         if (!_consumerGroupOffsets.TryGetValue(groupId, out var groupOffsets))
         {
             groupOffsets = [];
             _consumerGroupOffsets[groupId] = groupOffsets;
         }
 
-        foreach (var offset in offsets)
-            groupOffsets[new TopicPartition(offset.Topic, offset.Partition)] = offset;
+        return groupOffsets;
     }
 
     private void CommitShareOffsetsUnderLock(string groupId, IEnumerable<TopicPartitionOffset> offsets)
@@ -1570,6 +1595,10 @@ public sealed class InMemoryKafkaCluster
             groupOffsets[new TopicPartition(offset.Topic, offset.Partition)] = offset;
         }
     }
+
+    private bool ContainsTopicPartitionUnderLock(TopicPartition topicPartition) =>
+        _topics.TryGetValue(topicPartition.Topic, out var topic)
+        && (uint)topicPartition.Partition < (uint)topic.Partitions.Count;
 
     private bool RemoveConsumerGroupUnderLock(string groupId)
     {
