@@ -104,7 +104,18 @@ public sealed partial class InMemoryAdminClient
                 throw new ArgumentException($"Partition '{partition.Topic}-{partition.Partition}' is duplicated.", nameof(partitions));
         }
 
-        _cluster.DeleteGroupOffsets(groupId, partitionList);
+        if (!_cluster.DeleteGroupOffsets(groupId, partitionList))
+        {
+            foreach (var partition in partitionList)
+            {
+                results[partition] = new StreamsGroupOffsetOperationResult
+                {
+                    TopicPartition = partition,
+                    ErrorCode = ErrorCode.GroupIdNotFound
+                };
+            }
+        }
+
         return new ValueTask<IReadOnlyDictionary<TopicPartition, StreamsGroupOffsetOperationResult>>(results);
     }
 
@@ -134,7 +145,16 @@ public sealed partial class InMemoryAdminClient
         }
 
         foreach (var groupId in groupIdList)
-            _cluster.DeleteGroup(groupId);
+        {
+            if (!_cluster.DeleteGroup(groupId))
+            {
+                results[groupId] = new DeleteStreamsGroupResult
+                {
+                    GroupId = groupId,
+                    ErrorCode = ErrorCode.GroupIdNotFound
+                };
+            }
+        }
 
         return new ValueTask<IReadOnlyDictionary<string, DeleteStreamsGroupResult>>(results);
     }
