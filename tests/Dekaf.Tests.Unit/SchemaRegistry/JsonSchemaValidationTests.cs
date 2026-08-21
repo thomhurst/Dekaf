@@ -2791,7 +2791,8 @@ public sealed class JsonSchemaValidationTests
             SchemaRegistryRuleContext context) => payload;
     }
 
-    private sealed class PassThroughRuleHandler(string type, bool copyPayload = false) : ISchemaRegistryRuleHandler
+    private sealed class PassThroughRuleHandler(string type, bool copyPayload = false) :
+        ISchemaRegistryRuleTransformResultHandler
     {
         public string Type => type;
 
@@ -2802,6 +2803,15 @@ public sealed class JsonSchemaValidationTests
         public ReadOnlyMemory<byte> TransformDeserializedPayload(
             ReadOnlyMemory<byte> payload,
             SchemaRegistryRuleHandlerContext context) => copyPayload ? payload.ToArray() : payload;
+
+        public ReadOnlyMemory<byte> TransformDeserializedPayload(
+            ReadOnlyMemory<byte> payload,
+            SchemaRegistryRuleHandlerContext context,
+            out bool payloadChanged)
+        {
+            payloadChanged = false;
+            return copyPayload ? payload.ToArray() : payload;
+        }
     }
 
     private sealed class PassThroughLegacyRuleExecutor(bool copyPayload) : ISchemaRegistryRuleExecutor

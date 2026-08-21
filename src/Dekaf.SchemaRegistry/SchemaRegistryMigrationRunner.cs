@@ -251,7 +251,6 @@ internal sealed class SchemaRegistryMigrationRunner
             payloadFormat,
             taggedFieldTransformers,
             taggedFieldSchema: payloadSchema);
-        var readerDomainInput = payload;
         bool readerDomainTransformed;
         try
         {
@@ -264,8 +263,6 @@ internal sealed class SchemaRegistryMigrationRunner
         {
             context.Return();
         }
-
-        readerDomainTransformed = readerDomainTransformed && PayloadContentChanged(readerDomainInput, payload);
 
         return readerDomainTransformed && payloadFormat == SchemaRegistryPayloadFormat.Json
             ? new MigrationResult(
@@ -441,7 +438,6 @@ internal sealed class SchemaRegistryMigrationRunner
             payloadFormat,
             taggedFieldTransformers,
             taggedFieldSchema: payloadSchema);
-        var readerDomainInput = payload;
         bool readerDomainTransformed;
         try
         {
@@ -454,8 +450,6 @@ internal sealed class SchemaRegistryMigrationRunner
         {
             context.Return();
         }
-
-        readerDomainTransformed = readerDomainTransformed && PayloadContentChanged(readerDomainInput, payload);
 
         return readerDomainTransformed && payloadFormat == SchemaRegistryPayloadFormat.Json
             ? new MigrationResult(

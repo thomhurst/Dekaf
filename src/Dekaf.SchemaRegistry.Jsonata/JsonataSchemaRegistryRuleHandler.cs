@@ -12,7 +12,7 @@ namespace Dekaf.SchemaRegistry.Jsonata;
 /// Compiled queries are cached per rule and are safe for concurrent evaluation. Binary Avro and
 /// Protobuf payloads require codec-level object conversion and are rejected explicitly.
 /// </remarks>
-public sealed class JsonataSchemaRegistryRuleHandler : ISchemaRegistryRuleHandler
+public sealed class JsonataSchemaRegistryRuleHandler : ISchemaRegistryRuleTransformResultHandler
 {
     private const int MaxRetainedOutputBufferSize = 1024 * 1024;
 
@@ -41,6 +41,17 @@ public sealed class JsonataSchemaRegistryRuleHandler : ISchemaRegistryRuleHandle
     public ReadOnlyMemory<byte> TransformDeserializedPayload(
         ReadOnlyMemory<byte> payload,
         SchemaRegistryRuleHandlerContext context) => Transform(payload, context);
+
+    /// <inheritdoc />
+    public ReadOnlyMemory<byte> TransformDeserializedPayload(
+        ReadOnlyMemory<byte> payload,
+        SchemaRegistryRuleHandlerContext context,
+        out bool payloadChanged)
+    {
+        var result = Transform(payload, context);
+        payloadChanged = context.Rule.Kind == SchemaRuleKind.Transform && !payload.Equals(result);
+        return result;
+    }
 
     private ReadOnlyMemory<byte> Transform(
         ReadOnlyMemory<byte> payload,
