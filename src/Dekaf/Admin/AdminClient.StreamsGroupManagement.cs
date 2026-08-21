@@ -678,7 +678,8 @@ public sealed partial class AdminClient
 
                             if (partition.ErrorCode.IsRetriable() || partition.ErrorCode.RequiresMetadataRefresh())
                             {
-                                ambiguousPartitions.Add(topicPartition);
+                                if (partition.ErrorCode == Protocol.ErrorCode.RequestTimedOut)
+                                    ambiguousPartitions.Add(topicPartition);
                                 retryErrors[topicPartition] = partition.ErrorCode;
                                 retryFailure ??= new Errors.GroupException(
                                     partition.ErrorCode,

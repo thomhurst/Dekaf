@@ -707,6 +707,33 @@ public sealed class AdminClientStreamsGroupManagementTests
     }
 
     [Test]
+    public async Task DeleteStreamsGroupOffsetsAsync_GroupMissingAfterMetadataErrorRemainsMissing()
+    {
+        var (admin, connection) = CreateAdmin();
+        SetupFindCoordinator(connection);
+        connection.SendAsync<OffsetDeleteRequest, OffsetDeleteResponse>(
+                Arg.Any<OffsetDeleteRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(
+                ValueTask.FromResult(DeleteOffsetsResponse(Deleted(0, ErrorCode.UnknownTopicOrPartition))),
+                ValueTask.FromResult(new OffsetDeleteResponse
+                {
+                    ErrorCode = ErrorCode.GroupIdNotFound,
+                    Topics = []
+                }));
+        var partition = new TopicPartition(Topic, 0);
+
+        var results = await admin.DeleteStreamsGroupOffsetsAsync(FirstGroup, [partition]);
+
+        await Assert.That(results[partition].ErrorCode).IsEqualTo(ErrorCode.GroupIdNotFound);
+        await connection.Received(2).SendAsync<OffsetDeleteRequest, OffsetDeleteResponse>(
+            Arg.Any<OffsetDeleteRequest>(),
+            0,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
     public async Task DeleteStreamsGroupOffsetsAsync_GroupMissingConfirmsOnlyAmbiguousPartitions()
     {
         var (admin, connection) = CreateAdmin();
