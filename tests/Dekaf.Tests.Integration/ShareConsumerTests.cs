@@ -454,6 +454,52 @@ public class ShareConsumerAdminTests(KafkaTestContainer kafka) : KafkaIntegratio
     }
 
     [Test]
+    [SupportsKafka(430)]
+    public async Task DeleteShareGroups_DeletesShareGroupWithoutAffectingConsumerGroup()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        var shareGroupId = $"share-delete-{Guid.NewGuid():N}";
+        var consumerGroupId = $"consumer-preserve-{Guid.NewGuid():N}";
+        var partition = new TopicPartition(topic, 0);
+
+        await using (var consumer = await Kafka.CreateShareConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId(shareGroupId)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync())
+        {
+            consumer.Subscribe(topic);
+            await ShareConsumerTestHelper.PrimeShareConsumerAsync(consumer);
+        }
+
+        await using var admin = KafkaContainer.CreateAdminClient();
+        await admin.AlterConsumerGroupOffsetsAsync(
+            consumerGroupId,
+            [new TopicPartitionOffset(topic, 0, 0)]);
+
+        var deletionResults = await WaitForConditionAsync(
+            () => admin.DeleteShareGroupsAsync([shareGroupId]).AsTask(),
+            results => results[shareGroupId].ErrorCode == Protocol.ErrorCode.None,
+            maxRetries: 12,
+            initialDelayMs: 250,
+            description: "share group to become empty and delete");
+
+        await Assert.That(deletionResults[shareGroupId].ErrorCode).IsEqualTo(Protocol.ErrorCode.None);
+
+        var shareGroups = await WaitForConditionAsync(
+            () => admin.ListShareGroupsAsync().AsTask(),
+            groups => groups.All(group => group.GroupId != shareGroupId),
+            maxRetries: 12,
+            initialDelayMs: 250,
+            description: "deleted share group to disappear");
+        await Assert.That(shareGroups.Any(group => group.GroupId == shareGroupId)).IsFalse();
+
+        var consumerOffsets = await admin.ListConsumerGroupOffsetsAsync(consumerGroupId);
+        await Assert.That(consumerOffsets).ContainsKey(partition);
+        await Assert.That(consumerOffsets[partition]).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task DescribeShareGroupOffsets_ReturnsStartOffsets()
     {
         // Arrange — create a share consumer and consume a record to establish offsets

@@ -1092,6 +1092,37 @@ public sealed class InMemoryAdminClient : IAdminClient, IReplicaLogDirAdminClien
         return ListConsumerGroupsAsync(null, cancellationToken);
     }
 
+    public ValueTask<IReadOnlyDictionary<string, DeleteShareGroupResult>> DeleteShareGroupsAsync(
+        IEnumerable<string> groupIds,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(groupIds);
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+
+        var groupIdList = groupIds.ToArray();
+        var uniqueGroupIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var groupId in groupIdList)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
+            if (!uniqueGroupIds.Add(groupId))
+                throw new ArgumentException($"Share group ID '{groupId}' is duplicated.", nameof(groupIds));
+        }
+
+        var results = new Dictionary<string, DeleteShareGroupResult>(groupIdList.Length, StringComparer.Ordinal);
+        foreach (var groupId in groupIdList)
+        {
+            _cluster.DeleteGroup(groupId);
+            results[groupId] = new DeleteShareGroupResult
+            {
+                GroupId = groupId,
+                ErrorCode = ErrorCode.None
+            };
+        }
+
+        return ValueTask.FromResult<IReadOnlyDictionary<string, DeleteShareGroupResult>>(results);
+    }
+
     public ValueTask<IReadOnlyList<ShareGroupOffsetDescription>> DescribeShareGroupOffsetsAsync(
         string groupId,
         IEnumerable<TopicPartition>? partitions = null,

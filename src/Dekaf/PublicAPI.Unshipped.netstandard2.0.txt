@@ -408,3 +408,11 @@ static Dekaf.Protocol.Messages.ProduceRequest.IsFlexibleVersion(short version) -
 static Dekaf.Protocol.Messages.FetchRequest.GetRequestHeaderVersion(short version) -> short
 static Dekaf.Protocol.Messages.FetchRequest.GetResponseHeaderVersion(short version) -> short
 static Dekaf.Protocol.Messages.FetchRequest.IsFlexibleVersion(short version) -> bool
+Dekaf.Admin.AdminClient.DeleteShareGroupsAsync(System.Collections.Generic.IEnumerable<string!>! groupIds, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.DeleteShareGroupResult!>!>
+Dekaf.Admin.DeleteShareGroupResult
+Dekaf.Admin.DeleteShareGroupResult.DeleteShareGroupResult() -> void
+Dekaf.Admin.DeleteShareGroupResult.ErrorCode.get -> Dekaf.Protocol.ErrorCode
+Dekaf.Admin.DeleteShareGroupResult.ErrorCode.init -> void
+Dekaf.Admin.DeleteShareGroupResult.GroupId.get -> string!
+Dekaf.Admin.DeleteShareGroupResult.GroupId.init -> void
+Dekaf.Admin.IAdminClient.DeleteShareGroupsAsync(System.Collections.Generic.IEnumerable<string!>! groupIds, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.DeleteShareGroupResult!>!>
