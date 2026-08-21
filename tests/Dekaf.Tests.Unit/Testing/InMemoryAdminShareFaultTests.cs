@@ -100,6 +100,19 @@ public sealed class InMemoryAdminShareFaultTests
     }
 
     [Test]
+    public async Task AdminFault_EmptyResourceBatchesConsumeGenericFault()
+    {
+        await AssertEmptyAdminBatchConsumesFaultAsync(
+            static admin => admin.DeleteTopicsAsync(Array.Empty<string>()).AsTask());
+        await AssertEmptyAdminBatchConsumesFaultAsync(
+            static admin => admin.DescribeTopicsAsync(Array.Empty<string>()).AsTask());
+        await AssertEmptyAdminBatchConsumesFaultAsync(
+            static admin => admin.DescribeConfigsAsync(Array.Empty<ConfigResource>()).AsTask());
+        await AssertEmptyAdminBatchConsumesFaultAsync(
+            static admin => admin.ListOffsetsAsync(Array.Empty<TopicPartitionOffsetSpec>()).AsTask());
+    }
+
+    [Test]
     public async Task AdminFault_TopicIdOperationsUseResolvedTopicScope()
     {
         var cluster = new InMemoryKafkaCluster();
@@ -416,6 +429,21 @@ public sealed class InMemoryAdminShareFaultTests
         await consumer.CommitAsync();
 
         await Assert.That(faultPlan.GetResultCount).IsEqualTo(1);
+    }
+
+    private static async Task AssertEmptyAdminBatchConsumesFaultAsync(
+        Func<InMemoryAdminClient, Task> operation)
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var admin = new InMemoryAdminClient(cluster);
+        var failure = new InvalidOperationException("blocked");
+        cluster.FaultPlan.Fail(new KafkaFaultScope(KafkaFaultOperation.Admin), failure);
+
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() => operation(admin));
+        await operation(admin);
+
+        await Assert.That(actual).IsSameReferenceAs(failure);
+        await Assert.That(cluster.FaultPlan.Count).IsEqualTo(0);
     }
 
     private sealed class CompletedSourceFaultPlan : IKafkaFaultPlan, IValueTaskSource
