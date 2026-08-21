@@ -28,8 +28,18 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private readonly record struct PendingAutoCommitAdvancement(
         long Position,
         bool ResumePartition,
-        TaskCompletionSource<TopicPartitionOffset[]?> Completion,
-        TopicPartitionOffset[]? CapturedOffsets);
+        TaskCompletionSource<CapturedAutoCommitProof> Completion,
+        TopicPartitionOffset[] CapturedOffsets);
+
+    private readonly record struct CapturedAutoCommitProof(
+        TopicPartition Partition,
+        long Position,
+        TopicPartitionOffset[] Offsets,
+        bool SharedWaiter);
+
+    private readonly record struct ConsumeAttemptResult(
+        ConsumeResult<TKey, TValue>? Result,
+        bool StopPolling);
 
     private readonly record struct ConsumerSelectionVersion(
         int ConsumerState,
@@ -446,12 +456,14 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 // Resuming after the yield proves that the caller processed this record.
                 // Do this before the loop observes cancellation, matching KafkaConsumer.
                 ThrowIfDisposed();
-                var capturedOffsets = await ApplyInDoubtAutoCommitFaultAsync(
+                var capturedProof = await ApplyInDoubtAutoCommitFaultAsync(
                     CancellationToken.None).ConfigureAwait(false);
                 ThrowIfDisposed();
+                if (capturedProof is { SharedWaiter: true })
+                    yield break;
                 lock (_gate)
                 {
-                    ProveInDoubtRecordUnderLock(capturedOffsets);
+                    ProveInDoubtRecordUnderLock(capturedProof);
                 }
             }
         }
@@ -516,8 +528,11 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                var capturedOffsets = await ApplyInDoubtAutoCommitFaultAsync(
+                var capturedProof = await ApplyInDoubtAutoCommitFaultAsync(
                     cancellationToken).ConfigureAwait(false);
+                ThrowIfDisposed();
+                if (capturedProof is { SharedWaiter: true })
+                    yield break;
 
                 TopicPartition partition;
                 InMemoryRecord record;
@@ -530,7 +545,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                         consumerStateVersion,
                         consumerGroupGeneration);
 
-                    ProveInDoubtRecordUnderLock(capturedOffsets);
+                    ProveInDoubtRecordUnderLock(capturedProof);
                     if (!TrySelectSnapshotRecordUnderLock(
                             partitions,
                             ref activePartitionIndex,
@@ -717,9 +732,13 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 if (TryConsumeOne(out var result))
                     return result;
             }
-            else if (await TryConsumeOneAsync(cancellationToken).ConfigureAwait(false) is { } asyncResult)
+            else
             {
-                return asyncResult;
+                var attempt = await TryConsumeOneAsync(cancellationToken).ConfigureAwait(false);
+                if (attempt.Result is { } asyncResult)
+                    return asyncResult;
+                if (attempt.StopPolling)
+                    return null;
             }
 
             if (deadline is null)
@@ -1133,7 +1152,11 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 foreach (var (partition, pending) in _pendingAutoCommitAdvancements)
                 {
                     _paused.Remove(partition);
-                    pending.Completion.TrySetResult(pending.CapturedOffsets);
+                    pending.Completion.TrySetResult(new CapturedAutoCommitProof(
+                        partition,
+                        pending.Position,
+                        pending.CapturedOffsets,
+                        SharedWaiter: true));
                 }
 
                 _pendingAutoCommitAdvancements = null;
@@ -1578,23 +1601,26 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     /// <see cref="IAsyncDeserializer{T}"/>. Faults run before position advancement so a retry
     /// sees the same record.
     /// </summary>
-    private async ValueTask<ConsumeResult<TKey, TValue>?> TryConsumeOneAsync(CancellationToken cancellationToken)
+    private async ValueTask<ConsumeAttemptResult> TryConsumeOneAsync(
+        CancellationToken cancellationToken)
     {
-        var capturedOffsets = await ApplyInDoubtAutoCommitFaultAsync(
+        var capturedProof = await ApplyInDoubtAutoCommitFaultAsync(
             cancellationToken).ConfigureAwait(false);
         ThrowIfDisposed();
+        if (capturedProof is { SharedWaiter: true })
+            return new ConsumeAttemptResult(Result: null, StopPolling: true);
 
         var previousRecordProven = false;
         while (true)
         {
             if (!TrySelectRecordWithVersion(
                     ref previousRecordProven,
-                    capturedOffsets,
+                    capturedProof,
                     out var partition,
                     out var record,
                     out var position,
                     out var selectionVersion))
-                return null;
+                return new ConsumeAttemptResult(Result: null, StopPolling: false);
 
             var fetchScope = new KafkaFaultScope(
                 KafkaFaultOperation.Fetch,
@@ -1660,7 +1686,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             if (!positionAdvanced)
                 continue;
 
-            return selectedResult;
+            return new ConsumeAttemptResult(selectedResult, StopPolling: false);
         }
     }
 
@@ -1716,7 +1742,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
     private bool TrySelectRecordWithVersion(
         ref bool previousRecordProven,
-        TopicPartitionOffset[]? capturedOffsets,
+        CapturedAutoCommitProof? capturedProof,
         out TopicPartition selectedPartition,
         out InMemoryRecord selectedRecord,
         out long selectedPosition,
@@ -1728,7 +1754,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             {
                 // A new consume call proves the previously delivered record was processed
                 // (poll contract) — stage it before selecting the next one.
-                ProveInDoubtRecordUnderLock(capturedOffsets);
+                ProveInDoubtRecordUnderLock(capturedProof);
                 if (IsInDoubtAutoCommitAdvancementPendingUnderLock())
                 {
                     selectedPartition = default;
@@ -2003,11 +2029,17 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     /// application demonstrably moved past it: a subsequent consume call or explicit commit.
     /// </summary>
     private void ProveInDoubtRecordUnderLock(
-        TopicPartitionOffset[]? capturedOffsets = null,
+        CapturedAutoCommitProof? capturedProof = null,
         bool commitAutomatically = true)
     {
         if (_inDoubtNextOffset < 0)
             return;
+
+        if (capturedProof is { } proof &&
+            (_inDoubtNextOffset != proof.Position || !_inDoubtPartition.Equals(proof.Partition)))
+        {
+            return;
+        }
 
         if (IsInDoubtAutoCommitAdvancementPendingUnderLock())
             return;
@@ -2019,10 +2051,10 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
         if (commitAutomatically && _options.OffsetCommitMode == OffsetCommitMode.Auto)
         {
-            if (capturedOffsets is null)
+            if (capturedProof is null)
                 CommitStoredOffsets();
             else
-                CommitCapturedOffsetsUnderLock(capturedOffsets);
+                CommitCapturedOffsetsUnderLock(capturedProof.Value.Offsets);
         }
     }
 
@@ -2410,7 +2442,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             (_pendingAutoCommitAdvancements ??= [])[partition] = new PendingAutoCommitAdvancement(
                 expectedPosition,
                 resumePartition,
-                new TaskCompletionSource<TopicPartitionOffset[]?>(
+                new TaskCompletionSource<CapturedAutoCommitProof>(
                     TaskCreationOptions.RunContinuationsAsynchronously),
                 capturedOffsets);
             hasReservation = true;
@@ -2498,7 +2530,11 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         if (_pendingAutoCommitAdvancements.Count == 0)
             _pendingAutoCommitAdvancements = null;
 
-        pending.Completion.TrySetResult(pending.CapturedOffsets);
+        pending.Completion.TrySetResult(new CapturedAutoCommitProof(
+            partition,
+            pending.Position,
+            pending.CapturedOffsets,
+            SharedWaiter: true));
         _cluster.SignalRecordsChanged();
     }
 
@@ -2511,7 +2547,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         }
     }
 
-    private ValueTask<TopicPartitionOffset[]?> ApplyInDoubtAutoCommitFaultAsync(
+    private ValueTask<CapturedAutoCommitProof?> ApplyInDoubtAutoCommitFaultAsync(
         CancellationToken cancellationToken)
     {
         if (_options.OffsetCommitMode != OffsetCommitMode.Auto)
@@ -2533,8 +2569,9 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 _pendingAutoCommitAdvancements.TryGetValue(inDoubtPartition, out var pending) &&
                 pending.Position == inDoubtNextOffset)
             {
-                return new ValueTask<TopicPartitionOffset[]?>(
-                    pending.Completion.Task.WaitAsync(cancellationToken));
+                return AwaitPendingAutoCommitProofAsync(
+                    pending.Completion.Task,
+                    cancellationToken);
             }
 
             var inDoubtOffset = _options.EnableAutoOffsetStore
@@ -2558,7 +2595,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             (_pendingAutoCommitAdvancements ??= [])[inDoubtPartition] = new PendingAutoCommitAdvancement(
                 inDoubtNextOffset,
                 resumePartition,
-                new TaskCompletionSource<TopicPartitionOffset[]?>(
+                new TaskCompletionSource<CapturedAutoCommitProof>(
                     TaskCreationOptions.RunContinuationsAsynchronously),
                 capturedOffsets);
         }
@@ -2567,19 +2604,28 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             faultApplication,
             inDoubtPartition,
             inDoubtNextOffset,
-            capturedOffsets);
+            new CapturedAutoCommitProof(
+                inDoubtPartition,
+                inDoubtNextOffset,
+                capturedOffsets,
+                SharedWaiter: false));
     }
 
-    private async ValueTask<TopicPartitionOffset[]?> ApplyInDoubtAutoCommitFaultAndClearAsync(
+    private static async ValueTask<CapturedAutoCommitProof?> AwaitPendingAutoCommitProofAsync(
+        Task<CapturedAutoCommitProof> completion,
+        CancellationToken cancellationToken) =>
+        await completion.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+    private async ValueTask<CapturedAutoCommitProof?> ApplyInDoubtAutoCommitFaultAndClearAsync(
         ValueTask faultApplication,
         TopicPartition partition,
         long expectedPosition,
-        TopicPartitionOffset[] capturedOffsets)
+        CapturedAutoCommitProof capturedProof)
     {
         try
         {
             await faultApplication.ConfigureAwait(false);
-            return capturedOffsets;
+            return capturedProof;
         }
         finally
         {

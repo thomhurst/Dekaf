@@ -1709,6 +1709,54 @@ public sealed class InMemoryConsumerFaultTests
     }
 
     [Test]
+    public async Task AutoCommit_AfterProcessingSharedWaiterCannotProveNextRecord()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync(Topic, "key-0", "value-0");
+        await producer.ProduceAsync(Topic, "key-1", "value-1");
+        var deserializer = new AsyncStringDeserializer();
+        await using var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            deserializer,
+            deserializer,
+            new InMemoryConsumerOptions
+            {
+                GroupId = GroupId,
+                AutoOffsetReset = AutoOffsetReset.Earliest,
+                OffsetCommitMode = OffsetCommitMode.Auto,
+                EnableAutoOffsetStore = true,
+                OffsetStoreTiming = OffsetStoreTiming.AfterProcessing
+            });
+        consumer.Subscribe(Topic);
+        _ = await consumer.ConsumeOneAsync(TimeSpan.Zero);
+        var barrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId));
+
+        var provingConsume = consumer.ConsumeOneAsync(Timeout.InfiniteTimeSpan).AsTask();
+        await barrier.WaitUntilEnteredAsync();
+        var sharedWaiter = consumer.ConsumeOneAsync(Timeout.InfiniteTimeSpan).AsTask();
+        await Assert.That(sharedWaiter.IsCompleted).IsFalse();
+        await Assert.That(barrier.Release()).IsTrue();
+
+        var results = await Task.WhenAll(provingConsume, sharedWaiter);
+
+        await Assert.That(results.Count(static result => result is not null)).IsEqualTo(1);
+        await Assert.That(results.Single(static result => result is not null)!.Value.Key)
+            .IsEqualTo("key-1");
+        await Assert.That(await consumer.GetCommittedOffsetAsync(Partition)).IsEqualTo(1);
+
+        var commitFault = new InvalidOperationException("commit failed");
+        cluster.FaultPlan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.Commit, groupId: GroupId),
+            commitFault);
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            consumer.ConsumeOneAsync(TimeSpan.Zero).AsTask());
+
+        await Assert.That(actual).IsSameReferenceAs(commitFault);
+    }
+
+    [Test]
     public async Task AutoCommit_AfterProcessingBarrierPreservesCallerPause()
     {
         var cluster = new InMemoryKafkaCluster();
@@ -2231,6 +2279,15 @@ public sealed class InMemoryConsumerFaultTests
         public Task WaitUntilEnteredAsync() => _entered.Task;
 
         public void Release() => _release.TrySetResult();
+    }
+
+    private sealed class AsyncStringDeserializer : IAsyncDeserializer<string>
+    {
+        public ValueTask<string> DeserializeAsync(
+            ReadOnlyMemory<byte> data,
+            SerializationContext context,
+            CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult(Encoding.UTF8.GetString(data.Span));
     }
 
     private sealed class CallbackOnceDeserializer(Action callback) : IDeserializer<string>
