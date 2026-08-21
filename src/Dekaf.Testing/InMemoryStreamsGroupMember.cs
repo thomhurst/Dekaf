@@ -30,10 +30,13 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentException.ThrowIfNullOrWhiteSpace(options.GroupId);
-        if (options.RebalanceTimeout <= TimeSpan.Zero)
+        if (options.RebalanceTimeout.TotalMilliseconds < 1
+            || options.RebalanceTimeout.TotalMilliseconds > int.MaxValue)
+        {
             throw new ArgumentOutOfRangeException(
                 nameof(options),
-                "Rebalance timeout must be positive.");
+                "RebalanceTimeout must be greater than zero and no greater than Int32.MaxValue milliseconds.");
+        }
 
         _options = options;
     }

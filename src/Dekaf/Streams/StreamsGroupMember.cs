@@ -546,19 +546,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         {
             HandleBackgroundHeartbeatFailure(exception);
         }
-        catch (IOException exception)
-        {
-            HandleBackgroundHeartbeatFailure(exception);
-        }
-        catch (System.Net.Sockets.SocketException exception)
-        {
-            HandleBackgroundHeartbeatFailure(exception);
-        }
-        catch (TimeoutException exception)
-        {
-            HandleBackgroundHeartbeatFailure(exception);
-        }
-        catch (DnsResolutionException exception)
+        catch (Exception exception) when (IsRetriableConnectionFailure(exception))
         {
             HandleBackgroundHeartbeatFailure(exception);
         }

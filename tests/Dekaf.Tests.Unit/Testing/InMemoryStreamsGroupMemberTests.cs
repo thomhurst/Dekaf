@@ -6,6 +6,21 @@ namespace Dekaf.Tests.Unit.Testing;
 public sealed class InMemoryStreamsGroupMemberTests
 {
     [Test]
+    [Arguments(1L)]
+    [Arguments(21_474_836_480_000L)]
+    public async Task Constructor_RejectsUnrepresentableRebalanceTimeout(long ticks)
+    {
+        var exception = Assert.Throws<ArgumentOutOfRangeException>(() =>
+            _ = new InMemoryStreamsGroupMember(new StreamsGroupMemberOptions
+            {
+                GroupId = "streams-group",
+                RebalanceTimeout = TimeSpan.FromTicks(ticks)
+            }));
+
+        await Assert.That(exception.ParamName).IsEqualTo("options");
+    }
+
+    [Test]
     public async Task JoinAsync_WithoutTopologyThrowsArgumentException()
     {
         await using var member = CreateMember();
@@ -101,11 +116,15 @@ public sealed class InMemoryStreamsGroupMemberTests
         await using var member = CreateMember();
         await member.JoinAsync(new StreamsGroupMemberUpdate
         {
-            Topology = CreateTopology(),
+            Topology = CreateTopology()
+        });
+        await member.UpdateAsync(new StreamsGroupMemberUpdate
+        {
             ActiveTasks = [new StreamsGroupTaskSet { SubtopologyId = "active", Partitions = [0] }],
             StandbyTasks = [new StreamsGroupTaskSet { SubtopologyId = "standby", Partitions = [1] }],
             WarmupTasks = [new StreamsGroupTaskSet { SubtopologyId = "warmup", Partitions = [2] }]
         });
+        await Assert.That(member.Snapshot.Assignment.ActiveTasks).IsNotEmpty();
 
         var result = await member.UpdateAsync(new StreamsGroupMemberUpdate
         {

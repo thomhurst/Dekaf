@@ -829,6 +829,7 @@ public sealed class StreamsGroupMemberTests
         }).AsTask();
         await connection.SecondHeartbeatStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
         using var cancellation = new CancellationTokenSource();
+        // Matches StreamsGroupMember.CommandCapacity so the bounded queue is exactly full.
         var queued = new Task[64];
         for (var index = 0; index < queued.Length; index++)
         {
@@ -1319,6 +1320,35 @@ public sealed class StreamsGroupMemberTests
         await Assert.That(connection.FindCoordinatorRequestCount).IsEqualTo(2);
         await Assert.That(result.MemberEpoch).IsEqualTo(3);
         await Assert.That(fixture.Member.Snapshot.IsJoined).IsTrue();
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task BackgroundHeartbeat_FinalRetriableFailureRemainsRecoverable(bool wrappedTransportFailure)
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1));
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            Exception failure = wrappedTransportFailure
+                ? new InvalidOperationException("wrapped transport failure", new IOException("connection failed"))
+                : new ObjectDisposedException("KafkaConnection");
+            connection.EnqueueHeartbeat(Task.FromException<StreamsGroupHeartbeatResponse>(failure));
+        }
+
+        connection.EnqueueHeartbeat(Success(epoch: 2));
+        await using var fixture = CreateFixture(connection);
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+        StopHeartbeatTimer(fixture.Member);
+
+        await InvokeBackgroundHeartbeatAsync(fixture.Member);
+
+        await Assert.That(GetWorkerTask(fixture.Member).IsCompleted).IsFalse();
+        await Assert.That(fixture.Member.Snapshot.IsJoined).IsTrue();
+        StopHeartbeatTimer(fixture.Member);
+        await InvokeBackgroundHeartbeatAsync(fixture.Member);
+        await Assert.That(fixture.Member.Snapshot.MemberEpoch).IsEqualTo(2);
     }
 
     [Test]
