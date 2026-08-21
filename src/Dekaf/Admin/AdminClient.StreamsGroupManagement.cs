@@ -164,7 +164,9 @@ public sealed partial class AdminClient
                 var apiVersion = _metadataManager.GetNegotiatedApiVersion(
                     connection,
                     Protocol.ApiKey.OffsetFetch,
-                    OffsetFetchRequest.LowestSupportedVersion,
+                    requireStable
+                        ? OffsetFetchRequest.RequireStableVersion
+                        : OffsetFetchRequest.LowestSupportedVersion,
                     highestVersion);
 
                 if (apiVersion < 8)
@@ -547,6 +549,7 @@ public sealed partial class AdminClient
 
                         if (partition.ErrorCode.IsRetriable() || partition.ErrorCode.RequiresMetadataRefresh())
                         {
+                            deleteMayHaveApplied = true;
                             retryFailure ??= new Errors.GroupException(
                                 partition.ErrorCode,
                                 $"DeleteStreamsGroupOffsets failed for {topic.Name}-{partition.PartitionIndex}: {partition.ErrorCode}")

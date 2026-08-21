@@ -1,4 +1,5 @@
 using Dekaf.Admin;
+using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Protocol;
@@ -197,6 +198,26 @@ public sealed class AdminClientStreamsGroupManagementTests
     }
 
     [Test]
+    public async Task ListStreamsGroupOffsetsAsync_RequireStableRejectsOffsetFetchV6()
+    {
+        var (admin, connection) = CreateAdmin(offsetFetchMaxVersion: 6);
+        SetupFindCoordinator(connection);
+
+        await Assert.ThrowsAsync<BrokerVersionException>(async () =>
+            await admin.ListStreamsGroupOffsetsAsync(
+                new Dictionary<string, ListStreamsGroupOffsetsSpec>
+                {
+                    [FirstGroup] = new() { TopicPartitions = [new TopicPartition(Topic, 0)] }
+                },
+                new ListStreamsGroupOffsetsOptions { RequireStable = true }));
+
+        await connection.DidNotReceive().SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+            Arg.Any<OffsetFetchRequest>(),
+            Arg.Any<short>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
     public async Task AlterStreamsGroupOffsetsAsync_PreservesPartitionErrorsAndTopicIds()
     {
         var (admin, connection) = CreateAdmin();
@@ -310,6 +331,33 @@ public sealed class AdminClientStreamsGroupManagementTests
                 ValueTask.FromResult(DeleteOffsetsResponse(Deleted(0, ErrorCode.None))));
 
         var partition = new TopicPartition(Topic, 0);
+        var results = await admin.DeleteStreamsGroupOffsetsAsync(FirstGroup, [partition]);
+
+        await Assert.That(results[partition].ErrorCode).IsEqualTo(ErrorCode.None);
+        await connection.Received(2).SendAsync<OffsetDeleteRequest, OffsetDeleteResponse>(
+            Arg.Any<OffsetDeleteRequest>(),
+            0,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task DeleteStreamsGroupOffsetsAsync_GroupMissingAfterPartitionRetryIsSuccess()
+    {
+        var (admin, connection) = CreateAdmin();
+        SetupFindCoordinator(connection);
+        connection.SendAsync<OffsetDeleteRequest, OffsetDeleteResponse>(
+                Arg.Any<OffsetDeleteRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(
+                ValueTask.FromResult(DeleteOffsetsResponse(Deleted(0, ErrorCode.RequestTimedOut))),
+                ValueTask.FromResult(new OffsetDeleteResponse
+                {
+                    ErrorCode = ErrorCode.GroupIdNotFound,
+                    Topics = []
+                }));
+        var partition = new TopicPartition(Topic, 0);
+
         var results = await admin.DeleteStreamsGroupOffsetsAsync(FirstGroup, [partition]);
 
         await Assert.That(results[partition].ErrorCode).IsEqualTo(ErrorCode.None);
@@ -487,7 +535,8 @@ public sealed class AdminClientStreamsGroupManagementTests
             });
     }
 
-    private static (AdminClient Admin, IKafkaConnection Connection) CreateAdmin()
+    private static (AdminClient Admin, IKafkaConnection Connection) CreateAdmin(
+        short offsetFetchMaxVersion = 10)
     {
         var connection = Substitute.For<IKafkaConnection>();
         connection.BrokerId.Returns(1);
@@ -537,7 +586,7 @@ public sealed class AdminClientStreamsGroupManagementTests
             ]
         });
         metadataManager.SetApiVersion(ApiKey.FindCoordinator, 4, 6);
-        metadataManager.SetApiVersion(ApiKey.OffsetFetch, 6, 10);
+        metadataManager.SetApiVersion(ApiKey.OffsetFetch, 6, offsetFetchMaxVersion);
         metadataManager.SetApiVersion(ApiKey.OffsetCommit, 8, 10);
         metadataManager.SetApiVersion(ApiKey.OffsetDelete, 0, 0);
         metadataManager.SetApiVersion(ApiKey.DeleteGroups, 2, 2);
