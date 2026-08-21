@@ -872,6 +872,10 @@ public sealed class InMemoryKafkaClusterTests
         var inactiveResult = await admin.DeleteShareGroupsAsync(["share-active"]);
 
         await Assert.That(inactiveResult["share-active"].ErrorCode).IsEqualTo(ErrorCode.None);
+
+        var missingResult = await admin.DeleteShareGroupsAsync(["share-active"]);
+
+        await Assert.That(missingResult["share-active"].ErrorCode).IsEqualTo(ErrorCode.GroupIdNotFound);
     }
 
     [Test]
