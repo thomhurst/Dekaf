@@ -41,6 +41,14 @@ public sealed class AdminClientTopicIdTests
         await Assert.That(request.Topics[0].Name).IsNull();
         await Assert.That(result[TopicId].Name).IsEqualTo("orders");
         await Assert.That(result[TopicId].TopicId).IsEqualTo(TopicId);
+        var partition = result[TopicId].Partitions.Single();
+        await Assert.That(partition.PartitionIndex).IsEqualTo(0);
+        await Assert.That(partition.LeaderId).IsEqualTo(1);
+        await Assert.That(partition.LeaderEpoch).IsEqualTo(3);
+        await Assert.That(partition.ReplicaNodes).IsEquivalentTo([1]);
+        await Assert.That(partition.IsrNodes).IsEquivalentTo([1]);
+        await Assert.That(partition.OfflineReplicas).IsEmpty();
+        await Assert.That(partition.ErrorCode).IsEqualTo(ErrorCode.None);
     }
 
     [Test]
@@ -132,14 +140,14 @@ public sealed class AdminClientTopicIdTests
     }
 
     [Test]
-    public async Task DeleteTopicsAsync_PartialRetriableError_RetriesOnlyUnresolvedIds()
+    public async Task DeleteTopicsAsync_PartialRetriableError_AcceptsUnknownIdOnRetry()
     {
         await using var context = new AdminTestContext();
         context.EnqueueDeleteResponse(DeleteResponse(
             DeleteResult("orders", TopicId, ErrorCode.None),
             DeleteResult("pending", UnknownTopicId, ErrorCode.RequestTimedOut)));
         context.EnqueueDeleteResponse(DeleteResponse(
-            DeleteResult("pending", UnknownTopicId, ErrorCode.None)));
+            DeleteResult("pending", UnknownTopicId, ErrorCode.UnknownTopicId)));
 
         await context.Client.DeleteTopicsAsync([TopicId, UnknownTopicId]);
 

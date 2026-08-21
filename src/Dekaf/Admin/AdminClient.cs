@@ -635,6 +635,9 @@ public sealed class AdminClient : IAdminClient, IReplicaLogDirAdminClient, ITopi
                     continue;
                 }
 
+                if (topic.ErrorCode.IsRetriable())
+                    deleteMayHaveApplied = true;
+
                 failure ??= new KafkaException(topic.ErrorCode,
                     $"Failed to delete topic '{topic.Name}' ({identifier}): {topic.ErrorMessage ?? topic.ErrorCode.ToString()}");
             }
