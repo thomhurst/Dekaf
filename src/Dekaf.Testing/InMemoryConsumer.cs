@@ -1582,6 +1582,10 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 ? await ToConsumeResultAsync(partition, record, cancellationToken).ConfigureAwait(false)
                 : ToConsumeResult(partition, record);
 
+            ThrowIfDisposed();
+            if (!IsRecordSelectionCurrent(partition, position, in selectionVersion))
+                continue;
+
             var consumeScope = new KafkaFaultScope(
                 KafkaFaultOperation.Consume,
                 partition.Topic,

@@ -1015,6 +1015,56 @@ public sealed class InMemoryConsumerFaultTests
     }
 
     [Test]
+    public async Task ConsumeOneAsync_GroupChangeAfterDeserializationPreservesConsumeFault()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync(Topic, "key", "value");
+        var deserializer = new BlockingAsyncDeserializer();
+        await using var consumer = CreateAsyncConsumer(cluster, deserializer, "z-member");
+        consumer.Subscribe(Topic);
+        var failure = new InvalidOperationException("consume failed");
+        cluster.FaultPlan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.Consume, Topic, 0, GroupId),
+            failure);
+
+        var operation = consumer.ConsumeOneAsync(TimeSpan.Zero).AsTask();
+        await deserializer.WaitUntilEnteredAsync();
+        await using var joiningConsumer = CreateConsumer(cluster, memberId: "a-member");
+        joiningConsumer.Subscribe(Topic);
+        deserializer.Release();
+
+        await Assert.That(await operation).IsNull();
+        await Assert.That(cluster.FaultPlan.Count).IsEqualTo(1);
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            joiningConsumer.ConsumeOneAsync(TimeSpan.Zero).AsTask());
+        await Assert.That(actual).IsSameReferenceAs(failure);
+    }
+
+    [Test]
+    public async Task ConsumeOneAsync_DisposalDuringDeserializationPreservesConsumeFault()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync(Topic, "key", "value");
+        var deserializer = new BlockingAsyncDeserializer();
+        var consumer = CreateAsyncConsumer(cluster, deserializer);
+        consumer.Subscribe(Topic);
+        cluster.FaultPlan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.Consume, Topic, 0, GroupId),
+            new InvalidOperationException("consume failed"));
+
+        var operation = consumer.ConsumeOneAsync(TimeSpan.Zero).AsTask();
+        await deserializer.WaitUntilEnteredAsync();
+        var disposal = consumer.DisposeAsync().AsTask();
+        deserializer.Release();
+
+        _ = await Assert.ThrowsAsync<ObjectDisposedException>(() => operation);
+        await disposal;
+        await Assert.That(cluster.FaultPlan.Count).IsEqualTo(1);
+    }
+
+    [Test]
     [Arguments(KafkaFaultOperation.Consume)]
     [Arguments(KafkaFaultOperation.Commit)]
     public async Task Snapshot_GroupChangeAfterAsyncDeserializationPreservesFault(
@@ -1769,7 +1819,8 @@ public sealed class InMemoryConsumerFaultTests
 
     private static InMemoryConsumer<string, string> CreateAsyncConsumer(
         InMemoryKafkaCluster cluster,
-        IAsyncDeserializer<string> deserializer) =>
+        IAsyncDeserializer<string> deserializer,
+        string? memberId = null) =>
         new(
             cluster,
             deserializer,
@@ -1780,7 +1831,8 @@ public sealed class InMemoryConsumerFaultTests
                 AutoOffsetReset = AutoOffsetReset.Earliest,
                 OffsetCommitMode = OffsetCommitMode.Auto,
                 EnableAutoOffsetStore = true,
-                OffsetStoreTiming = OffsetStoreTiming.OnDelivery
+                OffsetStoreTiming = OffsetStoreTiming.OnDelivery,
+                MemberId = memberId
             });
 
     private static IEnumerable<TopicPartitionOffset> ThrowOnEnumeration()
