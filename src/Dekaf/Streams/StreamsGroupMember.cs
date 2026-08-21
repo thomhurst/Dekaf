@@ -33,6 +33,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         });
     private readonly object _commandWriteGate = new();
     private readonly CancellationTokenSource _commandAdmissionCancellation = new();
+    // CloseAsync remains idempotent after disposal, so concurrent close callers can still drain initialization.
     private readonly SemaphoreSlim _initializeLock = new(1, 1);
     private readonly StreamsGroupHeartbeatRequestCache _steadyRequestCache = new();
     private readonly Action _requestWriteStartedCallback;
@@ -243,7 +244,6 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         {
             _heartbeatTimer.Dispose();
             _commandAdmissionCancellation.Dispose();
-            _initializeLock.Dispose();
         }
     }
 
