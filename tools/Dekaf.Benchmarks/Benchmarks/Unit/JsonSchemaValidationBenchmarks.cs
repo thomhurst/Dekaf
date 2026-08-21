@@ -149,13 +149,31 @@ public class JsonSchemaValidationBenchmarks
         }
         """;
 
+    private const string SiblingMapSizeInlineRulesJsonSchema = """
+        {
+          "confluent:rules": [
+            { "name": "size-a", "expr": "size(this) == 8" },
+            { "name": "size-b", "expr": "size(this) > 7" },
+            { "name": "size-c", "expr": "size(this) < 9" },
+            { "name": "size-d", "expr": "size(this) != 0" },
+            { "name": "size-e", "expr": "size(this) >= 8" },
+            { "name": "size-f", "expr": "size(this) <= 8" },
+            { "name": "size-g", "expr": "size(this) == 8" },
+            { "name": "size-h", "expr": "size(this) == 8" }
+          ]
+        }
+        """;
+
     private ArrayBufferWriter<byte> _disabledDestination = new(256);
     private ArrayBufferWriter<byte> _enabledDestination = new(256);
     private ArrayBufferWriter<byte> _inlineRulesDestination = new(256);
+    private ArrayBufferWriter<byte> _preparedInlineRulesDestination = new(256);
     private readonly BenchmarkPayload _value = new(7, "benchmark");
     private JsonSchemaRegistrySerializer<BenchmarkPayload> _disabledSerializer = null!;
     private JsonSchemaRegistrySerializer<BenchmarkPayload> _enabledSerializer = null!;
     private JsonSchemaRegistrySerializer<BenchmarkPayload> _inlineRulesSerializer = null!;
+    private IAsyncSerializerPreparationAdmission<BenchmarkPayload> _preparedInlineRulesSerializer = null!;
+    private SerializerPreparationAdmission _inlineRulesAdmission;
     private JsonSchemaRegistryDeserializer<BenchmarkPayload> _disabledDeserializer = null!;
     private JsonSchemaRegistryDeserializer<BenchmarkPayload> _enabledDeserializer = null!;
     private JsonSchemaRegistryDeserializer<BenchmarkPayload> _inlineRulesDeserializer = null!;
@@ -195,6 +213,8 @@ public class JsonSchemaValidationBenchmarks
     private IJsonSchemaValidator _decimalMinNegationInlineRulesValidator = null!;
     private ReadOnlyMemory<byte> _duplicateMapSizeInlineRulesJsonPayload;
     private IJsonSchemaValidator _mapSizeInlineRulesValidator = null!;
+    private ReadOnlyMemory<byte> _siblingMapSizeInlineRulesJsonPayload;
+    private IJsonSchemaValidator _siblingMapSizeInlineRulesValidator = null!;
     private ReadOnlyMemory<byte> _terminalPrefixInlineRulesJsonPayload;
     private IJsonSchemaValidator _terminalPrefixInlineRulesValidator = null!;
     private SerializationContext _context;
@@ -264,6 +284,17 @@ public class JsonSchemaValidationBenchmarks
         _enabledDestination.Clear();
         _inlineRulesSerializer.Serialize(_value, ref _inlineRulesDestination, _context);
         _inlineRulesWirePayload = _inlineRulesDestination.WrittenMemory.ToArray();
+        _preparedInlineRulesSerializer = _inlineRulesSerializer;
+        _inlineRulesAdmission = _preparedInlineRulesSerializer
+            .PrepareForSerializationAsync(_value, _context)
+            .GetAwaiter()
+            .GetResult();
+        _preparedInlineRulesSerializer.SerializePrepared(
+            _value,
+            ref _preparedInlineRulesDestination,
+            _context,
+            in _inlineRulesAdmission);
+        _preparedInlineRulesDestination.Clear();
         _inlineRulesJsonPayload = _inlineRulesWirePayload[5..];
         _inlineRulesValidator = inlineRulesFactory.GetOrCreate(inlineRulesRegistry.GetSchema(1));
         _inlineRulesValidator.ValidateRules(_inlineRulesJsonPayload, 1, failFast: false);
@@ -422,6 +453,17 @@ public class JsonSchemaValidationBenchmarks
             _duplicateMapSizeInlineRulesJsonPayload,
             10,
             failFast: false);
+        _siblingMapSizeInlineRulesJsonPayload =
+            """{"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8}"""u8.ToArray();
+        _siblingMapSizeInlineRulesValidator = inlineRulesFactory.GetOrCreate(new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = SiblingMapSizeInlineRulesJsonSchema
+        });
+        _siblingMapSizeInlineRulesValidator.ValidateRules(
+            _siblingMapSizeInlineRulesJsonPayload,
+            14,
+            failFast: false);
         var (terminalPrefixSchema, terminalPrefixPayload) = CreateTerminalPrefixRule(depth: 32);
         _terminalPrefixInlineRulesJsonPayload = terminalPrefixPayload;
         _terminalPrefixInlineRulesValidator = inlineRulesFactory.GetOrCreate(new Schema
@@ -471,6 +513,17 @@ public class JsonSchemaValidationBenchmarks
     {
         _inlineRulesDestination.Clear();
         _inlineRulesSerializer.Serialize(_value, ref _inlineRulesDestination, _context);
+    }
+
+    [Benchmark]
+    public void SerializePreparedInlineRulesEnabled()
+    {
+        _preparedInlineRulesDestination.Clear();
+        _preparedInlineRulesSerializer.SerializePrepared(
+            _value,
+            ref _preparedInlineRulesDestination,
+            _context,
+            in _inlineRulesAdmission);
     }
 
     [Benchmark]
@@ -594,6 +647,13 @@ public class JsonSchemaValidationBenchmarks
         _mapSizeInlineRulesValidator.ValidateRules(
             _duplicateMapSizeInlineRulesJsonPayload,
             10,
+            failFast: false);
+
+    [Benchmark]
+    public void ValidateSiblingMapSizeInlineRules() =>
+        _siblingMapSizeInlineRulesValidator.ValidateRules(
+            _siblingMapSizeInlineRulesJsonPayload,
+            14,
             failFast: false);
 
     [Benchmark]

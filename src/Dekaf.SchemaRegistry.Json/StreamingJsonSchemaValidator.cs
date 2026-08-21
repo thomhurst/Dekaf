@@ -181,13 +181,16 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
                         checked((int)reader.TokenStartIndex),
                         value)
                     : ResolveMembers(node.ValidationRuleMembers!, memberCount, value);
+            var sizes = node.ValidationRulesUseSize
+                ? CompiledValidationRule.GetSizeValues(memberCount + 1)
+                : default;
 
             for (var index = 0; index < rules.Length; index++)
             {
                 var compiledRule = rules[index];
                 try
                 {
-                    var result = compiledRule.Evaluate(value, now, memberValues);
+                    var result = compiledRule.Evaluate(value, now, memberValues, sizes);
                     if (result.Kind == ValidationResultKind.Boolean ? !result.Boolean : result.String!.Length != 0)
                     {
                         if (!compositionMatches.CollectViolations)
@@ -1925,8 +1928,12 @@ internal sealed class SchemaCompiler : IDisposable
             }
         }
 
-        node.ValidationRules = CompileValidationRules(schema, out var validationRuleMemberIndexes);
+        node.ValidationRules = CompileValidationRules(
+            schema,
+            out var validationRuleMemberIndexes,
+            out var validationRulesUseSize);
         node.ValidationRuleMemberIndexes = validationRuleMemberIndexes;
+        node.ValidationRulesUseSize = validationRulesUseSize;
 
         node.Types = ParseTypes(schema);
         node.MinProperties = GetNonNegativeInt32(schema, "minProperties", 0);
@@ -2003,9 +2010,11 @@ internal sealed class SchemaCompiler : IDisposable
 
     private CompiledValidationRule[] CompileValidationRules(
         JsonElement schema,
-        out int[] memberIndexes)
+        out int[] memberIndexes,
+        out bool usesSize)
     {
         memberIndexes = [];
+        usesSize = false;
         if (!schema.TryGetProperty("confluent:rules", out var rules))
             return [];
         if (rules.ValueKind != JsonValueKind.Array)
@@ -2024,11 +2033,13 @@ internal sealed class SchemaCompiler : IDisposable
                 Expr = GetOptionalString(element, "expr"),
                 Sql = GetOptionalString(element, "sql")
             };
-            compiled.Add(CompiledValidationRule.Compile(
+            var compiledRule = CompiledValidationRule.Compile(
                 rule,
                 _validationMemberIndexes,
                 _validationMemberPaths,
-                usedMemberIndexes));
+                usedMemberIndexes);
+            usesSize |= compiledRule.UsesSize;
+            compiled.Add(compiledRule);
         }
         if (usedMemberIndexes.Count != 0)
         {
@@ -2644,6 +2655,7 @@ internal sealed class CompiledSchemaNode
     internal JsonSchemaType Types { get; set; } = JsonSchemaType.Any;
     internal CompiledSchemaNode? Reference { get; set; }
     internal CompiledValidationRule[] ValidationRules { get; set; } = [];
+    internal bool ValidationRulesUseSize { get; set; }
     internal int[] ValidationRuleMemberIndexes { get; set; } = [];
     internal ValidationCelMemberTable? ValidationRuleMembers { get; set; }
     internal bool SharesValidationRuleMembers { get; set; }

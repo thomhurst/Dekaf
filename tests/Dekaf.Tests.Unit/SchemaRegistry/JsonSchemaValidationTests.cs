@@ -1759,6 +1759,38 @@ public sealed class JsonSchemaValidationTests
     }
 
     [Test]
+    public async Task Serializer_PreparedSerializationRunsInlineRules()
+    {
+        const string schemaText = """
+            {
+              "confluent:rules": [{ "name": "validName", "expr": "this.name == 'ok'" }]
+            }
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        await using var serializer = new JsonSchemaRegistrySerializer<NamePayload>(
+            registry,
+            schemaText,
+            jsonOptions: null,
+            validationOptions: new JsonSchemaValidationOptions
+            {
+                ValidatorFactory = new StreamingJsonSchemaValidatorFactory(registry),
+                Mode = JsonSchemaValidationMode.None,
+                ValidationRulesExecution = ValidationRulesExecution.BeforeDomainRules
+            });
+        var admissionSerializer = (IAsyncSerializerPreparationAdmission<NamePayload>)serializer;
+        var admission = await admissionSerializer.PrepareForSerializationAsync(
+            new NamePayload("bad"),
+            Context);
+        var buffer = new ArrayBufferWriter<byte>();
+
+        Assert.Throws<ValidationRulesFailedException>(() => admissionSerializer.SerializePrepared(
+            new NamePayload("bad"),
+            ref buffer,
+            Context,
+            in admission));
+    }
+
+    [Test]
     public async Task Deserializer_InlineRulesRunBetweenEncodingAndDomainRules()
     {
         const string schemaText = """

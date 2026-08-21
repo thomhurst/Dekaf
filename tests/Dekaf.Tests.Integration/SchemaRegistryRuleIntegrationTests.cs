@@ -463,6 +463,14 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithValueSerializer(serializer)
             .BuildAsync();
+        await Assert.That(async () => await producer.ProduceAsync(
+            new ProducerMessage<string, InlineValidationPayload>
+            {
+                Topic = topic,
+                Key = "invalid",
+                Value = new InlineValidationPayload(string.Empty)
+            }))
+            .Throws<ValidationRulesFailedException>();
         await producer.ProduceAsync(new ProducerMessage<string, InlineValidationPayload>
         {
             Topic = topic,
