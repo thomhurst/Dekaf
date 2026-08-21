@@ -198,7 +198,7 @@ builder.Services.AddDekaf(dekaf =>
         "orders",
         builder.Configuration.GetSection("Kafka:Consumers:Orders"),
         consumer => consumer
-            .WithValueDeserializer(new JsonDeserializer<Order>())
+            .WithValueDeserializer(new JsonSerializer<Order>())
             .SubscribeTo("orders"));
 });
 ```
@@ -301,7 +301,7 @@ builder.Services.AddDekaf(dekaf =>
     dekaf.AddConsumer<string, Order>(
         kafka.GetSection("Consumers:Orders"),
         consumer => consumer
-            .WithValueDeserializer(new JsonDeserializer<Order>())
+            .WithValueDeserializer(new JsonSerializer<Order>())
             .SubscribeTo("orders"));
 
     dekaf.AddAdminClient(kafka.GetSection("Admin"));
@@ -333,7 +333,7 @@ builder.Services.AddDekaf(dekaf =>
             GroupId = "orders"
         },
         consumer => consumer
-            .WithValueDeserializer(new JsonDeserializer<Order>())
+            .WithValueDeserializer(new JsonSerializer<Order>())
             .SubscribeTo("orders"));
 
     dekaf.AddAdminClient(
@@ -400,7 +400,7 @@ builder.Services.AddDekaf(dekaf =>
     dekaf.AddConsumerService<OrderProcessorService, string, Order>(consumer => consumer
         .WithBootstrapServers(kafkaConfig["BootstrapServers"]!)
         .WithGroupId(kafkaConfig["GroupId"]!)
-        .WithValueDeserializer(new JsonDeserializer<Order>()));
+        .WithValueDeserializer(new JsonSerializer<Order>()));
 });
 
 var app = builder.Build();

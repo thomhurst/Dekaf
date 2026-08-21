@@ -39,6 +39,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       code: ${{ github.event_name != 'pull_request' && 'true' || steps.filter.outputs.code }}
+      docs: ${{ github.event_name != 'pull_request' && 'true' || steps.filter.outputs.docs }}
     steps:
       - name: Filter changed paths
         id: filter
@@ -73,6 +74,45 @@ jobs:
               - 'nuget.config'
               - '.editorconfig'
               - '.gitattributes'
+            docs:
+              - 'README.md'
+              - 'docs/docs/**'
+              - 'src/**'
+              - 'tests/Dekaf.DocTests/**'
+              - 'Directory.Build.props'
+              - 'Directory.Build.targets'
+              - 'Directory.Packages.props'
+
+  doc-snippets:
+    name: Documentation Snippets
+    needs: changes
+    if: needs.changes.outputs.docs == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+          dotnet-quality: 'preview'
+
+      - name: Cache NuGet packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/Directory.Packages.props', '**/Directory.Build.props', '**/Directory.Build.targets') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      - name: Compile documentation snippets
+        run: dotnet run --project tests/Dekaf.DocTests --configuration Release --framework net10.0 -- --repository-root .
 
   nuget-audit:
     name: NuGet Vulnerability Audit
@@ -122,7 +162,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-  # The ONLY job that compiles the solution. Runs net10.0 unit tests inline and
+  # The ONLY job that compiles the full solution. Runs net10.0 unit tests inline and
   # ships the built test binaries to every downstream test job as one tarball
   # (tar preserves the apphost executable bit; single-file upload is fast).
   build:
@@ -785,7 +825,7 @@ jobs:
   # release-only jobs skip on PR runs).
   ci-passed:
     name: CI Passed
-    needs: [changes, build, unit-net8, leak-gates-debug, integration, eventhubs-integration, aot-smoke, aot-integration-publish, aot-integration-smoke, release-matrix, release-matrix-aot, publish, code-quality, nuget-audit]
+    needs: [changes, doc-snippets, build, unit-net8, leak-gates-debug, integration, eventhubs-integration, aot-smoke, aot-integration-publish, aot-integration-smoke, release-matrix, release-matrix-aot, publish, code-quality, nuget-audit]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

@@ -60,7 +60,7 @@ builder.Services.AddDekaf(dekaf =>
     dekaf.AddConsumerService<OrderProcessorService, string, Order>(consumer => consumer
         .WithBootstrapServers(builder.Configuration["Kafka:BootstrapServers"]!)
         .WithGroupId("orders-service")
-        .WithValueDeserializer(new JsonDeserializer<Order>()));
+        .WithValueDeserializer(new JsonSerializer<Order>()));
 });
 ```
 

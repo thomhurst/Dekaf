@@ -134,7 +134,7 @@ var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .ForHighThroughput()
     .WithAcks(Acks.All)        // Override: want reliability too
-    .WithLingerMs(10)          // Override: even more batching
+    .WithLinger(TimeSpan.FromMilliseconds(10)) // Override: even more batching
     .BuildAsync();
 ```
 
@@ -181,7 +181,7 @@ public static class DekafPresets
         return builder
             .ForReliability()
             .UseLz4Compression()
-            .WithLingerMs(1);  // Slight batching for efficiency
+            .WithLinger(TimeSpan.FromMilliseconds(1)); // Slight batching for efficiency
     }
 
     public static ConsumerBuilder<TKey, TValue> ForOrderProcessing<TKey, TValue>(
@@ -224,9 +224,9 @@ using Dekaf;
 var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithAcks(Acks.All)
-    .WithLingerMs(2)
+    .WithLinger(TimeSpan.FromMilliseconds(2))
     .WithBatchSize(32768)
-    .EnableIdempotence()
+    .WithIdempotence(true)
     .UseZstdCompression()
     .BuildAsync();
 ```

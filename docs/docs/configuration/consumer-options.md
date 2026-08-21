@@ -67,7 +67,7 @@ builder.Services.AddDekaf(dekaf =>
     dekaf.AddConsumer<string, Order>(
         builder.Configuration.GetSection("Kafka:Consumers:Orders"),
         consumer => consumer
-            .WithValueDeserializer(new JsonDeserializer<Order>())
+            .WithValueDeserializer(new JsonSerializer<Order>())
             .SubscribeTo("orders"));
 });
 ```
@@ -273,8 +273,7 @@ it is the sole reservation. Coordinator responses do not consume this budget. Ob
 How long before consumer is considered dead:
 
 ```csharp
-.WithSessionTimeout(45000)                      // 45 seconds (default)
-.WithSessionTimeout(TimeSpan.FromSeconds(45))  // Same, using TimeSpan
+.WithSessionTimeout(TimeSpan.FromSeconds(45)) // Default
 ```
 
 ## Subscription
@@ -407,8 +406,8 @@ Setting a callback enables TLS for the connection.
 Custom deserializers:
 
 ```csharp
-.WithKeyDeserializer(new JsonDeserializer<OrderKey>())
-.WithValueDeserializer(new JsonDeserializer<Order>())
+.WithKeyDeserializer(new JsonSerializer<OrderKey>())
+.WithValueDeserializer(new JsonSerializer<Order>())
 ```
 
 ## Advanced Settings

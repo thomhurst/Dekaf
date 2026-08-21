@@ -20,7 +20,7 @@ builder.Services.AddDekaf(dekaf =>
         consumer => consumer
             .WithBootstrapServers("localhost:9092")
             .WithGroupId("orders-service")
-            .WithValueDeserializer(new JsonDeserializer<Order>()),
+            .WithValueDeserializer(new JsonSerializer<Order>()),
         dlq => dlq
             .WithMaxFailures(3));
 });

@@ -15,6 +15,22 @@ description: "Dekaf.Testing provides in-memory producers and consumers for fast 
 
 The cluster stores serialized bytes, not typed values, so custom serializers and deserializers still run during tests.
 
+## Documentation snippet gate
+
+CI extracts every C# fence from this documentation and the README, then compiles each snippet against the current source projects. Shell examples are checked against packable package IDs and existing project paths. New C# fences compile by default.
+
+Run the gate locally with:
+
+```bash
+dotnet run --project tests/Dekaf.DocTests --configuration Release --framework net10.0 -- --repository-root .
+```
+
+Dekaf's existing documentation contains many legacy snippets that are not yet standalone. Their exact source and compiler diagnostics are pinned by `KnownFailures.sha256`; any source or API change invalidates the baseline and requires review. Prefer making a fragment standalone. When application-specific context would obscure the example, exclude it explicitly with a reason immediately before the fence:
+
+```markdown
+<!-- doc-test-ignore: Application transport implementation is omitted. -->
+```
+
 ## Direct use
 
 ```csharp
