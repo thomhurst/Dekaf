@@ -643,6 +643,45 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
+    public async Task Admin_DescribeReplicaLogDirs_ReturnsSelectedReplicaInfo()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("events", partitionCount: 2);
+        var admin = new InMemoryAdminClient(cluster);
+        var existing = new TopicPartitionReplica("events", 1, 0);
+        var missing = new TopicPartitionReplica("events", 2, 0);
+
+        var result = await admin.DescribeReplicaLogDirsAsync([existing, missing, existing]);
+
+        await Assert.That(result.Count).IsEqualTo(2);
+        await Assert.That(result[existing].CurrentReplicaLogDir).IsEqualTo("in-memory");
+        await Assert.That(result[existing].CurrentReplicaOffsetLag).IsEqualTo(0);
+        await Assert.That(result[existing].FutureReplicaLogDir).IsNull();
+        await Assert.That(result[existing].FutureReplicaOffsetLag).IsEqualTo(-1);
+        await Assert.That(result[missing].CurrentReplicaLogDir).IsNull();
+        await Assert.That(result[missing].CurrentReplicaOffsetLag).IsEqualTo(-1);
+    }
+
+    [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task Admin_DescribeReplicaLogDirs_DoesNotCreateMissingTopic(bool autoCreateTopics)
+    {
+        var cluster = new InMemoryKafkaCluster(new InMemoryKafkaClusterOptions
+        {
+            AutoCreateTopics = autoCreateTopics
+        });
+        var admin = new InMemoryAdminClient(cluster);
+        var missing = new TopicPartitionReplica("missing", 0, 0);
+
+        var result = await admin.DescribeReplicaLogDirsAsync([missing]);
+
+        await Assert.That(result[missing].CurrentReplicaLogDir).IsNull();
+        await Assert.That(result[missing].CurrentReplicaOffsetLag).IsEqualTo(-1);
+        await Assert.That(cluster.ListTopics()).IsEmpty();
+    }
+
+    [Test]
     public async Task Producer_PurgeAsync_IsNoOpForInMemoryProducer()
     {
         var cluster = new InMemoryKafkaCluster();

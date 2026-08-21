@@ -1172,6 +1172,43 @@ public sealed class ReplicaLogDirInfo
 }
 
 /// <summary>
+/// Current and future log-directory information for a selected replica.
+/// </summary>
+public sealed class DescribeReplicaLogDirResultInfo
+{
+    /// <summary>
+    /// The replica the result applies to.
+    /// </summary>
+    public required TopicPartitionReplica TopicPartitionReplica { get; init; }
+
+    /// <summary>
+    /// The current replica log directory, or null when the replica was not found.
+    /// </summary>
+    public string? CurrentReplicaLogDir { get; init; }
+
+    /// <summary>
+    /// The current replica offset lag, or -1 when the replica was not found.
+    /// </summary>
+    public long CurrentReplicaOffsetLag { get; init; } = -1;
+
+    /// <summary>
+    /// The future replica log directory, or null when the replica is not moving.
+    /// </summary>
+    public string? FutureReplicaLogDir { get; init; }
+
+    /// <summary>
+    /// The future replica offset lag, or -1 when the replica is not moving.
+    /// </summary>
+    public long FutureReplicaOffsetLag { get; init; } = -1;
+
+    /// <summary>
+    /// Broker-level error code, an explicitly reported directory-level error code,
+    /// or None when Kafka did not report an error for this replica.
+    /// </summary>
+    public Protocol.ErrorCode ErrorCode { get; init; }
+}
+
+/// <summary>
 /// Result of altering a replica log directory.
 /// </summary>
 public sealed class AlterReplicaLogDirResultInfo

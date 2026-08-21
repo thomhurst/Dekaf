@@ -9,7 +9,7 @@ namespace Dekaf.Testing;
 /// <summary>
 /// In-memory <see cref="IAdminClient"/> for common topic and group-offset test operations.
 /// </summary>
-public sealed class InMemoryAdminClient : IAdminClient
+public sealed class InMemoryAdminClient : IAdminClient, IReplicaLogDirAdminClient
 {
     private static readonly TimeSpan DefaultDelegationTokenLifetime = TimeSpan.FromHours(24);
 
@@ -961,6 +961,34 @@ public sealed class InMemoryAdminClient : IAdminClient
         }
 
         return ValueTask.FromResult<IReadOnlyDictionary<TopicPartitionReplica, AlterReplicaLogDirResultInfo>>(result);
+    }
+
+    public ValueTask<IReadOnlyDictionary<TopicPartitionReplica, DescribeReplicaLogDirResultInfo>> DescribeReplicaLogDirsAsync(
+        IEnumerable<TopicPartitionReplica> replicas,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(replicas);
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+
+        var result = new Dictionary<TopicPartitionReplica, DescribeReplicaLogDirResultInfo>();
+        foreach (var replica in replicas)
+        {
+            ValidateTopicPartition(replica.TopicPartition);
+            ArgumentOutOfRangeException.ThrowIfNegative(replica.BrokerId);
+
+            var exists = replica.BrokerId == 0 && _cluster.ContainsTopicPartition(replica.TopicPartition);
+            result[replica] = new DescribeReplicaLogDirResultInfo
+            {
+                TopicPartitionReplica = replica,
+                CurrentReplicaLogDir = exists ? "in-memory" : null,
+                CurrentReplicaOffsetLag = exists ? 0 : -1,
+                FutureReplicaOffsetLag = -1,
+                ErrorCode = ErrorCode.None
+            };
+        }
+
+        return ValueTask.FromResult<IReadOnlyDictionary<TopicPartitionReplica, DescribeReplicaLogDirResultInfo>>(result);
     }
 
     public ValueTask<IReadOnlyDictionary<string, StreamsGroupDescription>> DescribeStreamsGroupsAsync(

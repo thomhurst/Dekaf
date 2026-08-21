@@ -1,4 +1,23 @@
 #nullable enable
+Dekaf.Admin.AdminClient.DescribeReplicaLogDirsAsync(System.Collections.Generic.IEnumerable<Dekaf.Admin.TopicPartitionReplica>! replicas, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<Dekaf.Admin.TopicPartitionReplica, Dekaf.Admin.DescribeReplicaLogDirResultInfo!>!>
+Dekaf.Admin.DescribeReplicaLogDirResultInfo
+Dekaf.Admin.DescribeReplicaLogDirResultInfo.CurrentReplicaLogDir.get -> string?
+Dekaf.Admin.DescribeReplicaLogDirResultInfo.CurrentReplicaLogDir.init -> void
+Dekaf.Admin.DescribeReplicaLogDirResultInfo.CurrentReplicaOffsetLag.get -> long
+Dekaf.Admin.DescribeReplicaLogDirResultInfo.CurrentReplicaOffsetLag.init -> void
+Dekaf.Admin.DescribeReplicaLogDirResultInfo.DescribeReplicaLogDirResultInfo() -> void
+Dekaf.Admin.DescribeReplicaLogDirResultInfo.ErrorCode.get -> Dekaf.Protocol.ErrorCode
+Dekaf.Admin.DescribeReplicaLogDirResultInfo.ErrorCode.init -> void
+Dekaf.Admin.DescribeReplicaLogDirResultInfo.FutureReplicaLogDir.get -> string?
+Dekaf.Admin.DescribeReplicaLogDirResultInfo.FutureReplicaLogDir.init -> void
+Dekaf.Admin.DescribeReplicaLogDirResultInfo.FutureReplicaOffsetLag.get -> long
+Dekaf.Admin.DescribeReplicaLogDirResultInfo.FutureReplicaOffsetLag.init -> void
+Dekaf.Admin.DescribeReplicaLogDirResultInfo.TopicPartitionReplica.get -> Dekaf.Admin.TopicPartitionReplica
+Dekaf.Admin.DescribeReplicaLogDirResultInfo.TopicPartitionReplica.init -> void
+Dekaf.Admin.AdminClientReplicaLogDirExtensions
+Dekaf.Admin.IReplicaLogDirAdminClient
+Dekaf.Admin.IReplicaLogDirAdminClient.DescribeReplicaLogDirsAsync(System.Collections.Generic.IEnumerable<Dekaf.Admin.TopicPartitionReplica>! replicas, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<Dekaf.Admin.TopicPartitionReplica, Dekaf.Admin.DescribeReplicaLogDirResultInfo!>!>
+static Dekaf.Admin.AdminClientReplicaLogDirExtensions.DescribeReplicaLogDirsAsync(this Dekaf.Admin.IAdminClient! adminClient, System.Collections.Generic.IEnumerable<Dekaf.Admin.TopicPartitionReplica>! replicas, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<Dekaf.Admin.TopicPartitionReplica, Dekaf.Admin.DescribeReplicaLogDirResultInfo!>!>
 Dekaf.Consumer.ConsumerRecordFilterContext
 Dekaf.Consumer.ConsumerRecordFilterContext.ConsumerRecordFilterContext() -> void
 Dekaf.Consumer.ConsumerRecordFilterContext.Headers.get -> System.ReadOnlySpan<Dekaf.Serialization.Header>

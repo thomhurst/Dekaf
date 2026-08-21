@@ -7,6 +7,11 @@ const sidebars = {
     'api-compatibility',
     {
       type: 'category',
+      label: 'Admin',
+      items: ['admin/replica-log-directories'],
+    },
+    {
+      type: 'category',
       label: 'Producer',
       items: [
         'producer/basics',
