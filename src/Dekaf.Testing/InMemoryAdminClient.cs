@@ -79,6 +79,9 @@ public sealed class InMemoryAdminClient :
         ThrowIfDisposed();
 
         var topicList = topics.ToArray();
+        if (topicList.Length == 0)
+            await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+
         for (var index = 0; index < topicList.Length; index++)
         {
             var topic = topicList[index];

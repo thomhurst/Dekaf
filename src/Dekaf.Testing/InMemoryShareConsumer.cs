@@ -29,6 +29,8 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
     private TopicPartitionOffset[] _completedRecords = [];
     private TopicPartitionOffset[] _commitOffsets = [];
     private readonly string _memberId;
+    private int _shareFaultIndexVersion = -1;
+    private int _shareFaultOperationMask;
     private bool _disposed;
 
     public InMemoryShareConsumer(InMemoryKafkaCluster cluster)
@@ -241,6 +243,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             _assignment.Clear();
             foreach (var topicPartition in topicPartitions)
                 _assignment.Add(topicPartition);
+            Volatile.Write(ref _shareFaultIndexVersion, -1);
         }
 
         return this;
@@ -255,6 +258,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             ReleasePendingUnderLock();
             _subscription.Clear();
             _assignment.Clear();
+            Volatile.Write(ref _shareFaultIndexVersion, -1);
         }
 
         return this;
@@ -372,6 +376,9 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             for (var index = 0; index < snapshotCount; index++)
             {
                 var record = _commitSnapshot[index].Value;
+                if (!HasPotentialFault(KafkaFaultOperation.ShareAcknowledge, record.TopicPartition))
+                    continue;
+
                 var apply = _cluster.FaultPlan.ApplyAsync(
                     new KafkaFaultScope(
                         KafkaFaultOperation.ShareAcknowledge,
@@ -410,6 +417,9 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             for (var index = nextIndex; index < snapshotCount; index++)
             {
                 var record = _commitSnapshot[index].Value;
+                if (!HasPotentialFault(KafkaFaultOperation.ShareAcknowledge, record.TopicPartition))
+                    continue;
+
                 await _cluster.FaultPlan.ApplyAsync(
                     new KafkaFaultScope(
                         KafkaFaultOperation.ShareAcknowledge,
@@ -540,24 +550,27 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             if (!TryAcquireRecord(partition, out var record, out var deliveryCount))
                 continue;
 
-            try
+            if (HasPotentialFault(KafkaFaultOperation.ShareConsume, partition))
             {
-                await _cluster.FaultPlan.ApplyAsync(
-                    new KafkaFaultScope(
-                        KafkaFaultOperation.ShareConsume,
-                        partition.Topic,
-                        partition.Partition,
-                        _options.GroupId),
-                    cancellationToken).ConfigureAwait(false);
-            }
-            catch
-            {
-                _cluster.RollbackShareRecordAcquisition(
-                    _options.GroupId,
-                    _memberId,
-                    partition,
-                    record.Offset);
-                throw;
+                try
+                {
+                    await _cluster.FaultPlan.ApplyAsync(
+                        new KafkaFaultScope(
+                            KafkaFaultOperation.ShareConsume,
+                            partition.Topic,
+                            partition.Partition,
+                            _options.GroupId),
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch
+                {
+                    _cluster.RollbackShareRecordAcquisition(
+                        _options.GroupId,
+                        _memberId,
+                        partition,
+                        record.Offset);
+                    throw;
+                }
             }
 
             ShareConsumeResult<TKey, TValue> result;
@@ -580,8 +593,61 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool HasPotentialFault(KafkaFaultOperation operation) =>
-        _cluster.FaultPlan is not KafkaFaultPlan indexedPlan || indexedPlan.HasPotentialMatch(operation);
+    private bool HasPotentialFault(KafkaFaultOperation operation)
+    {
+        if (_cluster.FaultPlan is not KafkaFaultPlan indexedPlan)
+            return true;
+
+        var version = indexedPlan.ShareFaultIndexVersion;
+        if (Volatile.Read(ref _shareFaultIndexVersion) != version)
+            return RefreshShareFaultIndex(indexedPlan, operation);
+
+        return (Volatile.Read(ref _shareFaultOperationMask) & (1 << (int)operation)) != 0;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool HasPotentialFault(KafkaFaultOperation operation, TopicPartition partition) =>
+        _cluster.FaultPlan is not KafkaFaultPlan indexedPlan ||
+        indexedPlan.HasPotentialShareMatch(
+            operation,
+            partition.Topic,
+            partition.Partition,
+            _options.GroupId);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private bool RefreshShareFaultIndex(KafkaFaultPlan faultPlan, KafkaFaultOperation operation)
+    {
+        lock (_gate)
+        {
+            int version;
+            int operationMask;
+            do
+            {
+                version = faultPlan.ShareFaultIndexVersion;
+                operationMask = 0;
+                if (faultPlan.HasPotentialShareMatch(
+                        KafkaFaultOperation.ShareConsume,
+                        _options.GroupId,
+                        _assignment))
+                {
+                    operationMask |= 1 << (int)KafkaFaultOperation.ShareConsume;
+                }
+
+                if (faultPlan.HasPotentialShareMatch(
+                        KafkaFaultOperation.ShareAcknowledge,
+                        _options.GroupId,
+                        _assignment))
+                {
+                    operationMask |= 1 << (int)KafkaFaultOperation.ShareAcknowledge;
+                }
+            }
+            while (version != faultPlan.ShareFaultIndexVersion);
+
+            Volatile.Write(ref _shareFaultOperationMask, operationMask);
+            Volatile.Write(ref _shareFaultIndexVersion, version);
+            return (operationMask & (1 << (int)operation)) != 0;
+        }
+    }
 
     private TopicPartition[] OrderedAssignment()
     {

@@ -84,6 +84,22 @@ public sealed class InMemoryAdminShareFaultTests
     }
 
     [Test]
+    public async Task AdminFault_EmptyCreateTopicsConsumesGenericFault()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var admin = new InMemoryAdminClient(cluster);
+        var failure = new InvalidOperationException("blocked");
+        cluster.FaultPlan.Fail(new KafkaFaultScope(KafkaFaultOperation.Admin), failure);
+
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            admin.CreateTopicsAsync([]).AsTask());
+        await admin.CreateTopicsAsync([]);
+
+        await Assert.That(actual).IsSameReferenceAs(failure);
+        await Assert.That(cluster.FaultPlan.Count).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task AdminFault_TopicIdOperationsUseResolvedTopicScope()
     {
         var cluster = new InMemoryKafkaCluster();
@@ -293,6 +309,34 @@ public sealed class InMemoryAdminShareFaultTests
         await Assert.That(beforeRetry).IsNull();
         await Assert.That(cluster.GetCommittedOffset("workers", new TopicPartition("shared", 0)))
             .IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task ShareFaultIndex_UnrelatedSelectorsLeaveDeliveryAndCommitOnFastPath()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync("shared", "key", "value");
+        await using var consumer = new InMemoryShareConsumer<string, string>(
+            cluster,
+            new InMemoryShareConsumerOptions { GroupId = "workers" });
+        consumer.Subscribe("shared");
+        var consumedFaults = 0;
+        cluster.FaultPlan.FaultConsumed += _ => consumedFaults++;
+        cluster.FaultPlan.FailPersistently(
+            new KafkaFaultScope(KafkaFaultOperation.ShareConsume, "other", 0, "workers"),
+            new InvalidOperationException("unrelated delivery"));
+        cluster.FaultPlan.FailPersistently(
+            new KafkaFaultScope(KafkaFaultOperation.ShareAcknowledge, "shared", 0, "other-group"),
+            new InvalidOperationException("unrelated acknowledgement"));
+
+        var record = await consumer.PollAsync().FirstAsync();
+        consumer.Acknowledge(record);
+        await consumer.CommitAsync();
+
+        await Assert.That(record.Offset).IsEqualTo(0);
+        await Assert.That(consumedFaults).IsEqualTo(0);
+        await Assert.That(cluster.FaultPlan.Count).IsEqualTo(2);
     }
 
     [Test]

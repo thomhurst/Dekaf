@@ -63,6 +63,51 @@ public sealed class KafkaFaultPlanTests
     }
 
     [Test]
+    public async Task ShareIndex_FiltersTopicPartitionAndGroupSelectors()
+    {
+        var plan = new KafkaFaultPlan();
+        var assignment = new HashSet<TopicPartition> { new("shared", 0) };
+        var failure = new InvalidOperationException("unrelated");
+        plan.FailPersistently(
+            new KafkaFaultScope(KafkaFaultOperation.ShareConsume, "other", 0, "workers"),
+            failure);
+        plan.FailPersistently(
+            new KafkaFaultScope(KafkaFaultOperation.ShareConsume, "shared", 1, "workers"),
+            failure);
+        plan.FailPersistently(
+            new KafkaFaultScope(KafkaFaultOperation.ShareConsume, "shared", 0, "other-group"),
+            failure);
+
+        await Assert.That(plan.HasPotentialShareMatch(
+            KafkaFaultOperation.ShareConsume,
+            "workers",
+            assignment)).IsFalse();
+        await Assert.That(plan.HasPotentialShareMatch(
+            KafkaFaultOperation.ShareConsume,
+            "shared",
+            0,
+            "workers")).IsFalse();
+
+        plan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.ShareConsume, "shared", 0, "workers"),
+            failure);
+
+        await Assert.That(plan.HasPotentialShareMatch(
+            KafkaFaultOperation.ShareConsume,
+            "workers",
+            assignment)).IsTrue();
+        await Assert.That(plan.HasPotentialShareMatch(
+            KafkaFaultOperation.ShareConsume,
+            "shared",
+            0,
+            "workers")).IsTrue();
+        await Assert.That(plan.HasPotentialShareMatch(
+            KafkaFaultOperation.ShareAcknowledge,
+            "workers",
+            assignment)).IsFalse();
+    }
+
+    [Test]
     public async Task FailPersistently_RemainsUntilExactScopeIsCleared()
     {
         var plan = new KafkaFaultPlan();
