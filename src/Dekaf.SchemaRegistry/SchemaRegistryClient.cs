@@ -16,7 +16,7 @@ namespace Dekaf.SchemaRegistry;
 /// <summary>
 /// HTTP client for Confluent Schema Registry.
 /// </summary>
-public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistryCache
+public sealed class SchemaRegistryClient : IFormattedSchemaRegistryClient, ISchemaRegistryCache
 {
     private const string AcceptUnknownPropertiesHeader = "Confluent-Accept-Unknown-Properties";
     private static readonly TimeSpan PooledConnectionLifetime = TimeSpan.FromMinutes(2);
@@ -585,6 +585,13 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         CancellationToken cancellationToken = default)
         => GetSchemaAsync(id, subject, format: null, cancellationToken);
 
+    Task<Schema> IFormattedSchemaRegistryClient.GetSchemaWithFormatAsync(
+        int id,
+        string subject,
+        string format,
+        CancellationToken cancellationToken) =>
+        GetSchemaAsync(id, subject, format, cancellationToken);
+
     internal async Task<Schema> GetSchemaAsync(
         int id,
         string subject,
@@ -636,6 +643,14 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
             ignoreDeletedSchemas,
             format: null,
             cancellationToken);
+
+    Task<RegisteredSchema> IFormattedSchemaRegistryClient.GetSchemaBySubjectWithFormatAsync(
+        string subject,
+        string version,
+        bool ignoreDeletedSchemas,
+        string format,
+        CancellationToken cancellationToken) =>
+        GetSchemaBySubjectAsync(subject, version, ignoreDeletedSchemas, format, cancellationToken);
 
     internal async Task<RegisteredSchema> GetSchemaBySubjectAsync(
         string subject,

@@ -6,7 +6,7 @@ namespace Dekaf.Tests.Unit.SchemaRegistry;
 /// <summary>
 /// Mock implementation of ISchemaRegistryClient for unit testing.
 /// </summary>
-internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistryCache
+internal sealed class MockSchemaRegistryClient : IFormattedSchemaRegistryClient, ISchemaRegistryCache
 {
     private readonly Dictionary<int, Schema> _schemasById = new();
     private readonly Dictionary<(Guid Guid, string? Format), Schema> _schemasByGuid = new();
@@ -224,6 +224,13 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
         throw new SchemaRegistryException(40403, $"Schema {id} not found under subject '{subject}'");
     }
 
+    public Task<Schema> GetSchemaWithFormatAsync(
+        int id,
+        string subject,
+        string format,
+        CancellationToken cancellationToken = default) =>
+        GetSchemaAsync(id, subject, cancellationToken);
+
     public bool TryGetCachedSchema(int id, out Schema schema)
     {
         ThrowIfDisposed();
@@ -297,6 +304,14 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
 
         return GetSchemaBySubjectAsync(subject, version, cancellationToken);
     }
+
+    public Task<RegisteredSchema> GetSchemaBySubjectWithFormatAsync(
+        string subject,
+        string version,
+        bool ignoreDeletedSchemas,
+        string format,
+        CancellationToken cancellationToken = default) =>
+        GetSchemaBySubjectAsync(subject, version, ignoreDeletedSchemas, cancellationToken);
 
     public Task<RegisteredSchema> LookupSchemaAsync(
         string subject,

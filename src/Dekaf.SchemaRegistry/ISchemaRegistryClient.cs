@@ -486,6 +486,42 @@ public interface ISchemaRegistryClient : IDisposable
 }
 
 /// <summary>
+/// Optional Schema Registry client capability for requesting alternate schema output formats.
+/// </summary>
+public interface IFormattedSchemaRegistryClient : ISchemaRegistryClient
+{
+    /// <summary>
+    /// Gets a subject-scoped schema by global ID in the requested output format.
+    /// </summary>
+    /// <param name="id">The schema ID.</param>
+    /// <param name="subject">The subject the schema is registered under.</param>
+    /// <param name="format">The schema output format, such as <c>serialized</c>.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The formatted schema.</returns>
+    Task<Schema> GetSchemaWithFormatAsync(
+        int id,
+        string subject,
+        string format,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Gets a subject version in the requested output format.
+    /// </summary>
+    /// <param name="subject">The subject name.</param>
+    /// <param name="version">The version number, or "latest" for latest.</param>
+    /// <param name="ignoreDeletedSchemas">Whether deleted schemas are excluded.</param>
+    /// <param name="format">The schema output format, such as <c>serialized</c>.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The registered formatted schema.</returns>
+    Task<RegisteredSchema> GetSchemaBySubjectWithFormatAsync(
+        string subject,
+        string version,
+        bool ignoreDeletedSchemas,
+        string format,
+        CancellationToken cancellationToken = default);
+}
+
+/// <summary>
 /// Optional Schema Registry client cache access used by hot deserialization paths.
 /// </summary>
 public interface ISchemaRegistryCache
