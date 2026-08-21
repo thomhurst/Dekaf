@@ -951,17 +951,15 @@ public sealed class InMemoryKafkaClusterTests
         await admin.AlterShareGroupOffsetsAsync(
             "deleted-share",
             [new ShareGroupOffsetAlteration { TopicPartition = partition, StartOffset = 0 }]);
-        await using var consumer = new InMemoryShareConsumer<string, string>(
-            cluster,
-            new InMemoryShareConsumerOptions { GroupId = "deleted-share" });
-        consumer.Subscribe(partition.Topic);
-        var memberId = consumer.MemberId!;
+        const string memberId = "closed-member";
+        var registration = cluster.RegisterShareGroupMember("deleted-share", memberId);
 
-        await consumer.CloseAsync();
+        cluster.UnregisterShareGroupMember("deleted-share", memberId, registration);
         var deletion = await admin.DeleteShareGroupsAsync(["deleted-share"]);
         var acquired = cluster.TryAcquireShareRecord(
             "deleted-share",
             memberId,
+            registration,
             partition,
             offset: 0,
             out _,
@@ -978,6 +976,38 @@ public sealed class InMemoryKafkaClusterTests
         var delivery = await recreatedConsumer.PollAsync().FirstAsync();
 
         await Assert.That(delivery.DeliveryCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task ShareConsumer_DuplicateMemberRegistrationsUseIndependentTokens()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        var partition = new TopicPartition("shared", 0);
+        await producer.ProduceAsync(partition.Topic, "k", "v");
+        var closedRegistration = cluster.RegisterShareGroupMember("shared-group", "shared-member");
+        var activeRegistration = cluster.RegisterShareGroupMember("shared-group", "shared-member");
+
+        cluster.UnregisterShareGroupMember("shared-group", "shared-member", closedRegistration);
+        var closedAcquired = cluster.TryAcquireShareRecord(
+            "shared-group",
+            "shared-member",
+            closedRegistration,
+            partition,
+            offset: 0,
+            out _,
+            out _);
+        var activeAcquired = cluster.TryAcquireShareRecord(
+            "shared-group",
+            "shared-member",
+            activeRegistration,
+            partition,
+            offset: 0,
+            out _,
+            out _);
+
+        await Assert.That(closedAcquired).IsFalse();
+        await Assert.That(activeAcquired).IsTrue();
     }
 
     [Test]

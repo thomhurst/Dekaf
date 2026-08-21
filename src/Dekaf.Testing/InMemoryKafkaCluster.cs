@@ -598,6 +598,7 @@ public sealed class InMemoryKafkaCluster
     internal bool TryAcquireShareRecord(
         string groupId,
         string memberId,
+        ShareGroupMemberRegistration registration,
         TopicPartition topicPartition,
         long offset,
         out InMemoryRecord record,
@@ -608,8 +609,7 @@ public sealed class InMemoryKafkaCluster
 
         lock (_gate)
         {
-            if (!_shareGroupMembers.TryGetValue(groupId, out var members) ||
-                !members.ContainsKey(memberId))
+            if (!registration.IsActive)
             {
                 record = null!;
                 deliveryCount = 0;
@@ -865,7 +865,7 @@ public sealed class InMemoryKafkaCluster
             _consumerGroupOffsets.Remove(groupId);
     }
 
-    internal void RegisterShareGroupMember(string groupId, string memberId)
+    internal ShareGroupMemberRegistration RegisterShareGroupMember(string groupId, string memberId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
         ArgumentException.ThrowIfNullOrWhiteSpace(memberId);
@@ -879,16 +879,24 @@ public sealed class InMemoryKafkaCluster
             }
 
             members[memberId] = members.GetValueOrDefault(memberId) + 1;
+            return new ShareGroupMemberRegistration();
         }
     }
 
-    internal void UnregisterShareGroupMember(string groupId, string memberId)
+    internal void UnregisterShareGroupMember(
+        string groupId,
+        string memberId,
+        ShareGroupMemberRegistration registration)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
         ArgumentException.ThrowIfNullOrWhiteSpace(memberId);
 
         lock (_gate)
         {
+            if (!registration.IsActive)
+                return;
+
+            registration.IsActive = false;
             if (!_shareGroupMembers.TryGetValue(groupId, out var members))
                 return;
 
@@ -1477,4 +1485,9 @@ public sealed class InMemoryKafkaCluster
     private readonly record struct ConsumerGroupMemberState(
         long RegistrationId,
         HashSet<TopicPartition> SubscribedPartitions);
+}
+
+internal sealed class ShareGroupMemberRegistration
+{
+    internal bool IsActive { get; set; } = true;
 }
