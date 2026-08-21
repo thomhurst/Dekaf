@@ -173,6 +173,50 @@ public class ProtobufSchemaIdentityTests
     }
 
     [Test]
+    public async Task Serialize_ExplicitId_NonConcreteClientRequestsSerializedReferenceGraph()
+    {
+        var backingRegistry = new MockSchemaRegistryClient();
+        var registered = await RegisterReferenceGraphAsync(backingRegistry);
+        var registry = Substitute.For<IFormattedSchemaRegistryClient>();
+        registry.GetSchemaWithFormatAsync(
+                registered.Id,
+                "identity-value",
+                "serialized",
+                Arg.Any<CancellationToken>())
+            .Returns(registered.Schema);
+        registry.GetSchemaBySubjectWithFormatAsync(
+                Arg.Any<string>(),
+                Arg.Any<string>(),
+                true,
+                "serialized",
+                Arg.Any<CancellationToken>())
+            .Returns(call => backingRegistry.GetSchemaBySubjectAsync(
+                call.ArgAt<string>(0),
+                call.ArgAt<string>(1),
+                call.ArgAt<CancellationToken>(4)));
+        await using var serializer = new ProtobufSchemaRegistrySerializer<ReferenceGraphMessage>(
+            registry,
+            new ProtobufSerializerConfig { UseSchemaId = registered.Id });
+        var destination = new ArrayBufferWriter<byte>();
+
+        serializer.Serialize(new ReferenceGraphMessage(), ref destination, CreateContext());
+
+        await registry.Received(1).GetSchemaWithFormatAsync(
+            registered.Id,
+            "identity-value",
+            "serialized",
+            Arg.Any<CancellationToken>());
+        await registry.Received().GetSchemaBySubjectWithFormatAsync(
+            Arg.Any<string>(),
+            Arg.Any<string>(),
+            true,
+            "serialized",
+            Arg.Any<CancellationToken>());
+        await Assert.That(BinaryPrimitives.ReadInt32BigEndian(destination.WrittenSpan[1..5]))
+            .IsEqualTo(registered.Id);
+    }
+
+    [Test]
     public async Task Serialize_ExplicitId_WithoutSchemaReferences_AcceptsMatchingRootDescriptor()
     {
         var registry = new MockSchemaRegistryClient();

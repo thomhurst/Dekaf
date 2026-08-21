@@ -725,22 +725,28 @@ public sealed class ProtobufSchemaRegistrySerializer<
         int schemaId,
         string subject,
         CancellationToken cancellationToken) =>
-        _schemaRegistry is SchemaRegistryClient client
-            ? client.GetSchemaAsync(schemaId, subject, SerializedSchemaFormat, cancellationToken)
-            : _schemaRegistry.GetSchemaAsync(schemaId, subject, cancellationToken);
+        GetFormattedSchemaRegistryClient().GetSchemaWithFormatAsync(
+            schemaId,
+            subject,
+            SerializedSchemaFormat,
+            cancellationToken);
 
     private Task<RegisteredSchema> GetSerializedSchemaBySubjectAsync(
         string subject,
         string version,
         CancellationToken cancellationToken) =>
-        _schemaRegistry is SchemaRegistryClient client
-            ? client.GetSchemaBySubjectAsync(
-                subject,
-                version,
-                ignoreDeletedSchemas: true,
-                format: SerializedSchemaFormat,
-                cancellationToken)
-            : _schemaRegistry.GetSchemaBySubjectAsync(subject, version, cancellationToken);
+        GetFormattedSchemaRegistryClient().GetSchemaBySubjectWithFormatAsync(
+            subject,
+            version,
+            ignoreDeletedSchemas: true,
+            SerializedSchemaFormat,
+            cancellationToken);
+
+    private IFormattedSchemaRegistryClient GetFormattedSchemaRegistryClient() =>
+        _schemaRegistry as IFormattedSchemaRegistryClient
+        ?? throw new NotSupportedException(
+            $"{_schemaRegistry.GetType().Name} does not support formatted schema lookup. " +
+            $"Implement {nameof(IFormattedSchemaRegistryClient)} to use explicit Protobuf schema IDs.");
 
     private async Task<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> CreateResolvedValueAsync(
         string subject,
