@@ -26,6 +26,72 @@ dotnet add package Dekaf.SchemaRegistry.Json
 `Dekaf.SchemaRegistry` keeps JSON validation disabled by default and does not depend on a JSON
 Schema engine. Install `Dekaf.SchemaRegistry.Json` only in applications that enable validation.
 
+## Association-backed subject names
+
+`SubjectNameStrategy.AssociatedName` resolves the key or value subject from a Schema Registry
+topic association. This is opt-in and leaves the default topic-name behavior unchanged. Association
+lookups happen during asynchronous serializer/deserializer preparation; warmed serialization does
+not perform network calls, take locks, allocate, or enter an async state machine.
+
+```csharp
+using Dekaf.SchemaRegistry;
+using Dekaf.SchemaRegistry.Avro;
+
+var registry = new SchemaRegistryClient(new SchemaRegistryConfig
+{
+    Url = "https://schema-registry.example.com"
+});
+
+var serializer = new AvroSchemaRegistrySerializer<Order>(
+    registry,
+    new AvroSerializerConfig
+    {
+        SubjectNameStrategy = SubjectNameStrategy.AssociatedName,
+        AutoRegisterSchemas = false,
+        UseLatestVersion = true
+    });
+
+await serializer.PrepareAsync("orders", order);
+```
+
+The association `resourceName` must equal the Kafka topic. Use association type `key` for key
+serdes and `value` for value serdes. By default Dekaf queries the wildcard resource namespace `-`,
+which matches associations from any Kafka cluster. For cluster-specific governance, share an
+explicit strategy instance:
+
+```csharp
+var associatedNames = new AssociatedNameStrategy(
+    registry,
+    new AssociatedNameStrategyOptions
+    {
+        KafkaClusterId = "lkc-12345",
+        FallbackStrategy = AssociatedNameFallbackStrategy.None
+    });
+
+var config = new AvroSerializerConfig
+{
+    AsyncSubjectNameStrategy = associatedNames,
+    AutoRegisterSchemas = false
+};
+```
+
+`CustomSubjectNameStrategy` has highest precedence. When it is null,
+`AsyncSubjectNameStrategy` takes precedence over the enum `SubjectNameStrategy`. Association-backed
+subjects work with Avro, generated Avro POCO, JSON Schema, Protobuf, schema references, and
+`UseLatestVersion`. Synchronous serialization fails fast until `PrepareAsync`, producer
+`BuildAsync`, or the relevant warmup API has completed.
+
+Successful resolutions are cached with a bounded cache. Missing and failed lookups are not cached.
+Call `RefreshAsync` to fetch and publish the current association, `Invalidate` to evict one topic,
+or `ClearCache` after a broader governance change. Serializers and deserializers sharing that
+`AssociatedNameStrategy` invalidate their prepared subject entries automatically; an already-issued
+preparation admission remains bound to its original schema, while new messages require preparation
+against the refreshed subject.
+
+Association endpoints require a Schema Registry deployment that supports the Confluent association
+API (Confluent Cloud or Confluent Platform 8.2+). Older or non-Confluent-compatible registries return
+an API error; configure a non-associated strategy or an explicit fallback for those environments.
+
 ## Avro Serialization
 
 ### With Generated Classes
