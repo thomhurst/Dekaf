@@ -401,6 +401,67 @@ public sealed class JsonSchemaValidationTests
     }
 
     [Test]
+    [Arguments(false, false)]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task Serializer_AsyncStrategyOverloadsApplyInlineRules(
+        bool useTypeInfo,
+        bool usePreparedSerialization)
+    {
+        const string schemaText = """
+            {
+              "confluent:rules": [{ "name": "validName", "expr": "this.name == 'ok'" }]
+            }
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        var strategy = new FixedAsyncSubjectNameStrategy("validation-value");
+        var validationOptions = new JsonSchemaValidationOptions
+        {
+            ValidatorFactory = new StreamingJsonSchemaValidatorFactory(registry),
+            Mode = JsonSchemaValidationMode.None,
+            ValidationRulesExecution = ValidationRulesExecution.BeforeDomainRules
+        };
+        var typeInfo = (System.Text.Json.Serialization.Metadata.JsonTypeInfo<NamePayload>)
+            System.Text.Json.JsonSerializerOptions.Default.GetTypeInfo(typeof(NamePayload));
+        await using var serializer = useTypeInfo
+            ? new JsonSchemaRegistrySerializer<NamePayload>(
+                registry,
+                strategy,
+                schemaText,
+                typeInfo,
+                validationOptions)
+            : new JsonSchemaRegistrySerializer<NamePayload>(
+                registry,
+                strategy,
+                schemaText,
+                jsonOptions: null,
+                validationOptions);
+        var invalidValue = new NamePayload("bad");
+        var buffer = new ArrayBufferWriter<byte>();
+
+        if (usePreparedSerialization)
+        {
+            var admissionSerializer = (IAsyncSerializerPreparationAdmission<NamePayload>)serializer;
+            var admission = await admissionSerializer.PrepareForSerializationAsync(
+                invalidValue,
+                Context);
+
+            Assert.Throws<ValidationRulesFailedException>(() => admissionSerializer.SerializePrepared(
+                invalidValue,
+                ref buffer,
+                Context,
+                in admission));
+        }
+        else
+        {
+            _ = await serializer.PrepareAsync(Context.Topic, invalidValue);
+            Assert.Throws<ValidationRulesFailedException>(
+                () => serializer.Serialize(invalidValue, ref buffer, Context));
+        }
+    }
+
+    [Test]
     public async Task Serializer_AutoRegistrationWithValidation_UsesIdOnlyLookup()
     {
         const string schemaText = """{ "type": "object", "required": ["id"] }""";

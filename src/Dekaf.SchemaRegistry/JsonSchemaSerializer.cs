@@ -461,6 +461,9 @@ public sealed class JsonSchemaRegistrySerializer<T> :
     {
         ArgumentNullException.ThrowIfNull(validationOptions);
         _validatorFactory = validationOptions.GetSerializerFactory();
+        _validationRulesFactory = validationOptions.GetValidationRulesFactory(ruleExecutor);
+        _validationRulesExecution = validationOptions.ValidationRulesExecution;
+        _validationRulesFailFast = validationOptions.ValidationRulesFailFast;
     }
 
     /// <summary>
@@ -521,6 +524,9 @@ public sealed class JsonSchemaRegistrySerializer<T> :
     {
         ArgumentNullException.ThrowIfNull(validationOptions);
         _validatorFactory = validationOptions.GetSerializerFactory();
+        _validationRulesFactory = validationOptions.GetValidationRulesFactory(ruleExecutor);
+        _validationRulesExecution = validationOptions.ValidationRulesExecution;
+        _validationRulesFailFast = validationOptions.ValidationRulesFailFast;
     }
 
     /// <summary>
