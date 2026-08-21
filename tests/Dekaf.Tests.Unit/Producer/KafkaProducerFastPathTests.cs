@@ -168,14 +168,22 @@ public class KafkaProducerFastPathTests
     [Test]
     public async Task FireAsync_CustomPartitionerReusingCallerHeaders_PreservesOuterStagedHeaders()
     {
+        const string topic = "reentrant-caller-headers";
         var startedActivityCount = 0;
+        var activityName = DekafDiagnostics.SendSpanName(topic);
         using var listener = new ActivityListener
         {
             ShouldListenTo = source => source.Name == DekafDiagnostics.ActivitySourceName,
             Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData,
-            ActivityStarted = _ => startedActivityCount++
+            ActivityStarted = activity =>
+            {
+                if (activity.OperationName == activityName)
+                    startedActivityCount++;
+            }
         };
         ActivitySource.AddActivityListener(listener);
+        using var unrelatedSource = new ActivitySource(DekafDiagnostics.ActivitySourceName);
+        unrelatedSource.StartActivity("unrelated operation")?.Dispose();
         var partitioner = new ReentrantPartitioner();
         var options = new ProducerOptions
         {
@@ -195,7 +203,7 @@ public class KafkaProducerFastPathTests
             new RecordHeaderStringSerializer(),
             Serializers.String);
         await StopProducerBackgroundLoopsAsync(producer);
-        SeedProducerMetadata(producer);
+        SeedProducerMetadata(producer, topic: topic);
         SetInstanceField(producer, "_initialized", true);
         AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(producer.RecordAccumulator);
         var headers = new Headers();
@@ -206,7 +214,7 @@ public class KafkaProducerFastPathTests
         {
             var innerProduce = producer.FireAsync(new ProducerMessage<string, string>
             {
-                Topic = Topic,
+                Topic = topic,
                 Key = "inner",
                 Value = "inner-value",
                 Headers = headers
@@ -219,13 +227,13 @@ public class KafkaProducerFastPathTests
 
         await producer.FireAsync(new ProducerMessage<string, string>
         {
-            Topic = Topic,
+            Topic = topic,
             Key = "outer",
             Value = "outer-value",
             Headers = headers
         });
 
-        var readyBatch = CompleteCurrentBatch(producer.RecordAccumulator, new TopicPartition(Topic, 0));
+        var readyBatch = CompleteCurrentBatch(producer.RecordAccumulator, new TopicPartition(topic, 0));
         await Assert.That(startedActivityCount).IsEqualTo(2);
         await Assert.That(restoredHeaderCount).IsEqualTo(1);
         await Assert.That(restoredHeaderKey).IsEqualTo("traceparent");
@@ -1055,7 +1063,10 @@ public class KafkaProducerFastPathTests
             .ToArray()
     };
 
-    private static void SeedProducerMetadata(KafkaProducer<string, string> producer, int partitionCount = 1)
+    private static void SeedProducerMetadata(
+        KafkaProducer<string, string> producer,
+        int partitionCount = 1,
+        string topic = Topic)
     {
         var metadataManager = GetInstanceField<MetadataManager>(producer, "_metadataManager");
         metadataManager.Metadata.Update(new MetadataResponse
@@ -1076,7 +1087,7 @@ public class KafkaProducerFastPathTests
                 new TopicMetadata
                 {
                     ErrorCode = ErrorCode.None,
-                    Name = Topic,
+                    Name = topic,
                     Partitions = Enumerable.Range(0, partitionCount)
                         .Select(partition => new PartitionMetadata
                         {
