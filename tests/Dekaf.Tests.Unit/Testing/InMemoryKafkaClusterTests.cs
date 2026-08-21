@@ -139,6 +139,28 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
+    public async Task StreamsGroupManagement_DeletesEmptyGroupWithoutCommittedOffsets()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("input");
+        IAdminClient admin = new InMemoryAdminClient(cluster);
+        const string groupId = "empty-streams";
+        await using var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions { GroupId = groupId });
+        consumer.Subscribe("input");
+        consumer.Unsubscribe();
+
+        var groupsBeforeDeletion = await admin.ListStreamsGroupsAsync();
+        var deletedGroups = await admin.DeleteStreamsGroupsAsync([groupId]);
+        var groupsAfterDeletion = await admin.ListStreamsGroupsAsync();
+
+        await Assert.That(groupsBeforeDeletion.Any(group => group.GroupId == groupId)).IsTrue();
+        await Assert.That(deletedGroups[groupId].ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(groupsAfterDeletion.Any(group => group.GroupId == groupId)).IsFalse();
+    }
+
+    [Test]
     public async Task StreamsGroupManagement_DeleteActiveGroupReportsNonEmptyGroup()
     {
         var cluster = new InMemoryKafkaCluster();
