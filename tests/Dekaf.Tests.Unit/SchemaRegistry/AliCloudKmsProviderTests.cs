@@ -427,9 +427,10 @@ public sealed class AliCloudKmsProviderTests
     [Test]
     public async Task CaFileReadFailure_IsWrappedAndRetryRecovers()
     {
-        var caFile = Path.Combine(Path.GetTempPath(), $"missing-{Guid.NewGuid():N}.pem");
+        var caFile = Path.GetTempFileName();
         try
         {
+            File.Delete(caFile);
             var factory = new RecordingFactory(_ => new XorClient());
             var provider = CreateProvider(factory, new AliCloudKmsProviderOptions { CaFile = caFile });
 
