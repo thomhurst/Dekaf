@@ -585,6 +585,12 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         var heartbeatEpoch = terminalEpoch ?? (options.ShutdownApplication ? _memberEpoch : null);
         try
         {
+            if (_ambiguousMembership && terminalEpoch is null && options.ShutdownApplication)
+            {
+                throw new InvalidOperationException(
+                    "Cannot request application shutdown while retaining an ambiguous Streams group membership because its member epoch is unknown.");
+            }
+
             if (heartbeatEpoch is not null
                 && (_memberEpoch > 0 || (_ambiguousMembership && terminalEpoch is not null)))
             {

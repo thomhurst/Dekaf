@@ -579,6 +579,50 @@ public sealed class StreamsGroupMemberTests
         await Assert.That(fixture.Member.Snapshot.MemberEpoch).IsEqualTo(1);
     }
 
+    [Arguments(false)]
+    [Arguments(true)]
+    [Test]
+    public async Task CloseAsync_RemainInGroupWithShutdownRejectsAmbiguousMembership(bool ambiguousUpdate)
+    {
+        var connection = new ScriptedConnection();
+        if (ambiguousUpdate)
+            connection.EnqueueHeartbeat(Success(epoch: 1));
+        var pendingHeartbeat = new TaskCompletionSource<StreamsGroupHeartbeatResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.EnqueueHeartbeat(pendingHeartbeat.Task);
+        await using var fixture = CreateFixture(connection, instanceId: "instance-1");
+        using var cancellation = new CancellationTokenSource();
+
+        Task operation;
+        if (ambiguousUpdate)
+        {
+            await fixture.Member.JoinAsync(CreateInitialUpdate());
+            operation = fixture.Member.UpdateAsync(
+                new StreamsGroupMemberUpdate { ProcessId = "process-2" },
+                cancellation.Token).AsTask();
+        }
+        else
+        {
+            operation = fixture.Member.JoinAsync(CreateInitialUpdate(), cancellation.Token).AsTask();
+        }
+
+        await (ambiguousUpdate ? connection.SecondHeartbeatStarted.Task : connection.FirstHeartbeatStarted.Task)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        cancellation.Cancel();
+        _ = await Assert.ThrowsAsync<OperationCanceledException>(() => operation);
+
+        var failure = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await fixture.Member.CloseAsync(new StreamsGroupCloseOptions
+            {
+                GroupMembershipOperation = StreamsGroupMembershipOperation.RemainInGroup,
+                ShutdownApplication = true
+            }));
+
+        await Assert.That(failure!.Message).Contains("member epoch is unknown");
+        await Assert.That(connection.HeartbeatRequests).Count().IsEqualTo(ambiguousUpdate ? 2 : 1);
+        await Assert.That(fixture.Member.Snapshot.IsClosed).IsTrue();
+    }
+
     [Arguments(StreamsGroupMembershipOperation.Default, false, ErrorCode.FencedMemberEpoch)]
     [Arguments(StreamsGroupMembershipOperation.Default, false, ErrorCode.UnknownMemberId)]
     [Arguments(StreamsGroupMembershipOperation.RemainInGroup, true, ErrorCode.FencedMemberEpoch)]
