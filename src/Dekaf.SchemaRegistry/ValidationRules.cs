@@ -144,6 +144,24 @@ internal sealed class CompiledValidationRule
     [ThreadStatic]
     private static uint t_memberGeneration;
 
+    [ThreadStatic]
+    private static uint t_memberResolutionEpoch;
+
+    [ThreadStatic]
+    private static uint t_resolvedMemberEpoch;
+
+    [ThreadStatic]
+    private static uint t_resolvedMemberGeneration;
+
+    [ThreadStatic]
+    private static int t_resolvedMemberGroupId;
+
+    [ThreadStatic]
+    private static int t_resolvedMemberStart;
+
+    [ThreadStatic]
+    private static int t_resolvedMemberLength;
+
     private readonly ValidationCelNode? _expression;
     private readonly string? _compilationError;
 
@@ -162,7 +180,8 @@ internal sealed class CompiledValidationRule
     internal static CompiledValidationRule Compile(
         ValidationRule rule,
         Dictionary<string, int> memberIndexes,
-        List<byte[][]> memberPaths)
+        List<byte[][]> memberPaths,
+        HashSet<int> usedMemberIndexes)
     {
         ArgumentNullException.ThrowIfNull(rule);
         if (string.IsNullOrWhiteSpace(rule.Expr))
@@ -175,7 +194,11 @@ internal sealed class CompiledValidationRule
 
         try
         {
-            var parser = new ValidationCelParser(rule.Expr, memberIndexes, memberPaths);
+            var parser = new ValidationCelParser(
+                rule.Expr,
+                memberIndexes,
+                memberPaths,
+                usedMemberIndexes);
             var expression = parser.Parse();
             return new CompiledValidationRule(rule, expression);
         }
@@ -232,6 +255,40 @@ internal sealed class CompiledValidationRule
             generation = ++t_memberGeneration;
         }
         return new ValidationCelMemberValues(values, generation);
+    }
+
+    internal static void BeginMemberResolution()
+    {
+        if (unchecked(++t_memberResolutionEpoch) == 0)
+        {
+            t_memberResolutionEpoch = 1;
+            t_resolvedMemberEpoch = 0;
+        }
+    }
+
+    internal static ValidationCelMemberValues GetOrResolveMemberValues(
+        ValidationCelMemberTable memberTable,
+        int memberGroupId,
+        int valueStart,
+        ReadOnlyMemory<byte> value)
+    {
+        if (t_resolvedMemberEpoch == t_memberResolutionEpoch &&
+            t_resolvedMemberGeneration == t_memberGeneration &&
+            t_resolvedMemberGroupId == memberGroupId &&
+            t_resolvedMemberStart == valueStart &&
+            t_resolvedMemberLength == value.Length)
+        {
+            return new ValidationCelMemberValues(t_memberValues!, t_memberGeneration);
+        }
+
+        var memberValues = GetMemberValues(memberTable.Count);
+        memberTable.Resolve(value, memberValues);
+        t_resolvedMemberEpoch = t_memberResolutionEpoch;
+        t_resolvedMemberGeneration = t_memberGeneration;
+        t_resolvedMemberGroupId = memberGroupId;
+        t_resolvedMemberStart = valueStart;
+        t_resolvedMemberLength = value.Length;
+        return memberValues;
     }
 }
 
@@ -545,12 +602,18 @@ internal sealed class ValidationCelMemberTable
 {
     private readonly MemberNode _root;
 
-    internal ValidationCelMemberTable(byte[][][] paths)
+    internal ValidationCelMemberTable(
+        IReadOnlyList<byte[][]> paths,
+        IReadOnlyList<int> memberIndexes,
+        int valueCount)
     {
-        Count = paths.Length;
+        Count = valueCount;
         var root = new MemberNodeBuilder();
-        for (var index = 0; index < paths.Length; index++)
-            root.Add(paths[index], index, depth: 0);
+        for (var index = 0; index < memberIndexes.Count; index++)
+        {
+            var memberIndex = memberIndexes[index];
+            root.Add(paths[memberIndex], memberIndex, depth: 0);
+        }
         _root = root.Build();
     }
 
@@ -2036,17 +2099,20 @@ internal sealed class ValidationCelParser
     private readonly string _expression;
     private readonly Dictionary<string, int> _memberIndexes;
     private readonly List<byte[][]> _memberPaths;
+    private readonly HashSet<int> _usedMemberIndexes;
     private int _position;
     private ValidationCelToken _current;
 
     internal ValidationCelParser(
         string expression,
         Dictionary<string, int> memberIndexes,
-        List<byte[][]> memberPaths)
+        List<byte[][]> memberPaths,
+        HashSet<int> usedMemberIndexes)
     {
         _expression = expression;
         _memberIndexes = memberIndexes;
         _memberPaths = memberPaths;
+        _usedMemberIndexes = usedMemberIndexes;
         _current = ReadNextToken();
     }
 
@@ -2220,6 +2286,7 @@ internal sealed class ValidationCelParser
             _memberIndexes.Add(memberPath, memberIndex);
             _memberPaths.Add(path);
         }
+        _usedMemberIndexes.Add(memberIndex);
         return new ValidationCelThisNode(memberIndex);
     }
 

@@ -659,15 +659,25 @@ public class JsonSchemaValidationBenchmarks
         var schema = new StringBuilder(depth * 96);
         for (var index = 0; index < depth; index++)
         {
-            schema.Append(
-                "{\"confluent:rules\":[{\"name\":\"valid\",\"expr\":\"true\"}],\"allOf\":[");
+            schema.Append("{\"confluent:rules\":[{\"name\":\"valid\",\"expr\":\"this.member")
+                .Append(index)
+                .Append(" == ")
+                .Append(index)
+                .Append("\"}],\"allOf\":[");
         }
         schema.Append("{}");
         for (var index = 0; index < depth; index++)
             schema.Append("]}");
 
         var payload = new StringBuilder(itemCount * 4);
-        payload.Append("{\"items\":[");
+        payload.Append('{');
+        for (var index = 0; index < depth; index++)
+        {
+            if (index != 0)
+                payload.Append(',');
+            payload.Append("\"member").Append(index).Append("\":").Append(index);
+        }
+        payload.Append(",\"items\":[");
         for (var index = 0; index < itemCount; index++)
         {
             if (index != 0)

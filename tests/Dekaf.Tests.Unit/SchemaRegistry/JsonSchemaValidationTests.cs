@@ -1142,6 +1142,71 @@ public sealed class JsonSchemaValidationTests
     }
 
     [Test]
+    public async Task InlineRules_EvaluateMemberRulesAcrossSchemaLayers()
+    {
+        const string schemaText = """
+            {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "$defs": {
+                "base": {
+                  "confluent:rules": [{ "name": "a", "expr": "this.a == 1" }]
+                }
+              },
+              "$ref": "#/$defs/base",
+              "confluent:rules": [{ "name": "b", "expr": "this.b == 2" }],
+              "allOf": [{
+                "confluent:rules": [{ "name": "c", "expr": "this.c == 3" }]
+              }]
+            }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
+
+        validator.ValidateRules("""{"a":1,"b":2,"c":3}"""u8.ToArray(), 25, failFast: false);
+        var exception = Assert.Throws<ValidationRulesFailedException>(() => validator.ValidateRules(
+            """{"a":0,"b":2,"c":0}"""u8.ToArray(),
+            25,
+            failFast: false));
+
+        await Assert.That(exception.Violations.Select(static violation => violation.Rule.Name!))
+            .IsEquivalentTo(["a", "c"]);
+    }
+
+    [Test]
+    public async Task InlineRules_ReResolveSharedMembersAfterNestedTraversal()
+    {
+        const string schemaText = """
+            {
+              "allOf": [
+                {
+                  "confluent:rules": [{ "name": "a", "expr": "this.a == 1" }],
+                  "properties": {
+                    "child": {
+                      "confluent:rules": [{ "name": "child", "expr": "this.x == 2" }]
+                    }
+                  }
+                },
+                {
+                  "confluent:rules": [{ "name": "b", "expr": "this.b == 3" }]
+                }
+              ]
+            }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
+
+        validator.ValidateRules(
+            """{"a":1,"b":3,"child":{"x":2}}"""u8.ToArray(),
+            25,
+            failFast: false);
+        var exception = Assert.Throws<ValidationRulesFailedException>(() => validator.ValidateRules(
+            """{"a":1,"b":0,"child":{"x":2}}"""u8.ToArray(),
+            25,
+            failFast: false));
+
+        await Assert.That(exception.Violations.Select(static violation => violation.Rule.Name!))
+            .IsEquivalentTo(["b"]);
+    }
+
+    [Test]
     public void InlineRules_MissingMembersDoNotReuseValuesFromEarlierPayloads()
     {
         const string schemaText = """

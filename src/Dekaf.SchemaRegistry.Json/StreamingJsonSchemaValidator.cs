@@ -129,6 +129,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         var path = new ValidationPathBuilder();
         List<ValidationRuleError>? violations = null;
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        CompiledValidationRule.BeginMemberResolution();
         var compositionMatches = new ValidationCompositionMatchCache(payload.Span);
         var valueSlice = new ValidationValueSlice();
         try
@@ -173,9 +174,13 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
             var memberCount = node.ValidationRuleMembers?.Count ?? 0;
             var memberValues = memberCount == 0
                 ? default
-                : CompiledValidationRule.GetMemberValues(memberCount);
-            if (memberCount != 0)
-                node.ValidationRuleMembers!.Resolve(value, memberValues);
+                : node.SharesValidationRuleMembers
+                    ? CompiledValidationRule.GetOrResolveMemberValues(
+                        node.ValidationRuleMembers!,
+                        node.ValidationRuleMemberGroupId,
+                        checked((int)reader.TokenStartIndex),
+                        value)
+                    : ResolveMembers(node.ValidationRuleMembers!, memberCount, value);
 
             for (var index = 0; index < rules.Length; index++)
             {
@@ -771,6 +776,17 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         var endReader = reader;
         endReader.Skip();
         return payload.Slice(start, checked((int)endReader.BytesConsumed) - start);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static ValidationCelMemberValues ResolveMembers(
+        ValidationCelMemberTable memberTable,
+        int memberCount,
+        ReadOnlyMemory<byte> value)
+    {
+        var memberValues = CompiledValidationRule.GetMemberValues(memberCount);
+        memberTable.Resolve(value, memberValues);
+        return memberValues;
     }
 
     private struct ValidationValueSlice
@@ -1592,6 +1608,9 @@ internal sealed class SchemaCompiler : IDisposable
     private readonly List<JsonDocument> _documents = [];
     private readonly Dictionary<string, SchemaResource> _resourcesByUri = new(StringComparer.Ordinal);
     private readonly Dictionary<NodeKey, CompiledSchemaNode> _compiledNodes = [];
+    private readonly List<CompiledSchemaNode> _compiledNodeList = [];
+    private readonly Dictionary<string, int> _validationMemberIndexes = new(StringComparer.Ordinal);
+    private readonly List<byte[][]> _validationMemberPaths = [];
     private int _nextDocumentId;
 
     internal SchemaCompiler(
@@ -1607,13 +1626,15 @@ internal sealed class SchemaCompiler : IDisposable
         var root = AddDocument(schema, retrievalUri);
         var visited = new HashSet<SchemaReferenceKey>();
         RegisterReferences(root, schema, visited);
-        return CompileNode(
+        var compiled = CompileNode(
             root,
             root.Document.RootElement,
             string.Empty,
             root.EffectiveBaseUri,
             GetDialect(root.Document.RootElement, SchemaDialect.Draft7),
             0);
+        AssignValidationRuleMemberTables();
+        return compiled;
     }
 
     public void Dispose()
@@ -1830,8 +1851,12 @@ internal sealed class SchemaCompiler : IDisposable
         if (_compiledNodes.TryGetValue(key, out var existing))
             return existing;
 
-        var node = new CompiledSchemaNode();
+        var node = new CompiledSchemaNode
+        {
+            CompilationIndex = _compiledNodeList.Count
+        };
         _compiledNodes.Add(key, node);
+        _compiledNodeList.Add(node);
 
         if (schema.ValueKind is JsonValueKind.True or JsonValueKind.False)
         {
@@ -1864,8 +1889,8 @@ internal sealed class SchemaCompiler : IDisposable
             }
         }
 
-        node.ValidationRules = CompileValidationRules(schema, out var validationRuleMembers);
-        node.ValidationRuleMembers = validationRuleMembers;
+        node.ValidationRules = CompileValidationRules(schema, out var validationRuleMemberIndexes);
+        node.ValidationRuleMemberIndexes = validationRuleMemberIndexes;
 
         node.Types = ParseTypes(schema);
         node.MinProperties = GetNonNegativeInt32(schema, "minProperties", 0);
@@ -1940,19 +1965,18 @@ internal sealed class SchemaCompiler : IDisposable
         return [.. compiled];
     }
 
-    private static CompiledValidationRule[] CompileValidationRules(
+    private CompiledValidationRule[] CompileValidationRules(
         JsonElement schema,
-        out ValidationCelMemberTable? members)
+        out int[] memberIndexes)
     {
-        members = null;
+        memberIndexes = [];
         if (!schema.TryGetProperty("confluent:rules", out var rules))
             return [];
         if (rules.ValueKind != JsonValueKind.Array)
             throw new InvalidOperationException("JSON Schema 'confluent:rules' must be an array.");
 
         var compiled = new List<CompiledValidationRule>();
-        var memberIndexes = new Dictionary<string, int>(StringComparer.Ordinal);
-        var memberPaths = new List<byte[][]>();
+        var usedMemberIndexes = new HashSet<int>();
         foreach (var element in rules.EnumerateArray())
         {
             if (element.ValueKind != JsonValueKind.Object)
@@ -1964,16 +1988,118 @@ internal sealed class SchemaCompiler : IDisposable
                 Expr = GetOptionalString(element, "expr"),
                 Sql = GetOptionalString(element, "sql")
             };
-            compiled.Add(CompiledValidationRule.Compile(rule, memberIndexes, memberPaths));
+            compiled.Add(CompiledValidationRule.Compile(
+                rule,
+                _validationMemberIndexes,
+                _validationMemberPaths,
+                usedMemberIndexes));
         }
-        if (memberPaths.Count != 0)
-            members = new ValidationCelMemberTable([.. memberPaths]);
+        if (usedMemberIndexes.Count != 0)
+        {
+            memberIndexes = [.. usedMemberIndexes];
+            Array.Sort(memberIndexes);
+        }
         return [.. compiled];
 
         static string? GetOptionalString(JsonElement owner, string name) =>
             owner.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
                 ? value.GetString()
                 : null;
+    }
+
+    private void AssignValidationRuleMemberTables()
+    {
+        if (_validationMemberPaths.Count == 0)
+            return;
+
+        var parents = new int[_compiledNodeList.Count];
+        for (var index = 0; index < parents.Length; index++)
+            parents[index] = index;
+
+        for (var index = 0; index < _compiledNodeList.Count; index++)
+        {
+            var node = _compiledNodeList[index];
+            UnionNode(node.Reference);
+            UnionNodes(node.AllOf);
+            UnionNodes(node.AnyOf);
+            UnionNodes(node.OneOf);
+
+            void UnionNode(CompiledSchemaNode? other)
+            {
+                if (other is not null)
+                    UnionIndexes(index, other.CompilationIndex);
+            }
+
+            void UnionNodes(CompiledSchemaNode[] others)
+            {
+                for (var otherIndex = 0; otherIndex < others.Length; otherIndex++)
+                    UnionIndexes(index, others[otherIndex].CompilationIndex);
+            }
+        }
+
+        var membersByRoot = new Dictionary<int, HashSet<int>>();
+        var memberNodeCounts = new Dictionary<int, int>();
+        for (var index = 0; index < _compiledNodeList.Count; index++)
+        {
+            var localMembers = _compiledNodeList[index].ValidationRuleMemberIndexes;
+            if (localMembers.Length == 0)
+                continue;
+
+            var root = Find(index);
+            if (!membersByRoot.TryGetValue(root, out var groupMembers))
+                membersByRoot.Add(root, groupMembers = []);
+            groupMembers.UnionWith(localMembers);
+            memberNodeCounts[root] = memberNodeCounts.GetValueOrDefault(root) + 1;
+        }
+
+        var tablesByRoot = new Dictionary<int, ValidationCelMemberTable>(membersByRoot.Count);
+        foreach (var (root, members) in membersByRoot)
+        {
+            var indexes = members.ToArray();
+            Array.Sort(indexes);
+            tablesByRoot.Add(
+                root,
+                new ValidationCelMemberTable(
+                    _validationMemberPaths,
+                    indexes,
+                    _validationMemberPaths.Count));
+        }
+
+        for (var index = 0; index < _compiledNodeList.Count; index++)
+        {
+            var node = _compiledNodeList[index];
+            var root = Find(index);
+            if (node.ValidationRuleMemberIndexes.Length != 0 &&
+                tablesByRoot.TryGetValue(root, out var table))
+            {
+                node.ValidationRuleMembers = table;
+                node.SharesValidationRuleMembers = memberNodeCounts[root] > 1;
+                node.ValidationRuleMemberGroupId = root + 1;
+            }
+            node.ValidationRuleMemberIndexes = [];
+        }
+
+        int Find(int index)
+        {
+            var root = index;
+            while (parents[root] != root)
+                root = parents[root];
+            while (parents[index] != index)
+            {
+                var parent = parents[index];
+                parents[index] = root;
+                index = parent;
+            }
+            return root;
+        }
+
+        void UnionIndexes(int left, int right)
+        {
+            var leftRoot = Find(left);
+            var rightRoot = Find(right);
+            if (leftRoot != rightRoot)
+                parents[rightRoot] = leftRoot;
+        }
     }
 
     private void CompileObjectKeywords(
@@ -2440,12 +2566,16 @@ internal enum JsonSchemaType : byte
 
 internal sealed class CompiledSchemaNode
 {
+    internal int CompilationIndex { get; init; }
     internal bool IsFalse { get; set; }
     internal bool HasLocalAssertions { get; set; }
     internal JsonSchemaType Types { get; set; } = JsonSchemaType.Any;
     internal CompiledSchemaNode? Reference { get; set; }
     internal CompiledValidationRule[] ValidationRules { get; set; } = [];
+    internal int[] ValidationRuleMemberIndexes { get; set; } = [];
     internal ValidationCelMemberTable? ValidationRuleMembers { get; set; }
+    internal bool SharesValidationRuleMembers { get; set; }
+    internal int ValidationRuleMemberGroupId { get; set; }
     internal CompiledSchemaNode[] AllOf { get; set; } = [];
     internal bool HasAnyOf { get; set; }
     internal CompiledSchemaNode[] AnyOf { get; set; } = [];
