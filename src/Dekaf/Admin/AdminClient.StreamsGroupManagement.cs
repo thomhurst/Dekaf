@@ -135,93 +135,116 @@ public sealed partial class AdminClient
     {
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
         var results = new Dictionary<string, StreamsGroupOffsetsResult>(requests.Count, StringComparer.Ordinal);
+        var retryErrors = new Dictionary<string, Protocol.ErrorCode>(requests.Count, StringComparer.Ordinal);
 
-        return await WithRetryAsync<IReadOnlyDictionary<string, StreamsGroupOffsetsResult>>(async () =>
+        try
         {
-            var groupsByCoordinator = new Dictionary<int, List<string>>();
-            foreach (var groupId in requests.Keys)
+            return await WithRetryAsync<IReadOnlyDictionary<string, StreamsGroupOffsetsResult>>(async () =>
             {
-                if (results.ContainsKey(groupId))
-                    continue;
+                retryErrors.Clear();
+                Exception? retryFailure = null;
+                var groupsByCoordinator = new Dictionary<int, List<string>>();
+                foreach (var groupId in requests.Keys)
+                {
+                    if (results.ContainsKey(groupId))
+                        continue;
 
-                int coordinatorId;
-                try
-                {
-                    coordinatorId = await FindGroupCoordinatorAsync(groupId, cancellationToken).ConfigureAwait(false);
-                }
-                catch (Errors.GroupException exception) when (
-                    exception.ErrorCode is { } errorCode &&
-                    !errorCode.IsRetriable() &&
-                    !errorCode.RequiresMetadataRefresh())
-                {
-                    results[groupId] = new StreamsGroupOffsetsResult
+                    int coordinatorId;
+                    try
                     {
-                        GroupId = groupId,
-                        ErrorCode = errorCode,
-                        Offsets = new Dictionary<TopicPartition, StreamsGroupOffsetDescription>()
-                    };
-                    continue;
+                        coordinatorId = await FindGroupCoordinatorAsync(groupId, cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (Errors.GroupException exception) when (
+                        exception.ErrorCode is { } errorCode &&
+                        !errorCode.IsRetriable() &&
+                        !errorCode.RequiresMetadataRefresh())
+                    {
+                        results[groupId] = GroupOffsetsError(groupId, errorCode);
+                        continue;
+                    }
+                    catch (Exception exception) when (
+                        RetryHelper.IsRetriableRequestFailure(exception) &&
+                        !cancellationToken.IsCancellationRequested)
+                    {
+                        retryErrors[groupId] = GetRetryErrorCode(exception);
+                        retryFailure ??= exception;
+                        continue;
+                    }
+                    if (!groupsByCoordinator.TryGetValue(coordinatorId, out var coordinatorGroups))
+                    {
+                        coordinatorGroups = [];
+                        groupsByCoordinator[coordinatorId] = coordinatorGroups;
+                    }
+                    coordinatorGroups.Add(groupId);
                 }
-                if (!groupsByCoordinator.TryGetValue(coordinatorId, out var coordinatorGroups))
-                {
-                    coordinatorGroups = [];
-                    groupsByCoordinator[coordinatorId] = coordinatorGroups;
-                }
-                coordinatorGroups.Add(groupId);
-            }
 
-            Exception? retryFailure = null;
-            foreach (var (coordinatorId, coordinatorGroups) in groupsByCoordinator)
-            {
-                using var connectionLease = await _connectionPool.LeaseConnectionAsync(
-                    coordinatorId,
-                    cancellationToken).ConfigureAwait(false);
-                var connection = connectionLease.Connection;
-                var highestVersion = coordinatorGroups.Any(groupId => requests[groupId] is null)
-                    ? (short)(OffsetFetchRequest.TopicIdVersion - 1)
-                    : OffsetFetchRequest.HighestSupportedVersion;
-                var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-                    connection,
-                    Protocol.ApiKey.OffsetFetch,
-                    requireStable
-                        ? OffsetFetchRequest.RequireStableVersion
-                        : OffsetFetchRequest.LowestSupportedVersion,
-                    highestVersion);
-
-                if (apiVersion < 8)
+                foreach (var (coordinatorId, coordinatorGroups) in groupsByCoordinator)
                 {
-                    foreach (var groupId in coordinatorGroups)
+                    using var connectionLease = await _connectionPool.LeaseConnectionAsync(
+                        coordinatorId,
+                        cancellationToken).ConfigureAwait(false);
+                    var connection = connectionLease.Connection;
+                    var highestVersion = coordinatorGroups.Any(groupId => requests[groupId] is null)
+                        ? (short)(OffsetFetchRequest.TopicIdVersion - 1)
+                        : OffsetFetchRequest.HighestSupportedVersion;
+                    var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                        connection,
+                        Protocol.ApiKey.OffsetFetch,
+                        requireStable
+                            ? OffsetFetchRequest.RequireStableVersion
+                            : OffsetFetchRequest.LowestSupportedVersion,
+                        highestVersion);
+
+                    if (apiVersion < 8)
+                    {
+                        foreach (var groupId in coordinatorGroups)
+                        {
+                            var failure = await ListStreamsGroupOffsetsBatchAsync(
+                                connection,
+                                [groupId],
+                                requests,
+                                requireStable,
+                                apiVersion,
+                                results,
+                                retryErrors,
+                                cancellationToken).ConfigureAwait(false);
+                            retryFailure ??= failure;
+                        }
+                    }
+                    else
                     {
                         var failure = await ListStreamsGroupOffsetsBatchAsync(
                             connection,
-                            [groupId],
+                            coordinatorGroups,
                             requests,
                             requireStable,
                             apiVersion,
                             results,
+                            retryErrors,
                             cancellationToken).ConfigureAwait(false);
                         retryFailure ??= failure;
                     }
                 }
-                else
-                {
-                    var failure = await ListStreamsGroupOffsetsBatchAsync(
-                        connection,
-                        coordinatorGroups,
-                        requests,
-                        requireStable,
-                        apiVersion,
-                        results,
-                        cancellationToken).ConfigureAwait(false);
-                    retryFailure ??= failure;
-                }
-            }
 
-            if (retryFailure is not null)
-                throw retryFailure;
+                if (retryFailure is not null)
+                    throw retryFailure;
+
+                return OrderGroupResults(requests.Keys, results);
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (
+            RetryHelper.IsRetriableRequestFailure(exception) &&
+            !cancellationToken.IsCancellationRequested)
+        {
+            foreach (var (groupId, errorCode) in retryErrors)
+                results.TryAdd(groupId, GroupOffsetsError(groupId, errorCode));
+
+            var fallbackError = GetRetryErrorCode(exception);
+            foreach (var groupId in requests.Keys)
+                results.TryAdd(groupId, GroupOffsetsError(groupId, fallbackError));
 
             return OrderGroupResults(requests.Keys, results);
-        }, cancellationToken).ConfigureAwait(false);
+        }
     }
 
     private async ValueTask<Exception?> ListStreamsGroupOffsetsBatchAsync(
@@ -231,6 +254,7 @@ public sealed partial class AdminClient
         bool requireStable,
         short apiVersion,
         Dictionary<string, StreamsGroupOffsetsResult> results,
+        Dictionary<string, Protocol.ErrorCode> retryErrors,
         CancellationToken cancellationToken)
     {
         var topicMaps = new Dictionary<string, OffsetTopicIdRequestMap?>(groupIds.Count, StringComparer.Ordinal);
@@ -271,6 +295,8 @@ public sealed partial class AdminClient
                 requests[groupId],
                 topicMaps[groupId],
                 results);
+            if (retryFailure is not null)
+                retryErrors[groupId] = GetRetryErrorCode(retryFailure);
             return retryFailure;
         }
 
@@ -289,22 +315,21 @@ public sealed partial class AdminClient
                 requests[group.GroupId],
                 topicMaps[group.GroupId],
                 results);
+            if (failure is not null)
+                retryErrors[group.GroupId] = GetRetryErrorCode(failure);
             retryFailure ??= failure;
         }
 
-        if (retryFailure is null)
+        foreach (var groupId in groupIds)
         {
-            foreach (var groupId in groupIds)
+            if (!responseGroupIds.Contains(groupId))
             {
-                if (!responseGroupIds.Contains(groupId))
+                if (retryFailure is null)
                 {
-                    results[groupId] = new StreamsGroupOffsetsResult
-                    {
-                        GroupId = groupId,
-                        ErrorCode = Protocol.ErrorCode.UnknownServerError,
-                        Offsets = new Dictionary<TopicPartition, StreamsGroupOffsetDescription>()
-                    };
+                    results[groupId] = GroupOffsetsError(groupId, Protocol.ErrorCode.UnknownServerError);
                 }
+                else
+                    retryErrors[groupId] = Protocol.ErrorCode.UnknownServerError;
             }
         }
 
@@ -911,6 +936,15 @@ public sealed partial class AdminClient
             ordered[groupId] = results[groupId];
         return ordered;
     }
+
+    private static StreamsGroupOffsetsResult GroupOffsetsError(
+        string groupId,
+        Protocol.ErrorCode errorCode) => new()
+    {
+        GroupId = groupId,
+        ErrorCode = errorCode,
+        Offsets = new Dictionary<TopicPartition, StreamsGroupOffsetDescription>()
+    };
 
     private static IReadOnlyDictionary<string, DeleteStreamsGroupResult> OrderDeleteGroupResults(
         IEnumerable<string> groupIds,

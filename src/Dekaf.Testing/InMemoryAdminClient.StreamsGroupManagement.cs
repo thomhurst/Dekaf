@@ -79,7 +79,21 @@ public sealed partial class InMemoryAdminClient
         if (offsetList.Length == 0)
             return new ValueTask<IReadOnlyDictionary<TopicPartition, StreamsGroupOffsetOperationResult>>(results);
 
-        _cluster.CommitOffsets(groupId, offsetList);
+        var alterResults = _cluster.AlterStreamsGroupOffsets(groupId, offsetList);
+        foreach (var offset in offsetList)
+        {
+            var partition = new TopicPartition(offset.Topic, offset.Partition);
+            var errorCode = alterResults[partition];
+            if (errorCode != ErrorCode.None)
+            {
+                results[partition] = new StreamsGroupOffsetOperationResult
+                {
+                    TopicPartition = partition,
+                    ErrorCode = errorCode
+                };
+            }
+        }
+
         return new ValueTask<IReadOnlyDictionary<TopicPartition, StreamsGroupOffsetOperationResult>>(results);
     }
 

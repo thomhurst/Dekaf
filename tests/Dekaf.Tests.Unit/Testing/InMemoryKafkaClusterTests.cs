@@ -146,13 +146,13 @@ public sealed class InMemoryKafkaClusterTests
         IAdminClient admin = new InMemoryAdminClient(cluster);
         const string groupId = "active-streams";
         var partition = new TopicPartition("input", 0);
+        _ = await admin.AlterStreamsGroupOffsetsAsync(
+            groupId,
+            [new TopicPartitionOffset(partition.Topic, partition.Partition, 42)]);
         await using var consumer = new InMemoryConsumer<string, string>(
             cluster,
             new InMemoryConsumerOptions { GroupId = groupId });
         consumer.Subscribe("input");
-        _ = await admin.AlterStreamsGroupOffsetsAsync(
-            groupId,
-            [new TopicPartitionOffset(partition.Topic, partition.Partition, 42)]);
 
         var activeDeletion = await admin.DeleteStreamsGroupsAsync([groupId]);
         var offsetsAfterRejection = await admin.ListStreamsGroupOffsetsAsync(
@@ -179,16 +179,16 @@ public sealed class InMemoryKafkaClusterTests
         const string groupId = "active-streams";
         var subscribed = new TopicPartition("input", 0);
         var inactive = new TopicPartition("input", 1);
-        await using var consumer = new InMemoryConsumer<string, string>(
-            cluster,
-            new InMemoryConsumerOptions { GroupId = groupId });
-        consumer.Assign(subscribed);
         _ = await admin.AlterStreamsGroupOffsetsAsync(
             groupId,
             [
                 new TopicPartitionOffset(subscribed.Topic, subscribed.Partition, 42),
                 new TopicPartitionOffset(inactive.Topic, inactive.Partition, 84)
             ]);
+        await using var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions { GroupId = groupId });
+        consumer.Assign(subscribed);
 
         var deletion = await admin.DeleteStreamsGroupOffsetsAsync(groupId, [subscribed, inactive]);
         var offsetsAfterRejection = await admin.ListStreamsGroupOffsetsAsync(
@@ -210,6 +210,43 @@ public sealed class InMemoryKafkaClusterTests
         await Assert.That(inactiveDeletion[subscribed].ErrorCode).IsEqualTo(ErrorCode.None);
         await Assert.That(inactiveDeletion[inactive].ErrorCode).IsEqualTo(ErrorCode.None);
         await Assert.That(offsetsAfterDeletion[groupId].Offsets).IsEmpty();
+    }
+
+    [Test]
+    public async Task StreamsGroupManagement_AlterOffsetsRejectsActiveGroupAndPreservesOffsets()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("input");
+        IAdminClient admin = new InMemoryAdminClient(cluster);
+        const string groupId = "active-streams";
+        var partition = new TopicPartition("input", 0);
+        _ = await admin.AlterStreamsGroupOffsetsAsync(
+            groupId,
+            [new TopicPartitionOffset(partition.Topic, partition.Partition, 42)]);
+        await using var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions { GroupId = groupId });
+        consumer.Subscribe("input");
+
+        var rejected = await admin.AlterStreamsGroupOffsetsAsync(
+            groupId,
+            [new TopicPartitionOffset(partition.Topic, partition.Partition, 84)]);
+        var afterRejection = await admin.ListStreamsGroupOffsetsAsync(
+            new Dictionary<string, ListStreamsGroupOffsetsSpec>
+            {
+                [groupId] = new() { TopicPartitions = [partition] }
+            });
+
+        await Assert.That(rejected[partition].ErrorCode).IsEqualTo(ErrorCode.UnknownMemberId);
+        await Assert.That(afterRejection[groupId].Offsets[partition].Offset).IsEqualTo(42);
+
+        consumer.Unsubscribe();
+        var altered = await admin.AlterStreamsGroupOffsetsAsync(
+            groupId,
+            [new TopicPartitionOffset(partition.Topic, partition.Partition, 84)]);
+
+        await Assert.That(altered[partition].ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(cluster.GetCommittedOffset(groupId, partition)).IsEqualTo(84);
     }
 
     [Test]
