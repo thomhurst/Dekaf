@@ -18,7 +18,7 @@ public sealed class InMemoryStreamsGroupMemberTests
     }
 
     [Test]
-    public async Task JoinAsync_PublishesInitialAssignmentAndSnapshot()
+    public async Task JoinAsync_IgnoresCallerAssignment()
     {
         await using var member = new InMemoryStreamsGroupMember(new StreamsGroupMemberOptions
         {
@@ -50,11 +50,15 @@ public sealed class InMemoryStreamsGroupMemberTests
         await Assert.That(member.InstanceId).IsEqualTo("instance-a");
         await Assert.That(member.LastUpdate).IsSameReferenceAs(update);
         await Assert.That(result.MemberEpoch).IsEqualTo(1);
-        await Assert.That(result.ActiveTasks![0].SubtopologyId).IsEqualTo("sub-0");
+        await Assert.That(result.ActiveTasks).IsNull();
+        await Assert.That(result.StandbyTasks).IsNull();
+        await Assert.That(result.WarmupTasks).IsNull();
         await Assert.That(member.Snapshot.IsJoined).IsTrue();
         await Assert.That(member.Snapshot.IsClosed).IsFalse();
         await Assert.That(member.Snapshot.EndpointInformationEpoch).IsEqualTo(7);
-        await Assert.That(member.Snapshot.Assignment.ActiveTasks[0].Partitions).IsEquivalentTo([0, 1]);
+        await Assert.That(member.Snapshot.Assignment.ActiveTasks).IsEmpty();
+        await Assert.That(member.Snapshot.Assignment.StandbyTasks).IsEmpty();
+        await Assert.That(member.Snapshot.Assignment.WarmupTasks).IsEmpty();
     }
 
     [Test]
@@ -63,7 +67,10 @@ public sealed class InMemoryStreamsGroupMemberTests
         await using var member = CreateMember();
         await member.JoinAsync(new StreamsGroupMemberUpdate
         {
-            Topology = CreateTopology(),
+            Topology = CreateTopology()
+        });
+        await member.UpdateAsync(new StreamsGroupMemberUpdate
+        {
             ActiveTasks = [new StreamsGroupTaskSet { SubtopologyId = "sub-0", Partitions = [2] }],
             StandbyTasks = [],
             WarmupTasks = []
@@ -140,39 +147,33 @@ public sealed class InMemoryStreamsGroupMemberTests
     }
 
     [Test]
-    public async Task JoinAndUpdateAsync_DeepCopyPublishedTaskSets()
+    public async Task UpdateAsync_DeepCopiesPublishedTaskSets()
     {
         await using var member = CreateMember();
-        var joinPartitions = new List<int> { 0, 1 };
-        var joinTasks = new List<StreamsGroupTaskSet>
+        await member.JoinAsync(new StreamsGroupMemberUpdate { Topology = CreateTopology() });
+        var activePartitions = new List<int> { 0, 1 };
+        var activeTasks = new List<StreamsGroupTaskSet>
         {
-            new() { SubtopologyId = "join", Partitions = joinPartitions }
+            new() { SubtopologyId = "active", Partitions = activePartitions }
         };
-
-        var joinResult = await member.JoinAsync(new StreamsGroupMemberUpdate
+        var standbyPartitions = new List<int> { 2, 3 };
+        var standbyTasks = new List<StreamsGroupTaskSet>
         {
-            Topology = CreateTopology(),
-            ActiveTasks = joinTasks
-        });
-
-        joinPartitions[0] = 99;
-        joinTasks.Clear();
-        await Assert.That(joinResult.ActiveTasks![0].Partitions).IsEquivalentTo([0, 1]);
-        await Assert.That(member.Snapshot.Assignment.ActiveTasks[0].Partitions).IsEquivalentTo([0, 1]);
-
-        var updatePartitions = new List<int> { 2, 3 };
-        var updateTasks = new List<StreamsGroupTaskSet>
-        {
-            new() { SubtopologyId = "update", Partitions = updatePartitions }
+            new() { SubtopologyId = "standby", Partitions = standbyPartitions }
         };
 
         var updateResult = await member.UpdateAsync(new StreamsGroupMemberUpdate
         {
-            StandbyTasks = updateTasks
+            ActiveTasks = activeTasks,
+            StandbyTasks = standbyTasks
         });
 
-        updatePartitions.Add(4);
-        updateTasks[0] = new StreamsGroupTaskSet { SubtopologyId = "replacement", Partitions = [9] };
+        activePartitions[0] = 99;
+        activeTasks.Clear();
+        standbyPartitions.Add(4);
+        standbyTasks[0] = new StreamsGroupTaskSet { SubtopologyId = "replacement", Partitions = [9] };
+        await Assert.That(updateResult.ActiveTasks![0].Partitions).IsEquivalentTo([0, 1]);
+        await Assert.That(member.Snapshot.Assignment.ActiveTasks[0].Partitions).IsEquivalentTo([0, 1]);
         await Assert.That(updateResult.StandbyTasks![0].Partitions).IsEquivalentTo([2, 3]);
         await Assert.That(member.Snapshot.Assignment.StandbyTasks[0].Partitions).IsEquivalentTo([2, 3]);
     }

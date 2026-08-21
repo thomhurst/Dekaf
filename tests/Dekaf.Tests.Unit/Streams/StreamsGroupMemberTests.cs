@@ -946,7 +946,11 @@ public sealed class StreamsGroupMemberTests
     }
 
     [Test]
-    public async Task UpdateAsync_AmbiguousCancellationRetainsStateForExplicitRejoin()
+    [Arguments(null, 0)]
+    [Arguments("instance-1", -2)]
+    public async Task UpdateAsync_AmbiguousCancellationRejoinUsesMembershipEpoch(
+        string? instanceId,
+        int expectedEpoch)
     {
         var connection = new ScriptedConnection();
         connection.EnqueueHeartbeat(Success(epoch: 1));
@@ -954,7 +958,7 @@ public sealed class StreamsGroupMemberTests
             TaskCreationOptions.RunContinuationsAsynchronously);
         connection.EnqueueHeartbeat(pendingUpdate.Task);
         connection.EnqueueHeartbeat(Success(epoch: 2));
-        await using var fixture = CreateFixture(connection);
+        await using var fixture = CreateFixture(connection, instanceId);
         await fixture.Member.JoinAsync(CreateInitialUpdate());
         using var cancellation = new CancellationTokenSource();
 
@@ -973,7 +977,7 @@ public sealed class StreamsGroupMemberTests
         });
 
         var recovery = connection.HeartbeatRequests[2];
-        await Assert.That(recovery.MemberEpoch).IsEqualTo(0);
+        await Assert.That(recovery.MemberEpoch).IsEqualTo(expectedEpoch);
         await Assert.That(recovery.ProcessId).IsEqualTo("process-2");
         await Assert.That(result.MemberEpoch).IsEqualTo(2);
     }
