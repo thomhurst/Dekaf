@@ -1,5 +1,5 @@
 ---
-sidebar_position: 1
+sidebar_position: 2
 description: "Query current and future Kafka log directories for selected replicas."
 ---
 
