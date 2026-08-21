@@ -409,168 +409,70 @@ public sealed partial class AdminClient
     {
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
         var results = new Dictionary<TopicPartition, StreamsGroupOffsetOperationResult>(offsets.Count);
+        var requestedPartitions = offsets
+            .Select(static offset => new TopicPartition(offset.Topic, offset.Partition))
+            .ToArray();
+        var retryErrors = new Dictionary<TopicPartition, Protocol.ErrorCode>(offsets.Count);
 
-        return await WithRetryAsync<IReadOnlyDictionary<TopicPartition, StreamsGroupOffsetOperationResult>>(async () =>
+        try
         {
-            var coordinatorId = await FindGroupCoordinatorAsync(groupId, cancellationToken).ConfigureAwait(false);
-            using var connectionLease = await _connectionPool.LeaseConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
-            var connection = connectionLease.Connection;
-            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-                connection,
-                Protocol.ApiKey.OffsetCommit,
-                OffsetCommitRequest.LowestSupportedVersion,
-                OffsetCommitRequest.HighestSupportedVersion);
-
-            var pendingOffsets = offsets
-                .Where(offset => !results.ContainsKey(new TopicPartition(offset.Topic, offset.Partition)))
-                .ToArray();
-            var topics = BuildOffsetCommitTopics(
-                pendingOffsets,
-                apiVersion,
-                nameof(AlterStreamsGroupOffsetsAsync),
-                out var topicMap);
-            var response = await connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
-                new OffsetCommitRequest
-                {
-                    GroupId = groupId,
-                    GenerationIdOrMemberEpoch = -1,
-                    MemberId = string.Empty,
-                    Topics = topics
-                },
-                apiVersion,
-                cancellationToken).ConfigureAwait(false);
-
-            var pending = pendingOffsets
-                .Select(static offset => new TopicPartition(offset.Topic, offset.Partition))
-                .ToHashSet();
-            var responseSnapshot = topicMap?.CaptureResponseSnapshot();
-            Exception? retryFailure = null;
-            foreach (var topic in response.Topics)
+            return await WithRetryAsync<IReadOnlyDictionary<TopicPartition, StreamsGroupOffsetOperationResult>>(async () =>
             {
-                var topicName = topicMap is null
-                    ? topic.Name
-                    : topicMap.MatchResponseTopic(
-                        topic.TopicId,
-                        responseSnapshot!,
-                        nameof(AlterStreamsGroupOffsetsAsync),
-                        responseMismatchIsRetriable: false);
-                foreach (var partition in topic.Partitions)
-                {
-                    var topicPartition = new TopicPartition(topicName, partition.PartitionIndex);
-                    if (!pending.Remove(topicPartition))
-                        continue;
+                retryErrors.Clear();
+                var coordinatorId = await FindGroupCoordinatorAsync(groupId, cancellationToken).ConfigureAwait(false);
+                using var connectionLease = await _connectionPool.LeaseConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
+                var connection = connectionLease.Connection;
+                var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                    connection,
+                    Protocol.ApiKey.OffsetCommit,
+                    OffsetCommitRequest.LowestSupportedVersion,
+                    OffsetCommitRequest.HighestSupportedVersion);
 
-                    if (partition.ErrorCode.IsRetriable() || partition.ErrorCode.RequiresMetadataRefresh())
-                    {
-                        retryFailure ??= new Errors.GroupException(
-                            partition.ErrorCode,
-                            $"AlterStreamsGroupOffsets failed for {topicName}-{partition.PartitionIndex}: {partition.ErrorCode}",
-                            isRetriable: true)
-                        {
-                            GroupId = groupId
-                        };
-                        continue;
-                    }
-
-                    results[topicPartition] = PartitionResult(topicPartition, partition.ErrorCode);
-                }
-            }
-
-            if (retryFailure is not null)
-                throw retryFailure;
-
-            foreach (var topicPartition in pending)
-                results[topicPartition] = PartitionResult(topicPartition, Protocol.ErrorCode.UnknownServerError);
-
-            return OrderPartitionResults(
-                offsets.Select(static offset => new TopicPartition(offset.Topic, offset.Partition)),
-                results);
-        }, cancellationToken).ConfigureAwait(false);
-    }
-
-    private async ValueTask<IReadOnlyDictionary<TopicPartition, StreamsGroupOffsetOperationResult>> DeleteStreamsGroupOffsetsCoreAsync(
-        string groupId,
-        IReadOnlyList<TopicPartition> partitions,
-        CancellationToken cancellationToken)
-    {
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-        var results = new Dictionary<TopicPartition, StreamsGroupOffsetOperationResult>(partitions.Count);
-        var deleteMayHaveApplied = false;
-
-        return await WithRetryAsync<IReadOnlyDictionary<TopicPartition, StreamsGroupOffsetOperationResult>>(async () =>
-        {
-            var pending = partitions.Where(partition => !results.ContainsKey(partition)).ToArray();
-            var coordinatorId = await FindGroupCoordinatorAsync(groupId, cancellationToken).ConfigureAwait(false);
-            using var connectionLease = await _connectionPool.LeaseConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
-            var connection = connectionLease.Connection;
-            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-                connection,
-                Protocol.ApiKey.OffsetDelete,
-                OffsetDeleteRequest.LowestSupportedVersion,
-                OffsetDeleteRequest.HighestSupportedVersion);
-
-            OffsetDeleteResponse response;
-            try
-            {
-                response = await connection.SendAsync<OffsetDeleteRequest, OffsetDeleteResponse>(
-                    new OffsetDeleteRequest
+                var pendingOffsets = offsets
+                    .Where(offset => !results.ContainsKey(new TopicPartition(offset.Topic, offset.Partition)))
+                    .ToArray();
+                var topics = BuildOffsetCommitTopics(
+                    pendingOffsets,
+                    apiVersion,
+                    nameof(AlterStreamsGroupOffsetsAsync),
+                    out var topicMap);
+                var response = await connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+                    new OffsetCommitRequest
                     {
                         GroupId = groupId,
-                        Topics = BuildOffsetDeleteTopics(pending)
+                        GenerationIdOrMemberEpoch = -1,
+                        MemberId = string.Empty,
+                        Topics = topics
                     },
                     apiVersion,
                     cancellationToken).ConfigureAwait(false);
-            }
-            catch (Exception exception) when (
-                RetryHelper.IsRetriableRequestFailure(exception) &&
-                !cancellationToken.IsCancellationRequested)
-            {
-                deleteMayHaveApplied = true;
-                throw;
-            }
 
-            var groupError = response.ErrorCode;
-            var ambiguousDeletionConfirmed = groupError == Protocol.ErrorCode.GroupIdNotFound && deleteMayHaveApplied;
-            if (ambiguousDeletionConfirmed)
-                groupError = Protocol.ErrorCode.None;
-
-            if (groupError.IsRetriable() || groupError.RequiresMetadataRefresh())
-            {
-                if (groupError == Protocol.ErrorCode.RequestTimedOut)
-                    deleteMayHaveApplied = true;
-
-                throw new Errors.GroupException(
-                    groupError,
-                    $"DeleteStreamsGroupOffsets failed for group '{groupId}': {groupError}",
-                    isRetriable: true)
-                {
-                    GroupId = groupId
-                };
-            }
-
-            Exception? retryFailure = null;
-            if (groupError != Protocol.ErrorCode.None || ambiguousDeletionConfirmed)
-            {
-                foreach (var topicPartition in pending)
-                    results[topicPartition] = PartitionResult(topicPartition, groupError);
-            }
-            else
-            {
-                var missing = pending.ToHashSet();
+                var pending = pendingOffsets
+                    .Select(static offset => new TopicPartition(offset.Topic, offset.Partition))
+                    .ToHashSet();
+                var responseSnapshot = topicMap?.CaptureResponseSnapshot();
+                Exception? retryFailure = null;
                 foreach (var topic in response.Topics)
                 {
+                    var topicName = topicMap is null
+                        ? topic.Name
+                        : topicMap.MatchResponseTopic(
+                            topic.TopicId,
+                            responseSnapshot!,
+                            nameof(AlterStreamsGroupOffsetsAsync),
+                            responseMismatchIsRetriable: false);
                     foreach (var partition in topic.Partitions)
                     {
-                        var topicPartition = new TopicPartition(topic.Name, partition.PartitionIndex);
-                        if (!missing.Remove(topicPartition))
+                        var topicPartition = new TopicPartition(topicName, partition.PartitionIndex);
+                        if (!pending.Remove(topicPartition))
                             continue;
 
                         if (partition.ErrorCode.IsRetriable() || partition.ErrorCode.RequiresMetadataRefresh())
                         {
-                            deleteMayHaveApplied = true;
+                            retryErrors[topicPartition] = partition.ErrorCode;
                             retryFailure ??= new Errors.GroupException(
                                 partition.ErrorCode,
-                                $"DeleteStreamsGroupOffsets failed for {topic.Name}-{partition.PartitionIndex}: {partition.ErrorCode}",
+                                $"AlterStreamsGroupOffsets failed for {topicName}-{partition.PartitionIndex}: {partition.ErrorCode}",
                                 isRetriable: true)
                             {
                                 GroupId = groupId
@@ -583,14 +485,157 @@ public sealed partial class AdminClient
                 }
 
                 if (retryFailure is not null)
+                {
+                    foreach (var topicPartition in pending)
+                        retryErrors[topicPartition] = Protocol.ErrorCode.UnknownServerError;
                     throw retryFailure;
+                }
 
-                foreach (var topicPartition in missing)
+                foreach (var topicPartition in pending)
                     results[topicPartition] = PartitionResult(topicPartition, Protocol.ErrorCode.UnknownServerError);
-            }
 
-            return OrderPartitionResults(partitions, results);
-        }, cancellationToken).ConfigureAwait(false);
+                return OrderPartitionResults(requestedPartitions, results);
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (
+            RetryHelper.IsRetriableRequestFailure(exception) &&
+            !cancellationToken.IsCancellationRequested)
+        {
+            foreach (var (topicPartition, errorCode) in retryErrors)
+                results.TryAdd(topicPartition, PartitionResult(topicPartition, errorCode));
+
+            return CompletePartitionResults(requestedPartitions, results, GetRetryErrorCode(exception));
+        }
+    }
+
+    private async ValueTask<IReadOnlyDictionary<TopicPartition, StreamsGroupOffsetOperationResult>> DeleteStreamsGroupOffsetsCoreAsync(
+        string groupId,
+        IReadOnlyList<TopicPartition> partitions,
+        CancellationToken cancellationToken)
+    {
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        var results = new Dictionary<TopicPartition, StreamsGroupOffsetOperationResult>(partitions.Count);
+        var retryErrors = new Dictionary<TopicPartition, Protocol.ErrorCode>(partitions.Count);
+        var deleteMayHaveApplied = false;
+
+        try
+        {
+            return await WithRetryAsync<IReadOnlyDictionary<TopicPartition, StreamsGroupOffsetOperationResult>>(async () =>
+            {
+                retryErrors.Clear();
+                var pending = partitions.Where(partition => !results.ContainsKey(partition)).ToArray();
+                var coordinatorId = await FindGroupCoordinatorAsync(groupId, cancellationToken).ConfigureAwait(false);
+                using var connectionLease = await _connectionPool.LeaseConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
+                var connection = connectionLease.Connection;
+                var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                    connection,
+                    Protocol.ApiKey.OffsetDelete,
+                    OffsetDeleteRequest.LowestSupportedVersion,
+                    OffsetDeleteRequest.HighestSupportedVersion);
+
+                OffsetDeleteResponse response;
+                try
+                {
+                    response = await connection.SendAsync<OffsetDeleteRequest, OffsetDeleteResponse>(
+                        new OffsetDeleteRequest
+                        {
+                            GroupId = groupId,
+                            Topics = BuildOffsetDeleteTopics(pending)
+                        },
+                        apiVersion,
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception exception) when (
+                    RetryHelper.IsRetriableRequestFailure(exception) &&
+                    !cancellationToken.IsCancellationRequested)
+                {
+                    deleteMayHaveApplied = true;
+                    var errorCode = GetRetryErrorCode(exception);
+                    foreach (var topicPartition in pending)
+                        retryErrors[topicPartition] = errorCode;
+                    throw;
+                }
+
+                var groupError = response.ErrorCode;
+                var ambiguousDeletionConfirmed = groupError == Protocol.ErrorCode.GroupIdNotFound && deleteMayHaveApplied;
+                if (ambiguousDeletionConfirmed)
+                    groupError = Protocol.ErrorCode.None;
+
+                if (groupError.IsRetriable() || groupError.RequiresMetadataRefresh())
+                {
+                    if (groupError == Protocol.ErrorCode.RequestTimedOut)
+                        deleteMayHaveApplied = true;
+
+                    foreach (var topicPartition in pending)
+                        retryErrors[topicPartition] = groupError;
+
+                    throw new Errors.GroupException(
+                        groupError,
+                        $"DeleteStreamsGroupOffsets failed for group '{groupId}': {groupError}",
+                        isRetriable: true)
+                    {
+                        GroupId = groupId
+                    };
+                }
+
+                Exception? retryFailure = null;
+                if (groupError != Protocol.ErrorCode.None || ambiguousDeletionConfirmed)
+                {
+                    foreach (var topicPartition in pending)
+                        results[topicPartition] = PartitionResult(topicPartition, groupError);
+                }
+                else
+                {
+                    var missing = pending.ToHashSet();
+                    foreach (var topic in response.Topics)
+                    {
+                        foreach (var partition in topic.Partitions)
+                        {
+                            var topicPartition = new TopicPartition(topic.Name, partition.PartitionIndex);
+                            if (!missing.Remove(topicPartition))
+                                continue;
+
+                            if (partition.ErrorCode.IsRetriable() || partition.ErrorCode.RequiresMetadataRefresh())
+                            {
+                                deleteMayHaveApplied = true;
+                                retryErrors[topicPartition] = partition.ErrorCode;
+                                retryFailure ??= new Errors.GroupException(
+                                    partition.ErrorCode,
+                                    $"DeleteStreamsGroupOffsets failed for {topic.Name}-{partition.PartitionIndex}: {partition.ErrorCode}",
+                                    isRetriable: true)
+                                {
+                                    GroupId = groupId
+                                };
+                                continue;
+                            }
+
+                            results[topicPartition] = PartitionResult(topicPartition, partition.ErrorCode);
+                        }
+                    }
+
+                    if (retryFailure is not null)
+                    {
+                        foreach (var topicPartition in missing)
+                            retryErrors[topicPartition] = Protocol.ErrorCode.UnknownServerError;
+                        throw retryFailure;
+                    }
+
+                    foreach (var topicPartition in missing)
+                        results[topicPartition] = PartitionResult(topicPartition, Protocol.ErrorCode.UnknownServerError);
+                }
+
+                return OrderPartitionResults(partitions, results);
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (
+            RetryHelper.IsRetriableRequestFailure(exception) &&
+            !cancellationToken.IsCancellationRequested)
+        {
+            foreach (var (topicPartition, errorCode) in retryErrors)
+                results.TryAdd(topicPartition, PartitionResult(topicPartition, errorCode));
+
+            return CompletePartitionResults(partitions, results, GetRetryErrorCode(exception));
+        }
     }
 
     private async ValueTask<IReadOnlyDictionary<string, DeleteStreamsGroupResult>> DeleteStreamsGroupsCoreAsync(
@@ -633,7 +678,7 @@ public sealed partial class AdminClient
                         RetryHelper.IsRetriableRequestFailure(exception) &&
                         !cancellationToken.IsCancellationRequested)
                     {
-                        retryErrors[groupId] = GetDeleteGroupRetryError(exception);
+                        retryErrors[groupId] = GetRetryErrorCode(exception);
                         retryFailure ??= exception;
                         continue;
                     }
@@ -672,7 +717,7 @@ public sealed partial class AdminClient
                     {
                         ambiguousGroups.UnionWith(coordinatorGroups);
                         foreach (var groupId in coordinatorGroups)
-                            retryErrors[groupId] = GetDeleteGroupRetryError(exception);
+                            retryErrors[groupId] = GetRetryErrorCode(exception);
                         retryFailure ??= exception;
                         continue;
                     }
@@ -857,10 +902,21 @@ public sealed partial class AdminClient
         ErrorCode = errorCode
     };
 
-    private static Protocol.ErrorCode GetDeleteGroupRetryError(Exception exception) =>
+    private static Protocol.ErrorCode GetRetryErrorCode(Exception exception) =>
         exception is Errors.KafkaException { ErrorCode: { } errorCode }
             ? errorCode
             : Protocol.ErrorCode.UnknownServerError;
+
+    private static IReadOnlyDictionary<TopicPartition, StreamsGroupOffsetOperationResult> CompletePartitionResults(
+        IReadOnlyList<TopicPartition> partitions,
+        Dictionary<TopicPartition, StreamsGroupOffsetOperationResult> results,
+        Protocol.ErrorCode fallbackError)
+    {
+        foreach (var topicPartition in partitions)
+            results.TryAdd(topicPartition, PartitionResult(topicPartition, fallbackError));
+
+        return OrderPartitionResults(partitions, results);
+    }
 
     private static IReadOnlyDictionary<TopicPartition, StreamsGroupOffsetOperationResult> OrderPartitionResults(
         IEnumerable<TopicPartition> partitions,
