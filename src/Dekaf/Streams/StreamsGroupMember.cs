@@ -670,7 +670,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
                     throw;
                 }
                 catch (Exception exception) when (
-                    RetryHelper.IsRetriableRequestFailure(exception)
+                    IsRetriableConnectionFailure(exception)
                     && (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested))
                 {
                     _coordinatorId = -1;
@@ -846,7 +846,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
                 return;
             }
             catch (Exception exception) when (
-                RetryHelper.IsRetriableRequestFailure(exception)
+                IsRetriableConnectionFailure(exception)
                 && !cancellationToken.IsCancellationRequested)
             {
                 if (attempt == 4)
@@ -866,6 +866,10 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
             "FindCoordinator failed after 5 attempts.")
         { GroupId = GroupId };
     }
+
+    private bool IsRetriableConnectionFailure(Exception exception) =>
+        RetryHelper.IsRetriableRequestFailure(exception)
+        || (exception is ObjectDisposedException && Volatile.Read(ref _closeRequested) == 0);
 
     private static void ObserveFault(Task task)
     {
