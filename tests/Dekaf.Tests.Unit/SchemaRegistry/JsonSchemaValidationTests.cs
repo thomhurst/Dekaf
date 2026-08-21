@@ -885,6 +885,27 @@ public sealed class JsonSchemaValidationTests
     }
 
     [Test]
+    public async Task InlineRules_JsonEscapeAdditionalPropertyNamesInPaths()
+    {
+        const string schemaText = """
+            {
+              "additionalProperties": {
+                "confluent:rules": [{ "name": "required", "expr": "size(this) > 0" }]
+              }
+            }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
+
+        var exception = Assert.Throws<ValidationRulesFailedException>(() => validator.ValidateRules(
+            """{"a\b\f\n\r\t\u0001\"\\":""}"""u8.ToArray(),
+            17,
+            failFast: false));
+
+        await Assert.That(exception.Violations[0].FieldPath)
+            .IsEqualTo("""$["a\b\f\n\r\t\u0001\"\\"]""");
+    }
+
+    [Test]
     public async Task InlineRules_StringResultAndFailFastMatchConfluentSemantics()
     {
         const string schemaText = """
