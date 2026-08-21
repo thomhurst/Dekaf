@@ -5001,7 +5001,26 @@ public sealed class AdminClient :
                 if (results.ContainsKey(groupId))
                     continue;
 
-                var coordinatorId = await FindGroupCoordinatorAsync(groupId, cancellationToken).ConfigureAwait(false);
+                int coordinatorId;
+                try
+                {
+                    coordinatorId = await FindGroupCoordinatorAsync(
+                        groupId,
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch (Errors.GroupException exception) when (
+                    exception.ErrorCode is { } errorCode &&
+                    !errorCode.IsRetriable() &&
+                    !errorCode.RequiresMetadataRefresh())
+                {
+                    results[groupId] = new DeleteShareGroupResult
+                    {
+                        GroupId = groupId,
+                        ErrorCode = errorCode
+                    };
+                    continue;
+                }
+
                 if (!groupsByCoordinator.TryGetValue(coordinatorId, out var coordinatorGroups))
                 {
                     coordinatorGroups = [];

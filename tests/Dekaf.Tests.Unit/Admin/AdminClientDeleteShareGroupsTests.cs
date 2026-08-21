@@ -93,6 +93,57 @@ public sealed class AdminClientDeleteShareGroupsTests
     }
 
     [Test]
+    public async Task DeleteShareGroupsAsync_PreservesTerminalCoordinatorErrorPerGroup()
+    {
+        var (admin, connection) = CreateAdmin();
+        connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                Arg.Any<FindCoordinatorRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                var request = callInfo.Arg<FindCoordinatorRequest>()!;
+                return ValueTask.FromResult(new FindCoordinatorResponse
+                {
+                    Coordinators =
+                    [
+                        new Coordinator
+                        {
+                            Key = request.Key,
+                            NodeId = 1,
+                            Host = "localhost",
+                            Port = 9092,
+                            ErrorCode = request.Key == SecondGroupId
+                                ? ErrorCode.GroupAuthorizationFailed
+                                : ErrorCode.None
+                        }
+                    ]
+                });
+            });
+        connection.SendAsync<DeleteGroupsRequest, DeleteGroupsResponse>(
+                Arg.Any<DeleteGroupsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new DeleteGroupsResponse
+            {
+                Results = [Result(FirstGroupId, ErrorCode.None)]
+            }));
+
+        var results = await admin.DeleteShareGroupsAsync([FirstGroupId, SecondGroupId]);
+
+        await Assert.That(results[FirstGroupId].ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(results[SecondGroupId].ErrorCode)
+            .IsEqualTo(ErrorCode.GroupAuthorizationFailed);
+        await connection.Received(1).SendAsync<DeleteGroupsRequest, DeleteGroupsResponse>(
+            Arg.Is<DeleteGroupsRequest>(request =>
+                request != null &&
+                request.GroupsNames.Count == 1 &&
+                request.GroupsNames[0] == FirstGroupId),
+            2,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
     public async Task DeleteShareGroupsAsync_TimeoutRetriesThenPropagates()
     {
         var (admin, connection) = CreateAdmin();
