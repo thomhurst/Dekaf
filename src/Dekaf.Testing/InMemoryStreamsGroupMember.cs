@@ -25,15 +25,19 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember
     private StreamsGroupMemberUpdate? _lastUpdate;
     private StreamsGroupTaskOffsetReport? _lastTaskOffsetReport;
     private StreamsGroupCloseOptions? _lastCloseOptions;
+    private bool _initialized;
 
     public InMemoryStreamsGroupMember(StreamsGroupMemberOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentException.ThrowIfNullOrWhiteSpace(options.GroupId);
-        if (options.RebalanceTimeout <= TimeSpan.Zero)
+        if (options.RebalanceTimeout.TotalMilliseconds < 1
+            || options.RebalanceTimeout.TotalMilliseconds > int.MaxValue)
+        {
             throw new ArgumentOutOfRangeException(
                 nameof(options),
-                "Rebalance timeout must be positive.");
+                "RebalanceTimeout must be greater than zero and no greater than Int32.MaxValue milliseconds.");
+        }
 
         _options = options;
     }
@@ -84,6 +88,7 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember
         lock (_gate)
         {
             ThrowIfClosed();
+            _initialized = true;
         }
 
         return ValueTask.CompletedTask;
@@ -95,11 +100,14 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(initialState);
+        if (initialState.Topology is null)
+            throw new ArgumentException("The initial Streams group state must include a topology.", nameof(initialState));
         cancellationToken.ThrowIfCancellationRequested();
 
         lock (_gate)
         {
             ThrowIfClosed();
+            ThrowIfNotInitialized();
             if (_snapshot.IsJoined)
                 throw new InvalidOperationException("The Streams group member has already joined.");
 
@@ -191,15 +199,17 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember
 
     private StreamsGroupHeartbeatResult ApplyUpdate(StreamsGroupMemberUpdate update, bool isJoin)
     {
-        var activeTasks = CopyTaskSets(update.ActiveTasks);
-        var standbyTasks = CopyTaskSets(update.StandbyTasks);
-        var warmupTasks = CopyTaskSets(update.WarmupTasks);
+        var isTopologyJoin = update.Topology is not null;
+        var activeTasks = isTopologyJoin ? null : CopyTaskSets(update.ActiveTasks);
+        var standbyTasks = isTopologyJoin ? null : CopyTaskSets(update.StandbyTasks);
+        var warmupTasks = isTopologyJoin ? null : CopyTaskSets(update.WarmupTasks);
         var previous = _snapshot;
+        var fallbackAssignment = isTopologyJoin ? EmptyAssignment : previous.Assignment;
         var assignment = new StreamsGroupAssignment
         {
-            ActiveTasks = activeTasks ?? previous.Assignment.ActiveTasks,
-            StandbyTasks = standbyTasks ?? previous.Assignment.StandbyTasks,
-            WarmupTasks = warmupTasks ?? previous.Assignment.WarmupTasks
+            ActiveTasks = activeTasks ?? fallbackAssignment.ActiveTasks,
+            StandbyTasks = standbyTasks ?? fallbackAssignment.StandbyTasks,
+            WarmupTasks = warmupTasks ?? fallbackAssignment.WarmupTasks
         };
         var memberId = isJoin ? "in-memory-streams-member" : previous.MemberId!;
         var memberEpoch = isJoin ? 1 : previous.MemberEpoch;
@@ -268,8 +278,18 @@ public sealed class InMemoryStreamsGroupMember : IStreamsGroupMember
     private void EnsureJoined()
     {
         ThrowIfClosed();
+        ThrowIfNotInitialized();
         if (!_snapshot.IsJoined)
             throw new InvalidOperationException("The Streams group member has not joined.");
+    }
+
+    private void ThrowIfNotInitialized()
+    {
+        if (!_initialized)
+        {
+            throw new InvalidOperationException(
+                "The Streams group member is not initialized. Call InitializeAsync() before joining.");
+        }
     }
 
     private void ThrowIfClosed() => ObjectDisposedException.ThrowIf(_snapshot.IsClosed, this);
