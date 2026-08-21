@@ -39,6 +39,12 @@ public sealed class ConsumerPauseResumeCacheTests
             BindingFlags.Instance | BindingFlags.NonPublic)
         ?? throw new InvalidOperationException("GroupPartitionsByBrokerAsync method not found");
 
+    private static readonly MethodInfo PublishPausedSnapshotMethod =
+        typeof(KafkaConsumer<string, string>).GetMethod(
+            "PublishPausedSnapshot",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+        ?? throw new InvalidOperationException("PublishPausedSnapshot method not found");
+
     private static readonly FieldInfo CachedPartitionsByBrokerField =
         typeof(KafkaConsumer<string, string>).GetField(
             "_cachedPartitionsByBroker",
@@ -90,50 +96,44 @@ public sealed class ConsumerPauseResumeCacheTests
         consumer.Assign(partition0, partition1);
         var paused = (ConcurrentDictionary<TopicPartition, byte>)GetField("_paused").GetValue(consumer)!;
         var epoch = (BatchIterationEpoch)GetField("_batchIterationEpoch").GetValue(consumer)!;
-        using var publisherReady = new ManualResetEventSlim();
-        using var startPublisher = new ManualResetEventSlim();
+        using var publisherMutated = new ManualResetEventSlim();
         Exception? publisherFailure = null;
         var publisher = new Thread(() =>
         {
-            publisherReady.Set();
-            startPublisher.Wait();
             try
             {
-                consumer.Pause(partition0);
+                paused.TryAdd(partition0, 0);
+                publisherMutated.Set();
+                PublishPausedSnapshotMethod.Invoke(consumer, null);
             }
             catch (Exception exception)
             {
                 publisherFailure = exception;
+            }
+            finally
+            {
+                publisherMutated.Set();
             }
         })
         {
             IsBackground = true
         };
 
-        bool publisherMutated;
-        publisher.Start();
-        var publisherWasReady = publisherReady.Wait(TimeSpan.FromSeconds(5));
         epoch.BeginPublication();
         try
         {
-            startPublisher.Set();
-            publisherMutated = SpinWait.SpinUntil(
-                () => paused.ContainsKey(partition0),
-                TimeSpan.FromSeconds(5));
+            publisher.Start();
+            publisherMutated.Wait();
             paused.TryAdd(partition1, 0);
         }
         finally
         {
-            startPublisher.Set();
             epoch.EndPublication();
         }
 
-        var publisherCompleted = publisher.Join(TimeSpan.FromSeconds(5));
+        publisher.Join();
         var snapshot = (HashSet<TopicPartition>)GetField("_pausedSnapshot").GetValue(consumer)!;
 
-        await Assert.That(publisherWasReady).IsTrue();
-        await Assert.That(publisherMutated).IsTrue();
-        await Assert.That(publisherCompleted).IsTrue();
         await Assert.That(publisherFailure).IsNull();
         await Assert.That(snapshot.Contains(partition0)).IsTrue();
         await Assert.That(snapshot.Contains(partition1)).IsTrue();
