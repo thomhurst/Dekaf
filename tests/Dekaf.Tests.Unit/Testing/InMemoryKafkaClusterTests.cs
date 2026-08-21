@@ -786,6 +786,42 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
+    public async Task Admin_DeleteShareGroupsDeletesOnlyRequestedGroups()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var admin = new InMemoryAdminClient(cluster);
+        var partition = new TopicPartition("shared", 0);
+        await admin.AlterShareGroupOffsetsAsync(
+            "share-delete",
+            [new ShareGroupOffsetAlteration { TopicPartition = partition, StartOffset = 3 }]);
+        await admin.AlterConsumerGroupOffsetsAsync(
+            "consumer-preserve",
+            [new TopicPartitionOffset(partition.Topic, partition.Partition, 7)]);
+
+        var results = await admin.DeleteShareGroupsAsync(["share-delete"]);
+
+        await Assert.That(results["share-delete"].ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(await admin.ListConsumerGroupOffsetsAsync("share-delete")).IsEmpty();
+        await Assert.That((await admin.ListConsumerGroupOffsetsAsync("consumer-preserve"))[partition]).IsEqualTo(7);
+    }
+
+    [Test]
+    public async Task Admin_DeleteShareGroupsValidatesBatchBeforeDeleting()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var admin = new InMemoryAdminClient(cluster);
+        var partition = new TopicPartition("shared", 0);
+        await admin.AlterShareGroupOffsetsAsync(
+            "share-preserve",
+            [new ShareGroupOffsetAlteration { TopicPartition = partition, StartOffset = 3 }]);
+
+        await Assert.ThrowsAsync<ArgumentException>(async () =>
+            await admin.DeleteShareGroupsAsync(["share-preserve", "share-preserve"]));
+
+        await Assert.That((await admin.ListConsumerGroupOffsetsAsync("share-preserve"))[partition]).IsEqualTo(3);
+    }
+
+    [Test]
     public async Task ShareConsumer_ReleaseGapStopsContiguousCommit()
     {
         var cluster = new InMemoryKafkaCluster();

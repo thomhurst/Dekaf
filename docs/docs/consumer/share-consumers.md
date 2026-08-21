@@ -169,7 +169,19 @@ await consumer.CloseAsync();
 
 ## Administration
 
-`IAdminClient` covers share group operations: `ListShareGroupsAsync`, `DescribeShareGroupsAsync`, `DescribeShareGroupOffsetsAsync`, `AlterShareGroupOffsetsAsync`, and `DeleteShareGroupOffsetsAsync`.
+`IAdminClient` covers share group operations: `ListShareGroupsAsync`, `DescribeShareGroupsAsync`, `DeleteShareGroupsAsync`, `DescribeShareGroupOffsetsAsync`, `AlterShareGroupOffsetsAsync`, and `DeleteShareGroupOffsetsAsync`.
+
+Group deletion returns one result per requested ID, so a batch preserves partial failures instead of throwing away successful results:
+
+```csharp
+var results = await admin.DeleteShareGroupsAsync(["jobs-a", "jobs-b"]);
+foreach (var (groupId, result) in results)
+{
+    Console.WriteLine($"{groupId}: {result.ErrorCode}");
+}
+```
+
+The operation uses the group coordinator and Kafka's `DeleteGroups` API, matching Kafka 4.3's `deleteShareGroups` implementation. Active groups normally return `NonEmptyGroup`; close their consumers before deletion.
 
 ## Testing
 
