@@ -464,13 +464,14 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         try
         {
             StreamsGroupHeartbeatRequest request;
-            int? recoveryJoinEpoch = command.Kind == MemberCommandKind.Join ? 0 : null;
+            var joinEpoch = InstanceId is not null && _snapshot.MemberId is not null ? -2 : 0;
+            int? recoveryJoinEpoch = command.Kind == MemberCommandKind.Join ? joinEpoch : null;
             switch (command.Kind)
             {
                 case MemberCommandKind.Join:
                     var initialState = command.Update!;
                     ApplyUpdate(initialState);
-                    request = CreateJoinRequest(shutdownApplication: initialState.ShutdownApplication);
+                    request = CreateJoinRequest(joinEpoch, initialState.ShutdownApplication);
                     break;
                 case MemberCommandKind.Update:
                     var update = command.Update!;
