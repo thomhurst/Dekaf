@@ -381,6 +381,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         }
         catch (Exception exception)
         {
+            MarkUnjoined();
             Volatile.Write(ref _backgroundFailure, exception);
             _commands.Writer.TryComplete(exception);
             Volatile.Read(ref _closeCommand)?.Completion.TrySetException(exception);
@@ -497,7 +498,12 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
             throw;
         }
 
-        var result = ApplyResponse(response, createResult: true)!;
+        var clearOmittedAssignment = command is
+        {
+            Kind: MemberCommandKind.Update,
+            Update.Topology: not null
+        };
+        var result = ApplyResponse(response, createResult: true, clearOmittedAssignment)!;
         if (command.Kind == MemberCommandKind.Join)
             Volatile.Write(ref _backgroundFailure, null);
         ScheduleHeartbeat();
@@ -514,7 +520,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
             var request = GetOrCreateSteadyRequest();
             var response = await SendWithRecoveryAsync(request, CancellationToken.None)
                 .ConfigureAwait(false);
-            ApplyResponse(response, createResult: false);
+            ApplyResponse(response, createResult: false, clearOmittedAssignment: false);
             Volatile.Write(ref _backgroundFailure, null);
         }
         catch (KafkaException exception)
@@ -785,7 +791,12 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
     {
         var brokers = _metadataManager.Metadata.GetBrokers();
         if (brokers.Count == 0)
-            throw new InvalidOperationException("No brokers available for Streams group coordinator discovery.");
+        {
+            throw new GroupException(
+                ErrorCode.CoordinatorNotAvailable,
+                "No brokers available for Streams group coordinator discovery.")
+            { GroupId = GroupId };
+        }
 
         var request = new FindCoordinatorRequest { Key = GroupId, KeyType = CoordinatorType.Group };
         for (var attempt = 0; attempt < 5; attempt++)
@@ -909,7 +920,8 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
 
     private StreamsGroupHeartbeatResult? ApplyResponse(
         StreamsGroupHeartbeatResponse response,
-        bool createResult)
+        bool createResult,
+        bool clearOmittedAssignment)
     {
         var heartbeatRequestChanged = response.MemberEpoch != _memberEpoch
             || response.EndpointInformationEpoch != _endpointInformationEpoch
@@ -922,14 +934,15 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
             _heartbeatIntervalMs = response.HeartbeatIntervalMs;
 
         var current = _snapshot;
+        var fallbackAssignment = clearOmittedAssignment ? EmptyAssignment : current.Assignment;
         var active = response.ActiveTasks is null
-            ? current.Assignment.ActiveTasks
+            ? fallbackAssignment.ActiveTasks
             : MapTaskSets(response.ActiveTasks);
         var standby = response.StandbyTasks is null
-            ? current.Assignment.StandbyTasks
+            ? fallbackAssignment.StandbyTasks
             : MapTaskSets(response.StandbyTasks);
         var warmup = response.WarmupTasks is null
-            ? current.Assignment.WarmupTasks
+            ? fallbackAssignment.WarmupTasks
             : MapTaskSets(response.WarmupTasks);
         var status = response.Status is null ? current.Status : MapStatus(response.Status);
         var endpoints = response.PartitionsByUserEndpoint is null
@@ -945,9 +958,24 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         _endpointInformationEpoch = response.EndpointInformationEpoch;
         if (heartbeatRequestChanged)
             _steadyRequestCache.Invalidate();
-        var assignmentChanged = response.ActiveTasks is not null
+        var assignmentReturned = response.ActiveTasks is not null
             || response.StandbyTasks is not null
             || response.WarmupTasks is not null;
+        var assignmentChanged = clearOmittedAssignment || assignmentReturned;
+        var assignment = current.Assignment;
+        if (clearOmittedAssignment && !assignmentReturned)
+        {
+            assignment = EmptyAssignment;
+        }
+        else if (assignmentReturned)
+        {
+            assignment = new StreamsGroupAssignment
+            {
+                ActiveTasks = active,
+                StandbyTasks = standby,
+                WarmupTasks = warmup
+            };
+        }
         var snapshotChanged = current.IsJoined != (response.MemberEpoch > 0)
             || current.MemberId != _memberId
             || current.MemberEpoch != response.MemberEpoch
@@ -965,14 +993,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
                 IsJoined = response.MemberEpoch > 0,
                 MemberId = _memberId,
                 MemberEpoch = response.MemberEpoch,
-                Assignment = assignmentChanged
-                    ? new StreamsGroupAssignment
-                    {
-                        ActiveTasks = active,
-                        StandbyTasks = standby,
-                        WarmupTasks = warmup
-                    }
-                    : current.Assignment,
+                Assignment = assignment,
                 EndpointInformationEpoch = response.EndpointInformationEpoch,
                 PartitionsByUserEndpoint = endpoints,
                 Status = status,

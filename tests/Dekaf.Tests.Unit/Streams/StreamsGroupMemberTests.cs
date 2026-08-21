@@ -696,11 +696,38 @@ public sealed class StreamsGroupMemberTests
 
             await Assert.That(failure!.InnerException).IsSameReferenceAs(unexpectedFailure);
             await Assert.That(failure.GroupId).IsEqualTo("streams-group");
+            await Assert.That(fixture.Member.Snapshot.IsJoined).IsFalse();
+            await Assert.That(fixture.Member.Snapshot.Assignment.ActiveTasks).IsEmpty();
         }
         finally
         {
             await fixture.DisposeMemberAndMetadataAsync();
         }
+    }
+
+    [Test]
+    public async Task BackgroundHeartbeat_NoBrokerMetadataRemainsRecoverable()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1));
+        connection.EnqueueHeartbeat(Success(epoch: 2));
+        await using var fixture = CreateFixture(connection);
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+        StopHeartbeatTimer(fixture.Member);
+        CoordinatorIdField.SetValue(fixture.Member, -1);
+        fixture.SetBrokers(available: false);
+
+        await InvokeBackgroundHeartbeatAsync(fixture.Member);
+
+        await Assert.That(fixture.Member.Snapshot.IsJoined).IsTrue();
+        await Assert.That(GetWorkerTask(fixture.Member).IsCompleted).IsFalse();
+
+        fixture.SetBrokers(available: true);
+        StopHeartbeatTimer(fixture.Member);
+        await InvokeBackgroundHeartbeatAsync(fixture.Member);
+
+        await Assert.That(connection.FindCoordinatorRequestCount).IsEqualTo(2);
+        await Assert.That(fixture.Member.Snapshot.MemberEpoch).IsEqualTo(2);
     }
 
     [Test]
@@ -870,6 +897,26 @@ public sealed class StreamsGroupMemberTests
         await Assert.That(recovery.ActiveTasks).IsEmpty();
         await Assert.That(recovery.StandbyTasks).IsEmpty();
         await Assert.That(recovery.WarmupTasks).IsEmpty();
+    }
+
+    [Test]
+    public async Task UpdateAsync_TopologyRejoinClearsOmittedResponseAssignment()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1, active: [TaskIds("old-active", 0)]));
+        connection.EnqueueHeartbeat(Success(epoch: 2));
+        await using var fixture = CreateFixture(connection);
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+
+        await fixture.Member.UpdateAsync(new StreamsGroupMemberUpdate
+        {
+            Topology = CreateInitialUpdate(topologyEpoch: 2).Topology
+        });
+
+        var snapshot = fixture.Member.Snapshot;
+        await Assert.That(snapshot.Assignment.ActiveTasks).IsEmpty();
+        await Assert.That(snapshot.Assignment.StandbyTasks).IsEmpty();
+        await Assert.That(snapshot.Assignment.WarmupTasks).IsEmpty();
     }
 
     [Test]
@@ -1292,8 +1339,12 @@ public sealed class StreamsGroupMemberTests
 
     private static readonly FieldInfo HeartbeatTimerField = GetMemberField("_heartbeatTimer");
     private static readonly FieldInfo HeartbeatIntervalMsField = GetMemberField("_heartbeatIntervalMs");
+    private static readonly FieldInfo CoordinatorIdField = GetMemberField("_coordinatorId");
     private static readonly FieldInfo CommandsField = GetMemberField("_commands");
     private static readonly FieldInfo WorkerTaskField = GetMemberField("_workerTask");
+    private static readonly MethodInfo ProcessBackgroundHeartbeatMethod = typeof(StreamsGroupMember).GetMethod(
+        "ProcessBackgroundHeartbeatAsync",
+        BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo QueueHeartbeatMethod = typeof(StreamsGroupMember).GetMethod(
         "QueueHeartbeat",
         BindingFlags.Instance | BindingFlags.NonPublic)!;
@@ -1309,6 +1360,9 @@ public sealed class StreamsGroupMemberTests
 
     private static Task GetWorkerTask(StreamsGroupMember member) =>
         (Task)WorkerTaskField.GetValue(member)!;
+
+    private static ValueTask InvokeBackgroundHeartbeatAsync(StreamsGroupMember member) =>
+        (ValueTask)ProcessBackgroundHeartbeatMethod.Invoke(member, null)!;
 
     private static bool CompleteCommandWriter(StreamsGroupMember member)
     {
@@ -1328,6 +1382,14 @@ public sealed class StreamsGroupMemberTests
         MetadataManager metadataManager) : IAsyncDisposable
     {
         public StreamsGroupMember Member { get; } = member;
+
+        public void SetBrokers(bool available) => metadataManager.Metadata.Update(new MetadataResponse
+        {
+            Brokers = available
+                ? [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }]
+                : [],
+            Topics = []
+        });
 
         public async ValueTask DisposeAsync()
         {
