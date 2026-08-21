@@ -31,6 +31,7 @@ public sealed class Headers : IEnumerable<Header>
     private int _stagedKeySchemaIdentityIndex = -1;
     private int _stagedValueSchemaIdentityIndex = -1;
     private bool _stagingRecordHeaders;
+    private Headers? _serializationSource;
     private StagedRecordHeadersCheckpoint _previousStagedRecordHeaders;
     private StagedRecordHeadersCheckpoint[]? _stagedRecordHeadersStack;
     private int _stagedRecordHeadersDepth;
@@ -85,20 +86,23 @@ public sealed class Headers : IEnumerable<Header>
     /// <summary>
     /// Gets the number of headers.
     /// </summary>
-    public int Count => _headers.Count;
+    public int Count => _serializationSource?._headers.Count ?? _headers.Count;
 
-    internal int SerializationCount => _headers.Count + _stagedHeaderCount;
+    internal int SerializationCount => (_serializationSource?._headers.Count ?? _headers.Count) + _stagedHeaderCount;
 
     internal int CountWithoutDeferredTraceContext
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         get
         {
-            var headerCount = _headers.Count;
+            var source = _serializationSource;
+            var headerCount = source?._headers.Count ?? _headers.Count;
             var count = headerCount;
-            if ((uint)_deferredTraceparentIndex < (uint)headerCount)
+            var traceparentIndex = source?._deferredTraceparentIndex ?? _deferredTraceparentIndex;
+            var tracestateIndex = source?._deferredTracestateIndex ?? _deferredTracestateIndex;
+            if ((uint)traceparentIndex < (uint)headerCount)
                 count--;
-            if ((uint)_deferredTracestateIndex < (uint)headerCount)
+            if ((uint)tracestateIndex < (uint)headerCount)
                 count--;
             return count;
         }
@@ -107,48 +111,50 @@ public sealed class Headers : IEnumerable<Header>
     /// <summary>
     /// Gets the header at the specified index.
     /// </summary>
-    public Header this[int index] => _headers[index];
+    public Header this[int index] => (_serializationSource?._headers ?? _headers)[index];
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal Header GetSerializationHeader(int index)
     {
+        var source = _serializationSource;
+        var headers = source?._headers ?? _headers;
         var stagedCount = _stagedHeaderCount;
         if (stagedCount == 0)
-            return _headers[index];
+            return headers[index];
 
-        var insertionIndex = _deferredTraceparentIndex >= 0
-            ? _deferredTraceparentIndex
-            : _headers.Count;
+        var traceparentIndex = source?._deferredTraceparentIndex ?? _deferredTraceparentIndex;
+        var insertionIndex = traceparentIndex >= 0 ? traceparentIndex : headers.Count;
         if (index < insertionIndex)
-            return _headers[index];
+            return headers[index];
         if (index < insertionIndex + stagedCount)
             return index == insertionIndex ? _stagedHeader0 : _stagedHeader1;
-        return _headers[index - stagedCount];
+        return headers[index - stagedCount];
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void CopySerializationHeadersTo(Header[] destination)
     {
+        var source = _serializationSource;
+        var headers = source?._headers ?? _headers;
         var stagedCount = _stagedHeaderCount;
         if (stagedCount == 0)
         {
-            for (var i = 0; i < _headers.Count; i++)
-                destination[i] = _headers[i];
+            for (var i = 0; i < headers.Count; i++)
+                destination[i] = headers[i];
             return;
         }
 
-        var insertionIndex = _deferredTraceparentIndex >= 0
-            ? _deferredTraceparentIndex
-            : _headers.Count;
+        var traceparentIndex = source?._deferredTraceparentIndex ?? _deferredTraceparentIndex;
+        var insertionIndex = traceparentIndex >= 0 ? traceparentIndex : headers.Count;
         for (var i = 0; i < insertionIndex; i++)
-            destination[i] = _headers[i];
+            destination[i] = headers[i];
 
         destination[insertionIndex] = _stagedHeader0;
         if (stagedCount == 2)
             destination[insertionIndex + 1] = _stagedHeader1;
 
-        for (var i = insertionIndex; i < _headers.Count; i++)
-            destination[stagedCount + i] = _headers[i];
+        for (var i = insertionIndex; i < headers.Count; i++)
+            destination[stagedCount + i] = headers[i];
     }
 
     /// <summary>
@@ -184,7 +190,8 @@ public sealed class Headers : IEnumerable<Header>
     public Header? GetFirst(string key)
     {
         // Manual loop to avoid closure allocation from lambda predicate
-        foreach (var header in _headers)
+        var headers = _serializationSource?._headers ?? _headers;
+        foreach (var header in headers)
         {
             if (header.Key == key)
                 return header;
@@ -200,7 +207,8 @@ public sealed class Headers : IEnumerable<Header>
     {
         // Use iterator method for zero-allocation deferred execution.
         // The state machine is only allocated when the caller enumerates.
-        foreach (var header in _headers)
+        var headers = _serializationSource?._headers ?? _headers;
+        foreach (var header in headers)
         {
             if (header.Key == key)
                 yield return header;
@@ -241,6 +249,7 @@ public sealed class Headers : IEnumerable<Header>
         _deferredTraceContextVersion = 0;
         _keySchemaIdentityIndex = -1;
         _valueSchemaIdentityIndex = -1;
+        _serializationSource = null;
         EndRecordHeaderStaging();
         ClearPreviousStagedRecordHeaders();
         ClearPreviousDeferredTraceContexts();
@@ -248,7 +257,12 @@ public sealed class Headers : IEnumerable<Header>
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void BeginRecordHeaderStaging()
+        => BeginRecordHeaderStaging(source: null);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void BeginRecordHeaderStaging(Headers? source)
     {
+        _serializationSource = source;
         if (_stagingRecordHeaders)
             PushStagedRecordHeaders();
         EndRecordHeaderStaging();
@@ -356,6 +370,12 @@ public sealed class Headers : IEnumerable<Header>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void RemoveDeferredTraceContext()
     {
+        if (_serializationSource is { } source)
+        {
+            source.RemoveDeferredTraceContext();
+            return;
+        }
+
         RemoveCurrentDeferredTraceContext();
         RestorePreviousDeferredTraceContext();
     }
@@ -549,10 +569,10 @@ public sealed class Headers : IEnumerable<Header>
         {
             SerializationComponent.Key => _stagedKeySchemaIdentityIndex >= 0
                 ? _stagedKeySchemaIdentityIndex
-                : _keySchemaIdentityIndex,
+                : _serializationSource?._keySchemaIdentityIndex ?? _keySchemaIdentityIndex,
             SerializationComponent.Value => _stagedValueSchemaIdentityIndex >= 0
                 ? _stagedValueSchemaIdentityIndex
-                : _valueSchemaIdentityIndex,
+                : _serializationSource?._valueSchemaIdentityIndex ?? _valueSchemaIdentityIndex,
             _ => throw new ArgumentOutOfRangeException(nameof(component), component, "Unknown serialization component.")
         };
 
@@ -577,9 +597,11 @@ public sealed class Headers : IEnumerable<Header>
         else
             throw new InvalidOperationException("A producer can stage at most one record header per key and value serializer.");
 
-        var insertionIndex = _deferredTraceparentIndex >= 0
-            ? _deferredTraceparentIndex
-            : _headers.Count;
+        var source = _serializationSource;
+        var traceparentIndex = source?._deferredTraceparentIndex ?? _deferredTraceparentIndex;
+        var insertionIndex = traceparentIndex >= 0
+            ? traceparentIndex
+            : source?._headers.Count ?? _headers.Count;
         var logicalIndex = insertionIndex + stagedIndex;
         _stagedHeaderCount = stagedIndex + 1;
         var key = header.Key;
@@ -832,9 +854,9 @@ public sealed class Headers : IEnumerable<Header>
     /// <summary>
     /// Gets all headers as a list.
     /// </summary>
-    public IReadOnlyList<Header> ToList() => _headers.AsReadOnly();
+    public IReadOnlyList<Header> ToList() => (_serializationSource?._headers ?? _headers).AsReadOnly();
 
-    public IEnumerator<Header> GetEnumerator() => _headers.GetEnumerator();
+    public IEnumerator<Header> GetEnumerator() => (_serializationSource?._headers ?? _headers).GetEnumerator();
     IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 }
 

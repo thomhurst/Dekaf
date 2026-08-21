@@ -662,7 +662,16 @@ public sealed class SchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistr
         var schema = CreateSchema(result);
         var schemaGuid = ParseSchemaGuid(result.Guid);
 
-        CacheSchema(result.Id, subject: null, schema, schemaGuid: schemaGuid);
+        if (format is null)
+        {
+            CacheSchema(result.Id, subject: null, schema, schemaGuid: schemaGuid);
+        }
+        else
+        {
+            CacheSubjectSchema(result.Id, subject, format, schema);
+            if (schemaGuid is { } guid)
+                CacheGuidSchema(guid, format, schema);
+        }
 
         return new RegisteredSchema
         {

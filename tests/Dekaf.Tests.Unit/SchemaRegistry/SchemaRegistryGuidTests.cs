@@ -163,6 +163,38 @@ public sealed class SchemaRegistryGuidTests
     }
 
     [Test]
+    public async Task GetSchemaBySubjectAsync_FormattedResponse_DoesNotPoisonCanonicalCaches()
+    {
+        using var handler = new RecordingHandler(static (request, _) => Task.FromResult(JsonResponse(
+            HttpStatusCode.OK,
+            request.RequestUri!.Query.Contains("format=serialized", StringComparison.Ordinal)
+                ? $$"""
+                  {
+                    "subject": "common-value",
+                    "version": 1,
+                    "id": 7,
+                    "guid": "{{FirstGuid:D}}",
+                    "schema": "serialized"
+                  }
+                  """
+                : """{ "schema": "canonical" }""")));
+        using var client = CreateClient(handler);
+
+        var formatted = await client.GetSchemaBySubjectAsync(
+            "common-value",
+            "1",
+            ignoreDeletedSchemas: true,
+            format: "serialized");
+        var canonicalById = await client.GetSchemaAsync(7);
+        var canonicalByGuid = await client.GetSchemaByGuidAsync(FirstGuid.ToString("D"));
+
+        await Assert.That(formatted.Schema.SchemaString).IsEqualTo("serialized");
+        await Assert.That(canonicalById.SchemaString).IsEqualTo("canonical");
+        await Assert.That(canonicalByGuid.SchemaString).IsEqualTo("canonical");
+        await Assert.That(handler.Requests).Count().IsEqualTo(3);
+    }
+
+    [Test]
     public async Task GetSchemaBySubjectAsync_PreservesGuidContextAndSeedsGuidCache()
     {
         using var handler = new RecordingHandler(static (_, _) => Task.FromResult(JsonResponse(HttpStatusCode.OK, $$"""

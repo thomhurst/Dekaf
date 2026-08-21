@@ -459,6 +459,64 @@ public class KafkaProducerFastPathTests
     }
 
     [Test]
+    public async Task FireAsync_ConcurrentRecordHeaderSerialization_SharingCallerHeaders_IsIsolated()
+    {
+        var serializer = new OverlappingRecordHeaderAsyncSerializer();
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-concurrent-record-header-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 4096,
+            LingerMs = 10,
+            RequestTimeoutMs = 500,
+            DeliveryTimeoutMs = 1000,
+            CloseTimeoutMs = 1000
+        };
+
+        await using var producer = new KafkaProducer<string, string>(
+            options,
+            Serializers.String,
+            Serializers.String,
+            asyncValueSerializer: serializer);
+        await StopProducerBackgroundLoopsAsync(producer);
+        SeedProducerMetadata(producer);
+        SetInstanceField(producer, "_initialized", true);
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(producer.RecordAccumulator);
+        var headers = new Headers(1).Add("caller", "owned");
+
+        var first = producer.FireAsync(new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Key = "first-key",
+            Value = "first",
+            Headers = headers
+        }).AsTask();
+        await serializer.FirstEntered;
+        var second = producer.FireAsync(new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Key = "second-key",
+            Value = "second",
+            Headers = headers
+        }).AsTask();
+
+        await serializer.SecondAddedHeader;
+        await first;
+        serializer.ReleaseSecond();
+        await second;
+
+        var readyBatch = CompleteCurrentBatch(producer.RecordAccumulator, new TopicPartition(Topic, 0));
+        await Assert.That(readyBatch.RecordBatch.Records.Count).IsEqualTo(2);
+        await Assert.That(GetNamedHeaderValueString(readyBatch.RecordBatch.Records[0], "identity"))
+            .IsEqualTo("first");
+        await Assert.That(GetNamedHeaderValueString(readyBatch.RecordBatch.Records[1], "identity"))
+            .IsEqualTo("second");
+        await Assert.That(headers[0].Key).IsEqualTo("caller");
+        await Assert.That(headers.GetFirst("identity")).IsNull();
+    }
+
+    [Test]
     public async Task ProduceAsync_PreparedRecordHeaderSerializerWithoutCallerHeaders_AppendsHeader()
     {
         var options = new ProducerOptions
@@ -1303,6 +1361,47 @@ public class KafkaProducerFastPathTests
             var written = Encoding.UTF8.GetBytes(value, span);
             destination.Advance(written);
             return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class OverlappingRecordHeaderAsyncSerializer : IAsyncSerializer<string>, IRecordHeaderSerializer
+    {
+        private readonly TaskCompletionSource _firstEntered =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _secondAddedHeader =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _releaseSecond =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _invocation;
+
+        public bool ProducesRecordHeaders => true;
+        internal Task FirstEntered => _firstEntered.Task;
+        internal Task SecondAddedHeader => _secondAddedHeader.Task;
+
+        internal void ReleaseSecond() => _releaseSecond.TrySetResult();
+
+        public async ValueTask SerializeAsync(
+            string value,
+            IBufferWriter<byte> destination,
+            SerializationContext context,
+            CancellationToken cancellationToken = default)
+        {
+            if (Interlocked.Increment(ref _invocation) == 1)
+            {
+                _firstEntered.TrySetResult();
+                await _secondAddedHeader.Task.WaitAsync(cancellationToken);
+                context.Headers!.Add("identity", Encoding.UTF8.GetBytes(value));
+            }
+            else
+            {
+                context.Headers!.Add("identity", Encoding.UTF8.GetBytes(value));
+                _secondAddedHeader.TrySetResult();
+                await _releaseSecond.Task.WaitAsync(cancellationToken);
+            }
+
+            var bytes = Encoding.UTF8.GetBytes(value);
+            bytes.CopyTo(destination.GetSpan(bytes.Length));
+            destination.Advance(bytes.Length);
         }
     }
 
