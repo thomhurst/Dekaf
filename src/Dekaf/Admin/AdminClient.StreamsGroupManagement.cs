@@ -136,12 +136,14 @@ public sealed partial class AdminClient
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
         var results = new Dictionary<string, StreamsGroupOffsetsResult>(requests.Count, StringComparer.Ordinal);
         var retryErrors = new Dictionary<string, Protocol.ErrorCode>(requests.Count, StringComparer.Ordinal);
+        var retryResults = new Dictionary<string, StreamsGroupOffsetsResult>(requests.Count, StringComparer.Ordinal);
 
         try
         {
             return await WithRetryAsync<IReadOnlyDictionary<string, StreamsGroupOffsetsResult>>(async () =>
             {
                 retryErrors.Clear();
+                retryResults.Clear();
                 Exception? retryFailure = null;
                 var groupsByCoordinator = new Dictionary<int, List<string>>();
                 foreach (var groupId in requests.Keys)
@@ -207,6 +209,7 @@ public sealed partial class AdminClient
                                 apiVersion,
                                 results,
                                 retryErrors,
+                                retryResults,
                                 cancellationToken).ConfigureAwait(false);
                             retryFailure ??= failure;
                         }
@@ -221,6 +224,7 @@ public sealed partial class AdminClient
                             apiVersion,
                             results,
                             retryErrors,
+                            retryResults,
                             cancellationToken).ConfigureAwait(false);
                         retryFailure ??= failure;
                     }
@@ -236,6 +240,9 @@ public sealed partial class AdminClient
             RetryHelper.IsRetriableRequestFailure(exception) &&
             !cancellationToken.IsCancellationRequested)
         {
+            foreach (var (groupId, result) in retryResults)
+                results.TryAdd(groupId, result);
+
             foreach (var (groupId, errorCode) in retryErrors)
                 results.TryAdd(groupId, GroupOffsetsError(groupId, errorCode));
 
@@ -255,6 +262,7 @@ public sealed partial class AdminClient
         short apiVersion,
         Dictionary<string, StreamsGroupOffsetsResult> results,
         Dictionary<string, Protocol.ErrorCode> retryErrors,
+        Dictionary<string, StreamsGroupOffsetsResult> retryResults,
         CancellationToken cancellationToken)
     {
         var topicMaps = new Dictionary<string, OffsetTopicIdRequestMap?>(groupIds.Count, StringComparer.Ordinal);
@@ -294,7 +302,8 @@ public sealed partial class AdminClient
                 response.Topics ?? [],
                 requests[groupId],
                 topicMaps[groupId],
-                results);
+                results,
+                retryResults);
             if (retryFailure is not null)
                 retryErrors[groupId] = GetRetryErrorCode(retryFailure);
             return retryFailure;
@@ -314,7 +323,8 @@ public sealed partial class AdminClient
                 group.Topics,
                 requests[group.GroupId],
                 topicMaps[group.GroupId],
-                results);
+                results,
+                retryResults);
             if (failure is not null)
                 retryErrors[group.GroupId] = GetRetryErrorCode(failure);
             retryFailure ??= failure;
@@ -342,7 +352,8 @@ public sealed partial class AdminClient
         IReadOnlyList<OffsetFetchResponseTopic> responseTopics,
         IReadOnlyList<TopicPartition>? requestedPartitions,
         OffsetTopicIdRequestMap? topicMap,
-        Dictionary<string, StreamsGroupOffsetsResult> results)
+        Dictionary<string, StreamsGroupOffsetsResult> results,
+        Dictionary<string, StreamsGroupOffsetsResult> retryResults)
     {
         if (groupError.IsRetriable() || groupError.RequiresMetadataRefresh())
         {
@@ -394,6 +405,14 @@ public sealed partial class AdminClient
                 if (requested is not null && !requested.Contains(topicPartition))
                     continue;
 
+                offsets[topicPartition] = new StreamsGroupOffsetDescription
+                {
+                    TopicPartition = topicPartition,
+                    Offset = partition.CommittedOffset,
+                    LeaderEpoch = partition.CommittedLeaderEpoch,
+                    Metadata = partition.Metadata,
+                    ErrorCode = partition.ErrorCode
+                };
                 if (partition.ErrorCode.IsRetriable() || partition.ErrorCode.RequiresMetadataRefresh())
                 {
                     retryFailure ??= new Errors.GroupException(
@@ -405,20 +424,8 @@ public sealed partial class AdminClient
                     };
                     continue;
                 }
-
-                offsets[topicPartition] = new StreamsGroupOffsetDescription
-                {
-                    TopicPartition = topicPartition,
-                    Offset = partition.CommittedOffset,
-                    LeaderEpoch = partition.CommittedLeaderEpoch,
-                    Metadata = partition.Metadata,
-                    ErrorCode = partition.ErrorCode
-                };
             }
         }
-
-        if (retryFailure is not null)
-            return retryFailure;
 
         if (requested is not null)
         {
@@ -435,12 +442,20 @@ public sealed partial class AdminClient
             }
         }
 
-        results[groupId] = new StreamsGroupOffsetsResult
+        var result = new StreamsGroupOffsetsResult
         {
             GroupId = groupId,
             ErrorCode = Protocol.ErrorCode.None,
             Offsets = offsets
         };
+
+        if (retryFailure is not null)
+        {
+            retryResults[groupId] = result;
+            return retryFailure;
+        }
+
+        results[groupId] = result;
         return null;
     }
 
