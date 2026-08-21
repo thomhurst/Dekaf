@@ -467,7 +467,6 @@ public class KafkaConnectionCapabilityHandshakeTests
         listener.Start();
         var port = ((IPEndPoint)listener.LocalEndpoint).Port;
         var identityRequestReceived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseServer = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
         var serverTask = StartServerEagerly(async () =>
         {
@@ -484,10 +483,21 @@ public class KafkaConnectionCapabilityHandshakeTests
 
             _ = await ReadFrameAsync(stream, cancellationToken);
             identityRequestReceived.TrySetResult();
-            await releaseServer.Task.WaitAsync(cancellationToken);
+            try
+            {
+                var buffer = new byte[1];
+                while (await stream.ReadAsync(buffer, cancellationToken) != 0)
+                {
+                    // Drain until the client closes or aborts the socket.
+                }
+            }
+            catch (IOException exception) when (exception.InnerException is SocketException)
+            {
+                // KafkaConnection disposal aborts its socket, which can surface as a reset.
+            }
         });
 
-        await using var connection = new KafkaConnection(
+        var connection = new KafkaConnection(
             7,
             "127.0.0.1",
             port,
@@ -509,7 +519,7 @@ public class KafkaConnectionCapabilityHandshakeTests
         }
         finally
         {
-            releaseServer.TrySetResult();
+            await connection.DisposeAsync();
         }
 
         await serverTask;
