@@ -522,6 +522,9 @@ public sealed partial class AdminClient
 
             if (groupError.IsRetriable() || groupError.RequiresMetadataRefresh())
             {
+                if (groupError == Protocol.ErrorCode.RequestTimedOut)
+                    deleteMayHaveApplied = true;
+
                 throw new Errors.GroupException(
                     groupError,
                     $"DeleteStreamsGroupOffsets failed for group '{groupId}': {groupError}")
@@ -638,6 +641,9 @@ public sealed partial class AdminClient
                     var errorCode = groupResult.ErrorCode;
                     if (errorCode.IsRetriable() || errorCode.RequiresMetadataRefresh())
                     {
+                        if (errorCode == Protocol.ErrorCode.RequestTimedOut)
+                            ambiguousGroups.Add(groupResult.GroupId);
+
                         retryFailure ??= new Errors.GroupException(
                             errorCode,
                             $"DeleteStreamsGroups failed for group '{groupResult.GroupId}': {errorCode}")

@@ -368,6 +368,37 @@ public sealed class AdminClientStreamsGroupManagementTests
     }
 
     [Test]
+    public async Task DeleteStreamsGroupOffsetsAsync_GroupMissingAfterGroupTimeoutIsSuccess()
+    {
+        var (admin, connection) = CreateAdmin();
+        SetupFindCoordinator(connection);
+        connection.SendAsync<OffsetDeleteRequest, OffsetDeleteResponse>(
+                Arg.Any<OffsetDeleteRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(
+                ValueTask.FromResult(new OffsetDeleteResponse
+                {
+                    ErrorCode = ErrorCode.RequestTimedOut,
+                    Topics = []
+                }),
+                ValueTask.FromResult(new OffsetDeleteResponse
+                {
+                    ErrorCode = ErrorCode.GroupIdNotFound,
+                    Topics = []
+                }));
+        var partition = new TopicPartition(Topic, 0);
+
+        var results = await admin.DeleteStreamsGroupOffsetsAsync(FirstGroup, [partition]);
+
+        await Assert.That(results[partition].ErrorCode).IsEqualTo(ErrorCode.None);
+        await connection.Received(2).SendAsync<OffsetDeleteRequest, OffsetDeleteResponse>(
+            Arg.Any<OffsetDeleteRequest>(),
+            0,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
     public async Task DeleteStreamsGroupsAsync_PreservesPerGroupErrors()
     {
         var (admin, connection) = CreateAdmin();
@@ -421,6 +452,34 @@ public sealed class AdminClientStreamsGroupManagementTests
         var results = await admin.DeleteStreamsGroupsAsync([FirstGroup, SecondGroup]);
 
         await Assert.That(results.Values.All(result => result.ErrorCode == ErrorCode.None)).IsTrue();
+        await connection.Received(2).SendAsync<DeleteGroupsRequest, DeleteGroupsResponse>(
+            Arg.Any<DeleteGroupsRequest>(),
+            2,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task DeleteStreamsGroupsAsync_GroupMissingAfterTimeoutIsSuccess()
+    {
+        var (admin, connection) = CreateAdmin();
+        SetupFindCoordinator(connection);
+        connection.SendAsync<DeleteGroupsRequest, DeleteGroupsResponse>(
+                Arg.Any<DeleteGroupsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(
+                ValueTask.FromResult(new DeleteGroupsResponse
+                {
+                    Results = [DeletedGroup(FirstGroup, ErrorCode.RequestTimedOut)]
+                }),
+                ValueTask.FromResult(new DeleteGroupsResponse
+                {
+                    Results = [DeletedGroup(FirstGroup, ErrorCode.GroupIdNotFound)]
+                }));
+
+        var results = await admin.DeleteStreamsGroupsAsync([FirstGroup]);
+
+        await Assert.That(results[FirstGroup].ErrorCode).IsEqualTo(ErrorCode.None);
         await connection.Received(2).SendAsync<DeleteGroupsRequest, DeleteGroupsResponse>(
             Arg.Any<DeleteGroupsRequest>(),
             2,
