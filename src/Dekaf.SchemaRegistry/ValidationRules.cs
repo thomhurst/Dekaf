@@ -237,7 +237,8 @@ internal sealed class CompiledValidationRule
         ReadOnlyMemory<byte> value,
         long nowUnixMilliseconds,
         ValidationCelMemberValues memberValues,
-        ValidationCelSizeValues sizes)
+        ValidationCelSizeValues sizes,
+        uint equalityGeneration)
     {
         if (_compilationError is not null)
             throw new SchemaRegistryRuleException(_compilationError);
@@ -248,7 +249,8 @@ internal sealed class CompiledValidationRule
                 value,
                 nowUnixMilliseconds,
                 memberValues,
-                sizes));
+                sizes,
+                equalityGeneration));
             return result.Kind switch
             {
                 ValidationCelValueKind.Boolean => ValidationResult.FromBoolean(result.Boolean),
@@ -299,33 +301,42 @@ internal sealed class CompiledValidationRule
         return new ValidationCelSizeValues(sizes, generation);
     }
 
-    internal static void BeginEqualityResolution()
+    internal static uint BeginEqualityResolution()
     {
         if (unchecked(++t_equalityGeneration) == 0)
         {
             t_equalities = default;
             t_equalityGeneration = 1;
         }
+        return t_equalityGeneration;
     }
 
-    internal static bool TryGetEquality(int leftIndex, int rightIndex, out bool value)
+    internal static bool TryGetEquality(
+        uint equalityGeneration,
+        int leftIndex,
+        int rightIndex,
+        out bool value)
     {
         NormalizeEqualityIndexes(ref leftIndex, ref rightIndex);
         ref readonly var slot = ref t_equalities[GetEqualitySlot(leftIndex, rightIndex)];
         value = slot.Value;
-        return slot.Generation == t_equalityGeneration &&
+        return slot.Generation == equalityGeneration &&
             slot.LeftIndex == leftIndex &&
             slot.RightIndex == rightIndex;
     }
 
-    internal static void SetEquality(int leftIndex, int rightIndex, bool value)
+    internal static void SetEquality(
+        uint equalityGeneration,
+        int leftIndex,
+        int rightIndex,
+        bool value)
     {
         NormalizeEqualityIndexes(ref leftIndex, ref rightIndex);
         ref var slot = ref t_equalities[GetEqualitySlot(leftIndex, rightIndex)];
         slot.LeftIndex = leftIndex;
         slot.RightIndex = rightIndex;
         slot.Value = value;
-        slot.Generation = t_equalityGeneration;
+        slot.Generation = equalityGeneration;
     }
 
     private static void NormalizeEqualityIndexes(ref int leftIndex, ref int rightIndex)
@@ -388,7 +399,8 @@ internal readonly record struct ValidationCelContext(
     ReadOnlyMemory<byte> This,
     long NowUnixMilliseconds,
     ValidationCelMemberValues MemberValues,
-    ValidationCelSizeValues Sizes);
+    ValidationCelSizeValues Sizes,
+    uint EqualityGeneration);
 
 internal struct ValidationCelMemberSlot
 {
@@ -1489,8 +1501,10 @@ internal sealed class ValidationCelBinaryNode(
         {
             ValidationCelTokenKind.And or ValidationCelTokenKind.Or =>
                 ValidationCelValue.FromBoolean(RequireBoolean(rightValue)),
-            ValidationCelTokenKind.Equal => ValidationCelValue.FromBoolean(AreEqual(leftValue, rightValue)),
-            ValidationCelTokenKind.NotEqual => ValidationCelValue.FromBoolean(!AreEqual(leftValue, rightValue)),
+            ValidationCelTokenKind.Equal => ValidationCelValue.FromBoolean(
+                AreEqual(leftValue, rightValue, context.EqualityGeneration)),
+            ValidationCelTokenKind.NotEqual => ValidationCelValue.FromBoolean(
+                !AreEqual(leftValue, rightValue, context.EqualityGeneration)),
             ValidationCelTokenKind.Less => ValidationCelValue.FromBoolean(Compare(leftValue, rightValue) < 0),
             ValidationCelTokenKind.LessOrEqual => ValidationCelValue.FromBoolean(Compare(leftValue, rightValue) <= 0),
             ValidationCelTokenKind.Greater => ValidationCelValue.FromBoolean(Compare(leftValue, rightValue) > 0),
@@ -1501,7 +1515,10 @@ internal sealed class ValidationCelBinaryNode(
         };
     }
 
-    private bool AreEqual(ValidationCelValue left, ValidationCelValue right)
+    private bool AreEqual(
+        ValidationCelValue left,
+        ValidationCelValue right,
+        uint equalityGeneration)
     {
         if (left.Kind == ValidationCelValueKind.Missing || right.Kind == ValidationCelValueKind.Missing)
             throw Unsupported("Cannot compare a missing CEL member; guard optional members with has(...).");
@@ -1514,20 +1531,31 @@ internal sealed class ValidationCelBinaryNode(
             ValidationCelValueKind.Number => CompareNumbers(left, right) == 0,
             ValidationCelValueKind.String => ValidationCelStrings.Evaluate(left, right, ValidationCelStringOperation.Equal),
             ValidationCelValueKind.Object or ValidationCelValueKind.Array =>
-                AreJsonValuesEqual(left, right),
+                AreJsonValuesEqual(left, right, equalityGeneration),
             _ => false
         };
     }
 
-    private bool AreJsonValuesEqual(ValidationCelValue left, ValidationCelValue right)
+    private bool AreJsonValuesEqual(
+        ValidationCelValue left,
+        ValidationCelValue right,
+        uint equalityGeneration)
     {
         if (_leftValueIndex < 0 || _rightValueIndex < 0)
             return ValidationCelJsonEquality.AreEqual(left.Json.Span, right.Json.Span);
-        if (CompiledValidationRule.TryGetEquality(_leftValueIndex, _rightValueIndex, out var value))
+        if (CompiledValidationRule.TryGetEquality(
+                equalityGeneration,
+                _leftValueIndex,
+                _rightValueIndex,
+                out var value))
             return value;
 
         value = ValidationCelJsonEquality.AreEqual(left.Json.Span, right.Json.Span);
-        CompiledValidationRule.SetEquality(_leftValueIndex, _rightValueIndex, value);
+        CompiledValidationRule.SetEquality(
+            equalityGeneration,
+            _leftValueIndex,
+            _rightValueIndex,
+            value);
         return value;
     }
 

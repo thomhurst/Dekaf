@@ -196,15 +196,21 @@ internal sealed class StreamingJsonSchemaValidator(
                     ? valueSlice.GetOrCreateSizes(memberCount + 1)
                     : CompiledValidationRule.GetSizeValues(memberCount + 1)
                 : default;
-            if (node.ValidationRulesUseCachedEquality)
-                CompiledValidationRule.BeginEqualityResolution();
+            var equalityGeneration = node.ValidationRulesUseCachedEquality
+                ? valueSlice.GetOrCreateEqualityGeneration()
+                : 0;
 
             for (var index = 0; index < rules.Length; index++)
             {
                 var compiledRule = rules[index];
                 try
                 {
-                    var result = compiledRule.Evaluate(value, now, memberValues, sizes);
+                    var result = compiledRule.Evaluate(
+                        value,
+                        now,
+                        memberValues,
+                        sizes,
+                        equalityGeneration);
                     if (result.Kind == ValidationResultKind.Boolean ? !result.Boolean : result.String!.Length != 0)
                     {
                         if (!compositionMatches.CollectViolations)
@@ -863,6 +869,7 @@ internal sealed class StreamingJsonSchemaValidator(
         private ReadOnlyMemory<byte> _value;
         private ValidationCelSizeValues _sizes;
         private bool _hasSizes;
+        private uint _equalityGeneration;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public ReadOnlyMemory<byte> GetOrCreate(
@@ -887,6 +894,14 @@ internal sealed class StreamingJsonSchemaValidator(
                 _sizes = CompiledValidationRule.GrowSizeValues(_sizes, count);
             }
             return _sizes;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public uint GetOrCreateEqualityGeneration()
+        {
+            if (_equalityGeneration == 0)
+                _equalityGeneration = CompiledValidationRule.BeginEqualityResolution();
+            return _equalityGeneration;
         }
     }
 

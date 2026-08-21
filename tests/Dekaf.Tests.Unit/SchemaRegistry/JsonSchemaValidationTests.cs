@@ -1660,6 +1660,35 @@ public sealed class JsonSchemaValidationTests
     }
 
     [Test]
+    public void InlineRules_SameValueEqualityCacheIsolatedFromChildTraversal()
+    {
+        const string schemaText = """
+            {
+              "allOf": [
+                {
+                  "confluent:rules": [{ "name": "root-first", "expr": "this.left == this.right" }],
+                  "properties": {
+                    "child": {
+                      "confluent:rules": [{ "name": "child", "expr": "this.left != this.right" }]
+                    }
+                  }
+                },
+                {
+                  "confluent:rules": [{ "name": "root-second", "expr": "this.left == this.right" }]
+                }
+              ]
+            }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
+
+        validator.ValidateRules(
+            """{"left":{"id":1},"right":{"id":1},"child":{"left":{"id":1},"right":{"id":2}}}"""u8
+                .ToArray(),
+            24,
+            failFast: false);
+    }
+
+    [Test]
     public async Task InlineRules_MissingMembersRequireHasGuard()
     {
         const string schemaText = """
