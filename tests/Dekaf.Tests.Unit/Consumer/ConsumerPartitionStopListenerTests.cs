@@ -103,18 +103,16 @@ public sealed class ConsumerPartitionStopListenerTests
     }
 
     [Test]
-    public async Task CloseAsync_PartitionStopTimeout_CancelsListenerAndContinuesCleanup()
+    [Timeout(30_000)]
+    public async Task CloseAsync_PartitionStopTimeout_CancelsListenerAndContinuesCleanup(
+        CancellationToken testTimeout)
     {
-        var cancellationObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseListener = new TaskCompletionSource();
-        var listenerCompleted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var listenerCompleted = new TaskCompletionSource();
         var listener = new TrackingPartitionStopListener
         {
-            OnStopped = async (_, cancellationToken) =>
+            OnStopped = async (_, _) =>
             {
-                using var registration = cancellationToken.Register(
-                    static state => ((TaskCompletionSource)state!).TrySetResult(),
-                    cancellationObserved);
                 try
                 {
                     await releaseListener.Task.ConfigureAwait(false);
@@ -130,13 +128,13 @@ public sealed class ConsumerPartitionStopListenerTests
             partitionStopTimeout: TimeSpan.FromMilliseconds(50));
         var partition = new TopicPartition("topic-a", 0);
         consumer.Assign(partition);
+        Task? close = null;
 
         try
         {
-            var close = consumer.CloseAsync().AsTask();
+            close = consumer.CloseAsync(CancellationToken.None).AsTask();
 
-            await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
-            await close.WaitAsync(TimeSpan.FromSeconds(5));
+            await close.WaitAsync(testTimeout);
 
             await Assert.That(listener.CancellationTokens[0].IsCancellationRequested).IsTrue();
             await Assert.That(listenerCompleted.Task.IsCompleted).IsFalse();
@@ -145,8 +143,11 @@ public sealed class ConsumerPartitionStopListenerTests
         finally
         {
             releaseListener.TrySetResult();
-            await listenerCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            if (close is not null)
+                await close.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
             await consumer.DisposeAsync();
+            if (!testTimeout.IsCancellationRequested)
+                await listenerCompleted.Task.WaitAsync(testTimeout);
         }
     }
 
