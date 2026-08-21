@@ -149,6 +149,14 @@ public class JsonSchemaValidationBenchmarks
         }
         """;
 
+    private const string EscapedMapKeyInlineRulesJsonSchema = """
+        {
+          "additionalProperties": {
+            "confluent:rules": [{ "name": "positive", "expr": "this > 0" }]
+          }
+        }
+        """;
+
     private const string SiblingMapSizeInlineRulesJsonSchema = """
         {
           "confluent:rules": [
@@ -213,6 +221,8 @@ public class JsonSchemaValidationBenchmarks
     private IJsonSchemaValidator _decimalMinNegationInlineRulesValidator = null!;
     private ReadOnlyMemory<byte> _duplicateMapSizeInlineRulesJsonPayload;
     private IJsonSchemaValidator _mapSizeInlineRulesValidator = null!;
+    private ReadOnlyMemory<byte> _escapedMapKeyInlineRulesJsonPayload;
+    private IJsonSchemaValidator _escapedMapKeyInlineRulesValidator = null!;
     private ReadOnlyMemory<byte> _siblingMapSizeInlineRulesJsonPayload;
     private IJsonSchemaValidator _siblingMapSizeInlineRulesValidator = null!;
     private ReadOnlyMemory<byte> _terminalPrefixInlineRulesJsonPayload;
@@ -453,6 +463,16 @@ public class JsonSchemaValidationBenchmarks
             _duplicateMapSizeInlineRulesJsonPayload,
             10,
             failFast: false);
+        _escapedMapKeyInlineRulesJsonPayload = """{"region\nname":1}"""u8.ToArray();
+        _escapedMapKeyInlineRulesValidator = inlineRulesFactory.GetOrCreate(new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = EscapedMapKeyInlineRulesJsonSchema
+        });
+        _escapedMapKeyInlineRulesValidator.ValidateRules(
+            _escapedMapKeyInlineRulesJsonPayload,
+            16,
+            failFast: false);
         _siblingMapSizeInlineRulesJsonPayload =
             """{"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8}"""u8.ToArray();
         _siblingMapSizeInlineRulesValidator = inlineRulesFactory.GetOrCreate(new Schema
@@ -647,6 +667,13 @@ public class JsonSchemaValidationBenchmarks
         _mapSizeInlineRulesValidator.ValidateRules(
             _duplicateMapSizeInlineRulesJsonPayload,
             10,
+            failFast: false);
+
+    [Benchmark]
+    public void ValidateEscapedMapKeyInlineRules() =>
+        _escapedMapKeyInlineRulesValidator.ValidateRules(
+            _escapedMapKeyInlineRulesJsonPayload,
+            16,
             failFast: false);
 
     [Benchmark]

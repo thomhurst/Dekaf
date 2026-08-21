@@ -2809,26 +2809,16 @@ internal struct ValidationPathBuilder
     internal void AppendMapKey(ref Utf8JsonReader reader)
     {
         var maximumLength = reader.ValueSpan.Length;
-        EnsureCapacity((maximumLength * 2) + 4);
+        EnsureCapacity(maximumLength + 4);
         _buffer[Length++] = '[';
         _buffer[Length++] = '"';
         var contentStart = Length;
-        var written = reader.CopyString(_buffer.AsSpan(contentStart, maximumLength));
-        var escapes = 0;
-        for (var index = 0; index < written; index++)
-        {
-            if (_buffer[contentStart + index] is '\\' or '"')
-                escapes++;
-        }
-        var destination = contentStart + written + escapes - 1;
-        for (var source = contentStart + written - 1; source >= contentStart; source--)
-        {
-            var character = _buffer[source];
-            _buffer[destination--] = character;
-            if (character is '\\' or '"')
-                _buffer[destination--] = '\\';
-        }
-        Length = contentStart + written + escapes;
+        // ValueSpan excludes the JSON string delimiters but retains its escapes. Transcoding
+        // directly keeps the path valid without a second decode-and-re-escape pass.
+        var written = Encoding.UTF8.GetChars(
+            reader.ValueSpan,
+            _buffer.AsSpan(contentStart, maximumLength));
+        Length = contentStart + written;
         _buffer[Length++] = '"';
         _buffer[Length++] = ']';
     }
