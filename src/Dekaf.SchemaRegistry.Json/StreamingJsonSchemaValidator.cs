@@ -303,13 +303,9 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         {
             JsonTokenType.StartObject when node.Properties is null && node.AdditionalProperties is null =>
                 SkipValue(ref reader),
-            JsonTokenType.StartObject => failFast
-                ? WalkValidationObjectFailFast(
-                    ref reader, payload, node, schemaId, ref path, now, ref violations,
-                    ref compositionMatches, referenceDepth)
-                : WalkValidationObject(
-                    ref reader, payload, node, schemaId, ref path, now, ref violations,
-                    ref compositionMatches, referenceDepth),
+            JsonTokenType.StartObject => WalkValidationObject(
+                ref reader, payload, node, schemaId, ref path, now, failFast, ref violations,
+                ref compositionMatches, referenceDepth),
             JsonTokenType.StartArray when node.Items is null && node.PrefixItems.Length == 0 =>
                 SkipValue(ref reader),
             JsonTokenType.StartArray => WalkValidationArray(
@@ -571,6 +567,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         int schemaId,
         scoped ref ValidationPathBuilder path,
         long now,
+        bool failFast,
         ref List<ValidationRuleError>? violations,
         scoped ref ValidationCompositionMatchCache compositionMatches,
         int referenceDepth)
@@ -664,7 +661,7 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
                                     schemaId,
                                     ref path,
                                     now,
-                                    failFast: false,
+                                    failFast,
                                     ref violations,
                                     ref compositionMatches,
                                     ref childValueSlice,
@@ -719,74 +716,6 @@ internal sealed class StreamingJsonSchemaValidator(CompiledSchemaNode root) : IJ
         }
 
         return AggregatePropertyLookahead.NotFound;
-    }
-
-    private static bool WalkValidationObjectFailFast(
-        ref Utf8JsonReader reader,
-        ReadOnlyMemory<byte> payload,
-        CompiledSchemaNode node,
-        int schemaId,
-        scoped ref ValidationPathBuilder path,
-        long now,
-        ref List<ValidationRuleError>? violations,
-        scoped ref ValidationCompositionMatchCache compositionMatches,
-        int referenceDepth)
-    {
-        var finalProperties = new JsonObjectPropertyIndex();
-        try
-        {
-            finalProperties.Build(ref reader, payload.Span);
-            while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
-            {
-                if (reader.TokenType != JsonTokenType.PropertyName)
-                    return true;
-                if (!finalProperties.IsLast(ref reader, payload.Span))
-                {
-                    if (!reader.Read())
-                        return true;
-                    reader.Skip();
-                    continue;
-                }
-
-                var pathMark = path.Length;
-                var property = node.Properties?.Find(ref reader);
-                if (property is not null)
-                    path.AppendProperty(property.Name);
-                else if (node.AdditionalProperties is not null)
-                    path.AppendMapKey(ref reader);
-                if (!reader.Read())
-                    return true;
-
-                var child = property?.IsDeclared == true ? property.Schema : node.AdditionalProperties;
-                if (child is not null)
-                {
-                    var childValueSlice = new ValidationValueSlice();
-                    if (!WalkValidationRules(
-                            ref reader,
-                            payload,
-                            child,
-                            schemaId,
-                            ref path,
-                            now,
-                            failFast: true,
-                            ref violations,
-                            ref compositionMatches,
-                            ref childValueSlice,
-                            referenceDepth))
-                        return false;
-                }
-                else
-                {
-                    reader.Skip();
-                }
-                path.Truncate(pathMark);
-            }
-            return true;
-        }
-        finally
-        {
-            finalProperties.Dispose();
-        }
     }
 
     private static bool WalkValidationArray(
