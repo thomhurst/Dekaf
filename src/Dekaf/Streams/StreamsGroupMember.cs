@@ -867,9 +867,9 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         { GroupId = GroupId };
     }
 
-    private bool IsRetriableConnectionFailure(Exception exception) =>
+    private static bool IsRetriableConnectionFailure(Exception exception) =>
         RetryHelper.IsRetriableRequestFailure(exception)
-        || (exception is ObjectDisposedException && Volatile.Read(ref _closeRequested) == 0);
+        || exception is ObjectDisposedException;
 
     private static void ObserveFault(Task task)
     {
