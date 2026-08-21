@@ -71,6 +71,7 @@ public sealed partial class InMemoryAdminClient
         {
             var partition = new TopicPartition(offset.Topic, offset.Partition);
             ValidateTopicPartition(partition);
+            ArgumentOutOfRangeException.ThrowIfNegative(offset.Offset, nameof(offsets));
             if (!results.TryAdd(partition, Success(partition)))
                 throw new ArgumentException($"Partition '{partition.Topic}-{partition.Partition}' is duplicated.", nameof(offsets));
         }
