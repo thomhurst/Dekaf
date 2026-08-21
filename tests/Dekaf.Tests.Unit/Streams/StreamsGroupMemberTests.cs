@@ -1362,6 +1362,22 @@ public sealed class StreamsGroupMemberTests
     }
 
     [Test]
+    public async Task CloseAsync_AfterDisposeObservesCompletedClose()
+    {
+        var connection = new ScriptedConnection();
+        connection.EnqueueHeartbeat(Success(epoch: 1));
+        connection.EnqueueHeartbeat(Success(epoch: -1));
+        await using var fixture = CreateFixture(connection);
+        await fixture.Member.JoinAsync(CreateInitialUpdate());
+
+        await fixture.Member.DisposeAsync();
+        await fixture.Member.CloseAsync();
+
+        await Assert.That(fixture.Member.Snapshot.IsClosed).IsTrue();
+        await Assert.That(connection.HeartbeatRequests).Count().IsEqualTo(2);
+    }
+
+    [Test]
     public async Task CloseAsync_WhenCallerCancelsObservesLaterTerminalFailure()
     {
         var connection = new ScriptedConnection();
