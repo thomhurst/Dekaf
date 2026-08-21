@@ -142,8 +142,9 @@ public sealed class ConsumerPartitionStopListenerTests
         finally
         {
             releaseListener.TrySetResult();
-            await listenerCompleted.Task.WaitAsync(testTimeout);
             await consumer.DisposeAsync();
+            if (!testTimeout.IsCancellationRequested)
+                await listenerCompleted.Task.WaitAsync(testTimeout);
         }
     }
 
