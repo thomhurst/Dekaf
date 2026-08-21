@@ -83,6 +83,80 @@ public sealed class InMemoryAdminShareFaultTests
     }
 
     [Test]
+    public async Task AdminFault_TopicIdOperationsUseResolvedTopicScope()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var admin = new InMemoryAdminClient(cluster);
+        cluster.CreateTopic("orders");
+        var topicId = cluster.TopicListings(includeInternal: true).Single().TopicId;
+        var failure = new InvalidOperationException("blocked");
+        cluster.FaultPlan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.Admin, topic: "orders"),
+            failure,
+            occurrenceCount: 2);
+
+        _ = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            admin.DescribeTopicsAsync([topicId]).AsTask());
+        _ = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            admin.DeleteTopicsAsync([topicId]).AsTask());
+
+        await Assert.That(cluster.ListTopics()).IsEquivalentTo(["orders"]);
+    }
+
+    [Test]
+    public async Task AdminFault_InvalidRequestDoesNotConsumeScriptedFailure()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var admin = new InMemoryAdminClient(cluster);
+        var failure = new InvalidOperationException("blocked");
+        cluster.FaultPlan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.Admin, topic: "orders"),
+            failure);
+
+        _ = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            admin.CreateTopicsAsync([new NewTopic { Name = "orders", NumPartitions = 0 }]).AsTask());
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            admin.CreateTopicsAsync([new NewTopic { Name = "orders", NumPartitions = 1 }]).AsTask());
+
+        await Assert.That(actual).IsSameReferenceAs(failure);
+    }
+
+    [Test]
+    public async Task AdminFault_InvalidPartitionCountDoesNotConsumeScriptedFailure()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var admin = new InMemoryAdminClient(cluster);
+        cluster.CreateTopic("orders");
+        var failure = new InvalidOperationException("blocked");
+        cluster.FaultPlan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.Admin, topic: "orders"),
+            failure);
+
+        _ = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            admin.CreatePartitionsAsync(new Dictionary<string, int> { ["orders"] = 0 }).AsTask());
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            admin.CreatePartitionsAsync(new Dictionary<string, int> { ["orders"] = 2 }).AsTask());
+
+        await Assert.That(actual).IsSameReferenceAs(failure);
+    }
+
+    [Test]
+    public async Task AdminFault_InvalidBrokerIdDoesNotConsumeScriptedFailure()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var admin = new InMemoryAdminClient(cluster);
+        var failure = new InvalidOperationException("blocked");
+        cluster.FaultPlan.Fail(new KafkaFaultScope(KafkaFaultOperation.Admin), failure);
+
+        _ = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            admin.DescribeLogDirsAsync([-1]).AsTask());
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            admin.DescribeLogDirsAsync([0]).AsTask());
+
+        await Assert.That(actual).IsSameReferenceAs(failure);
+    }
+
+    [Test]
     public async Task AdminFault_ClearLeavesGroupMutationAvailable()
     {
         var cluster = new InMemoryKafkaCluster();
@@ -200,6 +274,33 @@ public sealed class InMemoryAdminShareFaultTests
         await Assert.That(barrier.Release()).IsTrue();
 
         await consumer.CommitAsync();
+        await Assert.That(cluster.GetCommittedOffset("workers", new TopicPartition("shared", 0)))
+            .IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task ShareAcknowledgeBarrier_SerializesConcurrentCommits()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        await producer.ProduceAsync("shared", "key", "value");
+        await using var consumer = new InMemoryShareConsumer<string, string>(
+            cluster,
+            new InMemoryShareConsumerOptions { GroupId = "workers" });
+        consumer.Subscribe("shared");
+        consumer.Acknowledge(await consumer.PollAsync().FirstAsync());
+        var barrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(KafkaFaultOperation.ShareAcknowledge));
+
+        var first = consumer.CommitAsync().AsTask();
+        await barrier.WaitUntilEnteredAsync();
+        var second = consumer.CommitAsync().AsTask();
+
+        await Assert.That(second.IsCompleted).IsFalse();
+        await Assert.That(cluster.GetCommittedOffset("workers", new TopicPartition("shared", 0)))
+            .IsNull();
+        await Assert.That(barrier.Release()).IsTrue();
+        await Task.WhenAll(first, second);
         await Assert.That(cluster.GetCommittedOffset("workers", new TopicPartition("shared", 0)))
             .IsEqualTo(1);
     }

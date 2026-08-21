@@ -474,15 +474,16 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
         }
 
         Volatile.Write(ref _operationMask, operationMask);
-        Volatile.Write(
-            ref _produceFaultIndex,
-            new ProduceFaultIndex(
+        var produceFaultIndex = produceScopes.HasScopes || transactionProduceScopes.HasScopes
+            ? new ProduceFaultIndex(
                 produceScopes.AllTopics,
                 produceScopes.SingleTopic,
                 produceScopes.Topics,
                 transactionProduceScopes.AllTopics,
                 transactionProduceScopes.SingleTopic,
-                transactionProduceScopes.Topics));
+                transactionProduceScopes.Topics)
+            : ProduceFaultIndex.Empty;
+        Volatile.Write(ref _produceFaultIndex, produceFaultIndex);
     }
 
     private struct ProduceScopeBuilder
@@ -490,6 +491,8 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
         internal bool AllTopics;
         internal string? SingleTopic;
         internal HashSet<string>? Topics;
+
+        internal readonly bool HasScopes => AllTopics || SingleTopic is not null || Topics is not null;
 
         internal void Add(string? topic)
         {
