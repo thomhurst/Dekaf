@@ -1,3 +1,4 @@
+using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Protocol;
@@ -329,13 +330,22 @@ public sealed partial class AdminClient
         Exception? retryFailure = null;
         foreach (var topic in responseTopics)
         {
-            var topicName = topicMap is null
-                ? topic.Name
-                : topicMap.MatchResponseTopic(
-                    topic.TopicId,
-                    responseSnapshot!,
-                    nameof(ListStreamsGroupOffsetsAsync),
-                    responseMismatchIsRetriable: true);
+            string topicName;
+            try
+            {
+                topicName = topicMap is null
+                    ? topic.Name
+                    : topicMap.MatchResponseTopic(
+                        topic.TopicId,
+                        responseSnapshot!,
+                        nameof(ListStreamsGroupOffsetsAsync),
+                        responseMismatchIsRetriable: true);
+            }
+            catch (KafkaException exception)
+            {
+                return exception;
+            }
+
             foreach (var partition in topic.Partitions)
             {
                 var topicPartition = new TopicPartition(topicName, partition.PartitionIndex);
@@ -828,7 +838,13 @@ public sealed partial class AdminClient
             !cancellationToken.IsCancellationRequested &&
             timeoutSource.IsCancellationRequested)
         {
-            throw new TimeoutException($"{operationName} timed out after {timeoutMs} ms.", exception);
+            var configuredTimeout = TimeSpan.FromMilliseconds(timeoutMs);
+            throw new KafkaTimeoutException(
+                TimeoutKind.Api,
+                configuredTimeout,
+                configuredTimeout,
+                $"{operationName} timed out after {timeoutMs} ms.",
+                exception);
         }
     }
 }

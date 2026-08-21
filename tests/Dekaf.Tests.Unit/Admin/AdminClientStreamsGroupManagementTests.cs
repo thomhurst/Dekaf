@@ -201,6 +201,71 @@ public sealed class AdminClientStreamsGroupManagementTests
     }
 
     [Test]
+    public async Task ListStreamsGroupOffsetsAsync_TopicIdMismatchPreservesSiblingGroupResult()
+    {
+        var (admin, connection) = CreateAdmin();
+        SetupFindCoordinator(connection);
+        var mismatchTopicId = Guid.Parse("ffeeddcc-bbaa-9988-7766-554433221100");
+        connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(
+                ValueTask.FromResult(new OffsetFetchResponse
+                {
+                    Groups =
+                    [
+                        new OffsetFetchResponseGroup
+                        {
+                            GroupId = FirstGroup,
+                            ErrorCode = ErrorCode.None,
+                            Topics =
+                            [
+                                new OffsetFetchResponseTopic
+                                {
+                                    TopicId = mismatchTopicId,
+                                    Partitions = [Offset(0, 10, ErrorCode.None)]
+                                }
+                            ]
+                        },
+                        new OffsetFetchResponseGroup
+                        {
+                            GroupId = SecondGroup,
+                            ErrorCode = ErrorCode.None,
+                            Topics =
+                            [
+                                new OffsetFetchResponseTopic
+                                {
+                                    TopicId = TopicId,
+                                    Partitions = [Offset(0, 20, ErrorCode.None)]
+                                }
+                            ]
+                        }
+                    ]
+                }),
+                ValueTask.FromResult(ListResponse(Offset(0, 10, ErrorCode.None))));
+
+        var results = await admin.ListStreamsGroupOffsetsAsync(
+            new Dictionary<string, ListStreamsGroupOffsetsSpec>
+            {
+                [FirstGroup] = new() { TopicPartitions = [new TopicPartition(Topic, 0)] },
+                [SecondGroup] = new() { TopicPartitions = [new TopicPartition(Topic, 0)] }
+            });
+
+        await Assert.That(results[FirstGroup].Offsets[new TopicPartition(Topic, 0)].Offset).IsEqualTo(10);
+        await Assert.That(results[SecondGroup].Offsets[new TopicPartition(Topic, 0)].Offset).IsEqualTo(20);
+        await connection.Received(2).SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+            Arg.Any<OffsetFetchRequest>(),
+            10,
+            Arg.Any<CancellationToken>());
+        await connection.Received(1).SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+            Arg.Is<OffsetFetchRequest>(request =>
+                request != null && request.Groups!.Count == 1 && request.Groups[0].GroupId == FirstGroup),
+            10,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
     public async Task ListStreamsGroupOffsetsAsync_RequireStableRejectsOffsetFetchV6()
     {
         var (admin, connection) = CreateAdmin(offsetFetchMaxVersion: 6);
@@ -546,7 +611,7 @@ public sealed class AdminClientStreamsGroupManagementTests
     }
 
     [Test]
-    public async Task ListStreamsGroupOffsetsAsync_OperationTimeoutThrowsTimeoutException()
+    public async Task ListStreamsGroupOffsetsAsync_OperationTimeoutThrowsKafkaTimeoutException()
     {
         var (admin, connection) = CreateAdmin();
         SetupFindCoordinator(connection);
@@ -556,10 +621,13 @@ public sealed class AdminClientStreamsGroupManagementTests
                 Arg.Any<CancellationToken>())
             .Returns(call => WaitForCancellationAsync(call.ArgAt<CancellationToken>(2)));
 
-        await Assert.ThrowsAsync<TimeoutException>(async () =>
+        var exception = await Assert.ThrowsAsync<KafkaTimeoutException>(async () =>
             await admin.ListStreamsGroupOffsetsAsync(
                 new Dictionary<string, ListStreamsGroupOffsetsSpec> { [FirstGroup] = new() },
                 new ListStreamsGroupOffsetsOptions { TimeoutMs = 20 }));
+
+        await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Api);
+        await Assert.That(exception.Configured).IsEqualTo(TimeSpan.FromMilliseconds(20));
     }
 
     [Test]
