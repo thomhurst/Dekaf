@@ -24,7 +24,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
     private readonly HashSet<TopicPartition> _assignment = [];
     private readonly Dictionary<ShareConsumeResult<TKey, TValue>, PendingShareRecord> _pending = [];
     private readonly string _memberId;
-    private bool _registered;
+    private ShareGroupMemberRegistration? _registration;
     private bool _disposed;
 
     public InMemoryShareConsumer(InMemoryKafkaCluster cluster)
@@ -242,10 +242,9 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             {
                 UnregisterShareGroupMemberUnderLock();
             }
-            else if (!_registered)
+            else if (_registration is null)
             {
-                _cluster.RegisterShareGroupMember(_options.GroupId, _memberId);
-                _registered = true;
+                _registration = _cluster.RegisterShareGroupMember(_options.GroupId, _memberId);
             }
         }
 
@@ -406,12 +405,24 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
     private bool TryAcquireRecord(TopicPartition partition, out InMemoryRecord record, out int deliveryCount)
     {
         long offset;
+        ShareGroupMemberRegistration? registration;
         lock (_gate)
+        {
             offset = GetNextOffsetUnderLock(partition);
+            registration = _registration;
+        }
+
+        if (registration is null)
+        {
+            record = null!;
+            deliveryCount = 0;
+            return false;
+        }
 
         return _cluster.TryAcquireShareRecord(
             _options.GroupId,
             _memberId,
+            registration,
             partition,
             offset,
             out record,
@@ -579,11 +590,11 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
 
     private void UnregisterShareGroupMemberUnderLock()
     {
-        if (!_registered)
+        if (_registration is not { } registration)
             return;
 
-        _cluster.UnregisterShareGroupMember(_options.GroupId, _memberId);
-        _registered = false;
+        _cluster.UnregisterShareGroupMember(_options.GroupId, _memberId, registration);
+        _registration = null;
     }
 
     private static TopicPartitionOffset[] BuildCommitOffsets(IEnumerable<PendingShareRecord> records)
