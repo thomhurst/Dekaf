@@ -303,8 +303,9 @@ compatibility boundary, not a missing configuration switch:
   [KIP-1274](https://cwiki.apache.org/confluence/spaces/KAFKA/pages/406619710/KIP-1274%2BDeprecate%2Band%2Bremove%2Bsupport%2Bfor%2BClassic%2Brebalance%2Bprotocol%2Bin%2BKafkaConsumer)
   recommends the Consumer protocol in Kafka 4.3, changes the Java consumer default and
   deprecates Classic in Kafka 5.0, and removes public KafkaConsumer Classic support in Kafka
-  6.0. Adding a second coordinator now would target an upstream client protocol scheduled for
-  removal.
+  6.0. These are planned milestones under the accepted KIP-1274 roadmap, not fixed release
+  commitments. Adding a second coordinator now would target an upstream client protocol planned
+  for removal.
 - Kafka supports online upgrade and downgrade between compatible Classic and Consumer group
   members. Dekaf tests both directions, so rolling migration does not require a permanent
   Classic implementation in Dekaf.
@@ -315,8 +316,11 @@ compatibility boundary, not a missing configuration switch:
 Applications that require Kafka 3.x, custom client-side assignor metadata, or a broker with
 Consumer groups disabled should use a Classic-compatible client while migrating. Manual
 assignment bypasses group membership, but it does not lower Dekaf's supported Kafka 4.0 broker
-floor. `enforceRebalance` is also intentionally absent: KIP-848 reconciles assignment
-incrementally, so update the subscription/remote assignor or recreate the member instead.
+floor. `enforceRebalance` is also intentionally absent and has no direct KIP-848 equivalent.
+`Subscribe`, `SubscribePattern`, and `Unsubscribe` update the subscription and trigger normal
+broker reconciliation. `GroupRemoteAssignor` is configured when creating the consumer; recreate
+the consumer to change it. Recreating a member changes group membership but does not guarantee
+an assignment change, so it is not a force-rebalance replacement.
 
 Reconsider this decision only with explicit maintainer approval and concrete evidence that all
 of these are true:
