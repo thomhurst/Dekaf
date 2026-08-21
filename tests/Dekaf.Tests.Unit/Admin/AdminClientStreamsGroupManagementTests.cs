@@ -31,6 +31,9 @@ public sealed class AdminClientStreamsGroupManagementTests
             await admin.AlterStreamsGroupOffsetsAsync(FirstGroup,
                 [new TopicPartitionOffset(Topic, 0, 1), new TopicPartitionOffset(Topic, 0, 2)]));
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(async () =>
+            await admin.AlterStreamsGroupOffsetsAsync(FirstGroup,
+                [new TopicPartitionOffset(Topic, 0, -1)]));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(async () =>
             await admin.DeleteStreamsGroupOffsetsAsync(
                 FirstGroup,
                 [],

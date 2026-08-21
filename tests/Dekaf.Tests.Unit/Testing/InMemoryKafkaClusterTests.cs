@@ -87,7 +87,9 @@ public sealed class InMemoryKafkaClusterTests
                 [groupId] = new() { TopicPartitions = [first, second] }
             });
 
-        await Assert.That(altered.Values.All(result => result.ErrorCode == ErrorCode.None)).IsTrue();
+        await Assert.That(altered).Count().IsEqualTo(2);
+        await Assert.That(altered[first].ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(altered[second].ErrorCode).IsEqualTo(ErrorCode.None);
         await Assert.That(listed[groupId].Offsets[first].Offset).IsEqualTo(42);
         await Assert.That(listed[groupId].Offsets[first].LeaderEpoch).IsEqualTo(7);
         await Assert.That(listed[groupId].Offsets[first].Metadata).IsEqualTo("checkpoint");
@@ -103,9 +105,11 @@ public sealed class InMemoryKafkaClusterTests
         var deletedGroups = await admin.DeleteStreamsGroupsAsync([groupId]);
         var afterGroupDeletion = await admin.ListStreamsGroupOffsetsAsync(
             new Dictionary<string, ListStreamsGroupOffsetsSpec> { [groupId] = new() });
+        var groupsAfterDeletion = await admin.ListStreamsGroupsAsync();
 
         await Assert.That(deletedGroups[groupId].ErrorCode).IsEqualTo(ErrorCode.None);
         await Assert.That(afterGroupDeletion[groupId].Offsets).IsEmpty();
+        await Assert.That(groupsAfterDeletion.Any(group => group.GroupId == groupId)).IsFalse();
     }
 
     [Test]
@@ -118,6 +122,17 @@ public sealed class InMemoryKafkaClusterTests
 
         await Assert.That(altered).IsEmpty();
         await Assert.That(groups.Any(group => group.GroupId == "empty-streams")).IsFalse();
+    }
+
+    [Test]
+    public async Task StreamsGroupManagement_RejectsNegativeOffsets()
+    {
+        IAdminClient admin = new InMemoryAdminClient(new InMemoryKafkaCluster());
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(async () =>
+            await admin.AlterStreamsGroupOffsetsAsync(
+                "streams-app",
+                [new TopicPartitionOffset("input", 0, -1)]));
     }
 
     [Test]

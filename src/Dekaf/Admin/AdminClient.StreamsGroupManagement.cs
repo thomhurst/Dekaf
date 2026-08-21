@@ -55,6 +55,7 @@ public sealed partial class AdminClient
         {
             var partition = new TopicPartition(offset.Topic, offset.Partition);
             ValidateTopicPartition(partition, nameof(offsets));
+            ArgumentOutOfRangeException.ThrowIfNegative(offset.Offset, nameof(offsets));
             if (!seen.Add(partition))
                 throw new ArgumentException($"Partition '{partition.Topic}-{partition.Partition}' is duplicated.", nameof(offsets));
         }
