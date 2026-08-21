@@ -54,6 +54,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
     private int _coordinatorId = -1;
     private int _memberEpoch;
     private int _heartbeatIntervalMs = 5_000;
+    private bool _ambiguousMembership;
 
     private StreamsGroupHeartbeatTopology? _topology;
     private IReadOnlyList<StreamsGroupHeartbeatTaskIds>? _activeTasks;
@@ -489,6 +490,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         catch (AmbiguousHeartbeatException exception)
         {
             MarkUnjoined();
+            _ambiguousMembership = true;
             ExceptionDispatchInfo.Capture(exception.InnerException!).Throw();
             throw;
         }
@@ -572,7 +574,8 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         var heartbeatEpoch = terminalEpoch ?? (options.ShutdownApplication ? _memberEpoch : null);
         try
         {
-            if (_memberEpoch > 0 && heartbeatEpoch is not null)
+            if (heartbeatEpoch is not null
+                && (_memberEpoch > 0 || (_ambiguousMembership && terminalEpoch is not null)))
             {
                 var request = new StreamsGroupHeartbeatRequest
                 {
@@ -583,9 +586,27 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
                     InstanceId = InstanceId,
                     ShutdownApplication = options.ShutdownApplication
                 };
-                await SendWithRecoveryAsync(request, CancellationToken.None, recoverFencing: false)
+                await SendWithRecoveryAsync(
+                        request,
+                        CancellationToken.None,
+                        recoverFencing: false,
+                        trackAmbiguousRequestFailure: !retainMembership)
                     .ConfigureAwait(false);
             }
+        }
+        catch (AmbiguousHeartbeatException exception)
+            when (!retainMembership
+                && exception.InnerException is GroupException
+                {
+                    ErrorCode: ErrorCode.FencedMemberEpoch or ErrorCode.UnknownMemberId
+                })
+        {
+            // A prior leave attempt may have succeeded before its response was lost.
+        }
+        catch (AmbiguousHeartbeatException exception)
+        {
+            ExceptionDispatchInfo.Capture(exception.InnerException!).Throw();
+            throw;
         }
         catch (GroupException exception)
             when (exception.ErrorCode is ErrorCode.FencedMemberEpoch or ErrorCode.UnknownMemberId)
@@ -596,6 +617,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         finally
         {
             _memberEpoch = 0;
+            _ambiguousMembership = false;
             var current = _snapshot;
             _snapshot = new StreamsGroupMemberSnapshot
             {
@@ -773,6 +795,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
     private void MarkUnjoined()
     {
         _memberEpoch = 0;
+        _ambiguousMembership = false;
         ResetTaskAssignment(markUnjoined: true);
     }
 
@@ -938,6 +961,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         bool createResult,
         bool clearOmittedAssignment)
     {
+        _ambiguousMembership = false;
         var heartbeatRequestChanged = response.MemberEpoch != _memberEpoch
             || response.EndpointInformationEpoch != _endpointInformationEpoch
             || (!string.IsNullOrEmpty(response.MemberId) && response.MemberId != _memberId);
