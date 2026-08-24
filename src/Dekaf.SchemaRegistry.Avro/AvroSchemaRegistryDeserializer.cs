@@ -1,11 +1,11 @@
 using System.Buffers;
-using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
 using Avro.Generic;
 using Avro.IO;
 using Avro.Specific;
+using Dekaf.SchemaRegistry.Avro.Poco;
 using Dekaf.Serialization;
 using AvroSchema = Avro.Schema;
 
@@ -42,13 +42,14 @@ public sealed class AvroSchemaRegistryDeserializer<
     [DynamicallyAccessedMembers(
         DynamicallyAccessedMemberTypes.PublicFields |
         DynamicallyAccessedMemberTypes.PublicParameterlessConstructor)] T>
-    : IDeserializer<T>,
+    : IDeserializer<T>, IRecordHeaderDeserializer<T>, ICallerOwnedHeaderDeserializer<T>,
+      IRecordHeaderRoutingProvider,
       IAsyncDeserializerPreparer<T>,
       IAsyncDeserializerPreparationRequirement,
       IAsyncDisposable
 {
-    private const byte MagicByte = 0x00;
     private static readonly TimeSpan SchemaRegistryTimeout = TimeSpan.FromSeconds(30);
+    private const int MaxCachedGuidSchemas = 1024;
     private static readonly string FallbackRecordName = typeof(T).FullName ?? typeof(T).Name;
 
     private readonly ISchemaRegistryClient _schemaRegistry;
@@ -56,6 +57,10 @@ public sealed class AvroSchemaRegistryDeserializer<
     private readonly bool _ownsClient;
     private readonly ISchemaRegistryRuleExecutor? _ruleExecutor;
     private readonly ConcurrentDictionary<int, Lazy<Task<AvroSchema>>> _schemaCache = new();
+    private readonly ConcurrentDictionary<GuidTopicKey, Lazy<Task<GuidResolvedSchema>>> _guidSchemaCache = new();
+    private readonly ConcurrentQueue<KeyValuePair<GuidTopicKey, Lazy<Task<GuidResolvedSchema>>>>
+        _guidSchemaEvictionQueue = new();
+    private int _cachedGuidSchemaCount;
     private readonly ConcurrentDictionary<AvroSchemaPair, GenericDatumReader<GenericRecord>> _genericReaders =
         new(AvroSchemaPairReferenceComparer.Instance);
     private readonly ConcurrentDictionary<AvroSchemaPair, SpecificDatumReader<T>> _specificReaders =
@@ -80,6 +85,8 @@ public sealed class AvroSchemaRegistryDeserializer<
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _config = config ?? new AvroDeserializerConfig();
+        if (_config.SchemaIdStrategy is not (SchemaIdDeserializerStrategy.Dual or SchemaIdDeserializerStrategy.Prefix or SchemaIdDeserializerStrategy.Header))
+            throw new ArgumentOutOfRangeException(nameof(config), _config.SchemaIdStrategy, "Unknown schema identity strategy.");
         _ruleExecutor = _config.RuleExecutor;
         _ownsClient = ownsClient;
         if (_config.UseLatestVersion && !string.IsNullOrEmpty(_config.ReaderSchema))
@@ -195,26 +202,73 @@ public sealed class AvroSchemaRegistryDeserializer<
         SerializationContext context,
         string? preparedSubject)
     {
-        var span = data.Span;
-
-        if (span.Length < 5)
+        Header? identityHeader = null;
+        if (_config.SchemaIdStrategy != SchemaIdDeserializerStrategy.Prefix
+            && context.Headers is { } callerHeaders)
         {
-            if (context is { IsNull: true, Component: SerializationComponent.Value })
-                return default!;
-
-            throw new InvalidOperationException("Message too short to contain Schema Registry wire format");
+            var headerName = GetIdentityHeaderName(context.Component);
+            for (var index = callerHeaders.Count - 1; index >= 0; index--)
+            {
+                if (string.Equals(callerHeaders[index].Key, headerName, StringComparison.Ordinal))
+                {
+                    identityHeader = callerHeaders[index];
+                    break;
+                }
+            }
         }
 
-        if (span[0] != MagicByte)
-            throw new InvalidOperationException($"Unknown magic byte: {span[0]}. Expected Schema Registry format (0x00).");
+        return DeserializeCore(data, context, identityHeader, preparedSubject);
+    }
 
-        var schemaId = BinaryPrimitives.ReadInt32BigEndian(span.Slice(1, 4));
+    T ICallerOwnedHeaderDeserializer<T>.DeserializeCallerOwned(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context) => Deserialize(data, context);
+
+    T IRecordHeaderDeserializer<T>.Deserialize(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        in RecordHeaderRoutingLookup headers)
+    {
+        Header? identityHeader = headers.TryGetLast(GetIdentityHeaderName(context.Component), out var header)
+            ? header
+            : null;
+        return DeserializeCore(data, context, identityHeader, preparedSubject: null);
+    }
+
+    void IRecordHeaderRoutingProvider.CollectHeaderNames(List<string> names)
+    {
+        AddHeaderName(names, SchemaIdentityHeaderNames.Key);
+        AddHeaderName(names, SchemaIdentityHeaderNames.Value);
+    }
+
+    private T DeserializeCore(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        Header? identityHeader,
+        string? preparedSubject)
+    {
+        if (context is { IsNull: true, Component: SerializationComponent.Value })
+            return default!;
+
+        var identity = SchemaIdentityFraming.Read(
+            data.Span,
+            identityHeader,
+            _config.SchemaIdStrategy,
+            out var payloadOffset,
+            out var trailingHeaderData);
+        if (!trailingHeaderData.IsEmpty)
+            throw new InvalidDataException("Avro schema identity headers cannot contain trailing data.");
+
+        var schemaId = identity.SchemaId ?? -1;
+        var guidSchema = identity.SchemaGuid is { } schemaGuid
+            ? GetGuidSchemaCached(schemaGuid, context)
+            : null;
 
         // Get writer schema from registry (cached with lazy initialization)
-        var writerSchema = GetWriterSchemaCached(schemaId);
+        var writerSchema = guidSchema?.WriterSchema ?? GetWriterSchemaCached(schemaId);
 
         // Extract Avro payload. Array-backed payloads decode in place; other memory falls back to a pooled copy.
-        var payloadMemory = data.Slice(5);
+        var payloadMemory = data[payloadOffset..];
         AvroSchema? migrationReaderSchema = null;
         if (_ruleExecutor is null)
         {
@@ -230,23 +284,31 @@ public sealed class AvroSchemaRegistryDeserializer<
         try
         {
             string subject;
-            if (preparedSubject is not null)
+            Schema schema;
+            if (guidSchema is not null)
+            {
+                schemaId = guidSchema.SchemaId;
+                subject = guidSchema.Subject;
+                schema = guidSchema.Schema;
+            }
+            else if (preparedSubject is not null)
             {
                 subject = preparedSubject;
+                schema = _schemaRegistry.GetSchemaSync(schemaId, subject, SchemaRegistryTimeout);
             }
             else if (_subjectNames is null)
             {
                 subject = SubjectNameResolver.GetTopicSubjectName(
                     context.Topic,
                     context.Component == SerializationComponent.Key);
+                schema = _schemaRegistry.GetSchemaSync(schemaId, subject, SchemaRegistryTimeout);
             }
             else
             {
                 var unscopedSchema = _schemaRegistry.GetSchemaSync(schemaId, SchemaRegistryTimeout);
                 subject = GetSubjectName(schemaId, unscopedSchema, context);
+                schema = _schemaRegistry.GetSchemaSync(schemaId, subject, SchemaRegistryTimeout);
             }
-
-            var schema = _schemaRegistry.GetSchemaSync(schemaId, subject, SchemaRegistryTimeout);
             if (_migrationRunner is null)
             {
                 var ruleContext = SchemaRegistryRuleContext.RentWithTaggedFieldTransformer(
@@ -288,6 +350,132 @@ public sealed class AvroSchemaRegistryDeserializer<
             taggedWorkspaceOperation.Dispose();
         }
     }
+
+    private GuidResolvedSchema GetGuidSchemaCached(Guid schemaGuid, SerializationContext context)
+    {
+        var key = new GuidTopicKey(
+            schemaGuid,
+            context.Topic,
+            context.Component == SerializationComponent.Key,
+            _subjectNames?.Generation ?? 0);
+        if (!_guidSchemaCache.TryGetValue(key, out var lazy))
+        {
+            lazy = _guidSchemaCache.GetOrAdd(
+                key,
+                static (cacheKey, deserializer) => deserializer.CreateGuidSchemaLazy(cacheKey),
+                this);
+        }
+
+        var task = lazy.Value;
+        return task.IsCompletedSuccessfully
+            ? task.Result
+            : task.WaitAsync(SchemaRegistryTimeout).ConfigureAwait(false).GetAwaiter().GetResult();
+    }
+
+    private Lazy<Task<GuidResolvedSchema>> CreateGuidSchemaLazy(GuidTopicKey key) =>
+        new(() => FetchGuidSchemaAsync(key));
+
+    private async Task<GuidResolvedSchema> FetchGuidSchemaAsync(GuidTopicKey key)
+    {
+        try
+        {
+            var resolved = await SchemaRegistryOperationTimeout.ExecuteAsync(
+                    cancellationToken => FetchGuidSchemaCoreAsync(key, cancellationToken),
+                    SchemaRegistryTimeout,
+                    $"Schema GUID {key.SchemaGuid:D} resolution timed out.")
+                .ConfigureAwait(false);
+            BoundedSchemaIdentityCache.RecordSuccessfulResolution(
+                _guidSchemaCache,
+                _guidSchemaEvictionQueue,
+                key,
+                ref _cachedGuidSchemaCount,
+                MaxCachedGuidSchemas);
+            return resolved;
+        }
+        catch
+        {
+            _guidSchemaCache.TryRemove(key, out _);
+            throw;
+        }
+    }
+
+    private async Task<GuidResolvedSchema> FetchGuidSchemaCoreAsync(
+        GuidTopicKey key,
+        CancellationToken cancellationToken)
+    {
+        var unscopedSchema = await _schemaRegistry.GetSchemaByGuidAsync(
+                key.SchemaGuid.ToString("D"),
+                cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+        if (unscopedSchema.SchemaType != SchemaType.Avro)
+        {
+            throw new InvalidOperationException(
+                $"Schema with GUID {key.SchemaGuid:D} is not an Avro schema. Type: {unscopedSchema.SchemaType}");
+        }
+
+        var subject = _subjectNames is null
+            ? SubjectNameResolver.GetTopicSubjectName(key.Topic, key.IsKey)
+            : await _subjectNames.ResolveSubjectNameAsync(
+                    unscopedSchema,
+                    key.Topic,
+                    key.IsKey,
+                    FallbackRecordName,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        var registered = await _schemaRegistry.LookupSchemaAsync(
+                subject,
+                unscopedSchema,
+                ignoreDeletedSchemas: true,
+                cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+        if (!Guid.TryParse(registered.Guid, out var registeredGuid) || registeredGuid != key.SchemaGuid)
+        {
+            throw new InvalidDataException(
+                $"Schema Registry returned a conflicting GUID for subject '{subject}'.");
+        }
+
+        var names = registered.Schema.References is { Count: > 0 }
+            ? await AvroSchemaReferenceResolver.ResolveAsync(
+                    _schemaRegistry,
+                    registered.Schema,
+                    cancellationToken)
+                .ConfigureAwait(false)
+            : null;
+        var writerSchema = names is null
+            ? AvroSchema.Parse(registered.Schema.SchemaString)
+            : AvroSchema.Parse(registered.Schema.SchemaString, names);
+        var resolved = new GuidResolvedSchema(
+            registered.Id,
+            subject,
+            registered.Schema,
+            writerSchema);
+        return resolved;
+    }
+
+    private static void AddHeaderName(List<string> names, string name)
+    {
+        if (!names.Contains(name))
+            names.Add(name);
+    }
+
+    private static string GetIdentityHeaderName(SerializationComponent component) => component switch
+    {
+        SerializationComponent.Key => SchemaIdentityHeaderNames.Key,
+        SerializationComponent.Value => SchemaIdentityHeaderNames.Value,
+        _ => throw new ArgumentOutOfRangeException(nameof(component), component, "Unknown serialization component.")
+    };
+
+    private readonly record struct GuidTopicKey(
+        Guid SchemaGuid,
+        string Topic,
+        bool IsKey,
+        int SubjectGeneration);
+
+    private sealed record GuidResolvedSchema(
+        int SchemaId,
+        string Subject,
+        Schema Schema,
+        AvroSchema WriterSchema);
 
     private string GetSubjectName(int schemaId, Schema schema, SerializationContext context)
     {

@@ -1,8 +1,10 @@
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization.Metadata;
 using Dekaf.Serialization;
 
@@ -26,6 +28,7 @@ namespace Dekaf.SchemaRegistry;
 public sealed class JsonSchemaRegistrySerializer<T> :
     ISerializer<T>,
     IAsyncSerializerPreparer<T>,
+    IRecordHeaderSerializer,
     IAsyncSerializerPreparationAdmission<T>,
     IAsyncDisposable
 {
@@ -46,6 +49,9 @@ public sealed class JsonSchemaRegistrySerializer<T> :
     private readonly ISubjectNameStrategy? _customSubjectNameStrategy;
     private readonly IAsyncSubjectNameStrategy? _asyncSubjectNameStrategy;
     private readonly bool _autoRegisterSchemas;
+    private readonly SchemaSelectionMode _schemaSelectionMode;
+    private readonly int? _useSchemaId;
+    private readonly SchemaIdSerializerStrategy _schemaIdStrategy;
     private readonly bool _normalizeSchemas;
     private readonly bool _useLegacySubjectNames;
     private readonly Schema _schema;
@@ -60,11 +66,15 @@ public sealed class JsonSchemaRegistrySerializer<T> :
     private readonly SchemaResolutionCache<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> _schemaCache = new();
     private readonly SubjectSchemaIdCache _subjectSchemaIdCache = new();
 
+    bool IRecordHeaderSerializer.ProducesRecordHeaders =>
+        _schemaIdStrategy == SchemaIdSerializerStrategy.Header;
+
     /// <summary>
     /// Creates a new JSON Schema Registry serializer.
     /// </summary>
     [RequiresUnreferencedCode("JsonSerializerOptions-based JSON serialization uses reflection. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
     [RequiresDynamicCode("JsonSerializerOptions-based JSON serialization may require runtime code generation. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
+    [OverloadResolutionPriority(1)]
     public JsonSchemaRegistrySerializer(
         ISchemaRegistryClient schemaRegistry,
         string jsonSchema,
@@ -87,11 +97,71 @@ public sealed class JsonSchemaRegistrySerializer<T> :
     {
     }
 
+    /// <summary>Creates a JSON Schema Registry serializer with identity and schema-selection configuration.</summary>
+    [RequiresUnreferencedCode("JsonSerializerOptions-based JSON serialization uses reflection. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
+    [RequiresDynamicCode("JsonSerializerOptions-based JSON serialization may require runtime code generation. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
+    [OverloadResolutionPriority(1)]
+    public JsonSchemaRegistrySerializer(
+        ISchemaRegistryClient schemaRegistry,
+        string jsonSchema,
+        JsonSerializerOptions? jsonOptions,
+        JsonSchemaSerializerConfig config,
+        bool ownsClient = false)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
+        _jsonOptions = CreateJsonOptions(jsonOptions);
+        _serializePayload = SerializeWithOptions;
+        _subjectNameStrategy = config.SubjectNameStrategy;
+        _customSubjectNameStrategy = config.CustomSubjectNameStrategy;
+        _asyncSubjectNameStrategy = config.CustomSubjectNameStrategy is null
+            ? CreateAsyncSubjectNameStrategy(schemaRegistry, config.SubjectNameStrategy)
+            : null;
+        _autoRegisterSchemas = config.AutoRegisterSchemas;
+        _normalizeSchemas = config.NormalizeSchemas;
+        _useLegacySubjectNames = config.UseLegacySubjectNames;
+        _ownsClient = ownsClient;
+        _ruleExecutor = config.RuleExecutor;
+        _useSchemaId = config.UseSchemaId;
+        _schemaSelectionMode = SchemaRegistrySerializerConfigValidator.ValidateAndResolve(
+            config.UseSchemaId,
+            config.UseLatestVersion,
+            config.AutoRegisterSchemas);
+        _schemaIdStrategy = config.SchemaIdStrategy;
+        if (_schemaIdStrategy is not (SchemaIdSerializerStrategy.Prefix or SchemaIdSerializerStrategy.Header))
+            throw new ArgumentOutOfRangeException(nameof(config), _schemaIdStrategy, "Unknown schema identity strategy.");
+        _schema = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = jsonSchema
+        };
+        _recordName = SubjectNameResolver.GetRecordName(_schema, typeof(T).FullName ?? typeof(T).Name);
+        SubscribeToAssociatedNameInvalidation();
+    }
+
+    /// <summary>Creates a JSON Schema Registry serializer with identity configuration and payload validation.</summary>
+    [RequiresUnreferencedCode("JsonSerializerOptions-based JSON serialization uses reflection. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
+    [RequiresDynamicCode("JsonSerializerOptions-based JSON serialization may require runtime code generation. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
+    [OverloadResolutionPriority(1)]
+    public JsonSchemaRegistrySerializer(
+        ISchemaRegistryClient schemaRegistry,
+        string jsonSchema,
+        JsonSerializerOptions? jsonOptions,
+        JsonSchemaValidationOptions validationOptions,
+        JsonSchemaSerializerConfig config,
+        bool ownsClient = false)
+        : this(schemaRegistry, jsonSchema, jsonOptions, config, ownsClient)
+    {
+        ArgumentNullException.ThrowIfNull(validationOptions);
+        _validatorFactory = validationOptions.GetSerializerFactory();
+    }
+
     /// <summary>
     /// Creates a new JSON Schema Registry serializer with optional payload validation.
     /// </summary>
     [RequiresUnreferencedCode("JsonSerializerOptions-based JSON serialization uses reflection. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
     [RequiresDynamicCode("JsonSerializerOptions-based JSON serialization may require runtime code generation. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
+    [OverloadResolutionPriority(1)]
     public JsonSchemaRegistrySerializer(
         ISchemaRegistryClient schemaRegistry,
         string jsonSchema,
@@ -155,6 +225,10 @@ public sealed class JsonSchemaRegistrySerializer<T> :
         _useLegacySubjectNames = useLegacySubjectNames;
         _ownsClient = ownsClient;
         _ruleExecutor = ruleExecutor;
+        _schemaSelectionMode = SchemaRegistrySerializerConfigValidator.ValidateAndResolve(
+            useSchemaId: null,
+            useLatestVersion: false,
+            autoRegisterSchemas);
         _schema = new Schema
         {
             SchemaType = SchemaType.Json,
@@ -187,6 +261,59 @@ public sealed class JsonSchemaRegistrySerializer<T> :
             ruleExecutor,
             normalizeSchemas)
     {
+    }
+
+    /// <summary>Creates a NativeAOT-safe JSON Schema Registry serializer with identity configuration.</summary>
+    public JsonSchemaRegistrySerializer(
+        ISchemaRegistryClient schemaRegistry,
+        string jsonSchema,
+        JsonTypeInfo<T> jsonTypeInfo,
+        JsonSchemaSerializerConfig config,
+        bool ownsClient = false)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
+        _jsonTypeInfo = jsonTypeInfo ?? throw new ArgumentNullException(nameof(jsonTypeInfo));
+        _serializePayload = SerializeWithTypeInfo;
+        _subjectNameStrategy = config.SubjectNameStrategy;
+        _customSubjectNameStrategy = config.CustomSubjectNameStrategy;
+        _asyncSubjectNameStrategy = config.CustomSubjectNameStrategy is null
+            ? CreateAsyncSubjectNameStrategy(schemaRegistry, config.SubjectNameStrategy)
+            : null;
+        _autoRegisterSchemas = config.AutoRegisterSchemas;
+        _normalizeSchemas = config.NormalizeSchemas;
+        _useLegacySubjectNames = config.UseLegacySubjectNames;
+        _ownsClient = ownsClient;
+        _ruleExecutor = config.RuleExecutor;
+        _useSchemaId = config.UseSchemaId;
+        _schemaSelectionMode = SchemaRegistrySerializerConfigValidator.ValidateAndResolve(
+            config.UseSchemaId,
+            config.UseLatestVersion,
+            config.AutoRegisterSchemas);
+        _schemaIdStrategy = config.SchemaIdStrategy;
+        if (_schemaIdStrategy is not (SchemaIdSerializerStrategy.Prefix or SchemaIdSerializerStrategy.Header))
+            throw new ArgumentOutOfRangeException(nameof(config), _schemaIdStrategy, "Unknown schema identity strategy.");
+        _schema = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = jsonSchema
+        };
+        _recordName = SubjectNameResolver.GetRecordName(_schema, typeof(T).FullName ?? typeof(T).Name);
+        SubscribeToAssociatedNameInvalidation();
+    }
+
+    /// <summary>Creates a NativeAOT-safe JSON Schema Registry serializer with identity configuration and payload validation.</summary>
+    public JsonSchemaRegistrySerializer(
+        ISchemaRegistryClient schemaRegistry,
+        string jsonSchema,
+        JsonTypeInfo<T> jsonTypeInfo,
+        JsonSchemaSerializerConfig config,
+        JsonSchemaValidationOptions validationOptions,
+        bool ownsClient = false)
+        : this(schemaRegistry, jsonSchema, jsonTypeInfo, config, ownsClient)
+    {
+        ArgumentNullException.ThrowIfNull(validationOptions);
+        _validatorFactory = validationOptions.GetSerializerFactory();
     }
 
     /// <summary>
@@ -253,6 +380,10 @@ public sealed class JsonSchemaRegistrySerializer<T> :
         _useLegacySubjectNames = useLegacySubjectNames;
         _ownsClient = ownsClient;
         _ruleExecutor = ruleExecutor;
+        _schemaSelectionMode = SchemaRegistrySerializerConfigValidator.ValidateAndResolve(
+            useSchemaId: null,
+            useLatestVersion: false,
+            autoRegisterSchemas);
         _schema = new Schema
         {
             SchemaType = SchemaType.Json,
@@ -325,6 +456,10 @@ public sealed class JsonSchemaRegistrySerializer<T> :
         _normalizeSchemas = normalizeSchemas;
         _ownsClient = ownsClient;
         _ruleExecutor = ruleExecutor;
+        _schemaSelectionMode = SchemaRegistrySerializerConfigValidator.ValidateAndResolve(
+            useSchemaId: null,
+            useLatestVersion: false,
+            autoRegisterSchemas);
         _schema = new Schema
         {
             SchemaType = SchemaType.Json,
@@ -392,6 +527,10 @@ public sealed class JsonSchemaRegistrySerializer<T> :
         _normalizeSchemas = normalizeSchemas;
         _ownsClient = ownsClient;
         _ruleExecutor = ruleExecutor;
+        _schemaSelectionMode = SchemaRegistrySerializerConfigValidator.ValidateAndResolve(
+            useSchemaId: null,
+            useLatestVersion: false,
+            autoRegisterSchemas);
         _schema = new Schema
         {
             SchemaType = SchemaType.Json,
@@ -578,13 +717,18 @@ public sealed class JsonSchemaRegistrySerializer<T> :
             value,
             context.Component == SerializationComponent.Key,
             cancellationToken);
+        var isKey = context.Component == SerializationComponent.Key;
         return preparation.IsCompletedSuccessfully
-            ? new ValueTask<SerializerPreparationAdmission>(ToAdmission(preparation.Result))
-            : AwaitAdmissionAsync(preparation);
+            ? new ValueTask<SerializerPreparationAdmission>(
+                ToAdmission(preparation.Result, context.Topic, isKey))
+            : AwaitAdmissionAsync(this, preparation, context.Topic, isKey);
 
         static async ValueTask<SerializerPreparationAdmission> AwaitAdmissionAsync(
-            ValueTask<ResolvedSchemaContext> pending) =>
-            ToAdmission(await pending.ConfigureAwait(false));
+            JsonSchemaRegistrySerializer<T> serializer,
+            ValueTask<ResolvedSchemaContext> pending,
+            string topic,
+            bool isKey) =>
+            serializer.ToAdmission(await pending.ConfigureAwait(false), topic, isKey);
     }
 
     public void Serialize<TWriter>(T value, ref TWriter destination, SerializationContext context)
@@ -681,11 +825,26 @@ public sealed class JsonSchemaRegistrySerializer<T> :
             }
         }
 
-        var totalSize = 1 + 4 + payload.Length;
-        var span = destination.GetSpan(totalSize);
-        span[0] = MagicByte;
-        BinaryPrimitives.WriteInt32BigEndian(span.Slice(1, 4), schemaId);
-        payload.Span.CopyTo(span.Slice(5));
+        int totalSize;
+        if (_schemaIdStrategy == SchemaIdSerializerStrategy.Prefix)
+        {
+            totalSize = SchemaIdentityFraming.SchemaIdFrameSize + payload.Length;
+            var span = destination.GetSpan(totalSize);
+            span[0] = MagicByte;
+            BinaryPrimitives.WriteInt32BigEndian(span.Slice(1, 4), schemaId);
+            payload.Span.CopyTo(span.Slice(SchemaIdentityFraming.SchemaIdFrameSize));
+        }
+        else
+        {
+            totalSize = payload.Length;
+            var span = destination.GetSpan(totalSize);
+            SchemaIdentitySerialization.WriteIdentity(
+                span,
+                context,
+                in schemaEntry,
+                SchemaIdSerializerStrategy.Header);
+            payload.Span.CopyTo(span);
+        }
         destination.Advance(totalSize);
 
         if (payloadBuffer.Capacity > 1024 * 1024)
@@ -806,13 +965,26 @@ public sealed class JsonSchemaRegistrySerializer<T> :
             }
         }
 
-        // Write wire format: [0x00] [schema ID] [JSON payload]
-        var totalSize = 1 + 4 + payload.Length;
-        var span = destination.GetSpan(totalSize);
-
-        span[0] = MagicByte;
-        BinaryPrimitives.WriteInt32BigEndian(span.Slice(1, 4), schemaId);
-        payload.Span.CopyTo(span.Slice(5));
+        int totalSize;
+        if (_schemaIdStrategy == SchemaIdSerializerStrategy.Prefix)
+        {
+            totalSize = SchemaIdentityFraming.SchemaIdFrameSize + payload.Length;
+            var span = destination.GetSpan(totalSize);
+            span[0] = MagicByte;
+            BinaryPrimitives.WriteInt32BigEndian(span.Slice(1, 4), schemaId);
+            payload.Span.CopyTo(span.Slice(SchemaIdentityFraming.SchemaIdFrameSize));
+        }
+        else
+        {
+            totalSize = payload.Length;
+            var span = destination.GetSpan(totalSize);
+            SchemaIdentitySerialization.WriteIdentity(
+                span,
+                context,
+                in schemaEntry,
+                SchemaIdSerializerStrategy.Header);
+            payload.Span.CopyTo(span);
+        }
 
         destination.Advance(totalSize);
 
@@ -823,9 +995,16 @@ public sealed class JsonSchemaRegistrySerializer<T> :
         }
     }
 
-    private static SerializerPreparationAdmission ToAdmission(
-        in ResolvedSchemaContext context) =>
-        new(context.Subject, context.SchemaId, context.Schema);
+    private SerializerPreparationAdmission ToAdmission(
+        in ResolvedSchemaContext context,
+        string topic,
+        bool isKey)
+    {
+        var schemaGuidFrame = _schemaIdStrategy == SchemaIdSerializerStrategy.Header
+            ? GetSchemaForContext(topic, isKey).SchemaGuidFrame
+            : null;
+        return new(context.Subject, context.SchemaId, context.Schema, schemaGuidFrame);
+    }
 
     private SubjectSchemaIdCache.SubjectSchemaIdCacheEntry GetSchemaForContext(string topic, bool isKey)
     {
@@ -900,7 +1079,11 @@ public sealed class JsonSchemaRegistrySerializer<T> :
         {
             var value = resolved.Result;
             return new ValueTask<ResolvedSchemaContext>(ToResolvedContext(
-                standardCache.CacheEntry(topic, isKey, subject, value.SchemaId, value.Schema!)));
+                standardCache.CacheEntry(
+                    topic,
+                    isKey,
+                    subject,
+                    in value)));
         }
 
         return AwaitSchemaAsync(topic, isKey, subject, standardCache, resolved);
@@ -917,8 +1100,7 @@ public sealed class JsonSchemaRegistrySerializer<T> :
                 topic,
                 isKey,
                 subject,
-                value.SchemaId,
-                value.Schema!));
+                in value));
         }
     }
 
@@ -949,8 +1131,7 @@ public sealed class JsonSchemaRegistrySerializer<T> :
                     topic,
                     isKey,
                     subject,
-                    value.SchemaId,
-                    value.Schema!);
+                    in value);
                 if (ReferenceEquals(cache, Volatile.Read(ref state.Cache)))
                     return ToResolvedContext(cached);
             }
@@ -977,7 +1158,43 @@ public sealed class JsonSchemaRegistrySerializer<T> :
         Schema schema,
         CancellationToken cancellationToken)
     {
-        if (_autoRegisterSchemas)
+        if (_schemaSelectionMode == SchemaSelectionMode.ExplicitId)
+        {
+            var schemaId = _useSchemaId!.Value;
+            var explicitSchema = await _schemaRegistry.GetSchemaAsync(
+                    schemaId,
+                    subject,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            ValidateSchemaFormat(schemaId, explicitSchema);
+            ValidateSelectedSchema(schemaId, explicitSchema, schema);
+            return await CreateResolvedValueAsync(
+                    subject,
+                    schemaId,
+                    explicitSchema,
+                    registeredSchema: null,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        if (_schemaSelectionMode == SchemaSelectionMode.Latest)
+        {
+            var latest = await _schemaRegistry.GetSchemaBySubjectAsync(
+                    subject,
+                    "latest",
+                    cancellationToken)
+                .ConfigureAwait(false);
+            ValidateSchemaFormat(latest.Id, latest.Schema);
+            return await CreateResolvedValueAsync(
+                    subject,
+                    latest.Id,
+                    latest.Schema,
+                    latest,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        if (_schemaSelectionMode == SchemaSelectionMode.AutoRegister)
         {
             var schemaId = _normalizeSchemas
                 ? await _schemaRegistry.GetOrRegisterSchemaAsync(
@@ -994,16 +1211,93 @@ public sealed class JsonSchemaRegistrySerializer<T> :
                 : _validatorFactory is not null || _validationRulesFactory is not null
                     ? await _schemaRegistry.GetSchemaAsync(schemaId, cancellationToken).ConfigureAwait(false)
                     : schema;
-            return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(schemaId, registeredSchema);
+            return await CreateResolvedValueAsync(
+                    subject,
+                    schemaId,
+                    registeredSchema,
+                    registeredSchema: null,
+                    cancellationToken)
+                .ConfigureAwait(false);
         }
 
-        var registered = await _schemaRegistry.GetSchemaBySubjectAsync(
+        var registered = await _schemaRegistry.LookupSchemaAsync(
                 subject,
-                cancellationToken: cancellationToken)
+                schema,
+                ignoreDeletedSchemas: true,
+                normalize: _normalizeSchemas,
+                cancellationToken)
             .ConfigureAwait(false);
-        return new SubjectSchemaIdCache.SubjectSchemaIdCacheValue(
-            registered.Id,
-            registered.Schema);
+        ValidateSchemaFormat(registered.Id, registered.Schema);
+        return await CreateResolvedValueAsync(
+                subject,
+                registered.Id,
+                registered.Schema,
+                registered,
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private Task<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> CreateResolvedValueAsync(
+        string subject,
+        int schemaId,
+        Schema schema,
+        RegisteredSchema? registeredSchema,
+        CancellationToken cancellationToken) =>
+        SchemaIdentityResolution.CreateSerializerValueAsync(
+            _schemaRegistry,
+            subject,
+            schemaId,
+            schema,
+            _schemaIdStrategy,
+            _normalizeSchemas,
+            registeredSchema,
+            cancellationToken);
+
+    private static void ValidateSchemaFormat(int schemaId, Schema schema)
+    {
+        if (schema.SchemaType != SchemaType.Json)
+        {
+            throw new InvalidOperationException(
+                $"Schema ID {schemaId} has format {schema.SchemaType}; expected {SchemaType.Json}.");
+        }
+    }
+
+    private static void ValidateSelectedSchema(
+        int schemaId,
+        Schema selectedSchema,
+        Schema configuredSchema)
+    {
+        if (!JsonNode.DeepEquals(
+                JsonNode.Parse(selectedSchema.SchemaString),
+                JsonNode.Parse(configuredSchema.SchemaString)) ||
+            !HaveEquivalentReferences(selectedSchema.References, configuredSchema.References))
+        {
+            throw new InvalidOperationException(
+                $"Schema ID {schemaId} does not match the configured JSON schema.");
+        }
+    }
+
+    private static bool HaveEquivalentReferences(
+        IReadOnlyList<SchemaReference>? selected,
+        IReadOnlyList<SchemaReference>? configured)
+    {
+        var selectedCount = selected?.Count ?? 0;
+        if (selectedCount != (configured?.Count ?? 0))
+            return false;
+
+        for (var index = 0; index < selectedCount; index++)
+        {
+            var left = selected![index];
+            var right = configured![index];
+            if (!string.Equals(left.Name, right.Name, StringComparison.Ordinal) ||
+                !string.Equals(left.Subject, right.Subject, StringComparison.Ordinal) ||
+                left.Version != right.Version)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static ResolvedSchemaContext ToResolvedContext(
@@ -1116,11 +1410,15 @@ public sealed class JsonSchemaRegistrySerializer<T> :
 /// <typeparam name="T">The type to deserialize.</typeparam>
 public sealed class JsonSchemaRegistryDeserializer<T> :
     IDeserializer<T>,
+    IRecordHeaderDeserializer<T>,
+    ICallerOwnedHeaderDeserializer<T>,
+    IRecordHeaderRoutingProvider,
     IAsyncDeserializerPreparer<T>,
+    IRecordHeaderAsyncDeserializerPreparer<T>,
     IAsyncDeserializerPreparationRequirement,
     IAsyncDisposable
 {
-    private const byte MagicByte = 0x00;
+    private const int MaxCachedGuidSchemas = 1024;
     private static readonly TimeSpan SchemaRegistryTimeout = TimeSpan.FromSeconds(30);
     private static readonly string FallbackRecordName = typeof(T).FullName ?? typeof(T).Name;
 
@@ -1138,6 +1436,11 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
     private readonly bool _validationRulesFailFast;
     private readonly DeserializerSubjectNameCache? _subjectNames;
     private readonly SchemaRegistryMigrationRunner? _migrationRunner;
+    private readonly ConcurrentDictionary<GuidTopicKey, Lazy<Task<GuidResolvedSchema>>> _guidSchemaCache = new();
+    private readonly ConcurrentQueue<KeyValuePair<GuidTopicKey, Lazy<Task<GuidResolvedSchema>>>>
+        _guidSchemaEvictionQueue = new();
+    private int _cachedGuidSchemaCount;
+    private readonly SchemaIdDeserializerStrategy _schemaIdStrategy = SchemaIdDeserializerStrategy.Dual;
 
     /// <summary>
     /// Creates a new JSON Schema Registry deserializer.
@@ -1147,6 +1450,7 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
     /// <param name="ownsClient">Whether this deserializer owns the client and should dispose it.</param>
     [RequiresUnreferencedCode("JsonSerializerOptions-based JSON deserialization uses reflection. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
     [RequiresDynamicCode("JsonSerializerOptions-based JSON deserialization may require runtime code generation. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
+    [OverloadResolutionPriority(1)]
     public JsonSchemaRegistryDeserializer(
         ISchemaRegistryClient schemaRegistry,
         JsonSerializerOptions? jsonOptions = null,
@@ -1165,6 +1469,7 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
     /// </summary>
     [RequiresUnreferencedCode("JsonSerializerOptions-based JSON deserialization uses reflection. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
     [RequiresDynamicCode("JsonSerializerOptions-based JSON deserialization may require runtime code generation. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
+    [OverloadResolutionPriority(1)]
     public JsonSchemaRegistryDeserializer(
         ISchemaRegistryClient schemaRegistry,
         JsonSerializerOptions? jsonOptions,
@@ -1174,6 +1479,8 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
         : this(schemaRegistry, jsonOptions, ownsClient, ruleExecutor)
     {
         ArgumentNullException.ThrowIfNull(config);
+        ValidateSchemaIdStrategy(config.SchemaIdStrategy);
+        _schemaIdStrategy = config.SchemaIdStrategy;
         _subjectNames = DeserializerSubjectNameCache.Create(schemaRegistry, config);
         if (config.UseLatestVersion)
         {
@@ -1189,6 +1496,7 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
     /// </summary>
     [RequiresUnreferencedCode("JsonSerializerOptions-based JSON deserialization uses reflection. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
     [RequiresDynamicCode("JsonSerializerOptions-based JSON deserialization may require runtime code generation. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
+    [OverloadResolutionPriority(1)]
     public JsonSchemaRegistryDeserializer(
         ISchemaRegistryClient schemaRegistry,
         JsonSerializerOptions? jsonOptions,
@@ -1210,6 +1518,7 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
     /// </summary>
     [RequiresUnreferencedCode("JsonSerializerOptions-based JSON deserialization uses reflection. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
     [RequiresDynamicCode("JsonSerializerOptions-based JSON deserialization may require runtime code generation. Use the JsonTypeInfo<T> constructor for NativeAOT.")]
+    [OverloadResolutionPriority(1)]
     public JsonSchemaRegistryDeserializer(
         ISchemaRegistryClient schemaRegistry,
         JsonSerializerOptions? jsonOptions,
@@ -1258,6 +1567,8 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
         : this(schemaRegistry, jsonTypeInfo, ownsClient, ruleExecutor)
     {
         ArgumentNullException.ThrowIfNull(config);
+        ValidateSchemaIdStrategy(config.SchemaIdStrategy);
+        _schemaIdStrategy = config.SchemaIdStrategy;
         _subjectNames = DeserializerSubjectNameCache.Create(schemaRegistry, config);
         if (config.UseLatestVersion)
         {
@@ -1308,53 +1619,152 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
     }
 
     bool IAsyncDeserializerPreparationRequirement.RequiresPreparation =>
-        _ruleExecutor is not null && _subjectNames is { RequiresPreparation: true };
+        _subjectNames is { RequiresPreparation: true }
+        && (_ruleExecutor is not null || _schemaIdStrategy != SchemaIdDeserializerStrategy.Prefix);
 
     ValueTask IAsyncDeserializerPreparer<T>.PrepareAsync(
         ReadOnlyMemory<byte> data,
         SerializationContext context,
+        CancellationToken cancellationToken) =>
+        PrepareCoreAsync(data, context, FindCallerIdentityHeader(context), cancellationToken);
+
+    ValueTask IRecordHeaderAsyncDeserializerPreparer<T>.PrepareAsync(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        RecordHeaderRoutingLookup headers,
+        CancellationToken cancellationToken) =>
+        PrepareCoreAsync(data, context, FindRoutedIdentityHeader(context, in headers), cancellationToken);
+
+    private ValueTask PrepareCoreAsync(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        Header? identityHeader,
         CancellationToken cancellationToken)
     {
-        if (_ruleExecutor is null
-            || _subjectNames is not { RequiresPreparation: true }
-            || !DeserializerSubjectNameCache.TryReadSchemaId(data, out var schemaId))
+        if (context is { IsNull: true, Component: SerializationComponent.Value }
+            || _subjectNames is not { RequiresPreparation: true })
         {
             return default;
         }
 
-        return _subjectNames.PrepareAsync(
-            _schemaRegistry,
-            schemaId,
-            context.Topic,
-            context.Component == SerializationComponent.Key,
-            FallbackRecordName,
-            cancellationToken);
+        if (_schemaIdStrategy == SchemaIdDeserializerStrategy.Prefix)
+        {
+            return _ruleExecutor is not null
+                && DeserializerSubjectNameCache.TryReadSchemaId(data, out var prefixSchemaId)
+                    ? _subjectNames.PrepareAsync(
+                        _schemaRegistry,
+                        prefixSchemaId,
+                        context.Topic,
+                        context.Component == SerializationComponent.Key,
+                        FallbackRecordName,
+                        cancellationToken)
+                    : default;
+        }
+
+        var identity = ReadIdentity(data, identityHeader, out _);
+        if (identity.SchemaGuid is { } schemaGuid)
+        {
+            return new ValueTask(GetGuidSchemaAsync(
+                new GuidTopicKey(
+                    schemaGuid,
+                    context.Topic,
+                    context.Component == SerializationComponent.Key,
+                    _subjectNames.Generation),
+                cancellationToken));
+        }
+
+        return _ruleExecutor is null
+            ? default
+            : _subjectNames.PrepareAsync(
+                _schemaRegistry,
+                identity.SchemaId!.Value,
+                context.Topic,
+                context.Component == SerializationComponent.Key,
+                FallbackRecordName,
+                cancellationToken);
     }
 
     bool IAsyncDeserializerPreparer<T>.TryDeserialize(
         ReadOnlyMemory<byte> data,
         SerializationContext context,
+        out T value) =>
+        TryDeserializeCore(data, context, FindCallerIdentityHeader(context), out value);
+
+    bool IRecordHeaderAsyncDeserializerPreparer<T>.TryDeserialize(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        in RecordHeaderRoutingLookup headers,
+        out T value) =>
+        TryDeserializeCore(data, context, FindRoutedIdentityHeader(context, in headers), out value);
+
+    private bool TryDeserializeCore(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        Header? identityHeader,
         out T value)
     {
-        string? preparedSubject = null;
-        if (_ruleExecutor is not null
-            && _subjectNames is { RequiresPreparation: true } subjectNames
-            && DeserializerSubjectNameCache.TryReadSchemaId(data, out var schemaId))
+        if (context is { IsNull: true, Component: SerializationComponent.Value })
         {
-            if (!subjectNames.TryGetPreparedSubject(
-                    schemaId,
-                    context.Topic,
-                    context.Component == SerializationComponent.Key,
-                    out var prepared))
-            {
-                value = default!;
-                return false;
-            }
-
-            preparedSubject = prepared.Subject;
+            value = default!;
+            return true;
         }
 
-        value = DeserializeCore(data, context, preparedSubject);
+        string? preparedSubject = null;
+        if (_subjectNames is { RequiresPreparation: true } subjectNames)
+        {
+            if (_schemaIdStrategy == SchemaIdDeserializerStrategy.Prefix)
+            {
+                if (_ruleExecutor is not null
+                    && DeserializerSubjectNameCache.TryReadSchemaId(data, out var prefixSchemaId))
+                {
+                    if (!subjectNames.TryGetPreparedSubject(
+                            prefixSchemaId,
+                            context.Topic,
+                            context.Component == SerializationComponent.Key,
+                            out var prepared))
+                    {
+                        value = default!;
+                        return false;
+                    }
+
+                    preparedSubject = prepared.Subject;
+                }
+
+                value = DeserializeCore(data, context, identityHeader, preparedSubject);
+                return true;
+            }
+
+            var identity = ReadIdentity(data, identityHeader, out _);
+            if (identity.SchemaGuid is { } schemaGuid)
+            {
+                var key = new GuidTopicKey(
+                    schemaGuid,
+                    context.Topic,
+                    context.Component == SerializationComponent.Key,
+                    subjectNames.Generation);
+                if (!HasResolvedGuidSchema(key))
+                {
+                    value = default!;
+                    return false;
+                }
+            }
+            else if (_ruleExecutor is not null)
+            {
+                if (!subjectNames.TryGetPreparedSubject(
+                        identity.SchemaId!.Value,
+                        context.Topic,
+                        context.Component == SerializationComponent.Key,
+                        out var prepared))
+                {
+                    value = default!;
+                    return false;
+                }
+
+                preparedSubject = prepared.Subject;
+            }
+        }
+
+        value = DeserializeCore(data, context, identityHeader, preparedSubject);
         return true;
     }
 
@@ -1366,44 +1776,90 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
         SerializationContext context,
         string? preparedSubject)
     {
-        var span = data.Span;
-
-        if (span.Length < 5)
+        Header? identityHeader = null;
+        if (_schemaIdStrategy != SchemaIdDeserializerStrategy.Prefix
+            && context.Headers is { } callerHeaders)
         {
-            if (context is { IsNull: true, Component: SerializationComponent.Value })
-                return default!;
-
-            throw new InvalidOperationException("Message too short to contain Schema Registry wire format");
+            var headerName = GetIdentityHeaderName(context.Component);
+            for (var index = callerHeaders.Count - 1; index >= 0; index--)
+            {
+                if (string.Equals(callerHeaders[index].Key, headerName, StringComparison.Ordinal))
+                {
+                    identityHeader = callerHeaders[index];
+                    break;
+                }
+            }
         }
 
-        if (span[0] != MagicByte)
-            throw new InvalidOperationException($"Unknown magic byte: {span[0]}. Expected Schema Registry format.");
+        return DeserializeCore(data, context, identityHeader, preparedSubject);
+    }
 
-        var schemaId = BinaryPrimitives.ReadInt32BigEndian(span.Slice(1, 4));
+    T ICallerOwnedHeaderDeserializer<T>.DeserializeCallerOwned(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context) => Deserialize(data, context);
+
+    T IRecordHeaderDeserializer<T>.Deserialize(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        in RecordHeaderRoutingLookup headers)
+    {
+        Header? identityHeader = headers.TryGetLast(GetIdentityHeaderName(context.Component), out var header)
+            ? header
+            : null;
+        return DeserializeCore(data, context, identityHeader, preparedSubject: null);
+    }
+
+    void IRecordHeaderRoutingProvider.CollectHeaderNames(List<string> names)
+    {
+        AddHeaderName(names, SchemaIdentityHeaderNames.Key);
+        AddHeaderName(names, SchemaIdentityHeaderNames.Value);
+    }
+
+    private T DeserializeCore(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        Header? identityHeader,
+        string? preparedSubject)
+    {
+        if (context is { IsNull: true, Component: SerializationComponent.Value })
+            return default!;
+
+        var identity = ReadIdentity(data, identityHeader, out var payloadOffset);
+        var schemaId = identity.SchemaId ?? -1;
+        var guidSchema = identity.SchemaGuid is { } schemaGuid
+            ? GetGuidSchemaCached(schemaGuid, context)
+            : null;
 
         // Extract JSON payload and deserialize
-        var payload = data.Slice(5);
+        var payload = data[payloadOffset..];
         Schema schema;
         if (_ruleExecutor is not null)
         {
             string subject;
-            if (preparedSubject is not null)
+            if (guidSchema is not null)
+            {
+                schemaId = guidSchema.SchemaId;
+                subject = guidSchema.Subject;
+                schema = guidSchema.Schema;
+            }
+            else if (preparedSubject is not null)
             {
                 subject = preparedSubject;
+                schema = _schemaRegistry.GetSchemaSync(schemaId, subject, SchemaRegistryTimeout);
             }
             else if (_subjectNames is null)
             {
                 subject = SubjectNameResolver.GetTopicSubjectName(
                     context.Topic,
                     context.Component == SerializationComponent.Key);
+                schema = _schemaRegistry.GetSchemaSync(schemaId, subject, SchemaRegistryTimeout);
             }
             else
             {
                 schema = _schemaRegistry.GetSchemaSync(schemaId, SchemaRegistryTimeout);
                 subject = GetSubjectName(schemaId, schema, context);
+                schema = _schemaRegistry.GetSchemaSync(schemaId, subject, SchemaRegistryTimeout);
             }
-
-            schema = _schemaRegistry.GetSchemaSync(schemaId, subject, SchemaRegistryTimeout);
             if (_migrationRunner is null)
             {
                 var ruleContext = SchemaRegistryRuleContext.Rent(
@@ -1473,7 +1929,9 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
         else
         {
             // Verify the schema exists. Cache hits avoid Task allocation and sync-over-async.
-            schema = _schemaRegistry.GetSchemaSync(schemaId, SchemaRegistryTimeout);
+            schema = guidSchema?.Schema ?? _schemaRegistry.GetSchemaSync(schemaId, SchemaRegistryTimeout);
+            if (guidSchema is not null)
+                schemaId = guidSchema.SchemaId;
         }
 
         if (_validatorFactory is not null)
@@ -1502,6 +1960,184 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
                 validationOptions.ValidationRulesFailFast),
             null);
     }
+
+    private GuidResolvedSchema GetGuidSchemaCached(Guid schemaGuid, SerializationContext context)
+    {
+        var key = new GuidTopicKey(
+            schemaGuid,
+            context.Topic,
+            context.Component == SerializationComponent.Key,
+            _subjectNames?.Generation ?? 0);
+        if (!_guidSchemaCache.TryGetValue(key, out var lazy))
+        {
+            lazy = _guidSchemaCache.GetOrAdd(
+                key,
+                static (cacheKey, deserializer) => deserializer.CreateGuidSchemaLazy(cacheKey),
+                this);
+        }
+
+        var task = lazy.Value;
+        return task.IsCompletedSuccessfully
+            ? task.Result
+            : task.WaitAsync(SchemaRegistryTimeout).ConfigureAwait(false).GetAwaiter().GetResult();
+    }
+
+    private bool HasResolvedGuidSchema(GuidTopicKey key) =>
+        _guidSchemaCache.TryGetValue(key, out var lazy)
+        && lazy.IsValueCreated
+        && lazy.Value.IsCompletedSuccessfully;
+
+    private Task<GuidResolvedSchema> GetGuidSchemaAsync(
+        GuidTopicKey key,
+        CancellationToken cancellationToken)
+    {
+        var lazy = _guidSchemaCache.GetOrAdd(
+            key,
+            static (cacheKey, deserializer) => deserializer.CreateGuidSchemaLazy(cacheKey),
+            this);
+        return lazy.Value.WaitAsync(cancellationToken);
+    }
+
+    private Lazy<Task<GuidResolvedSchema>> CreateGuidSchemaLazy(GuidTopicKey key) =>
+        new(() => FetchGuidSchemaAsync(key));
+
+    private async Task<GuidResolvedSchema> FetchGuidSchemaAsync(GuidTopicKey key)
+    {
+        try
+        {
+            var resolved = await SchemaRegistryOperationTimeout.ExecuteAsync(
+                    cancellationToken => FetchGuidSchemaCoreAsync(key, cancellationToken),
+                    SchemaRegistryTimeout,
+                    $"Schema GUID {key.SchemaGuid:D} resolution timed out.")
+                .ConfigureAwait(false);
+            BoundedSchemaIdentityCache.RecordSuccessfulResolution(
+                _guidSchemaCache,
+                _guidSchemaEvictionQueue,
+                key,
+                ref _cachedGuidSchemaCount,
+                MaxCachedGuidSchemas);
+            return resolved;
+        }
+        catch
+        {
+            _guidSchemaCache.TryRemove(key, out _);
+            throw;
+        }
+    }
+
+    private async Task<GuidResolvedSchema> FetchGuidSchemaCoreAsync(
+        GuidTopicKey key,
+        CancellationToken cancellationToken)
+    {
+        var unscopedSchema = await _schemaRegistry.GetSchemaByGuidAsync(
+                key.SchemaGuid.ToString("D"),
+                cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+        if (unscopedSchema.SchemaType != SchemaType.Json)
+        {
+            throw new InvalidOperationException(
+                $"Schema with GUID {key.SchemaGuid:D} is not a JSON schema. Type: {unscopedSchema.SchemaType}");
+        }
+        var subject = _subjectNames is null
+            ? SubjectNameResolver.GetTopicSubjectName(key.Topic, key.IsKey)
+            : await _subjectNames.ResolveSubjectNameAsync(
+                    unscopedSchema,
+                    key.Topic,
+                    key.IsKey,
+                    FallbackRecordName,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        var registered = await _schemaRegistry.LookupSchemaAsync(
+                subject,
+                unscopedSchema,
+                ignoreDeletedSchemas: true,
+                cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+        if (!Guid.TryParse(registered.Guid, out var registeredGuid) || registeredGuid != key.SchemaGuid)
+        {
+            throw new InvalidDataException(
+                $"Schema Registry returned a conflicting GUID for subject '{subject}'.");
+        }
+
+        var resolved = new GuidResolvedSchema(registered.Id, subject, registered.Schema);
+        return resolved;
+    }
+
+    private static void ValidateSchemaIdStrategy(SchemaIdDeserializerStrategy strategy)
+    {
+        if (strategy is not (
+            SchemaIdDeserializerStrategy.Dual
+            or SchemaIdDeserializerStrategy.Prefix
+            or SchemaIdDeserializerStrategy.Header))
+        {
+            throw new ArgumentOutOfRangeException(nameof(strategy), strategy, "Unknown schema identity strategy.");
+        }
+    }
+
+    private static void AddHeaderName(List<string> names, string name)
+    {
+        if (!names.Contains(name))
+            names.Add(name);
+    }
+
+    private static string GetIdentityHeaderName(SerializationComponent component) => component switch
+    {
+        SerializationComponent.Key => SchemaIdentityHeaderNames.Key,
+        SerializationComponent.Value => SchemaIdentityHeaderNames.Value,
+        _ => throw new ArgumentOutOfRangeException(nameof(component), component, "Unknown serialization component.")
+    };
+
+    private SchemaIdentity ReadIdentity(
+        ReadOnlyMemory<byte> data,
+        Header? identityHeader,
+        out int payloadOffset)
+    {
+        var identity = SchemaIdentityFraming.Read(
+            data.Span,
+            identityHeader,
+            _schemaIdStrategy,
+            out payloadOffset,
+            out var trailingHeaderData);
+        if (!trailingHeaderData.IsEmpty)
+            throw new InvalidDataException("JSON schema identity headers cannot contain trailing data.");
+        return identity;
+    }
+
+    private Header? FindCallerIdentityHeader(SerializationContext context)
+    {
+        if (context is { IsNull: true, Component: SerializationComponent.Value }
+            || _schemaIdStrategy == SchemaIdDeserializerStrategy.Prefix
+            || context.Headers is not { } headers)
+        {
+            return null;
+        }
+
+        var headerName = GetIdentityHeaderName(context.Component);
+        for (var index = headers.Count - 1; index >= 0; index--)
+        {
+            if (string.Equals(headers[index].Key, headerName, StringComparison.Ordinal))
+                return headers[index];
+        }
+
+        return null;
+    }
+
+    private Header? FindRoutedIdentityHeader(
+        SerializationContext context,
+        in RecordHeaderRoutingLookup headers) =>
+        context is not { IsNull: true, Component: SerializationComponent.Value }
+        && _schemaIdStrategy != SchemaIdDeserializerStrategy.Prefix
+        && headers.TryGetLast(GetIdentityHeaderName(context.Component), out var header)
+            ? header
+            : null;
+
+    private readonly record struct GuidTopicKey(
+        Guid SchemaGuid,
+        string Topic,
+        bool IsKey,
+        int SubjectGeneration);
+
+    private sealed record GuidResolvedSchema(int SchemaId, string Subject, Schema Schema);
 
     private string GetSubjectName(int schemaId, Schema schema, SerializationContext context)
     {

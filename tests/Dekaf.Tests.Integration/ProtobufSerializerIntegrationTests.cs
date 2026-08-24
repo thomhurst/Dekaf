@@ -3,6 +3,7 @@ using Dekaf.Producer;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Protobuf;
 using Dekaf.Tests.Integration.Protos;
+using Google.Protobuf;
 
 namespace Dekaf.Tests.Integration;
 
@@ -10,9 +11,66 @@ namespace Dekaf.Tests.Integration;
 /// Integration tests for Protobuf serializer with Kafka and Schema Registry.
 /// </summary>
 [Category("Serialization")]
-[ClassDataSource<KafkaWithSchemaRegistryContainer>(Shared = SharedType.PerTestSession)]
-public sealed class ProtobufSerializerIntegrationTests(KafkaWithSchemaRegistryContainer testInfra)
+[ClassDataSource<KafkaWithAssociationSchemaRegistryContainer>(Shared = SharedType.PerTestSession)]
+public sealed class ProtobufSerializerIntegrationTests(KafkaWithAssociationSchemaRegistryContainer testInfra)
 {
+    [Test]
+    public async Task ProtobufSerializer_ExplicitSchemaId_RoundTrips()
+    {
+        var topic = await testInfra.CreateTestTopicAsync();
+        using var registryClient = new SchemaRegistryClient(new SchemaRegistryConfig
+        {
+            Url = testInfra.RegistryUrl
+        });
+        var schemaId = await registryClient.RegisterSchemaAsync($"{topic}-value", new Schema
+        {
+            SchemaType = SchemaType.Protobuf,
+            SchemaString = TestPerson.Descriptor.File.SerializedData.ToBase64()
+        });
+        var person = new TestPerson { Id = 71, Name = "Explicit ID", Email = "id@example.com" };
+
+        await using var producer = await Kafka.CreateProducer<string, TestPerson>()
+            .WithBootstrapServers(testInfra.BootstrapServers)
+            .UseProtobufSchemaRegistry(registryClient, new ProtobufSerializerConfig
+            {
+                UseSchemaId = schemaId
+            })
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        await producer.ProduceAsync(topic, "explicit", person);
+
+        var consumed = await ConsumeOneAsync(topic, registryClient);
+
+        await Assert.That(consumed.Id).IsEqualTo(person.Id);
+        await Assert.That(consumed.Name).IsEqualTo(person.Name);
+    }
+
+    [Test]
+    public async Task ProtobufSerializer_GuidHeader_RoundTrips()
+    {
+        var topic = await testInfra.CreateTestTopicAsync();
+        using var registryClient = new SchemaRegistryClient(new SchemaRegistryConfig
+        {
+            Url = testInfra.RegistryUrl
+        });
+        var person = new TestPerson { Id = 72, Name = "GUID", Email = "guid@example.com" };
+
+        await using var producer = await Kafka.CreateProducer<string, TestPerson>()
+            .WithBootstrapServers(testInfra.BootstrapServers)
+            .UseProtobufSchemaRegistry(registryClient, new ProtobufSerializerConfig
+            {
+                SchemaIdStrategy = SchemaIdSerializerStrategy.Header
+            })
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        await producer.ProduceAsync(topic, "guid", person);
+
+        var consumed = await ConsumeOneAsync(topic, registryClient);
+
+        await Assert.That(consumed.Id).IsEqualTo(person.Id);
+        await Assert.That(consumed.Name).IsEqualTo(person.Name);
+    }
+
     [Test]
     public async Task ProtobufSerializer_ProduceAndConsume_RoundTrips()
     {
@@ -210,5 +268,23 @@ public sealed class ProtobufSerializerIntegrationTests(KafkaWithSchemaRegistryCo
         await Assert.That(consumed!.Id).IsEqualTo(0);
         await Assert.That(consumed.Name).IsEqualTo("");
         await Assert.That(consumed.Email).IsEqualTo("");
+    }
+
+    private async Task<TestPerson> ConsumeOneAsync(string topic, ISchemaRegistryClient registryClient)
+    {
+        await using var consumer = await Kafka.CreateConsumer<string, TestPerson>()
+            .WithBootstrapServers(testInfra.BootstrapServers)
+            .WithGroupId($"proto-identity-{Guid.NewGuid():N}")
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .UseProtobufSchemaRegistry(registryClient)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        consumer.Subscribe(topic);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await foreach (var message in consumer.ConsumeAsync(cts.Token))
+            return message.Value!;
+
+        throw new InvalidOperationException("The produced Protobuf message was not consumed.");
     }
 }

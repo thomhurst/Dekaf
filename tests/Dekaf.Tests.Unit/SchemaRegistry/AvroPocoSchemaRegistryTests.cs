@@ -15,6 +15,8 @@ using ISchemaRegistryRuleHandler = Dekaf.SchemaRegistry.ISchemaRegistryRuleHandl
 using SchemaRegistryRuleContext = Dekaf.SchemaRegistry.SchemaRegistryRuleContext;
 using SchemaRegistryRuleExecutor = Dekaf.SchemaRegistry.SchemaRegistryRuleExecutor;
 using SchemaRegistryRuleHandlerContext = Dekaf.SchemaRegistry.SchemaRegistryRuleHandlerContext;
+using SchemaIdDeserializerStrategy = Dekaf.SchemaRegistry.SchemaIdDeserializerStrategy;
+using SchemaIdSerializerStrategy = Dekaf.SchemaRegistry.SchemaIdSerializerStrategy;
 using SchemaRule = Dekaf.SchemaRegistry.SchemaRule;
 using SchemaRuleKind = Dekaf.SchemaRegistry.SchemaRuleKind;
 using SchemaRuleMode = Dekaf.SchemaRegistry.SchemaRuleMode;
@@ -1460,6 +1462,136 @@ public sealed class AvroPocoSchemaRegistryTests
         var actual = deserializer.Deserialize(destination.WrittenMemory, context);
 
         await Assert.That(actual.Value).IsEqualTo(expected.Value);
+    }
+
+    [Test]
+    public async Task GeneratedCodec_HeaderStrategy_RoundTripsUnprefixedPayload()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        await using var serializer = PocoNullableStructRecord.CreateAvroSerializer(
+            registry,
+            new AvroSerializerConfig
+            {
+                SchemaIdStrategy = SchemaIdSerializerStrategy.Header,
+                SubjectNameStrategy = SubjectNameStrategy.RecordName
+            });
+        await using var deserializer = PocoNullableStructRecord.CreateAvroDeserializer(
+            registry,
+            new AvroDeserializerConfig
+            {
+                SchemaIdStrategy = SchemaIdDeserializerStrategy.Header,
+                SubjectNameStrategy = SubjectNameStrategy.RecordName
+            });
+        var headers = new Headers();
+        var context = new SerializationContext
+        {
+            Topic = "poco-header",
+            Component = SerializationComponent.Value,
+            Headers = headers
+        };
+        var destination = new ArrayBufferWriter<byte>();
+        var expected = new PocoNullableStructRecord
+        {
+            Value = new PocoReadonlyRecord { Id = 42 }
+        };
+
+        serializer.Serialize(expected, ref destination, context);
+        await Assert.That(() => deserializer.Deserialize(destination.WrittenMemory, context))
+            .Throws<InvalidOperationException>()
+            .WithMessageContaining("not cached");
+        await ((IAsyncDeserializerPreparer<PocoNullableStructRecord>)deserializer)
+            .PrepareAsync(destination.WrittenMemory, context);
+        var actual = deserializer.Deserialize(destination.WrittenMemory, context);
+
+        await Assert.That(destination.WrittenCount).IsLessThan(5);
+        await Assert.That(headers.Count).IsEqualTo(1);
+        await Assert.That(headers[0].Value.Length).IsEqualTo(17);
+        await Assert.That(actual.Value).IsEqualTo(expected.Value);
+        await Assert.That(registry.LastGetSchemaByGuidCancellationToken.CanBeCanceled).IsTrue();
+    }
+
+    [Test]
+    public async Task GeneratedCodec_GuidWarmup_AllowsSynchronousDeserialization()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        await using var serializer = PocoNullableStructRecord.CreateAvroSerializer(
+            registry,
+            new AvroSerializerConfig { SchemaIdStrategy = SchemaIdSerializerStrategy.Header });
+        await using var deserializer = PocoNullableStructRecord.CreateAvroDeserializer(
+            registry,
+            new AvroDeserializerConfig { SchemaIdStrategy = SchemaIdDeserializerStrategy.Header });
+        var headers = new Headers();
+        var context = new SerializationContext
+        {
+            Topic = "poco-guid-warmup",
+            Component = SerializationComponent.Value,
+            Headers = headers
+        };
+        var destination = new ArrayBufferWriter<byte>();
+        var expected = new PocoNullableStructRecord
+        {
+            Value = new PocoReadonlyRecord { Id = 42 }
+        };
+        var schemaId = await serializer.WarmupAsync(context.Topic);
+        serializer.Serialize(expected, ref destination, context);
+
+        await deserializer.WarmupAsync(new Guid(schemaId, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0), context);
+        var actual = deserializer.Deserialize(destination.WrittenMemory, context);
+
+        await Assert.That(actual.Value).IsEqualTo(expected.Value);
+        await Assert.That(registry.LastGetSchemaByGuidCancellationToken.CanBeCanceled).IsTrue();
+    }
+
+    [Arguments(false)]
+    [Arguments(true)]
+    [Test]
+    public async Task GeneratedCodec_GuidHeader_PreparesConfiguredAsyncSubject(bool useWarmup)
+    {
+        const string topic = "poco-guid-async-subject";
+        var subject = $"{topic}-value";
+        using var registry = new MockSchemaRegistryClient();
+        await using var serializer = PocoNullableStructRecord.CreateAvroSerializer(
+            registry,
+            new AvroSerializerConfig { SchemaIdStrategy = SchemaIdSerializerStrategy.Header });
+        var strategy = new FixedAsyncSubjectNameStrategy(subject);
+        await using var deserializer = PocoNullableStructRecord.CreateAvroDeserializer(
+            registry,
+            new AvroDeserializerConfig
+            {
+                SchemaIdStrategy = SchemaIdDeserializerStrategy.Header,
+                AsyncSubjectNameStrategy = strategy
+            });
+        var headers = new Headers();
+        var context = new SerializationContext
+        {
+            Topic = topic,
+            Component = SerializationComponent.Value,
+            Headers = headers
+        };
+        var destination = new ArrayBufferWriter<byte>();
+        var expected = new PocoNullableStructRecord
+        {
+            Value = new PocoReadonlyRecord { Id = 42 }
+        };
+        var schemaId = await serializer.WarmupAsync(topic);
+        serializer.Serialize(expected, ref destination, context);
+
+        if (useWarmup)
+        {
+            await deserializer.WarmupAsync(
+                new Guid(schemaId, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+                context);
+        }
+        else
+        {
+            await ((IAsyncDeserializerPreparer<PocoNullableStructRecord>)deserializer)
+                .PrepareAsync(destination.WrittenMemory, context);
+        }
+
+        var actual = deserializer.Deserialize(destination.WrittenMemory, context);
+
+        await Assert.That(actual.Value).IsEqualTo(expected.Value);
+        await Assert.That(strategy.CallCount).IsEqualTo(1);
     }
 
     [Test]
@@ -3296,6 +3428,31 @@ public sealed class AvroPocoSchemaRegistryTests
         var actualId = await serializer.WarmupAsync("poco-lookup");
 
         await Assert.That(actualId).IsEqualTo(expectedId);
+    }
+
+    [Test]
+    public async Task GeneratedCodec_UseSchemaId_TakesPrecedenceOverLatestAndRegistration()
+    {
+        using var registry = new MockSchemaRegistryClient();
+        var schema = new Dekaf.SchemaRegistry.Schema
+        {
+            SchemaType = Dekaf.SchemaRegistry.SchemaType.Avro,
+            SchemaString = PocoWireRecord.AvroCodec.SchemaJson
+        };
+        var explicitId = await registry.RegisterSchemaAsync("poco-explicit-value", schema);
+        _ = await registry.RegisterSchemaAsync("poco-explicit-value", schema);
+        await using var serializer = PocoWireRecord.CreateAvroSerializer(
+            registry,
+            new AvroSerializerConfig
+            {
+                UseSchemaId = explicitId,
+                UseLatestVersion = true,
+                AutoRegisterSchemas = true
+            });
+
+        var actualId = await serializer.WarmupAsync("poco-explicit");
+
+        await Assert.That(actualId).IsEqualTo(explicitId);
     }
 
     [Test]

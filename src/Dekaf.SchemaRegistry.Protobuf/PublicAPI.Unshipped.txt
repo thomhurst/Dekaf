@@ -5,6 +5,8 @@ Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig.AsyncSubjectNameStrategy.
 Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig.AsyncSubjectNameStrategy.init -> void
 Dekaf.SchemaRegistry.Protobuf.ProtobufDeserializerConfig.CustomSubjectNameStrategy.get -> Dekaf.SchemaRegistry.ISubjectNameStrategy?
 Dekaf.SchemaRegistry.Protobuf.ProtobufDeserializerConfig.CustomSubjectNameStrategy.init -> void
+Dekaf.SchemaRegistry.Protobuf.ProtobufDeserializerConfig.SchemaIdStrategy.get -> Dekaf.SchemaRegistry.SchemaIdDeserializerStrategy
+Dekaf.SchemaRegistry.Protobuf.ProtobufDeserializerConfig.SchemaIdStrategy.init -> void
 Dekaf.SchemaRegistry.Protobuf.ProtobufDeserializerConfig.SubjectNameStrategy.get -> Dekaf.SchemaRegistry.SubjectNameStrategy
 Dekaf.SchemaRegistry.Protobuf.ProtobufDeserializerConfig.SubjectNameStrategy.init -> void
 Dekaf.SchemaRegistry.Protobuf.ProtobufDeserializerConfig.UseLegacySubjectNames.get -> bool
@@ -17,4 +19,8 @@ Dekaf.SchemaRegistry.Protobuf.ProtobufSchemaRegistrySerializer<T>.PrepareAsync(s
 Dekaf.SchemaRegistry.Protobuf.ProtobufSchemaRegistrySerializer<T>.PrepareAsync(T value, Dekaf.Serialization.SerializationContext context, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
 Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig.CustomReferenceSubjectNameStrategy.get -> Dekaf.SchemaRegistry.Protobuf.IReferenceSubjectNameStrategy?
 Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig.CustomReferenceSubjectNameStrategy.init -> void
+Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig.SchemaIdStrategy.get -> Dekaf.SchemaRegistry.SchemaIdSerializerStrategy
+Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig.SchemaIdStrategy.init -> void
+Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig.UseSchemaId.get -> int?
+Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig.UseSchemaId.init -> void
 Dekaf.SchemaRegistry.Protobuf.ReferenceSubjectNameStrategy.Qualified = 1 -> Dekaf.SchemaRegistry.Protobuf.ReferenceSubjectNameStrategy

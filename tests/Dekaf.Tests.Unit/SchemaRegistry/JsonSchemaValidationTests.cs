@@ -628,8 +628,12 @@ public sealed class JsonSchemaValidationTests
             registry,
             rootSchema,
             jsonOptions: null,
-            validationOptions: validation,
-            autoRegisterSchemas: false);
+            validation,
+            new JsonSchemaSerializerConfig
+            {
+                AutoRegisterSchemas = false,
+                UseLatestVersion = true
+            });
         var context = new SerializationContext
         {
             Topic = "registered-write",
@@ -668,12 +672,16 @@ public sealed class JsonSchemaValidationTests
             registry,
             rootSchema,
             jsonOptions: null,
-            validationOptions: new JsonSchemaValidationOptions
+            new JsonSchemaValidationOptions
             {
                 ValidatorFactory = new StreamingJsonSchemaValidatorFactory(registry),
                 Mode = JsonSchemaValidationMode.Serialize
             },
-            autoRegisterSchemas: false);
+            new JsonSchemaSerializerConfig
+            {
+                AutoRegisterSchemas = false,
+                UseLatestVersion = true
+            });
         var context = new SerializationContext
         {
             Topic = "registered-write",

@@ -25,6 +25,7 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
 
     public int GetSchemaCallCount { get; private set; }
     public CancellationToken LastGetSchemaCancellationToken { get; private set; }
+    public CancellationToken LastGetSchemaByGuidCancellationToken { get; private set; }
     public int GetOrRegisterSchemaCallCount { get; private set; }
     public CancellationToken LastGetOrRegisterSchemaCancellationToken { get; private set; }
     public int TryGetCachedSchemaCallCount { get; private set; }
@@ -185,6 +186,7 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
         CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
+        LastGetSchemaByGuidCancellationToken = cancellationToken;
         cancellationToken.ThrowIfCancellationRequested();
         if (Guid.TryParse(guid, out var parsedGuid))
         {
