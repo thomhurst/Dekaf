@@ -6,6 +6,7 @@ using Dekaf.SchemaRegistry.Avro;
 using Dekaf.SchemaRegistry.Avro.Poco;
 using Dekaf.Serialization;
 using Dekaf.Serialization.Routing;
+using Dekaf.ShareConsumer;
 using AvroSchema = Avro.Schema;
 
 namespace Dekaf.Tests.Integration;
@@ -213,10 +214,92 @@ public sealed class SchemaIdentityFramingIntegrationTests(
         await Assert.That(consumed.Value.Name).IsEqualTo("batch-guid");
     }
 
+    [Test]
+    [Arguments(SchemaIdDeserializerStrategy.Header)]
+    [Arguments(SchemaIdDeserializerStrategy.Dual)]
+    public async Task AvroPoco_GuidHeader_ColdShareConsumerRoundTrips(
+        SchemaIdDeserializerStrategy strategy)
+    {
+        var topic = await testInfra.CreateTestTopicAsync();
+        using var producerRegistry = CreateRegistryClient();
+        using var consumerRegistry = CreateRegistryClient();
+        await using var serializer = BatchIdentityRecord.CreateAvroSerializer(
+            producerRegistry,
+            new AvroSerializerConfig
+            {
+                SchemaIdStrategy = SchemaIdSerializerStrategy.Header
+            });
+        await using var deserializer = BatchIdentityRecord.CreateAvroDeserializer(
+            consumerRegistry,
+            new AvroDeserializerConfig
+            {
+                SchemaIdStrategy = strategy
+            });
+
+        await using var producer = await Kafka.CreateProducer<string, BatchIdentityRecord>()
+            .WithBootstrapServers(testInfra.BootstrapServers)
+            .WithValueSerializer(serializer)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        await using var consumer = await Kafka.CreateShareConsumer<string, BatchIdentityRecord>()
+            .WithBootstrapServers(testInfra.BootstrapServers)
+            .WithGroupId($"avro-poco-share-guid-{strategy}-{Guid.NewGuid():N}")
+            .WithValueDeserializer(deserializer)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        consumer.Subscribe(topic);
+        await PrimeShareConsumerAsync(consumer);
+
+        await producer.ProduceAsync(
+            topic,
+            "share-guid",
+            new BatchIdentityRecord { Id = 92, Name = "cold-share-guid" });
+
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await foreach (var consumed in consumer.PollAsync(cancellation.Token))
+        {
+            await Assert.That(consumed.Value.Id).IsEqualTo(92);
+            await Assert.That(consumed.Value.Name).IsEqualTo("cold-share-guid");
+            await AssertIdentityHeaderAsync(consumed.Headers);
+            return;
+        }
+
+        Assert.Fail("No Avro POCO share-consumer record was consumed.");
+    }
+
     private SchemaRegistryClient CreateRegistryClient() => new(new SchemaRegistryConfig
     {
         Url = testInfra.RegistryUrl
     });
+
+    private static async Task PrimeShareConsumerAsync<TKey, TValue>(
+        IKafkaShareConsumer<TKey, TValue> consumer)
+    {
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var polling = PollUntilCanceledAsync(consumer, cancellation.Token);
+
+        while (consumer.MemberId is null || consumer.Assignment.Count == 0)
+            await Task.Delay(100, cancellation.Token);
+
+        await Task.Delay(TimeSpan.FromMilliseconds(500), cancellation.Token);
+        await cancellation.CancelAsync();
+        await polling;
+    }
+
+    private static async Task PollUntilCanceledAsync<TKey, TValue>(
+        IKafkaShareConsumer<TKey, TValue> consumer,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await foreach (var _ in consumer.PollAsync(cancellationToken))
+            {
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+    }
 
     private static async Task AssertIdentityHeaderAsync(IReadOnlyList<Dekaf.Serialization.Header> headers)
     {

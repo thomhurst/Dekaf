@@ -5,10 +5,11 @@ namespace Dekaf.Serialization;
 /// require asynchronous work, such as fetching a writer schema from Schema Registry.
 /// </summary>
 /// <remarks>
-/// <c>ConsumeAsync</c> and <c>ConsumeOneAsync</c> await <see cref="PrepareAsync"/> after
-/// <see cref="TryDeserialize"/> reports a cold miss. Once prepared, <see cref="TryDeserialize"/>
-/// should complete synchronously without allocating. Batch records are iterated synchronously, so
-/// callers using <c>ConsumeBatchAsync</c> must explicitly warm asynchronous prerequisites first.
+/// <c>ConsumeAsync</c>, <c>ConsumeOneAsync</c>, and the share consumer's <c>PollAsync</c> await
+/// <see cref="PrepareAsync"/> after <see cref="TryDeserialize"/> reports a cold miss. Once prepared,
+/// <see cref="TryDeserialize"/> should complete synchronously without allocating. Batch records are
+/// iterated synchronously, so callers using <c>ConsumeBatchAsync</c> must explicitly warm
+/// asynchronous prerequisites first.
 /// The supplied data references pooled fetch storage and must not be retained after the returned
 /// task completes.
 /// </remarks>
