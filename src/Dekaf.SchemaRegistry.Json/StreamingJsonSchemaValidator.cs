@@ -129,9 +129,6 @@ internal sealed class StreamingJsonSchemaValidator(
             CommentHandling = JsonCommentHandling.Disallow,
             MaxDepth = 128
         });
-        if (!reader.Read())
-            return;
-
         var path = new ValidationPathBuilder();
         List<ValidationRuleError>? violations = null;
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
@@ -140,6 +137,9 @@ internal sealed class StreamingJsonSchemaValidator(
         var valueSlice = new ValidationValueSlice();
         try
         {
+            if (!reader.Read())
+                ThrowFailure(schemaId, "$parse", "$", null);
+
             var completed = WalkValidationRules(
                 ref reader,
                 payload,

@@ -1015,6 +1015,28 @@ public sealed class JsonSchemaValidationTests
     }
 
     [Test]
+    [Arguments("")]
+    [Arguments(" \r\n\t")]
+    public async Task InlineRules_RejectMissingJsonRoot(string payload)
+    {
+        const string schemaText = """
+            {
+              "confluent:rules": [{ "name": "valid", "expr": "true" }]
+            }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
+
+        var exception = Assert.Throws<JsonSchemaValidationException>(() => validator.ValidateRules(
+            Encoding.UTF8.GetBytes(payload),
+            19,
+            failFast: false));
+
+        await Assert.That(exception.SchemaId).IsEqualTo(19);
+        await Assert.That(exception.Keyword).IsEqualTo("$parse");
+        await Assert.That(exception.JsonPath).IsEqualTo("$");
+    }
+
+    [Test]
     public void InlineRules_CompositionCountsFinalDuplicateProperties()
     {
         const string schemaText = """
