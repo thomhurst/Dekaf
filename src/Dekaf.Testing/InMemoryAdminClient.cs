@@ -442,6 +442,9 @@ public sealed class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
         var offsetSnapshot = new Dictionary<TopicPartition, long>(offsets);
+        foreach (var partition in offsetSnapshot.Keys)
+            ValidateTopicPartition(partition);
+
         var result = new Dictionary<TopicPartition, long>(offsetSnapshot.Count);
         if (offsetSnapshot.Count == 0)
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
@@ -1055,12 +1058,14 @@ public sealed class InMemoryAdminClient :
         ThrowIfDisposed();
 
         var partitionList = partitions.ToArray();
+        for (var index = 0; index < partitionList.Length; index++)
+            ValidateTopicPartition(partitionList[index]);
+
         if (partitionList.Length == 0)
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         for (var index = 0; index < partitionList.Length; index++)
         {
             var partition = partitionList[index];
-            ValidateTopicPartition(partition);
             await ApplyAdminFaultAsync(
                 cancellationToken,
                 partition.Topic,
@@ -1221,14 +1226,18 @@ public sealed class InMemoryAdminClient :
         ThrowIfDisposed();
 
         var assignments = replicaAssignments.ToArray();
-        var result = new Dictionary<TopicPartitionReplica, AlterReplicaLogDirResultInfo>(assignments.Length);
-        if (assignments.Length == 0)
-            await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         foreach (var (replica, logDir) in assignments)
         {
             ValidateTopicPartition(replica.TopicPartition);
             ArgumentOutOfRangeException.ThrowIfNegative(replica.BrokerId);
             ArgumentException.ThrowIfNullOrWhiteSpace(logDir);
+        }
+
+        var result = new Dictionary<TopicPartitionReplica, AlterReplicaLogDirResultInfo>(assignments.Length);
+        if (assignments.Length == 0)
+            await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        foreach (var (replica, _) in assignments)
+        {
             await ApplyAdminFaultAsync(
                 cancellationToken,
                 replica.TopicPartition.Topic,
@@ -1253,13 +1262,17 @@ public sealed class InMemoryAdminClient :
         ThrowIfDisposed();
 
         var replicaList = replicas.ToArray();
+        foreach (var replica in replicaList)
+        {
+            ValidateTopicPartition(replica.TopicPartition);
+            ArgumentOutOfRangeException.ThrowIfNegative(replica.BrokerId);
+        }
+
         var result = new Dictionary<TopicPartitionReplica, DescribeReplicaLogDirResultInfo>(replicaList.Length);
         if (replicaList.Length == 0)
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         foreach (var replica in replicaList)
         {
-            ValidateTopicPartition(replica.TopicPartition);
-            ArgumentOutOfRangeException.ThrowIfNegative(replica.BrokerId);
             await ApplyAdminFaultAsync(
                 cancellationToken,
                 replica.TopicPartition.Topic,

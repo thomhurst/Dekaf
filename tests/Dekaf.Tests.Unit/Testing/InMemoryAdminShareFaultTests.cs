@@ -322,6 +322,44 @@ public sealed class InMemoryAdminShareFaultTests
     }
 
     [Test]
+    public async Task AdminFault_InvalidLaterPartitionDoesNotConsumeScriptedFailure()
+    {
+        var validPartition = new TopicPartition("orders", 0);
+        var invalidPartition = new TopicPartition("payments", -1);
+        var validReplica = new TopicPartitionReplica("orders", 0, 0);
+        var invalidReplica = new TopicPartitionReplica("payments", -1, 0);
+
+        await AssertInvalidAdminBatchDoesNotConsumeFaultAsync(
+            admin => admin.DeleteRecordsAsync(new Dictionary<TopicPartition, long>
+            {
+                [validPartition] = 0,
+                [invalidPartition] = 0
+            }).AsTask(),
+            admin => admin.DeleteRecordsAsync(new Dictionary<TopicPartition, long>
+            {
+                [validPartition] = 0
+            }).AsTask());
+        await AssertInvalidAdminBatchDoesNotConsumeFaultAsync(
+            admin => admin.DescribeProducersAsync([validPartition, invalidPartition]).AsTask(),
+            admin => admin.DescribeProducersAsync([validPartition]).AsTask());
+        await AssertInvalidAdminBatchDoesNotConsumeFaultAsync(
+            admin => admin.AlterReplicaLogDirsAsync(
+                new Dictionary<TopicPartitionReplica, string>
+                {
+                    [validReplica] = "in-memory",
+                    [invalidReplica] = "in-memory"
+                }).AsTask(),
+            admin => admin.AlterReplicaLogDirsAsync(
+                new Dictionary<TopicPartitionReplica, string>
+                {
+                    [validReplica] = "in-memory"
+                }).AsTask());
+        await AssertInvalidAdminBatchDoesNotConsumeFaultAsync(
+            admin => admin.DescribeReplicaLogDirsAsync([validReplica, invalidReplica]).AsTask(),
+            admin => admin.DescribeReplicaLogDirsAsync([validReplica]).AsTask());
+    }
+
+    [Test]
     public async Task AdminFault_InvalidBrokerIdDoesNotConsumeScriptedFailure()
     {
         var cluster = new InMemoryKafkaCluster();
@@ -616,6 +654,22 @@ public sealed class InMemoryAdminShareFaultTests
 
         await Assert.That(actual).IsSameReferenceAs(failure);
         await Assert.That(cluster.FaultPlan.Count).IsEqualTo(0);
+    }
+
+    private static async Task AssertInvalidAdminBatchDoesNotConsumeFaultAsync(
+        Func<InMemoryAdminClient, Task> invalidOperation,
+        Func<InMemoryAdminClient, Task> validOperation)
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var admin = new InMemoryAdminClient(cluster);
+        var failure = new InvalidOperationException("blocked");
+        cluster.FaultPlan.Fail(new KafkaFaultScope(KafkaFaultOperation.Admin), failure);
+
+        _ = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => invalidOperation(admin));
+        await Assert.That(cluster.FaultPlan.Count).IsEqualTo(1);
+
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() => validOperation(admin));
+        await Assert.That(actual).IsSameReferenceAs(failure);
     }
 
     private sealed class CompletedSourceFaultPlan : IKafkaFaultPlan, IValueTaskSource
