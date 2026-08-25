@@ -125,6 +125,7 @@ public sealed class ConsumerPartitionStopListenerTests
         };
         var consumer = CreateConsumer(
             listener,
+            defaultApiTimeoutMs: 5_000,
             partitionStopTimeout: TimeSpan.FromMilliseconds(50));
         var partition = new TopicPartition("topic-a", 0);
         consumer.Assign(partition);
@@ -146,8 +147,14 @@ public sealed class ConsumerPartitionStopListenerTests
             if (close is not null)
                 await close.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
             await consumer.DisposeAsync();
-            if (!testTimeout.IsCancellationRequested)
+            try
+            {
                 await listenerCompleted.Task.WaitAsync(testTimeout);
+            }
+            catch (OperationCanceledException) when (testTimeout.IsCancellationRequested)
+            {
+                // Preserve the original timeout failure after cleanup completes.
+            }
         }
     }
 
