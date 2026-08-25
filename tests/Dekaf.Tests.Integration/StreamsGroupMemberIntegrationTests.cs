@@ -53,6 +53,9 @@ public sealed class StreamsGroupMemberIntegrationTests(KafkaTestContainer kafka)
             GroupMembershipOperation = StreamsGroupMembershipOperation.LeaveGroup
         });
         await Assert.That(member.Snapshot.IsClosed).IsTrue();
+        var afterLeave = await admin.DescribeStreamsGroupsAsync([groupId]);
+        await Assert.That(afterLeave[groupId].Members
+            .Any(brokerGroupMember => brokerGroupMember.MemberId == firstMemberId)).IsFalse();
 
         await using var replacement = client.CreateStreamsGroupMember(new StreamsGroupMemberOptions
         {
@@ -154,6 +157,7 @@ public sealed class StreamsGroupMemberIntegrationTests(KafkaTestContainer kafka)
         var instanceId = $"streams-instance-{Guid.NewGuid():N}";
         await using var client = Kafka.Connect(KafkaContainer.BootstrapServers, builder =>
             builder.WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()));
+        await using var admin = client.CreateAdminClient().Build();
 
         await using var first = CreateStaticMember(client, groupId, instanceId);
         await first.InitializeAsync();
@@ -170,6 +174,15 @@ public sealed class StreamsGroupMemberIntegrationTests(KafkaTestContainer kafka)
         {
             GroupMembershipOperation = StreamsGroupMembershipOperation.RemainInGroup
         });
+        var retained = await admin.DescribeStreamsGroupsAsync([groupId]);
+        await Assert.That(retained[groupId].Members
+            .Any(member => member.MemberId == firstMemberId)).IsTrue();
+
+        await TestWait.WaitForConditionAsync(
+            async () => (await admin.DescribeStreamsGroupsAsync([groupId]))[groupId].Members,
+            members => members.All(member => member.MemberId != firstMemberId),
+            initialDelayMs: 250,
+            description: $"Streams member {firstMemberId} to expire from group {groupId}");
 
         await using var afterCrash = CreateStaticMember(client, groupId, instanceId);
         await afterCrash.InitializeAsync();

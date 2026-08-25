@@ -30,17 +30,36 @@ public class KafkaContainerDefault : KafkaTestContainer
     /// </summary>
     internal static int ParseVersion(string tag)
     {
-        var parts = tag.Split('.');
-        if (parts.Length != 3
-            || !int.TryParse(parts[0], out var major)
-            || !int.TryParse(parts[1], out var minor)
-            || !int.TryParse(parts[2], out var patch))
-        {
-            throw new InvalidOperationException(
-                $"KAFKA_TEST_IMAGE_TAG must be a three-part version like '4.2.0', but was '{tag}'.");
-        }
+        var (major, minor, patch) = ParseVersionParts(tag);
 
         return major * 100 + minor * 10 + patch;
+    }
+
+    internal static bool SupportsVersion(string tag, int supportedKafkaVersion)
+    {
+        var (major, minor, patch) = ParseVersionParts(tag);
+        var supportedMajor = supportedKafkaVersion / 100;
+        var supportedMinor = supportedKafkaVersion / 10 % 10;
+        var supportedPatch = supportedKafkaVersion % 10;
+
+        return major > supportedMajor
+            || major == supportedMajor && minor > supportedMinor
+            || major == supportedMajor && minor == supportedMinor && patch >= supportedPatch;
+    }
+
+    private static (int Major, int Minor, int Patch) ParseVersionParts(string tag)
+    {
+        var parts = tag.Split('.');
+        if (parts.Length == 3
+            && int.TryParse(parts[0], out var major)
+            && int.TryParse(parts[1], out var minor)
+            && int.TryParse(parts[2], out var patch))
+        {
+            return (major, minor, patch);
+        }
+
+        throw new InvalidOperationException(
+            $"KAFKA_TEST_IMAGE_TAG must be a three-part version like '4.2.0', but was '{tag}'.");
     }
 
     // Testcontainers.Kafka generates a startup script that sets
