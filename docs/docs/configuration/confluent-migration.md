@@ -5,6 +5,14 @@ description: "Translate existing Confluent-style configuration to Dekaf, includi
 
 # Migrate Confluent configuration
 
+:::tip Migrating application code?
+
+Start with [Migrate from Confluent.Kafka](../migrating-from-confluent-kafka.md) for side-by-side
+producer and consumer examples, offset-semantics differences, serializers, transactions, and a
+rollout checklist.
+
+:::
+
 `Dekaf.Extensions.DependencyInjection` can translate existing Confluent-style `ProducerConfig`
 and `ConsumerConfig` sections. This is a migration adapter: it accepts only settings that Dekaf
 can represent exactly, then lets a fluent callback add or override native Dekaf settings.
