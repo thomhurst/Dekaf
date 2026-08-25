@@ -61,9 +61,9 @@ internal static class DekafConsumerRegistrationKeys
 /// </summary>
 public sealed class DekafBuilder
 {
-    private const string ConfigurationBindingRequiresDynamicCode =
+    internal const string ConfigurationBindingRequiresDynamicCode =
         "IConfiguration binding uses Microsoft.Extensions.Configuration.Binder. Use typed options overloads for NativeAOT.";
-    private const string ConfigurationBindingRequiresUnreferencedCode =
+    internal const string ConfigurationBindingRequiresUnreferencedCode =
         "IConfiguration binding may require members that are trimmed. Use typed options overloads for NativeAOT.";
     private const string DynamicInterceptorRequiresDynamicCode =
         "Type-based global interceptors can close generic types and activate them dynamically. Use closed factory overloads for NativeAOT.";
@@ -268,22 +268,6 @@ public sealed class DekafBuilder
     }
 
     /// <summary>
-    /// Adds a producer to the service collection using configuration resolved from the service provider.
-    /// </summary>
-    /// <param name="configure">Configures the full producer builder surface using the service provider.</param>
-    public DekafBuilder AddProducer<TKey, TValue>(
-        Action<IServiceProvider, ProducerBuilder<TKey, TValue>> configure)
-    {
-        ArgumentNullException.ThrowIfNull(configure);
-        return AddProducerCore(serviceKey: null, isKeyed: false, serviceProvider =>
-        {
-            var builder = new ProducerBuilder<TKey, TValue>();
-            configure(serviceProvider, builder);
-            return builder;
-        });
-    }
-
-    /// <summary>
     /// Adds a producer configured from typed options.
     /// </summary>
     /// <param name="options">Producer options to apply.</param>
@@ -302,25 +286,6 @@ public sealed class DekafBuilder
     }
 
     /// <summary>
-    /// Adds a producer configured from typed options and the service provider.
-    /// </summary>
-    /// <param name="options">Producer options to apply.</param>
-    /// <param name="configure">Additional producer configuration using the service provider.</param>
-    public DekafBuilder AddProducer<TKey, TValue>(
-        ProducerOptions options,
-        Action<IServiceProvider, ProducerBuilder<TKey, TValue>> configure)
-    {
-        ArgumentNullException.ThrowIfNull(options);
-        ArgumentNullException.ThrowIfNull(configure);
-
-        return AddProducer<TKey, TValue>((serviceProvider, producer) =>
-        {
-            DekafOptionsBinding.ApplyProducer(options, producer);
-            configure(serviceProvider, producer);
-        });
-    }
-
-    /// <summary>
     /// Adds a keyed producer to the service collection.
     /// </summary>
     /// <param name="serviceKey">Key used to resolve the producer through keyed DI.</param>
@@ -334,25 +299,6 @@ public sealed class DekafBuilder
         var builder = new ProducerBuilder<TKey, TValue>();
         configure(builder);
         return AddProducerCore(serviceKey, isKeyed: true, _ => builder);
-    }
-
-    /// <summary>
-    /// Adds a keyed producer using configuration resolved from the service provider.
-    /// </summary>
-    /// <param name="serviceKey">Key used to resolve the producer through keyed DI.</param>
-    /// <param name="configure">Configures the full producer builder surface using the service provider.</param>
-    public DekafBuilder AddProducer<TKey, TValue>(
-        object serviceKey,
-        Action<IServiceProvider, ProducerBuilder<TKey, TValue>> configure)
-    {
-        ArgumentNullException.ThrowIfNull(serviceKey);
-        ArgumentNullException.ThrowIfNull(configure);
-        return AddProducerCore(serviceKey, isKeyed: true, serviceProvider =>
-        {
-            var builder = new ProducerBuilder<TKey, TValue>();
-            configure(serviceProvider, builder);
-            return builder;
-        });
     }
 
     /// <summary>
@@ -376,25 +322,16 @@ public sealed class DekafBuilder
         });
     }
 
-    /// <summary>
-    /// Adds a keyed producer configured from typed options and the service provider.
-    /// </summary>
-    /// <param name="serviceKey">Key used to resolve the producer through keyed DI.</param>
-    /// <param name="options">Producer options to apply.</param>
-    /// <param name="configure">Additional producer configuration using the service provider.</param>
-    public DekafBuilder AddProducer<TKey, TValue>(
-        object serviceKey,
-        ProducerOptions options,
+    internal DekafBuilder AddProviderConfiguredProducer<TKey, TValue>(
+        object? serviceKey,
+        bool isKeyed,
         Action<IServiceProvider, ProducerBuilder<TKey, TValue>> configure)
     {
-        ArgumentNullException.ThrowIfNull(serviceKey);
-        ArgumentNullException.ThrowIfNull(options);
-        ArgumentNullException.ThrowIfNull(configure);
-
-        return AddProducer<TKey, TValue>(serviceKey, (serviceProvider, producer) =>
+        return AddProducerCore(serviceKey, isKeyed, serviceProvider =>
         {
-            DekafOptionsBinding.ApplyProducer(options, producer);
-            configure(serviceProvider, producer);
+            var builder = new ProducerBuilder<TKey, TValue>();
+            configure(serviceProvider, builder);
+            return builder;
         });
     }
 
@@ -450,28 +387,6 @@ public sealed class DekafBuilder
     }
 
     /// <summary>
-    /// Adds a producer configured from an <see cref="IConfiguration"/> section and the service provider.
-    /// Fluent configuration runs after binding.
-    /// </summary>
-    /// <param name="configuration">Configuration section using <see cref="ProducerOptions"/> property names.</param>
-    /// <param name="configure">Additional producer configuration using the service provider.</param>
-    [RequiresDynamicCode(ConfigurationBindingRequiresDynamicCode)]
-    [RequiresUnreferencedCode(ConfigurationBindingRequiresUnreferencedCode)]
-    public DekafBuilder AddProducer<TKey, TValue>(
-        IConfiguration configuration,
-        Action<IServiceProvider, ProducerBuilder<TKey, TValue>> configure)
-    {
-        ArgumentNullException.ThrowIfNull(configuration);
-        ArgumentNullException.ThrowIfNull(configure);
-
-        return AddProducer<TKey, TValue>((serviceProvider, producer) =>
-        {
-            DekafConfigurationBinding.ApplyProducer(configuration, producer);
-            configure(serviceProvider, producer);
-        });
-    }
-
-    /// <summary>
     /// Adds a keyed producer configured from an <see cref="IConfiguration"/> section.
     /// Fluent configuration runs after binding, so it can override config values and add services such as serializers.
     /// </summary>
@@ -492,31 +407,6 @@ public sealed class DekafBuilder
         {
             DekafConfigurationBinding.ApplyProducer(configuration, producer);
             configure?.Invoke(producer);
-        });
-    }
-
-    /// <summary>
-    /// Adds a keyed producer configured from an <see cref="IConfiguration"/> section and the service provider.
-    /// Fluent configuration runs after binding.
-    /// </summary>
-    /// <param name="serviceKey">Key used to resolve the producer through keyed DI.</param>
-    /// <param name="configuration">Configuration section using <see cref="ProducerOptions"/> property names.</param>
-    /// <param name="configure">Additional producer configuration using the service provider.</param>
-    [RequiresDynamicCode(ConfigurationBindingRequiresDynamicCode)]
-    [RequiresUnreferencedCode(ConfigurationBindingRequiresUnreferencedCode)]
-    public DekafBuilder AddProducer<TKey, TValue>(
-        object serviceKey,
-        IConfiguration configuration,
-        Action<IServiceProvider, ProducerBuilder<TKey, TValue>> configure)
-    {
-        ArgumentNullException.ThrowIfNull(serviceKey);
-        ArgumentNullException.ThrowIfNull(configuration);
-        ArgumentNullException.ThrowIfNull(configure);
-
-        return AddProducer<TKey, TValue>(serviceKey, (serviceProvider, producer) =>
-        {
-            DekafConfigurationBinding.ApplyProducer(configuration, producer);
-            configure(serviceProvider, producer);
         });
     }
 
@@ -546,28 +436,6 @@ public sealed class DekafBuilder
     }
 
     /// <summary>
-    /// Adds a producer configured from a Confluent.Kafka-shaped <see cref="IConfiguration"/> section
-    /// and the service provider. Fluent configuration runs after translation.
-    /// </summary>
-    /// <param name="configuration">The Confluent <c>ProducerConfig</c> JSON section.</param>
-    /// <param name="configure">Additional producer configuration using the service provider.</param>
-    [RequiresDynamicCode(ConfigurationBindingRequiresDynamicCode)]
-    [RequiresUnreferencedCode(ConfigurationBindingRequiresUnreferencedCode)]
-    public DekafBuilder AddProducerFromConfluentConfig<TKey, TValue>(
-        IConfiguration configuration,
-        Action<IServiceProvider, ProducerBuilder<TKey, TValue>> configure)
-    {
-        ArgumentNullException.ThrowIfNull(configuration);
-        ArgumentNullException.ThrowIfNull(configure);
-
-        return AddProducer<TKey, TValue>((serviceProvider, producer) =>
-        {
-            ConfluentConfigurationBinding.ApplyProducer(configuration, producer);
-            configure(serviceProvider, producer);
-        });
-    }
-
-    /// <summary>
     /// Adds a keyed producer configured from an <see cref="IConfiguration"/> section shaped
     /// like Confluent.Kafka <c>ProducerConfig</c>. Fluent configuration runs after translation.
     /// </summary>
@@ -592,31 +460,6 @@ public sealed class DekafBuilder
     }
 
     /// <summary>
-    /// Adds a keyed producer configured from a Confluent.Kafka-shaped <see cref="IConfiguration"/> section
-    /// and the service provider. Fluent configuration runs after translation.
-    /// </summary>
-    /// <param name="serviceKey">Key used to resolve the producer through keyed DI.</param>
-    /// <param name="configuration">The Confluent <c>ProducerConfig</c> JSON section.</param>
-    /// <param name="configure">Additional producer configuration using the service provider.</param>
-    [RequiresDynamicCode(ConfigurationBindingRequiresDynamicCode)]
-    [RequiresUnreferencedCode(ConfigurationBindingRequiresUnreferencedCode)]
-    public DekafBuilder AddProducerFromConfluentConfig<TKey, TValue>(
-        object serviceKey,
-        IConfiguration configuration,
-        Action<IServiceProvider, ProducerBuilder<TKey, TValue>> configure)
-    {
-        ArgumentNullException.ThrowIfNull(serviceKey);
-        ArgumentNullException.ThrowIfNull(configuration);
-        ArgumentNullException.ThrowIfNull(configure);
-
-        return AddProducer<TKey, TValue>(serviceKey, (serviceProvider, producer) =>
-        {
-            ConfluentConfigurationBinding.ApplyProducer(configuration, producer);
-            configure(serviceProvider, producer);
-        });
-    }
-
-    /// <summary>
     /// Adds a consumer to the service collection.
     /// </summary>
     /// <param name="configure">Configures the full consumer builder surface.</param>
@@ -627,23 +470,6 @@ public sealed class DekafBuilder
     {
         ArgumentNullException.ThrowIfNull(configure);
         return AddConsumerCore(serviceKey: null, isKeyed: false, configure, configureDeadLetterQueue);
-    }
-
-    /// <summary>
-    /// Adds a consumer to the service collection using configuration resolved from the service provider.
-    /// </summary>
-    /// <param name="configure">Configures the full consumer builder surface using the service provider.</param>
-    /// <param name="configureDeadLetterQueue">Optional dead letter queue configuration.</param>
-    public DekafBuilder AddConsumer<TKey, TValue>(
-        Action<IServiceProvider, ConsumerBuilder<TKey, TValue>> configure,
-        Action<DeadLetterQueueBuilder>? configureDeadLetterQueue = null)
-    {
-        ArgumentNullException.ThrowIfNull(configure);
-        return AddConsumerCore(
-            serviceKey: null,
-            isKeyed: false,
-            configure,
-            configureDeadLetterQueue);
     }
 
     /// <summary>
@@ -669,29 +495,6 @@ public sealed class DekafBuilder
     }
 
     /// <summary>
-    /// Adds a consumer configured from typed options and the service provider.
-    /// </summary>
-    /// <param name="options">Consumer options to apply.</param>
-    /// <param name="configure">Additional consumer configuration using the service provider.</param>
-    /// <param name="configureDeadLetterQueue">Optional dead letter queue configuration.</param>
-    public DekafBuilder AddConsumer<TKey, TValue>(
-        ConsumerOptions options,
-        Action<IServiceProvider, ConsumerBuilder<TKey, TValue>> configure,
-        Action<DeadLetterQueueBuilder>? configureDeadLetterQueue = null)
-    {
-        ArgumentNullException.ThrowIfNull(options);
-        ArgumentNullException.ThrowIfNull(configure);
-
-        return AddConsumer<TKey, TValue>(
-            (serviceProvider, consumer) =>
-            {
-                DekafOptionsBinding.ApplyConsumer(options, consumer);
-                configure(serviceProvider, consumer);
-            },
-            configureDeadLetterQueue);
-    }
-
-    /// <summary>
     /// Adds a keyed consumer to the service collection.
     /// </summary>
     /// <param name="serviceKey">Key used to resolve the consumer through keyed DI.</param>
@@ -700,22 +503,6 @@ public sealed class DekafBuilder
     public DekafBuilder AddConsumer<TKey, TValue>(
         object serviceKey,
         Action<ConsumerBuilder<TKey, TValue>> configure,
-        Action<DeadLetterQueueBuilder>? configureDeadLetterQueue = null)
-    {
-        ArgumentNullException.ThrowIfNull(serviceKey);
-        ArgumentNullException.ThrowIfNull(configure);
-        return AddConsumerCore(serviceKey, isKeyed: true, configure, configureDeadLetterQueue);
-    }
-
-    /// <summary>
-    /// Adds a keyed consumer using configuration resolved from the service provider.
-    /// </summary>
-    /// <param name="serviceKey">Key used to resolve the consumer through keyed DI.</param>
-    /// <param name="configure">Configures the full consumer builder surface using the service provider.</param>
-    /// <param name="configureDeadLetterQueue">Optional dead letter queue configuration.</param>
-    public DekafBuilder AddConsumer<TKey, TValue>(
-        object serviceKey,
-        Action<IServiceProvider, ConsumerBuilder<TKey, TValue>> configure,
         Action<DeadLetterQueueBuilder>? configureDeadLetterQueue = null)
     {
         ArgumentNullException.ThrowIfNull(serviceKey);
@@ -750,33 +537,6 @@ public sealed class DekafBuilder
     }
 
     /// <summary>
-    /// Adds a keyed consumer configured from typed options and the service provider.
-    /// </summary>
-    /// <param name="serviceKey">Key used to resolve the consumer through keyed DI.</param>
-    /// <param name="options">Consumer options to apply.</param>
-    /// <param name="configure">Additional consumer configuration using the service provider.</param>
-    /// <param name="configureDeadLetterQueue">Optional dead letter queue configuration.</param>
-    public DekafBuilder AddConsumer<TKey, TValue>(
-        object serviceKey,
-        ConsumerOptions options,
-        Action<IServiceProvider, ConsumerBuilder<TKey, TValue>> configure,
-        Action<DeadLetterQueueBuilder>? configureDeadLetterQueue = null)
-    {
-        ArgumentNullException.ThrowIfNull(serviceKey);
-        ArgumentNullException.ThrowIfNull(options);
-        ArgumentNullException.ThrowIfNull(configure);
-
-        return AddConsumer<TKey, TValue>(
-            serviceKey,
-            (serviceProvider, consumer) =>
-            {
-                DekafOptionsBinding.ApplyConsumer(options, consumer);
-                configure(serviceProvider, consumer);
-            },
-            configureDeadLetterQueue);
-    }
-
-    /// <summary>
     /// Adds a consumer configured from an <see cref="IConfiguration"/> section shaped like
     /// Confluent.Kafka <c>ConsumerConfig</c>. Fluent configuration runs after translation.
     /// </summary>
@@ -801,32 +561,6 @@ public sealed class DekafBuilder
             {
                 ConfluentConfigurationBinding.ApplyConsumer(configuration, consumer);
                 configure?.Invoke(consumer);
-            },
-            configureDeadLetterQueue);
-    }
-
-    /// <summary>
-    /// Adds a consumer configured from a Confluent.Kafka-shaped <see cref="IConfiguration"/> section
-    /// and the service provider. Fluent configuration runs after translation.
-    /// </summary>
-    /// <param name="configuration">The Confluent <c>ConsumerConfig</c> JSON section.</param>
-    /// <param name="configure">Additional consumer configuration using the service provider.</param>
-    /// <param name="configureDeadLetterQueue">Optional dead letter queue configuration.</param>
-    [RequiresDynamicCode(ConfigurationBindingRequiresDynamicCode)]
-    [RequiresUnreferencedCode(ConfigurationBindingRequiresUnreferencedCode)]
-    public DekafBuilder AddConsumerFromConfluentConfig<TKey, TValue>(
-        IConfiguration configuration,
-        Action<IServiceProvider, ConsumerBuilder<TKey, TValue>> configure,
-        Action<DeadLetterQueueBuilder>? configureDeadLetterQueue = null)
-    {
-        ArgumentNullException.ThrowIfNull(configuration);
-        ArgumentNullException.ThrowIfNull(configure);
-
-        return AddConsumer<TKey, TValue>(
-            (serviceProvider, consumer) =>
-            {
-                ConfluentConfigurationBinding.ApplyConsumer(configuration, consumer);
-                configure(serviceProvider, consumer);
             },
             configureDeadLetterQueue);
     }
@@ -860,60 +594,38 @@ public sealed class DekafBuilder
             configureDeadLetterQueue);
     }
 
-    /// <summary>
-    /// Adds a keyed consumer configured from a Confluent.Kafka-shaped <see cref="IConfiguration"/> section
-    /// and the service provider. Fluent configuration runs after translation.
-    /// </summary>
-    /// <param name="serviceKey">Key used to resolve the consumer through keyed DI.</param>
-    /// <param name="configuration">The Confluent <c>ConsumerConfig</c> JSON section.</param>
-    /// <param name="configure">Additional consumer configuration using the service provider.</param>
-    /// <param name="configureDeadLetterQueue">Optional dead letter queue configuration.</param>
-    [RequiresDynamicCode(ConfigurationBindingRequiresDynamicCode)]
-    [RequiresUnreferencedCode(ConfigurationBindingRequiresUnreferencedCode)]
-    public DekafBuilder AddConsumerFromConfluentConfig<TKey, TValue>(
-        object serviceKey,
-        IConfiguration configuration,
-        Action<IServiceProvider, ConsumerBuilder<TKey, TValue>> configure,
-        Action<DeadLetterQueueBuilder>? configureDeadLetterQueue = null)
-    {
-        ArgumentNullException.ThrowIfNull(serviceKey);
-        ArgumentNullException.ThrowIfNull(configuration);
-        ArgumentNullException.ThrowIfNull(configure);
-
-        return AddConsumer<TKey, TValue>(
-            serviceKey,
-            (serviceProvider, consumer) =>
-            {
-                ConfluentConfigurationBinding.ApplyConsumer(configuration, consumer);
-                configure(serviceProvider, consumer);
-            },
-            configureDeadLetterQueue);
-    }
-
-    private DekafBuilder AddConsumerCore<TKey, TValue>(
+    internal DekafBuilder AddProviderConfiguredConsumer<TKey, TValue>(
         object? serviceKey,
         bool isKeyed,
         Action<IServiceProvider, ConsumerBuilder<TKey, TValue>> configure,
         Action<DeadLetterQueueBuilder>? configureDeadLetterQueue)
     {
-        var registration = new ProviderConfiguredConsumerRegistration<TKey, TValue>(
-            serviceKey,
-            isKeyed,
-            configure,
-            configureDeadLetterQueue,
-            _globalConsumerInterceptorFactories);
+        var stateKey = new object();
+        var globalFactories = _globalConsumerInterceptorFactories;
+        _services.AddKeyedSingleton<ProviderConfiguredConsumerState<TKey, TValue>>(
+            stateKey,
+            (_, _) => new ProviderConfiguredConsumerState<TKey, TValue>(
+                serviceKey,
+                isKeyed,
+                configure,
+                configureDeadLetterQueue,
+                globalFactories));
 
         if (isKeyed)
         {
             _services.AddKeyedSingleton<IKafkaConsumer<TKey, TValue>>(
                 serviceKey!,
-                (serviceProvider, _) => registration.BuildConsumer(serviceProvider));
+                (serviceProvider, _) => serviceProvider
+                    .GetRequiredKeyedService<ProviderConfiguredConsumerState<TKey, TValue>>(stateKey)
+                    .BuildConsumer(serviceProvider));
             _services.AddSingleton<IInitializableKafkaClient>(serviceProvider =>
                 serviceProvider.GetRequiredKeyedService<IKafkaConsumer<TKey, TValue>>(serviceKey!));
         }
         else
         {
-            _services.AddSingleton<IKafkaConsumer<TKey, TValue>>(registration.BuildConsumer);
+            _services.AddSingleton<IKafkaConsumer<TKey, TValue>>(serviceProvider => serviceProvider
+                .GetRequiredKeyedService<ProviderConfiguredConsumerState<TKey, TValue>>(stateKey)
+                .BuildConsumer(serviceProvider));
             _services.AddSingleton<IInitializableKafkaClient>(serviceProvider =>
                 serviceProvider.GetRequiredService<IKafkaConsumer<TKey, TValue>>());
         }
@@ -922,7 +634,9 @@ public sealed class DekafBuilder
         {
             _services.AddKeyedSingleton<DeadLetterOptions>(
                 DekafConsumerRegistrationKeys.DeadLetterOptionsKey<TKey, TValue>(serviceKey),
-                (serviceProvider, _) => registration.BuildDeadLetterOptions(serviceProvider));
+                (serviceProvider, _) => serviceProvider
+                    .GetRequiredKeyedService<ProviderConfiguredConsumerState<TKey, TValue>>(stateKey)
+                    .BuildDeadLetterOptions(serviceProvider));
         }
 
         return this;
@@ -1011,32 +725,6 @@ public sealed class DekafBuilder
     }
 
     /// <summary>
-    /// Adds a consumer configured from an <see cref="IConfiguration"/> section and the service provider.
-    /// Fluent configuration runs after binding.
-    /// </summary>
-    /// <param name="configuration">Configuration section using <see cref="ConsumerOptions"/> property names.</param>
-    /// <param name="configure">Additional consumer configuration using the service provider.</param>
-    /// <param name="configureDeadLetterQueue">Optional dead letter queue configuration.</param>
-    [RequiresDynamicCode(ConfigurationBindingRequiresDynamicCode)]
-    [RequiresUnreferencedCode(ConfigurationBindingRequiresUnreferencedCode)]
-    public DekafBuilder AddConsumer<TKey, TValue>(
-        IConfiguration configuration,
-        Action<IServiceProvider, ConsumerBuilder<TKey, TValue>> configure,
-        Action<DeadLetterQueueBuilder>? configureDeadLetterQueue = null)
-    {
-        ArgumentNullException.ThrowIfNull(configuration);
-        ArgumentNullException.ThrowIfNull(configure);
-
-        return AddConsumer<TKey, TValue>(
-            (serviceProvider, consumer) =>
-            {
-                DekafConfigurationBinding.ApplyConsumer(configuration, consumer);
-                configure(serviceProvider, consumer);
-            },
-            configureDeadLetterQueue);
-    }
-
-    /// <summary>
     /// Adds a keyed consumer configured from an <see cref="IConfiguration"/> section.
     /// Fluent configuration runs after binding, so it can override config values and add services such as deserializers.
     /// </summary>
@@ -1066,36 +754,6 @@ public sealed class DekafBuilder
     }
 
     /// <summary>
-    /// Adds a keyed consumer configured from an <see cref="IConfiguration"/> section and the service provider.
-    /// Fluent configuration runs after binding.
-    /// </summary>
-    /// <param name="serviceKey">Key used to resolve the consumer through keyed DI.</param>
-    /// <param name="configuration">Configuration section using <see cref="ConsumerOptions"/> property names.</param>
-    /// <param name="configure">Additional consumer configuration using the service provider.</param>
-    /// <param name="configureDeadLetterQueue">Optional dead letter queue configuration.</param>
-    [RequiresDynamicCode(ConfigurationBindingRequiresDynamicCode)]
-    [RequiresUnreferencedCode(ConfigurationBindingRequiresUnreferencedCode)]
-    public DekafBuilder AddConsumer<TKey, TValue>(
-        object serviceKey,
-        IConfiguration configuration,
-        Action<IServiceProvider, ConsumerBuilder<TKey, TValue>> configure,
-        Action<DeadLetterQueueBuilder>? configureDeadLetterQueue = null)
-    {
-        ArgumentNullException.ThrowIfNull(serviceKey);
-        ArgumentNullException.ThrowIfNull(configuration);
-        ArgumentNullException.ThrowIfNull(configure);
-
-        return AddConsumer<TKey, TValue>(
-            serviceKey,
-            (serviceProvider, consumer) =>
-            {
-                DekafConfigurationBinding.ApplyConsumer(configuration, consumer);
-                configure(serviceProvider, consumer);
-            },
-            configureDeadLetterQueue);
-    }
-
-    /// <summary>
     /// Adds an admin client to the service collection.
     /// </summary>
     public DekafBuilder AddAdminClient(Action<AdminClientServiceBuilder> configure)
@@ -1112,11 +770,7 @@ public sealed class DekafBuilder
         return this;
     }
 
-    /// <summary>
-    /// Adds an admin client using configuration resolved from the service provider.
-    /// </summary>
-    /// <param name="configure">Configures the admin client builder using the service provider.</param>
-    public DekafBuilder AddAdminClient(
+    internal DekafBuilder AddProviderConfiguredAdminClient(
         Action<IServiceProvider, AdminClientServiceBuilder> configure)
     {
         ArgumentNullException.ThrowIfNull(configure);
@@ -1151,25 +805,6 @@ public sealed class DekafBuilder
     }
 
     /// <summary>
-    /// Adds an admin client configured from typed options and the service provider.
-    /// </summary>
-    /// <param name="options">Admin client options to apply.</param>
-    /// <param name="configure">Additional admin client configuration using the service provider.</param>
-    public DekafBuilder AddAdminClient(
-        AdminClientOptions options,
-        Action<IServiceProvider, AdminClientServiceBuilder> configure)
-    {
-        ArgumentNullException.ThrowIfNull(options);
-        ArgumentNullException.ThrowIfNull(configure);
-
-        return AddAdminClient((serviceProvider, admin) =>
-        {
-            admin.ApplyOptions(options);
-            configure(serviceProvider, admin);
-        });
-    }
-
-    /// <summary>
     /// Adds an admin client configured from an <see cref="IConfiguration"/> section.
     /// Fluent configuration runs after binding, so it can override config values.
     /// </summary>
@@ -1187,28 +822,6 @@ public sealed class DekafBuilder
         {
             admin.ApplyConfiguration(configuration);
             configure?.Invoke(admin);
-        });
-    }
-
-    /// <summary>
-    /// Adds an admin client configured from an <see cref="IConfiguration"/> section and the service provider.
-    /// Fluent configuration runs after binding.
-    /// </summary>
-    /// <param name="configuration">Configuration section using <see cref="AdminClientOptions"/> property names.</param>
-    /// <param name="configure">Additional admin client configuration using the service provider.</param>
-    [RequiresDynamicCode(ConfigurationBindingRequiresDynamicCode)]
-    [RequiresUnreferencedCode(ConfigurationBindingRequiresUnreferencedCode)]
-    public DekafBuilder AddAdminClient(
-        IConfiguration configuration,
-        Action<IServiceProvider, AdminClientServiceBuilder> configure)
-    {
-        ArgumentNullException.ThrowIfNull(configuration);
-        ArgumentNullException.ThrowIfNull(configure);
-
-        return AddAdminClient((serviceProvider, admin) =>
-        {
-            admin.ApplyConfiguration(configuration);
-            configure(serviceProvider, admin);
         });
     }
 
@@ -1294,7 +907,7 @@ public sealed class DekafBuilder
         return builder.Build();
     }
 
-    private sealed class ProviderConfiguredConsumerRegistration<TKey, TValue>(
+    private sealed class ProviderConfiguredConsumerState<TKey, TValue>(
         object? serviceKey,
         bool isKeyed,
         Action<IServiceProvider, ConsumerBuilder<TKey, TValue>> configure,

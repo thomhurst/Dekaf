@@ -250,6 +250,193 @@ public class DependencyInjectionTests
     }
 
     [Test]
+    public async Task ProviderConfiguredConsumer_StateIsIsolatedPerServiceProvider()
+    {
+        var services = new ServiceCollection();
+        var settingsSequence = 0;
+        services.AddSingleton(_ =>
+        {
+            var id = Interlocked.Increment(ref settingsSequence);
+            return new RegistrationSettings($"broker{id}:9092", $"producer-{id}", $"consumer-{id}", $"admin-{id}");
+        });
+
+        services.AddDekaf(builder => builder.AddConsumer<string, string>(
+            (serviceProvider, consumer) =>
+            {
+                var settings = serviceProvider.GetRequiredService<RegistrationSettings>();
+                consumer
+                    .WithBootstrapServers(settings.BootstrapServers)
+                    .WithGroupId(settings.ConsumerGroupId);
+            },
+            deadLetterQueue => deadLetterQueue.WithTopicSuffix(".provider-dlq")));
+
+        await using var firstProvider = services.BuildServiceProvider();
+        await using var secondProvider = services.BuildServiceProvider();
+
+        _ = firstProvider.GetRequiredService<IKafkaConsumer<string, string>>();
+        _ = secondProvider.GetRequiredService<IKafkaConsumer<string, string>>();
+
+        var firstDeadLetterOptions = firstProvider.GetRequiredKeyedService<DeadLetterOptions>(
+            typeof(IKafkaConsumer<string, string>));
+        var secondDeadLetterOptions = secondProvider.GetRequiredKeyedService<DeadLetterOptions>(
+            typeof(IKafkaConsumer<string, string>));
+
+        await Assert.That(firstDeadLetterOptions.BootstrapServers)
+            .IsEqualTo(firstProvider.GetRequiredService<RegistrationSettings>().BootstrapServers);
+        await Assert.That(secondDeadLetterOptions.BootstrapServers)
+            .IsEqualTo(secondProvider.GetRequiredService<RegistrationSettings>().BootstrapServers);
+        await Assert.That(firstDeadLetterOptions.BootstrapServers)
+            .IsNotEqualTo(secondDeadLetterOptions.BootstrapServers);
+    }
+
+    [Test]
+    public async Task ProviderConfiguredKeyedOptionsAndConfiguration_ApplyBeforeCallback()
+    {
+        var services = new ServiceCollection();
+        var settings = new RegistrationSettings(
+            "settings:9092",
+            "provider-producer",
+            "provider-consumer",
+            "unused-admin");
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Producer:BootstrapServers"] = "configured-producer:9092",
+            ["Consumer:BootstrapServers"] = "configured-consumer:9092",
+            ["Consumer:GroupId"] = "configured-group"
+        });
+        services.AddSingleton(settings);
+
+        services.AddDekaf(builder =>
+        {
+            builder.AddProducer<string, string>(
+                "typed",
+                new ProducerOptions { BootstrapServers = ["typed-producer:9092"] },
+                (serviceProvider, producer) => producer.WithClientId(
+                    serviceProvider.GetRequiredService<RegistrationSettings>().ProducerClientId));
+            builder.AddConsumer<string, string>(
+                "typed",
+                new ConsumerOptions
+                {
+                    BootstrapServers = ["typed-consumer:9092"],
+                    GroupId = "typed-group"
+                },
+                (serviceProvider, consumer) => consumer.WithGroupId(
+                    serviceProvider.GetRequiredService<RegistrationSettings>().ConsumerGroupId));
+            builder.AddProducer<string, string>(
+                "configured",
+                configuration.GetSection("Producer"),
+                (serviceProvider, producer) => producer.WithClientId(
+                    serviceProvider.GetRequiredService<RegistrationSettings>().ProducerClientId));
+            builder.AddConsumer<string, string>(
+                "configured",
+                configuration.GetSection("Consumer"),
+                (serviceProvider, consumer) => consumer.WithGroupId(
+                    serviceProvider.GetRequiredService<RegistrationSettings>().ConsumerGroupId));
+        });
+
+        await using var provider = services.BuildServiceProvider();
+        var typedProducer = GetProducerOptions(
+            provider.GetRequiredKeyedService<IKafkaProducer<string, string>>("typed"));
+        var typedConsumer = GetConsumerOptions(
+            provider.GetRequiredKeyedService<IKafkaConsumer<string, string>>("typed"));
+        var configuredProducer = GetProducerOptions(
+            provider.GetRequiredKeyedService<IKafkaProducer<string, string>>("configured"));
+        var configuredConsumer = GetConsumerOptions(
+            provider.GetRequiredKeyedService<IKafkaConsumer<string, string>>("configured"));
+
+        await Assert.That(typedProducer.BootstrapServers[0]).IsEqualTo("typed-producer:9092");
+        await Assert.That(typedProducer.ClientId).IsEqualTo(settings.ProducerClientId);
+        await Assert.That(typedConsumer.BootstrapServers[0]).IsEqualTo("typed-consumer:9092");
+        await Assert.That(typedConsumer.GroupId).IsEqualTo(settings.ConsumerGroupId);
+        await Assert.That(configuredProducer.BootstrapServers[0]).IsEqualTo("configured-producer:9092");
+        await Assert.That(configuredProducer.ClientId).IsEqualTo(settings.ProducerClientId);
+        await Assert.That(configuredConsumer.BootstrapServers[0]).IsEqualTo("configured-consumer:9092");
+        await Assert.That(configuredConsumer.GroupId).IsEqualTo(settings.ConsumerGroupId);
+    }
+
+    [Test]
+    public async Task ProviderConfiguredConfluentConfiguration_AppliesBeforeCallback()
+    {
+        var services = new ServiceCollection();
+        var settings = new RegistrationSettings(
+            "unused:9092",
+            "provider-producer",
+            "provider-consumer",
+            "unused-admin");
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Producer:BootstrapServers"] = "confluent-producer:9092",
+            ["Producer:ClientId"] = "initial-producer",
+            ["Consumer:BootstrapServers"] = "confluent-consumer:9092",
+            ["Consumer:GroupId"] = "initial-consumer"
+        });
+        services.AddSingleton(settings);
+
+        services.AddDekaf(builder =>
+        {
+            builder.AddProducerFromConfluentConfig<string, string>(
+                configuration.GetSection("Producer"),
+                (serviceProvider, producer) => producer.WithClientId(
+                    serviceProvider.GetRequiredService<RegistrationSettings>().ProducerClientId));
+            builder.AddConsumerFromConfluentConfig<string, string>(
+                configuration.GetSection("Consumer"),
+                (serviceProvider, consumer) => consumer.WithGroupId(
+                    serviceProvider.GetRequiredService<RegistrationSettings>().ConsumerGroupId));
+        });
+
+        await using var provider = services.BuildServiceProvider();
+        var producer = GetProducerOptions(provider.GetRequiredService<IKafkaProducer<string, string>>());
+        var consumer = GetConsumerOptions(provider.GetRequiredService<IKafkaConsumer<string, string>>());
+
+        await Assert.That(producer.BootstrapServers[0]).IsEqualTo("confluent-producer:9092");
+        await Assert.That(producer.ClientId).IsEqualTo(settings.ProducerClientId);
+        await Assert.That(consumer.BootstrapServers[0]).IsEqualTo("confluent-consumer:9092");
+        await Assert.That(consumer.GroupId).IsEqualTo(settings.ConsumerGroupId);
+    }
+
+    [Test]
+    public async Task ExistingNullCallbacks_RemainSourceCompatible()
+    {
+        var services = new ServiceCollection();
+        var producerOptions = new ProducerOptions { BootstrapServers = ["localhost:9092"] };
+        var consumerOptions = new ConsumerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            GroupId = "group"
+        };
+        var adminOptions = new AdminClientOptions { BootstrapServers = ["localhost:9092"] };
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["BootstrapServers"] = "localhost:9092",
+            ["GroupId"] = "group"
+        });
+        var confluentProducerConfiguration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["BootstrapServers"] = "localhost:9092"
+        });
+
+        services.AddDekaf(builder =>
+        {
+            builder.AddProducer<string, string>(producerOptions, null);
+            builder.AddProducer<string, string>("typed", producerOptions, null);
+            builder.AddProducer<string, string>(configuration, null);
+            builder.AddProducer<string, string>("configured", configuration, null);
+            builder.AddProducerFromConfluentConfig<string, string>(confluentProducerConfiguration, null);
+            builder.AddProducerFromConfluentConfig<string, string>("confluent", confluentProducerConfiguration, null);
+            builder.AddConsumer<string, string>(consumerOptions, null, _ => { });
+            builder.AddConsumer<string, string>("typed", consumerOptions, null, _ => { });
+            builder.AddConsumer<string, string>(configuration, null, _ => { });
+            builder.AddConsumer<string, string>("configured", configuration, null, _ => { });
+            builder.AddConsumerFromConfluentConfig<string, string>(configuration, null, _ => { });
+            builder.AddConsumerFromConfluentConfig<string, string>("confluent", configuration, null, _ => { });
+            builder.AddAdminClient(adminOptions, null);
+            builder.AddAdminClient(configuration, null);
+        });
+
+        await Assert.That(services).IsNotEmpty();
+    }
+
+    [Test]
     public async Task AddProducer_RegistersAsSingleton()
     {
         var services = new ServiceCollection();

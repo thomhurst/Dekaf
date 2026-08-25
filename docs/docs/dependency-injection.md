@@ -45,6 +45,7 @@ Producer, consumer, and admin client registrations provide overloads whose callb
 `IServiceProvider`. Use them when configuration objects such as serializers, deserializers,
 retry policies, or credentials are themselves registered services:
 
+<!-- doc-test-ignore: illustrative application-specific service implementations -->
 ```csharp
 builder.Services.AddSingleton<IKafkaSettings, KafkaSettings>();
 builder.Services.AddSingleton<ISerializer<Order>, OrderSerializer>();
