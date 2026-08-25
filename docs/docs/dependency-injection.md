@@ -39,6 +39,35 @@ builder.Services.AddDekaf(dekaf =>
 });
 ```
 
+## Resolving Configuration from DI
+
+Producer, consumer, and admin client registrations provide overloads whose callbacks receive
+`IServiceProvider`. Use them when configuration objects such as serializers, deserializers,
+retry policies, or credentials are themselves registered services:
+
+```csharp
+builder.Services.AddSingleton<IKafkaSettings, KafkaSettings>();
+builder.Services.AddSingleton<ISerializer<Order>, OrderSerializer>();
+
+builder.Services.AddDekaf(dekaf =>
+{
+    dekaf.AddProducer<string, Order>((serviceProvider, producer) =>
+    {
+        var settings = serviceProvider.GetRequiredService<IKafkaSettings>();
+        var serializer = serviceProvider.GetRequiredService<ISerializer<Order>>();
+
+        producer
+            .WithBootstrapServers(settings.BootstrapServers)
+            .WithValueSerializer(serializer);
+    });
+});
+```
+
+Service-provider callbacks run once when their singleton client is first resolved. Existing
+single-parameter callbacks continue to run immediately during registration. Because clients are
+singletons, dependencies resolved by these callbacks should also be safe to retain for the
+application lifetime.
+
 ## Full Builder Surface
 
 The DI callback receives the same `ProducerBuilder<TKey,TValue>` and `ConsumerBuilder<TKey,TValue>` used by the non-DI API. Any option available during manual construction is available during registration too.

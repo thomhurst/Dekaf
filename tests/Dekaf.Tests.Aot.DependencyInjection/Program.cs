@@ -12,6 +12,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 var services = new ServiceCollection();
+services.AddSingleton<AotRegistrationMarker>();
 
 services.AddDekaf(dekaf =>
 {
@@ -23,7 +24,9 @@ services.AddDekaf(dekaf =>
         {
             BootstrapServers = ["localhost:9092"],
             ClientId = "aot-producer"
-        });
+        },
+        static (serviceProvider, _) =>
+            GC.KeepAlive(serviceProvider.GetRequiredService<AotRegistrationMarker>()));
 
     dekaf.AddConsumer<string, string>(
         new ConsumerOptions
@@ -32,14 +35,20 @@ services.AddDekaf(dekaf =>
             ClientId = "aot-consumer",
             GroupId = "aot-group"
         },
-        consumer => consumer.SubscribeTo("aot-topic"));
+        static (serviceProvider, consumer) =>
+        {
+            _ = serviceProvider.GetRequiredService<AotRegistrationMarker>();
+            consumer.SubscribeTo("aot-topic");
+        });
 
     dekaf.AddAdminClient(
         new AdminClientOptions
         {
             BootstrapServers = ["localhost:9092"],
             ClientId = "aot-admin"
-        });
+        },
+        static (serviceProvider, _) =>
+            GC.KeepAlive(serviceProvider.GetRequiredService<AotRegistrationMarker>()));
 });
 
 await using var provider = services.BuildServiceProvider();
@@ -92,6 +101,8 @@ file sealed class AotProducerInterceptor : IProducerInterceptor<string, string>
     {
     }
 }
+
+file sealed class AotRegistrationMarker;
 
 file sealed class AotHostedConsumerService(
     IKafkaConsumer<string, string> consumer,

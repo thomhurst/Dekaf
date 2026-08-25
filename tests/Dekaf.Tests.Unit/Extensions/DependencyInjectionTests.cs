@@ -50,6 +50,206 @@ public class DependencyInjectionTests
     #region AddProducer Tests
 
     [Test]
+    public async Task ProviderConfiguredRegistrations_ReceiveServiceProviderAtResolution()
+    {
+        var services = new ServiceCollection();
+        var settings = new RegistrationSettings(
+            "broker1:9092",
+            "provider-producer",
+            "provider-consumer",
+            "provider-admin");
+        services.AddSingleton(settings);
+        IServiceProvider? producerProvider = null;
+        IServiceProvider? consumerProvider = null;
+        IServiceProvider? adminProvider = null;
+
+        services.AddDekaf(builder =>
+        {
+            builder.AddProducer<string, string>((serviceProvider, producer) =>
+            {
+                producerProvider = serviceProvider;
+                var registration = serviceProvider.GetRequiredService<RegistrationSettings>();
+                producer
+                    .WithBootstrapServers(registration.BootstrapServers)
+                    .WithClientId(registration.ProducerClientId);
+            });
+            builder.AddConsumer<string, string>(
+                (serviceProvider, consumer) =>
+                {
+                    consumerProvider = serviceProvider;
+                    var registration = serviceProvider.GetRequiredService<RegistrationSettings>();
+                    consumer
+                        .WithBootstrapServers(registration.BootstrapServers)
+                        .WithGroupId(registration.ConsumerGroupId);
+                },
+                deadLetterQueue => deadLetterQueue.WithTopicSuffix(".provider-dlq"));
+            builder.AddAdminClient((serviceProvider, admin) =>
+            {
+                adminProvider = serviceProvider;
+                var registration = serviceProvider.GetRequiredService<RegistrationSettings>();
+                admin
+                    .WithBootstrapServers(registration.BootstrapServers)
+                    .WithClientId(registration.AdminClientId);
+            });
+        });
+
+        await Assert.That(producerProvider).IsNull();
+        await Assert.That(consumerProvider).IsNull();
+        await Assert.That(adminProvider).IsNull();
+
+        await using var provider = services.BuildServiceProvider();
+        var producer = provider.GetRequiredService<IKafkaProducer<string, string>>();
+        var consumer = provider.GetRequiredService<IKafkaConsumer<string, string>>();
+        var admin = provider.GetRequiredService<IAdminClient>();
+        var deadLetterOptions = provider.GetRequiredKeyedService<DeadLetterOptions>(
+            typeof(IKafkaConsumer<string, string>));
+
+        await Assert.That(producerProvider!.GetRequiredService<RegistrationSettings>())
+            .IsSameReferenceAs(settings);
+        await Assert.That(consumerProvider!.GetRequiredService<RegistrationSettings>())
+            .IsSameReferenceAs(settings);
+        await Assert.That(adminProvider!.GetRequiredService<RegistrationSettings>())
+            .IsSameReferenceAs(settings);
+        await Assert.That(GetProducerOptions(producer).ClientId).IsEqualTo(settings.ProducerClientId);
+        await Assert.That(GetConsumerOptions(consumer).GroupId).IsEqualTo(settings.ConsumerGroupId);
+        await Assert.That(GetAdminOptions(admin).ClientId).IsEqualTo(settings.AdminClientId);
+        await Assert.That(deadLetterOptions.TopicSuffix).IsEqualTo(".provider-dlq");
+        await Assert.That(deadLetterOptions.BootstrapServers).IsEqualTo(settings.BootstrapServers);
+    }
+
+    [Test]
+    public async Task ProviderConfiguredKeyedRegistrations_ReceiveServiceProvider()
+    {
+        var services = new ServiceCollection();
+        var settings = new RegistrationSettings(
+            "broker1:9092",
+            "keyed-producer",
+            "keyed-consumer",
+            "unused-admin");
+        services.AddSingleton(settings);
+
+        services.AddDekaf(builder =>
+        {
+            builder.AddProducer<string, string>("orders", (serviceProvider, producer) =>
+            {
+                var registration = serviceProvider.GetRequiredService<RegistrationSettings>();
+                producer
+                    .WithBootstrapServers(registration.BootstrapServers)
+                    .WithClientId(registration.ProducerClientId);
+            });
+            builder.AddConsumer<string, string>("orders", (serviceProvider, consumer) =>
+            {
+                var registration = serviceProvider.GetRequiredService<RegistrationSettings>();
+                consumer
+                    .WithBootstrapServers(registration.BootstrapServers)
+                    .WithGroupId(registration.ConsumerGroupId);
+            });
+        });
+
+        await using var provider = services.BuildServiceProvider();
+        var producer = provider.GetRequiredKeyedService<IKafkaProducer<string, string>>("orders");
+        var consumer = provider.GetRequiredKeyedService<IKafkaConsumer<string, string>>("orders");
+
+        await Assert.That(GetProducerOptions(producer).ClientId).IsEqualTo(settings.ProducerClientId);
+        await Assert.That(GetConsumerOptions(consumer).GroupId).IsEqualTo(settings.ConsumerGroupId);
+    }
+
+    [Test]
+    public async Task ProviderConfiguredTypedOptions_ApplyBeforeCallback()
+    {
+        var services = new ServiceCollection();
+        var settings = new RegistrationSettings(
+            "broker1:9092",
+            "typed-provider-producer",
+            "typed-provider-consumer",
+            "typed-provider-admin");
+        services.AddSingleton(settings);
+
+        services.AddDekaf(builder =>
+        {
+            builder.AddProducer<string, string>(
+                new ProducerOptions { BootstrapServers = [settings.BootstrapServers] },
+                (serviceProvider, producer) => producer.WithClientId(
+                    serviceProvider.GetRequiredService<RegistrationSettings>().ProducerClientId));
+            builder.AddConsumer<string, string>(
+                new ConsumerOptions
+                {
+                    BootstrapServers = [settings.BootstrapServers],
+                    GroupId = "initial-group"
+                },
+                (serviceProvider, consumer) => consumer.WithGroupId(
+                    serviceProvider.GetRequiredService<RegistrationSettings>().ConsumerGroupId));
+            builder.AddAdminClient(
+                new AdminClientOptions { BootstrapServers = [settings.BootstrapServers] },
+                (serviceProvider, admin) => admin.WithClientId(
+                    serviceProvider.GetRequiredService<RegistrationSettings>().AdminClientId));
+        });
+
+        await using var provider = services.BuildServiceProvider();
+        var producerOptions = GetProducerOptions(
+            provider.GetRequiredService<IKafkaProducer<string, string>>());
+        var consumerOptions = GetConsumerOptions(
+            provider.GetRequiredService<IKafkaConsumer<string, string>>());
+        var adminOptions = GetAdminOptions(provider.GetRequiredService<IAdminClient>());
+
+        await Assert.That(producerOptions.BootstrapServers[0]).IsEqualTo(settings.BootstrapServers);
+        await Assert.That(producerOptions.ClientId).IsEqualTo(settings.ProducerClientId);
+        await Assert.That(consumerOptions.BootstrapServers[0]).IsEqualTo(settings.BootstrapServers);
+        await Assert.That(consumerOptions.GroupId).IsEqualTo(settings.ConsumerGroupId);
+        await Assert.That(adminOptions.BootstrapServers[0]).IsEqualTo(settings.BootstrapServers);
+        await Assert.That(adminOptions.ClientId).IsEqualTo(settings.AdminClientId);
+    }
+
+    [Test]
+    public async Task ProviderConfiguredConfiguration_ApplyBeforeCallback()
+    {
+        var services = new ServiceCollection();
+        var settings = new RegistrationSettings(
+            "unused:9092",
+            "configured-provider-producer",
+            "configured-provider-consumer",
+            "configured-provider-admin");
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Kafka:Producer:BootstrapServers"] = "producer:9092",
+            ["Kafka:Consumer:BootstrapServers"] = "consumer:9092",
+            ["Kafka:Consumer:GroupId"] = "initial-group",
+            ["Kafka:Admin:BootstrapServers"] = "admin:9092"
+        });
+        services.AddSingleton(settings);
+
+        services.AddDekaf(builder =>
+        {
+            builder.AddProducer<string, string>(
+                configuration.GetSection("Kafka:Producer"),
+                (serviceProvider, producer) => producer.WithClientId(
+                    serviceProvider.GetRequiredService<RegistrationSettings>().ProducerClientId));
+            builder.AddConsumer<string, string>(
+                configuration.GetSection("Kafka:Consumer"),
+                (serviceProvider, consumer) => consumer.WithGroupId(
+                    serviceProvider.GetRequiredService<RegistrationSettings>().ConsumerGroupId));
+            builder.AddAdminClient(
+                configuration.GetSection("Kafka:Admin"),
+                (serviceProvider, admin) => admin.WithClientId(
+                    serviceProvider.GetRequiredService<RegistrationSettings>().AdminClientId));
+        });
+
+        await using var provider = services.BuildServiceProvider();
+        var producerOptions = GetProducerOptions(
+            provider.GetRequiredService<IKafkaProducer<string, string>>());
+        var consumerOptions = GetConsumerOptions(
+            provider.GetRequiredService<IKafkaConsumer<string, string>>());
+        var adminOptions = GetAdminOptions(provider.GetRequiredService<IAdminClient>());
+
+        await Assert.That(producerOptions.BootstrapServers[0]).IsEqualTo("producer:9092");
+        await Assert.That(producerOptions.ClientId).IsEqualTo(settings.ProducerClientId);
+        await Assert.That(consumerOptions.BootstrapServers[0]).IsEqualTo("consumer:9092");
+        await Assert.That(consumerOptions.GroupId).IsEqualTo(settings.ConsumerGroupId);
+        await Assert.That(adminOptions.BootstrapServers[0]).IsEqualTo("admin:9092");
+        await Assert.That(adminOptions.ClientId).IsEqualTo(settings.AdminClientId);
+    }
+
+    [Test]
     public async Task AddProducer_RegistersAsSingleton()
     {
         var services = new ServiceCollection();
@@ -2131,6 +2331,12 @@ public class DependencyInjectionTests
             ?? throw new InvalidOperationException("Could not find _options field");
         return (AdminClientOptions)field.GetValue(admin)!;
     }
+
+    private sealed record RegistrationSettings(
+        string BootstrapServers,
+        string ProducerClientId,
+        string ConsumerGroupId,
+        string AdminClientId);
 
     #region Test Interceptor Implementations
 
