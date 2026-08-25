@@ -23,6 +23,9 @@ public sealed class SchemaRegistryAssociationIntegrationTests(KafkaWithAssociati
         }
         """;
 
+    private const string JsonRecordSchema =
+        "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"integer\"}}}";
+
     [Test]
     public async Task Association_CreateListDelete_RoundTripsAgainstSchemaRegistry()
     {
@@ -148,7 +151,7 @@ public sealed class SchemaRegistryAssociationIntegrationTests(KafkaWithAssociati
             new Schema
             {
                 SchemaType = SchemaType.Json,
-                SchemaString = "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"integer\"}}}"
+                SchemaString = JsonRecordSchema
             });
         await RegisterAssociatedSchemaAsync(
             client,
@@ -175,7 +178,7 @@ public sealed class SchemaRegistryAssociationIntegrationTests(KafkaWithAssociati
                 });
             await using var json = new JsonSchemaRegistrySerializer<AssociatedJsonRecord>(
                 client,
-                "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"integer\"}}}",
+                JsonRecordSchema,
                 subjectNameStrategy: SubjectNameStrategy.AssociatedName,
                 autoRegisterSchemas: false);
             await using var protobuf = new ProtobufSchemaRegistrySerializer<TestPerson>(
