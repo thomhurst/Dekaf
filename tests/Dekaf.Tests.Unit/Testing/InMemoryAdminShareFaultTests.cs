@@ -270,6 +270,32 @@ public sealed class InMemoryAdminShareFaultTests
     }
 
     [Test]
+    public async Task AdminFault_InvalidLaterPartitionCountDoesNotConsumeFaultOrMutateBatch()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var admin = new InMemoryAdminClient(cluster);
+        cluster.CreateTopic("customers");
+        cluster.CreateTopic("orders");
+        var failure = new InvalidOperationException("blocked");
+        cluster.FaultPlan.Fail(new KafkaFaultScope(KafkaFaultOperation.Admin), failure);
+
+        _ = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            admin.CreatePartitionsAsync(new Dictionary<string, int>
+            {
+                ["customers"] = 2,
+                ["orders"] = 0
+            }).AsTask());
+
+        var customers = cluster.DescribeTopics(["customers"])["customers"];
+        await Assert.That(customers.Partitions).Count().IsEqualTo(1);
+        await Assert.That(cluster.FaultPlan.Count).IsEqualTo(1);
+
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            admin.CreatePartitionsAsync(new Dictionary<string, int> { ["customers"] = 2 }).AsTask());
+        await Assert.That(actual).IsSameReferenceAs(failure);
+    }
+
+    [Test]
     public async Task AdminFault_InvalidBrokerIdDoesNotConsumeScriptedFailure()
     {
         var cluster = new InMemoryKafkaCluster();

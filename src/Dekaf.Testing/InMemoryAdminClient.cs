@@ -474,6 +474,9 @@ public sealed class InMemoryAdminClient :
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(topicName);
             ArgumentOutOfRangeException.ThrowIfLessThan(partitionCount, 1);
+        }
+        foreach (var (topicName, partitionCount) in partitionCounts)
+        {
             await ApplyAdminFaultAsync(cancellationToken, topic: topicName).ConfigureAwait(false);
             _cluster.CreatePartitions(topicName, partitionCount);
         }
