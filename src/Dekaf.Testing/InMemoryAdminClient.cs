@@ -420,6 +420,9 @@ public sealed class InMemoryAdminClient :
         ThrowIfDisposed();
 
         var offsetList = offsets.ToArray();
+        foreach (var offset in offsetList)
+            ValidateTopicPartition(new TopicPartition(offset.Topic, offset.Partition));
+
         if (offsetList.Length == 0)
             await ApplyAdminFaultAsync(cancellationToken, groupId: groupId).ConfigureAwait(false);
         for (var index = 0; index < offsetList.Length; index++)
@@ -530,8 +533,10 @@ public sealed class InMemoryAdminClient :
             if (partitionList.Length == 0)
                 await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
             foreach (var partition in partitionList)
-            {
                 ValidateTopicPartition(partition);
+
+            foreach (var partition in partitionList)
+            {
                 await ApplyAdminFaultAsync(
                     cancellationToken,
                     partition.Topic,
@@ -729,8 +734,16 @@ public sealed class InMemoryAdminClient :
         ArgumentNullException.ThrowIfNull(aclBindings);
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
-        _ = aclBindings.Any();
-        await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        var bindings = aclBindings.ToArray();
+        if (bindings.Length == 0)
+            await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        foreach (var binding in bindings)
+        {
+            await ApplyAdminAclResourceFaultAsync(
+                binding.Pattern.Type,
+                binding.Pattern.Name,
+                cancellationToken).ConfigureAwait(false);
+        }
     }
 
     public async ValueTask<IReadOnlyList<AclBinding>> DeleteAclsAsync(
@@ -741,8 +754,16 @@ public sealed class InMemoryAdminClient :
         ArgumentNullException.ThrowIfNull(filters);
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
-        _ = filters.Any();
-        await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        var filterList = filters.ToArray();
+        if (filterList.Length == 0)
+            await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        foreach (var filter in filterList)
+        {
+            await ApplyAdminAclResourceFaultAsync(
+                filter.ResourceType,
+                filter.ResourceName,
+                cancellationToken).ConfigureAwait(false);
+        }
         return Array.Empty<AclBinding>();
     }
 
@@ -754,7 +775,10 @@ public sealed class InMemoryAdminClient :
         ArgumentNullException.ThrowIfNull(filter);
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
-        await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        await ApplyAdminAclResourceFaultAsync(
+            filter.ResourceType,
+            filter.ResourceName,
+            cancellationToken).ConfigureAwait(false);
         return Array.Empty<AclBinding>();
     }
 
@@ -770,6 +794,9 @@ public sealed class InMemoryAdminClient :
         ThrowIfDisposed();
 
         var partitionList = partitions.ToArray();
+        foreach (var partition in partitionList)
+            ValidateTopicPartition(partition);
+
         if (partitionList.Length == 0)
             await ApplyAdminFaultAsync(cancellationToken, groupId: groupId).ConfigureAwait(false);
         for (var index = 0; index < partitionList.Length; index++)
@@ -794,6 +821,9 @@ public sealed class InMemoryAdminClient :
         ThrowIfDisposed();
 
         var specList = specs.ToArray();
+        foreach (var spec in specList)
+            ValidateTopicPartition(spec.TopicPartition);
+
         if (specList.Length == 0)
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         for (var index = 0; index < specList.Length; index++)
@@ -838,6 +868,9 @@ public sealed class InMemoryAdminClient :
         ThrowIfDisposed();
 
         var partitionList = partitions?.ToArray() ?? [];
+        foreach (var partition in partitionList)
+            ValidateTopicPartition(partition);
+
         if (partitionList.Length == 0)
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         for (var index = 0; index < partitionList.Length; index++)
@@ -1444,6 +1477,9 @@ public sealed class InMemoryAdminClient :
 
         var groupOffsets = _cluster.GetShareGroupOffsets(groupId);
         var targetPartitions = partitions?.ToArray() ?? groupOffsets.Keys.ToArray();
+        foreach (var partition in targetPartitions)
+            ValidateTopicPartition(partition);
+
         if (targetPartitions.Length == 0)
             await ApplyAdminFaultAsync(cancellationToken, groupId: groupId).ConfigureAwait(false);
         for (var index = 0; index < targetPartitions.Length; index++)
@@ -1485,6 +1521,9 @@ public sealed class InMemoryAdminClient :
         ThrowIfDisposed();
 
         var offsetList = offsets.ToArray();
+        foreach (var offset in offsetList)
+            ValidateTopicPartition(offset.TopicPartition);
+
         if (offsetList.Length == 0)
             await ApplyAdminFaultAsync(cancellationToken, groupId: groupId).ConfigureAwait(false);
         for (var index = 0; index < offsetList.Length; index++)
@@ -1516,6 +1555,9 @@ public sealed class InMemoryAdminClient :
         ThrowIfDisposed();
 
         var topicSet = topics.ToHashSet(StringComparer.Ordinal);
+        foreach (var topic in topicSet)
+            ArgumentException.ThrowIfNullOrWhiteSpace(topic);
+
         if (topicSet.Count == 0)
             await ApplyAdminFaultAsync(cancellationToken, groupId: groupId).ConfigureAwait(false);
         foreach (var topic in topicSet)
@@ -1553,6 +1595,19 @@ public sealed class InMemoryAdminClient :
                 ApplyAdminFaultAsync(cancellationToken, topic: resource.Name),
             ConfigResourceType.Group =>
                 ApplyAdminFaultAsync(cancellationToken, groupId: resource.Name),
+            _ => ApplyAdminFaultAsync(cancellationToken)
+        };
+
+    private ValueTask ApplyAdminAclResourceFaultAsync(
+        ResourceType resourceType,
+        string? resourceName,
+        CancellationToken cancellationToken) =>
+        resourceType switch
+        {
+            ResourceType.Topic when !string.IsNullOrWhiteSpace(resourceName) =>
+                ApplyAdminFaultAsync(cancellationToken, topic: resourceName),
+            ResourceType.Group when !string.IsNullOrWhiteSpace(resourceName) =>
+                ApplyAdminFaultAsync(cancellationToken, groupId: resourceName),
             _ => ApplyAdminFaultAsync(cancellationToken)
         };
 

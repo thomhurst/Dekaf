@@ -357,6 +357,99 @@ public sealed class InMemoryAdminShareFaultTests
         await AssertInvalidAdminBatchDoesNotConsumeFaultAsync(
             admin => admin.DescribeReplicaLogDirsAsync([validReplica, invalidReplica]).AsTask(),
             admin => admin.DescribeReplicaLogDirsAsync([validReplica]).AsTask());
+        await AssertInvalidAdminBatchDoesNotConsumeFaultAsync(
+            admin => admin.ListPartitionReassignmentsAsync([validPartition, invalidPartition]).AsTask(),
+            admin => admin.ListPartitionReassignmentsAsync([validPartition]).AsTask());
+        await AssertInvalidAdminBatchDoesNotConsumeFaultAsync(
+            admin => admin.AlterConsumerGroupOffsetsAsync(
+                "workers",
+                [
+                    new TopicPartitionOffset(validPartition.Topic, validPartition.Partition, 1),
+                    new TopicPartitionOffset(invalidPartition.Topic, invalidPartition.Partition, 1)
+                ]).AsTask(),
+            admin => admin.AlterConsumerGroupOffsetsAsync(
+                "workers",
+                [new TopicPartitionOffset(validPartition.Topic, validPartition.Partition, 1)]).AsTask());
+        await AssertInvalidAdminBatchDoesNotConsumeFaultAsync(
+            admin => admin.DeleteConsumerGroupOffsetsAsync(
+                "workers",
+                [validPartition, invalidPartition]).AsTask(),
+            admin => admin.DeleteConsumerGroupOffsetsAsync("workers", [validPartition]).AsTask());
+        await AssertInvalidAdminBatchDoesNotConsumeFaultAsync(
+            admin => admin.ListOffsetsAsync(
+                [
+                    new TopicPartitionOffsetSpec { TopicPartition = validPartition, Spec = OffsetSpec.Latest },
+                    new TopicPartitionOffsetSpec { TopicPartition = invalidPartition, Spec = OffsetSpec.Latest }
+                ]).AsTask(),
+            admin => admin.ListOffsetsAsync(
+                [new TopicPartitionOffsetSpec { TopicPartition = validPartition, Spec = OffsetSpec.Latest }]).AsTask());
+        await AssertInvalidAdminBatchDoesNotConsumeFaultAsync(
+            admin => admin.ElectLeadersAsync(
+                ElectionType.Preferred,
+                [validPartition, invalidPartition]).AsTask(),
+            admin => admin.ElectLeadersAsync(ElectionType.Preferred, [validPartition]).AsTask());
+        await AssertInvalidAdminBatchDoesNotConsumeFaultAsync(
+            admin => admin.DescribeShareGroupOffsetsAsync(
+                "workers",
+                [validPartition, invalidPartition]).AsTask(),
+            admin => admin.DescribeShareGroupOffsetsAsync("workers", [validPartition]).AsTask());
+        await AssertInvalidAdminBatchDoesNotConsumeFaultAsync(
+            admin => admin.AlterShareGroupOffsetsAsync(
+                "workers",
+                [
+                    new ShareGroupOffsetAlteration { TopicPartition = validPartition, StartOffset = 1 },
+                    new ShareGroupOffsetAlteration { TopicPartition = invalidPartition, StartOffset = 1 }
+                ]).AsTask(),
+            admin => admin.AlterShareGroupOffsetsAsync(
+                "workers",
+                [new ShareGroupOffsetAlteration { TopicPartition = validPartition, StartOffset = 1 }]).AsTask());
+    }
+
+    [Test]
+    public async Task AdminFault_InvalidLaterShareTopicDoesNotConsumeScriptedFailure()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var admin = new InMemoryAdminClient(cluster);
+        var failure = new InvalidOperationException("blocked");
+        cluster.FaultPlan.Fail(new KafkaFaultScope(KafkaFaultOperation.Admin), failure);
+
+        _ = await Assert.ThrowsAsync<ArgumentException>(() =>
+            admin.DeleteShareGroupOffsetsAsync("workers", ["orders", ""]).AsTask());
+        await Assert.That(cluster.FaultPlan.Count).IsEqualTo(1);
+
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            admin.DeleteShareGroupOffsetsAsync("workers", ["orders"]).AsTask());
+        await Assert.That(actual).IsSameReferenceAs(failure);
+    }
+
+    [Test]
+    public async Task AdminFault_AclOperationsHonorResourceScope()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var admin = new InMemoryAdminClient(cluster);
+        var topicFailure = new InvalidOperationException("topic blocked");
+        var groupFailure = new InvalidOperationException("group blocked");
+        cluster.FaultPlan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.Admin, topic: "orders"),
+            topicFailure,
+            occurrenceCount: 2);
+        cluster.FaultPlan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.Admin, groupId: "workers"),
+            groupFailure);
+
+        var createFailure = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            admin.CreateAclsAsync(
+                [AclBinding.Allow(ResourcePattern.Topic("orders"), "User:alice", AclOperation.Read)]).AsTask());
+        var deleteFailure = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            admin.DeleteAclsAsync(
+                [AclBindingFilter.ForResource(ResourceType.Topic, "orders")]).AsTask());
+        var describeFailure = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            admin.DescribeAclsAsync(
+                AclBindingFilter.ForResource(ResourceType.Group, "workers")).AsTask());
+
+        await Assert.That(createFailure).IsSameReferenceAs(topicFailure);
+        await Assert.That(deleteFailure).IsSameReferenceAs(topicFailure);
+        await Assert.That(describeFailure).IsSameReferenceAs(groupFailure);
     }
 
     [Test]
