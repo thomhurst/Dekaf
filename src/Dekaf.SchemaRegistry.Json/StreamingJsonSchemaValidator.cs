@@ -140,7 +140,7 @@ internal sealed class StreamingJsonSchemaValidator(
         var valueSlice = new ValidationValueSlice();
         try
         {
-            WalkValidationRules(
+            var completed = WalkValidationRules(
                 ref reader,
                 payload,
                 root,
@@ -151,6 +151,17 @@ internal sealed class StreamingJsonSchemaValidator(
                 ref violations,
                 ref compositionMatches,
                 ref valueSlice);
+            if (completed && reader.Read())
+                ThrowFailure(schemaId, "$parse", "$", null);
+        }
+        catch (JsonException exception)
+        {
+            throw new JsonSchemaValidationException(
+                schemaId,
+                "$parse",
+                exception.Path ?? "$",
+                $"JSON Schema validation failed for schema ID {schemaId} at '{exception.Path ?? "$"}' (keyword '$parse').",
+                exception);
         }
         finally
         {
@@ -200,40 +211,48 @@ internal sealed class StreamingJsonSchemaValidator(
                 ? valueSlice.GetOrCreateEqualityGeneration()
                 : 0;
 
-            for (var index = 0; index < rules.Length; index++)
+            ValidationCelStrings.Begin(memberCount + 1, value.Length);
+            try
             {
-                var compiledRule = rules[index];
-                try
+                for (var index = 0; index < rules.Length; index++)
                 {
-                    var result = compiledRule.Evaluate(
-                        value,
-                        now,
-                        memberValues,
-                        sizes,
-                        equalityGeneration);
-                    if (result.Kind == ValidationResultKind.Boolean ? !result.Boolean : result.String!.Length != 0)
+                    var compiledRule = rules[index];
+                    try
+                    {
+                        var result = compiledRule.Evaluate(
+                            value,
+                            now,
+                            memberValues,
+                            sizes,
+                            equalityGeneration);
+                        if (result.Kind == ValidationResultKind.Boolean ? !result.Boolean : result.String!.Length != 0)
+                        {
+                            if (!compositionMatches.CollectViolations)
+                                return false;
+                            (violations ??= []).Add(new ValidationRuleError(
+                                compiledRule.Rule,
+                                path.ToString(),
+                                result.Kind == ValidationResultKind.String ? result.String : null));
+                            if (failFast)
+                                return false;
+                        }
+                    }
+                    catch (SchemaRegistryRuleException exception)
                     {
                         if (!compositionMatches.CollectViolations)
                             return false;
                         (violations ??= []).Add(new ValidationRuleError(
                             compiledRule.Rule,
                             path.ToString(),
-                            result.Kind == ValidationResultKind.String ? result.String : null));
+                            cause: exception));
                         if (failFast)
                             return false;
                     }
                 }
-                catch (SchemaRegistryRuleException exception)
-                {
-                    if (!compositionMatches.CollectViolations)
-                        return false;
-                    (violations ??= []).Add(new ValidationRuleError(
-                        compiledRule.Rule,
-                        path.ToString(),
-                        cause: exception));
-                    if (failFast)
-                        return false;
-                }
+            }
+            finally
+            {
+                ValidationCelStrings.End();
             }
         }
 
@@ -374,20 +393,12 @@ internal sealed class StreamingJsonSchemaValidator(
             for (var index = 0; index < branches.Length; index++)
             {
                 var branchReader = reader;
-                if (!MatchesValidationShape(
+                if (!MatchesValidationShapeLastPropertyWins(
                         ref branchReader,
                         branches[index],
                         referenceDepth,
                         ref compositionMatches))
-                {
-                    branchReader = reader;
-                    if (!MatchesValidationShapeLastPropertyWins(
-                            ref branchReader,
-                            branches[index],
-                            referenceDepth,
-                            ref compositionMatches))
-                        continue;
-                }
+                    continue;
 
                 if (oneOnly)
                 {
@@ -567,24 +578,6 @@ internal sealed class StreamingJsonSchemaValidator(
         if (collectViolations)
             ThrowFailure(schemaId, keyword, path.ToString(), innerException: null);
         return false;
-    }
-
-    private static bool MatchesValidationShape(
-        ref Utf8JsonReader reader,
-        CompiledSchemaNode node,
-        int referenceDepth,
-        scoped ref ValidationCompositionMatchCache compositionMatches)
-    {
-        var path = new JsonPathBuilder();
-        return ValidateNodeCore(
-            ref reader,
-            node,
-            ref path,
-            schemaId: null,
-            out _,
-            ref compositionMatches,
-            recordCompositionMatches: false,
-            referenceDepth);
     }
 
     private static bool MatchesValidationShapeLastPropertyWins(

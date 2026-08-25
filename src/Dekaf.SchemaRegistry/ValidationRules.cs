@@ -2160,104 +2160,138 @@ internal enum ValidationCelStringOperation : byte
     Contains
 }
 
+internal struct ValidationCelStringSlot
+{
+    internal int Start;
+    internal int Length;
+    internal uint Generation;
+}
+
 internal static class ValidationCelStrings
 {
     private const int StackBufferLength = 256;
+
+    [ThreadStatic]
+    private static ValidationCelStringSlot[]? t_values;
+
+    [ThreadStatic]
+    private static byte[]? t_buffer;
+
+    [ThreadStatic]
+    private static int t_valueCount;
+
+    [ThreadStatic]
+    private static int t_maximumLength;
+
+    [ThreadStatic]
+    private static int t_written;
+
+    [ThreadStatic]
+    private static uint t_generation;
+
+    // Short strings keep the stack fast path. Long strings share one payload-sized pooled
+    // buffer across sibling rules, so each referenced member is decoded at most once.
+    internal static void Begin(int valueCount, int maximumLength)
+    {
+        t_valueCount = valueCount;
+        t_maximumLength = maximumLength;
+        t_written = 0;
+        if (unchecked(++t_generation) != 0)
+            return;
+
+        if (t_values is not null)
+            Array.Clear(t_values);
+        t_generation = 1;
+    }
+
+    internal static void End()
+    {
+        var buffer = t_buffer;
+        t_buffer = null;
+        t_valueCount = 0;
+        t_maximumLength = 0;
+        t_written = 0;
+        if (buffer is not null)
+            ArrayPool<byte>.Shared.Return(buffer);
+    }
 
     internal static bool Evaluate(
         ValidationCelValue left,
         ValidationCelValue right,
         ValidationCelStringOperation operation)
     {
-        byte[]? leftRented = null;
-        byte[]? rightRented = null;
         var leftMaximum = GetMaximumLength(left);
         var rightMaximum = GetMaximumLength(right);
-        Span<byte> leftBuffer = leftMaximum <= StackBufferLength
-            ? stackalloc byte[leftMaximum]
-            : (leftRented = ArrayPool<byte>.Shared.Rent(leftMaximum));
-        Span<byte> rightBuffer = rightMaximum <= StackBufferLength
-            ? stackalloc byte[rightMaximum]
-            : (rightRented = ArrayPool<byte>.Shared.Rent(rightMaximum));
-        try
+        if (leftMaximum <= StackBufferLength && rightMaximum <= StackBufferLength)
         {
-            var leftText = Decode(left, leftBuffer);
-            var rightText = Decode(right, rightBuffer);
-            return operation switch
-            {
-                ValidationCelStringOperation.Equal => leftText.SequenceEqual(rightText),
-                ValidationCelStringOperation.StartsWith => leftText.StartsWith(rightText),
-                ValidationCelStringOperation.EndsWith => leftText.EndsWith(rightText),
-                ValidationCelStringOperation.Contains => leftText.IndexOf(rightText) >= 0,
-                _ => false
-            };
+            Span<byte> leftBuffer = stackalloc byte[leftMaximum];
+            Span<byte> rightBuffer = stackalloc byte[rightMaximum];
+            return EvaluateCore(
+                DecodeUncached(left, leftBuffer),
+                DecodeUncached(right, rightBuffer),
+                operation);
         }
-        finally
-        {
-            if (leftRented is not null)
-                ArrayPool<byte>.Shared.Return(leftRented);
-            if (rightRented is not null)
-                ArrayPool<byte>.Shared.Return(rightRented);
-        }
+
+        return EvaluateCore(Decode(left), Decode(right), operation);
     }
+
+    private static bool EvaluateCore(
+        ReadOnlySpan<byte> leftText,
+        ReadOnlySpan<byte> rightText,
+        ValidationCelStringOperation operation) =>
+        operation switch
+        {
+            ValidationCelStringOperation.Equal => leftText.SequenceEqual(rightText),
+            ValidationCelStringOperation.StartsWith => leftText.StartsWith(rightText),
+            ValidationCelStringOperation.EndsWith => leftText.EndsWith(rightText),
+            ValidationCelStringOperation.Contains => leftText.IndexOf(rightText) >= 0,
+            _ => false
+        };
 
     internal static int Compare(ValidationCelValue left, ValidationCelValue right)
     {
-        byte[]? leftRented = null;
-        byte[]? rightRented = null;
         var leftMaximum = GetMaximumLength(left);
         var rightMaximum = GetMaximumLength(right);
-        Span<byte> leftBuffer = leftMaximum <= StackBufferLength
-            ? stackalloc byte[leftMaximum]
-            : (leftRented = ArrayPool<byte>.Shared.Rent(leftMaximum));
-        Span<byte> rightBuffer = rightMaximum <= StackBufferLength
-            ? stackalloc byte[rightMaximum]
-            : (rightRented = ArrayPool<byte>.Shared.Rent(rightMaximum));
-        try
+        if (leftMaximum <= StackBufferLength && rightMaximum <= StackBufferLength)
         {
-            return Decode(left, leftBuffer).SequenceCompareTo(Decode(right, rightBuffer));
+            Span<byte> leftBuffer = stackalloc byte[leftMaximum];
+            Span<byte> rightBuffer = stackalloc byte[rightMaximum];
+            return DecodeUncached(left, leftBuffer)
+                .SequenceCompareTo(DecodeUncached(right, rightBuffer));
         }
-        finally
-        {
-            if (leftRented is not null)
-                ArrayPool<byte>.Shared.Return(leftRented);
-            if (rightRented is not null)
-                ArrayPool<byte>.Shared.Return(rightRented);
-        }
+
+        var leftText = Decode(left);
+        var rightText = Decode(right);
+        return leftText.SequenceCompareTo(rightText);
     }
 
     internal static int GetLength(ValidationCelValue value)
     {
-        byte[]? rented = null;
         var maximum = GetMaximumLength(value);
         Span<byte> buffer = maximum <= StackBufferLength
             ? stackalloc byte[maximum]
-            : (rented = ArrayPool<byte>.Shared.Rent(maximum));
-        try
+            : default;
+        var text = maximum <= StackBufferLength
+            ? DecodeUncached(value, buffer)
+            : Decode(value);
+        var count = 0;
+        while (!text.IsEmpty)
         {
-            var text = Decode(value, buffer);
-            var count = 0;
-            while (!text.IsEmpty)
-            {
-                var status = Rune.DecodeFromUtf8(text, out _, out var consumed);
-                if (status != OperationStatus.Done)
-                    throw Unsupported("CEL string contains invalid UTF-8.");
-                text = text[consumed..];
-                count++;
-            }
-            return count;
+            var status = Rune.DecodeFromUtf8(text, out _, out var consumed);
+            if (status != OperationStatus.Done)
+                throw Unsupported("CEL string contains invalid UTF-8.");
+            text = text[consumed..];
+            count++;
         }
-        finally
-        {
-            if (rented is not null)
-                ArrayPool<byte>.Shared.Return(rented);
-        }
+        return count;
     }
 
     private static int GetMaximumLength(ValidationCelValue value) =>
         value.Literal is null ? value.Json.Length : value.Utf8Literal.Length;
 
-    private static ReadOnlySpan<byte> Decode(ValidationCelValue value, Span<byte> destination)
+    private static ReadOnlySpan<byte> DecodeUncached(
+        ValidationCelValue value,
+        Span<byte> destination)
     {
         if (value.Literal is not null)
         {
@@ -2269,6 +2303,38 @@ internal static class ValidationCelStrings
         _ = reader.Read();
         var written = reader.CopyString(destination);
         return destination[..written];
+    }
+
+    private static ReadOnlySpan<byte> Decode(ValidationCelValue value)
+    {
+        if (value.Literal is not null)
+            return value.Utf8Literal.Span;
+
+        var valueIndex = value.SizeIndex;
+        if ((uint)valueIndex >= (uint)t_valueCount)
+            throw Unsupported("CEL string cache index is invalid.");
+
+        var values = t_values;
+        if (values is null || values.Length < t_valueCount)
+            t_values = values = new ValidationCelStringSlot[Math.Max(t_valueCount, 8)];
+
+        ref var slot = ref values[valueIndex];
+        var buffer = t_buffer;
+        if (slot.Generation == t_generation)
+            return buffer!.AsSpan(slot.Start, slot.Length);
+
+        if (buffer is null)
+            t_buffer = buffer = ArrayPool<byte>.Shared.Rent(Math.Max(t_maximumLength, 1));
+
+        var reader = new Utf8JsonReader(value.Json.Span, ValidationCelJsonReader.Options);
+        _ = reader.Read();
+        var start = t_written;
+        var written = reader.CopyString(buffer.AsSpan(start));
+        slot.Start = start;
+        slot.Length = written;
+        slot.Generation = t_generation;
+        t_written += written;
+        return buffer.AsSpan(start, written);
     }
 }
 

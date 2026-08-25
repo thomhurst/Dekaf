@@ -995,6 +995,46 @@ public sealed class JsonSchemaValidationTests
     }
 
     [Test]
+    public void InlineRules_RejectTrailingJsonContent()
+    {
+        const string schemaText = """
+            {
+              "confluent:rules": [{ "name": "valid", "expr": "true" }]
+            }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
+
+        Assert.Throws<JsonSchemaValidationException>(() => validator.ValidateRules(
+            """{"value":1}{"value":2}"""u8.ToArray(),
+            19,
+            failFast: false));
+        Assert.Throws<JsonSchemaValidationException>(() => validator.ValidateRules(
+            """{"value":1}garbage"""u8.ToArray(),
+            19,
+            failFast: false));
+    }
+
+    [Test]
+    public void InlineRules_CompositionCountsFinalDuplicateProperties()
+    {
+        const string schemaText = """
+            {
+              "oneOf": [
+                { "type": "object", "minProperties": 2 },
+                {
+                  "type": "object",
+                  "maxProperties": 1,
+                  "confluent:rules": [{ "name": "final-value", "expr": "this.x == 2" }]
+                }
+              ]
+            }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
+
+        validator.ValidateRules("""{"x":1,"x":2}"""u8.ToArray(), 19, failFast: false);
+    }
+
+    [Test]
     [Arguments(false)]
     [Arguments(true)]
     public async Task InlineRules_NestedAllOfPreservesLeafFailure(bool failFast)
@@ -1631,6 +1671,31 @@ public sealed class JsonSchemaValidationTests
             CreateDeepEqualityPayload(depth: 32, rightLeaf: 2),
             24,
             failFast: false));
+    }
+
+    [Test]
+    public void InlineRules_LongStringCacheResetsPerPayload()
+    {
+        const string schemaText = """
+            {
+              "confluent:rules": [
+                { "name": "prefix", "expr": "this.text.startsWith('prefix')" },
+                { "name": "suffix", "expr": "this.text.endsWith('suffix')" },
+                { "name": "contains", "expr": "this.text.contains('aaaaaaaa')" },
+                { "name": "size", "expr": "size(this.text) > 500" }
+              ]
+            }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
+        var valid = Encoding.UTF8.GetBytes(
+            "{\"text\":\"prefix" + new string('a', 512) + "suffix\"}");
+        var invalid = Encoding.UTF8.GetBytes(
+            "{\"text\":\"prefix" + new string('a', 512) + "wrong\"}");
+
+        validator.ValidateRules(valid, 24, failFast: false);
+        Assert.Throws<ValidationRulesFailedException>(() =>
+            validator.ValidateRules(invalid, 24, failFast: false));
+        validator.ValidateRules(valid, 24, failFast: false);
     }
 
     [Test]

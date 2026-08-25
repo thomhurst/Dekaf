@@ -108,6 +108,21 @@ public class JsonSchemaValidationBenchmarks
         }
         """;
 
+    private const string RepeatedLongStringInlineRulesJsonSchema = """
+        {
+          "confluent:rules": [
+            { "name": "a", "expr": "this.text.startsWith('prefix')" },
+            { "name": "b", "expr": "this.text.endsWith('suffix')" },
+            { "name": "c", "expr": "this.text.contains('aaaaaaaa')" },
+            { "name": "d", "expr": "this.text > 'prefix'" },
+            { "name": "e", "expr": "this.text != 'other'" },
+            { "name": "f", "expr": "size(this.text) > 500" },
+            { "name": "g", "expr": "this.text.startsWith('prefix')" },
+            { "name": "h", "expr": "this.text.endsWith('suffix')" }
+          ]
+        }
+        """;
+
     private const string NestedMemberInlineRulesJsonSchema = """
         {
           "confluent:rules": [
@@ -228,6 +243,8 @@ public class JsonSchemaValidationBenchmarks
     private IJsonSchemaValidator _layeredStructuralEqualityValidator = null!;
     private ReadOnlyMemory<byte> _siblingInlineRulesJsonPayload;
     private IJsonSchemaValidator _siblingInlineRulesValidator = null!;
+    private ReadOnlyMemory<byte> _repeatedLongStringInlineRulesJsonPayload;
+    private IJsonSchemaValidator _repeatedLongStringInlineRulesValidator = null!;
     private ReadOnlyMemory<byte> _nestedMemberInlineRulesJsonPayload;
     private ReadOnlyMemory<byte> _duplicateNestedMemberInlineRulesJsonPayload;
     private ReadOnlyMemory<byte> _manyDuplicateNestedMemberInlineRulesJsonPayload;
@@ -439,6 +456,17 @@ public class JsonSchemaValidationBenchmarks
             SchemaString = SiblingInlineRulesJsonSchema
         });
         _siblingInlineRulesValidator.ValidateRules(_siblingInlineRulesJsonPayload, 4, failFast: false);
+        _repeatedLongStringInlineRulesJsonPayload = Encoding.UTF8.GetBytes(
+            "{\"text\":\"prefix" + new string('a', 512) + "suffix\"}");
+        _repeatedLongStringInlineRulesValidator = inlineRulesFactory.GetOrCreate(new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = RepeatedLongStringInlineRulesJsonSchema
+        });
+        _repeatedLongStringInlineRulesValidator.ValidateRules(
+            _repeatedLongStringInlineRulesJsonPayload,
+            20,
+            failFast: false);
         _nestedMemberInlineRulesJsonPayload =
             """{"details":{"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8}}"""u8.ToArray();
         _nestedMemberInlineRulesValidator = inlineRulesFactory.GetOrCreate(new Schema
@@ -688,6 +716,13 @@ public class JsonSchemaValidationBenchmarks
     [Benchmark]
     public void ValidateSiblingInlineRules() =>
         _siblingInlineRulesValidator.ValidateRules(_siblingInlineRulesJsonPayload, 4, failFast: false);
+
+    [Benchmark]
+    public void ValidateRepeatedLongStringInlineRules() =>
+        _repeatedLongStringInlineRulesValidator.ValidateRules(
+            _repeatedLongStringInlineRulesJsonPayload,
+            20,
+            failFast: false);
 
     [Benchmark]
     public void ValidateNestedMemberInlineRules() =>
