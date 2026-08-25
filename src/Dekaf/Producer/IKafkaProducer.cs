@@ -254,6 +254,57 @@ public interface IKafkaProducer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// <returns>A producer bound to the specified topic.</returns>
     ITopicProducer<TKey, TValue> ForTopic(string topic);
 }
+
+/// <summary>
+/// Optional producer capability for querying topic partition metadata.
+/// </summary>
+/// <remarks>
+/// Dekaf's built-in producer implements this interface. Custom
+/// <see cref="IKafkaProducer{TKey,TValue}"/> implementations can implement it to support
+/// <see cref="ProducerExtensions.GetPartitionsForAsync{TKey,TValue}"/> without adding members
+/// to the core producer contract.
+/// </remarks>
+public interface IProducerMetadata
+{
+    /// <summary>
+    /// Gets the latest accepted partition metadata for a topic.
+    /// </summary>
+    /// <remarks>
+    /// A cache hit completes synchronously. A cache miss refreshes metadata and is bounded by
+    /// the producer's configured maximum blocking time as well as
+    /// <paramref name="cancellationToken"/>.
+    /// </remarks>
+    /// <param name="topic">Topic name.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>An immutable snapshot ordered as supplied by the broker.</returns>
+    ValueTask<IReadOnlyList<ProducerPartitionMetadata>> GetPartitionsForAsync(
+        string topic,
+        CancellationToken cancellationToken = default);
+}
+
+/// <summary>
+/// Immutable producer view of one topic partition's metadata.
+/// </summary>
+public sealed class ProducerPartitionMetadata
+{
+    /// <summary>The topic and partition.</summary>
+    public required TopicPartition TopicPartition { get; init; }
+
+    /// <summary>Current leader broker ID, or <c>-1</c> when no leader is available.</summary>
+    public int LeaderId { get; init; } = -1;
+
+    /// <summary>Current leader epoch, or <c>-1</c> when unavailable.</summary>
+    public int LeaderEpoch { get; init; } = -1;
+
+    /// <summary>Replica broker IDs.</summary>
+    public required IReadOnlyList<int> ReplicaIds { get; init; }
+
+    /// <summary>In-sync replica broker IDs.</summary>
+    public required IReadOnlyList<int> InSyncReplicaIds { get; init; }
+
+    /// <summary>Offline replica broker IDs.</summary>
+    public required IReadOnlyList<int> OfflineReplicaIds { get; init; }
+}
 #endif
 
 #if !DEKAF_ABSTRACTIONS

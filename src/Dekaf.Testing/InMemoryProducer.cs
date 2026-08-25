@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Collections.ObjectModel;
 using System.Runtime.CompilerServices;
 using Dekaf.Consumer;
 using Dekaf.Errors;
@@ -32,8 +33,12 @@ internal interface IInMemoryTransactionRecoveryContext
 /// </summary>
 public sealed class InMemoryProducer<TKey, TValue> :
     IKafkaProducer<TKey, TValue>,
+    IProducerMetadata,
     IInMemoryTransactionRecoveryContext
 {
+    private static readonly IReadOnlyList<int> SingleBrokerIds =
+        new ReadOnlyCollection<int>([0]);
+
     internal Action? TransactionCompletionPublishedTestHook;
 
     private readonly InMemoryKafkaCluster _cluster;
@@ -150,6 +155,33 @@ public sealed class InMemoryProducer<TKey, TValue> :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
         return ValueTask.CompletedTask;
+    }
+
+    /// <inheritdoc />
+    public ValueTask<IReadOnlyList<ProducerPartitionMetadata>> GetPartitionsForAsync(
+        string topic,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(topic);
+        ThrowIfDisposed();
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var topicPartitions = _cluster.GetTopicPartitions(topic);
+        var result = new ProducerPartitionMetadata[topicPartitions.Count];
+        for (var i = 0; i < topicPartitions.Count; i++)
+        {
+            result[i] = new ProducerPartitionMetadata
+            {
+                TopicPartition = topicPartitions[i],
+                LeaderId = 0,
+                ReplicaIds = SingleBrokerIds,
+                InSyncReplicaIds = SingleBrokerIds,
+                OfflineReplicaIds = Array.Empty<int>()
+            };
+        }
+
+        return new ValueTask<IReadOnlyList<ProducerPartitionMetadata>>(
+            new ReadOnlyCollection<ProducerPartitionMetadata>(result));
     }
 
     public ValueTask<RecordMetadata> ProduceAsync(

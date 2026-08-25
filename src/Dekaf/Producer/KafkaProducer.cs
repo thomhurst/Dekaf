@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Collections.Concurrent;
+using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Dekaf.Compression;
@@ -26,6 +27,7 @@ namespace Dekaf.Producer;
 /// <typeparam name="TValue">Value type.</typeparam>
 public sealed partial class KafkaProducer<TKey, TValue> :
     IKafkaProducer<TKey, TValue>,
+    IProducerMetadata,
     IKafkaClientStatusProvider,
     IProducerDiagnostics,
     IProducerFastPath<TKey, TValue>,
@@ -116,6 +118,97 @@ public sealed partial class KafkaProducer<TKey, TValue> :
             _accumulator.DispatchQueuedBatchCount,
             _accumulator.InFlightBatchCount,
             _accumulator.BufferPressureEvents));
+
+    /// <inheritdoc />
+    public ValueTask<IReadOnlyList<ProducerPartitionMetadata>> GetPartitionsForAsync(
+        string topic,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(topic);
+
+        if (Volatile.Read(ref _disposed) != 0)
+            throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+
+        ThrowIfNotInitialized();
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return _metadataManager.TryGetCachedTopicMetadata(topic, out var topicInfo)
+            ? new ValueTask<IReadOnlyList<ProducerPartitionMetadata>>(ProjectPartitionMetadata(topicInfo!))
+            : GetPartitionsForSlowAsync(topic, cancellationToken);
+    }
+
+    private async ValueTask<IReadOnlyList<ProducerPartitionMetadata>> GetPartitionsForSlowAsync(
+        string topic,
+        CancellationToken cancellationToken)
+    {
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(_options.MaxBlockMs);
+
+        TopicInfo? topicInfo;
+        try
+        {
+            topicInfo = await _metadataManager.GetTopicMetadataAsync(topic, timeoutCts.Token)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            var configured = TimeSpan.FromMilliseconds(_options.MaxBlockMs);
+            throw new KafkaTimeoutException(
+                TimeoutKind.Metadata,
+                configured,
+                configured,
+                $"Failed to fetch metadata for topic '{topic}' within max.block.ms ({_options.MaxBlockMs}ms).");
+        }
+
+        if (topicInfo is null)
+        {
+            throw KafkaException.FromErrorCode(
+                ErrorCode.UnknownTopicOrPartition,
+                $"Topic '{topic}' was not present in broker metadata.");
+        }
+
+        if (topicInfo.ErrorCode != ErrorCode.None)
+        {
+            throw KafkaException.FromErrorCode(
+                topicInfo.ErrorCode,
+                $"Failed to fetch metadata for topic '{topic}': {topicInfo.ErrorCode}.");
+        }
+
+        return ProjectPartitionMetadata(topicInfo);
+    }
+
+    private static IReadOnlyList<ProducerPartitionMetadata> ProjectPartitionMetadata(TopicInfo topicInfo)
+    {
+        var source = topicInfo.Partitions;
+        var result = new ProducerPartitionMetadata[source.Count];
+        for (var i = 0; i < source.Count; i++)
+        {
+            var partition = source[i];
+            result[i] = new ProducerPartitionMetadata
+            {
+                TopicPartition = new TopicPartition(topicInfo.Name, partition.PartitionIndex),
+                LeaderId = partition.LeaderId,
+                LeaderEpoch = partition.LeaderEpoch,
+                ReplicaIds = CopyNodeIds(partition.ReplicaNodes),
+                InSyncReplicaIds = CopyNodeIds(partition.IsrNodes),
+                OfflineReplicaIds = CopyNodeIds(partition.OfflineReplicas)
+            };
+        }
+
+        return new ReadOnlyCollection<ProducerPartitionMetadata>(result);
+    }
+
+    private static IReadOnlyList<int> CopyNodeIds(IReadOnlyList<int>? source)
+    {
+        if (source is not { Count: > 0 })
+            return Array.Empty<int>();
+
+        var result = new int[source.Count];
+        for (var i = 0; i < source.Count; i++)
+            result[i] = source[i];
+
+        return new ReadOnlyCollection<int>(result);
+    }
 
     // Idempotent / transaction state
     // Memory ordering: _idempotentInitialized is volatile (acquire/release semantics).
