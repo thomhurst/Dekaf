@@ -788,30 +788,60 @@ public sealed class ConsumerPauseResumeCacheTests
         prefetchBufferField.SetValue(consumer, prefetchBuffer);
         originalPrefetchBuffer.Dispose();
 
+        using var consumeCancellation = new CancellationTokenSource();
         await using var ownedConsumer = consumer;
-        await using var records = consumer.ConsumeAsync().GetAsyncEnumerator();
-        var moveNext = Task.Run(() => records.MoveNextAsync().AsTask());
-        var stagePendingClear = typeof(KafkaConsumer<string, string>).GetMethod(
-            "StagePendingFetchClear",
-            BindingFlags.Instance | BindingFlags.NonPublic)
-            ?? throw new InvalidOperationException("StagePendingFetchClear method not found");
+        IAsyncEnumerator<ConsumeResult<string, string>>? records = null;
+        Task<bool>? moveNext = null;
+        var testCompleted = false;
 
         try
         {
+            records = consumer.ConsumeAsync(consumeCancellation.Token).GetAsyncEnumerator();
+            moveNext = Task.Run(() => records.MoveNextAsync().AsTask());
+            var stagePendingClear = typeof(KafkaConsumer<string, string>).GetMethod(
+                "StagePendingFetchClear",
+                BindingFlags.Instance | BindingFlags.NonPublic)
+                ?? throw new InvalidOperationException("StagePendingFetchClear method not found");
+
             await Assert.That(waitEntered.Wait(TimeSpan.FromSeconds(5))).IsTrue();
             stagePendingClear.Invoke(consumer, [revokedPartition]);
             await Assert.That(prefetchBuffer.TryWrite(CreatePendingFetch(revokedPartition, 10, 1))).IsTrue();
             await Assert.That(prefetchBuffer.TryWrite(CreatePendingFetch(activePartition, 20, 1))).IsTrue();
+            releaseWait.Set();
+
+            await Assert.That(await moveNext.WaitAsync(TimeSpan.FromSeconds(5))).IsTrue();
+            await Assert.That(records.Current.Topic).IsEqualTo(activePartition.Topic);
+            await Assert.That(records.Current.Partition).IsEqualTo(activePartition.Partition);
+            await Assert.That(records.Current.Offset).IsEqualTo(20);
+            testCompleted = true;
         }
         finally
         {
             releaseWait.Set();
+            consumeCancellation.Cancel();
+            try
+            {
+                if (moveNext is not null)
+                {
+                    if (testCompleted)
+                        await moveNext;
+                    else
+                        await ((Task)moveNext).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+                }
+            }
+            finally
+            {
+                if (records is not null)
+                {
+                    if (testCompleted)
+                        await records.DisposeAsync();
+                    else
+                        await records.DisposeAsync()
+                            .AsTask()
+                            .ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+                }
+            }
         }
-
-        await Assert.That(await moveNext.WaitAsync(TimeSpan.FromSeconds(5))).IsTrue();
-        await Assert.That(records.Current.Topic).IsEqualTo(activePartition.Topic);
-        await Assert.That(records.Current.Partition).IsEqualTo(activePartition.Partition);
-        await Assert.That(records.Current.Offset).IsEqualTo(20);
     }
 
     [Test]
