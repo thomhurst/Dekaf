@@ -502,7 +502,10 @@ public sealed class InMemoryAdminClient :
                 foreach (var replica in reassignment.Value.TargetReplicas)
                     ArgumentOutOfRangeException.ThrowIfNegative(replica);
             }
+        }
 
+        foreach (var (topicPartition, _) in reassignmentList)
+        {
             await ApplyAdminFaultAsync(
                 cancellationToken,
                 topicPartition.Topic,
@@ -1156,6 +1159,8 @@ public sealed class InMemoryAdminClient :
         var targetBrokerIds = brokerIds.Distinct().Order().ToArray();
         for (var index = 0; index < targetBrokerIds.Length; index++)
             ArgumentOutOfRangeException.ThrowIfNegative(targetBrokerIds[index]);
+        foreach (var partition in targetPartitions)
+            ValidateTopicPartition(partition);
         if (targetBrokerIds.Length == 0)
         {
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
@@ -1164,7 +1169,6 @@ public sealed class InMemoryAdminClient :
 
         foreach (var partition in targetPartitions)
         {
-            ValidateTopicPartition(partition);
             await ApplyAdminFaultAsync(
                 cancellationToken,
                 partition.Topic,

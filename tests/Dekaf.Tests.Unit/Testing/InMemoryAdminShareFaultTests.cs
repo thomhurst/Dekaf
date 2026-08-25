@@ -296,6 +296,32 @@ public sealed class InMemoryAdminShareFaultTests
     }
 
     [Test]
+    public async Task AdminFault_InvalidLaterReassignmentDoesNotConsumeScriptedFailure()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var admin = new InMemoryAdminClient(cluster);
+        var failure = new InvalidOperationException("blocked");
+        cluster.FaultPlan.Fail(new KafkaFaultScope(KafkaFaultOperation.Admin), failure);
+
+        _ = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            admin.AlterPartitionReassignmentsAsync(
+                new Dictionary<TopicPartition, Optional<NewPartitionReassignment>>
+                {
+                    [new("orders", 0)] = NewPartitionReassignment.ToReplicas(0),
+                    [new("payments", 0)] = NewPartitionReassignment.ToReplicas(-1)
+                }).AsTask());
+        await Assert.That(cluster.FaultPlan.Count).IsEqualTo(1);
+
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            admin.AlterPartitionReassignmentsAsync(
+                new Dictionary<TopicPartition, Optional<NewPartitionReassignment>>
+                {
+                    [new("orders", 0)] = NewPartitionReassignment.ToReplicas(0)
+                }).AsTask());
+        await Assert.That(actual).IsSameReferenceAs(failure);
+    }
+
+    [Test]
     public async Task AdminFault_InvalidBrokerIdDoesNotConsumeScriptedFailure()
     {
         var cluster = new InMemoryKafkaCluster();
@@ -308,6 +334,27 @@ public sealed class InMemoryAdminShareFaultTests
         var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             admin.DescribeLogDirsAsync([0]).AsTask());
 
+        await Assert.That(actual).IsSameReferenceAs(failure);
+    }
+
+    [Test]
+    public async Task AdminFault_InvalidPartitionWithEmptyBrokerBatchDoesNotConsumeScriptedFailure()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var admin = new InMemoryAdminClient(cluster);
+        var failure = new InvalidOperationException("blocked");
+        cluster.FaultPlan.Fail(new KafkaFaultScope(KafkaFaultOperation.Admin), failure);
+
+        _ = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            admin.DescribeLogDirsAsync(
+                Array.Empty<int>(),
+                [new TopicPartition("orders", -1)]).AsTask());
+        await Assert.That(cluster.FaultPlan.Count).IsEqualTo(1);
+
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            admin.DescribeLogDirsAsync(
+                Array.Empty<int>(),
+                Array.Empty<TopicPartition>()).AsTask());
         await Assert.That(actual).IsSameReferenceAs(failure);
     }
 
