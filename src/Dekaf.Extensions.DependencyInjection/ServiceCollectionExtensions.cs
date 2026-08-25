@@ -927,14 +927,9 @@ public sealed class DekafBuilder
 
         internal DeadLetterOptions BuildDeadLetterOptions(IServiceProvider serviceProvider)
         {
-            if (isKeyed)
-            {
-                _ = serviceProvider.GetRequiredKeyedService<IKafkaConsumer<TKey, TValue>>(serviceKey!);
-            }
-            else
-            {
-                _ = serviceProvider.GetRequiredService<IKafkaConsumer<TKey, TValue>>();
-            }
+            _ = isKeyed
+                ? serviceProvider.GetRequiredKeyedService<IKafkaConsumer<TKey, TValue>>(serviceKey!)
+                : serviceProvider.GetRequiredService<IKafkaConsumer<TKey, TValue>>();
 
             var consumerBuilder = Volatile.Read(ref _builder) ??
                 throw new InvalidOperationException("Consumer builder was not configured.");
