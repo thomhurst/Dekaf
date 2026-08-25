@@ -151,6 +151,36 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
+    public async Task DelayOverTarget_ProbesDownByQuarterWindow()
+    {
+        var controller = CreateController(latencyGovernorEnabled: true);
+        var now = T0;
+        var admissionBlocks = 0L;
+
+        // A fixed ambient delay lets slow start reach its optimistic 16-quantum window. Once
+        // slow start ends, the still-missed target must use the accelerated 25% treatment
+        // (16 -> 12), not the normal 12.5% knee-maintenance step (16 -> 14).
+        for (var pass = 0; pass < 4; pass++)
+        {
+            controller.RecordAcknowledgement(
+                100, Seconds(0.001), Seconds(0.050), false, controller.Generation, now);
+            _ = controller.CompleteInterval(0, 0, now, 0);
+        }
+
+        for (var i = 0; i < 100 && controller.Phase == BrokerWindowPhase.Steady; i++)
+        {
+            _ = DriveControllerEpoch(
+                controller,
+                ref now,
+                ref admissionBlocks,
+                sealToSendSeconds: 0.050);
+        }
+
+        await Assert.That(controller.Phase).IsEqualTo(BrokerWindowPhase.ProbeDown);
+        await Assert.That(controller.WindowBytes).IsEqualTo(1_200);
+    }
+
+    [Test]
     public async Task DeepDescent_RequiresDemonstratedDelayGain()
     {
         var controller = CreateController(latencyGovernorEnabled: true);

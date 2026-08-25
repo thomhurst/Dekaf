@@ -94,6 +94,12 @@ internal sealed class BrokerWindowController
     private const int MaximumUnqualifiedProbeEpochs = 4;
     private const double UpProbeMultiplier = 1.125;
     private const double DownProbeMultiplier = 0.875;
+    // When delay is already over target, 12.5% whole-request steps make the controller spend
+    // minutes walking a cold 16-quantum window down to the observed 5-9-quantum knee. That
+    // convergence interval alone fills the 15-minute run's p95 with avoidable queueing. A
+    // 25% treatment reaches the same knee in roughly half as many B-A-B experiments; the
+    // existing 99% goodput guard still rejects and restores any shrink that crosses it.
+    private const double LatencyBiasedDownProbeMultiplier = 0.75;
     private const double UpProbeGoodputThreshold = 1.03;
     // When the experiment itself observed admission blocking, demand is provably clipped by
     // the window and "not worse" goodput suffices to grow it — the +3% bar exists to stop
@@ -421,9 +427,12 @@ internal sealed class BrokerWindowController
 
     private BrokerWindowDecision StartDownProbe(bool descentBias)
     {
+        var multiplier = descentBias
+            ? LatencyBiasedDownProbeMultiplier
+            : DownProbeMultiplier;
         var requestedWindow = Math.Max(
             ProbeFloorBytes(descentBias),
-            (long)Math.Floor(_windowBytes * DownProbeMultiplier));
+            (long)Math.Floor(_windowBytes * multiplier));
         return StartCapacityProbe(
             BrokerWindowPhase.ProbeDown,
             requestedWindow);
