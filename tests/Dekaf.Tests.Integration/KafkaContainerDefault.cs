@@ -76,7 +76,7 @@ public class KafkaContainerDefault : KafkaTestContainer
 
     protected override KafkaBuilder ConfigureBuilder(KafkaBuilder builder)
     {
-        if (Version < 420)
+        if (!SupportsVersion(Tag, 420))
         {
             return builder;
         }
