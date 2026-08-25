@@ -1115,22 +1115,26 @@ public sealed class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
 
-        if (options?.States is { Count: > 0 } states
-            && !states.Contains("Stable", StringComparer.OrdinalIgnoreCase))
+        var groups = _cluster.ListShareGroups();
+        var result = new List<GroupListing>(groups.Count);
+        foreach (var group in groups)
         {
-            return ValueTask.FromResult<IReadOnlyList<GroupListing>>([]);
+            var state = group.HasActiveMembers ? "Stable" : "Empty";
+            if (options?.States is { Count: > 0 } states &&
+                !states.Contains(state, StringComparer.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            result.Add(new GroupListing
+            {
+                GroupId = group.GroupId,
+                ProtocolType = "share",
+                State = state
+            });
         }
 
-        IReadOnlyList<GroupListing> result = _cluster.ListShareGroups()
-            .Select(groupId => new GroupListing
-            {
-                GroupId = groupId,
-                ProtocolType = "share",
-                State = "Stable"
-            })
-            .ToArray();
-
-        return ValueTask.FromResult(result);
+        return ValueTask.FromResult<IReadOnlyList<GroupListing>>(result);
     }
 
     public ValueTask<IReadOnlyDictionary<string, DeleteShareGroupResult>> DeleteShareGroupsAsync(

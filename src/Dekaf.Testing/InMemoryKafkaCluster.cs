@@ -10,6 +10,10 @@ using Dekaf.Serialization;
 
 namespace Dekaf.Testing;
 
+internal readonly record struct InMemoryShareGroupListing(
+    string GroupId,
+    bool HasActiveMembers);
+
 /// <summary>
 /// Shared in-memory topic, partition, offset, and group-offset store.
 /// </summary>
@@ -22,6 +26,7 @@ public sealed class InMemoryKafkaCluster
     private readonly Dictionary<string, Dictionary<string, ConsumerGroupMemberState>> _consumerGroupMembers = new(StringComparer.Ordinal);
     private readonly Dictionary<string, int> _consumerGroupGenerations = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<string, int>> _shareGroupMembers = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _shareGroupsWithMemberHistory = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<TopicPartition, Dictionary<long, ShareGroupMemberRegistration>>> _shareLeases = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<TopicPartition, Dictionary<long, int>>> _shareDeliveryCounts = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Exception> _produceFailures = new(StringComparer.Ordinal);
@@ -883,15 +888,25 @@ public sealed class InMemoryKafkaCluster
             return _consumerGroupOffsets.Keys.Order(StringComparer.Ordinal).ToArray();
     }
 
-    internal IReadOnlyList<string> ListShareGroups()
+    internal IReadOnlyList<InMemoryShareGroupListing> ListShareGroups()
     {
         lock (_gate)
         {
-            var groupIds = new HashSet<string>(_shareGroupOffsets.Keys, StringComparer.Ordinal);
+            var groupIds = new HashSet<string>(_shareGroupsWithMemberHistory, StringComparer.Ordinal);
+            groupIds.UnionWith(_shareGroupOffsets.Keys);
             groupIds.UnionWith(_shareGroupMembers.Keys);
             groupIds.UnionWith(_shareLeases.Keys);
             groupIds.UnionWith(_shareDeliveryCounts.Keys);
-            return groupIds.Order(StringComparer.Ordinal).ToArray();
+            var result = new InMemoryShareGroupListing[groupIds.Count];
+            var index = 0;
+            foreach (var groupId in groupIds.Order(StringComparer.Ordinal))
+            {
+                var hasActiveMembers = _shareGroupMembers.TryGetValue(groupId, out var members) &&
+                    members.Count > 0;
+                result[index++] = new InMemoryShareGroupListing(groupId, hasActiveMembers);
+            }
+
+            return result;
         }
     }
 
@@ -908,6 +923,7 @@ public sealed class InMemoryKafkaCluster
 
         lock (_gate)
         {
+            _shareGroupsWithMemberHistory.Add(groupId);
             if (!_shareGroupMembers.TryGetValue(groupId, out var members))
             {
                 members = new Dictionary<string, int>(StringComparer.Ordinal);
@@ -959,7 +975,8 @@ public sealed class InMemoryKafkaCluster
             var hasMembers = _shareGroupMembers.TryGetValue(groupId, out var members);
             var hasLeases = _shareLeases.TryGetValue(groupId, out var leases);
             var hasDeliveryCounts = _shareDeliveryCounts.ContainsKey(groupId);
-            if (!hasOffsets && !hasMembers && !hasLeases && !hasDeliveryCounts)
+            var hasMemberHistory = _shareGroupsWithMemberHistory.Contains(groupId);
+            if (!hasOffsets && !hasMembers && !hasLeases && !hasDeliveryCounts && !hasMemberHistory)
                 return ErrorCode.GroupIdNotFound;
 
             if (members is { Count: > 0 } || leases is { Count: > 0 })
@@ -969,6 +986,7 @@ public sealed class InMemoryKafkaCluster
             _shareGroupMembers.Remove(groupId);
             _shareLeases.Remove(groupId);
             _shareDeliveryCounts.Remove(groupId);
+            _shareGroupsWithMemberHistory.Remove(groupId);
             return ErrorCode.None;
         }
     }
@@ -1235,14 +1253,22 @@ public sealed class InMemoryKafkaCluster
 
     private void CommitShareOffsetsUnderLock(string groupId, IEnumerable<TopicPartitionOffset> offsets)
     {
+        using var enumerator = offsets.GetEnumerator();
+        if (!enumerator.MoveNext())
+            return;
+
         if (!_shareGroupOffsets.TryGetValue(groupId, out var groupOffsets))
         {
             groupOffsets = [];
             _shareGroupOffsets[groupId] = groupOffsets;
         }
 
-        foreach (var offset in offsets)
+        do
+        {
+            var offset = enumerator.Current;
             groupOffsets[new TopicPartition(offset.Topic, offset.Partition)] = offset;
+        }
+        while (enumerator.MoveNext());
     }
 
     private Dictionary<long, ShareGroupMemberRegistration>? GetShareLeasePartition(

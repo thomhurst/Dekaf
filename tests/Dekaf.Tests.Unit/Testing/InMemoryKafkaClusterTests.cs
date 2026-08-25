@@ -827,12 +827,20 @@ public sealed class InMemoryKafkaClusterTests
         await Assert.That(activeGroups.Select(static group => group.GroupId))
             .IsEquivalentTo(["member-only", "offset-only"]);
         await Assert.That(activeGroups.All(static group => group.ProtocolType == "share")).IsTrue();
+        await Assert.That(activeGroups.Single(static group => group.GroupId == "member-only").State)
+            .IsEqualTo("Stable");
+        await Assert.That(activeGroups.Single(static group => group.GroupId == "offset-only").State)
+            .IsEqualTo("Empty");
 
         await consumer.CloseAsync();
         var inactiveGroups = await admin.ListShareGroupsAsync();
 
         await Assert.That(inactiveGroups.Select(static group => group.GroupId))
-            .IsEquivalentTo(["offset-only"]);
+            .IsEquivalentTo(["member-only", "offset-only"]);
+        await Assert.That(inactiveGroups.All(static group => group.State == "Empty")).IsTrue();
+
+        var deletion = await admin.DeleteShareGroupsAsync(["member-only"]);
+        await Assert.That(deletion["member-only"].ErrorCode).IsEqualTo(ErrorCode.None);
     }
 
     [Test]
@@ -844,18 +852,38 @@ public sealed class InMemoryKafkaClusterTests
         await admin.AlterShareGroupOffsetsAsync(
             "offset-only",
             [new ShareGroupOffsetAlteration { TopicPartition = partition, StartOffset = 3 }]);
+        await using var consumer = new InMemoryShareConsumer<string, string>(
+            cluster,
+            new InMemoryShareConsumerOptions { GroupId = "member-only" });
+        consumer.Subscribe(partition.Topic);
 
-        var excluded = await admin.ListShareGroupsAsync(new ListShareGroupsOptions
+        var emptyGroups = await admin.ListShareGroupsAsync(new ListShareGroupsOptions
         {
             States = ["Empty"]
         });
-        var included = await admin.ListShareGroupsAsync(new ListShareGroupsOptions
+        var stableGroups = await admin.ListShareGroupsAsync(new ListShareGroupsOptions
         {
             States = ["stable"]
         });
 
-        await Assert.That(excluded).IsEmpty();
-        await Assert.That(included.Select(static group => group.GroupId)).IsEquivalentTo(["offset-only"]);
+        await Assert.That(emptyGroups.Select(static group => group.GroupId))
+            .IsEquivalentTo(["offset-only"]);
+        await Assert.That(stableGroups.Select(static group => group.GroupId))
+            .IsEquivalentTo(["member-only"]);
+    }
+
+    [Test]
+    public async Task Admin_AlterEmptyShareGroupOffsetsDoesNotCreateGroup()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var admin = new InMemoryAdminClient(cluster);
+
+        await admin.AlterShareGroupOffsetsAsync("phantom", []);
+        var groups = await admin.ListShareGroupsAsync();
+        var deletion = await admin.DeleteShareGroupsAsync(["phantom"]);
+
+        await Assert.That(groups).IsEmpty();
+        await Assert.That(deletion["phantom"].ErrorCode).IsEqualTo(ErrorCode.GroupIdNotFound);
     }
 
     [Test]
