@@ -34,6 +34,8 @@ lookups happen during asynchronous serializer/deserializer preparation; warmed s
 not perform network calls, take locks, allocate, or enter an async state machine.
 
 ```csharp
+using Avro;
+using Avro.Generic;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Avro;
 
@@ -42,7 +44,18 @@ var registry = new SchemaRegistryClient(new SchemaRegistryConfig
     Url = "https://schema-registry.example.com"
 });
 
-var serializer = new AvroSchemaRegistrySerializer<Order>(
+var orderSchema = (RecordSchema)Avro.Schema.Parse("""
+    {
+      "type": "record",
+      "name": "Order",
+      "namespace": "example.orders",
+      "fields": [{ "name": "id", "type": "string" }]
+    }
+    """);
+var order = new GenericRecord(orderSchema);
+order.Add("id", "order-123");
+
+var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(
     registry,
     new AvroSerializerConfig
     {
@@ -78,15 +91,17 @@ var config = new AvroSerializerConfig
 `CustomSubjectNameStrategy` has highest precedence. When it is null,
 `AsyncSubjectNameStrategy` takes precedence over the enum `SubjectNameStrategy`. Association-backed
 subjects work with Avro, generated Avro POCO, JSON Schema, Protobuf, schema references, and
-`UseLatestVersion`. Synchronous serialization fails fast until `PrepareAsync`, producer
-`BuildAsync`, or the relevant warmup API has completed.
+`UseLatestVersion`. Synchronous serialization fails fast until `PrepareAsync` or the relevant
+warmup API has completed. Producers perform this preparation during the first `ProduceAsync` for
+each topic and value shape; `BuildAsync` alone cannot resolve an association because it has neither.
 
-Successful resolutions are cached with a bounded cache. Missing and failed lookups are not cached.
-Call `RefreshAsync` to fetch and publish the current association, `Invalidate` to evict one topic,
-or `ClearCache` after a broader governance change. Serializers and deserializers sharing that
-`AssociatedNameStrategy` invalidate their prepared subject entries automatically; an already-issued
-preparation admission remains bound to its original schema, while new messages require preparation
-against the refreshed subject.
+Successful association and fallback resolutions are cached with a bounded cache. With
+`FallbackStrategy = None`, missing and failed lookups are not cached. A configured fallback remains
+cached even if an association is created later; call `RefreshAsync` to fetch and publish that
+association, `Invalidate` to evict one topic, or `ClearCache` after a broader governance change.
+Serializers and deserializers sharing that `AssociatedNameStrategy` invalidate their prepared
+subject entries automatically; an already-issued preparation admission remains bound to its
+original schema, while new messages require preparation against the refreshed subject.
 
 Association endpoints require a Schema Registry deployment that supports the Confluent association
 API (Confluent Cloud or Confluent Platform 8.2+). Older or non-Confluent-compatible registries return
