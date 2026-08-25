@@ -1115,6 +1115,12 @@ public sealed class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
 
+        if (options?.States is { Count: > 0 } states
+            && !states.Contains("Stable", StringComparer.OrdinalIgnoreCase))
+        {
+            return ValueTask.FromResult<IReadOnlyList<GroupListing>>([]);
+        }
+
         IReadOnlyList<GroupListing> result = _cluster.ListShareGroups()
             .Select(groupId => new GroupListing
             {

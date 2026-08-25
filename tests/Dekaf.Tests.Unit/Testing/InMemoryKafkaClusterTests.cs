@@ -836,6 +836,29 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
+    public async Task Admin_ListShareGroupsHonorsStateFilter()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var admin = new InMemoryAdminClient(cluster);
+        var partition = new TopicPartition("shared", 0);
+        await admin.AlterShareGroupOffsetsAsync(
+            "offset-only",
+            [new ShareGroupOffsetAlteration { TopicPartition = partition, StartOffset = 3 }]);
+
+        var excluded = await admin.ListShareGroupsAsync(new ListShareGroupsOptions
+        {
+            States = ["Empty"]
+        });
+        var included = await admin.ListShareGroupsAsync(new ListShareGroupsOptions
+        {
+            States = ["stable"]
+        });
+
+        await Assert.That(excluded).IsEmpty();
+        await Assert.That(included.Select(static group => group.GroupId)).IsEquivalentTo(["offset-only"]);
+    }
+
+    [Test]
     public async Task Admin_DeleteLastShareGroupOffsetRemovesGroupState()
     {
         var cluster = new InMemoryKafkaCluster();
