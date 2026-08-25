@@ -209,9 +209,11 @@ public sealed class AvroSchemaRegistryDeserializer<
         }
 
         string? preparedSubject = null;
+        SchemaIdentity identity = default;
+        var payloadOffset = 0;
         if (_config.SchemaIdStrategy != SchemaIdDeserializerStrategy.Prefix)
         {
-            var identity = ReadIdentity(data, identityHeader, out _);
+            identity = ReadIdentity(data, identityHeader, out payloadOffset);
             if (identity.SchemaGuid is { } schemaGuid)
             {
                 var key = new GuidTopicKey(
@@ -258,7 +260,9 @@ public sealed class AvroSchemaRegistryDeserializer<
             preparedSubject = prepared.Subject;
         }
 
-        value = DeserializeCore(data, context, identityHeader, preparedSubject);
+        value = _config.SchemaIdStrategy == SchemaIdDeserializerStrategy.Prefix
+            ? DeserializeCore(data, context, identityHeader, preparedSubject)
+            : DeserializeCore(data, context, identity, payloadOffset, preparedSubject);
         return true;
     }
 
@@ -324,7 +328,16 @@ public sealed class AvroSchemaRegistryDeserializer<
             return default!;
 
         var identity = ReadIdentity(data, identityHeader, out var payloadOffset);
+        return DeserializeCore(data, context, identity, payloadOffset, preparedSubject);
+    }
 
+    private T DeserializeCore(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        SchemaIdentity identity,
+        int payloadOffset,
+        string? preparedSubject)
+    {
         var schemaId = identity.SchemaId ?? -1;
         var guidSchema = identity.SchemaGuid is { } schemaGuid
             ? GetGuidSchemaCached(schemaGuid, context)

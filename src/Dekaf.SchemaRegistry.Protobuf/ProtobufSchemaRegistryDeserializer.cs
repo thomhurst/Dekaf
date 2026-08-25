@@ -128,13 +128,15 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
             out _);
         if (identity.SchemaGuid is { } schemaGuid)
         {
-            return new ValueTask(GetGuidSchemaAsync(
-                new GuidTopicKey(
-                    schemaGuid,
-                    context.Topic,
-                    context.Component == SerializationComponent.Key,
-                    _subjectNames?.Generation ?? 0),
-                cancellationToken));
+            return RequiresGuidSchema
+                ? new ValueTask(GetGuidSchemaAsync(
+                    new GuidTopicKey(
+                        schemaGuid,
+                        context.Topic,
+                        context.Component == SerializationComponent.Key,
+                        _subjectNames?.Generation ?? 0),
+                    cancellationToken))
+                : default;
         }
 
         return _ruleExecutor is not null
@@ -175,25 +177,31 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
         }
 
         string? preparedSubject = null;
+        SchemaIdentity identity = default;
+        var payloadOffset = 0;
+        ReadOnlyMemory<byte> headerMessageIndexes = default;
         if (_config.SchemaIdStrategy != SchemaIdDeserializerStrategy.Prefix)
         {
-            var identity = SchemaIdentityFraming.Read(
+            identity = SchemaIdentityFraming.Read(
                 data.Span,
                 identityHeader,
                 _config.SchemaIdStrategy,
-                out _,
-                out _);
+                out payloadOffset,
+                out headerMessageIndexes);
             if (identity.SchemaGuid is { } schemaGuid)
             {
-                var key = new GuidTopicKey(
-                    schemaGuid,
-                    context.Topic,
-                    context.Component == SerializationComponent.Key,
-                    _subjectNames?.Generation ?? 0);
-                if (!HasResolvedGuidSchema(key))
+                if (RequiresGuidSchema)
                 {
-                    value = default!;
-                    return false;
+                    var key = new GuidTopicKey(
+                        schemaGuid,
+                        context.Topic,
+                        context.Component == SerializationComponent.Key,
+                        _subjectNames?.Generation ?? 0);
+                    if (!HasResolvedGuidSchema(key))
+                    {
+                        value = default!;
+                        return false;
+                    }
                 }
             }
             else if (_ruleExecutor is not null
@@ -229,7 +237,15 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
             preparedSubject = prepared.Subject;
         }
 
-        value = DeserializeCore(data, context, identityHeader, preparedSubject);
+        value = _config.SchemaIdStrategy == SchemaIdDeserializerStrategy.Prefix
+            ? DeserializeCore(data, context, identityHeader, preparedSubject)
+            : DeserializeCore(
+                data,
+                context,
+                identity,
+                payloadOffset,
+                headerMessageIndexes,
+                preparedSubject);
         return true;
     }
 
@@ -275,12 +291,29 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
             _config.SchemaIdStrategy,
             out var payloadOffset,
             out var headerMessageIndexes);
+        return DeserializeCore(
+            data,
+            context,
+            identity,
+            payloadOffset,
+            headerMessageIndexes,
+            preparedSubject);
+    }
+
+    private T DeserializeCore(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        SchemaIdentity identity,
+        int payloadOffset,
+        ReadOnlyMemory<byte> headerMessageIndexes,
+        string? preparedSubject)
+    {
         var schemaId = identity.SchemaId ?? -1;
         var needsSchema = !_config.SkipSchemaValidation
                           || _config.RuleExecutor is SchemaRegistryRuleExecutor
                           || _migrationRunner is not null;
         var guidSchema = identity.SchemaGuid is { } schemaGuid
-                         && (needsSchema || _ruleExecutor is not null)
+                         && RequiresGuidSchema
             ? GetGuidSchemaCached(schemaGuid, context)
             : null;
         if (guidSchema is not null)
@@ -413,6 +446,9 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
         _guidSchemaCache.TryGetValue(key, out var lazy)
         && lazy.IsValueCreated
         && lazy.Value.IsCompletedSuccessfully;
+
+    private bool RequiresGuidSchema =>
+        !_config.SkipSchemaValidation || _ruleExecutor is not null || _migrationRunner is not null;
 
     private Task<GuidResolvedSchema> GetGuidSchemaAsync(
         GuidTopicKey key,

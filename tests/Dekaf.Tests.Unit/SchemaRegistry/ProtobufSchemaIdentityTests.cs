@@ -655,6 +655,72 @@ public class ProtobufSchemaIdentityTests
     }
 
     [Test]
+    public async Task Prepare_Header_SkipSchemaValidation_DoesNotResolveGuidSchema()
+    {
+        var registry = Substitute.For<ISchemaRegistryClient>();
+        var config = new ProtobufDeserializerConfig
+        {
+            SchemaIdStrategy = SchemaIdDeserializerStrategy.Header,
+            SkipSchemaValidation = true
+        };
+        await using var deserializer = new ProtobufSchemaRegistryDeserializer<TestMessage>(registry, config);
+        var message = new TestMessage { Id = 37, Name = "registry-unavailable" };
+        var identityHeader = CreateIdentityHeaders(Guid.NewGuid(), [0])
+            .GetFirst(SchemaIdentityHeaderNames.Value)!;
+        var lookup = CreateRoutingLookup(deserializer, identityHeader);
+        var context = CreateContext();
+        var preparer = (IRecordHeaderAsyncDeserializerPreparer<TestMessage>)deserializer;
+
+        var preparation = preparer.PrepareAsync(
+            message.ToByteArray(),
+            context,
+            lookup,
+            CancellationToken.None);
+        var prepared = preparer.TryDeserialize(
+            message.ToByteArray(),
+            context,
+            in lookup,
+            out var result);
+
+        await Assert.That(preparation.IsCompletedSuccessfully).IsTrue();
+        await preparation;
+        await Assert.That(prepared).IsTrue();
+        await Assert.That(result.Id).IsEqualTo(message.Id);
+        await Assert.That(result.Name).IsEqualTo(message.Name);
+        await Assert.That(registry.ReceivedCalls()).IsEmpty();
+    }
+
+    [Test]
+    public async Task RoutedPreparation_Dual_DeserializesPrefixButPreparesIdentityHeader()
+    {
+        var registry = new MockSchemaRegistryClient();
+        var schemaId = await registry.RegisterSchemaAsync("identity-value", CreateSchema());
+        var registered = await registry.GetSchemaBySubjectAsync("identity-value");
+        await using var deserializer = new ProtobufSchemaRegistryDeserializer<TestMessage>(
+            registry,
+            new ProtobufDeserializerConfig { SchemaIdStrategy = SchemaIdDeserializerStrategy.Dual });
+        var preparer = (IRecordHeaderAsyncDeserializerPreparer<TestMessage>)deserializer;
+        var prefixLookup = CreateRoutingLookup<TestMessage>(deserializer, identityHeader: null);
+        var identityHeader = CreateIdentityHeaders(Guid.Parse(registered.Guid!), [0])
+            .GetFirst(SchemaIdentityHeaderNames.Value)!;
+        var headerLookup = CreateRoutingLookup(deserializer, identityHeader);
+
+        var prefixPrepared = preparer.TryDeserialize(
+            CreatePrefixPayload(schemaId, new TestMessage()),
+            CreateContext(),
+            in prefixLookup,
+            out _);
+        var headerPrepared = preparer.TryDeserialize(
+            new TestMessage().ToByteArray(),
+            CreateContext(),
+            in headerLookup,
+            out _);
+
+        await Assert.That(prefixPrepared).IsTrue();
+        await Assert.That(headerPrepared).IsFalse();
+    }
+
+    [Test]
     public async Task Constructors_RejectUnknownIdentityStrategies()
     {
         var registry = Substitute.For<ISchemaRegistryClient>();
@@ -717,6 +783,21 @@ public class ProtobufSchemaIdentityTests
         _ = schemaGuid.TryWriteBytes(frame.AsSpan(1, 16), bigEndian: true, out _);
         messageIndexes.CopyTo(frame.AsSpan(17));
         return new Headers().Add(SchemaIdentityHeaderNames.Value, frame);
+    }
+
+    private static RecordHeaderRoutingLookup CreateRoutingLookup<T>(
+        IDeserializer<T> deserializer,
+        Header? identityHeader)
+    {
+        Header[]? headers = identityHeader is null ? null : [identityHeader.Value];
+        var plan = RecordHeaderRoutingPlan.Create<string, T>(null, deserializer)!;
+        return new RecordHeaderRoutingLookup(
+            plan,
+            headers,
+            headers?.Length ?? 0,
+            firstIndex: 0,
+            secondIndex: identityHeader is null ? 0 : 1,
+            routedHeaderTailOffset: RecordHeaderRoutingPlan.FullyIndexedWithoutTail);
     }
 
     private static byte[] CreatePrefixPayload(int schemaId, TestMessage message)
