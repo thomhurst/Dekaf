@@ -438,7 +438,9 @@ internal sealed class BrokerWindowController
         // baseline with the normal step to bracket the knee instead of repeating it forever.
         _probeUsedAcceleratedDescent = descentBias
             && _windowBytes != _rejectedAcceleratedDescentBaseline
-            && _windowBytes >= QuantaFloorBytes(MinimumAcceleratedDescentQuanta);
+            && _windowBytes >= SaturatingMultiply(
+                _requestQuantumBytes,
+                MinimumAcceleratedDescentQuanta);
         var multiplier = _probeUsedAcceleratedDescent
             ? LatencyBiasedDownProbeMultiplier
             : DownProbeMultiplier;

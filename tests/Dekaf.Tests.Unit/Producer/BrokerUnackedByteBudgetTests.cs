@@ -181,6 +181,37 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
+    public async Task CapBelowAcceleratedThreshold_UsesNormalStep()
+    {
+        var controller = new BrokerWindowController(
+            targetSeconds: 0.010,
+            floorBytes: 1,
+            capBytes: 1_000,
+            initialRequestBytes: 100,
+            latencyGovernorEnabled: true);
+        var now = T0;
+        var admissionBlocks = 0L;
+
+        for (var pass = 0; pass < 4; pass++)
+        {
+            controller.RecordAcknowledgement(
+                100, Seconds(0.001), Seconds(0.050), false, controller.Generation, now);
+            _ = controller.CompleteInterval(0, 0, now, 0);
+        }
+
+        StartNextProbe(
+            controller,
+            BrokerWindowPhase.ProbeDown,
+            ref now,
+            ref admissionBlocks,
+            sealToSendSeconds: 0.050);
+
+        // The 10-quantum cap is below the 11-quantum accelerated threshold. Cap clamping
+        // must not turn that threshold into 10 and permit the coarse 10 -> 7 treatment.
+        await Assert.That(controller.WindowBytes).IsEqualTo(800);
+    }
+
+    [Test]
     public async Task AcceleratedDescent_StopsAtNormalPipelineFloor()
     {
         var controller = CreateController(latencyGovernorEnabled: true);
