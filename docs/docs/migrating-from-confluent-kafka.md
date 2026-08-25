@@ -62,7 +62,8 @@ after every client and serializer has moved.
 | `ConsumeResult<TKey, TValue>` | `ConsumeResult<TKey, TValue>` | Dekaf exposes key/value directly instead of through `.Message` |
 | `Commit` / `StoreOffset` | `CommitAsync` / `StoreOffset` | Explicit commits are asynchronous; stored offsets remain local until committed |
 | `InitTransactions` / transaction methods | `InitTransactionsAsync` / `ITransaction<TKey, TValue>` | A Dekaf transaction owns produce, offset, commit, and abort operations |
-| `Null` or `Ignore` key types | `Dekaf.Ignore` | Built-in serializer writes a null/empty key |
+| `Null` producer key | A nullable reference-type key passed as `null` | Dekaf detects null before serialization and writes a Kafka null key |
+| `Ignore` consumer key | `Dekaf.Serialization.Ignore` | Ignores key bytes on read; producing an `Ignore` value writes an empty key, not a null key |
 
 ## Migrate a producer
 
@@ -210,9 +211,10 @@ await foreach (var result in consumer.ConsumeAsync(cancellationToken))
 }
 ```
 
-Cancellation stops an in-flight fetch. `await using` calls the graceful close path, including final
-offset handling and leaving the group. Call `CloseAsync` explicitly only when close timing or close
-errors must be observed before disposal.
+Cancellation ends the foreground enumeration and unblocks the caller. It does not stop the
+consumer's lifetime background prefetch if the consumer remains alive. `await using` calls the
+graceful close path, which stops prefetch, performs final offset handling, and leaves the group.
+Call `CloseAsync` explicitly only when close timing or close errors must be observed before disposal.
 
 Use `ConsumeOneAsync(timeout, cancellationToken)` when an existing design genuinely needs one
 record or a timeout. Prefer `ConsumeAsync` or `ConsumeBatchAsync` for continuous processing.
