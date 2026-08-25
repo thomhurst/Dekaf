@@ -540,6 +540,85 @@ public sealed class AdminClientStreamsGroupManagementTests
     }
 
     [Test]
+    public async Task ListStreamsGroupOffsetsAsync_RetriesMissingTopicIdAfterMetadataRefresh()
+    {
+        const string refreshedTopic = "created-after-cache";
+        var refreshedTopicId = Guid.Parse("ffeeddcc-bbaa-9988-7766-554433221100");
+        var (admin, connection) = CreateAdmin();
+        SetupFindCoordinator(connection);
+        connection.SendAsync<MetadataRequest, MetadataResponse>(
+                Arg.Any<MetadataRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(MetadataResponseFor(
+                (Topic, TopicId),
+                (refreshedTopic, refreshedTopicId))));
+        connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                10,
+                Arg.Any<CancellationToken>())
+            .Returns(
+                ValueTask.FromResult(new OffsetFetchResponse
+                {
+                    Groups =
+                    [
+                        new OffsetFetchResponseGroup
+                        {
+                            GroupId = SecondGroup,
+                            ErrorCode = ErrorCode.None,
+                            Topics =
+                            [
+                                new OffsetFetchResponseTopic
+                                {
+                                    TopicId = TopicId,
+                                    Partitions = [Offset(0, 42, ErrorCode.None)]
+                                }
+                            ]
+                        }
+                    ]
+                }),
+                ValueTask.FromResult(new OffsetFetchResponse
+                {
+                    Groups =
+                    [
+                        new OffsetFetchResponseGroup
+                        {
+                            GroupId = FirstGroup,
+                            ErrorCode = ErrorCode.None,
+                            Topics =
+                            [
+                                new OffsetFetchResponseTopic
+                                {
+                                    TopicId = refreshedTopicId,
+                                    Partitions = [Offset(0, 84, ErrorCode.None)]
+                                }
+                            ]
+                        }
+                    ]
+                }));
+        var refreshed = new TopicPartition(refreshedTopic, 0);
+        var cached = new TopicPartition(Topic, 0);
+
+        var results = await admin.ListStreamsGroupOffsetsAsync(
+            new Dictionary<string, ListStreamsGroupOffsetsSpec>
+            {
+                [FirstGroup] = new() { TopicPartitions = [refreshed] },
+                [SecondGroup] = new() { TopicPartitions = [cached] }
+            });
+
+        await Assert.That(results[FirstGroup].Offsets[refreshed].Offset).IsEqualTo(84);
+        await Assert.That(results[SecondGroup].Offsets[cached].Offset).IsEqualTo(42);
+        await connection.Received(1).SendAsync<MetadataRequest, MetadataResponse>(
+            Arg.Any<MetadataRequest>(),
+            Arg.Any<short>(),
+            Arg.Any<CancellationToken>());
+        await connection.Received(2).SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+            Arg.Any<OffsetFetchRequest>(),
+            10,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
     public async Task ListStreamsGroupOffsetsAsync_RequireStableRejectsOffsetFetchV6()
     {
         var (admin, connection) = CreateAdmin(offsetFetchMaxVersion: 6);
@@ -620,6 +699,64 @@ public sealed class AdminClientStreamsGroupManagementTests
         await Assert.That(results[missing].ErrorCode).IsEqualTo(ErrorCode.UnknownTopicId);
         await connection.Received(1).SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
             Arg.Is<OffsetCommitRequest>(request => request.Topics.Count == 1 && request.Topics[0].Name == Topic),
+            10,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task AlterStreamsGroupOffsetsAsync_RetriesMissingTopicIdAfterMetadataRefresh()
+    {
+        const string refreshedTopic = "created-after-cache";
+        var refreshedTopicId = Guid.Parse("ffeeddcc-bbaa-9988-7766-554433221100");
+        var (admin, connection) = CreateAdmin();
+        SetupFindCoordinator(connection);
+        connection.SendAsync<MetadataRequest, MetadataResponse>(
+                Arg.Any<MetadataRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(MetadataResponseFor(
+                (Topic, TopicId),
+                (refreshedTopic, refreshedTopicId))));
+        connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+                Arg.Any<OffsetCommitRequest>(),
+                10,
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                var request = call.ArgAt<OffsetCommitRequest>(0);
+                return ValueTask.FromResult(new OffsetCommitResponse
+                {
+                    Topics = request.Topics.Select(static topic => new OffsetCommitResponseTopic
+                    {
+                        TopicId = topic.TopicId,
+                        Partitions = topic.Partitions.Select(static partition =>
+                            Commit(partition.PartitionIndex, ErrorCode.None)).ToArray()
+                    }).ToArray()
+                });
+            });
+        var cached = new TopicPartition(Topic, 0);
+        var refreshed = new TopicPartition(refreshedTopic, 0);
+
+        var results = await admin.AlterStreamsGroupOffsetsAsync(
+            FirstGroup,
+            [
+                new TopicPartitionOffset(cached.Topic, cached.Partition, 42),
+                new TopicPartitionOffset(refreshed.Topic, refreshed.Partition, 84)
+            ]);
+
+        await Assert.That(results.Values.All(static result => result.ErrorCode == ErrorCode.None)).IsTrue();
+        await connection.Received(1).SendAsync<MetadataRequest, MetadataResponse>(
+            Arg.Any<MetadataRequest>(),
+            Arg.Any<short>(),
+            Arg.Any<CancellationToken>());
+        await connection.Received(1).SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+            Arg.Is<OffsetCommitRequest>(request =>
+                request.Topics.Count == 1 && request.Topics[0].TopicId == TopicId),
+            10,
+            Arg.Any<CancellationToken>());
+        await connection.Received(1).SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+            Arg.Is<OffsetCommitRequest>(request =>
+                request.Topics.Count == 1 && request.Topics[0].TopicId == refreshedTopicId),
             10,
             Arg.Any<CancellationToken>());
     }
@@ -1354,43 +1491,28 @@ public sealed class AdminClientStreamsGroupManagementTests
             .Returns(ValueTask.FromResult(connection));
         pool.GetConnectionAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
             .Returns(ValueTask.FromResult(connection));
+        connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
+                Arg.Any<ApiVersionsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new ApiVersionsResponse
+            {
+                ErrorCode = ErrorCode.None,
+                ApiKeys =
+                [
+                    new ApiVersion(ApiKey.Metadata, 9, 13),
+                    new ApiVersion(ApiKey.FindCoordinator, 4, 6),
+                    new ApiVersion(ApiKey.OffsetFetch, 6, offsetFetchMaxVersion),
+                    new ApiVersion(ApiKey.OffsetCommit, 8, 10),
+                    new ApiVersion(ApiKey.OffsetDelete, 0, 0),
+                    new ApiVersion(ApiKey.DeleteGroups, 2, 2)
+                ]
+            }));
 
         var metadataManager = new MetadataManager(pool, ["localhost:9092"]);
-        metadataManager.Metadata.Update(new MetadataResponse
-        {
-            Brokers = [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }],
-            ClusterId = "test-cluster",
-            ControllerId = 1,
-            Topics =
-            [
-                new TopicMetadata
-                {
-                    Name = Topic,
-                    TopicId = TopicId,
-                    ErrorCode = ErrorCode.None,
-                    Partitions =
-                    [
-                        new PartitionMetadata
-                        {
-                            PartitionIndex = 0,
-                            LeaderId = 1,
-                            ErrorCode = ErrorCode.None,
-                            ReplicaNodes = [1],
-                            IsrNodes = [1]
-                        },
-                        new PartitionMetadata
-                        {
-                            PartitionIndex = 1,
-                            LeaderId = 1,
-                            ErrorCode = ErrorCode.None,
-                            ReplicaNodes = [1],
-                            IsrNodes = [1]
-                        }
-                    ]
-                }
-            ]
-        });
+        metadataManager.Metadata.Update(MetadataResponseFor((Topic, TopicId)));
         metadataManager.SetApiVersion(ApiKey.FindCoordinator, 4, 6);
+        metadataManager.SetApiVersion(ApiKey.Metadata, 9, 13);
         metadataManager.SetApiVersion(ApiKey.OffsetFetch, 6, offsetFetchMaxVersion);
         metadataManager.SetApiVersion(ApiKey.OffsetCommit, 8, 10);
         metadataManager.SetApiVersion(ApiKey.OffsetDelete, 0, 0);
@@ -1406,4 +1528,36 @@ public sealed class AdminClientStreamsGroupManagementTests
             pool,
             metadataManager), connection, pool);
     }
+
+    private static MetadataResponse MetadataResponseFor(params (string Name, Guid Id)[] topics) => new()
+    {
+        Brokers = [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }],
+        ClusterId = "test-cluster",
+        ControllerId = 1,
+        Topics = topics.Select(static topic => new TopicMetadata
+        {
+            Name = topic.Name,
+            TopicId = topic.Id,
+            ErrorCode = ErrorCode.None,
+            Partitions =
+            [
+                new PartitionMetadata
+                {
+                    PartitionIndex = 0,
+                    LeaderId = 1,
+                    ErrorCode = ErrorCode.None,
+                    ReplicaNodes = [1],
+                    IsrNodes = [1]
+                },
+                new PartitionMetadata
+                {
+                    PartitionIndex = 1,
+                    LeaderId = 1,
+                    ErrorCode = ErrorCode.None,
+                    ReplicaNodes = [1],
+                    IsrNodes = [1]
+                }
+            ]
+        }).ToArray()
+    };
 }
