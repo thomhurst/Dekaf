@@ -1169,7 +1169,10 @@ public sealed class ConsumerPauseResumeCacheTests
             if (testCompleted)
                 await moveNext;
             else
-                await ((Task)moveNext).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+            {
+                Task pendingMoveNext = moveNext;
+                await pendingMoveNext.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+            }
         }
 
         if (records is null)
