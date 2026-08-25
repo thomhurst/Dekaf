@@ -5,11 +5,10 @@ using Dekaf.Testing;
 namespace Dekaf.Benchmarks.Benchmarks.Unit;
 
 [MemoryDiagnoser]
-[MinIterationTime(500)]
-[SimpleJob(RunStrategy.Throughput, launchCount: 3, warmupCount: 8, iterationCount: 12)]
+[SimpleJob(RunStrategy.Throughput, launchCount: 5, warmupCount: 8, iterationCount: 20)]
 public class InMemoryShareRecordAcquisitionBenchmarks
 {
-    private const int OperationsPerInvoke = 1024;
+    private const int OperationsPerInvoke = 8192;
     private const string GroupId = "benchmark-group";
     private const string MemberId = "benchmark-member";
     private readonly InMemoryKafkaCluster _cluster = new();

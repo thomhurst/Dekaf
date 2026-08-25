@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Dekaf.Admin;
 using Dekaf.Consumer;
 using Dekaf.Errors;
@@ -643,7 +644,15 @@ public sealed class InMemoryKafkaCluster
                 }
 
                 if (!ReferenceEquals(existingRegistration, registration))
+                {
                     partitionLeases[candidate.Offset] = registration;
+                    deliveryCount = RecordShareRedeliveryUnderLock(
+                        groupId,
+                        topicPartition,
+                        candidate.Offset);
+                    record = CloneRecord(candidate);
+                    return true;
+                }
             }
 
             var partitionDeliveryCounts = GetShareDeliveryCountPartition(groupId, topicPartition, create: true)!;
@@ -662,6 +671,22 @@ public sealed class InMemoryKafkaCluster
             record = CloneRecord(candidate);
             return true;
         }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private int RecordShareRedeliveryUnderLock(
+        string groupId,
+        TopicPartition topicPartition,
+        long offset)
+    {
+        var partitionDeliveryCounts = GetShareDeliveryCountPartition(
+            groupId,
+            topicPartition,
+            create: true)!;
+        partitionDeliveryCounts.TryGetValue(offset, out var deliveryCount);
+        deliveryCount++;
+        partitionDeliveryCounts[offset] = deliveryCount;
+        return deliveryCount;
     }
 
     internal void CompleteShareRecords(

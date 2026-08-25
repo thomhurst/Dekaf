@@ -1103,8 +1103,9 @@ public sealed class InMemoryKafkaClusterTests
             partition,
             offset: 0,
             out var record,
-            out _);
+            out var staleDeliveryCount);
         await Assert.That(staleAcquired).IsTrue();
+        await Assert.That(staleDeliveryCount).IsEqualTo(1);
 
         var replacementRegistration = cluster.RegisterShareGroupMember(groupId, memberId);
         cluster.UnregisterShareGroupMember(groupId, memberId, staleRegistration);
@@ -1115,8 +1116,9 @@ public sealed class InMemoryKafkaClusterTests
             partition,
             offset: 0,
             out _,
-            out _);
+            out var replacementDeliveryCount);
         await Assert.That(replacementAcquired).IsTrue();
+        await Assert.That(replacementDeliveryCount).IsEqualTo(2);
 
         cluster.ReleaseShareRecords(
             groupId,
