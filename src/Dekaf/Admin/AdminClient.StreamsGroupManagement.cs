@@ -143,7 +143,6 @@ public sealed partial class AdminClient
             return await WithRetryAsync<IReadOnlyDictionary<string, StreamsGroupOffsetsResult>>(async () =>
             {
                 retryErrors.Clear();
-                retryResults.Clear();
                 Exception? retryFailure = null;
                 var groupsByCoordinator = new Dictionary<int, List<string>>();
                 foreach (var groupId in requests.Keys)
@@ -446,6 +445,8 @@ public sealed partial class AdminClient
             catch (KafkaException exception)
             {
                 responseMismatchError ??= exception.ErrorCode ?? Protocol.ErrorCode.UnknownTopicId;
+                if (exception.IsRetriable)
+                    retryFailure ??= exception;
                 continue;
             }
 

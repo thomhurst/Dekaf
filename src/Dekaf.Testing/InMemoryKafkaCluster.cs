@@ -1279,12 +1279,6 @@ public sealed class InMemoryKafkaCluster
                     continue;
                 }
 
-                if (offsets is null)
-                {
-                    results[partition] = ErrorCode.None;
-                    continue;
-                }
-
                 var isSubscribed = false;
                 if (members is not null)
                 {
@@ -1310,7 +1304,7 @@ public sealed class InMemoryKafkaCluster
                     continue;
                 }
 
-                offsets.Remove(partition);
+                offsets?.Remove(partition);
                 results[partition] = ErrorCode.None;
             }
 

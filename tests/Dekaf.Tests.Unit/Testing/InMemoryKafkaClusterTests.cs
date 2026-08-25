@@ -236,6 +236,24 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
+    public async Task StreamsGroupManagement_DeleteOffsetsRejectsSubscribedTopicWithoutCommittedOffsets()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("input");
+        IAdminClient admin = new InMemoryAdminClient(cluster);
+        const string groupId = "active-streams";
+        var partition = new TopicPartition("input", 0);
+        await using var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions { GroupId = groupId });
+        consumer.Subscribe("input");
+
+        var deletion = await admin.DeleteStreamsGroupOffsetsAsync(groupId, [partition]);
+
+        await Assert.That(deletion[partition].ErrorCode).IsEqualTo(ErrorCode.GroupSubscribedToTopic);
+    }
+
+    [Test]
     public async Task StreamsGroupManagement_AlterOffsetsRejectsActiveGroupAndPreservesOffsets()
     {
         var cluster = new InMemoryKafkaCluster();

@@ -378,7 +378,7 @@ public sealed class AdminClientStreamsGroupManagementTests
     }
 
     [Test]
-    public async Task ListStreamsGroupOffsetsAsync_PreservesFinalPartitionOutcomesAfterRetryExhaustion()
+    public async Task ListStreamsGroupOffsetsAsync_PreservesLastPartitionOutcomesWhenLaterRetriesFail()
     {
         var (admin, connection) = CreateAdmin();
         SetupFindCoordinator(connection);
@@ -386,9 +386,13 @@ public sealed class AdminClientStreamsGroupManagementTests
                 Arg.Any<OffsetFetchRequest>(),
                 Arg.Any<short>(),
                 Arg.Any<CancellationToken>())
-            .Returns(ValueTask.FromResult(ListResponse(
-                Offset(0, 42, ErrorCode.None),
-                Offset(1, -1, ErrorCode.RequestTimedOut))));
+            .Returns(
+                ValueTask.FromResult(ListResponse(
+                    Offset(0, 42, ErrorCode.None),
+                    Offset(1, -1, ErrorCode.RequestTimedOut))),
+                ValueTask.FromException<OffsetFetchResponse>(new IOException("Coordinator unavailable.")),
+                ValueTask.FromException<OffsetFetchResponse>(new IOException("Coordinator unavailable.")),
+                ValueTask.FromException<OffsetFetchResponse>(new IOException("Coordinator unavailable.")));
 
         var results = await admin.ListStreamsGroupOffsetsAsync(
             new Dictionary<string, ListStreamsGroupOffsetsSpec>
@@ -425,7 +429,40 @@ public sealed class AdminClientStreamsGroupManagementTests
                 Arg.Any<OffsetFetchRequest>(),
                 Arg.Any<short>(),
                 Arg.Any<CancellationToken>())
-            .Returns(ValueTask.FromResult(new OffsetFetchResponse
+            .Returns(
+                ValueTask.FromResult(new OffsetFetchResponse
+                    {
+                        Groups =
+                        [
+                            new OffsetFetchResponseGroup
+                            {
+                                GroupId = FirstGroup,
+                                ErrorCode = ErrorCode.None,
+                                Topics =
+                                [
+                                    new OffsetFetchResponseTopic
+                                    {
+                                        TopicId = mismatchTopicId,
+                                        Partitions = [Offset(0, 10, ErrorCode.None)]
+                                    }
+                                ]
+                            },
+                            new OffsetFetchResponseGroup
+                            {
+                                GroupId = SecondGroup,
+                                ErrorCode = ErrorCode.None,
+                                Topics =
+                                [
+                                    new OffsetFetchResponseTopic
+                                    {
+                                        TopicId = TopicId,
+                                        Partitions = [Offset(0, 20, ErrorCode.None)]
+                                    }
+                                ]
+                            }
+                        ]
+                    }),
+                ValueTask.FromResult(new OffsetFetchResponse
                 {
                     Groups =
                     [
@@ -437,21 +474,8 @@ public sealed class AdminClientStreamsGroupManagementTests
                             [
                                 new OffsetFetchResponseTopic
                                 {
-                                    TopicId = mismatchTopicId,
-                                    Partitions = [Offset(0, 10, ErrorCode.None)]
-                                }
-                            ]
-                        },
-                        new OffsetFetchResponseGroup
-                        {
-                            GroupId = SecondGroup,
-                            ErrorCode = ErrorCode.None,
-                            Topics =
-                            [
-                                new OffsetFetchResponseTopic
-                                {
                                     TopicId = TopicId,
-                                    Partitions = [Offset(0, 20, ErrorCode.None)]
+                                    Partitions = [Offset(0, 30, ErrorCode.None)]
                                 }
                             ]
                         }
@@ -465,10 +489,9 @@ public sealed class AdminClientStreamsGroupManagementTests
                 [SecondGroup] = new() { TopicPartitions = [new TopicPartition(Topic, 0)] }
             });
 
-        await Assert.That(results[FirstGroup].Offsets[new TopicPartition(Topic, 0)].ErrorCode)
-            .IsEqualTo(ErrorCode.UnknownTopicId);
+        await Assert.That(results[FirstGroup].Offsets[new TopicPartition(Topic, 0)].Offset).IsEqualTo(30);
         await Assert.That(results[SecondGroup].Offsets[new TopicPartition(Topic, 0)].Offset).IsEqualTo(20);
-        await connection.Received(1).SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+        await connection.Received(2).SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
             Arg.Any<OffsetFetchRequest>(),
             10,
             Arg.Any<CancellationToken>());
