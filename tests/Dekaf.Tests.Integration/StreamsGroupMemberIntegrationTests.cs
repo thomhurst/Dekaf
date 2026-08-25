@@ -6,6 +6,7 @@ using Dekaf.Streams;
 
 namespace Dekaf.Tests.Integration;
 
+[Category("ConsumerGroup")]
 [SupportsKafka(420)]
 public sealed class StreamsGroupMemberIntegrationTests(KafkaTestContainer kafka)
     : KafkaIntegrationTest(kafka)

@@ -1,5 +1,6 @@
 namespace Dekaf.Tests.Integration;
 
+[Category("ConsumerGroup")]
 public sealed class KafkaVersionComparisonTests
 {
     [Test]
