@@ -66,6 +66,9 @@ internal sealed class BrokerWindowController
     // the floor. Descent below this floor is allowed only while the controlled-delay EWMA
     // exceeds the delivery-latency target (see LatencyDescentPipelineQuanta).
     private const int MinimumPipelineQuanta = 8;
+    // floor(11 * 0.75) is the first accelerated candidate that remains at or above the
+    // normal eight-quantum floor. Smaller windows use the normal step for deep descent.
+    private const int MinimumAcceleratedDescentQuanta = 11;
     // Deep-descent floor while over the latency target: two quanta keep the acknowledgement
     // clock pipelined (one request on the wire while the next seals). The eight-quantum
     // floor encoded a one-broker knee and forced ~3x the delivery-latency target of standing
@@ -97,8 +100,9 @@ internal sealed class BrokerWindowController
     // When delay is already over target, 12.5% whole-request steps make the controller spend
     // minutes walking a cold 16-quantum window down to the observed 5-9-quantum knee. That
     // convergence interval alone fills the 15-minute run's p95 with avoidable queueing. A
-    // 25% treatment reaches the same knee in roughly half as many B-A-B experiments; the
-    // existing 99% goodput guard still rejects and restores any shrink that crosses it.
+    // 25% treatment reaches the normal pipeline floor in roughly half as many B-A-B
+    // experiments. Below that floor, retain the normal 12.5% step: coarse deep treatments
+    // create admission-tail bursts even when their aggregate goodput remains acceptable.
     private const double LatencyBiasedDownProbeMultiplier = 0.75;
     private const double UpProbeGoodputThreshold = 1.03;
     // When the experiment itself observed admission blocking, demand is provably clipped by
@@ -433,7 +437,8 @@ internal sealed class BrokerWindowController
         // A rejected coarse step only proves that candidate was too small. Retry the same
         // baseline with the normal step to bracket the knee instead of repeating it forever.
         _probeUsedAcceleratedDescent = descentBias
-            && _windowBytes != _rejectedAcceleratedDescentBaseline;
+            && _windowBytes != _rejectedAcceleratedDescentBaseline
+            && _windowBytes >= QuantaFloorBytes(MinimumAcceleratedDescentQuanta);
         var multiplier = _probeUsedAcceleratedDescent
             ? LatencyBiasedDownProbeMultiplier
             : DownProbeMultiplier;
