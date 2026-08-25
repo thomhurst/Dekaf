@@ -1,6 +1,12 @@
 using System.Buffers.Binary;
+using Avro.Generic;
 using Dekaf.SchemaRegistry;
+using Dekaf.SchemaRegistry.Avro;
+using Dekaf.SchemaRegistry.Protobuf;
 using Dekaf.Serialization;
+using Dekaf.Tests.Integration.Protos;
+using Google.Protobuf;
+using AvroSchema = Avro.Schema;
 
 namespace Dekaf.Tests.Integration;
 
@@ -8,6 +14,18 @@ namespace Dekaf.Tests.Integration;
 [Category("Serialization")]
 public sealed class SchemaRegistryAssociationIntegrationTests(KafkaWithAssociationSchemaRegistryContainer testInfra)
 {
+    private const string AvroRecordSchema = """
+        {
+            "type": "record",
+            "name": "AssociatedOrder",
+            "namespace": "dekaf.associations",
+            "fields": [{ "name": "id", "type": "int" }]
+        }
+        """;
+
+    private const string JsonRecordSchema =
+        "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"integer\"}}}";
+
     [Test]
     public async Task Association_CreateListDelete_RoundTripsAgainstSchemaRegistry()
     {
@@ -105,6 +123,122 @@ public sealed class SchemaRegistryAssociationIntegrationTests(KafkaWithAssociati
         var remaining = await client.GetAssociationsByResourceNameAsync(resourceName, resourceNamespace);
 
         await Assert.That(remaining).IsEmpty();
+    }
+
+    [Test]
+    public async Task AssociatedName_AllFormatSerializers_PrepareAgainstSchemaRegistry()
+    {
+        var suffix = Guid.NewGuid().ToString("N");
+        using var client = new SchemaRegistryClient(new SchemaRegistryConfig
+        {
+            Url = testInfra.RegistryUrl
+        });
+        var avroTopic = $"associated-avro-{suffix}";
+        var jsonTopic = $"associated-json-{suffix}";
+        var protobufTopic = $"associated-protobuf-{suffix}";
+        var avroSubject = $"{avroTopic}-governed";
+        var jsonSubject = $"{jsonTopic}-governed";
+        var protobufSubject = $"{protobufTopic}-governed";
+        await RegisterAssociatedSchemaAsync(
+            client,
+            avroTopic,
+            avroSubject,
+            new Schema { SchemaType = SchemaType.Avro, SchemaString = AvroRecordSchema });
+        await RegisterAssociatedSchemaAsync(
+            client,
+            jsonTopic,
+            jsonSubject,
+            new Schema
+            {
+                SchemaType = SchemaType.Json,
+                SchemaString = JsonRecordSchema
+            });
+        await RegisterAssociatedSchemaAsync(
+            client,
+            protobufTopic,
+            protobufSubject,
+            new Schema
+            {
+                SchemaType = SchemaType.Protobuf,
+                SchemaString = TestPerson.Descriptor.File.ToProto().ToByteString().ToBase64()
+            });
+
+        try
+        {
+            var avroSchema = (Avro.RecordSchema)AvroSchema.Parse(AvroRecordSchema);
+            var avroValue = new GenericRecord(avroSchema);
+            avroValue.Add("id", 42);
+            await using var avro = new AvroSchemaRegistrySerializer<GenericRecord>(
+                client,
+                new AvroSerializerConfig
+                {
+                    SubjectNameStrategy = SubjectNameStrategy.AssociatedName,
+                    AutoRegisterSchemas = false,
+                    UseLatestVersion = true
+                });
+            await using var json = new JsonSchemaRegistrySerializer<AssociatedJsonRecord>(
+                client,
+                JsonRecordSchema,
+                subjectNameStrategy: SubjectNameStrategy.AssociatedName,
+                autoRegisterSchemas: false);
+            await using var protobuf = new ProtobufSchemaRegistrySerializer<TestPerson>(
+                client,
+                new ProtobufSerializerConfig
+                {
+                    SubjectNameStrategy = SubjectNameStrategy.AssociatedName,
+                    AutoRegisterSchemas = false,
+                    UseLatestVersion = true
+                });
+
+            var avroPrepared = await avro.PrepareAsync(avroTopic, avroValue);
+            var jsonPrepared = await json.PrepareAsync(jsonTopic, new AssociatedJsonRecord { Id = 42 });
+            var protobufPrepared = await protobuf.PrepareAsync(
+                protobufTopic,
+                new TestPerson { Id = 42, Name = "Associated" });
+
+            await Assert.That(avroPrepared.Subject).IsEqualTo(avroSubject);
+            await Assert.That(jsonPrepared.Subject).IsEqualTo(jsonSubject);
+            await Assert.That(protobufPrepared.Subject).IsEqualTo(protobufSubject);
+        }
+        finally
+        {
+            await DeleteAssociationAsync(client, avroTopic);
+            await DeleteAssociationAsync(client, jsonTopic);
+            await DeleteAssociationAsync(client, protobufTopic);
+        }
+    }
+
+    private static async Task RegisterAssociatedSchemaAsync(
+        ISchemaRegistryClient client,
+        string topic,
+        string subject,
+        Schema schema)
+    {
+        _ = await client.RegisterSchemaAsync(subject, schema);
+        _ = await client.CreateAssociationAsync(new AssociationCreateOrUpdateRequest
+        {
+            ResourceName = topic,
+            ResourceNamespace = AssociatedNameStrategy.NamespaceWildcard,
+            ResourceId = topic,
+            ResourceType = "topic",
+            Associations =
+            [
+                new AssociationCreateOrUpdateInfo
+                {
+                    Subject = subject,
+                    AssociationType = "value",
+                    Lifecycle = "WEAK"
+                }
+            ]
+        });
+    }
+
+    private static Task DeleteAssociationAsync(ISchemaRegistryClient client, string topic) =>
+        client.DeleteAssociationsAsync(topic, "topic", ["value"]);
+
+    private sealed class AssociatedJsonRecord
+    {
+        public int Id { get; init; }
     }
 
     private sealed class CapturingRuleExecutor : ISchemaRegistryRuleExecutor

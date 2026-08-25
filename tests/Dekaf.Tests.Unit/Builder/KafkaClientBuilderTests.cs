@@ -5,11 +5,31 @@ using Dekaf.Networking;
 using Dekaf.Consumer;
 using Dekaf.Producer;
 using Dekaf.Security.Sasl;
+using Dekaf.Streams;
 
 namespace Dekaf.Tests.Unit.Builder;
 
 public sealed class KafkaClientBuilderTests
 {
+    [Test]
+    public async Task RootClient_CreatedStreamsGroupMemberUsesSharedInfrastructure()
+    {
+        await using var client = Kafka.Connect("localhost:9092");
+        await using var producer = client.CreateProducer<string, string>().Build();
+        await using var member = client.CreateStreamsGroupMember(new StreamsGroupMemberOptions
+        {
+            GroupId = "streams-group",
+            InstanceId = "instance-1"
+        });
+
+        var producerMetadata = GetField<MetadataManager>(producer, "_metadataManager");
+        var memberMetadata = GetField<MetadataManager>(member, "_metadataManager");
+
+        await Assert.That(ReferenceEquals(producerMetadata, memberMetadata)).IsTrue();
+        await Assert.That(member.GroupId).IsEqualTo("streams-group");
+        await Assert.That(member.InstanceId).IsEqualTo("instance-1");
+    }
+
     [Test]
     public async Task RootClient_MetadataClusterCheck_IsAppliedToSharedMetadataManager()
     {

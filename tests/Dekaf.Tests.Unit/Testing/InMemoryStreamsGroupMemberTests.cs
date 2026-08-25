@@ -6,7 +6,35 @@ namespace Dekaf.Tests.Unit.Testing;
 public sealed class InMemoryStreamsGroupMemberTests
 {
     [Test]
-    public async Task JoinAsync_PublishesInitialAssignmentAndSnapshot()
+    [Arguments(1L)]
+    [Arguments(21_474_836_480_000L)]
+    public async Task Constructor_RejectsUnrepresentableRebalanceTimeout(long ticks)
+    {
+        var exception = Assert.Throws<ArgumentOutOfRangeException>(() =>
+            _ = new InMemoryStreamsGroupMember(new StreamsGroupMemberOptions
+            {
+                GroupId = "streams-group",
+                RebalanceTimeout = TimeSpan.FromTicks(ticks)
+            }));
+
+        await Assert.That(exception.ParamName).IsEqualTo("options");
+    }
+
+    [Test]
+    public async Task JoinAsync_WithoutTopologyThrowsArgumentException()
+    {
+        await using var member = CreateMember();
+        await member.InitializeAsync();
+
+        var exception = Assert.Throws<ArgumentException>(() =>
+            member.JoinAsync(new StreamsGroupMemberUpdate()));
+
+        await Assert.That(exception.ParamName).IsEqualTo("initialState");
+        await Assert.That(member.Snapshot.IsJoined).IsFalse();
+    }
+
+    [Test]
+    public async Task JoinAsync_IgnoresCallerAssignment()
     {
         await using var member = new InMemoryStreamsGroupMember(new StreamsGroupMemberOptions
         {
@@ -14,6 +42,7 @@ public sealed class InMemoryStreamsGroupMemberTests
             InstanceId = "instance-a",
             RackId = "rack-a"
         });
+        await member.InitializeAsync();
         var activeTasks = new[]
         {
             new StreamsGroupTaskSet { SubtopologyId = "sub-0", Partitions = [0, 1] }
@@ -38,18 +67,27 @@ public sealed class InMemoryStreamsGroupMemberTests
         await Assert.That(member.InstanceId).IsEqualTo("instance-a");
         await Assert.That(member.LastUpdate).IsSameReferenceAs(update);
         await Assert.That(result.MemberEpoch).IsEqualTo(1);
-        await Assert.That(result.ActiveTasks![0].SubtopologyId).IsEqualTo("sub-0");
+        await Assert.That(result.ActiveTasks).IsNull();
+        await Assert.That(result.StandbyTasks).IsNull();
+        await Assert.That(result.WarmupTasks).IsNull();
         await Assert.That(member.Snapshot.IsJoined).IsTrue();
         await Assert.That(member.Snapshot.IsClosed).IsFalse();
         await Assert.That(member.Snapshot.EndpointInformationEpoch).IsEqualTo(7);
-        await Assert.That(member.Snapshot.Assignment.ActiveTasks[0].Partitions).IsEquivalentTo([0, 1]);
+        await Assert.That(member.Snapshot.Assignment.ActiveTasks).IsEmpty();
+        await Assert.That(member.Snapshot.Assignment.StandbyTasks).IsEmpty();
+        await Assert.That(member.Snapshot.Assignment.WarmupTasks).IsEmpty();
     }
 
     [Test]
     public async Task UpdateAndReportOffsets_PreserveUnchangedAssignment()
     {
         await using var member = CreateMember();
+        await member.InitializeAsync();
         await member.JoinAsync(new StreamsGroupMemberUpdate
+        {
+            Topology = CreateTopology()
+        });
+        await member.UpdateAsync(new StreamsGroupMemberUpdate
         {
             ActiveTasks = [new StreamsGroupTaskSet { SubtopologyId = "sub-0", Partitions = [2] }],
             StandbyTasks = [],
@@ -76,38 +114,91 @@ public sealed class InMemoryStreamsGroupMemberTests
     }
 
     [Test]
-    public async Task JoinAndUpdateAsync_DeepCopyPublishedTaskSets()
+    public async Task UpdateAsync_TopologyRejoinClearsOmittedAssignment()
     {
         await using var member = CreateMember();
-        var joinPartitions = new List<int> { 0, 1 };
-        var joinTasks = new List<StreamsGroupTaskSet>
+        await member.InitializeAsync();
+        await member.JoinAsync(new StreamsGroupMemberUpdate
         {
-            new() { SubtopologyId = "join", Partitions = joinPartitions }
-        };
+            Topology = CreateTopology()
+        });
+        await member.UpdateAsync(new StreamsGroupMemberUpdate
+        {
+            ActiveTasks = [new StreamsGroupTaskSet { SubtopologyId = "active", Partitions = [0] }],
+            StandbyTasks = [new StreamsGroupTaskSet { SubtopologyId = "standby", Partitions = [1] }],
+            WarmupTasks = [new StreamsGroupTaskSet { SubtopologyId = "warmup", Partitions = [2] }]
+        });
+        await Assert.That(member.Snapshot.Assignment.ActiveTasks).IsNotEmpty();
 
-        var joinResult = await member.JoinAsync(new StreamsGroupMemberUpdate
+        var result = await member.UpdateAsync(new StreamsGroupMemberUpdate
         {
-            ActiveTasks = joinTasks
+            Topology = CreateTopology()
         });
 
-        joinPartitions[0] = 99;
-        joinTasks.Clear();
-        await Assert.That(joinResult.ActiveTasks![0].Partitions).IsEquivalentTo([0, 1]);
-        await Assert.That(member.Snapshot.Assignment.ActiveTasks[0].Partitions).IsEquivalentTo([0, 1]);
+        await Assert.That(result.ActiveTasks).IsNull();
+        await Assert.That(result.StandbyTasks).IsNull();
+        await Assert.That(result.WarmupTasks).IsNull();
+        await Assert.That(member.Snapshot.Assignment.ActiveTasks).IsEmpty();
+        await Assert.That(member.Snapshot.Assignment.StandbyTasks).IsEmpty();
+        await Assert.That(member.Snapshot.Assignment.WarmupTasks).IsEmpty();
+    }
 
-        var updatePartitions = new List<int> { 2, 3 };
-        var updateTasks = new List<StreamsGroupTaskSet>
+    [Test]
+    public async Task UpdateAsync_TopologyRejoinIgnoresSuppliedAssignment()
+    {
+        await using var member = CreateMember();
+        await member.InitializeAsync();
+        await member.JoinAsync(new StreamsGroupMemberUpdate
         {
-            new() { SubtopologyId = "update", Partitions = updatePartitions }
+            Topology = CreateTopology(),
+            ActiveTasks = [new StreamsGroupTaskSet { SubtopologyId = "initial", Partitions = [0] }]
+        });
+
+        var result = await member.UpdateAsync(new StreamsGroupMemberUpdate
+        {
+            Topology = CreateTopology(),
+            ActiveTasks = [new StreamsGroupTaskSet { SubtopologyId = "active", Partitions = [1] }],
+            StandbyTasks = [new StreamsGroupTaskSet { SubtopologyId = "standby", Partitions = [2] }],
+            WarmupTasks = [new StreamsGroupTaskSet { SubtopologyId = "warmup", Partitions = [3] }]
+        });
+
+        await Assert.That(result.ActiveTasks).IsNull();
+        await Assert.That(result.StandbyTasks).IsNull();
+        await Assert.That(result.WarmupTasks).IsNull();
+        await Assert.That(member.Snapshot.Assignment.ActiveTasks).IsEmpty();
+        await Assert.That(member.Snapshot.Assignment.StandbyTasks).IsEmpty();
+        await Assert.That(member.Snapshot.Assignment.WarmupTasks).IsEmpty();
+    }
+
+    [Test]
+    public async Task UpdateAsync_DeepCopiesPublishedTaskSets()
+    {
+        await using var member = CreateMember();
+        await member.InitializeAsync();
+        await member.JoinAsync(new StreamsGroupMemberUpdate { Topology = CreateTopology() });
+        var activePartitions = new List<int> { 0, 1 };
+        var activeTasks = new List<StreamsGroupTaskSet>
+        {
+            new() { SubtopologyId = "active", Partitions = activePartitions }
+        };
+        var standbyPartitions = new List<int> { 2, 3 };
+        var standbyTasks = new List<StreamsGroupTaskSet>
+        {
+            new() { SubtopologyId = "standby", Partitions = standbyPartitions }
         };
 
         var updateResult = await member.UpdateAsync(new StreamsGroupMemberUpdate
         {
-            StandbyTasks = updateTasks
+            ActiveTasks = activeTasks,
+            StandbyTasks = standbyTasks
         });
 
-        updatePartitions.Add(4);
-        updateTasks[0] = new StreamsGroupTaskSet { SubtopologyId = "replacement", Partitions = [9] };
+        activePartitions[0] = 99;
+        activeTasks.Clear();
+        standbyPartitions.Add(4);
+        standbyTasks[0] = new StreamsGroupTaskSet { SubtopologyId = "replacement", Partitions = [9] };
+        await Assert.That(updateResult.ActiveTasks![0].Partitions).IsEquivalentTo([0, 1]);
+        await Assert.That(member.Snapshot.Assignment.ActiveTasks[0].Partitions).IsEquivalentTo([0, 1]);
         await Assert.That(updateResult.StandbyTasks![0].Partitions).IsEquivalentTo([2, 3]);
         await Assert.That(member.Snapshot.Assignment.StandbyTasks[0].Partitions).IsEquivalentTo([2, 3]);
     }
@@ -127,7 +218,8 @@ public sealed class InMemoryStreamsGroupMemberTests
             GroupId = "streams-group",
             InstanceId = instanceId
         });
-        await member.JoinAsync(new StreamsGroupMemberUpdate());
+        await member.InitializeAsync();
+        await member.JoinAsync(new StreamsGroupMemberUpdate { Topology = CreateTopology() });
         var closeOptions = new StreamsGroupCloseOptions
         {
             GroupMembershipOperation = operation,
@@ -146,10 +238,34 @@ public sealed class InMemoryStreamsGroupMemberTests
     public async Task UpdateAsync_BeforeJoin_Throws()
     {
         await using var member = CreateMember();
+        await member.InitializeAsync();
 
         var action = async () => await member.UpdateAsync(new StreamsGroupMemberUpdate());
 
         await Assert.That(action).Throws<InvalidOperationException>();
+    }
+
+    [Test]
+    public async Task Operations_BeforeInitialize_Throw()
+    {
+        await using var member = CreateMember();
+        var update = new StreamsGroupMemberUpdate { Topology = CreateTopology() };
+
+        var joinException = Assert.Throws<InvalidOperationException>(() => member.JoinAsync(update));
+        var updateException = Assert.Throws<InvalidOperationException>(() =>
+            member.UpdateAsync(new StreamsGroupMemberUpdate()));
+        var reportException = Assert.Throws<InvalidOperationException>(() =>
+            member.ReportTaskOffsetsAsync(new StreamsGroupTaskOffsetReport
+            {
+                TaskOffsets = [],
+                TaskEndOffsets = []
+            }));
+
+        const string message =
+            "The Streams group member is not initialized. Call InitializeAsync() before joining.";
+        await Assert.That(joinException.Message).IsEqualTo(message);
+        await Assert.That(updateException.Message).IsEqualTo(message);
+        await Assert.That(reportException.Message).IsEqualTo(message);
     }
 
     private static InMemoryStreamsGroupMember CreateMember() =>
