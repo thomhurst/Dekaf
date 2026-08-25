@@ -1087,6 +1087,57 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
+    public async Task ShareConsumer_StaleRegistrationCannotReleaseReplacementLease()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        var partition = new TopicPartition("shared", 0);
+        await producer.ProduceAsync(partition.Topic, "k", "v");
+        const string groupId = "shared-group";
+        const string memberId = "shared-member";
+        var staleRegistration = cluster.RegisterShareGroupMember(groupId, memberId);
+        var staleAcquired = cluster.TryAcquireShareRecord(
+            groupId,
+            memberId,
+            staleRegistration,
+            partition,
+            offset: 0,
+            out var record,
+            out _);
+        await Assert.That(staleAcquired).IsTrue();
+
+        var replacementRegistration = cluster.RegisterShareGroupMember(groupId, memberId);
+        cluster.UnregisterShareGroupMember(groupId, memberId, staleRegistration);
+        var replacementAcquired = cluster.TryAcquireShareRecord(
+            groupId,
+            memberId,
+            replacementRegistration,
+            partition,
+            offset: 0,
+            out _,
+            out _);
+        await Assert.That(replacementAcquired).IsTrue();
+
+        cluster.ReleaseShareRecords(
+            groupId,
+            memberId,
+            staleRegistration,
+            [new TopicPartitionOffset(partition.Topic, partition.Partition, record.Offset)]);
+        const string thirdMemberId = "third-member";
+        var thirdRegistration = cluster.RegisterShareGroupMember(groupId, thirdMemberId);
+        var thirdAcquired = cluster.TryAcquireShareRecord(
+            groupId,
+            thirdMemberId,
+            thirdRegistration,
+            partition,
+            offset: 0,
+            out _,
+            out _);
+
+        await Assert.That(thirdAcquired).IsFalse();
+    }
+
+    [Test]
     public async Task ShareConsumer_ReleaseGapStopsContiguousCommit()
     {
         var cluster = new InMemoryKafkaCluster();

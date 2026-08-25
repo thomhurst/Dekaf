@@ -352,7 +352,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             }
             catch
             {
-                ReleaseAcquiredRecord(partition, record);
+                ReleaseAcquiredRecord(partition, record, registration);
                 throw;
             }
 
@@ -382,7 +382,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             }
             catch
             {
-                ReleaseAcquiredRecord(partition, record);
+                ReleaseAcquiredRecord(partition, record, registration);
                 throw;
             }
 
@@ -442,10 +442,14 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
     /// acknowledge, commit, unsubscribe or close path can ever release it and the record stays
     /// unavailable to the group's other members.
     /// </summary>
-    private void ReleaseAcquiredRecord(TopicPartition partition, InMemoryRecord record) =>
+    private void ReleaseAcquiredRecord(
+        TopicPartition partition,
+        InMemoryRecord record,
+        ShareGroupMemberRegistration registration) =>
         _cluster.ReleaseShareRecords(
             _options.GroupId,
             _memberId,
+            registration,
             [new TopicPartitionOffset(partition.Topic, partition.Partition, record.Offset)]);
 
     private ShareConsumeResult<TKey, TValue>? RegisterPending(
@@ -467,7 +471,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             }
         }
 
-        ReleaseAcquiredRecord(partition, record);
+        ReleaseAcquiredRecord(partition, record, registration);
         if (disposed)
             throw new ObjectDisposedException(GetType().FullName);
 
@@ -584,7 +588,11 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
         if (_pending.Count == 0)
             return;
 
-        _cluster.ReleaseShareRecords(_options.GroupId, _memberId, BuildCompletedRecords(_pending.Values));
+        _cluster.ReleaseShareRecords(
+            _options.GroupId,
+            _memberId,
+            _registration!,
+            BuildCompletedRecords(_pending.Values));
         _pending.Clear();
     }
 
@@ -597,7 +605,12 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
         var offsets = BuildCommitOffsets(pending);
         var completedRecords = BuildCompletedRecords(pending);
 
-        _cluster.CompleteShareRecords(_options.GroupId, _memberId, completedRecords, offsets);
+        _cluster.CompleteShareRecords(
+            _options.GroupId,
+            _memberId,
+            _registration!,
+            completedRecords,
+            offsets);
         _pending.Clear();
     }
 

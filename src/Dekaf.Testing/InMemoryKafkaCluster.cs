@@ -629,21 +629,30 @@ public sealed class InMemoryKafkaCluster
             }
 
             var partitionLeases = GetShareLeasePartition(groupId, topicPartition, create: true)!;
-            if (partitionLeases.TryGetValue(candidate.Offset, out var lease) &&
-                !StringComparer.Ordinal.Equals(lease.MemberId, memberId))
+            var hasLease = partitionLeases.TryGetValue(candidate.Offset, out var lease);
+            if (hasLease)
             {
-                record = null!;
-                deliveryCount = 0;
-                return false;
+                var existingLease = lease!;
+                if (!StringComparer.Ordinal.Equals(existingLease.MemberId, memberId) ||
+                    (!ReferenceEquals(existingLease.Registration, registration) &&
+                     existingLease.Registration.IsActive))
+                {
+                    record = null!;
+                    deliveryCount = 0;
+                    return false;
+                }
+
+                if (!ReferenceEquals(existingLease.Registration, registration))
+                    existingLease.Registration = registration;
             }
 
             var partitionDeliveryCounts = GetShareDeliveryCountPartition(groupId, topicPartition, create: true)!;
-            if (!partitionLeases.ContainsKey(candidate.Offset))
+            if (!hasLease)
             {
                 partitionDeliveryCounts.TryGetValue(candidate.Offset, out deliveryCount);
                 deliveryCount++;
                 partitionDeliveryCounts[candidate.Offset] = deliveryCount;
-                partitionLeases[candidate.Offset] = new ShareLeaseState(memberId);
+                partitionLeases[candidate.Offset] = new ShareLeaseState(memberId, registration);
             }
             else
             {
@@ -658,6 +667,7 @@ public sealed class InMemoryKafkaCluster
     internal void CompleteShareRecords(
         string groupId,
         string memberId,
+        ShareGroupMemberRegistration registration,
         IEnumerable<TopicPartitionOffset> completedRecords,
         IEnumerable<TopicPartitionOffset> commitOffsets)
     {
@@ -671,7 +681,7 @@ public sealed class InMemoryKafkaCluster
 
         lock (_gate)
         {
-            ReleaseShareLeasesUnderLock(groupId, memberId, completed);
+            ReleaseShareLeasesUnderLock(groupId, memberId, registration, completed);
             if (commits.Length > 0)
             {
                 CommitShareOffsetsUnderLock(groupId, commits);
@@ -684,6 +694,7 @@ public sealed class InMemoryKafkaCluster
     internal void ReleaseShareRecords(
         string groupId,
         string memberId,
+        ShareGroupMemberRegistration registration,
         IEnumerable<TopicPartitionOffset> records)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
@@ -691,7 +702,7 @@ public sealed class InMemoryKafkaCluster
         ArgumentNullException.ThrowIfNull(records);
 
         lock (_gate)
-            ReleaseShareLeasesUnderLock(groupId, memberId, records);
+            ReleaseShareLeasesUnderLock(groupId, memberId, registration, records);
     }
 
     internal async Task WaitForRecordsAsync(TimeSpan timeout, CancellationToken cancellationToken)
@@ -1264,6 +1275,7 @@ public sealed class InMemoryKafkaCluster
     private void ReleaseShareLeasesUnderLock(
         string groupId,
         string memberId,
+        ShareGroupMemberRegistration registration,
         IEnumerable<TopicPartitionOffset> records)
     {
         if (!_shareLeases.TryGetValue(groupId, out var groupLeases))
@@ -1274,7 +1286,8 @@ public sealed class InMemoryKafkaCluster
             var topicPartition = new TopicPartition(record.Topic, record.Partition);
             if (!groupLeases.TryGetValue(topicPartition, out var partitionLeases) ||
                 !partitionLeases.TryGetValue(record.Offset, out var lease) ||
-                !StringComparer.Ordinal.Equals(lease.MemberId, memberId))
+                !StringComparer.Ordinal.Equals(lease.MemberId, memberId) ||
+                !ReferenceEquals(lease.Registration, registration))
             {
                 continue;
             }
@@ -1477,12 +1490,14 @@ public sealed class InMemoryKafkaCluster
 
     private sealed class ShareLeaseState
     {
-        public ShareLeaseState(string memberId)
+        public ShareLeaseState(string memberId, ShareGroupMemberRegistration registration)
         {
             MemberId = memberId;
+            Registration = registration;
         }
 
         public string MemberId { get; }
+        public ShareGroupMemberRegistration Registration { get; set; }
     }
 
     private readonly record struct ConsumerGroupMemberState(
