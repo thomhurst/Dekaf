@@ -8,6 +8,10 @@ public sealed class SchemaRegistryDeserializerConfig
     /// <summary>
     /// Strategy used to read the schema identity. The default accepts a GUID header and falls back to the payload prefix.
     /// </summary>
+    /// <remarks>
+    /// The format-specific deserializers support all strategies. The generic custom deserializer supports
+    /// <see cref="SchemaIdDeserializerStrategy.Prefix" /> only.
+    /// </remarks>
     public SchemaIdDeserializerStrategy SchemaIdStrategy { get; init; } = SchemaIdDeserializerStrategy.Dual;
 
     /// <summary>

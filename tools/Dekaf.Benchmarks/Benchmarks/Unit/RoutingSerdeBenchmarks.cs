@@ -7,6 +7,7 @@ using BenchmarkDotNet.Reports;
 using BenchmarkDotNet.Running;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Records;
+using Dekaf.SchemaRegistry;
 using Dekaf.Serialization;
 using Dekaf.Serialization.Routing;
 
@@ -343,6 +344,8 @@ public class HeaderRoutingParseBenchmarks
     private readonly RoutingSerdeBenchmarks.EventDeserializer _deserializer = new();
     private byte[] _encodedRecord = null!;
     private RecordHeaderRoutingPlan _nestedPlan = null!;
+    private RecordHeaderRoutingPlan? _prefixSchemaPlan;
+    private SchemaRegistryClient _schemaRegistry = null!;
 
     [GlobalSetup]
     public void Setup()
@@ -356,6 +359,20 @@ public class HeaderRoutingParseBenchmarks
         }
 
         _nestedPlan = RecordHeaderRoutingPlan.Create(_deserializer, nested)!;
+        _schemaRegistry = new SchemaRegistryClient(new SchemaRegistryConfig
+        {
+            Url = "http://localhost:8081"
+        });
+        var prefixSchemaDeserializer = new JsonSchemaRegistryDeserializer<int>(
+            _schemaRegistry,
+            jsonOptions: null,
+            new SchemaRegistryDeserializerConfig
+            {
+                SchemaIdStrategy = SchemaIdDeserializerStrategy.Prefix
+            });
+        _prefixSchemaPlan = RecordHeaderRoutingPlan.Create<string, int>(
+            null,
+            prefixSchemaDeserializer);
         var record = new Record
         {
             Key = new byte[] { 1 },
@@ -376,14 +393,21 @@ public class HeaderRoutingParseBenchmarks
 
         _ = Parse(headerRoutingPlan: null);
         _ = Parse(_nestedPlan);
+        _ = Parse(_prefixSchemaPlan);
         _ = ParseThenAttachRouting();
     }
+
+    [GlobalCleanup]
+    public void Cleanup() => _schemaRegistry.Dispose();
 
     [Benchmark(Baseline = true)]
     public int ParseWithoutRouting() => Parse(headerRoutingPlan: null);
 
     [Benchmark]
     public int ParseNestedRouting() => Parse(_nestedPlan);
+
+    [Benchmark]
+    public int ParsePrefixSchemaRouting() => Parse(_prefixSchemaPlan);
 
     [Benchmark]
     public int ParseThenAttachNestedRouting() => ParseThenAttachRouting();

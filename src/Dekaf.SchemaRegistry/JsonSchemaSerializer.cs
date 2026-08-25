@@ -1824,6 +1824,9 @@ public sealed class JsonSchemaRegistryDeserializer<T> :
 
     void IRecordHeaderRoutingProvider.CollectHeaderNames(List<string> names)
     {
+        if (_schemaIdStrategy == SchemaIdDeserializerStrategy.Prefix)
+            return;
+
         AddHeaderName(names, SchemaIdentityHeaderNames.Key);
         AddHeaderName(names, SchemaIdentityHeaderNames.Value);
     }

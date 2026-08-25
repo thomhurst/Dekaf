@@ -3,6 +3,7 @@ using System.Buffers.Binary;
 using Avro.Generic;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Avro;
+using Dekaf.SchemaRegistry.Avro.Poco;
 using Dekaf.SchemaRegistry.Protobuf;
 using Dekaf.Serialization;
 
@@ -11,6 +12,59 @@ namespace Dekaf.Tests.Unit.SchemaRegistry;
 public sealed class AssociatedNameStrategyTests
 {
     private const string ClusterId = "lkc-test";
+
+    [Test]
+    public async Task PrefixOnlyDeserializers_DoNotRequestHeaderRouting()
+    {
+        using var client = new MockSchemaRegistryClient();
+        await using var json = new JsonSchemaRegistryDeserializer<int>(
+            client,
+            jsonOptions: null,
+            new SchemaRegistryDeserializerConfig
+            {
+                SchemaIdStrategy = SchemaIdDeserializerStrategy.Prefix
+            });
+        await using var avro = new AvroSchemaRegistryDeserializer<GenericRecord>(
+            client,
+            new AvroDeserializerConfig
+            {
+                SchemaIdStrategy = SchemaIdDeserializerStrategy.Prefix
+            });
+        await using var protobuf = new ProtobufSchemaRegistryDeserializer<TestMessage>(
+            client,
+            new ProtobufDeserializerConfig
+            {
+                SchemaIdStrategy = SchemaIdDeserializerStrategy.Prefix
+            });
+        await using var poco = PocoWireRecord.CreateAvroDeserializer(
+            client,
+            new AvroDeserializerConfig
+            {
+                SchemaIdStrategy = SchemaIdDeserializerStrategy.Prefix
+            });
+
+        await Assert.That(RecordHeaderRoutingPlan.Create<string, int>(null, json)).IsNull();
+        await Assert.That(RecordHeaderRoutingPlan.Create<string, GenericRecord>(null, avro)).IsNull();
+        await Assert.That(RecordHeaderRoutingPlan.Create<string, TestMessage>(null, protobuf)).IsNull();
+        await Assert.That(RecordHeaderRoutingPlan.Create<string, PocoWireRecord>(null, poco)).IsNull();
+    }
+
+    [Test]
+    [Arguments(SchemaIdDeserializerStrategy.Dual)]
+    [Arguments(SchemaIdDeserializerStrategy.Header)]
+    public async Task GenericDeserializer_RejectsUnsupportedIdentityStrategy(
+        SchemaIdDeserializerStrategy strategy)
+    {
+        using var client = new MockSchemaRegistryClient();
+
+        var exception = Assert.Throws<ArgumentException>(() =>
+            SchemaRegistryDeserializer.Create(
+                client,
+                static (ReadOnlyMemory<byte> _, Schema _) => 42,
+                new SchemaRegistryDeserializerConfig { SchemaIdStrategy = strategy }));
+
+        await Assert.That(exception.Message).Contains(nameof(SchemaRegistryDeserializerConfig.SchemaIdStrategy));
+    }
 
     [Test]
     public async Task ClearCache_AdvancesDeserializerSubjectGeneration()
@@ -933,6 +987,7 @@ public sealed class AssociatedNameStrategyTests
             executor,
             new SchemaRegistryDeserializerConfig
             {
+                SchemaIdStrategy = SchemaIdDeserializerStrategy.Prefix,
                 SubjectNameStrategy = SubjectNameStrategy.AssociatedName
             });
         var preparer = (IAsyncDeserializerPreparer<int>)deserializer;
@@ -973,7 +1028,11 @@ public sealed class AssociatedNameStrategyTests
             static (_, _) => 42,
             ownsClient: false,
             new CapturingRuleExecutor(),
-            new SchemaRegistryDeserializerConfig { AsyncSubjectNameStrategy = resolver });
+            new SchemaRegistryDeserializerConfig
+            {
+                SchemaIdStrategy = SchemaIdDeserializerStrategy.Prefix,
+                AsyncSubjectNameStrategy = resolver
+            });
         var preparer = (IAsyncDeserializerPreparer<int>)deserializer;
         var context = new SerializationContext
         {
@@ -1131,7 +1190,10 @@ public sealed class AssociatedNameStrategyTests
             static (_, _) => 42,
             ownsClient: false,
             ruleExecutor: new CapturingRuleExecutor(),
-            config: new SchemaRegistryDeserializerConfig());
+            config: new SchemaRegistryDeserializerConfig
+            {
+                SchemaIdStrategy = SchemaIdDeserializerStrategy.Prefix
+            });
 
         var preparer = (IAsyncDeserializerPreparer<int>)deserializer;
 

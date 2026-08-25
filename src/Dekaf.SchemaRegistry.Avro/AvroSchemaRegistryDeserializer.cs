@@ -308,6 +308,9 @@ public sealed class AvroSchemaRegistryDeserializer<
 
     void IRecordHeaderRoutingProvider.CollectHeaderNames(List<string> names)
     {
+        if (_config.SchemaIdStrategy == SchemaIdDeserializerStrategy.Prefix)
+            return;
+
         AddHeaderName(names, SchemaIdentityHeaderNames.Key);
         AddHeaderName(names, SchemaIdentityHeaderNames.Value);
     }
