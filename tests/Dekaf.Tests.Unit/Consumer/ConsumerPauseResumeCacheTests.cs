@@ -701,24 +701,32 @@ public sealed class ConsumerPauseResumeCacheTests
         prefetchBufferField.SetValue(consumer, prefetchBuffer);
         originalPrefetchBuffer.Dispose();
 
+        using var consumeCancellation = new CancellationTokenSource();
         await using var ownedConsumer = consumer;
-        await using var records = consumer.ConsumeAsync().GetAsyncEnumerator();
-        var moveNext = Task.Run(() => records.MoveNextAsync().AsTask());
+        IAsyncEnumerator<ConsumeResult<string, string>>? records = null;
+        Task<bool>? moveNext = null;
+        var testCompleted = false;
 
         try
         {
+            records = consumer.ConsumeAsync(consumeCancellation.Token).GetAsyncEnumerator();
+            moveNext = StartDedicatedMoveNext(records);
             await Assert.That(waitEntered.Wait(TimeSpan.FromSeconds(5))).IsTrue();
             consumer.Resume(partition);
+            releaseWait.Set();
+
+            await Assert.That(await moveNext.WaitAsync(TimeSpan.FromSeconds(5))).IsTrue();
+            await Assert.That(records.Current.Topic).IsEqualTo(partition.Topic);
+            await Assert.That(records.Current.Partition).IsEqualTo(partition.Partition);
+            await Assert.That(records.Current.Offset).IsEqualTo(10);
+            testCompleted = true;
         }
         finally
         {
             releaseWait.Set();
+            consumeCancellation.Cancel();
+            await CompleteAndDisposeMoveNextAsync(records, moveNext, testCompleted);
         }
-
-        await Assert.That(await moveNext.WaitAsync(TimeSpan.FromSeconds(5))).IsTrue();
-        await Assert.That(records.Current.Topic).IsEqualTo(partition.Topic);
-        await Assert.That(records.Current.Partition).IsEqualTo(partition.Partition);
-        await Assert.That(records.Current.Offset).IsEqualTo(10);
     }
 
     [Test]
@@ -797,7 +805,7 @@ public sealed class ConsumerPauseResumeCacheTests
         try
         {
             records = consumer.ConsumeAsync(consumeCancellation.Token).GetAsyncEnumerator();
-            moveNext = Task.Run(() => records.MoveNextAsync().AsTask());
+            moveNext = StartDedicatedMoveNext(records);
             var stagePendingClear = typeof(KafkaConsumer<string, string>).GetMethod(
                 "StagePendingFetchClear",
                 BindingFlags.Instance | BindingFlags.NonPublic)
@@ -819,28 +827,7 @@ public sealed class ConsumerPauseResumeCacheTests
         {
             releaseWait.Set();
             consumeCancellation.Cancel();
-            try
-            {
-                if (moveNext is not null)
-                {
-                    if (testCompleted)
-                        await moveNext;
-                    else
-                        await ((Task)moveNext).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
-                }
-            }
-            finally
-            {
-                if (records is not null)
-                {
-                    if (testCompleted)
-                        await records.DisposeAsync();
-                    else
-                        await records.DisposeAsync()
-                            .AsTask()
-                            .ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
-                }
-            }
+            await CompleteAndDisposeMoveNextAsync(records, moveNext, testCompleted);
         }
     }
 
@@ -1161,6 +1148,42 @@ public sealed class ConsumerPauseResumeCacheTests
                 Records = records
             }
         ]);
+    }
+
+    private static Task<bool> StartDedicatedMoveNext(
+        IAsyncEnumerator<ConsumeResult<string, string>> records) =>
+        Task.Factory.StartNew(
+            static state => ((IAsyncEnumerator<ConsumeResult<string, string>>)state!).MoveNextAsync().AsTask(),
+            records,
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default).Unwrap();
+
+    private static async Task CompleteAndDisposeMoveNextAsync(
+        IAsyncEnumerator<ConsumeResult<string, string>>? records,
+        Task<bool>? moveNext,
+        bool testCompleted)
+    {
+        if (moveNext is not null)
+        {
+            if (testCompleted)
+                await moveNext;
+            else
+            {
+                Task pendingMoveNext = moveNext;
+                await pendingMoveNext.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+            }
+        }
+
+        if (records is null)
+            return;
+
+        if (testCompleted)
+            await records.DisposeAsync();
+        else
+            await records.DisposeAsync()
+                .AsTask()
+                .ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
     }
 
     private static FieldInfo GetField(string name) =>
