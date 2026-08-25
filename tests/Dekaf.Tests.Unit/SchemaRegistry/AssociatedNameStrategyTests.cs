@@ -67,6 +67,19 @@ public sealed class AssociatedNameStrategyTests
     }
 
     [Test]
+    public async Task GenericDeserializer_DefaultConfigRetainsImplicitPrefixFraming()
+    {
+        using var client = new MockSchemaRegistryClient();
+
+        await using var deserializer = SchemaRegistryDeserializer.Create(
+            client,
+            static (ReadOnlyMemory<byte> _, Schema _) => 42,
+            new SchemaRegistryDeserializerConfig());
+
+        await Assert.That(deserializer).IsNotNull();
+    }
+
+    [Test]
     public async Task ClearCache_AdvancesDeserializerSubjectGeneration()
     {
         using var client = new MockSchemaRegistryClient();
@@ -585,10 +598,12 @@ public sealed class AssociatedNameStrategyTests
         await Assert.That(strategy.CallCount).IsEqualTo(1);
     }
 
+    [Arguments(false)]
+    [Arguments(true)]
     [Test]
-    public async Task AvroDeserializer_GuidHeader_PreparesConfiguredAsyncSubjectFromRoutedHeaders()
+    public async Task AvroDeserializer_GuidHeader_PreparesFromRoutedHeaders(bool configureAsyncSubject)
     {
-        const string subject = "configured-associated";
+        var subject = configureAsyncSubject ? "configured-associated" : "orders-value";
         const string schemaString =
             """{"type":"record","name":"Order","fields":[{"name":"id","type":"int"}]}""";
         using var client = new MockSchemaRegistryClient();
@@ -597,14 +612,14 @@ public sealed class AssociatedNameStrategyTests
             SchemaType = SchemaType.Avro,
             SchemaString = schemaString
         });
-        var strategy = new FixedAsyncSubjectNameStrategy(subject);
+        var strategy = configureAsyncSubject ? new FixedAsyncSubjectNameStrategy(subject) : null;
         await using var deserializer = new AvroSchemaRegistryDeserializer<GenericRecord>(
             client,
             new AvroDeserializerConfig
             {
                 SchemaIdStrategy = SchemaIdDeserializerStrategy.Header,
                 AsyncSubjectNameStrategy = strategy,
-                RuleExecutor = new CapturingRuleExecutor()
+                RuleExecutor = configureAsyncSubject ? new CapturingRuleExecutor() : null
             });
         var identityHeader = new Header(
             SchemaIdentityHeaderNames.Value,
@@ -628,32 +643,35 @@ public sealed class AssociatedNameStrategyTests
         var preparer = (IRecordHeaderAsyncDeserializerPreparer<GenericRecord>)deserializer;
         var data = new byte[] { 84 };
 
+        await Assert.That(((IAsyncDeserializerPreparationRequirement)deserializer).RequiresPreparation).IsTrue();
         await Assert.That(preparer.TryDeserialize(data, context, in lookup, out _)).IsFalse();
         await preparer.PrepareAsync(data, context, lookup, CancellationToken.None);
         await Assert.That(preparer.TryDeserialize(data, context, in lookup, out var value)).IsTrue();
 
         await Assert.That(value["id"]).IsEqualTo(42);
-        await Assert.That(strategy.CallCount).IsEqualTo(1);
+        await Assert.That(strategy?.CallCount ?? 0).IsEqualTo(configureAsyncSubject ? 1 : 0);
     }
 
+    [Arguments(false)]
+    [Arguments(true)]
     [Test]
-    public async Task ProtobufDeserializer_GuidHeader_PreparesConfiguredAsyncSubjectFromRoutedHeaders()
+    public async Task ProtobufDeserializer_GuidHeader_PreparesFromRoutedHeaders(bool configureAsyncSubject)
     {
-        const string subject = "configured-associated";
+        var subject = configureAsyncSubject ? "configured-associated" : "orders-value";
         using var client = new MockSchemaRegistryClient();
         var schemaId = await client.RegisterSchemaAsync(subject, new Schema
         {
             SchemaType = SchemaType.Protobuf,
             SchemaString = TestMessage.Descriptor.File.SerializedData.ToBase64()
         });
-        var strategy = new FixedAsyncSubjectNameStrategy(subject);
+        var strategy = configureAsyncSubject ? new FixedAsyncSubjectNameStrategy(subject) : null;
         await using var deserializer = new ProtobufSchemaRegistryDeserializer<TestMessage>(
             client,
             new ProtobufDeserializerConfig
             {
                 SchemaIdStrategy = SchemaIdDeserializerStrategy.Header,
                 AsyncSubjectNameStrategy = strategy,
-                RuleExecutor = new CapturingRuleExecutor()
+                RuleExecutor = configureAsyncSubject ? new CapturingRuleExecutor() : null
             });
         var identityFrame = SchemaIdentityFraming.CreateSchemaGuidFrame(
             new Guid(schemaId, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0));
@@ -678,12 +696,13 @@ public sealed class AssociatedNameStrategyTests
         var preparer = (IRecordHeaderAsyncDeserializerPreparer<TestMessage>)deserializer;
         var data = new byte[] { 8, 42 };
 
+        await Assert.That(((IAsyncDeserializerPreparationRequirement)deserializer).RequiresPreparation).IsTrue();
         await Assert.That(preparer.TryDeserialize(data, context, in lookup, out _)).IsFalse();
         await preparer.PrepareAsync(data, context, lookup, CancellationToken.None);
         await Assert.That(preparer.TryDeserialize(data, context, in lookup, out var value)).IsTrue();
 
         await Assert.That(value.Id).IsEqualTo(42);
-        await Assert.That(strategy.CallCount).IsEqualTo(1);
+        await Assert.That(strategy?.CallCount ?? 0).IsEqualTo(configureAsyncSubject ? 1 : 0);
     }
 
     [Test]

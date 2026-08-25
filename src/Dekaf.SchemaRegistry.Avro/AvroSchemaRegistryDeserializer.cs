@@ -119,7 +119,8 @@ public sealed class AvroSchemaRegistryDeserializer<
     internal int CachedSpecificReaderCount => _specificReaders.Count;
 
     bool IAsyncDeserializerPreparationRequirement.RequiresPreparation =>
-        _ruleExecutor is not null && _subjectNames is { RequiresPreparation: true };
+        _config.SchemaIdStrategy != SchemaIdDeserializerStrategy.Prefix
+        || _ruleExecutor is not null && _subjectNames is { RequiresPreparation: true };
 
     ValueTask IAsyncDeserializerPreparer<T>.PrepareAsync(
         ReadOnlyMemory<byte> data,
@@ -140,17 +141,15 @@ public sealed class AvroSchemaRegistryDeserializer<
         Header? identityHeader,
         CancellationToken cancellationToken)
     {
-        if (context is { IsNull: true, Component: SerializationComponent.Value }
-            || _ruleExecutor is null
-            || _subjectNames is not { RequiresPreparation: true } subjectNames)
-        {
+        if (context is { IsNull: true, Component: SerializationComponent.Value })
             return default;
-        }
 
         if (_config.SchemaIdStrategy == SchemaIdDeserializerStrategy.Prefix)
         {
-            return DeserializerSubjectNameCache.TryReadSchemaId(data, out var prefixSchemaId)
-                ? subjectNames.PrepareAsync(
+            return _ruleExecutor is not null
+                && _subjectNames is { RequiresPreparation: true } prefixSubjectNames
+                && DeserializerSubjectNameCache.TryReadSchemaId(data, out var prefixSchemaId)
+                ? prefixSubjectNames.PrepareAsync(
                     _schemaRegistry,
                     prefixSchemaId,
                     context.Topic,
@@ -168,17 +167,20 @@ public sealed class AvroSchemaRegistryDeserializer<
                     schemaGuid,
                     context.Topic,
                     context.Component == SerializationComponent.Key,
-                    subjectNames.Generation),
+                    _subjectNames?.Generation ?? 0),
                 cancellationToken));
         }
 
-        return subjectNames.PrepareAsync(
-            _schemaRegistry,
-            identity.SchemaId!.Value,
-            context.Topic,
-            context.Component == SerializationComponent.Key,
-            FallbackRecordName,
-            cancellationToken);
+        return _ruleExecutor is not null
+            && _subjectNames is { RequiresPreparation: true } subjectNames
+            ? subjectNames.PrepareAsync(
+                _schemaRegistry,
+                identity.SchemaId!.Value,
+                context.Topic,
+                context.Component == SerializationComponent.Key,
+                FallbackRecordName,
+                cancellationToken)
+            : default;
     }
 
     bool IAsyncDeserializerPreparer<T>.TryDeserialize(
@@ -207,56 +209,53 @@ public sealed class AvroSchemaRegistryDeserializer<
         }
 
         string? preparedSubject = null;
-        if (_ruleExecutor is not null
-            && _subjectNames is { RequiresPreparation: true } subjectNames)
+        if (_config.SchemaIdStrategy != SchemaIdDeserializerStrategy.Prefix)
         {
-            if (_config.SchemaIdStrategy == SchemaIdDeserializerStrategy.Prefix)
+            var identity = ReadIdentity(data, identityHeader, out _);
+            if (identity.SchemaGuid is { } schemaGuid)
             {
-                if (DeserializerSubjectNameCache.TryReadSchemaId(data, out var prefixSchemaId))
-                {
-                    if (!subjectNames.TryGetPreparedSubject(
-                            prefixSchemaId,
-                            context.Topic,
-                            context.Component == SerializationComponent.Key,
-                            out var prepared))
-                    {
-                        value = default!;
-                        return false;
-                    }
-
-                    preparedSubject = prepared.Subject;
-                }
-            }
-            else
-            {
-                var identity = ReadIdentity(data, identityHeader, out _);
-                if (identity.SchemaGuid is { } schemaGuid)
-                {
-                    var key = new GuidTopicKey(
-                        schemaGuid,
-                        context.Topic,
-                        context.Component == SerializationComponent.Key,
-                        subjectNames.Generation);
-                    if (!HasResolvedGuidSchema(key))
-                    {
-                        value = default!;
-                        return false;
-                    }
-                }
-                else if (!subjectNames.TryGetPreparedSubject(
-                             identity.SchemaId!.Value,
-                             context.Topic,
-                             context.Component == SerializationComponent.Key,
-                             out var prepared))
+                var key = new GuidTopicKey(
+                    schemaGuid,
+                    context.Topic,
+                    context.Component == SerializationComponent.Key,
+                    _subjectNames?.Generation ?? 0);
+                if (!HasResolvedGuidSchema(key))
                 {
                     value = default!;
                     return false;
                 }
-                else
-                {
-                    preparedSubject = prepared.Subject;
-                }
             }
+            else if (_ruleExecutor is not null
+                     && _subjectNames is { RequiresPreparation: true } subjectNames)
+            {
+                if (!subjectNames.TryGetPreparedSubject(
+                        identity.SchemaId!.Value,
+                        context.Topic,
+                        context.Component == SerializationComponent.Key,
+                        out var prepared))
+                {
+                    value = default!;
+                    return false;
+                }
+
+                preparedSubject = prepared.Subject;
+            }
+        }
+        else if (_ruleExecutor is not null
+                 && _subjectNames is { RequiresPreparation: true } prefixSubjectNames
+                 && DeserializerSubjectNameCache.TryReadSchemaId(data, out var prefixSchemaId))
+        {
+            if (!prefixSubjectNames.TryGetPreparedSubject(
+                    prefixSchemaId,
+                    context.Topic,
+                    context.Component == SerializationComponent.Key,
+                    out var prepared))
+            {
+                value = default!;
+                return false;
+            }
+
+            preparedSubject = prepared.Subject;
         }
 
         value = DeserializeCore(data, context, identityHeader, preparedSubject);

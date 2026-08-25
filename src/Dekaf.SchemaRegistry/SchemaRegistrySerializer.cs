@@ -1066,7 +1066,11 @@ public sealed class SchemaRegistryDeserializer<T> :
     {
         _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
         _deserialize = deserialize ?? throw new ArgumentNullException(nameof(deserialize));
-        if (config is { SchemaIdStrategy: not SchemaIdDeserializerStrategy.Prefix })
+        if (config is
+            {
+                IsSchemaIdStrategyConfigured: true,
+                SchemaIdStrategy: not SchemaIdDeserializerStrategy.Prefix
+            })
         {
             throw new ArgumentException(
                 $"{nameof(SchemaRegistryDeserializerConfig.SchemaIdStrategy)} must be Prefix for the generic deserializer.",
@@ -1300,7 +1304,7 @@ public static class SchemaRegistryDeserializer
     /// Creates a zero-copy Schema Registry deserializer with subject-name configuration for read rules.
     /// </summary>
     /// <exception cref="ArgumentException">
-    /// <paramref name="config" /> selects an identity strategy other than
+    /// <paramref name="config" /> explicitly selects an identity strategy other than
     /// <see cref="SchemaIdDeserializerStrategy.Prefix" />.
     /// </exception>
     public static SchemaRegistryDeserializer<T> Create<T>(

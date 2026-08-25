@@ -218,6 +218,49 @@ public class HeadersTests
     }
 
     [Test]
+    public async Task NestedStateStacks_ResizeAndRestoreFiveLevels()
+    {
+        var stagedHeaders = new Headers();
+        var checkpoints = new Headers.Checkpoint[4];
+        stagedHeaders.BeginRecordHeaderStaging();
+        stagedHeaders.Add("__value_schema_id", "stage-0");
+        for (var level = 1; level <= checkpoints.Length; level++)
+        {
+            checkpoints[level - 1] = stagedHeaders.CaptureCheckpoint();
+            stagedHeaders.BeginRecordHeaderStaging();
+            stagedHeaders.Add("__value_schema_id", $"stage-{level}");
+        }
+
+        for (var level = checkpoints.Length; level >= 1; level--)
+        {
+            var checkpoint = checkpoints[level - 1];
+            stagedHeaders.Restore(in checkpoint);
+            await Assert.That(stagedHeaders.TryGetLastSchemaIdentity(
+                SerializationComponent.Value,
+                out var restored)).IsTrue();
+            await Assert.That(restored.GetValueAsString()).IsEqualTo($"stage-{level - 1}");
+        }
+
+        var traceHeaders = new Headers().Add("caller", "value");
+        var traceTokens = new object[5];
+        for (var level = 0; level < traceTokens.Length; level++)
+        {
+            traceTokens[level] = new object();
+            traceHeaders.AddDeferredTraceContext(traceTokens[level], $"level={level}");
+        }
+
+        for (var level = traceTokens.Length - 1; level >= 0; level--)
+        {
+            await Assert.That(traceHeaders[1].DeferredTraceparentToken)
+                .IsSameReferenceAs(traceTokens[level]);
+            traceHeaders.RemoveDeferredTraceContext();
+        }
+
+        await Assert.That(traceHeaders.Count).IsEqualTo(1);
+        await Assert.That(traceHeaders[0].Key).IsEqualTo("caller");
+    }
+
+    [Test]
     public async Task Indexer_ReturnsCorrectHeader()
     {
         var headers = new Headers();

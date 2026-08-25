@@ -5,14 +5,27 @@ namespace Dekaf.SchemaRegistry;
 /// </summary>
 public sealed class SchemaRegistryDeserializerConfig
 {
+    private SchemaIdDeserializerStrategy _schemaIdStrategy = SchemaIdDeserializerStrategy.Dual;
+
     /// <summary>
     /// Strategy used to read the schema identity. The default accepts a GUID header and falls back to the payload prefix.
     /// </summary>
     /// <remarks>
     /// The format-specific deserializers support all strategies. The generic custom deserializer supports
-    /// <see cref="SchemaIdDeserializerStrategy.Prefix" /> only.
+    /// <see cref="SchemaIdDeserializerStrategy.Prefix" /> only. For backward compatibility, the generic
+    /// deserializer treats an unconfigured strategy as Prefix; explicitly selecting Dual or Header is rejected.
     /// </remarks>
-    public SchemaIdDeserializerStrategy SchemaIdStrategy { get; init; } = SchemaIdDeserializerStrategy.Dual;
+    public SchemaIdDeserializerStrategy SchemaIdStrategy
+    {
+        get => _schemaIdStrategy;
+        init
+        {
+            _schemaIdStrategy = value;
+            IsSchemaIdStrategyConfigured = true;
+        }
+    }
+
+    internal bool IsSchemaIdStrategyConfigured { get; private set; }
 
     /// <summary>
     /// Whether to use the latest registered subject version as the reader schema and execute

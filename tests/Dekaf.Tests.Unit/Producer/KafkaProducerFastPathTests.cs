@@ -166,6 +166,37 @@ public class KafkaProducerFastPathTests
     }
 
     [Test]
+    public async Task FireAsync_KeyAndValueRecordHeaderSerializers_AppendBothStagedHeaders()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 4096,
+            LingerMs = 10,
+            RequestTimeoutMs = 500,
+            DeliveryTimeoutMs = 1000,
+            CloseTimeoutMs = 1000
+        };
+
+        var serializer = new ComponentRecordHeaderStringSerializer();
+        await using var producer = new KafkaProducer<string, string>(options, serializer, serializer);
+        await StopProducerBackgroundLoopsAsync(producer);
+        SeedProducerMetadata(producer);
+        SetInstanceField(producer, "_initialized", true);
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(producer.RecordAccumulator);
+
+        await producer.FireAsync(Topic, "key", "value");
+
+        var readyBatch = CompleteCurrentBatch(producer.RecordAccumulator, new TopicPartition(Topic, 0));
+        var record = readyBatch.RecordBatch.Records[0];
+        await Assert.That(record.HeaderCount).IsEqualTo(2);
+        await Assert.That(GetNamedHeaderValueString(record, "__key_schema_id")).IsEqualTo("key");
+        await Assert.That(GetNamedHeaderValueString(record, "__value_schema_id")).IsEqualTo("value");
+    }
+
+    [Test]
     public async Task FireAsync_CustomPartitionerReusingCallerHeaders_PreservesOuterStagedHeaders()
     {
         const string topic = "reentrant-caller-headers";
@@ -1364,6 +1395,27 @@ public class KafkaProducerFastPathTests
 #endif
         {
             context.Headers!.Add("identity", Encoding.UTF8.GetBytes(value));
+            Serializers.String.Serialize(value, ref destination, context);
+        }
+    }
+
+    private sealed class ComponentRecordHeaderStringSerializer : ISerializer<string>, IRecordHeaderSerializer
+    {
+        public bool ProducesRecordHeaders => true;
+
+        public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
+            where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
+        {
+            var headerName = context.Component switch
+            {
+                SerializationComponent.Key => "__key_schema_id",
+                SerializationComponent.Value => "__value_schema_id",
+                _ => throw new ArgumentOutOfRangeException(nameof(context))
+            };
+            context.Headers!.Add(headerName, Encoding.UTF8.GetBytes(value));
             Serializers.String.Serialize(value, ref destination, context);
         }
     }
