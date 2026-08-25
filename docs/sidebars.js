@@ -3,6 +3,7 @@ const sidebars = {
   tutorialSidebar: [
     'intro',
     'getting-started',
+    'migrating-from-confluent-kafka',
     'compatibility',
     'api-compatibility',
     {
