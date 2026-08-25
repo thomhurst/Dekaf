@@ -112,6 +112,7 @@ public sealed class InMemoryAdminClient :
         ThrowIfDisposed();
 
         var names = topicNames.ToArray();
+        ValidateNames(names, nameof(topicNames), requireDistinct: false);
         if (names.Length == 0)
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         for (var index = 0; index < names.Length; index++)
@@ -168,6 +169,7 @@ public sealed class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
         var names = topicNames.ToArray();
+        ValidateNames(names, nameof(topicNames), requireDistinct: true);
         if (names.Length == 0)
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         for (var index = 0; index < names.Length; index++)
@@ -218,6 +220,7 @@ public sealed class InMemoryAdminClient :
         ThrowIfDisposed();
 
         var names = topicNames.ToArray();
+        ValidateNames(names, nameof(topicNames), requireDistinct: true);
         if (names.Length == 0)
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         for (var index = 0; index < names.Length; index++)
@@ -314,6 +317,7 @@ public sealed class InMemoryAdminClient :
         ThrowIfDisposed();
 
         var groups = groupIds.ToArray();
+        ValidateNames(groups, nameof(groupIds), requireDistinct: true);
         if (groups.Length == 0)
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         for (var index = 0; index < groups.Length; index++)
@@ -559,6 +563,7 @@ public sealed class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
         var userList = users?.ToArray() ?? [];
+        ValidateNames(userList, nameof(users), requireDistinct: true);
         await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
 
         var result = userList.ToDictionary(
@@ -685,6 +690,7 @@ public sealed class InMemoryAdminClient :
         ThrowIfDisposed();
 
         var resourceList = resources.ToArray();
+        ValidateDistinct(resourceList, nameof(resources));
         if (resourceList.Length == 0)
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         for (var index = 0; index < resourceList.Length; index++)
@@ -821,8 +827,13 @@ public sealed class InMemoryAdminClient :
         ThrowIfDisposed();
 
         var specList = specs.ToArray();
+        HashSet<TopicPartition>? seenPartitions = specList.Length > 1 ? [] : null;
         foreach (var spec in specList)
+        {
             ValidateTopicPartition(spec.TopicPartition);
+            if (seenPartitions is not null && !seenPartitions.Add(spec.TopicPartition))
+                throw new ArgumentException("Partition specifications must be unique.", nameof(specs));
+        }
 
         if (specList.Length == 0)
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
@@ -870,6 +881,7 @@ public sealed class InMemoryAdminClient :
         var partitionList = partitions?.ToArray() ?? [];
         foreach (var partition in partitionList)
             ValidateTopicPartition(partition);
+        ValidateDistinct(partitionList, nameof(partitions));
 
         if (partitionList.Length == 0)
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
@@ -1061,6 +1073,7 @@ public sealed class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
         var ids = transactionalIds.ToArray();
+        ValidateNames(ids, nameof(transactionalIds), requireDistinct: true);
         await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
 
         var result = ids.ToDictionary(
@@ -1093,6 +1106,7 @@ public sealed class InMemoryAdminClient :
         var partitionList = partitions.ToArray();
         for (var index = 0; index < partitionList.Length; index++)
             ValidateTopicPartition(partitionList[index]);
+        ValidateDistinct(partitionList, nameof(partitions));
 
         if (partitionList.Length == 0)
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
@@ -1126,6 +1140,7 @@ public sealed class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
         var ids = transactionalIds.ToArray();
+        ValidateNames(ids, nameof(transactionalIds), requireDistinct: true);
         await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
 
         var result = ids.ToDictionary(
@@ -1334,6 +1349,7 @@ public sealed class InMemoryAdminClient :
         ThrowIfDisposed();
 
         var groups = groupIds.ToArray();
+        ValidateNames(groups, nameof(groupIds), requireDistinct: true);
         if (groups.Length == 0)
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         for (var index = 0; index < groups.Length; index++)
@@ -1380,6 +1396,7 @@ public sealed class InMemoryAdminClient :
         ThrowIfDisposed();
 
         var groups = groupIds.ToArray();
+        ValidateNames(groups, nameof(groupIds), requireDistinct: true);
         if (groups.Length == 0)
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         for (var index = 0; index < groups.Length; index++)
@@ -1672,6 +1689,37 @@ public sealed class InMemoryAdminClient :
             })
             .ToArray()
     };
+
+    private static void ValidateNames(
+        IReadOnlyList<string> names,
+        string parameterName,
+        bool requireDistinct)
+    {
+        HashSet<string>? seen = requireDistinct && names.Count > 1
+            ? new(StringComparer.Ordinal)
+            : null;
+        for (var index = 0; index < names.Count; index++)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(names[index], parameterName);
+            if (seen is not null && !seen.Add(names[index]))
+                throw new ArgumentException("Values must be unique.", parameterName);
+        }
+    }
+
+    private static void ValidateDistinct<T>(IReadOnlyList<T> values, string parameterName)
+        where T : notnull
+    {
+        if (values.Count < 2)
+            return;
+
+        var seen = new HashSet<T>();
+        for (var index = 0; index < values.Count; index++)
+        {
+            ArgumentNullException.ThrowIfNull(values[index], parameterName);
+            if (!seen.Add(values[index]))
+                throw new ArgumentException("Values must be unique.", parameterName);
+        }
+    }
 
     private static void ValidateTopicPartition(TopicPartition topicPartition)
     {

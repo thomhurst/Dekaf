@@ -233,6 +233,73 @@ public sealed class InMemoryAdminShareFaultTests
     }
 
     [Test]
+    public async Task AdminFault_InvalidLaterTopicNameDoesNotConsumeScriptedFailure()
+    {
+        await AssertInvalidAdminRequestDoesNotConsumeFaultAsync<ArgumentException>(
+            admin => admin.DeleteTopicsAsync(["orders", ""]).AsTask(),
+            admin => admin.DeleteTopicsAsync(["orders"]).AsTask());
+        await AssertInvalidAdminRequestDoesNotConsumeFaultAsync<ArgumentException>(
+            admin => admin.DescribeTopicsAsync(["orders", ""]).AsTask(),
+            admin => admin.DescribeTopicsAsync(["orders"]).AsTask());
+        await AssertInvalidAdminRequestDoesNotConsumeFaultAsync<ArgumentException>(
+            admin => admin.DescribeTopicPartitionsPageAsync(["orders", ""]).AsTask(),
+            admin => admin.DescribeTopicPartitionsPageAsync(["orders"]).AsTask());
+    }
+
+    [Test]
+    public async Task AdminFault_DuplicateResultKeysDoNotConsumeScriptedFailure()
+    {
+        var partition = new TopicPartition("orders", 0);
+        var offsetSpec = new TopicPartitionOffsetSpec
+        {
+            TopicPartition = partition,
+            Spec = OffsetSpec.Latest
+        };
+        var configResource = new ConfigResource
+        {
+            Type = ConfigResourceType.Topic,
+            Name = "orders"
+        };
+
+        await AssertInvalidAdminRequestDoesNotConsumeFaultAsync<ArgumentException>(
+            admin => admin.DescribeTopicsAsync(["orders", "orders"]).AsTask(),
+            admin => admin.DescribeTopicsAsync(["orders"]).AsTask());
+        await AssertInvalidAdminRequestDoesNotConsumeFaultAsync<ArgumentException>(
+            admin => admin.DescribeTopicPartitionsPageAsync(["orders", "orders"]).AsTask(),
+            admin => admin.DescribeTopicPartitionsPageAsync(["orders"]).AsTask());
+        await AssertInvalidAdminRequestDoesNotConsumeFaultAsync<ArgumentException>(
+            admin => admin.DescribeConsumerGroupsAsync(["workers", "workers"]).AsTask(),
+            admin => admin.DescribeConsumerGroupsAsync(["workers"]).AsTask());
+        await AssertInvalidAdminRequestDoesNotConsumeFaultAsync<ArgumentException>(
+            admin => admin.DescribeStreamsGroupsAsync(["workers", "workers"]).AsTask(),
+            admin => admin.DescribeStreamsGroupsAsync(["workers"]).AsTask());
+        await AssertInvalidAdminRequestDoesNotConsumeFaultAsync<ArgumentException>(
+            admin => admin.DescribeShareGroupsAsync(["workers", "workers"]).AsTask(),
+            admin => admin.DescribeShareGroupsAsync(["workers"]).AsTask());
+        await AssertInvalidAdminRequestDoesNotConsumeFaultAsync<ArgumentException>(
+            admin => admin.DescribeUserScramCredentialsAsync(["alice", "alice"]).AsTask(),
+            admin => admin.DescribeUserScramCredentialsAsync(["alice"]).AsTask());
+        await AssertInvalidAdminRequestDoesNotConsumeFaultAsync<ArgumentException>(
+            admin => admin.DescribeConfigsAsync([configResource, configResource]).AsTask(),
+            admin => admin.DescribeConfigsAsync([configResource]).AsTask());
+        await AssertInvalidAdminRequestDoesNotConsumeFaultAsync<ArgumentException>(
+            admin => admin.ListOffsetsAsync([offsetSpec, offsetSpec]).AsTask(),
+            admin => admin.ListOffsetsAsync([offsetSpec]).AsTask());
+        await AssertInvalidAdminRequestDoesNotConsumeFaultAsync<ArgumentException>(
+            admin => admin.ElectLeadersAsync(ElectionType.Preferred, [partition, partition]).AsTask(),
+            admin => admin.ElectLeadersAsync(ElectionType.Preferred, [partition]).AsTask());
+        await AssertInvalidAdminRequestDoesNotConsumeFaultAsync<ArgumentException>(
+            admin => admin.DescribeTransactionsAsync(["tx-1", "tx-1"]).AsTask(),
+            admin => admin.DescribeTransactionsAsync(["tx-1"]).AsTask());
+        await AssertInvalidAdminRequestDoesNotConsumeFaultAsync<ArgumentException>(
+            admin => admin.DescribeProducersAsync([partition, partition]).AsTask(),
+            admin => admin.DescribeProducersAsync([partition]).AsTask());
+        await AssertInvalidAdminRequestDoesNotConsumeFaultAsync<ArgumentException>(
+            admin => admin.FenceProducersAsync(["tx-1", "tx-1"]).AsTask(),
+            admin => admin.FenceProducersAsync(["tx-1"]).AsTask());
+    }
+
+    [Test]
     public async Task AdminFault_EmptyTopicIdDoesNotConsumeScriptedFailure()
     {
         var cluster = new InMemoryKafkaCluster();
@@ -753,12 +820,22 @@ public sealed class InMemoryAdminShareFaultTests
         Func<InMemoryAdminClient, Task> invalidOperation,
         Func<InMemoryAdminClient, Task> validOperation)
     {
+        await AssertInvalidAdminRequestDoesNotConsumeFaultAsync<ArgumentOutOfRangeException>(
+            invalidOperation,
+            validOperation);
+    }
+
+    private static async Task AssertInvalidAdminRequestDoesNotConsumeFaultAsync<TException>(
+        Func<InMemoryAdminClient, Task> invalidOperation,
+        Func<InMemoryAdminClient, Task> validOperation)
+        where TException : Exception
+    {
         var cluster = new InMemoryKafkaCluster();
         var admin = new InMemoryAdminClient(cluster);
         var failure = new InvalidOperationException("blocked");
         cluster.FaultPlan.Fail(new KafkaFaultScope(KafkaFaultOperation.Admin), failure);
 
-        _ = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => invalidOperation(admin));
+        _ = await Assert.ThrowsAsync<TException>(() => invalidOperation(admin));
         await Assert.That(cluster.FaultPlan.Count).IsEqualTo(1);
 
         var actual = await Assert.ThrowsAsync<InvalidOperationException>(() => validOperation(admin));
