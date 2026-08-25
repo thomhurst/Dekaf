@@ -486,6 +486,59 @@ public sealed class StreamsGroupMemberTests
         await Assert.That(fixture.Member.Snapshot.IsJoined).IsFalse();
     }
 
+    [Arguments(null, StreamsGroupMembershipOperation.Default, true, ErrorCode.UnknownMemberId)]
+    [Arguments(null, StreamsGroupMembershipOperation.Default, true, ErrorCode.FencedMemberEpoch)]
+    [Arguments("instance-1", StreamsGroupMembershipOperation.LeaveGroup, false, ErrorCode.UnknownMemberId)]
+    [Arguments("instance-1", StreamsGroupMembershipOperation.LeaveGroup, false, ErrorCode.FencedMemberEpoch)]
+    [Test]
+    public async Task CloseAsync_PreexistingAmbiguousMembershipLossCompletesSuccessfully(
+        string? instanceId,
+        StreamsGroupMembershipOperation operation,
+        bool ambiguousJoin,
+        ErrorCode errorCode)
+    {
+        var connection = new ScriptedConnection();
+        var pendingHeartbeat = new TaskCompletionSource<StreamsGroupHeartbeatResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!ambiguousJoin)
+            connection.EnqueueHeartbeat(Success(epoch: 1));
+        connection.EnqueueHeartbeat(pendingHeartbeat.Task);
+        connection.EnqueueHeartbeat(new StreamsGroupHeartbeatResponse
+        {
+            ErrorCode = errorCode,
+            MemberId = "member-1"
+        });
+        await using var fixture = CreateFixture(connection, instanceId);
+        using var cancellation = new CancellationTokenSource();
+
+        Task ambiguousOperation;
+        if (ambiguousJoin)
+        {
+            ambiguousOperation = fixture.Member.JoinAsync(CreateInitialUpdate(), cancellation.Token).AsTask();
+        }
+        else
+        {
+            await fixture.Member.JoinAsync(CreateInitialUpdate());
+            ambiguousOperation = fixture.Member.UpdateAsync(
+                new StreamsGroupMemberUpdate { ProcessId = "process-2" },
+                cancellation.Token).AsTask();
+        }
+        await (ambiguousJoin
+                ? connection.FirstHeartbeatStarted.Task
+                : connection.SecondHeartbeatStarted.Task)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        cancellation.Cancel();
+        _ = await Assert.ThrowsAsync<OperationCanceledException>(() => ambiguousOperation);
+
+        await fixture.Member.CloseAsync(new StreamsGroupCloseOptions
+        {
+            GroupMembershipOperation = operation
+        });
+
+        await Assert.That(fixture.Member.Snapshot.IsClosed).IsTrue();
+        await Assert.That(fixture.Member.Snapshot.IsJoined).IsFalse();
+    }
+
     [Arguments(StreamsGroupMembershipOperation.Default, false, -2, ErrorCode.FencedMemberEpoch)]
     [Arguments(StreamsGroupMembershipOperation.RemainInGroup, true, 1, ErrorCode.UnknownMemberId)]
     [Test]

@@ -577,6 +577,7 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         };
         var retainMembership = terminalEpoch is null or -2;
         var heartbeatEpoch = terminalEpoch ?? (options.ShutdownApplication ? _memberEpoch : null);
+        var membershipWasAmbiguous = _ambiguousMembership;
         try
         {
             if (_ambiguousMembership && terminalEpoch is null && options.ShutdownApplication)
@@ -618,6 +619,13 @@ internal sealed class StreamsGroupMember : IStreamsGroupMember
         {
             ExceptionDispatchInfo.Capture(exception.InnerException!).Throw();
             throw;
+        }
+        catch (GroupException exception)
+            when (!retainMembership
+                && membershipWasAmbiguous
+                && exception.ErrorCode is ErrorCode.FencedMemberEpoch or ErrorCode.UnknownMemberId)
+        {
+            // Membership loss proves an ambiguously completed join or update is no longer active.
         }
         catch (GroupException exception)
             when (exception.ErrorCode is ErrorCode.FencedMemberEpoch or ErrorCode.UnknownMemberId)
