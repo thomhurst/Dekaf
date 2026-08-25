@@ -115,7 +115,12 @@ public sealed class KafkaFaultPlanTests
         [
             new(KafkaFaultOperation.ShareConsume),
             new(KafkaFaultOperation.ShareConsume, topic: "shared"),
-            new(KafkaFaultOperation.ShareConsume, topic: "shared", partition: 0)
+            new(KafkaFaultOperation.ShareConsume, partition: 0),
+            new(KafkaFaultOperation.ShareConsume, groupId: "workers"),
+            new(KafkaFaultOperation.ShareConsume, topic: "shared", partition: 0),
+            new(KafkaFaultOperation.ShareConsume, topic: "shared", groupId: "workers"),
+            new(KafkaFaultOperation.ShareConsume, partition: 0, groupId: "workers"),
+            new(KafkaFaultOperation.ShareConsume, "shared", 0, "workers")
         ];
 
         for (var index = 0; index < scopes.Length; index++)

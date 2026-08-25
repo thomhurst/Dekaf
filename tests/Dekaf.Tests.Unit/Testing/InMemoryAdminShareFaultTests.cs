@@ -105,11 +105,69 @@ public sealed class InMemoryAdminShareFaultTests
         await AssertEmptyAdminBatchConsumesFaultAsync(
             static admin => admin.DeleteTopicsAsync(Array.Empty<string>()).AsTask());
         await AssertEmptyAdminBatchConsumesFaultAsync(
+            static admin => admin.DeleteTopicsAsync(Array.Empty<Guid>()).AsTask());
+        await AssertEmptyAdminBatchConsumesFaultAsync(
             static admin => admin.DescribeTopicsAsync(Array.Empty<string>()).AsTask());
+        await AssertEmptyAdminBatchConsumesFaultAsync(
+            static admin => admin.DescribeTopicsAsync(Array.Empty<Guid>()).AsTask());
+        await AssertEmptyAdminBatchConsumesFaultAsync(
+            static admin => admin.DescribeTopicPartitionsPageAsync(Array.Empty<string>()).AsTask());
+        await AssertEmptyAdminBatchConsumesFaultAsync(
+            static admin => admin.DescribeConsumerGroupsAsync(Array.Empty<string>()).AsTask());
+        await AssertEmptyAdminBatchConsumesFaultAsync(
+            static admin => admin.DeleteConsumerGroupsAsync(Array.Empty<string>()).AsTask());
+        await AssertEmptyAdminBatchConsumesFaultAsync(
+            static admin => admin.DeleteRecordsAsync(new Dictionary<TopicPartition, long>()).AsTask());
+        await AssertEmptyAdminBatchConsumesFaultAsync(
+            static admin => admin.CreatePartitionsAsync(new Dictionary<string, int>()).AsTask());
+        await AssertEmptyAdminBatchConsumesFaultAsync(
+            static admin => admin.AlterPartitionReassignmentsAsync(
+                new Dictionary<TopicPartition, Optional<NewPartitionReassignment>>()).AsTask());
+        await AssertEmptyAdminBatchConsumesFaultAsync(
+            static admin => admin.ListPartitionReassignmentsAsync(Array.Empty<TopicPartition>()).AsTask());
         await AssertEmptyAdminBatchConsumesFaultAsync(
             static admin => admin.DescribeConfigsAsync(Array.Empty<ConfigResource>()).AsTask());
         await AssertEmptyAdminBatchConsumesFaultAsync(
+            static admin => admin.AlterConfigsAsync(
+                new Dictionary<ConfigResource, IReadOnlyList<ConfigEntry>>()).AsTask());
+        await AssertEmptyAdminBatchConsumesFaultAsync(
+            static admin => admin.IncrementalAlterConfigsAsync(
+                new Dictionary<ConfigResource, IReadOnlyList<ConfigAlter>>()).AsTask());
+        await AssertEmptyAdminBatchConsumesFaultAsync(
+            static admin => admin.CreateAclsAsync(Array.Empty<AclBinding>()).AsTask());
+        await AssertEmptyAdminBatchConsumesFaultAsync(
+            static admin => admin.DeleteAclsAsync(Array.Empty<AclBindingFilter>()).AsTask());
+        await AssertEmptyAdminBatchConsumesFaultAsync(
+            static admin => admin.DeleteConsumerGroupOffsetsAsync(
+                "workers",
+                Array.Empty<TopicPartition>()).AsTask());
+        await AssertEmptyAdminBatchConsumesFaultAsync(
             static admin => admin.ListOffsetsAsync(Array.Empty<TopicPartitionOffsetSpec>()).AsTask());
+        await AssertEmptyAdminBatchConsumesFaultAsync(
+            static admin => admin.ElectLeadersAsync(
+                ElectionType.Preferred,
+                Array.Empty<TopicPartition>()).AsTask());
+        await AssertEmptyAdminBatchConsumesFaultAsync(
+            static admin => admin.AlterClientQuotasAsync(Array.Empty<ClientQuotaAlteration>()).AsTask());
+        await AssertEmptyAdminBatchConsumesFaultAsync(
+            static admin => admin.DescribeTransactionsAsync(Array.Empty<string>()).AsTask());
+        await AssertEmptyAdminBatchConsumesFaultAsync(
+            static admin => admin.DescribeProducersAsync(Array.Empty<TopicPartition>()).AsTask());
+        await AssertEmptyAdminBatchConsumesFaultAsync(
+            static admin => admin.FenceProducersAsync(Array.Empty<string>()).AsTask());
+        await AssertEmptyAdminBatchConsumesFaultAsync(
+            static admin => admin.DescribeLogDirsAsync(
+                Array.Empty<int>(),
+                Array.Empty<TopicPartition>()).AsTask());
+        await AssertEmptyAdminBatchConsumesFaultAsync(
+            static admin => admin.AlterReplicaLogDirsAsync(
+                new Dictionary<TopicPartitionReplica, string>()).AsTask());
+        await AssertEmptyAdminBatchConsumesFaultAsync(
+            static admin => admin.DescribeReplicaLogDirsAsync(Array.Empty<TopicPartitionReplica>()).AsTask());
+        await AssertEmptyAdminBatchConsumesFaultAsync(
+            static admin => admin.DescribeStreamsGroupsAsync(Array.Empty<string>()).AsTask());
+        await AssertEmptyAdminBatchConsumesFaultAsync(
+            static admin => admin.DescribeShareGroupsAsync(Array.Empty<string>()).AsTask());
     }
 
     [Test]
@@ -147,6 +205,47 @@ public sealed class InMemoryAdminShareFaultTests
             admin.CreateTopicsAsync([new NewTopic { Name = "orders", NumPartitions = 0 }]).AsTask());
         var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             admin.CreateTopicsAsync([new NewTopic { Name = "orders", NumPartitions = 1 }]).AsTask());
+
+        await Assert.That(actual).IsSameReferenceAs(failure);
+    }
+
+    [Test]
+    public async Task AdminFault_InvalidLaterTopicDoesNotConsumeFaultOrMutateBatch()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var admin = new InMemoryAdminClient(cluster);
+        var failure = new InvalidOperationException("blocked");
+        cluster.FaultPlan.Fail(new KafkaFaultScope(KafkaFaultOperation.Admin), failure);
+
+        _ = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            admin.CreateTopicsAsync(
+                [
+                    new NewTopic { Name = "customers", NumPartitions = 1 },
+                    new NewTopic { Name = "orders", NumPartitions = 0 }
+                ]).AsTask());
+
+        await Assert.That(cluster.ListTopics()).IsEmpty();
+        await Assert.That(cluster.FaultPlan.Count).IsEqualTo(1);
+
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            admin.CreateTopicsAsync([new NewTopic { Name = "customers", NumPartitions = 1 }]).AsTask());
+        await Assert.That(actual).IsSameReferenceAs(failure);
+    }
+
+    [Test]
+    public async Task AdminFault_EmptyTopicIdDoesNotConsumeScriptedFailure()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var admin = new InMemoryAdminClient(cluster);
+        cluster.CreateTopic("orders");
+        var topicId = cluster.TopicListings(includeInternal: true).Single().TopicId;
+        var failure = new InvalidOperationException("blocked");
+        cluster.FaultPlan.Fail(new KafkaFaultScope(KafkaFaultOperation.Admin), failure);
+
+        _ = await Assert.ThrowsAsync<ArgumentException>(() =>
+            admin.DescribeTopicsAsync([Guid.Empty]).AsTask());
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            admin.DescribeTopicsAsync([topicId]).AsTask());
 
         await Assert.That(actual).IsSameReferenceAs(failure);
     }

@@ -10,6 +10,7 @@ public class ShareAcknowledgeCommitBenchmarks
     private const string Topic = "shared";
     private const string GroupId = "workers";
     private const int BatchSize = 4096;
+    private const int NonMatchingSelectorCount = 1024;
 
     private InMemoryKafkaCluster _matchingCluster = null!;
     private InMemoryKafkaCluster _nonMatchingCluster = null!;
@@ -30,10 +31,13 @@ public class ShareAcknowledgeCommitBenchmarks
         _matchingConsumer = CreateConsumer(_matchingCluster);
 
         _nonMatchingCluster = new InMemoryKafkaCluster();
-        _nonMatchingCluster.CreateTopic(Topic);
-        _nonMatchingCluster.FaultPlan.FailPersistently(
-            new KafkaFaultScope(KafkaFaultOperation.ShareAcknowledge, "other-topic"),
-            new InvalidOperationException("unrelated"));
+        _nonMatchingCluster.CreateTopic(Topic, partitionCount: 2);
+        for (var index = 0; index < NonMatchingSelectorCount; index++)
+        {
+            _nonMatchingCluster.FaultPlan.FailPersistently(
+                new KafkaFaultScope(KafkaFaultOperation.ShareAcknowledge, Topic, 1, GroupId),
+                new InvalidOperationException("unrelated"));
+        }
         _nonMatchingProducer = new InMemoryProducer<string, string>(_nonMatchingCluster);
         _nonMatchingConsumer = CreateConsumer(_nonMatchingCluster);
 

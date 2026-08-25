@@ -1,3 +1,5 @@
+using System.Runtime.CompilerServices;
+
 namespace Dekaf.Testing;
 
 /// <summary>
@@ -468,8 +470,8 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
     {
         var produceScopes = new ProduceScopeBuilder();
         var transactionProduceScopes = new ProduceScopeBuilder();
-        List<KafkaFaultScope>? shareConsumeScopes = null;
-        List<KafkaFaultScope>? shareAcknowledgeScopes = null;
+        var shareConsumeScopes = new ShareScopeBuilder();
+        var shareAcknowledgeScopes = new ShareScopeBuilder();
         for (var entryIndex = 0; entryIndex < _entries.Count; entryIndex++)
         {
             var scope = _entries[entryIndex].Scope;
@@ -485,10 +487,10 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
                         transactionProduceScopes.Add(scope.Topic);
                     break;
                 case KafkaFaultOperation.ShareConsume:
-                    (shareConsumeScopes ??= []).Add(scope);
+                    shareConsumeScopes.Add(scope);
                     break;
                 case KafkaFaultOperation.ShareAcknowledge:
-                    (shareAcknowledgeScopes ??= []).Add(scope);
+                    shareAcknowledgeScopes.Add(scope);
                     break;
             }
         }
@@ -503,10 +505,10 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
                 transactionProduceScopes.Topics)
             : ProduceFaultIndex.Empty;
         Volatile.Write(ref _produceFaultIndex, produceFaultIndex);
-        var shareFaultIndex = shareConsumeScopes is not null || shareAcknowledgeScopes is not null
+        var shareFaultIndex = shareConsumeScopes.HasScopes || shareAcknowledgeScopes.HasScopes
             ? new ShareFaultIndex(
-                shareConsumeScopes?.ToArray() ?? [],
-                shareAcknowledgeScopes?.ToArray() ?? [])
+                shareConsumeScopes.Build(),
+                shareAcknowledgeScopes.Build())
             : ShareFaultIndex.Empty;
         Volatile.Write(ref _shareFaultIndex, shareFaultIndex);
         Interlocked.Increment(ref _shareFaultIndexVersion);
@@ -548,6 +550,69 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
         }
     }
 
+    private struct ShareScopeBuilder
+    {
+        private bool _all;
+        private HashSet<string>? _topics;
+        private HashSet<int>? _partitions;
+        private HashSet<string>? _groups;
+        private HashSet<TopicPartition>? _topicPartitions;
+        private HashSet<TopicGroupKey>? _topicGroups;
+        private HashSet<PartitionGroupKey>? _partitionGroups;
+        private HashSet<ExactShareKey>? _exactScopes;
+
+        internal readonly bool HasScopes =>
+            _all ||
+            _topics is not null ||
+            _partitions is not null ||
+            _groups is not null ||
+            _topicPartitions is not null ||
+            _topicGroups is not null ||
+            _partitionGroups is not null ||
+            _exactScopes is not null;
+
+        internal void Add(KafkaFaultScope scope)
+        {
+            switch (scope)
+            {
+                case { Topic: null, Partition: null, GroupId: null }:
+                    _all = true;
+                    break;
+                case { Topic: { } topic, Partition: null, GroupId: null }:
+                    (_topics ??= new(StringComparer.Ordinal)).Add(topic);
+                    break;
+                case { Topic: null, Partition: { } partition, GroupId: null }:
+                    (_partitions ??= []).Add(partition);
+                    break;
+                case { Topic: null, Partition: null, GroupId: { } groupId }:
+                    (_groups ??= new(StringComparer.Ordinal)).Add(groupId);
+                    break;
+                case { Topic: { } topic, Partition: { } partition, GroupId: null }:
+                    (_topicPartitions ??= []).Add(new TopicPartition(topic, partition));
+                    break;
+                case { Topic: { } topic, Partition: null, GroupId: { } groupId }:
+                    (_topicGroups ??= []).Add(new TopicGroupKey(topic, groupId));
+                    break;
+                case { Topic: null, Partition: { } partition, GroupId: { } groupId }:
+                    (_partitionGroups ??= []).Add(new PartitionGroupKey(partition, groupId));
+                    break;
+                case { Topic: { } topic, Partition: { } partition, GroupId: { } groupId }:
+                    (_exactScopes ??= []).Add(new ExactShareKey(topic, partition, groupId));
+                    break;
+            }
+        }
+
+        internal readonly ShareScopeIndex Build() => new(
+            _all,
+            _topics,
+            _partitions,
+            _groups,
+            _topicPartitions,
+            _topicGroups,
+            _partitionGroups,
+            _exactScopes);
+    }
+
     private sealed class ProduceFaultIndex(
         bool allProduceTopics,
         string? produceTopic,
@@ -573,10 +638,10 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
     }
 
     private sealed class ShareFaultIndex(
-        KafkaFaultScope[] consumeScopes,
-        KafkaFaultScope[] acknowledgeScopes)
+        ShareScopeIndex consumeScopes,
+        ShareScopeIndex acknowledgeScopes)
     {
-        public static ShareFaultIndex Empty { get; } = new([], []);
+        public static ShareFaultIndex Empty { get; } = new(ShareScopeIndex.Empty, ShareScopeIndex.Empty);
 
         public bool Matches(
             KafkaFaultOperation operation,
@@ -587,32 +652,9 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
             {
                 KafkaFaultOperation.ShareConsume => consumeScopes,
                 KafkaFaultOperation.ShareAcknowledge => acknowledgeScopes,
-                _ => Array.Empty<KafkaFaultScope>()
+                _ => ShareScopeIndex.Empty
             };
-
-            for (var scopeIndex = 0; scopeIndex < scopes.Length; scopeIndex++)
-            {
-                var scope = scopes[scopeIndex];
-                if (scope.GroupId is not null &&
-                    !string.Equals(scope.GroupId, groupId, StringComparison.Ordinal))
-                {
-                    continue;
-                }
-
-                foreach (var partition in assignment)
-                {
-                    if (scope.Topic is not null &&
-                        !string.Equals(scope.Topic, partition.Topic, StringComparison.Ordinal))
-                    {
-                        continue;
-                    }
-
-                    if (scope.Partition is null || scope.Partition == partition.Partition)
-                        return true;
-                }
-            }
-
-            return false;
+            return scopes.Matches(groupId, assignment);
         }
 
         public bool Matches(
@@ -625,31 +667,63 @@ public sealed class KafkaFaultPlan : IKafkaFaultPlan
             {
                 KafkaFaultOperation.ShareConsume => consumeScopes,
                 KafkaFaultOperation.ShareAcknowledge => acknowledgeScopes,
-                _ => Array.Empty<KafkaFaultScope>()
+                _ => ShareScopeIndex.Empty
             };
+            return scopes.Matches(topic, partition, groupId);
+        }
+    }
 
-            for (var scopeIndex = 0; scopeIndex < scopes.Length; scopeIndex++)
+    private sealed class ShareScopeIndex(
+        bool all,
+        HashSet<string>? topics,
+        HashSet<int>? partitions,
+        HashSet<string>? groups,
+        HashSet<TopicPartition>? topicPartitions,
+        HashSet<TopicGroupKey>? topicGroups,
+        HashSet<PartitionGroupKey>? partitionGroups,
+        HashSet<ExactShareKey>? exactScopes)
+    {
+        public static ShareScopeIndex Empty { get; } = new(
+            false,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null);
+
+        public bool Matches(string groupId, HashSet<TopicPartition> assignment)
+        {
+            if (assignment.Count == 0)
+                return false;
+
+            foreach (var partition in assignment)
             {
-                var scope = scopes[scopeIndex];
-                if (scope.Topic is not null &&
-                    !string.Equals(scope.Topic, topic, StringComparison.Ordinal))
-                {
-                    continue;
-                }
-
-                if (scope.Partition is not null && scope.Partition != partition)
-                    continue;
-
-                if (scope.GroupId is null ||
-                    string.Equals(scope.GroupId, groupId, StringComparison.Ordinal))
-                {
+                if (Matches(partition.Topic, partition.Partition, groupId))
                     return true;
-                }
             }
 
             return false;
         }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool Matches(string topic, int partition, string groupId) =>
+            all ||
+            topics is not null && topics.Contains(topic) ||
+            partitions is not null && partitions.Contains(partition) ||
+            groups is not null && groups.Contains(groupId) ||
+            topicPartitions is not null && topicPartitions.Contains(new TopicPartition(topic, partition)) ||
+            topicGroups is not null && topicGroups.Contains(new TopicGroupKey(topic, groupId)) ||
+            partitionGroups is not null && partitionGroups.Contains(new PartitionGroupKey(partition, groupId)) ||
+            exactScopes is not null && exactScopes.Contains(new ExactShareKey(topic, partition, groupId));
     }
+
+    private readonly record struct TopicGroupKey(string Topic, string GroupId);
+
+    private readonly record struct PartitionGroupKey(int Partition, string GroupId);
+
+    private readonly record struct ExactShareKey(string Topic, int Partition, string GroupId);
 
     private sealed class FaultEntry
     {

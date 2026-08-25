@@ -88,6 +88,11 @@ public sealed class InMemoryAdminClient :
             var topic = topicList[index];
             ArgumentException.ThrowIfNullOrWhiteSpace(topic.Name);
             ArgumentOutOfRangeException.ThrowIfLessThan(topic.NumPartitions, 1);
+        }
+
+        for (var index = 0; index < topicList.Length; index++)
+        {
+            var topic = topicList[index];
             await ApplyAdminFaultAsync(
                 cancellationToken,
                 topic: topic.Name).ConfigureAwait(false);
@@ -178,6 +183,12 @@ public sealed class InMemoryAdminClient :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
         var ids = topicIds.Distinct().ToArray();
+        for (var index = 0; index < ids.Length; index++)
+        {
+            if (ids[index] == Guid.Empty)
+                throw new ArgumentException("Topic IDs cannot contain the empty UUID.", nameof(topicIds));
+        }
+
         if (ids.Length == 0)
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         for (var index = 0; index < ids.Length; index++)
