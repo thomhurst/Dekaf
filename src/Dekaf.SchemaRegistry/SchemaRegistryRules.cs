@@ -1119,7 +1119,7 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         bool trackPayloadChange,
         out bool? payloadChanged)
     {
-        payloadChanged = false;
+        payloadChanged = null;
         var handlerContext = RentHandlerContext(context, rule, direction);
         try
         {
