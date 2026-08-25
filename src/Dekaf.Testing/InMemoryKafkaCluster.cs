@@ -21,7 +21,7 @@ public sealed class InMemoryKafkaCluster
     private readonly Dictionary<string, Dictionary<string, ConsumerGroupMemberState>> _consumerGroupMembers = new(StringComparer.Ordinal);
     private readonly Dictionary<string, int> _consumerGroupGenerations = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<string, int>> _shareGroupMembers = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, Dictionary<TopicPartition, Dictionary<long, ShareLeaseState>>> _shareLeases = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Dictionary<TopicPartition, Dictionary<long, ShareGroupMemberRegistration>>> _shareLeases = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<TopicPartition, Dictionary<long, int>>> _shareDeliveryCounts = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Exception> _produceFailures = new(StringComparer.Ordinal);
     private readonly Dictionary<PreparedTransactionState, IInMemoryPreparedTransaction> _preparedTransactions = [];
@@ -629,21 +629,21 @@ public sealed class InMemoryKafkaCluster
             }
 
             var partitionLeases = GetShareLeasePartition(groupId, topicPartition, create: true)!;
-            var hasLease = partitionLeases.TryGetValue(candidate.Offset, out var lease);
+            var hasLease = partitionLeases.TryGetValue(candidate.Offset, out var leaseRegistration);
             if (hasLease)
             {
-                var existingLease = lease!;
-                if (!StringComparer.Ordinal.Equals(existingLease.MemberId, memberId) ||
-                    (!ReferenceEquals(existingLease.Registration, registration) &&
-                     existingLease.Registration.IsActive))
+                var existingRegistration = leaseRegistration!;
+                if (!StringComparer.Ordinal.Equals(existingRegistration.MemberId, memberId) ||
+                    (!ReferenceEquals(existingRegistration, registration) &&
+                     existingRegistration.IsActive))
                 {
                     record = null!;
                     deliveryCount = 0;
                     return false;
                 }
 
-                if (!ReferenceEquals(existingLease.Registration, registration))
-                    existingLease.Registration = registration;
+                if (!ReferenceEquals(existingRegistration, registration))
+                    partitionLeases[candidate.Offset] = registration;
             }
 
             var partitionDeliveryCounts = GetShareDeliveryCountPartition(groupId, topicPartition, create: true)!;
@@ -652,7 +652,7 @@ public sealed class InMemoryKafkaCluster
                 partitionDeliveryCounts.TryGetValue(candidate.Offset, out deliveryCount);
                 deliveryCount++;
                 partitionDeliveryCounts[candidate.Offset] = deliveryCount;
-                partitionLeases[candidate.Offset] = new ShareLeaseState(memberId, registration);
+                partitionLeases[candidate.Offset] = registration;
             }
             else
             {
@@ -890,7 +890,7 @@ public sealed class InMemoryKafkaCluster
             }
 
             members[memberId] = members.GetValueOrDefault(memberId) + 1;
-            return new ShareGroupMemberRegistration();
+            return new ShareGroupMemberRegistration(memberId);
         }
     }
 
@@ -1220,7 +1220,7 @@ public sealed class InMemoryKafkaCluster
             groupOffsets[new TopicPartition(offset.Topic, offset.Partition)] = offset;
     }
 
-    private Dictionary<long, ShareLeaseState>? GetShareLeasePartition(
+    private Dictionary<long, ShareGroupMemberRegistration>? GetShareLeasePartition(
         string groupId,
         TopicPartition topicPartition,
         bool create)
@@ -1287,7 +1287,7 @@ public sealed class InMemoryKafkaCluster
             if (!groupLeases.TryGetValue(topicPartition, out var partitionLeases) ||
                 !partitionLeases.TryGetValue(record.Offset, out var lease) ||
                 !StringComparer.Ordinal.Equals(lease.MemberId, memberId) ||
-                !ReferenceEquals(lease.Registration, registration))
+                !ReferenceEquals(lease, registration))
             {
                 continue;
             }
@@ -1488,18 +1488,6 @@ public sealed class InMemoryKafkaCluster
         }
     }
 
-    private sealed class ShareLeaseState
-    {
-        public ShareLeaseState(string memberId, ShareGroupMemberRegistration registration)
-        {
-            MemberId = memberId;
-            Registration = registration;
-        }
-
-        public string MemberId { get; }
-        public ShareGroupMemberRegistration Registration { get; set; }
-    }
-
     private readonly record struct ConsumerGroupMemberState(
         long RegistrationId,
         HashSet<TopicPartition> SubscribedPartitions);
@@ -1507,5 +1495,11 @@ public sealed class InMemoryKafkaCluster
 
 internal sealed class ShareGroupMemberRegistration
 {
+    internal ShareGroupMemberRegistration(string memberId)
+    {
+        MemberId = memberId;
+    }
+
+    internal string MemberId { get; }
     internal bool IsActive { get; set; } = true;
 }

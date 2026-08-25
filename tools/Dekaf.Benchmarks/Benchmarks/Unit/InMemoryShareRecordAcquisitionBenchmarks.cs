@@ -14,17 +14,42 @@ public class InMemoryShareRecordAcquisitionBenchmarks
     private const string MemberId = "benchmark-member";
     private readonly InMemoryKafkaCluster _cluster = new();
     private readonly TopicPartition _topicPartition = new("benchmark-topic", 0);
+    private TopicPartitionOffset[] _benchmarkLeases = null!;
     private ShareGroupMemberRegistration _registration = null!;
 
     [GlobalSetup]
-    public void Setup()
+    public async Task Setup()
     {
         _cluster.CreateTopic(_topicPartition.Topic);
         _registration = _cluster.RegisterShareGroupMember(GroupId, MemberId);
+        _benchmarkLeases = new TopicPartitionOffset[OperationsPerInvoke];
+        await using var producer = new InMemoryProducer<byte[], byte[]>(_cluster);
+        await producer.ProduceAsync(_topicPartition.Topic, [], []).ConfigureAwait(false);
+        for (var i = 0; i < OperationsPerInvoke; i++)
+        {
+            await producer.ProduceAsync(_topicPartition.Topic, [], []).ConfigureAwait(false);
+            _benchmarkLeases[i] = new TopicPartitionOffset(
+                _topicPartition.Topic,
+                _topicPartition.Partition,
+                i + 1);
+        }
+
+        _cluster.TryAcquireShareRecord(
+            GroupId,
+            MemberId,
+            _registration,
+            _topicPartition,
+            offset: 0,
+            out _,
+            out _);
     }
 
+    [IterationSetup]
+    public void ResetBenchmarkLease() =>
+        _cluster.ReleaseShareRecords(GroupId, MemberId, _registration, _benchmarkLeases);
+
     [Benchmark(OperationsPerInvoke = OperationsPerInvoke)]
-    public int ActiveMemberMissingRecord()
+    public int ActiveMemberSuccessfulAcquisition()
     {
         var acquired = 0;
         for (var i = 0; i < OperationsPerInvoke; i++)
@@ -34,7 +59,7 @@ public class InMemoryShareRecordAcquisitionBenchmarks
                     MemberId,
                     _registration,
                     _topicPartition,
-                    offset: 0,
+                    offset: i + 1,
                     out _,
                     out _))
             {
