@@ -164,6 +164,8 @@ internal sealed class BrokerWindowController
     private int _epochsUntilProbe = ProbeIntervalEpochs;
     private bool _probeDownNext = true;
     private int _consecutiveProbeFailures;
+    private long _rejectedAcceleratedDescentBaseline;
+    private bool _probeUsedAcceleratedDescent;
     private long _probeBaselineWindow;
     private long _probeCandidateWindow;
     private CapacityProbeStage _probeStage;
@@ -420,6 +422,7 @@ internal sealed class BrokerWindowController
             Math.Max(
                 _windowBytes + _requestQuantumBytes,
                 (long)Math.Ceiling(_windowBytes * UpProbeMultiplier)));
+        _probeUsedAcceleratedDescent = false;
         return StartCapacityProbe(
             BrokerWindowPhase.ProbeUp,
             requestedWindow);
@@ -427,7 +430,11 @@ internal sealed class BrokerWindowController
 
     private BrokerWindowDecision StartDownProbe(bool descentBias)
     {
-        var multiplier = descentBias
+        // A rejected coarse step only proves that candidate was too small. Retry the same
+        // baseline with the normal step to bracket the knee instead of repeating it forever.
+        _probeUsedAcceleratedDescent = descentBias
+            && _windowBytes != _rejectedAcceleratedDescentBaseline;
+        var multiplier = _probeUsedAcceleratedDescent
             ? LatencyBiasedDownProbeMultiplier
             : DownProbeMultiplier;
         var requestedWindow = Math.Max(
@@ -560,6 +567,7 @@ internal sealed class BrokerWindowController
         {
             CapacityProbeSuccessCount++;
             _consecutiveProbeFailures = 0;
+            _rejectedAcceleratedDescentBaseline = 0;
         }
         else
         {
@@ -567,6 +575,8 @@ internal sealed class BrokerWindowController
             _consecutiveProbeFailures = Math.Min(
                 _consecutiveProbeFailures + 1,
                 MaximumProbeBackoffShift);
+            if (!probingUp && _probeUsedAcceleratedDescent)
+                _rejectedAcceleratedDescentBaseline = _probeBaselineWindow;
             SetWindow(_probeBaselineWindow);
         }
 
@@ -591,6 +601,7 @@ internal sealed class BrokerWindowController
                 : ProbeIntervalEpochs << _consecutiveProbeFailures;
         _unqualifiedProbeEpochs = 0;
         ResetProbeExperiment();
+        _probeUsedAcceleratedDescent = false;
         return CurrentDecision(
             BrokerBudgetProbeType.Capacity,
             succeeded ? BrokerBudgetProbeOutcome.Succeeded : BrokerBudgetProbeOutcome.Failed);

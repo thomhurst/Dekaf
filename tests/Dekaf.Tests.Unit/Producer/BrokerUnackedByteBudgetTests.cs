@@ -181,6 +181,51 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
+    public async Task RejectedAcceleratedDescent_RetriesWithNormalStep()
+    {
+        var controller = CreateController(latencyGovernorEnabled: true);
+        var now = T0;
+        var admissionBlocks = 0L;
+
+        for (var pass = 0; pass < 4; pass++)
+        {
+            controller.RecordAcknowledgement(
+                100, Seconds(0.001), Seconds(0.050), false, controller.Generation, now);
+            _ = controller.CompleteInterval(0, 0, now, 0);
+        }
+
+        for (var i = 0; i < 100 && controller.Phase == BrokerWindowPhase.Steady; i++)
+        {
+            _ = DriveControllerEpoch(
+                controller,
+                ref now,
+                ref admissionBlocks,
+                sealToSendSeconds: 0.050);
+        }
+        await Assert.That(controller.WindowBytes).IsEqualTo(1_200);
+
+        _ = CompleteActiveProbe(
+            controller,
+            baselineWindow: 1_600,
+            ref now,
+            ref admissionBlocks,
+            candidateLogicalBytes: 50,
+            candidateSealToSendSeconds: 0.050,
+            baselineSealToSendSeconds: 0.050);
+
+        for (var i = 0; i < 100 && controller.Phase == BrokerWindowPhase.Steady; i++)
+        {
+            _ = DriveControllerEpoch(
+                controller,
+                ref now,
+                ref admissionBlocks,
+                sealToSendSeconds: 0.050);
+        }
+
+        await Assert.That(controller.WindowBytes).IsEqualTo(1_400);
+    }
+
+    [Test]
     public async Task DeepDescent_RequiresDemonstratedDelayGain()
     {
         var controller = CreateController(latencyGovernorEnabled: true);
