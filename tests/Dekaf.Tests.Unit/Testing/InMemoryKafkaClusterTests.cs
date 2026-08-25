@@ -311,6 +311,31 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
+    public async Task StreamsGroupManagement_ListOffsetsRejectsUnknownPartitions()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("input");
+        IAdminClient admin = new InMemoryAdminClient(cluster);
+        var valid = new TopicPartition("input", 0);
+        var missingTopic = new TopicPartition("missing", 0);
+        var missingPartition = new TopicPartition("input", 1);
+
+        var listed = await admin.ListStreamsGroupOffsetsAsync(
+            new Dictionary<string, ListStreamsGroupOffsetsSpec>
+            {
+                ["streams-app"] = new()
+                {
+                    TopicPartitions = [valid, missingTopic, missingPartition]
+                }
+            });
+
+        var offsets = listed["streams-app"].Offsets;
+        await Assert.That(offsets[valid].ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(offsets[missingTopic].ErrorCode).IsEqualTo(ErrorCode.UnknownTopicOrPartition);
+        await Assert.That(offsets[missingPartition].ErrorCode).IsEqualTo(ErrorCode.UnknownTopicOrPartition);
+    }
+
+    [Test]
     public async Task StreamsGroupManagement_DeleteOffsetsRejectsUnknownPartitions()
     {
         var cluster = new InMemoryKafkaCluster();

@@ -32,13 +32,16 @@ public sealed partial class InMemoryAdminClient
                     throw new ArgumentException($"Partition '{partition.Topic}-{partition.Partition}' is duplicated.", nameof(groupSpecs));
 
                 var hasOffset = storedOffsets.TryGetValue(partition, out var storedOffset);
+                var errorCode = _cluster.ContainsTopicPartition(partition)
+                    ? ErrorCode.None
+                    : ErrorCode.UnknownTopicOrPartition;
                 offsets[partition] = new StreamsGroupOffsetDescription
                 {
                     TopicPartition = partition,
                     Offset = hasOffset ? storedOffset.Offset : -1,
                     LeaderEpoch = hasOffset ? storedOffset.LeaderEpoch : -1,
                     Metadata = hasOffset ? storedOffset.Metadata : null,
-                    ErrorCode = ErrorCode.None
+                    ErrorCode = errorCode
                 };
             }
 

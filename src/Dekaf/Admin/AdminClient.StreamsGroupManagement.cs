@@ -203,17 +203,27 @@ public sealed partial class AdminClient
                         {
                             foreach (var groupId in coordinatorGroups)
                             {
-                                var failure = await ListStreamsGroupOffsetsBatchAsync(
-                                    connection,
-                                    [groupId],
-                                    requests,
-                                    requireStable,
-                                    apiVersion,
-                                    results,
-                                    retryErrors,
-                                    retryResults,
-                                    cancellationToken).ConfigureAwait(false);
-                                retryFailure ??= failure;
+                                try
+                                {
+                                    var failure = await ListStreamsGroupOffsetsBatchAsync(
+                                        connection,
+                                        [groupId],
+                                        requests,
+                                        requireStable,
+                                        apiVersion,
+                                        results,
+                                        retryErrors,
+                                        retryResults,
+                                        cancellationToken).ConfigureAwait(false);
+                                    retryFailure ??= failure;
+                                }
+                                catch (Exception exception) when (
+                                    RetryHelper.IsRetriableRequestFailure(exception) &&
+                                    !cancellationToken.IsCancellationRequested)
+                                {
+                                    retryErrors[groupId] = GetRetryErrorCode(exception);
+                                    retryFailure ??= exception;
+                                }
                             }
                         }
                         else
@@ -284,7 +294,25 @@ public sealed partial class AdminClient
         var requestGroups = new List<OffsetFetchRequestGroup>(groupIds.Count);
         foreach (var groupId in groupIds)
         {
-            var topics = BuildOffsetFetchTopics(requests[groupId], apiVersion, nameof(ListStreamsGroupOffsetsAsync), out var topicMap);
+            IReadOnlyList<OffsetFetchRequestTopic>? topics;
+            OffsetTopicIdRequestMap? topicMap;
+            try
+            {
+                topics = BuildOffsetFetchTopics(
+                    requests[groupId],
+                    apiVersion,
+                    nameof(ListStreamsGroupOffsetsAsync),
+                    out topicMap);
+            }
+            catch (KafkaException exception) when (exception.ErrorCode == Protocol.ErrorCode.UnknownTopicId)
+            {
+                results[groupId] = GroupOffsetsPartitionError(
+                    groupId,
+                    requests[groupId],
+                    exception.ErrorCode ?? Protocol.ErrorCode.UnknownTopicId);
+                continue;
+            }
+
             topicMaps[groupId] = topicMap;
             requestGroups.Add(new OffsetFetchRequestGroup
             {
@@ -294,6 +322,11 @@ public sealed partial class AdminClient
                 MemberEpoch = -1
             });
         }
+
+        if (requestGroups.Count == 0)
+            return null;
+
+        var sentGroupIds = requestGroups.Select(static group => group.GroupId).ToArray();
 
         var firstGroup = requestGroups[0];
         var response = await connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
@@ -310,7 +343,7 @@ public sealed partial class AdminClient
         Exception? retryFailure = null;
         if (apiVersion < 8)
         {
-            var groupId = groupIds[0];
+            var groupId = sentGroupIds[0];
             retryFailure = CaptureListStreamsGroupResult(
                 groupId,
                 response.ErrorCode,
@@ -324,7 +357,7 @@ public sealed partial class AdminClient
             return retryFailure;
         }
 
-        var requestedGroupIds = new HashSet<string>(groupIds, StringComparer.Ordinal);
+        var requestedGroupIds = new HashSet<string>(sentGroupIds, StringComparer.Ordinal);
         var responseGroupIds = new HashSet<string>(StringComparer.Ordinal);
         foreach (var group in response.Groups ?? [])
         {
@@ -345,7 +378,7 @@ public sealed partial class AdminClient
             retryFailure ??= failure;
         }
 
-        foreach (var groupId in groupIds)
+        foreach (var groupId in sentGroupIds)
         {
             if (!responseGroupIds.Contains(groupId))
             {
@@ -396,6 +429,7 @@ public sealed partial class AdminClient
         var offsets = new Dictionary<TopicPartition, StreamsGroupOffsetDescription>();
         var responseSnapshot = topicMap?.CaptureResponseSnapshot();
         Exception? retryFailure = null;
+        Protocol.ErrorCode? responseMismatchError = null;
         foreach (var topic in responseTopics)
         {
             string topicName;
@@ -411,7 +445,8 @@ public sealed partial class AdminClient
             }
             catch (KafkaException exception)
             {
-                return exception;
+                responseMismatchError ??= exception.ErrorCode ?? Protocol.ErrorCode.UnknownTopicId;
+                continue;
             }
 
             foreach (var partition in topic.Partitions)
@@ -451,7 +486,7 @@ public sealed partial class AdminClient
                     offsets[topicPartition] = new StreamsGroupOffsetDescription
                     {
                         TopicPartition = topicPartition,
-                        ErrorCode = Protocol.ErrorCode.UnknownServerError
+                        ErrorCode = responseMismatchError ?? Protocol.ErrorCode.UnknownServerError
                     };
                 }
             }
@@ -518,7 +553,17 @@ public sealed partial class AdminClient
                     pendingOffsets,
                     apiVersion,
                     nameof(AlterStreamsGroupOffsetsAsync),
-                    out var topicMap);
+                    out var topicMap,
+                    out var mappingErrors);
+                if (mappingErrors is not null)
+                {
+                    foreach (var (topicPartition, errorCode) in mappingErrors)
+                        results[topicPartition] = PartitionResult(topicPartition, errorCode);
+                }
+
+                if (topics.Count == 0)
+                    return OrderPartitionResults(requestedPartitions, results);
+
                 var response = await connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
                     new OffsetCommitRequest
                     {
@@ -530,20 +575,34 @@ public sealed partial class AdminClient
                     apiVersion,
                     cancellationToken).ConfigureAwait(false);
 
-                var pending = pendingOffsets
-                    .Select(static offset => new TopicPartition(offset.Topic, offset.Partition))
-                    .ToHashSet();
+                var pending = new HashSet<TopicPartition>();
+                foreach (var offset in pendingOffsets)
+                {
+                    var partition = new TopicPartition(offset.Topic, offset.Partition);
+                    if (!results.ContainsKey(partition))
+                        pending.Add(partition);
+                }
                 var responseSnapshot = topicMap?.CaptureResponseSnapshot();
                 Exception? retryFailure = null;
+                Protocol.ErrorCode? responseMismatchError = null;
                 foreach (var topic in response.Topics)
                 {
-                    var topicName = topicMap is null
-                        ? topic.Name
-                        : topicMap.MatchResponseTopic(
-                            topic.TopicId,
-                            responseSnapshot!,
-                            nameof(AlterStreamsGroupOffsetsAsync),
-                            responseMismatchIsRetriable: false);
+                    string topicName;
+                    try
+                    {
+                        topicName = topicMap is null
+                            ? topic.Name
+                            : topicMap.MatchResponseTopic(
+                                topic.TopicId,
+                                responseSnapshot!,
+                                nameof(AlterStreamsGroupOffsetsAsync),
+                                responseMismatchIsRetriable: false);
+                    }
+                    catch (KafkaException exception)
+                    {
+                        responseMismatchError ??= exception.ErrorCode ?? Protocol.ErrorCode.UnknownTopicId;
+                        continue;
+                    }
                     foreach (var partition in topic.Partitions)
                     {
                         var topicPartition = new TopicPartition(topicName, partition.PartitionIndex);
@@ -575,7 +634,11 @@ public sealed partial class AdminClient
                 }
 
                 foreach (var topicPartition in pending)
-                    results[topicPartition] = PartitionResult(topicPartition, Protocol.ErrorCode.UnknownServerError);
+                {
+                    results[topicPartition] = PartitionResult(
+                        topicPartition,
+                        responseMismatchError ?? Protocol.ErrorCode.UnknownServerError);
+                }
 
                 return OrderPartitionResults(requestedPartitions, results);
             }, cancellationToken).ConfigureAwait(false);
@@ -899,26 +962,47 @@ public sealed partial class AdminClient
         IReadOnlyList<TopicPartitionOffset> offsets,
         short apiVersion,
         string operation,
-        out OffsetTopicIdRequestMap? topicMap)
+        out OffsetTopicIdRequestMap? topicMap,
+        out Dictionary<TopicPartition, Protocol.ErrorCode>? mappingErrors)
     {
         var groups = offsets.GroupBy(static offset => offset.Topic).ToArray();
         var requestTopicMap = apiVersion >= OffsetCommitRequest.TopicIdVersion
             ? new OffsetTopicIdRequestMap(_metadataManager.Metadata, groups.Length)
             : null;
         topicMap = requestTopicMap;
-
-        return groups.Select(group => new OffsetCommitRequestTopic
+        mappingErrors = null;
+        var topics = new List<OffsetCommitRequestTopic>(groups.Length);
+        foreach (var group in groups)
         {
-            Name = group.Key,
-            TopicId = requestTopicMap?.AddTopic(group.Key, operation) ?? Guid.Empty,
-            Partitions = group.Select(static offset => new OffsetCommitRequestPartition
+            Guid topicId;
+            try
             {
-                PartitionIndex = offset.Partition,
-                CommittedOffset = offset.Offset,
-                CommittedLeaderEpoch = offset.LeaderEpoch,
-                CommittedMetadata = offset.Metadata
-            }).ToArray()
-        }).ToArray();
+                topicId = requestTopicMap?.AddTopic(group.Key, operation) ?? Guid.Empty;
+            }
+            catch (KafkaException exception) when (exception.ErrorCode == Protocol.ErrorCode.UnknownTopicId)
+            {
+                mappingErrors ??= [];
+                var errorCode = exception.ErrorCode ?? Protocol.ErrorCode.UnknownTopicId;
+                foreach (var offset in group)
+                    mappingErrors[new TopicPartition(offset.Topic, offset.Partition)] = errorCode;
+                continue;
+            }
+
+            topics.Add(new OffsetCommitRequestTopic
+            {
+                Name = group.Key,
+                TopicId = topicId,
+                Partitions = group.Select(static offset => new OffsetCommitRequestPartition
+                {
+                    PartitionIndex = offset.Partition,
+                    CommittedOffset = offset.Offset,
+                    CommittedLeaderEpoch = offset.LeaderEpoch,
+                    CommittedMetadata = offset.Metadata
+                }).ToArray()
+            });
+        }
+
+        return topics;
     }
 
     private static IReadOnlyList<OffsetDeleteRequestTopic> BuildOffsetDeleteTopics(
@@ -978,6 +1062,34 @@ public sealed partial class AdminClient
         ErrorCode = errorCode,
         Offsets = new Dictionary<TopicPartition, StreamsGroupOffsetDescription>()
     };
+
+    private static StreamsGroupOffsetsResult GroupOffsetsPartitionError(
+        string groupId,
+        IReadOnlyList<TopicPartition>? partitions,
+        Protocol.ErrorCode errorCode)
+    {
+        var offsets = new Dictionary<TopicPartition, StreamsGroupOffsetDescription>(partitions?.Count ?? 0);
+        if (partitions is not null)
+        {
+            foreach (var partition in partitions)
+            {
+                offsets[partition] = new StreamsGroupOffsetDescription
+                {
+                    TopicPartition = partition,
+                    Offset = -1,
+                    LeaderEpoch = -1,
+                    ErrorCode = errorCode
+                };
+            }
+        }
+
+        return new StreamsGroupOffsetsResult
+        {
+            GroupId = groupId,
+            ErrorCode = Protocol.ErrorCode.None,
+            Offsets = offsets
+        };
+    }
 
     private static IReadOnlyDictionary<string, DeleteStreamsGroupResult> OrderDeleteGroupResults(
         IEnumerable<string> groupIds,

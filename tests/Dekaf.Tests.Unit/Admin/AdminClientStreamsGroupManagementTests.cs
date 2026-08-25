@@ -225,6 +225,38 @@ public sealed class AdminClientStreamsGroupManagementTests
     }
 
     [Test]
+    public async Task ListStreamsGroupOffsetsAsync_V6SendFailureDoesNotStarveSiblingGroup()
+    {
+        var (admin, connection) = CreateAdmin(offsetFetchMaxVersion: 6);
+        SetupFindCoordinator(connection);
+        connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                6,
+                Arg.Any<CancellationToken>())
+            .Returns(call => call.ArgAt<OffsetFetchRequest>(0).GroupId == FirstGroup
+                ? ValueTask.FromException<OffsetFetchResponse>(new IOException("Coordinator unavailable."))
+                : ValueTask.FromResult(new OffsetFetchResponse
+                {
+                    ErrorCode = ErrorCode.None,
+                    Topics = []
+                }));
+
+        var results = await admin.ListStreamsGroupOffsetsAsync(
+            new Dictionary<string, ListStreamsGroupOffsetsSpec>
+            {
+                [FirstGroup] = new(),
+                [SecondGroup] = new()
+            });
+
+        await Assert.That(results[FirstGroup].ErrorCode).IsEqualTo(ErrorCode.UnknownServerError);
+        await Assert.That(results[SecondGroup].ErrorCode).IsEqualTo(ErrorCode.None);
+        await connection.Received(1).SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+            Arg.Is<OffsetFetchRequest>(request => request.GroupId == SecondGroup),
+            6,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
     public async Task ListStreamsGroupOffsetsAsync_FetchAllNegotiatesV9()
     {
         var (admin, connection) = CreateAdmin();
@@ -393,8 +425,7 @@ public sealed class AdminClientStreamsGroupManagementTests
                 Arg.Any<OffsetFetchRequest>(),
                 Arg.Any<short>(),
                 Arg.Any<CancellationToken>())
-            .Returns(
-                ValueTask.FromResult(new OffsetFetchResponse
+            .Returns(ValueTask.FromResult(new OffsetFetchResponse
                 {
                     Groups =
                     [
@@ -425,8 +456,7 @@ public sealed class AdminClientStreamsGroupManagementTests
                             ]
                         }
                     ]
-                }),
-                ValueTask.FromResult(ListResponse(Offset(0, 10, ErrorCode.None))));
+                }));
 
         var results = await admin.ListStreamsGroupOffsetsAsync(
             new Dictionary<string, ListStreamsGroupOffsetsSpec>
@@ -435,17 +465,55 @@ public sealed class AdminClientStreamsGroupManagementTests
                 [SecondGroup] = new() { TopicPartitions = [new TopicPartition(Topic, 0)] }
             });
 
-        await Assert.That(results[FirstGroup].Offsets[new TopicPartition(Topic, 0)].Offset).IsEqualTo(10);
+        await Assert.That(results[FirstGroup].Offsets[new TopicPartition(Topic, 0)].ErrorCode)
+            .IsEqualTo(ErrorCode.UnknownTopicId);
         await Assert.That(results[SecondGroup].Offsets[new TopicPartition(Topic, 0)].Offset).IsEqualTo(20);
-        await connection.Received(2).SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+        await connection.Received(1).SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
             Arg.Any<OffsetFetchRequest>(),
             10,
             Arg.Any<CancellationToken>());
-        await connection.Received(1).SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
-            Arg.Is<OffsetFetchRequest>(request =>
-                request != null && request.Groups!.Count == 1 && request.Groups[0].GroupId == FirstGroup),
-            10,
-            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task ListStreamsGroupOffsetsAsync_MissingTopicIdDoesNotStarveSiblingGroup()
+    {
+        var (admin, connection) = CreateAdmin();
+        SetupFindCoordinator(connection);
+        connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                10,
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new OffsetFetchResponse
+            {
+                Groups =
+                [
+                    new OffsetFetchResponseGroup
+                    {
+                        GroupId = SecondGroup,
+                        ErrorCode = ErrorCode.None,
+                        Topics =
+                        [
+                            new OffsetFetchResponseTopic
+                            {
+                                TopicId = TopicId,
+                                Partitions = [Offset(0, 42, ErrorCode.None)]
+                            }
+                        ]
+                    }
+                ]
+            }));
+        var missing = new TopicPartition("missing", 0);
+        var valid = new TopicPartition(Topic, 0);
+
+        var results = await admin.ListStreamsGroupOffsetsAsync(
+            new Dictionary<string, ListStreamsGroupOffsetsSpec>
+            {
+                [FirstGroup] = new() { TopicPartitions = [missing] },
+                [SecondGroup] = new() { TopicPartitions = [valid] }
+            });
+
+        await Assert.That(results[FirstGroup].Offsets[missing].ErrorCode).IsEqualTo(ErrorCode.UnknownTopicId);
+        await Assert.That(results[SecondGroup].Offsets[valid].Offset).IsEqualTo(42);
     }
 
     [Test]
@@ -503,6 +571,74 @@ public sealed class AdminClientStreamsGroupManagementTests
             Arg.Is<OffsetCommitRequest>(request => request != null && request.Topics[0].TopicId == TopicId),
             10,
             Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task AlterStreamsGroupOffsetsAsync_MissingTopicIdPreservesValidAlteration()
+    {
+        var (admin, connection) = CreateAdmin();
+        SetupFindCoordinator(connection);
+        connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+                Arg.Any<OffsetCommitRequest>(),
+                10,
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(CommitResponse(Commit(0, ErrorCode.None))));
+        var valid = new TopicPartition(Topic, 0);
+        var missing = new TopicPartition("missing", 0);
+
+        var results = await admin.AlterStreamsGroupOffsetsAsync(
+            FirstGroup,
+            [
+                new TopicPartitionOffset(valid.Topic, valid.Partition, 42),
+                new TopicPartitionOffset(missing.Topic, missing.Partition, 84)
+            ]);
+
+        await Assert.That(results[valid].ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(results[missing].ErrorCode).IsEqualTo(ErrorCode.UnknownTopicId);
+        await connection.Received(1).SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+            Arg.Is<OffsetCommitRequest>(request => request.Topics.Count == 1 && request.Topics[0].Name == Topic),
+            10,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task AlterStreamsGroupOffsetsAsync_TopicIdMismatchPreservesValidPartition()
+    {
+        var (admin, connection) = CreateAdmin();
+        SetupFindCoordinator(connection);
+        var mismatchTopicId = Guid.Parse("ffeeddcc-bbaa-9988-7766-554433221100");
+        connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+                Arg.Any<OffsetCommitRequest>(),
+                10,
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new OffsetCommitResponse
+            {
+                Topics =
+                [
+                    new OffsetCommitResponseTopic
+                    {
+                        TopicId = TopicId,
+                        Partitions = [Commit(0, ErrorCode.None)]
+                    },
+                    new OffsetCommitResponseTopic
+                    {
+                        TopicId = mismatchTopicId,
+                        Partitions = [Commit(1, ErrorCode.None)]
+                    }
+                ]
+            }));
+        var valid = new TopicPartition(Topic, 0);
+        var unmatched = new TopicPartition(Topic, 1);
+
+        var results = await admin.AlterStreamsGroupOffsetsAsync(
+            FirstGroup,
+            [
+                new TopicPartitionOffset(valid.Topic, valid.Partition, 42),
+                new TopicPartitionOffset(unmatched.Topic, unmatched.Partition, 43)
+            ]);
+
+        await Assert.That(results[valid].ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(results[unmatched].ErrorCode).IsEqualTo(ErrorCode.UnknownTopicId);
     }
 
     [Test]
