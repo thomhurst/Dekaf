@@ -61,9 +61,9 @@ internal static class DekafConsumerRegistrationKeys
 /// </summary>
 public sealed class DekafBuilder
 {
-    private const string ConfigurationBindingRequiresDynamicCode =
+    internal const string ConfigurationBindingRequiresDynamicCode =
         "IConfiguration binding uses Microsoft.Extensions.Configuration.Binder. Use typed options overloads for NativeAOT.";
-    private const string ConfigurationBindingRequiresUnreferencedCode =
+    internal const string ConfigurationBindingRequiresUnreferencedCode =
         "IConfiguration binding may require members that are trimmed. Use typed options overloads for NativeAOT.";
     private const string DynamicInterceptorRequiresDynamicCode =
         "Type-based global interceptors can close generic types and activate them dynamically. Use closed factory overloads for NativeAOT.";
@@ -262,7 +262,9 @@ public sealed class DekafBuilder
     public DekafBuilder AddProducer<TKey, TValue>(Action<ProducerBuilder<TKey, TValue>> configure)
     {
         ArgumentNullException.ThrowIfNull(configure);
-        return AddProducerCore(serviceKey: null, isKeyed: false, configure);
+        var builder = new ProducerBuilder<TKey, TValue>();
+        configure(builder);
+        return AddProducerCore(serviceKey: null, isKeyed: false, _ => builder);
     }
 
     /// <summary>
@@ -294,7 +296,9 @@ public sealed class DekafBuilder
     {
         ArgumentNullException.ThrowIfNull(serviceKey);
         ArgumentNullException.ThrowIfNull(configure);
-        return AddProducerCore(serviceKey, isKeyed: true, configure);
+        var builder = new ProducerBuilder<TKey, TValue>();
+        configure(builder);
+        return AddProducerCore(serviceKey, isKeyed: true, _ => builder);
     }
 
     /// <summary>
@@ -318,21 +322,31 @@ public sealed class DekafBuilder
         });
     }
 
+    internal DekafBuilder AddProviderConfiguredProducer<TKey, TValue>(
+        object? serviceKey,
+        bool isKeyed,
+        Action<IServiceProvider, ProducerBuilder<TKey, TValue>> configure)
+    {
+        return AddProducerCore(serviceKey, isKeyed, serviceProvider =>
+        {
+            var builder = new ProducerBuilder<TKey, TValue>();
+            configure(serviceProvider, builder);
+            return builder;
+        });
+    }
+
     private DekafBuilder AddProducerCore<TKey, TValue>(
         object? serviceKey,
         bool isKeyed,
-        Action<ProducerBuilder<TKey, TValue>> configure)
+        Func<IServiceProvider, ProducerBuilder<TKey, TValue>> builderFactory)
     {
-        var builder = new ProducerBuilder<TKey, TValue>();
-        configure(builder);
-
         var globalFactories = _globalProducerInterceptorFactories;
 
         if (isKeyed)
         {
             _services.AddKeyedSingleton<IKafkaProducer<TKey, TValue>>(
                 serviceKey!,
-                (sp, _) => BuildProducer(sp, builder, globalFactories));
+                (sp, _) => BuildProducer(sp, builderFactory(sp), globalFactories));
 
             // Register as IInitializableKafkaClient (resolves the same keyed singleton instance).
             _services.AddSingleton<IInitializableKafkaClient>(sp =>
@@ -341,7 +355,7 @@ public sealed class DekafBuilder
         else
         {
             _services.AddSingleton<IKafkaProducer<TKey, TValue>>(sp =>
-                BuildProducer(sp, builder, globalFactories));
+                BuildProducer(sp, builderFactory(sp), globalFactories));
 
             // Register as IInitializableKafkaClient (resolves the same singleton instance).
             _services.AddSingleton<IInitializableKafkaClient>(sp =>
@@ -580,6 +594,54 @@ public sealed class DekafBuilder
             configureDeadLetterQueue);
     }
 
+    internal DekafBuilder AddProviderConfiguredConsumer<TKey, TValue>(
+        object? serviceKey,
+        bool isKeyed,
+        Action<IServiceProvider, ConsumerBuilder<TKey, TValue>> configure,
+        Action<DeadLetterQueueBuilder>? configureDeadLetterQueue)
+    {
+        var stateKey = new object();
+        var globalFactories = _globalConsumerInterceptorFactories;
+        _services.AddKeyedSingleton<ProviderConfiguredConsumerState<TKey, TValue>>(
+            stateKey,
+            (_, _) => new ProviderConfiguredConsumerState<TKey, TValue>(
+                serviceKey,
+                isKeyed,
+                configure,
+                configureDeadLetterQueue,
+                globalFactories));
+
+        if (isKeyed)
+        {
+            _services.AddKeyedSingleton<IKafkaConsumer<TKey, TValue>>(
+                serviceKey!,
+                (serviceProvider, _) => serviceProvider
+                    .GetRequiredKeyedService<ProviderConfiguredConsumerState<TKey, TValue>>(stateKey)
+                    .BuildConsumer(serviceProvider));
+            _services.AddSingleton<IInitializableKafkaClient>(serviceProvider =>
+                serviceProvider.GetRequiredKeyedService<IKafkaConsumer<TKey, TValue>>(serviceKey!));
+        }
+        else
+        {
+            _services.AddSingleton<IKafkaConsumer<TKey, TValue>>(serviceProvider => serviceProvider
+                .GetRequiredKeyedService<ProviderConfiguredConsumerState<TKey, TValue>>(stateKey)
+                .BuildConsumer(serviceProvider));
+            _services.AddSingleton<IInitializableKafkaClient>(serviceProvider =>
+                serviceProvider.GetRequiredService<IKafkaConsumer<TKey, TValue>>());
+        }
+
+        if (configureDeadLetterQueue is not null)
+        {
+            _services.AddKeyedSingleton<DeadLetterOptions>(
+                DekafConsumerRegistrationKeys.DeadLetterOptionsKey<TKey, TValue>(serviceKey),
+                (serviceProvider, _) => serviceProvider
+                    .GetRequiredKeyedService<ProviderConfiguredConsumerState<TKey, TValue>>(stateKey)
+                    .BuildDeadLetterOptions(serviceProvider));
+        }
+
+        return this;
+    }
+
     private DekafBuilder AddConsumerCore<TKey, TValue>(
         object? serviceKey,
         bool isKeyed,
@@ -708,6 +770,22 @@ public sealed class DekafBuilder
         return this;
     }
 
+    internal DekafBuilder AddProviderConfiguredAdminClient(
+        Action<IServiceProvider, AdminClientServiceBuilder> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+
+        _services.AddSingleton<IAdminClient>(serviceProvider =>
+        {
+            var builder = new AdminClientServiceBuilder();
+            configure(serviceProvider, builder);
+            var loggerFactory = serviceProvider.GetService<ILoggerFactory>();
+            return builder.Build(loggerFactory);
+        });
+
+        return this;
+    }
+
     /// <summary>
     /// Adds an admin client configured from typed options.
     /// </summary>
@@ -827,6 +905,44 @@ public sealed class DekafBuilder
         }
 
         return builder.Build();
+    }
+
+    private sealed class ProviderConfiguredConsumerState<TKey, TValue>(
+        object? serviceKey,
+        bool isKeyed,
+        Action<IServiceProvider, ConsumerBuilder<TKey, TValue>> configure,
+        Action<DeadLetterQueueBuilder>? configureDeadLetterQueue,
+        IReadOnlyList<Func<IServiceProvider, Type, Type, object?>> globalFactories)
+    {
+        private ConsumerBuilder<TKey, TValue>? _builder;
+
+        internal IKafkaConsumer<TKey, TValue> BuildConsumer(IServiceProvider serviceProvider)
+        {
+            var builder = new ConsumerBuilder<TKey, TValue>();
+            configure(serviceProvider, builder);
+            var consumer = DekafBuilder.BuildConsumer(serviceProvider, builder, globalFactories);
+            Volatile.Write(ref _builder, builder);
+            return consumer;
+        }
+
+        internal DeadLetterOptions BuildDeadLetterOptions(IServiceProvider serviceProvider)
+        {
+            _ = isKeyed
+                ? serviceProvider.GetRequiredKeyedService<IKafkaConsumer<TKey, TValue>>(serviceKey!)
+                : serviceProvider.GetRequiredService<IKafkaConsumer<TKey, TValue>>();
+
+            var consumerBuilder = Volatile.Read(ref _builder) ??
+                throw new InvalidOperationException("Consumer builder was not configured.");
+            var deadLetterQueueBuilder = new DeadLetterQueueBuilder();
+            configureDeadLetterQueue!(deadLetterQueueBuilder);
+
+            if (consumerBuilder.BootstrapServersString is { } bootstrapServers)
+            {
+                deadLetterQueueBuilder.WithDefaultBootstrapServers(bootstrapServers);
+            }
+
+            return deadLetterQueueBuilder.Build();
+        }
     }
 }
 
