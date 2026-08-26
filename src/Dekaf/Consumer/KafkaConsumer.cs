@@ -1145,6 +1145,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     IConsumerPositions,
     IConsumerCommittedOffsets,
     IConsumerLag,
+    IRequestWriteSequenceSource,
     IConsumerPartitions,
     IConsumerOffsets,
     IConsumerRebalanceEventSource,
@@ -4333,15 +4334,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             request.SessionEpoch = fetchSessionBuild?.SessionEpoch ?? -1;
 
             var fetchStarted = Stopwatch.GetTimestamp();
-            var watermarkUpdateSequence = Interlocked.Increment(ref _watermarkUpdateSequence);
+            long watermarkUpdateSequence;
 
             FetchResponse response;
             try
             {
-                response = await connection.SendAsync<FetchRequest, FetchResponse>(
+                response = await SendWithWatermarkWriteSequenceAsync<FetchRequest, FetchResponse>(
+                    connection,
                     request,
                     (short)apiVersion,
                     cancellationToken).ConfigureAwait(false);
+                watermarkUpdateSequence = ((IRequestWriteSequenceTarget)request).WriteSequence;
             }
             catch
             {
@@ -8555,6 +8558,31 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         return null;
     }
 
+    private ValueTask<TResponse> SendWithWatermarkWriteSequenceAsync<TRequest, TResponse>(
+        IKafkaConnection connection,
+        TRequest request,
+        short apiVersion,
+        CancellationToken cancellationToken)
+        where TRequest : IKafkaRequest<TResponse>, IRequestWriteSequenceTarget
+        where TResponse : IKafkaResponse
+    {
+        request.WriteSequenceSource = this;
+        if (connection is IKafkaRequestWriteObserverConnection writeObserverConnection)
+        {
+            return writeObserverConnection.SendWithWriteObservationAsync<TRequest, TResponse>(
+                request,
+                apiVersion,
+                request.RequestWriteStarted,
+                cancellationToken);
+        }
+
+        request.RequestWriteStarted();
+        return connection.SendAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);
+    }
+
+    long IRequestWriteSequenceSource.NextRequestWriteSequence() =>
+        Interlocked.Increment(ref _watermarkUpdateSequence);
+
     private async ValueTask<(long Offset, long UpdateSequence)> QueryLatestOffsetCoreAsync(
         TopicPartition topicPartition,
         CancellationToken cancellationToken)
@@ -8583,12 +8611,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     _options.IsolationLevel,
                     LatestOffsetTimestamp,
                     GetCurrentLeaderEpoch(topicPartition));
-                var watermarkUpdateSequence = Interlocked.Increment(ref _watermarkUpdateSequence);
-                var response = await connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
+                var response = await SendWithWatermarkWriteSequenceAsync<ListOffsetsRequest, ListOffsetsResponse>(
+                        connection,
                         request,
                         listOffsetsVersion,
                         apiTimeout.Token)
                     .ConfigureAwait(false);
+                var watermarkUpdateSequence = ((IRequestWriteSequenceTarget)request).WriteSequence;
                 var partitionResponse = FindListOffsetsPartition(response, topicPartition);
 
                 if (partitionResponse is null)
@@ -8675,13 +8704,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     listOffsetsVersion,
                     apiTimeout.Token).AsTask();
 
-                var watermarkUpdateSequence = Interlocked.Increment(ref _watermarkUpdateSequence);
-                var latestResponseTask = connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
+                var latestResponseTask = SendWithWatermarkWriteSequenceAsync<ListOffsetsRequest, ListOffsetsResponse>(
+                    connection,
                     latestRequest,
                     listOffsetsVersion,
                     apiTimeout.Token).AsTask();
 
                 await Task.WhenAll(earliestResponseTask, latestResponseTask).ConfigureAwait(false);
+                var watermarkUpdateSequence = ((IRequestWriteSequenceTarget)latestRequest).WriteSequence;
 
                 var earliestPartitionResponse = FindListOffsetsPartition(earliestResponseTask.Result, topicPartition);
 
@@ -10519,15 +10549,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         request.SessionEpoch = fetchSessionBuild?.SessionEpoch ?? -1;
 
         var fetchStarted = Stopwatch.GetTimestamp();
-        var watermarkUpdateSequence = Interlocked.Increment(ref _watermarkUpdateSequence);
+        long watermarkUpdateSequence;
 
         FetchResponse response;
         try
         {
-            response = await connection.SendAsync<FetchRequest, FetchResponse>(
+            response = await SendWithWatermarkWriteSequenceAsync<FetchRequest, FetchResponse>(
+                connection,
                 request,
                 (short)apiVersion,
                 cancellationToken).ConfigureAwait(false);
+            watermarkUpdateSequence = ((IRequestWriteSequenceTarget)request).WriteSequence;
         }
         catch
         {

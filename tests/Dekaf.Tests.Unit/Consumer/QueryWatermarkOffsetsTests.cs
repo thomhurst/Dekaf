@@ -308,6 +308,99 @@ public sealed class QueryWatermarkOffsetsTests
     }
 
     [Test]
+    public async Task QueryWatermarkOffsetsAsync_LaterWritePublishesNewerSnapshot()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = new LeaseTrackingConnection();
+        connectionPool.GetConnectionByIndexAsync(0, 1, Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult<IKafkaConnection>(connection));
+        await using var consumer = CreateConsumer(connectionPool);
+        var partition = new TopicPartition(Topic, Partition);
+        var firstLatestReachedWrite = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirstLatestWrite = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        ListOffsetsRequest? delayedLatestRequest = null;
+
+        connection.BeforeWriteHandler = async request =>
+        {
+            if (request.Topics[0].Partitions[0].Timestamp != LatestOffsetTimestamp
+                || Interlocked.CompareExchange(ref delayedLatestRequest, request, null) is not null)
+            {
+                return;
+            }
+
+            firstLatestReachedWrite.SetResult();
+            await releaseFirstLatestWrite.Task.ConfigureAwait(false);
+        };
+        connection.SendHandler = request => ValueTask.FromResult(CreateListOffsetsResponse(
+            request,
+            offset: request.Topics[0].Partitions[0].Timestamp == EarliestOffsetTimestamp
+                ? 10
+                : ReferenceEquals(request, delayedLatestRequest) ? 110 : 100));
+
+        var firstQuery = consumer.QueryWatermarkOffsetsAsync(partition).AsTask();
+        await firstLatestReachedWrite.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        try
+        {
+            await Assert.That(await consumer.QueryWatermarkOffsetsAsync(partition))
+                .IsEqualTo(new WatermarkOffsets(10, 100));
+        }
+        finally
+        {
+            releaseFirstLatestWrite.TrySetResult();
+        }
+
+        await Assert.That(await firstQuery.WaitAsync(TimeSpan.FromSeconds(1)))
+            .IsEqualTo(new WatermarkOffsets(10, 110));
+        await Assert.That(consumer.GetWatermarkOffsets(partition))
+            .IsEqualTo(new WatermarkOffsets(10, 110));
+    }
+
+    [Test]
+    public async Task QueryCurrentLagAsync_LaterWritePublishesNewerLag()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = new LeaseTrackingConnection();
+        connectionPool.GetConnectionByIndexAsync(0, 1, Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult<IKafkaConnection>(connection));
+        await using var consumer = CreateConsumer(connectionPool);
+        var partition = new TopicPartition(Topic, Partition);
+        consumer.IncrementalAssign([new TopicPartitionOffset(Topic, Partition, 32)]);
+        var firstWriteReached = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirstWrite = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        ListOffsetsRequest? delayedRequest = null;
+
+        connection.BeforeWriteHandler = async request =>
+        {
+            if (Interlocked.CompareExchange(ref delayedRequest, request, null) is not null)
+                return;
+
+            firstWriteReached.SetResult();
+            await releaseFirstWrite.Task.ConfigureAwait(false);
+        };
+        connection.SendHandler = request => ValueTask.FromResult(CreateListOffsetsResponse(
+            request,
+            offset: ReferenceEquals(request, delayedRequest) ? 110 : 100));
+
+        var firstQuery = consumer.QueryCurrentLagAsync(partition).AsTask();
+        await firstWriteReached.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        try
+        {
+            await Assert.That(await consumer.QueryCurrentLagAsync(partition)).IsEqualTo(68);
+        }
+        finally
+        {
+            releaseFirstWrite.TrySetResult();
+        }
+
+        await Assert.That(await firstQuery.WaitAsync(TimeSpan.FromSeconds(1))).IsEqualTo(78);
+        await Assert.That(consumer.GetCurrentLag(partition)).IsEqualTo(78);
+    }
+
+    [Test]
     public async Task QueryCurrentLagAsync_AssignmentChangeDuringRefreshReturnsNull()
     {
         var connectionPool = Substitute.For<IConnectionPool>();
@@ -782,12 +875,16 @@ public sealed class QueryWatermarkOffsetsTests
         await valueTask.ConfigureAwait(false);
     }
 
-    private sealed class LeaseTrackingConnection : IKafkaConnection, IRetirableKafkaConnection
+    private sealed class LeaseTrackingConnection :
+        IKafkaConnection,
+        IKafkaRequestWriteObserverConnection,
+        IRetirableKafkaConnection
     {
         private int _leaseCount;
         private int _leaseAcquisitionCount;
         private int _sendCount;
 
+        public Func<ListOffsetsRequest, ValueTask>? BeforeWriteHandler { get; set; }
         public Func<ListOffsetsRequest, ValueTask<ListOffsetsResponse>>? SendHandler { get; set; }
         public int BrokerId => 0;
         public string Host => "localhost";
@@ -825,8 +922,39 @@ public sealed class QueryWatermarkOffsetsTests
                 throw new NotSupportedException();
             }
 
+            if (BeforeWriteHandler is not null)
+                await BeforeWriteHandler(listOffsetsRequest);
+
+            return await SendCoreAsync<TResponse>(listOffsetsRequest);
+        }
+
+        public async ValueTask<TResponse> SendWithWriteObservationAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            Action requestWriteStarted,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse
+        {
+            if (request is not ListOffsetsRequest listOffsetsRequest
+                || typeof(TResponse) != typeof(ListOffsetsResponse)
+                || SendHandler is null)
+            {
+                throw new NotSupportedException();
+            }
+
+            if (BeforeWriteHandler is not null)
+                await BeforeWriteHandler(listOffsetsRequest);
+
+            requestWriteStarted();
+            return await SendCoreAsync<TResponse>(listOffsetsRequest);
+        }
+
+        private async ValueTask<TResponse> SendCoreAsync<TResponse>(ListOffsetsRequest request)
+            where TResponse : IKafkaResponse
+        {
             Interlocked.Increment(ref _sendCount);
-            var response = await SendHandler(listOffsetsRequest);
+            var response = await SendHandler!(request);
             return (TResponse)(object)response;
         }
 
@@ -854,6 +982,14 @@ public sealed class QueryWatermarkOffsetsTests
         public Task<TResponse> SendPipelinedWithCallerTimeoutAsync<TRequest, TResponse>(
             TRequest request,
             short apiVersion,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse => throw new NotSupportedException();
+
+        public ValueTask<PipelinedResponse<TResponse>> SendPipelinedWithWriteObservationAfterWriteAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            Action requestWriteStarted,
             CancellationToken cancellationToken = default)
             where TRequest : IKafkaRequest<TResponse>
             where TResponse : IKafkaResponse => throw new NotSupportedException();
