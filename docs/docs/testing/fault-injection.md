@@ -10,9 +10,11 @@ wall-clock sleeps, or production-code hooks. Every in-memory client backed by th
 the same thread-safe plan.
 
 ```csharp
+using System.Collections.Concurrent;
+
 var cluster = new InMemoryKafkaCluster();
-var observations = new List<KafkaFaultObservation>();
-cluster.FaultPlan.FaultConsumed += observations.Add;
+var observations = new ConcurrentQueue<KafkaFaultObservation>();
+cluster.FaultPlan.FaultConsumed += observations.Enqueue;
 
 cluster.FaultPlan.Fail(
     new KafkaFaultScope(
@@ -111,7 +113,8 @@ public static class ProduceBarrierScenario
 ## Observations
 
 `FaultConsumed` runs synchronously after a matching entry is consumed and before its throw or pause
-action runs. Each `KafkaFaultObservation` exposes:
+action runs. Different clients can invoke handlers concurrently, so shared observation state must be
+thread-safe. Each `KafkaFaultObservation` exposes:
 
 - `RuleScope`: the configured scope, including wildcard selectors.
 - `OperationScope`: the concrete operation that matched.
