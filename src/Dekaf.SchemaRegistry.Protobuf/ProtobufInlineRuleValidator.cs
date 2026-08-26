@@ -1869,10 +1869,22 @@ internal static class ProtobufSemanticEquality
     internal static bool AreEqual(
         MessageDescriptor descriptor,
         ReadOnlyMemory<byte> left,
-        ReadOnlyMemory<byte> right)
+        ReadOnlyMemory<byte> right) =>
+        AreEqual(descriptor, left, right, ProtobufInlineRuleValidator.MaximumValidationDepth);
+
+    private static bool AreEqual(
+        MessageDescriptor descriptor,
+        ReadOnlyMemory<byte> left,
+        ReadOnlyMemory<byte> right,
+        int remainingDepth)
     {
         if (left.Span.SequenceEqual(right.Span))
             return true;
+        if (remainingDepth == 0)
+        {
+            throw new SchemaRegistryRuleException(
+                $"Could not evaluate Protobuf validation rules: message recursion exceeds {ProtobufInlineRuleValidator.MaximumValidationDepth} levels.");
+        }
 
         var leftState = new ProtobufSemanticMessageState(descriptor, left);
         try
@@ -1889,14 +1901,14 @@ internal static class ProtobufSemanticEquality
                     var field = fields[index];
                     if (field.IsRepeated)
                     {
-                        if (!AreRepeatedValuesEqual(field, left, right))
+                        if (!AreRepeatedValuesEqual(field, left, right, remainingDepth))
                             return false;
                         continue;
                     }
 
                     ref readonly var leftField = ref leftState[field.Index];
                     ref readonly var rightField = ref rightState[field.Index];
-                    if (!AreSingularValuesEqual(field, leftField, rightField))
+                    if (!AreSingularValuesEqual(field, leftField, rightField, remainingDepth))
                         return false;
                 }
                 return true;
@@ -1915,7 +1927,8 @@ internal static class ProtobufSemanticEquality
     private static bool AreSingularValuesEqual(
         FieldDescriptor descriptor,
         in ProtobufSemanticFieldState left,
-        in ProtobufSemanticFieldState right)
+        in ProtobufSemanticFieldState right,
+        int remainingDepth)
     {
         if (left.IsSet != right.IsSet)
         {
@@ -1933,7 +1946,8 @@ internal static class ProtobufSemanticEquality
             return AreEqual(
                 descriptor.MessageType,
                 left.Field.Payload,
-                right.Field.Payload);
+                right.Field.Payload,
+                remainingDepth - 1);
         }
         return AreScalarValuesEqual(
             ProtobufValidationValueDecoder.Decode(descriptor, left.Field),
@@ -1943,7 +1957,8 @@ internal static class ProtobufSemanticEquality
     private static bool AreRepeatedValuesEqual(
         FieldDescriptor descriptor,
         ReadOnlyMemory<byte> left,
-        ReadOnlyMemory<byte> right)
+        ReadOnlyMemory<byte> right,
+        int remainingDepth)
     {
         var leftReader = new ProtobufRepeatedValueReader(left, descriptor);
         var rightReader = new ProtobufRepeatedValueReader(right, descriptor);
@@ -1955,7 +1970,11 @@ internal static class ProtobufSemanticEquality
                 return hasLeft == hasRight;
             if (descriptor.FieldType is FieldType.Message or FieldType.Group)
             {
-                if (!AreEqual(descriptor.MessageType, leftField.Payload, rightField.Payload))
+                if (!AreEqual(
+                        descriptor.MessageType,
+                        leftField.Payload,
+                        rightField.Payload,
+                        remainingDepth - 1))
                     return false;
             }
             else if (!AreScalarValuesEqual(

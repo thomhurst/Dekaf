@@ -1706,6 +1706,7 @@ internal sealed class SchemaCompiler : IDisposable
     private readonly Dictionary<string, int> _validationMemberIndexes = new(StringComparer.Ordinal);
     private readonly List<byte[][]> _validationMemberPaths = [];
     private int _nextDocumentId;
+    private int _nextValidationEqualityIndex;
 
     internal SchemaCompiler(
         ISchemaRegistryClient schemaRegistry,
@@ -2096,7 +2097,7 @@ internal sealed class SchemaCompiler : IDisposable
 
         var compiled = new List<CompiledValidationRule>();
         var usedMemberIndexes = new HashSet<int>();
-        var equalityIndexOffset = 0;
+        var equalityIndexOffset = _nextValidationEqualityIndex;
         foreach (var element in rules.EnumerateArray())
         {
             var rule = new ValidationRule
@@ -2114,9 +2115,10 @@ internal sealed class SchemaCompiler : IDisposable
                 equalityIndexOffset);
             usesSize |= compiledRule.UsesSize;
             usesCachedEquality |= compiledRule.UsesCachedEquality;
-            equalityIndexOffset += compiledRule.EqualityPairs.Length;
+            equalityIndexOffset = checked(equalityIndexOffset + compiledRule.EqualityPairs.Length);
             compiled.Add(compiledRule);
         }
+        _nextValidationEqualityIndex = equalityIndexOffset;
         if (usedMemberIndexes.Count != 0)
         {
             memberIndexes = [.. usedMemberIndexes];

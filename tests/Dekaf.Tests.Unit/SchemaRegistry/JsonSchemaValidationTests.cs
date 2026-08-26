@@ -1776,6 +1776,36 @@ public sealed class JsonSchemaValidationTests
     }
 
     [Test]
+    public async Task InlineRules_ComposedNodesUseDistinctEqualityCacheIndexes()
+    {
+        const string schemaText = """
+            {
+              "allOf": [
+                {
+                  "confluent:rules": [
+                    { "name": "first", "expr": "this.a == this.b" }
+                  ]
+                },
+                {
+                  "confluent:rules": [
+                    { "name": "second", "expr": "this.c == this.d" }
+                  ]
+                }
+              ]
+            }
+            """;
+        var validator = CreateFactory().GetOrCreate(CreateSchema(schemaText));
+
+        var exception = Assert.Throws<ValidationRulesFailedException>(() => validator.ValidateRules(
+            """{"a":{"id":1},"b":{"id":1},"c":{"id":1},"d":{"id":2}}"""u8.ToArray(),
+            24,
+            failFast: false));
+
+        await Assert.That(exception.Violations.Select(static violation => violation.Rule.Name!))
+            .IsEquivalentTo(["second"]);
+    }
+
+    [Test]
     public async Task InlineRules_MissingMembersRequireHasGuard()
     {
         const string schemaText = """

@@ -234,6 +234,37 @@ public sealed class ProtobufInlineRuleValidatorTests
     }
 
     [Test]
+    public async Task Validate_MessageEqualityRejectsExcessiveRecursion()
+    {
+        byte[] left = [8, 1];
+        byte[] right = [8, 0, 8, 1];
+        for (var depth = 0; depth <= ProtobufInlineRuleValidator.MaximumValidationDepth; depth++)
+        {
+            var nextLeft = new ArrayBufferWriter<byte>();
+            WriteVarint(nextLeft, 8);
+            WriteVarint(nextLeft, 1);
+            WriteLengthDelimited(nextLeft, fieldNumber: 2, left);
+            left = nextLeft.WrittenSpan.ToArray();
+
+            var nextRight = new ArrayBufferWriter<byte>();
+            WriteLengthDelimited(nextRight, fieldNumber: 2, right);
+            WriteVarint(nextRight, 8);
+            WriteVarint(nextRight, 1);
+            right = nextRight.WrittenSpan.ToArray();
+        }
+        var payload = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(payload, fieldNumber: 1, left);
+        WriteLengthDelimited(payload, fieldNumber: 2, right);
+        var validator = new ProtobufInlineRuleValidator(ValidationMessageEqualityEnvelope.Descriptor);
+
+        var exception = Assert.Throws<ValidationRulesFailedException>(() =>
+            validator.Validate(payload.WrittenMemory, schemaId: 17, failFast: false));
+
+        await Assert.That(exception.Violations[0].Cause).IsTypeOf<SchemaRegistryRuleException>();
+        await Assert.That(exception.Violations[0].Cause!.Message).Contains("message recursion exceeds");
+    }
+
+    [Test]
     public async Task Validate_Proto2GroupPreservesNestedPayload()
     {
         var invalid = new ArrayBufferWriter<byte>();
