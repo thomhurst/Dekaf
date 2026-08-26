@@ -91,11 +91,74 @@ public sealed class QueryWatermarkOffsetsTests
         await Assert.That(connection.LeaseCount).IsEqualTo(0);
     }
 
+    [Test]
+    public async Task QueryCurrentLagAsync_RefreshesHighWatermarkAndUsesLatestPosition()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = new LeaseTrackingConnection
+        {
+            SendHandler = request => ValueTask.FromResult(CreateListOffsetsResponse(request))
+        };
+        connectionPool.GetConnectionByIndexAsync(0, 1, Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult<IKafkaConnection>(connection));
+
+        var metadataManager = new MetadataManager(connectionPool, ["localhost:9092"]);
+        metadataManager.SetApiVersion(
+            ApiKey.ListOffsets,
+            ListOffsetsRequest.LowestSupportedVersion,
+            ListOffsetsRequest.HighestSupportedVersion);
+        metadataManager.Metadata.Update(CreateMetadataResponse());
+
+        await using var consumer = new KafkaConsumer<string, string>(
+            new ConsumerOptions
+            {
+                BootstrapServers = ["localhost:9092"],
+                GroupId = "test-group"
+            },
+            Serializers.String,
+            Serializers.String,
+            connectionPool,
+            metadataManager);
+        SetInitialized(consumer);
+        consumer.IncrementalAssign([new TopicPartitionOffset(Topic, Partition, 32)]);
+
+        var lag = await consumer.QueryCurrentLagAsync(new TopicPartition(Topic, Partition));
+
+        await Assert.That(lag).IsEqualTo(10);
+        await Assert.That(consumer.GetCurrentLag(new TopicPartition(Topic, Partition))).IsEqualTo(10);
+        await Assert.That(connection.LeaseAcquisitionCount).IsEqualTo(1);
+    }
+
     private static async Task<ListOffsetsResponse> CreateListOffsetsResponseAsync(long timestamp, Task release)
     {
         await release.ConfigureAwait(false);
         var offset = timestamp == EarliestOffsetTimestamp ? 10 : 42;
 
+        return new ListOffsetsResponse
+        {
+            Topics =
+            [
+                new ListOffsetsResponseTopic
+                {
+                    Name = Topic,
+                    Partitions =
+                    [
+                        new ListOffsetsResponsePartition
+                        {
+                            PartitionIndex = Partition,
+                            ErrorCode = ErrorCode.None,
+                            Offset = offset
+                        }
+                    ]
+                }
+            ]
+        };
+    }
+
+    private static ListOffsetsResponse CreateListOffsetsResponse(ListOffsetsRequest request)
+    {
+        var timestamp = request.Topics[0].Partitions[0].Timestamp;
+        var offset = timestamp == EarliestOffsetTimestamp ? 10 : 42;
         return new ListOffsetsResponse
         {
             Topics =

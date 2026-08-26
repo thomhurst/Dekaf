@@ -218,6 +218,39 @@ var committedOffsets = await consumer.GetCommittedOffsetsAsync(
 long? position = consumer.Positions.GetPosition(new TopicPartition("my-topic", 0));
 ```
 
+## Checking Current Lag
+
+For an assigned partition with an initialized position, use the cached query when a recent fetch
+watermark is sufficient:
+
+```csharp
+var partition = new TopicPartition("my-topic", 0);
+long? cachedLag = consumer.GetCurrentLag(partition);
+```
+
+`GetCurrentLag` performs no network I/O and allocates zero bytes. It returns `null` while the
+partition is unassigned, before its position is initialized, or before a high watermark has been
+cached. Its high watermark is a snapshot from the latest fetch or explicit query, so newly appended
+records can make the result stale.
+
+Refresh the high watermark when the caller needs a current broker value:
+
+```csharp
+long? currentLag = await consumer.QueryCurrentLagAsync(partition, ct);
+```
+
+The async query uses the consumer's isolation-aware `ListOffsets` path, supports cancellation, and
+uses `DefaultApiTimeoutMs`. It returns `null` without network I/O when assignment or position data is
+unavailable. Lag is clamped to zero when a seek or log truncation temporarily places the position
+beyond the broker high watermark. Dekaf's broker-backed and in-memory consumers expose this through
+the optional `IConsumerLag` capability; custom wrappers can implement the capability without a
+binary-breaking change to `IKafkaConsumer<TKey, TValue>`.
+
+Lag is consumer-local runtime state. For topic-wide partition metadata—partition count, leaders,
+replicas, and ISR—use `IAdminClient.DescribeTopicsAsync` instead of duplicating metadata inspection
+on the consumer. Consumer-group membership is KIP-848-only; `enforceRebalance` remains intentionally
+unsupported as documented in [Consumer Groups](./consumer-groups.md).
+
 ## Seeking to Offsets
 
 Jump to a specific position:

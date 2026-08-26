@@ -1144,6 +1144,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     IConsumerGroupLiveness,
     IConsumerPositions,
     IConsumerCommittedOffsets,
+    IConsumerLag,
     IConsumerPartitions,
     IConsumerOffsets,
     IConsumerRebalanceEventSource,
@@ -8343,6 +8344,52 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (_watermarks.TryGetValue(topicPartition, out var watermarks))
             return watermarks;
         return null;
+    }
+
+    public long? GetCurrentLag(TopicPartition partition)
+    {
+        if (Volatile.Read(ref _consumerDisposed) != 0)
+            throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
+
+        var assignmentVersion = Volatile.Read(ref _assignmentEnsureVersion);
+        if (!_assignmentSnapshot.Contains(partition)
+            || GetPosition(partition) is not { } position
+            || position < 0
+            || !_watermarks.TryGetValue(partition, out var watermarks)
+            || assignmentVersion != Volatile.Read(ref _assignmentEnsureVersion))
+        {
+            return null;
+        }
+
+        return position >= watermarks.High ? 0 : watermarks.High - position;
+    }
+
+    public ValueTask<long?> QueryCurrentLagAsync(
+        TopicPartition partition,
+        CancellationToken cancellationToken = default)
+    {
+        if (Volatile.Read(ref _consumerDisposed) != 0)
+            throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
+
+        ThrowIfNotInitialized();
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (!_assignmentSnapshot.Contains(partition)
+            || GetPosition(partition) is not { } position
+            || position < 0)
+        {
+            return new ValueTask<long?>((long?)null);
+        }
+
+        return QueryCurrentLagCoreAsync(partition, cancellationToken);
+    }
+
+    private async ValueTask<long?> QueryCurrentLagCoreAsync(
+        TopicPartition partition,
+        CancellationToken cancellationToken)
+    {
+        await QueryWatermarkOffsetsAsync(partition, cancellationToken).ConfigureAwait(false);
+        return GetCurrentLag(partition);
     }
 
     private static ListOffsetsRequest CreateWatermarkListOffsetsRequest(

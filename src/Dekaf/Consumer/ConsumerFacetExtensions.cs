@@ -96,6 +96,37 @@ public static class ConsumerFacetExtensions
     }
 
     /// <summary>
+    /// Gets cached lag for an assigned partition without performing network I/O.
+    /// Returns null when assignment, position, or high-watermark data is unavailable.
+    /// </summary>
+    /// <exception cref="NotSupportedException">
+    /// The consumer implementation does not expose partition lag.
+    /// </exception>
+    public static long? GetCurrentLag<TKey, TValue>(
+        this IKafkaConsumer<TKey, TValue> consumer,
+        TopicPartition partition)
+    {
+        ArgumentNullException.ThrowIfNull(consumer);
+        return GetLagCapability(consumer).GetCurrentLag(partition);
+    }
+
+    /// <summary>
+    /// Refreshes the partition high watermark from the broker and returns current lag.
+    /// Returns null when the partition is unassigned or its position is unavailable.
+    /// </summary>
+    /// <exception cref="NotSupportedException">
+    /// The consumer implementation does not expose partition lag.
+    /// </exception>
+    public static ValueTask<long?> QueryCurrentLagAsync<TKey, TValue>(
+        this IKafkaConsumer<TKey, TValue> consumer,
+        TopicPartition partition,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(consumer);
+        return GetLagCapability(consumer).QueryCurrentLagAsync(partition, cancellationToken);
+    }
+
+    /// <summary>
     /// Seeks to a specific offset.
     /// </summary>
     public static void Seek<TKey, TValue>(
@@ -184,4 +215,8 @@ public static class ConsumerFacetExtensions
         ArgumentNullException.ThrowIfNull(consumer);
         return consumer.Offsets.QueryWatermarkOffsetsAsync(topicPartition, cancellationToken);
     }
+
+    private static IConsumerLag GetLagCapability<TKey, TValue>(IKafkaConsumer<TKey, TValue> consumer) =>
+        consumer as IConsumerLag
+        ?? throw new NotSupportedException("The consumer does not expose partition lag");
 }

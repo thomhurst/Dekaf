@@ -335,6 +335,42 @@ public interface IConsumerCommittedOffsets
 }
 
 /// <summary>
+/// Optional capability for reading the current lag of assigned consumer partitions.
+/// </summary>
+/// <remarks>
+/// Dekaf's built-in consumers implement this interface. The separate capability keeps existing
+/// <see cref="IKafkaConsumer{TKey,TValue}"/> implementations binary compatible while
+/// <c>ConsumerFacetExtensions</c> provides the API on every consumer.
+/// </remarks>
+public interface IConsumerLag
+{
+    /// <summary>
+    /// Gets cached lag for an assigned partition without performing network I/O.
+    /// </summary>
+    /// <remarks>
+    /// Returns <see langword="null"/> when the partition is not assigned, its position has not
+    /// been initialized, or no high watermark has been cached. The cached high watermark can be
+    /// stale until a fetch response or <see cref="QueryCurrentLagAsync"/> refreshes it.
+    /// </remarks>
+    long? GetCurrentLag(TopicPartition partition);
+
+    /// <summary>
+    /// Queries the broker for the current high watermark and returns lag for an assigned partition.
+    /// </summary>
+    /// <remarks>
+    /// Returns <see langword="null"/> without network I/O when the partition is not assigned or its
+    /// position has not been initialized. Lag is never negative when the position is beyond the
+    /// current high watermark.
+    /// </remarks>
+    /// <exception cref="KafkaTimeoutException">
+    /// The operation exceeds <see cref="ConsumerOptions.DefaultApiTimeoutMs"/>.
+    /// </exception>
+    ValueTask<long?> QueryCurrentLagAsync(
+        TopicPartition partition,
+        CancellationToken cancellationToken = default);
+}
+
+/// <summary>
 /// Assignment and pause/resume operations for a Kafka consumer.
 /// </summary>
 public interface IConsumerPartitions

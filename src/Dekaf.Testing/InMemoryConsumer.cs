@@ -16,6 +16,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     IBoundedKafkaConsumer<TKey, TValue>,
     IConsumerPositions,
     IConsumerCommittedOffsets,
+    IConsumerLag,
     IConsumerPartitions,
     IConsumerOffsets,
     IConsumerBatchOffsetStore,
@@ -1469,6 +1470,32 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     {
         ThrowIfDisposed();
         return _cluster.GetWatermarks(topicPartition);
+    }
+
+    public long? GetCurrentLag(TopicPartition partition)
+    {
+        ThrowIfDisposed();
+
+        lock (_gate)
+        {
+            if (!_assignment.Contains(partition)
+                || !_positions.TryGetValue(partition, out var position)
+                || position < 0)
+            {
+                return null;
+            }
+
+            var watermarks = _cluster.GetWatermarks(partition);
+            return position >= watermarks.High ? 0 : watermarks.High - position;
+        }
+    }
+
+    public ValueTask<long?> QueryCurrentLagAsync(
+        TopicPartition partition,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return ValueTask.FromResult(GetCurrentLag(partition));
     }
 
     public ValueTask<WatermarkOffsets> QueryWatermarkOffsetsAsync(
