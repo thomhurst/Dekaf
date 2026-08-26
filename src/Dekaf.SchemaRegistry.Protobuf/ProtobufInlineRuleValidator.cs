@@ -1751,8 +1751,11 @@ internal sealed class ProtobufMemberResolver
             {
                 var node = _nodes[index];
                 node.ApplyDefault(payload, values, sizes);
-                if (node.Child is not null && nestedPayloads.TryGet(index, out var childPayload))
+                if (node.Child is not null)
+                {
+                    _ = nestedPayloads.TryGet(index, out var childPayload);
                     node.Child.Resolve(childPayload, values, sizes);
+                }
             }
         }
         finally
@@ -1792,8 +1795,11 @@ internal sealed class ProtobufMemberResolver
             {
                 var node = _nodes[index];
                 node.ApplyDefault(payload, values, sizes);
-                if (node.Child is not null && nestedPayloads.TryGet(index, out var childPayload))
+                if (node.Child is not null)
+                {
+                    _ = nestedPayloads.TryGet(index, out var childPayload);
                     node.Child.Resolve(childPayload, values, sizes);
+                }
             }
         }
         finally
@@ -1889,8 +1895,7 @@ internal sealed class ProtobufMemberNode(FieldDescriptor descriptor)
                     MemberIndex + 1,
                     parentPayload));
         }
-        else if (!values.IsSet(MemberIndex) &&
-                 descriptor.FieldType is not (FieldType.Message or FieldType.Group))
+        else if (!values.IsSet(MemberIndex))
         {
             values.SetDefaultValue(MemberIndex, _defaultValue);
         }
@@ -2174,10 +2179,10 @@ internal static class ProtobufValidationValueDecoder
 
     internal static ValidationCelValue DeclaredDefault(FieldDescriptor descriptor)
     {
-        if (descriptor.IsRepeated || descriptor.FieldType is FieldType.Message or FieldType.Group)
-        {
+        if (descriptor.IsRepeated)
             return Default(descriptor);
-        }
+        if (descriptor.FieldType is FieldType.Message or FieldType.Group)
+            return DecodeMessage(descriptor.MessageType, default);
 
         var proto = descriptor.ToProto();
         if (!proto.HasDefaultValue)
@@ -2290,13 +2295,20 @@ internal static class ProtobufValidationValueDecoder
 
     internal static bool IsUnknownClosedEnumValue(
         FieldDescriptor descriptor,
-        ProtobufValidationWireField field)
-    {
-        if (descriptor.FieldType != FieldType.Enum || field.WireType != ProtobufWireType.Varint)
-            return false;
-        return IsClosedEnum(descriptor) &&
-               descriptor.EnumType.FindValueByNumber(unchecked((int)field.Varint)) is null;
-    }
+        ProtobufValidationWireField field) => IsUnknownClosedEnumValue(
+            descriptor,
+            field,
+            descriptor.FieldType == FieldType.Enum && IsClosedEnum(descriptor));
+
+    internal static bool IsUnknownClosedEnumValue(
+        FieldDescriptor descriptor,
+        ProtobufValidationWireField field,
+        bool isClosedEnum) => isClosedEnum &&
+        field.WireType == ProtobufWireType.Varint &&
+        descriptor.EnumType.FindValueByNumber(unchecked((int)field.Varint)) is null;
+
+    internal static ulong NormalizeEnumVarint(ulong value) =>
+        unchecked((ulong)(long)(int)value);
 
     internal static bool IsClosedEnum(FieldDescriptor descriptor)
     {
@@ -3189,15 +3201,28 @@ internal ref struct ProtobufUnknownFieldSetState
         while (reader.TryRead(out var field))
         {
             var known = descriptor?.FindFieldByNumber(field.Number);
-            if (known is null || !ProtobufValidationValueDecoder.MatchesField(known, field))
+            var isClosedEnum = known?.FieldType == FieldType.Enum &&
+                ProtobufValidationValueDecoder.IsClosedEnum(known);
+            if (known is null ||
+                !ProtobufValidationValueDecoder.MatchesField(known, field, isClosedEnum))
             {
+                if (known is not null &&
+                    ProtobufValidationValueDecoder.IsUnknownClosedEnumValue(
+                        known,
+                        field,
+                        isClosedEnum))
+                {
+                    field = field with
+                    {
+                        Varint = ProtobufValidationValueDecoder.NormalizeEnumVarint(field.Varint)
+                    };
+                }
                 Add(field);
                 continue;
             }
-            if (known.FieldType == FieldType.Enum &&
+            if (isClosedEnum &&
                 known.IsRepeated &&
-                field.WireType == ProtobufWireType.LengthDelimited &&
-                ProtobufValidationValueDecoder.IsClosedEnum(known))
+                field.WireType == ProtobufWireType.LengthDelimited)
             {
                 AddUnknownPackedEnumValues(known, field);
             }
@@ -3219,7 +3244,7 @@ internal ref struct ProtobufUnknownFieldSetState
                     packedField.Number,
                     ProtobufWireType.Varint,
                     default,
-                    value,
+                    ProtobufValidationValueDecoder.NormalizeEnumVarint(value),
                     0,
                     0));
             }

@@ -74,6 +74,19 @@ message Proto2ImportedOpenEnumValidationMessage {
   repeated ImportedOpenStatus statuses = 2 [packed = true];
 }
 
+message Proto2AbsentGroupValidationMessage {
+  option (confluent.message_meta) = {
+    rules: {
+      name: "absent-group-uses-default-message"
+      expr: "!has(this.details) && this.details == this.details && this.details.value == 0"
+    }
+  };
+
+  optional group Details = 1 {
+    optional int32 value = 2;
+  }
+}
+
 enum Proto2PresenceStatus {
   PROTO2_PRESENCE_STATUS_UNSPECIFIED = 0;
   PROTO2_PRESENCE_STATUS_ACTIVE = 1;

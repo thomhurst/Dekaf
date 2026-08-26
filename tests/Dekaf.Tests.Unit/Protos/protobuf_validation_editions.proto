@@ -45,3 +45,20 @@ message ValidationEditionClosedEnumEqualityEnvelope {
 message ValidationEditionClosedEnumEqualityChild {
   repeated ValidationEditionClosedStatus values = 1;
 }
+
+message ValidationEditionClosedEnumMapEnvelope {
+  option (confluent.message_meta) = {
+    rules: {
+      name: "closed-enum-map-semantics"
+      expr: "size(this.left) == 1 && this.left != this.right"
+    }
+  };
+
+  map<string, ValidationEditionClosedStatus> left = 1 [(confluent.field_meta) = {
+    rules: {
+      name: "closed-enum-map-field-size"
+      expr: "size(this) == 1"
+    }
+  }];
+  map<string, ValidationEditionClosedStatus> right = 2;
+}

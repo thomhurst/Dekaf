@@ -798,6 +798,27 @@ public sealed class ProtobufInlineRuleValidatorTests
     }
 
     [Test]
+    public async Task Validate_AbsentMessagesUseDefaultInstances()
+    {
+        var messageValidator = new ProtobufInlineRuleValidator(
+            ValidationMessageEqualityEnvelope.Descriptor);
+        var groupValidator = new ProtobufInlineRuleValidator(
+            Proto2AbsentGroupValidationMessage.Descriptor);
+
+        messageValidator.Validate(ReadOnlyMemory<byte>.Empty, schemaId: 17, failFast: false);
+        groupValidator.Validate(ReadOnlyMemory<byte>.Empty, schemaId: 18, failFast: false);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+        {
+            messageValidator.Validate(ReadOnlyMemory<byte>.Empty, schemaId: 17, failFast: false);
+            groupValidator.Validate(ReadOnlyMemory<byte>.Empty, schemaId: 18, failFast: false);
+        }
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        await Assert.That(allocated).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task Validate_EditionsClosedEnumExcludesUnknownPackedValues()
     {
         var packed = new ArrayBufferWriter<byte>();
@@ -841,6 +862,54 @@ public sealed class ProtobufInlineRuleValidatorTests
             validator.Validate(payload.WrittenMemory, schemaId: 18, failFast: false);
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
+        await Assert.That(allocated).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Validate_EditionsClosedEnumMapIncludesUnknownEntries()
+    {
+        var payload = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(payload, fieldNumber: 1, CreateInt32MapEntry("unknown", 99));
+        var parsed = ValidationEditionClosedEnumMapEnvelope.Parser.ParseFrom(payload.WrittenSpan);
+        var validator = new ProtobufInlineRuleValidator(
+            ValidationEditionClosedEnumMapEnvelope.Descriptor);
+
+        validator.Validate(payload.WrittenMemory, schemaId: 18, failFast: false);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+            validator.Validate(payload.WrittenMemory, schemaId: 18, failFast: false);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        await Assert.That(parsed.Left.Count).IsEqualTo(1);
+        await Assert.That((int)parsed.Left["unknown"]).IsEqualTo(99);
+        await Assert.That(parsed.Right.Count).IsEqualTo(0);
+        await Assert.That(allocated).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Validate_UnknownClosedEnumsNormalizeOverlongVarintsForEquality()
+    {
+        var left = new ArrayBufferWriter<byte>();
+        WriteVarint(left, 1u << 3);
+        WriteVarint(left, 99);
+        var right = new ArrayBufferWriter<byte>();
+        WriteVarint(right, 1u << 3);
+        WriteVarint(right, 0x1_0000_0063);
+        var payload = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(payload, fieldNumber: 1, left.WrittenSpan);
+        WriteLengthDelimited(payload, fieldNumber: 2, right.WrittenSpan);
+        var parsed = ValidationEditionClosedEnumEqualityEnvelope.Parser.ParseFrom(
+            payload.WrittenSpan);
+        var validator = new ProtobufInlineRuleValidator(
+            ValidationEditionClosedEnumEqualityEnvelope.Descriptor);
+
+        validator.Validate(payload.WrittenMemory, schemaId: 18, failFast: false);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+            validator.Validate(payload.WrittenMemory, schemaId: 18, failFast: false);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        await Assert.That(parsed.Left).IsEqualTo(parsed.Right);
         await Assert.That(allocated).IsEqualTo(0);
     }
 
