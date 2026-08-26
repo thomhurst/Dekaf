@@ -34,7 +34,7 @@ public class AsyncConsumerSerdePoolingBenchmarks
                 .WithLaunchCount(1)
                 .WithWarmupCount(3)
                 .WithIterationCount(10)
-                .WithInvocationCount(PollsPerIteration)
+                .WithInvocationCount(1)
                 .WithUnrollFactor(1));
         }
     }
@@ -103,21 +103,19 @@ public class AsyncConsumerSerdePoolingBenchmarks
     public void YieldingKeySyncHeaderValueSetup() =>
         Reseed(_yieldingKeyHeaderValueConsumer, _headerBatchRecords);
 
-    [Benchmark]
-    public ValueTask<ConsumeResult<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>?> Completed()
-        => _completedConsumer.ConsumeOneAsync(PollTimeout);
+    [Benchmark(OperationsPerInvoke = PollsPerIteration)]
+    public ValueTask Completed() => ConsumeAllAsync(_completedConsumer);
 
-    [Benchmark]
-    public ValueTask<ConsumeResult<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>?> Yielding()
-        => _yieldingConsumer.ConsumeOneAsync(PollTimeout);
+    [Benchmark(OperationsPerInvoke = PollsPerIteration)]
+    public ValueTask Yielding() => ConsumeAllAsync(_yieldingConsumer);
 
-    [Benchmark]
-    public ValueTask<ConsumeResult<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>?> CompletedKeySyncHeaderValue()
-        => _completedKeyHeaderValueConsumer.ConsumeOneAsync(PollTimeout);
+    [Benchmark(OperationsPerInvoke = PollsPerIteration)]
+    public ValueTask CompletedKeySyncHeaderValue() =>
+        ConsumeAllAsync(_completedKeyHeaderValueConsumer);
 
-    [Benchmark]
-    public ValueTask<ConsumeResult<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>?> YieldingKeySyncHeaderValue()
-        => _yieldingKeyHeaderValueConsumer.ConsumeOneAsync(PollTimeout);
+    [Benchmark(OperationsPerInvoke = PollsPerIteration)]
+    public ValueTask YieldingKeySyncHeaderValue() =>
+        ConsumeAllAsync(_yieldingKeyHeaderValueConsumer);
 
     [GlobalCleanup]
     public void Cleanup()
@@ -130,6 +128,22 @@ public class AsyncConsumerSerdePoolingBenchmarks
         _yieldingConsumer.DisposeAsync().AsTask().GetAwaiter().GetResult();
         _completedKeyHeaderValueConsumer.DisposeAsync().AsTask().GetAwaiter().GetResult();
         _yieldingKeyHeaderValueConsumer.DisposeAsync().AsTask().GetAwaiter().GetResult();
+    }
+
+    // BenchmarkDotNet synchronously waits for an async operation between invocations. Running a
+    // full consumer loop per invocation keeps successive polls on the async continuation thread,
+    // matching application usage and measuring steady-state allocations per consumed record.
+#if NET
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+#endif
+    private static async ValueTask ConsumeAllAsync(
+        KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> consumer)
+    {
+        for (var i = 0; i < PollsPerIteration; i++)
+        {
+            if (await consumer.ConsumeOneAsync(PollTimeout).ConfigureAwait(false) is null)
+                throw new InvalidOperationException("Buffered benchmark record was unavailable.");
+        }
     }
 
     private static KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> CreateConsumer(
@@ -200,13 +214,22 @@ public class AsyncConsumerSerdePoolingBenchmarks
 
     private sealed class HeaderDeserializer :
         IDeserializer<ReadOnlyMemory<byte>>,
-        IRecordHeaderDeserializer
+        IRecordHeaderDeserializer<ReadOnlyMemory<byte>>,
+        IRecordHeaderRoutingProvider
     {
-        public bool ConsumesRecordHeaders => true;
+        private const string HeaderName = "record-id";
 
         public ReadOnlyMemory<byte> Deserialize(
             ReadOnlyMemory<byte> data,
             SerializationContext context) =>
-            context.Headers is null ? ReadOnlyMemory<byte>.Empty : data;
+            data;
+
+        public ReadOnlyMemory<byte> Deserialize(
+            ReadOnlyMemory<byte> data,
+            SerializationContext context,
+            in RecordHeaderRoutingLookup headers) =>
+            headers.TryGetLast(HeaderName, out _) ? data : ReadOnlyMemory<byte>.Empty;
+
+        public void CollectHeaderNames(List<string> names) => names.Add(HeaderName);
     }
 }
