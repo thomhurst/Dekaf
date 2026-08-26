@@ -19,6 +19,8 @@ public sealed partial class InMemoryAdminClient :
 {
     private static readonly TimeSpan DefaultDelegationTokenLifetime = TimeSpan.FromHours(24);
 
+    internal Action<CancellationTokenSource>? ConfigureTimeoutSourceTestHook;
+
     private readonly InMemoryKafkaCluster _cluster;
     private readonly Dictionary<ClientQuotaEntity, Dictionary<string, double>> _clientQuotas = new();
     private readonly object _delegationTokenGate = new();
