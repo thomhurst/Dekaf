@@ -462,6 +462,45 @@ public sealed class JsonSchemaValidationTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Serializer_ConfigOverloadsApplyInlineRules(bool useTypeInfo)
+    {
+        const string schemaText = """
+            {
+              "confluent:rules": [{ "name": "validName", "expr": "this.name == 'ok'" }]
+            }
+            """;
+        using var registry = new MockSchemaRegistryClient();
+        var validationOptions = new JsonSchemaValidationOptions
+        {
+            ValidatorFactory = new StreamingJsonSchemaValidatorFactory(registry),
+            Mode = JsonSchemaValidationMode.None,
+            ValidationRulesExecution = ValidationRulesExecution.BeforeDomainRules
+        };
+        var config = new JsonSchemaSerializerConfig();
+        var typeInfo = (System.Text.Json.Serialization.Metadata.JsonTypeInfo<NamePayload>)
+            System.Text.Json.JsonSerializerOptions.Default.GetTypeInfo(typeof(NamePayload));
+        await using var serializer = useTypeInfo
+            ? new JsonSchemaRegistrySerializer<NamePayload>(
+                registry,
+                schemaText,
+                typeInfo,
+                config,
+                validationOptions)
+            : new JsonSchemaRegistrySerializer<NamePayload>(
+                registry,
+                schemaText,
+                jsonOptions: null,
+                validationOptions,
+                config);
+        var buffer = new ArrayBufferWriter<byte>();
+
+        Assert.Throws<ValidationRulesFailedException>(
+            () => serializer.Serialize(new NamePayload("bad"), ref buffer, Context));
+    }
+
+    [Test]
     public async Task Serializer_AutoRegistrationWithValidation_UsesIdOnlyLookup()
     {
         const string schemaText = """{ "type": "object", "required": ["id"] }""";
@@ -1845,6 +1884,48 @@ public sealed class JsonSchemaValidationTests
                 jsonOptions: null,
                 validationOptions: options,
                 ruleExecutor: new PassThroughRuleExecutor());
+        });
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public void InlineRules_ConfigOverloadsRejectOpaqueCustomRuleExecutor(bool useTypeInfo)
+    {
+        using var registry = new MockSchemaRegistryClient();
+        var options = new JsonSchemaValidationOptions
+        {
+            ValidatorFactory = CreateFactory(),
+            Mode = JsonSchemaValidationMode.None,
+            ValidationRulesExecution = ValidationRulesExecution.AfterDomainRules
+        };
+        var config = new JsonSchemaSerializerConfig
+        {
+            RuleExecutor = new PassThroughRuleExecutor()
+        };
+        var typeInfo = (System.Text.Json.Serialization.Metadata.JsonTypeInfo<NamePayload>)
+            System.Text.Json.JsonSerializerOptions.Default.GetTypeInfo(typeof(NamePayload));
+
+        Assert.Throws<NotSupportedException>(() =>
+        {
+            if (useTypeInfo)
+            {
+                _ = new JsonSchemaRegistrySerializer<NamePayload>(
+                    registry,
+                    """{"type":"object"}""",
+                    typeInfo,
+                    config,
+                    options);
+            }
+            else
+            {
+                _ = new JsonSchemaRegistrySerializer<NamePayload>(
+                    registry,
+                    """{"type":"object"}""",
+                    jsonOptions: null,
+                    options,
+                    config);
+            }
         });
     }
 
