@@ -9966,6 +9966,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         recreatedPartitions.Add(partition);
                 }
 
+                RotateWatermarkCacheGenerations(recreatedPartitions);
+
                 Dictionary<TopicPartition, long>? preexistingPendingFetchClearVersions = null;
                 Task[]? resetTasks = null;
                 var resetTaskCount = 0;
@@ -9984,7 +9986,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         _pendingRebalanceSeeks.TryRemove(partition, out _);
                         _committed.TryRemove(partition, out _);
                         _highWatermarks.TryRemove(partition, out _);
-                        _watermarks.TryRemove(partition, out _);
                         _eofEmitted.TryRemove(partition, out _);
 
                         var topicInfo = metadataSnapshot.Topics[partition.Topic];
@@ -10058,6 +10059,22 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         finally
         {
             SemaphoreHelper.ReleaseSafely(_topicIdentityLock);
+        }
+    }
+
+    private void RotateWatermarkCacheGenerations(HashSet<TopicPartition> recreatedPartitions)
+    {
+        lock (_snapshotStateGate)
+        {
+            var assignmentVersion = Interlocked.Increment(ref _assignmentEnsureVersion);
+            foreach (var partition in recreatedPartitions)
+            {
+                if (!_assignmentSnapshot.Contains(partition))
+                    continue;
+
+                _watermarkAssignmentVersions[partition] = assignmentVersion;
+                _watermarks.TryRemove(partition, out _);
+            }
         }
     }
 

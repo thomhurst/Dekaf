@@ -16,6 +16,7 @@ public sealed class QueryWatermarkOffsetsTests
     private const int Partition = 0;
     private const long EarliestOffsetTimestamp = -2;
     private const long LatestOffsetTimestamp = -1;
+    private static readonly Guid InitialTopicId = Guid.Parse("00000000-0000-0000-0000-000000000001");
 
     [Test]
     public async Task QueryWatermarkOffsetsAsync_UsesCoordinationConnectionAndStartsRequestsConcurrently()
@@ -183,6 +184,66 @@ public sealed class QueryWatermarkOffsetsTests
     }
 
     [Test]
+    public async Task QueryCurrentLagAsync_TopicIdentityChangeDuringRefreshReturnsNull()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = new LeaseTrackingConnection();
+        connectionPool.GetConnectionByIndexAsync(0, 1, Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult<IKafkaConnection>(connection));
+        var metadataManager = new MetadataManager(connectionPool, ["localhost:9092"]);
+        metadataManager.SetApiVersion(
+            ApiKey.ListOffsets,
+            ListOffsetsRequest.LowestSupportedVersion,
+            ListOffsetsRequest.HighestSupportedVersion);
+        metadataManager.Metadata.Update(CreateMetadataResponse(InitialTopicId));
+        await using var consumer = new KafkaConsumer<string, string>(
+            new ConsumerOptions
+            {
+                BootstrapServers = ["localhost:9092"],
+                GroupId = "test-group"
+            },
+            Serializers.String,
+            Serializers.String,
+            connectionPool,
+            metadataManager);
+        SetInitialized(consumer);
+        var partition = new TopicPartition(Topic, Partition);
+        consumer.IncrementalAssign([new TopicPartitionOffset(Topic, Partition, 32)]);
+        await InvokeHandleTopicIdentityChangesAsync(consumer);
+
+        var requestCount = 0;
+        var requestsStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseOldTopicResponses = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.SendHandler = async request =>
+        {
+            var requestNumber = Interlocked.Increment(ref requestCount);
+            if (requestNumber <= 2)
+            {
+                if (requestNumber == 2)
+                    requestsStarted.TrySetResult();
+                await releaseOldTopicResponses.Task.ConfigureAwait(false);
+            }
+
+            return CreateListOffsetsResponse(request);
+        };
+
+        var pending = consumer.QueryCurrentLagAsync(partition).AsTask();
+        try
+        {
+            await requestsStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            metadataManager.Metadata.Update(CreateMetadataResponse(Guid.NewGuid()));
+            await InvokeHandleTopicIdentityChangesAsync(consumer);
+        }
+        finally
+        {
+            releaseOldTopicResponses.TrySetResult();
+        }
+
+        await Assert.That(await pending.WaitAsync(TimeSpan.FromSeconds(1))).IsNull();
+        await Assert.That(consumer.GetCurrentLag(partition)).IsNull();
+    }
+
+    [Test]
     public async Task QueryWatermarkOffsetsAsync_AssignmentChangeDoesNotPublishLagCache()
     {
         var connectionPool = Substitute.For<IConnectionPool>();
@@ -288,7 +349,7 @@ public sealed class QueryWatermarkOffsetsTests
         };
     }
 
-    private static MetadataResponse CreateMetadataResponse() => new()
+    private static MetadataResponse CreateMetadataResponse(Guid topicId = default) => new()
     {
         Brokers =
         [
@@ -304,6 +365,7 @@ public sealed class QueryWatermarkOffsetsTests
             new TopicMetadata
             {
                 Name = Topic,
+                TopicId = topicId,
                 ErrorCode = ErrorCode.None,
                 Partitions =
                 [
@@ -328,6 +390,20 @@ public sealed class QueryWatermarkOffsetsTests
             ?? throw new InvalidOperationException("_initialized field not found - was it renamed?");
 
         initializedField.SetValue(consumer, true);
+    }
+
+    private static async ValueTask InvokeHandleTopicIdentityChangesAsync(
+        KafkaConsumer<string, string> consumer)
+    {
+        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+            "HandleTopicIdentityChangesAsync",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("HandleTopicIdentityChangesAsync method not found.");
+        var result = method.Invoke(consumer, [CancellationToken.None, null, Guid.Empty]);
+        if (result is not ValueTask valueTask)
+            throw new InvalidOperationException("HandleTopicIdentityChangesAsync returned unexpected type.");
+
+        await valueTask.ConfigureAwait(false);
     }
 
     private sealed class LeaseTrackingConnection : IKafkaConnection, IRetirableKafkaConnection
