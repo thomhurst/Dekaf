@@ -365,6 +365,7 @@ public sealed class InMemoryAdminClient :
         ThrowIfDisposed();
 
         var groups = groupIds.ToArray();
+        ValidateNames(groups, nameof(groupIds), requireDistinct: false);
         if (groups.Length == 0)
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         for (var index = 0; index < groups.Length; index++)

@@ -233,7 +233,7 @@ public sealed class InMemoryAdminShareFaultTests
     }
 
     [Test]
-    public async Task AdminFault_InvalidLaterTopicNameDoesNotConsumeScriptedFailure()
+    public async Task AdminFault_InvalidLaterNameDoesNotConsumeScriptedFailure()
     {
         await AssertInvalidAdminRequestDoesNotConsumeFaultAsync<ArgumentException>(
             admin => admin.DeleteTopicsAsync(["orders", ""]).AsTask(),
@@ -244,6 +244,9 @@ public sealed class InMemoryAdminShareFaultTests
         await AssertInvalidAdminRequestDoesNotConsumeFaultAsync<ArgumentException>(
             admin => admin.DescribeTopicPartitionsPageAsync(["orders", ""]).AsTask(),
             admin => admin.DescribeTopicPartitionsPageAsync(["orders"]).AsTask());
+        await AssertInvalidAdminRequestDoesNotConsumeFaultAsync<ArgumentException>(
+            admin => admin.DeleteConsumerGroupsAsync(["workers", ""]).AsTask(),
+            admin => admin.DeleteConsumerGroupsAsync(["workers"]).AsTask());
     }
 
     [Test]
