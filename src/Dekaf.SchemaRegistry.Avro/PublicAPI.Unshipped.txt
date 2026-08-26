@@ -1,4 +1,12 @@
 #nullable enable
+Dekaf.SchemaRegistry.Avro.AvroDeserializerConfig.ValidationRulesExecution.get -> Dekaf.SchemaRegistry.ValidationRulesExecution
+Dekaf.SchemaRegistry.Avro.AvroDeserializerConfig.ValidationRulesExecution.init -> void
+Dekaf.SchemaRegistry.Avro.AvroDeserializerConfig.ValidationRulesFailFast.get -> bool
+Dekaf.SchemaRegistry.Avro.AvroDeserializerConfig.ValidationRulesFailFast.init -> void
+Dekaf.SchemaRegistry.Avro.AvroSerializerConfig.ValidationRulesExecution.get -> Dekaf.SchemaRegistry.ValidationRulesExecution
+Dekaf.SchemaRegistry.Avro.AvroSerializerConfig.ValidationRulesExecution.init -> void
+Dekaf.SchemaRegistry.Avro.AvroSerializerConfig.ValidationRulesFailFast.get -> bool
+Dekaf.SchemaRegistry.Avro.AvroSerializerConfig.ValidationRulesFailFast.init -> void
 Dekaf.SchemaRegistry.Avro.AvroDeserializerConfig.AsyncSubjectNameStrategy.get -> Dekaf.SchemaRegistry.IAsyncSubjectNameStrategy?
 Dekaf.SchemaRegistry.Avro.AvroDeserializerConfig.AsyncSubjectNameStrategy.init -> void
 Dekaf.SchemaRegistry.Avro.AvroSerializerConfig.AsyncSubjectNameStrategy.get -> Dekaf.SchemaRegistry.IAsyncSubjectNameStrategy?

@@ -735,6 +735,40 @@ public sealed class SchemaRegistryRuleExecutor : ISchemaRegistryRuleExecutor
         SchemaRegistryRuleContext context)
         => ApplyReadRuleCollection(payload, context, useEncodingRules: false);
 
+    private ReadOnlyMemory<byte> ApplyWriteRuleCollection(
+        ReadOnlyMemory<byte> payload,
+        SchemaRegistryRuleContext context,
+        bool useEncodingRules)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+
+        var ruleSet = context.Schema?.RuleSet;
+        if (ruleSet is null || !ruleSet.HasDomainOrEncodingRules || !ShouldExecute(ruleSet))
+            return payload;
+
+        if (ruleSet.HasFixedRuleCollections)
+        {
+            var plan = _executionPlans.GetValue(ruleSet, _createExecutionPlan);
+            var start = useEncodingRules ? plan.WriteDomainStepCount : 0;
+            var count = useEncodingRules
+                ? plan.WriteSteps.Length - plan.WriteDomainStepCount
+                : plan.WriteDomainStepCount;
+            return ApplyRules(
+                payload,
+                context,
+                plan.WriteSteps,
+                start,
+                count,
+                SchemaRegistryRuleDirection.Write);
+        }
+
+        return ApplyRules(
+            payload,
+            context,
+            useEncodingRules ? ruleSet.EncodingRules : ruleSet.DomainRules,
+            SchemaRegistryRuleDirection.Write);
+    }
+
     internal ReadOnlyMemory<byte> TransformDeserializedDomainPayload(
         ReadOnlyMemory<byte> payload,
         SchemaRegistryRuleContext context,

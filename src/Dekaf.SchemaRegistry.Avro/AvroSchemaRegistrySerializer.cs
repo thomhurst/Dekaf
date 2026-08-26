@@ -73,6 +73,7 @@ public sealed class AvroSchemaRegistrySerializer<
     private readonly AllocationFreeSpecificRecordWriter<T>? _specificWriter;
     private readonly AvroSchema? _writerSchema;
     private readonly AvroTaggedFieldTransformerProvider _taggedFieldTransformers = new();
+    private readonly AvroInlineRuleValidatorProvider? _inlineRuleValidators;
     private int _dynamicSchemaCacheCount;
     private int _overflowDynamicSchemaCacheCount;
     private int _hasEvictedOverflowLogicalSchemas;
@@ -103,6 +104,9 @@ public sealed class AvroSchemaRegistrySerializer<
             _config.AutoRegisterSchemas);
         if (_schemaIdStrategy is not (SchemaIdSerializerStrategy.Prefix or SchemaIdSerializerStrategy.Header))
             throw new ArgumentOutOfRangeException(nameof(config), _schemaIdStrategy, "Unknown schema identity strategy.");
+        _inlineRuleValidators = AvroValidationConfiguration.Create(
+            _config.ValidationRulesExecution,
+            _config.RuleExecutor);
         if (_config.CustomSubjectNameStrategy is null)
         {
             _asyncSubjectNameStrategy = _config.AsyncSubjectNameStrategy
@@ -250,7 +254,7 @@ public sealed class AvroSchemaRegistrySerializer<
         var schemaId = schemaEntry.SchemaId;
 
         var codecState = AvroCodecThreadStateCache.Serialization ??= new AvroSerializationThreadState();
-        if (_config.RuleExecutor is null)
+        if (_config.RuleExecutor is null && _inlineRuleValidators is null)
         {
             if (_schemaIdStrategy == SchemaIdSerializerStrategy.Prefix)
                 SerializeDirect(value, ref destination, schemaId, codecState);
@@ -293,7 +297,7 @@ public sealed class AvroSchemaRegistrySerializer<
         var schemaId = schemaEntry.SchemaId;
 
         var codecState = AvroCodecThreadStateCache.Serialization ??= new AvroSerializationThreadState();
-        if (_config.RuleExecutor is null)
+        if (_config.RuleExecutor is null && _inlineRuleValidators is null)
         {
             if (_schemaIdStrategy == SchemaIdSerializerStrategy.Prefix)
                 SerializeDirect(value, ref destination, schemaId, codecState);
@@ -438,22 +442,37 @@ public sealed class AvroSchemaRegistrySerializer<
 
             var avroPayloadLength = (int)memoryStream.Position;
             var payload = new ReadOnlyMemory<byte>(memoryStream.GetBuffer(), 0, avroPayloadLength);
-            var taggedFieldTransformer = _taggedFieldTransformers.Get(schemaEntry.Schema!, avroSchema);
-            var ruleContext = SchemaRegistryRuleContext.RentWithTaggedFieldTransformer(
-                context.Topic,
-                context.Component,
-                schemaId,
-                schemaEntry.Subject,
-                schemaEntry.Schema,
-                SchemaRegistryPayloadFormat.Avro,
-                taggedFieldTransformer);
-            try
+            if (_config.RuleExecutor is null)
             {
-                payload = _config.RuleExecutor!.TransformSerializedPayload(payload, ruleContext);
+                _inlineRuleValidators!.Get(avroSchema).Validate(
+                    payload,
+                    schemaId,
+                    _config.ValidationRulesFailFast);
             }
-            finally
+            else
             {
-                ruleContext.Return();
+                var taggedFieldTransformer = _taggedFieldTransformers.Get(schemaEntry.Schema!, avroSchema);
+                var ruleContext = SchemaRegistryRuleContext.RentWithTaggedFieldTransformer(
+                    context.Topic,
+                    context.Component,
+                    schemaId,
+                    schemaEntry.Subject,
+                    schemaEntry.Schema,
+                    SchemaRegistryPayloadFormat.Avro,
+                    taggedFieldTransformer);
+                try
+                {
+                    payload = TransformSerializedPayload(
+                        payload,
+                        ruleContext,
+                        schemaId,
+                        schemaEntry.Schema!,
+                        avroSchema);
+                }
+                finally
+                {
+                    ruleContext.Return();
+                }
             }
 
             var payloadOffset = SchemaIdentitySerialization.GetPayloadOffset(_schemaIdStrategy);
@@ -475,6 +494,28 @@ public sealed class AvroSchemaRegistrySerializer<
             if (memoryStream.Capacity > MaxRetainedAvroPayloadBufferSize)
                 memoryStream.DetachBuffer();
         }
+    }
+
+    private ReadOnlyMemory<byte> TransformSerializedPayload(
+        ReadOnlyMemory<byte> payload,
+        SchemaRegistryRuleContext context,
+        int schemaId,
+        Schema registrySchema,
+        AvroSchema avroSchema)
+    {
+        if (_inlineRuleValidators is null ||
+            _config.RuleExecutor is not SchemaRegistryRuleExecutor ruleExecutor)
+        {
+            return _config.RuleExecutor!.TransformSerializedPayload(payload, context);
+        }
+
+        var validator = _inlineRuleValidators.Register(registrySchema, avroSchema);
+        if (_config.ValidationRulesExecution == ValidationRulesExecution.BeforeDomainRules)
+            validator.Validate(payload, schemaId, _config.ValidationRulesFailFast);
+        payload = ruleExecutor.TransformSerializedDomainPayload(payload, context);
+        if (_config.ValidationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+            validator.Validate(payload, schemaId, _config.ValidationRulesFailFast);
+        return ruleExecutor.TransformSerializedEncodingPayload(payload, context);
     }
 
     private static int GrowPayloadSizeHint(int currentHint, int requiredCapacity)

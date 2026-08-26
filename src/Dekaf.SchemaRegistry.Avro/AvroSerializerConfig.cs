@@ -75,6 +75,18 @@ public sealed class AvroSerializerConfig
     /// Optional rule executor applied to Avro payload bytes before the Schema Registry envelope is written.
     /// </summary>
     public ISchemaRegistryRuleExecutor? RuleExecutor { get; init; }
+
+    /// <summary>
+    /// Selects when inline <c>confluent:rules</c> CHECK constraints run.
+    /// Default is disabled. When <see cref="RuleExecutor"/> is also configured,
+    /// it must be a <see cref="SchemaRegistryRuleExecutor"/> so rule boundaries are known.
+    /// </summary>
+    public ValidationRulesExecution ValidationRulesExecution { get; init; }
+
+    /// <summary>
+    /// Stops Avro inline validation after its first violation when enabled.
+    /// </summary>
+    public bool ValidationRulesFailFast { get; init; }
 }
 
 /// <summary>
@@ -123,4 +135,16 @@ public sealed class AvroDeserializerConfig
     /// Optional rule executor applied to Avro payload bytes after the Schema Registry envelope is read.
     /// </summary>
     public ISchemaRegistryRuleExecutor? RuleExecutor { get; init; }
+
+    /// <summary>
+    /// Selects when inline <c>confluent:rules</c> CHECK constraints run.
+    /// Default is disabled. When <see cref="RuleExecutor"/> is also configured,
+    /// it must be a <see cref="SchemaRegistryRuleExecutor"/> so rule boundaries are known.
+    /// </summary>
+    public ValidationRulesExecution ValidationRulesExecution { get; init; }
+
+    /// <summary>
+    /// Stops Avro inline validation after its first violation when enabled.
+    /// </summary>
+    public bool ValidationRulesFailFast { get; init; }
 }

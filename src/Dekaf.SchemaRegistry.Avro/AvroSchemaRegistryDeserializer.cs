@@ -72,6 +72,7 @@ public sealed class AvroSchemaRegistryDeserializer<
     private readonly DeserializerSubjectNameCache? _subjectNames;
     private readonly SchemaRegistryMigrationRunner? _migrationRunner;
     private readonly AvroTaggedFieldTransformerProvider _taggedFieldTransformers = new();
+    private readonly AvroInlineRuleValidatorProvider? _inlineRuleValidators;
 
     /// <summary>
     /// Creates a new Avro Schema Registry deserializer.
@@ -89,6 +90,9 @@ public sealed class AvroSchemaRegistryDeserializer<
         if (_config.SchemaIdStrategy is not (SchemaIdDeserializerStrategy.Dual or SchemaIdDeserializerStrategy.Prefix or SchemaIdDeserializerStrategy.Header))
             throw new ArgumentOutOfRangeException(nameof(config), _config.SchemaIdStrategy, "Unknown schema identity strategy.");
         _ruleExecutor = _config.RuleExecutor;
+        _inlineRuleValidators = AvroValidationConfiguration.Create(
+            _config.ValidationRulesExecution,
+            _config.RuleExecutor);
         _ownsClient = ownsClient;
         if (_config.UseLatestVersion && !string.IsNullOrEmpty(_config.ReaderSchema))
         {
@@ -349,7 +353,7 @@ public sealed class AvroSchemaRegistryDeserializer<
         // Extract Avro payload. Array-backed payloads decode in place; other memory falls back to a pooled copy.
         var payloadMemory = data[payloadOffset..];
         AvroSchema? migrationReaderSchema = null;
-        if (_ruleExecutor is null)
+        if (_ruleExecutor is null && _inlineRuleValidators is null)
         {
             var directCodecState = AvroCodecThreadStateCache.Deserialization ??= new AvroDeserializationThreadState();
             return ReadAvroPayload(
@@ -357,6 +361,21 @@ public sealed class AvroSchemaRegistryDeserializer<
                 writerSchema,
                 migrationReaderSchema: null,
                 codecState: directCodecState);
+        }
+
+        if (_ruleExecutor is null)
+        {
+            _inlineRuleValidators!.Get(writerSchema).Validate(
+                payloadMemory,
+                schemaId,
+                _config.ValidationRulesFailFast);
+            var validatedCodecState = AvroCodecThreadStateCache.Deserialization ??=
+                new AvroDeserializationThreadState();
+            return ReadAvroPayload(
+                payloadMemory,
+                writerSchema,
+                migrationReaderSchema: null,
+                codecState: validatedCodecState);
         }
 
         var taggedWorkspaceOperation = AvroTaggedFieldTransformerProvider.BeginOperation();
@@ -400,7 +419,35 @@ public sealed class AvroSchemaRegistryDeserializer<
                     _taggedFieldTransformers.Get(schema, writerSchema));
                 try
                 {
-                    payloadMemory = _ruleExecutor.TransformDeserializedPayload(payloadMemory, ruleContext);
+                    if (_inlineRuleValidators is not null &&
+                        _ruleExecutor is SchemaRegistryRuleExecutor builtInRuleExecutor)
+                    {
+                        var validator = _inlineRuleValidators.Register(schema, writerSchema);
+                        payloadMemory = builtInRuleExecutor.TransformDeserializedEncodingPayload(
+                            payloadMemory,
+                            ruleContext);
+                        if (_config.ValidationRulesExecution == ValidationRulesExecution.BeforeDomainRules)
+                        {
+                            validator.Validate(
+                                payloadMemory,
+                                schemaId,
+                                _config.ValidationRulesFailFast);
+                        }
+                        payloadMemory = builtInRuleExecutor.TransformDeserializedDomainPayload(
+                            payloadMemory,
+                            ruleContext);
+                        if (_config.ValidationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+                        {
+                            validator.Validate(
+                                payloadMemory,
+                                schemaId,
+                                _config.ValidationRulesFailFast);
+                        }
+                    }
+                    else
+                    {
+                        payloadMemory = _ruleExecutor.TransformDeserializedPayload(payloadMemory, ruleContext);
+                    }
                 }
                 finally
                 {
@@ -409,16 +456,37 @@ public sealed class AvroSchemaRegistryDeserializer<
             }
             else
             {
-                var migration = _migrationRunner.Transform(
-                    payloadMemory,
-                    schemaId,
-                    subject,
-                    schema,
-                    context,
-                    SchemaRegistryPayloadFormat.Avro,
-                    _taggedFieldTransformers);
+                _inlineRuleValidators?.Register(schema, writerSchema);
+                var migration = _config.ValidationRulesExecution == ValidationRulesExecution.BeforeDomainRules
+                    ? _migrationRunner.TransformWithBeforeDomainValidation(
+                        payloadMemory,
+                        schemaId,
+                        subject,
+                        schema,
+                        context,
+                        SchemaRegistryPayloadFormat.Avro,
+                        _inlineRuleValidators!,
+                        _config.ValidationRulesFailFast,
+                        _taggedFieldTransformers)
+                    : _migrationRunner.Transform(
+                        payloadMemory,
+                        schemaId,
+                        subject,
+                        schema,
+                        context,
+                        SchemaRegistryPayloadFormat.Avro,
+                        _taggedFieldTransformers);
                 payloadMemory = migration.Payload;
                 writerSchema = GetWriterSchemaCached(migration.PayloadSchemaId);
+                _inlineRuleValidators?.Register(migration.PayloadSchema, writerSchema);
+                if (_config.ValidationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+                {
+                    ((IInlineValidationRuleExecutor)_inlineRuleValidators!).Validate(
+                        payloadMemory,
+                        migration.PayloadSchemaId,
+                        migration.PayloadSchema,
+                        _config.ValidationRulesFailFast);
+                }
                 migrationReaderSchema = GetWriterSchemaCached(migration.ReaderSchema.Id);
             }
             var codecState = AvroCodecThreadStateCache.Deserialization ??= new AvroDeserializationThreadState();

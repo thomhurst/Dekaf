@@ -39,6 +39,7 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
     private readonly ISchemaRegistryRuleExecutor? _ruleExecutor;
     private readonly DeserializerSubjectNameCache? _subjectNames;
     private readonly bool _canUseSynchronousRuleCache;
+    private readonly AvroInlineRuleValidatorProvider? _inlineRuleValidators;
     private PreparedRuleState? _lastPreparedRuleState;
     private int _cachedPlanCount;
     private int _cachedPreparedRuleStateCount;
@@ -66,6 +67,9 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         }
         _ownsClient = ownsClient;
         _ruleExecutor = _config.RuleExecutor;
+        _inlineRuleValidators = AvroValidationConfiguration.Create(
+            _config.ValidationRulesExecution,
+            _config.RuleExecutor);
         if (!string.IsNullOrEmpty(_config.ReaderSchema))
         {
             throw new ArgumentException(
@@ -470,10 +474,21 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
                 context.Component == SerializationComponent.Key,
                 _subjectNames?.Generation ?? 0));
         var payload = data[payloadOffset..];
-        if (_ruleExecutor is null)
+        if (_ruleExecutor is null && _inlineRuleValidators is null)
         {
             var directReader = new AvroValueReader(payload.Span);
             return TCodec.Read(ref directReader, GetPlanCached(schemaId));
+        }
+
+        if (_ruleExecutor is null)
+        {
+            var validatedPlan = GetPlanCached(schemaId);
+            _inlineRuleValidators!.Get(GetValidationSchema(schemaId, validatedPlan)).Validate(
+                payload,
+                schemaId,
+                _config.ValidationRulesFailFast);
+            var validatedReader = new AvroValueReader(payload.Span);
+            return TCodec.Read(ref validatedReader, validatedPlan);
         }
 
         if (_canUseSynchronousRuleCache)
@@ -540,7 +555,12 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
             SchemaRegistryPayloadFormat.Avro);
         try
         {
-            payload = _ruleExecutor!.TransformDeserializedPayload(payload, ruleContext);
+            payload = TransformDeserializedPayload(
+                payload,
+                schemaId,
+                scopedSchema,
+                plan,
+                ruleContext);
         }
         finally
         {
@@ -583,7 +603,12 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
             SchemaRegistryPayloadFormat.Avro);
         try
         {
-            payload = _ruleExecutor!.TransformDeserializedPayload(payload, ruleContext);
+            payload = TransformDeserializedPayload(
+                payload,
+                schemaId,
+                scopedSchema,
+                plan,
+                ruleContext);
         }
         finally
         {
@@ -615,7 +640,12 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
                 _taggedFieldTransformers.Get(scopedSchema));
             try
             {
-                payload = _ruleExecutor!.TransformDeserializedPayload(payload, ruleContext);
+                payload = TransformDeserializedPayload(
+                    payload,
+                    schemaId,
+                    scopedSchema,
+                    plan,
+                    ruleContext);
             }
             finally
             {
@@ -642,16 +672,34 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
         var taggedWorkspaceOperation = AvroTaggedFieldTransformerProvider.BeginOperation();
         try
         {
-            var migration = _migrationRunner!.Transform(
-                payload,
-                schemaId,
-                subject,
-                scopedSchema,
-                context,
-                SchemaRegistryPayloadFormat.Avro,
-                _taggedFieldTransformers,
-                skipLatestRefresh);
-            var reader = new AvroValueReader(migration.Payload.Span);
+            if (_inlineRuleValidators is not null)
+            {
+                var writerPlan = GetOrBuildPlanCached(schemaId, scopedSchema);
+                _inlineRuleValidators.Register(
+                    scopedSchema,
+                    GetValidationSchema(schemaId, scopedSchema, writerPlan));
+            }
+            var migration = _config.ValidationRulesExecution == ValidationRulesExecution.BeforeDomainRules
+                ? _migrationRunner!.TransformWithBeforeDomainValidation(
+                    payload,
+                    schemaId,
+                    subject,
+                    scopedSchema,
+                    context,
+                    SchemaRegistryPayloadFormat.Avro,
+                    _inlineRuleValidators!,
+                    _config.ValidationRulesFailFast,
+                    _taggedFieldTransformers,
+                    skipLatestRefresh)
+                : _migrationRunner!.Transform(
+                    payload,
+                    schemaId,
+                    subject,
+                    scopedSchema,
+                    context,
+                    SchemaRegistryPayloadFormat.Avro,
+                    _taggedFieldTransformers,
+                    skipLatestRefresh);
             var preparedKey = new PreparedRuleKey(
                 schemaId,
                 context.Topic,
@@ -665,12 +713,76 @@ public sealed class AvroPocoSchemaRegistryDeserializer<T, TCodec>
                        preparedState.TryGetPlan(migration.PayloadSchemaId, out var preparedPlan)
                 ? preparedPlan
                 : GetOrBuildPlanCached(migration.PayloadSchemaId, migration.PayloadSchema);
+            if (_inlineRuleValidators is not null)
+            {
+                var validationSchema = GetValidationSchema(
+                    migration.PayloadSchemaId,
+                    migration.PayloadSchema,
+                    plan);
+                _inlineRuleValidators.Register(migration.PayloadSchema, validationSchema);
+                if (_config.ValidationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+                {
+                    ((IInlineValidationRuleExecutor)_inlineRuleValidators).Validate(
+                        migration.Payload,
+                        migration.PayloadSchemaId,
+                        migration.PayloadSchema,
+                        _config.ValidationRulesFailFast);
+                }
+            }
+            var reader = new AvroValueReader(migration.Payload.Span);
             return TCodec.Read(ref reader, plan);
         }
         finally
         {
             taggedWorkspaceOperation.Dispose();
         }
+    }
+
+    private ReadOnlyMemory<byte> TransformDeserializedPayload(
+        ReadOnlyMemory<byte> payload,
+        int schemaId,
+        Schema scopedSchema,
+        AvroPocoReaderPlan plan,
+        SchemaRegistryRuleContext context)
+    {
+        if (_inlineRuleValidators is null ||
+            _ruleExecutor is not SchemaRegistryRuleExecutor ruleExecutor)
+        {
+            return _ruleExecutor!.TransformDeserializedPayload(payload, context);
+        }
+
+        var validator = _inlineRuleValidators.Register(
+            scopedSchema,
+            GetValidationSchema(schemaId, scopedSchema, plan));
+        payload = ruleExecutor.TransformDeserializedEncodingPayload(payload, context);
+        if (_config.ValidationRulesExecution == ValidationRulesExecution.BeforeDomainRules)
+            validator.Validate(payload, schemaId, _config.ValidationRulesFailFast);
+        payload = ruleExecutor.TransformDeserializedDomainPayload(payload, context);
+        if (_config.ValidationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+            validator.Validate(payload, schemaId, _config.ValidationRulesFailFast);
+        return payload;
+    }
+
+    private AvroSchema GetValidationSchema(int schemaId, AvroPocoReaderPlan plan)
+    {
+        if (plan.ResolvedWriterSchema is { } resolved)
+            return resolved;
+        var schema = _schemaRegistry.GetSchemaSync(schemaId, RegistryTimeout);
+        return GetValidationSchema(schemaId, schema, plan);
+    }
+
+    private AvroSchema GetValidationSchema(
+        int schemaId,
+        Schema schema,
+        AvroPocoReaderPlan plan)
+    {
+        if (plan.ResolvedWriterSchema is { } resolved)
+            return resolved;
+        if (_resolvedSchemas.TryGetValue(schemaId, out var cached))
+            return cached.Schema;
+        var parsed = AvroSchema.Parse(schema.SchemaString);
+        plan.ResolvedWriterSchema = parsed;
+        return parsed;
     }
 
     private AvroPocoReaderPlan GetPlanCached(int schemaId)

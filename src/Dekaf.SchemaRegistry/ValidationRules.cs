@@ -3141,7 +3141,9 @@ internal sealed class ValidationCelParser
         return new ValidationCelToken(ValidationCelTokenKind.Number, _expression[start.._position]);
     }
 
-    private ValidationCelToken ReadString(char quote)
+    private ValidationCelToken ReadString(
+        char quote,
+        ValidationCelTokenKind kind = ValidationCelTokenKind.String)
     {
         _position++;
         var builder = new StringBuilder();
@@ -3149,7 +3151,7 @@ internal sealed class ValidationCelParser
         {
             var character = _expression[_position++];
             if (character == quote)
-                return new ValidationCelToken(ValidationCelTokenKind.String, builder.ToString());
+                return new ValidationCelToken(kind, builder.ToString());
             if (character != '\\')
             {
                 builder.Append(character);
