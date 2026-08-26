@@ -39,6 +39,7 @@ public class ProtobufInlineValidationBenchmarks
     private byte[] _mapEqualityPayload = null!;
     private byte[] _collectionEqualityPayload = null!;
     private byte[] _sint32Payload = null!;
+    private byte[] _simpleLargePayload = null!;
     private byte[] _editionClosedEnumPayload = null!;
     private int _schemaIndex;
     private SerializationContext _context;
@@ -55,6 +56,10 @@ public class ProtobufInlineValidationBenchmarks
         _mapEqualityPayload = CreateMapEqualityPayload();
         _collectionEqualityPayload = CreateCollectionEqualityPayload();
         _sint32Payload = [8, 1];
+        var simpleLargePayload = new ArrayBufferWriter<byte>(4096);
+        simpleLargePayload.Write(_sint32Payload);
+        WriteLengthDelimited(simpleLargePayload, fieldNumber: 100, new byte[4096]);
+        _simpleLargePayload = simpleLargePayload.WrittenSpan.ToArray();
         _editionClosedEnumPayload = [10, 1, 1];
         _validator = new ProtobufInlineRuleValidator(ValidationEnvelope.Descriptor);
         _semanticEqualityValidator = new ProtobufInlineRuleValidator(
@@ -107,6 +112,7 @@ public class ProtobufInlineValidationBenchmarks
             schemaId: 1,
             failFast: false);
         _sint32Validator.Validate(_sint32Payload, schemaId: 1, failFast: false);
+        _sint32Validator.Validate(_simpleLargePayload, schemaId: 1, failFast: false);
         _editionClosedEnumValidator.Validate(
             _editionClosedEnumPayload,
             schemaId: 1,
@@ -160,6 +166,10 @@ public class ProtobufInlineValidationBenchmarks
     [Benchmark]
     public void ValidateSInt32() =>
         _sint32Validator.Validate(_sint32Payload, schemaId: 1, failFast: false);
+
+    [Benchmark]
+    public void ValidateSimpleLargePayload() =>
+        _sint32Validator.Validate(_simpleLargePayload, schemaId: 1, failFast: false);
 
     [Benchmark]
     public void ValidateEditionClosedEnum() =>

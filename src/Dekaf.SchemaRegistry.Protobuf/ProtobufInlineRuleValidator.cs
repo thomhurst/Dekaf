@@ -413,6 +413,7 @@ internal sealed class ProtobufMessageRulePlan
     private int _oneofCount;
     private bool _usesSizes;
     private bool _hasMaps;
+    private bool _hasRepeatedChildren;
     private bool _requiresRuleSnapshots;
 
     internal bool HasAnyRules { get; private set; }
@@ -510,6 +511,20 @@ internal sealed class ProtobufMessageRulePlan
                 }
             }
         }
+
+        foreach (var plan in plans.Values)
+        {
+            for (var index = 0; index < plan._allFields.Length; index++)
+            {
+                var field = plan._allFields[index];
+                if (field.Descriptor is { IsRepeated: true, IsMap: false } &&
+                    field.Child is { HasAnyRules: true })
+                {
+                    plan._hasRepeatedChildren = true;
+                    break;
+                }
+            }
+        }
     }
 
     internal void Validate(
@@ -569,24 +584,26 @@ internal sealed class ProtobufMessageRulePlan
             try
             {
                 singularChildren.Capture(_allFields, values);
-                reader = new ProtobufValidationWireReader(payload);
-                while (reader.TryRead(out var wireField))
-                {
-                    if (!_fields.TryGetValue(wireField.Number, out var field) ||
-                        !field.Descriptor.IsMap ||
-                        wireField.WireType != ProtobufWireType.LengthDelimited)
-                    {
-                        continue;
-                    }
-                    field.GetMapValue(
-                        wireField.Payload,
-                        out var mapKey,
-                        out var mapPayload,
-                        out var rentedMapPayload);
-                    mapEntries.Add(field, mapKey, mapPayload, rentedMapPayload);
-                }
                 if (_hasMaps)
+                {
+                    reader = new ProtobufValidationWireReader(payload);
+                    while (reader.TryRead(out var wireField))
+                    {
+                        if (!_fields.TryGetValue(wireField.Number, out var field) ||
+                            !field.Descriptor.IsMap ||
+                            wireField.WireType != ProtobufWireType.LengthDelimited)
+                        {
+                            continue;
+                        }
+                        field.GetMapValue(
+                            wireField.Payload,
+                            out var mapKey,
+                            out var mapPayload,
+                            out var rentedMapPayload);
+                        mapEntries.Add(field, mapKey, mapPayload, rentedMapPayload);
+                    }
                     mapEntries.ApplyUniqueSizes(_allFields, sizes);
+                }
 
                 var ruleFields = new ProtobufRuleFieldEntries(
                     _ruleFields.Length,
@@ -643,15 +660,18 @@ internal sealed class ProtobufMessageRulePlan
                         return;
                 }
 
-                ValidateRepeatedChildren(
-                    payload,
-                    mapEntries,
-                    schemaId,
-                    now,
-                    failFast,
-                    ref violations,
-                    ref path,
-                    remainingDepth);
+                if (_hasRepeatedChildren)
+                {
+                    ValidateRepeatedChildren(
+                        payload,
+                        mapEntries,
+                        schemaId,
+                        now,
+                        failFast,
+                        ref violations,
+                        ref path,
+                        remainingDepth);
+                }
             }
             finally
             {
@@ -2657,9 +2677,13 @@ internal static class ProtobufSemanticEquality
                     var field = fields[index];
                     if (field.IsRepeated)
                     {
-                        if (!(field.IsMap
-                                ? AreMapValuesEqual(field, left, right, remainingDepth)
-                                : AreRepeatedValuesEqual(field, left, right, remainingDepth)))
+                        var areEqual = field.IsMap
+                            ? AreMapValuesEqual(field, left, right, remainingDepth)
+                            : field.FieldType == FieldType.Enum &&
+                              ProtobufValidationValueDecoder.IsClosedEnum(field)
+                                ? AreClosedEnumRepeatedValuesEqual(field, left, right)
+                                : AreRepeatedValuesEqual(field, left, right, remainingDepth);
+                        if (!areEqual)
                             return false;
                         continue;
                     }

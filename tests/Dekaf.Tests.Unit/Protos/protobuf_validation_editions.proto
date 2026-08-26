@@ -29,3 +29,19 @@ message ValidationEditionClosedEnumBenchmarkEnvelope {
     }
   }];
 }
+
+message ValidationEditionClosedEnumEqualityEnvelope {
+  option (confluent.message_meta) = {
+    rules: {
+      name: "closed-enum-equality"
+      expr: "this.left == this.right"
+    }
+  };
+
+  ValidationEditionClosedEnumEqualityChild left = 1;
+  ValidationEditionClosedEnumEqualityChild right = 2;
+}
+
+message ValidationEditionClosedEnumEqualityChild {
+  repeated ValidationEditionClosedStatus values = 1;
+}

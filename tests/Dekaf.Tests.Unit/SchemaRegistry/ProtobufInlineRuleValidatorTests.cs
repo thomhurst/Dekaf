@@ -788,6 +788,34 @@ public sealed class ProtobufInlineRuleValidatorTests
     }
 
     [Test]
+    public async Task Validate_EditionsClosedEnumEqualityIgnoresUnknownValueOrder()
+    {
+        var leftValues = new ArrayBufferWriter<byte>();
+        WriteVarint(leftValues, 1);
+        WriteVarint(leftValues, 99);
+        var left = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(left, fieldNumber: 1, leftValues.WrittenSpan);
+        var rightValues = new ArrayBufferWriter<byte>();
+        WriteVarint(rightValues, 99);
+        WriteVarint(rightValues, 1);
+        var right = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(right, fieldNumber: 1, rightValues.WrittenSpan);
+        var payload = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(payload, fieldNumber: 1, left.WrittenSpan);
+        WriteLengthDelimited(payload, fieldNumber: 2, right.WrittenSpan);
+        var validator = new ProtobufInlineRuleValidator(
+            ValidationEditionClosedEnumEqualityEnvelope.Descriptor);
+
+        validator.Validate(payload.WrittenMemory, schemaId: 18, failFast: false);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+            validator.Validate(payload.WrittenMemory, schemaId: 18, failFast: false);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        await Assert.That(allocated).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task Validate_SInt32TruncatesOverlongVarintBeforeZigZagDecoding()
     {
         var payload = new ArrayBufferWriter<byte>();
