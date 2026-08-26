@@ -138,6 +138,11 @@ public sealed partial class AdminClient
         var retryErrors = new Dictionary<string, Protocol.ErrorCode>(requests.Count, StringComparer.Ordinal);
         var retryResults = new Dictionary<string, StreamsGroupOffsetsResult>(requests.Count, StringComparer.Ordinal);
         var mappingRetryResults = new Dictionary<string, StreamsGroupOffsetsResult>(requests.Count, StringComparer.Ordinal);
+        foreach (var (groupId, partitions) in requests)
+        {
+            if (partitions is { Count: 0 })
+                results.Add(groupId, EmptyGroupOffsetsResult(groupId));
+        }
 
         try
         {
@@ -1143,6 +1148,13 @@ public sealed partial class AdminClient
     {
         GroupId = groupId,
         ErrorCode = errorCode,
+        Offsets = new Dictionary<TopicPartition, StreamsGroupOffsetDescription>()
+    };
+
+    private static StreamsGroupOffsetsResult EmptyGroupOffsetsResult(string groupId) => new()
+    {
+        GroupId = groupId,
+        ErrorCode = Protocol.ErrorCode.None,
         Offsets = new Dictionary<TopicPartition, StreamsGroupOffsetDescription>()
     };
 

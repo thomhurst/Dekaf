@@ -50,9 +50,18 @@ public sealed class AdminClientStreamsGroupManagementTests
 
         await Assert.That(await admin.ListStreamsGroupOffsetsAsync(
             new Dictionary<string, ListStreamsGroupOffsetsSpec>())).IsEmpty();
+        var emptySelection = await admin.ListStreamsGroupOffsetsAsync(
+            new Dictionary<string, ListStreamsGroupOffsetsSpec>
+            {
+                [FirstGroup] = new() { TopicPartitions = [] }
+            });
         await Assert.That(await admin.AlterStreamsGroupOffsetsAsync(FirstGroup, [])).IsEmpty();
         await Assert.That(await admin.DeleteStreamsGroupOffsetsAsync(FirstGroup, [])).IsEmpty();
         await Assert.That(await admin.DeleteStreamsGroupsAsync([])).IsEmpty();
+
+        await Assert.That(emptySelection).HasSingleItem();
+        await Assert.That(emptySelection[FirstGroup].ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(emptySelection[FirstGroup].Offsets).IsEmpty();
 
         await connection.DidNotReceive().SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
             Arg.Any<FindCoordinatorRequest>(),
