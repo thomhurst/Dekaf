@@ -5,7 +5,7 @@ namespace Dekaf.Testing;
 
 public sealed partial class InMemoryAdminClient
 {
-    public ValueTask<IReadOnlyDictionary<string, StreamsGroupOffsetsResult>> ListStreamsGroupOffsetsAsync(
+    public async ValueTask<IReadOnlyDictionary<string, StreamsGroupOffsetsResult>> ListStreamsGroupOffsetsAsync(
         IReadOnlyDictionary<string, ListStreamsGroupOffsetsSpec> groupSpecs,
         ListStreamsGroupOffsetsOptions? options = null,
         CancellationToken cancellationToken = default)
@@ -15,22 +15,54 @@ public sealed partial class InMemoryAdminClient
         ThrowIfDisposed();
         ArgumentOutOfRangeException.ThrowIfNegative((options ?? new ListStreamsGroupOffsetsOptions()).TimeoutMs);
 
-        var results = new Dictionary<string, StreamsGroupOffsetsResult>(groupSpecs.Count, StringComparer.Ordinal);
+        var validatedSpecs = new (string GroupId, TopicPartition[]? Partitions)[groupSpecs.Count];
+        var specIndex = 0;
         foreach (var (groupId, spec) in groupSpecs)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
             ArgumentNullException.ThrowIfNull(spec);
 
+            var partitions = spec.TopicPartitions?.ToArray();
+            if (partitions is not null)
+            {
+                var uniquePartitions = new HashSet<TopicPartition>();
+                foreach (var partition in partitions)
+                {
+                    ValidateTopicPartition(partition);
+                    if (!uniquePartitions.Add(partition))
+                        throw new ArgumentException($"Partition '{partition.Topic}-{partition.Partition}' is duplicated.", nameof(groupSpecs));
+                }
+            }
+
+            validatedSpecs[specIndex++] = (groupId, partitions);
+        }
+
+        var results = new Dictionary<string, StreamsGroupOffsetsResult>(groupSpecs.Count, StringComparer.Ordinal);
+        if (validatedSpecs.Length == 0)
+            await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        foreach (var (groupId, selectedPartitions) in validatedSpecs)
+        {
+            if (selectedPartitions is { Length: > 0 })
+            {
+                foreach (var partition in selectedPartitions)
+                {
+                    await ApplyAdminFaultAsync(
+                        cancellationToken,
+                        partition.Topic,
+                        partition.Partition,
+                        groupId).ConfigureAwait(false);
+                }
+            }
+            else
+            {
+                await ApplyAdminFaultAsync(cancellationToken, groupId: groupId).ConfigureAwait(false);
+            }
+
             var storedOffsets = _cluster.GetGroupOffsetDetails(groupId);
-            var partitions = spec.TopicPartitions?.ToArray() ?? storedOffsets.Keys.ToArray();
-            var uniquePartitions = new HashSet<TopicPartition>();
+            var partitions = selectedPartitions ?? storedOffsets.Keys.ToArray();
             var offsets = new Dictionary<TopicPartition, StreamsGroupOffsetDescription>(partitions.Length);
             foreach (var partition in partitions)
             {
-                ValidateTopicPartition(partition);
-                if (!uniquePartitions.Add(partition))
-                    throw new ArgumentException($"Partition '{partition.Topic}-{partition.Partition}' is duplicated.", nameof(groupSpecs));
-
                 var hasOffset = storedOffsets.TryGetValue(partition, out var storedOffset);
                 var errorCode = _cluster.ContainsTopicPartition(partition)
                     ? ErrorCode.None
@@ -53,10 +85,10 @@ public sealed partial class InMemoryAdminClient
             });
         }
 
-        return new ValueTask<IReadOnlyDictionary<string, StreamsGroupOffsetsResult>>(results);
+        return results;
     }
 
-    public ValueTask<IReadOnlyDictionary<TopicPartition, StreamsGroupOffsetOperationResult>> AlterStreamsGroupOffsetsAsync(
+    public async ValueTask<IReadOnlyDictionary<TopicPartition, StreamsGroupOffsetOperationResult>> AlterStreamsGroupOffsetsAsync(
         string groupId,
         IEnumerable<TopicPartitionOffset> offsets,
         AlterStreamsGroupOffsetsOptions? options = null,
@@ -80,7 +112,19 @@ public sealed partial class InMemoryAdminClient
         }
 
         if (offsetList.Length == 0)
-            return new ValueTask<IReadOnlyDictionary<TopicPartition, StreamsGroupOffsetOperationResult>>(results);
+        {
+            await ApplyAdminFaultAsync(cancellationToken, groupId: groupId).ConfigureAwait(false);
+            return results;
+        }
+
+        foreach (var offset in offsetList)
+        {
+            await ApplyAdminFaultAsync(
+                cancellationToken,
+                offset.Topic,
+                offset.Partition,
+                groupId).ConfigureAwait(false);
+        }
 
         var alterResults = _cluster.AlterStreamsGroupOffsets(groupId, offsetList);
         foreach (var offset in offsetList)
@@ -97,10 +141,10 @@ public sealed partial class InMemoryAdminClient
             }
         }
 
-        return new ValueTask<IReadOnlyDictionary<TopicPartition, StreamsGroupOffsetOperationResult>>(results);
+        return results;
     }
 
-    public ValueTask<IReadOnlyDictionary<TopicPartition, StreamsGroupOffsetOperationResult>> DeleteStreamsGroupOffsetsAsync(
+    public async ValueTask<IReadOnlyDictionary<TopicPartition, StreamsGroupOffsetOperationResult>> DeleteStreamsGroupOffsetsAsync(
         string groupId,
         IEnumerable<TopicPartition> partitions,
         DeleteStreamsGroupOffsetsOptions? options = null,
@@ -121,6 +165,17 @@ public sealed partial class InMemoryAdminClient
                 throw new ArgumentException($"Partition '{partition.Topic}-{partition.Partition}' is duplicated.", nameof(partitions));
         }
 
+        if (partitionList.Length == 0)
+            await ApplyAdminFaultAsync(cancellationToken, groupId: groupId).ConfigureAwait(false);
+        foreach (var partition in partitionList)
+        {
+            await ApplyAdminFaultAsync(
+                cancellationToken,
+                partition.Topic,
+                partition.Partition,
+                groupId).ConfigureAwait(false);
+        }
+
         var deleteResults = _cluster.DeleteStreamsGroupOffsets(groupId, partitionList);
         foreach (var partition in partitionList)
         {
@@ -135,10 +190,10 @@ public sealed partial class InMemoryAdminClient
             }
         }
 
-        return new ValueTask<IReadOnlyDictionary<TopicPartition, StreamsGroupOffsetOperationResult>>(results);
+        return results;
     }
 
-    public ValueTask<IReadOnlyDictionary<string, DeleteStreamsGroupResult>> DeleteStreamsGroupsAsync(
+    public async ValueTask<IReadOnlyDictionary<string, DeleteStreamsGroupResult>> DeleteStreamsGroupsAsync(
         IEnumerable<string> groupIds,
         DeleteStreamsGroupsOptions? options = null,
         CancellationToken cancellationToken = default)
@@ -163,8 +218,11 @@ public sealed partial class InMemoryAdminClient
             }
         }
 
+        if (groupIdList.Length == 0)
+            await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
         foreach (var groupId in groupIdList)
         {
+            await ApplyAdminFaultAsync(cancellationToken, groupId: groupId).ConfigureAwait(false);
             var errorCode = _cluster.DeleteGroup(groupId);
             if (errorCode != ErrorCode.None)
             {
@@ -176,7 +234,7 @@ public sealed partial class InMemoryAdminClient
             }
         }
 
-        return new ValueTask<IReadOnlyDictionary<string, DeleteStreamsGroupResult>>(results);
+        return results;
     }
 
     private static StreamsGroupOffsetOperationResult Success(TopicPartition partition) => new()

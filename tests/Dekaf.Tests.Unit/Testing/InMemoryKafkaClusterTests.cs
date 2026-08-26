@@ -286,6 +286,23 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
+    public async Task DeleteConsumerGroupsAsync_DuplicateGroupDeletesOnce()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("input");
+        IAdminClient admin = new InMemoryAdminClient(cluster);
+        const string groupId = "deletable-classic";
+        _ = await admin.AlterStreamsGroupOffsetsAsync(
+            groupId,
+            [new TopicPartitionOffset("input", 0, 42)]);
+
+        await admin.DeleteConsumerGroupsAsync([groupId, groupId]);
+        var remainingGroups = await admin.ListConsumerGroupsAsync();
+
+        await Assert.That(remainingGroups.Any(group => group.GroupId == groupId)).IsFalse();
+    }
+
+    [Test]
     public async Task StreamsGroupManagement_DeleteOffsetsRejectsSubscribedTopicAndPreservesOffsets()
     {
         var cluster = new InMemoryKafkaCluster();
