@@ -768,6 +768,25 @@ public sealed class ProtobufInlineRuleValidatorTests
     }
 
     [Test]
+    public async Task Validate_SInt32TruncatesOverlongVarintBeforeZigZagDecoding()
+    {
+        var payload = new ArrayBufferWriter<byte>();
+        WriteVarint(payload, 1u << 3);
+        WriteVarint(payload, 0x1_0000_0000);
+        var parsed = ValidationSint32Envelope.Parser.ParseFrom(payload.WrittenSpan);
+        var validator = new ProtobufInlineRuleValidator(ValidationSint32Envelope.Descriptor);
+
+        validator.Validate(payload.WrittenMemory, schemaId: 17, failFast: false);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+            validator.Validate(payload.WrittenMemory, schemaId: 17, failFast: false);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        await Assert.That(parsed.Value).IsEqualTo(0);
+        await Assert.That(allocated).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task Validate_OversizedFieldNumberReportsRuleException()
     {
         var payload = new ArrayBufferWriter<byte>();

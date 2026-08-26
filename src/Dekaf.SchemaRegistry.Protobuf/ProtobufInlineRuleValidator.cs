@@ -2419,8 +2419,11 @@ internal static class ProtobufValidationValueDecoder
         "google.protobuf.StringValue" or
         "google.protobuf.BytesValue";
 
-    private static int DecodeZigZag32(ulong value) =>
-        unchecked((int)((value >> 1) ^ (ulong)-(long)(value & 1)));
+    private static int DecodeZigZag32(ulong value)
+    {
+        var truncated = unchecked((uint)value);
+        return unchecked((int)(truncated >> 1) ^ -(int)(truncated & 1));
+    }
 
     private static long DecodeZigZag64(ulong value) =>
         unchecked((long)((value >> 1) ^ (ulong)-(long)(value & 1)));

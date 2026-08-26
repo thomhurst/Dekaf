@@ -239,6 +239,24 @@ message ValidationCollectionEnvelope {
   map<string, int32> right_labels = 4;
 }
 
+message ValidationSint32Envelope {
+  sint32 value = 1 [(confluent.field_meta) = {
+    rules: {
+      name: "sint32-zero"
+      expr: "this == 0"
+    }
+  }];
+}
+
+message ValidationSint32BenchmarkEnvelope {
+  sint32 value = 1 [(confluent.field_meta) = {
+    rules: {
+      name: "sint32-non-positive"
+      expr: "this <= 0"
+    }
+  }];
+}
+
 enum ValidationStatus {
   VALIDATION_STATUS_UNSPECIFIED = 0;
   VALIDATION_STATUS_ACTIVE = 1;
