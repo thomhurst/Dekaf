@@ -7,7 +7,7 @@ namespace Dekaf.Tests.Unit.SchemaRegistry;
 public sealed class SchemaRegistryCelRuleTests
 {
     [Test]
-    public async Task SizeConditional_TracksOnlyValueProducingBranches()
+    public async Task SizeConditional_DefersValueProducingBranches()
     {
         var memberIndexes = new Dictionary<string, int>(StringComparer.Ordinal);
         var memberPaths = new List<byte[][]>();
@@ -26,8 +26,8 @@ public sealed class SchemaRegistryCelRuleTests
             sizedMemberIndexes);
 
         await Assert.That(sizedMemberIndexes).DoesNotContain(memberIndexes["large"]);
-        await Assert.That(sizedMemberIndexes).Contains(memberIndexes["small"]);
-        await Assert.That(sizedMemberIndexes).Contains(memberIndexes["other"]);
+        await Assert.That(sizedMemberIndexes).DoesNotContain(memberIndexes["small"]);
+        await Assert.That(sizedMemberIndexes).DoesNotContain(memberIndexes["other"]);
     }
 
     [Test]

@@ -2266,10 +2266,12 @@ internal sealed class AvroMemberResolver
                 var additionalIndexes = _additionalMemberIndexes;
                 if (additionalIndexes is null)
                 {
+                    var sizeIndex = MemberIndex + 1;
                     if (_needsSize && value.SizeIndex == 0)
-                    {
-                        var sizeIndex = MemberIndex + 1;
                         sizes.Set(sizeIndex, AvroValidationValueDecoder.Count(schema, payload));
+                    if (value.Kind is ValidationCelValueKind.Array or ValidationCelValueKind.Object &&
+                        value.SizeIndex == 0)
+                    {
                         value = value with { SizeIndex = sizeIndex };
                     }
                     values.SetValue(MemberIndex, value, aggregateComparer);
@@ -2361,10 +2363,12 @@ internal sealed class AvroMemberResolver
             ValidationCelSizeValues sizes,
             AvroAggregateEqualityComparer? aggregateComparer)
         {
+            var sizeIndex = memberIndex + 1;
             if (size >= 0)
-            {
-                var sizeIndex = memberIndex + 1;
                 sizes.Set(sizeIndex, size);
+            if (value.Kind is ValidationCelValueKind.Array or ValidationCelValueKind.Object &&
+                value.SizeIndex == 0)
+            {
                 value = value with { SizeIndex = sizeIndex };
             }
             values.SetValue(memberIndex, value, aggregateComparer);

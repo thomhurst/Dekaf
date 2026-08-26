@@ -670,6 +670,51 @@ public class AvroInlineRuleValidatorTests
     }
 
     [Test]
+    public async Task Validate_ConditionalSizeCountsOnlySelectedAggregate()
+    {
+        const string schemaText = """
+            {
+              "type": "record",
+              "name": "ConditionalAggregateSizeRecord",
+              "confluent:rules": [{
+                "name": "selected-size",
+                "expr": "size(this.flag ? this.left : this.right) == 2"
+              }],
+              "fields": [
+                { "name": "flag", "type": "boolean" },
+                { "name": "left", "type": { "type": "array", "items": "int" } },
+                { "name": "right", "type": { "type": "array", "items": "int" } }
+              ]
+            }
+            """;
+        var schema = (RecordSchema)AvroSchema.Parse(schemaText);
+        var manyItems = Enumerable.Range(0, 128).ToArray();
+        var selectLeft = new GenericRecord(schema);
+        selectLeft.Add("flag", true);
+        selectLeft.Add("left", TwoItems);
+        selectLeft.Add("right", manyItems);
+        var selectRight = new GenericRecord(schema);
+        selectRight.Add("flag", false);
+        selectRight.Add("left", manyItems);
+        selectRight.Add("right", TwoItems);
+        var leftPayload = Serialize(selectLeft, schema);
+        var rightPayload = Serialize(selectRight, schema);
+        var validator = new AvroInlineRuleValidator(schema);
+
+        validator.Validate(leftPayload, 18, failFast: false);
+        validator.Validate(rightPayload, 18, failFast: false);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+        {
+            validator.Validate(leftPayload, 18, failFast: false);
+            validator.Validate(rightPayload, 18, failFast: false);
+        }
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        await Assert.That(allocated).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task Validate_FloatingArithmeticPreservesFloatingOperands()
     {
         const string schemaText = """
@@ -1621,11 +1666,15 @@ public class AvroInlineRuleValidatorTests
             });
         var destination = new ArrayBufferWriter<byte>();
 
+        _ = await serializer.PrepareAsync("validation-topic", record);
+        var schemaCallsAfterPreparation = registry.GetSchemaCallCount;
+
         var exception = Assert.Throws<ValidationRulesFailedException>(() =>
             serializer.Serialize(record, ref destination, CreateContext()));
 
         await Assert.That(exception.Message).Contains("$.child.code: positive");
         await Assert.That(destination.WrittenCount).IsEqualTo(0);
+        await Assert.That(registry.GetSchemaCallCount).IsEqualTo(schemaCallsAfterPreparation);
     }
 
     [Test]
@@ -2287,14 +2336,19 @@ public class AvroInlineRuleValidatorTests
         ReadOnlyMemory<byte> payload)
     {
         var before = GC.GetAllocatedBytesForCurrentThread();
+        var failed = false;
         try
         {
             validator.Validate(payload, 18, failFast: true);
         }
         catch (ValidationRulesFailedException)
         {
+            failed = true;
         }
-        return GC.GetAllocatedBytesForCurrentThread() - before;
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        return failed
+            ? allocated
+            : throw new InvalidOperationException("Expected inline validation to fail.");
     }
 
     private static byte[] CreateWireBytes(int schemaId, ReadOnlySpan<byte> payload)

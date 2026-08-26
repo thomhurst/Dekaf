@@ -81,6 +81,9 @@ internal sealed class AvroAggregateEqualityComparer(
     object? IValidationCelAggregateComparer.RawEqualityToken =>
         _requiresSemanticEquality || !rawEqualityCompatible ? null : _schemaToken;
 
+    int IValidationCelAggregateComparer.GetSize(ReadOnlyMemory<byte> value) =>
+        AvroValidationValueDecoder.Count(_schema, value);
+
     bool IValidationCelAggregateComparer.AreEqual(
         ReadOnlyMemory<byte> left,
         IValidationCelAggregateComparer rightComparer,

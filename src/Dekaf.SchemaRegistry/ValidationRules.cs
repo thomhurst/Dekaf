@@ -1237,6 +1237,8 @@ internal interface IValidationCelAggregateComparer
 {
     object? RawEqualityToken { get; }
 
+    int GetSize(ReadOnlyMemory<byte> value);
+
     bool AreEqual(
         ReadOnlyMemory<byte> left,
         IValidationCelAggregateComparer rightComparer,
@@ -2746,7 +2748,7 @@ internal sealed class ValidationCelFunctionNode(
         if (name == "size")
         {
             RequireArgumentCount(1);
-            return ValidationCelValue.FromNumber(GetSize(arguments[0].Evaluate(context), context.Sizes));
+            return ValidationCelValue.FromNumber(GetSize(arguments[0].Evaluate(context), context));
         }
 
         if (name is "startsWith" or "endsWith" or "contains")
@@ -2778,15 +2780,29 @@ internal sealed class ValidationCelFunctionNode(
             throw Unsupported($"CEL function '{name}' expects {expected.ToString(CultureInfo.InvariantCulture)} argument(s).");
     }
 
-    private static int GetSize(ValidationCelValue value, ValidationCelSizeValues sizes)
+    private static int GetSize(ValidationCelValue value, ValidationCelContext context)
     {
-        if (value.SizeIndex >= 0 && sizes.TryGet(value.SizeIndex, out var cached))
+        if (value.SizeIndex >= 0 && context.Sizes.TryGet(value.SizeIndex, out var cached))
             return cached;
 
-        var size = GetSizeCore(value);
+        var size = value.Kind is ValidationCelValueKind.Array or ValidationCelValueKind.Object &&
+                   value.Json.IsEmpty
+            ? GetEncodedAggregateSize(value, context)
+            : GetSizeCore(value);
         if (value.SizeIndex >= 0)
-            sizes.Set(value.SizeIndex, size);
+            context.Sizes.Set(value.SizeIndex, size);
         return size;
+    }
+
+    private static int GetEncodedAggregateSize(
+        ValidationCelValue value,
+        ValidationCelContext context)
+    {
+        var comparer = value.SizeIndex == 0
+            ? context.RootAggregateComparer
+            : context.MemberValues.GetAggregateComparer(value.SizeIndex - 1);
+        return comparer?.GetSize(value.Utf8Literal) ??
+            throw Unsupported("CEL function 'size' could not resolve the encoded aggregate schema.");
     }
 
     private static int GetSizeCore(ValidationCelValue value)
@@ -3109,7 +3125,10 @@ internal sealed class ValidationCelParser
         }
         var whenTrue = ParseConditional();
         Expect(ValidationCelTokenKind.Colon);
-        return new ValidationCelConditionalNode(condition, whenTrue, ParseConditional());
+        var whenFalse = ParseConditional();
+        if (sizedMemberCount >= 0)
+            RollbackSizedMembers(sizedMemberCount);
+        return new ValidationCelConditionalNode(condition, whenTrue, whenFalse);
     }
 
     private ValidationCelNode ParseOr()

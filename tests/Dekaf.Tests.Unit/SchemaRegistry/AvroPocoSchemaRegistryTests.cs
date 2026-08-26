@@ -2878,9 +2878,30 @@ public sealed class AvroPocoSchemaRegistryTests
             });
         await using var serializer = PocoReferencedRoot.CreateAvroSerializer(
             registry,
-            new AvroSerializerConfig { UseLatestVersion = true });
+            new AvroSerializerConfig
+            {
+                UseLatestVersion = true,
+                ValidationRulesExecution =
+                    Dekaf.SchemaRegistry.ValidationRulesExecution.BeforeDomainRules
+            });
 
         await serializer.WarmupAsync("poco-referenced-latest");
+        var schemaCallsAfterPreparation = registry.GetSchemaCallCount;
+        var destination = new ArrayBufferWriter<byte>();
+        serializer.Serialize(
+            new PocoReferencedRoot
+            {
+                Address = new PocoAddress { City = "London", PostCode = "SW1" }
+            },
+            ref destination,
+            new SerializationContext
+            {
+                Topic = "poco-referenced-latest",
+                Component = SerializationComponent.Value
+            });
+
+        await Assert.That(destination.WrittenCount).IsGreaterThan(5);
+        await Assert.That(registry.GetSchemaCallCount).IsEqualTo(schemaCallsAfterPreparation);
     }
 
     [Test]

@@ -176,15 +176,72 @@ public sealed class AvroSchemaRegistrySerializer<
         ArgumentNullException.ThrowIfNull(value);
         var avroSchema = GetSchemaForValue(value);
         var cache = GetSubjectSchemaIdCache(avroSchema);
-        if (cache.TryGet(topic, isKey, out var cached))
-            return new ValueTask<ResolvedSchemaContext>(ToResolvedContext(cached));
+        var preparation = cache.TryGet(topic, isKey, out var cached)
+            ? new ValueTask<ResolvedSchemaContext>(ToResolvedContext(cached))
+            : PrepareCoreAsync(
+                topic,
+                isKey,
+                avroSchema,
+                cache,
+                cancellationToken);
+        return PrepareInlineValidationAsync(preparation, avroSchema, cancellationToken);
+    }
 
-        return PrepareCoreAsync(
-            topic,
-            isKey,
-            avroSchema,
-            cache,
-            cancellationToken);
+    private ValueTask<ResolvedSchemaContext> PrepareInlineValidationAsync(
+        ValueTask<ResolvedSchemaContext> preparation,
+        AvroSchema runtimeSchema,
+        CancellationToken cancellationToken)
+    {
+        if (_inlineRuleValidators is null)
+            return preparation;
+        if (preparation.IsCompletedSuccessfully)
+        {
+            var resolved = preparation.Result;
+            var cached = Volatile.Read(ref _lastInlineValidationDecision);
+            if (cached >= 0 && (int)(cached >> 1) == resolved.SchemaId)
+                return new ValueTask<ResolvedSchemaContext>(resolved);
+            var validationPreparation = _inlineRuleValidators.PrepareSerializerSchemaAsync(
+                resolved.Schema,
+                runtimeSchema,
+                cancellationToken);
+            if (validationPreparation.IsCompletedSuccessfully)
+            {
+                CacheInlineValidationDecision(resolved.SchemaId, validationPreparation.Result);
+                return new ValueTask<ResolvedSchemaContext>(resolved);
+            }
+            return AwaitValidationCompletionAsync(this, resolved, validationPreparation);
+        }
+
+        return AwaitPreparationAndValidationAsync(this, preparation, runtimeSchema, cancellationToken);
+
+        static async ValueTask<ResolvedSchemaContext> AwaitValidationCompletionAsync(
+            AvroSchemaRegistrySerializer<T> serializer,
+            ResolvedSchemaContext resolved,
+            ValueTask<AvroInlineRuleValidator> pending)
+        {
+            var validator = await pending.ConfigureAwait(false);
+            serializer.CacheInlineValidationDecision(resolved.SchemaId, validator);
+            return resolved;
+        }
+
+        static async ValueTask<ResolvedSchemaContext> AwaitPreparationAndValidationAsync(
+            AvroSchemaRegistrySerializer<T> serializer,
+            ValueTask<ResolvedSchemaContext> pending,
+            AvroSchema runtimeSchema,
+            CancellationToken cancellationToken)
+        {
+            var resolved = await pending.ConfigureAwait(false);
+            var cached = Volatile.Read(ref serializer._lastInlineValidationDecision);
+            if (cached >= 0 && (int)(cached >> 1) == resolved.SchemaId)
+                return resolved;
+            var validator = await serializer._inlineRuleValidators!.PrepareSerializerSchemaAsync(
+                    resolved.Schema,
+                    runtimeSchema,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            serializer.CacheInlineValidationDecision(resolved.SchemaId, validator);
+            return resolved;
+        }
     }
 
     /// <inheritdoc />
@@ -534,11 +591,17 @@ public sealed class AvroSchemaRegistrySerializer<
 
         var validator = _inlineRuleValidators!.RegisterSerializerSchema(registrySchema, avroSchema);
         var hasRules = validator.HasAnyRules;
-        Volatile.Write(
-            ref _lastInlineValidationDecision,
-            ((long)schemaId << 1) | (hasRules ? 1L : 0L));
+        CacheInlineValidationDecision(schemaId, validator);
         return hasRules ? validator : null;
     }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void CacheInlineValidationDecision(
+        int schemaId,
+        AvroInlineRuleValidator validator) =>
+        Volatile.Write(
+            ref _lastInlineValidationDecision,
+            ((long)schemaId << 1) | (validator.HasAnyRules ? 1L : 0L));
 
     private ReadOnlyMemory<byte> TransformSerializedPayload(
         ReadOnlyMemory<byte> payload,

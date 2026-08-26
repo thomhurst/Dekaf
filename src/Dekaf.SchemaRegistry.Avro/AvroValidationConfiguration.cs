@@ -63,6 +63,36 @@ internal sealed class AvroInlineRuleValidatorProvider : IInlineValidationRuleExe
             : Register(registrySchema, runtimeSchema);
     }
 
+    internal ValueTask<AvroInlineRuleValidator> PrepareSerializerSchemaAsync(
+        RegistrySchema registrySchema,
+        AvroSchema runtimeSchema,
+        CancellationToken cancellationToken)
+    {
+        if (_registeredSchemas.TryGetValue(registrySchema, out var existing))
+            return new ValueTask<AvroInlineRuleValidator>(existing);
+        if (registrySchema.References is not { Count: > 0 })
+            return new ValueTask<AvroInlineRuleValidator>(Register(registrySchema, runtimeSchema));
+        if (_schemaRegistry is null)
+        {
+            throw new SchemaRegistryRuleException(
+                "Could not resolve registered Avro schema references without a Schema Registry client.");
+        }
+
+        return PrepareReferencedSerializerSchemaAsync(registrySchema, cancellationToken);
+    }
+
+    private async ValueTask<AvroInlineRuleValidator> PrepareReferencedSerializerSchemaAsync(
+        RegistrySchema registrySchema,
+        CancellationToken cancellationToken)
+    {
+        var resolvedSchema = await Poco.AvroSchemaReferenceResolver.ParseAsync(
+                _schemaRegistry!,
+                registrySchema,
+                cancellationToken)
+            .ConfigureAwait(false);
+        return Register(registrySchema, resolvedSchema);
+    }
+
     internal AvroSchema GetResolvedSchema(RegistrySchema registrySchema)
     {
         if (_resolvedSchemas.TryGetValue(registrySchema, out var resolved))

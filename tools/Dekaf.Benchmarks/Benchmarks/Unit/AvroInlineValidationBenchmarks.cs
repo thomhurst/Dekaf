@@ -17,6 +17,8 @@ public class AvroInlineValidationBenchmarks
     private ReadOnlyMemory<byte> _payload;
     private AvroInlineRuleValidator _arrayEqualityValidator = null!;
     private AvroInlineRuleValidator _conditionalArrayEqualityValidator = null!;
+    private AvroInlineRuleValidator _conditionalArraySizeValidator = null!;
+    private ReadOnlyMemory<byte> _conditionalArraySizePayload;
     private ReadOnlyMemory<byte> _equalArrayPayload;
     private ReadOnlyMemory<byte> _segmentedArrayPayload;
     private AvroInlineRuleValidator _unionArrayEqualityValidator = null!;
@@ -125,6 +127,40 @@ public class AvroInlineValidationBenchmarks
         _conditionalArrayEqualityValidator = new AvroInlineRuleValidator(
             AvroSchema.Parse(conditionalArrayEqualitySchema));
         _conditionalArrayEqualityValidator.Validate(_segmentedArrayPayload, 10, failFast: false);
+
+        const string conditionalArraySizeSchema = """
+            {
+              "type": "record",
+              "name": "ConditionalArraySizeBenchmarkRecord",
+              "confluent:rules": [{
+                "name": "size",
+                "expr": "size(this.flag ? this.left : this.right) == 128"
+              }],
+              "fields": [
+                { "name": "flag", "type": "boolean" },
+                { "name": "left", "type": { "type": "array", "items": "int" } },
+                { "name": "right", "type": { "type": "array", "items": "int" } }
+              ]
+            }
+            """;
+        var conditionalSizeSchema = (RecordSchema)AvroSchema.Parse(conditionalArraySizeSchema);
+        var conditionalSizeRecord = new GenericRecord(conditionalSizeSchema);
+        var conditionalSizeItems = Enumerable.Range(0, 128).ToArray();
+        conditionalSizeRecord.Add("flag", true);
+        conditionalSizeRecord.Add("left", conditionalSizeItems);
+        conditionalSizeRecord.Add("right", conditionalSizeItems);
+        using var conditionalSizeStream = new MemoryStream();
+        var conditionalSizeEncoder = new BinaryEncoder(conditionalSizeStream);
+        new GenericDatumWriter<GenericRecord>(conditionalSizeSchema).Write(
+            conditionalSizeRecord,
+            conditionalSizeEncoder);
+        conditionalSizeEncoder.Flush();
+        _conditionalArraySizePayload = conditionalSizeStream.ToArray();
+        _conditionalArraySizeValidator = new AvroInlineRuleValidator(conditionalSizeSchema);
+        _conditionalArraySizeValidator.Validate(
+            _conditionalArraySizePayload,
+            21,
+            failFast: false);
 
         const string unionArrayEqualitySchema = """
             {
@@ -600,6 +636,13 @@ public class AvroInlineValidationBenchmarks
     [Benchmark]
     public void ValidateConditionalEqualArraysWithDifferentBlocks() =>
         _conditionalArrayEqualityValidator.Validate(_segmentedArrayPayload, 10, failFast: false);
+
+    [Benchmark]
+    public void ValidateConditionalArraySize() =>
+        _conditionalArraySizeValidator.Validate(
+            _conditionalArraySizePayload,
+            21,
+            failFast: false);
 
     [Benchmark]
     public void ValidateEqualUnionArraysControl() =>

@@ -116,20 +116,28 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         CancellationToken cancellationToken = default)
     {
         var cache = _subjectCache;
+        ValueTask<ResolvedSchemaContext> preparation;
         if (cache.TryGet(topic, isKey, out var cached))
-            return new ValueTask<ResolvedSchemaContext>(ToResolvedContext(cached));
-
+        {
+            preparation = new ValueTask<ResolvedSchemaContext>(ToResolvedContext(cached));
+            return PrepareInlineValidationAsync(preparation, cancellationToken);
+        }
         if (_asyncSubjectNameStrategy is not null)
         {
             cache = Volatile.Read(ref _associatedSubjectCache)!;
             if (cache.TryGet(topic, isKey, out cached))
-                return new ValueTask<ResolvedSchemaContext>(ToResolvedContext(cached));
-
-            return PrepareAssociatedCoreAsync(
-                topic,
-                isKey,
-                cache,
-                cancellationToken);
+            {
+                preparation = new ValueTask<ResolvedSchemaContext>(ToResolvedContext(cached));
+            }
+            else
+            {
+                preparation = PrepareAssociatedCoreAsync(
+                    topic,
+                    isKey,
+                    cache,
+                    cancellationToken);
+            }
+            return PrepareInlineValidationAsync(preparation, cancellationToken);
         }
 
         var subject = GetSubjectName(topic, isKey);
@@ -137,15 +145,73 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
         if (resolution.IsCompletedSuccessfully)
         {
             var value = resolution.Result;
-            return new ValueTask<ResolvedSchemaContext>(ToResolvedContext(
+            preparation = new ValueTask<ResolvedSchemaContext>(ToResolvedContext(
                 cache.CacheEntry(
                     topic,
                     isKey,
                     subject,
                     in value)));
         }
+        else
+        {
+            preparation = AwaitResolutionAsync(topic, isKey, subject, cache, resolution);
+        }
+        return PrepareInlineValidationAsync(preparation, cancellationToken);
+    }
 
-        return AwaitResolutionAsync(topic, isKey, subject, cache, resolution);
+    private ValueTask<ResolvedSchemaContext> PrepareInlineValidationAsync(
+        ValueTask<ResolvedSchemaContext> preparation,
+        CancellationToken cancellationToken)
+    {
+        if (_inlineRuleValidators is null)
+            return preparation;
+        if (preparation.IsCompletedSuccessfully)
+        {
+            var resolved = preparation.Result;
+            var cached = Volatile.Read(ref _lastInlineValidationDecision);
+            if (cached >= 0 && (int)(cached >> 1) == resolved.SchemaId)
+                return new ValueTask<ResolvedSchemaContext>(resolved);
+            var validationPreparation = _inlineRuleValidators.PrepareSerializerSchemaAsync(
+                resolved.Schema,
+                GeneratedSchema.Value,
+                cancellationToken);
+            if (validationPreparation.IsCompletedSuccessfully)
+            {
+                CacheInlineValidationDecision(resolved.SchemaId, validationPreparation.Result);
+                return new ValueTask<ResolvedSchemaContext>(resolved);
+            }
+            return AwaitValidationCompletionAsync(this, resolved, validationPreparation);
+        }
+
+        return AwaitPreparationAndValidationAsync(this, preparation, cancellationToken);
+
+        static async ValueTask<ResolvedSchemaContext> AwaitValidationCompletionAsync(
+            AvroPocoSchemaRegistrySerializer<T, TCodec> serializer,
+            ResolvedSchemaContext resolved,
+            ValueTask<AvroInlineRuleValidator> pending)
+        {
+            var validator = await pending.ConfigureAwait(false);
+            serializer.CacheInlineValidationDecision(resolved.SchemaId, validator);
+            return resolved;
+        }
+
+        static async ValueTask<ResolvedSchemaContext> AwaitPreparationAndValidationAsync(
+            AvroPocoSchemaRegistrySerializer<T, TCodec> serializer,
+            ValueTask<ResolvedSchemaContext> pending,
+            CancellationToken cancellationToken)
+        {
+            var resolved = await pending.ConfigureAwait(false);
+            var cached = Volatile.Read(ref serializer._lastInlineValidationDecision);
+            if (cached >= 0 && (int)(cached >> 1) == resolved.SchemaId)
+                return resolved;
+            var validator = await serializer._inlineRuleValidators!.PrepareSerializerSchemaAsync(
+                    resolved.Schema,
+                    GeneratedSchema.Value,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            serializer.CacheInlineValidationDecision(resolved.SchemaId, validator);
+            return resolved;
+        }
     }
 
     private async ValueTask<ResolvedSchemaContext> PrepareAssociatedCoreAsync(
@@ -542,11 +608,17 @@ public sealed class AvroPocoSchemaRegistrySerializer<T, TCodec>
 
         var validator = _inlineRuleValidators!.RegisterSerializerSchema(registrySchema, GeneratedSchema.Value);
         var hasRules = validator.HasAnyRules;
-        Volatile.Write(
-            ref _lastInlineValidationDecision,
-            ((long)schemaId << 1) | (hasRules ? 1L : 0L));
+        CacheInlineValidationDecision(schemaId, validator);
         return hasRules ? validator : null;
     }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void CacheInlineValidationDecision(
+        int schemaId,
+        AvroInlineRuleValidator validator) =>
+        Volatile.Write(
+            ref _lastInlineValidationDecision,
+            ((long)schemaId << 1) | (validator.HasAnyRules ? 1L : 0L));
 
     private void SerializeWithTaggedRules<TWriter>(
         T value,
