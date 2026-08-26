@@ -448,6 +448,7 @@ internal sealed class AvroValueRulePlan
                 _fields[index],
                 ref reader,
                 now,
+                _schemaRules.NeedsRecordFieldSize(index),
                 ref nestedViolations,
                 ref path,
                 out var size);
@@ -464,6 +465,7 @@ internal sealed class AvroValueRulePlan
         AvroFieldRulePlan field,
         ref AvroValidationReader reader,
         long now,
+        bool needsSize,
         ref List<ValidationRuleError>? violations,
         scoped ref AvroValidationPath path,
         out int size)
@@ -502,6 +504,8 @@ internal sealed class AvroValueRulePlan
         var value = field.Child.ValidateAndCapture(
             ref reader,
             now,
+            failFast: false,
+            needsSize,
             ref violations,
             ref path,
             out size);
@@ -530,6 +534,8 @@ internal sealed class AvroValueRulePlan
         var value = field.Child.ValidateAndCapture(
             ref reader,
             now,
+            failFast,
+            field.Rules.UsesRootSize,
             ref nestedViolations,
             ref path,
             out size);
@@ -549,6 +555,8 @@ internal sealed class AvroValueRulePlan
     private ValidationCelValue ValidateAndCapture(
         ref AvroValidationReader reader,
         long now,
+        bool failFast,
+        bool needsSize,
         ref List<ValidationRuleError>? violations,
         scoped ref AvroValidationPath path,
         out int size)
@@ -560,16 +568,16 @@ internal sealed class AvroValueRulePlan
             switch (_schema)
             {
                 case global::Avro.RecordSchema:
-                    ValidateRecord(ref reader, now, failFast: false, ref violations, ref path);
+                    ValidateRecord(ref reader, now, failFast, ref violations, ref path);
                     size = _fields.Length;
                     kind = ValidationCelValueKind.Object;
                     break;
                 case global::Avro.ArraySchema:
-                    size = ValidateArray(ref reader, now, failFast: false, ref violations, ref path);
+                    size = ValidateArray(ref reader, now, failFast, ref violations, ref path);
                     kind = ValidationCelValueKind.Array;
                     break;
                 case global::Avro.MapSchema:
-                    size = ValidateMap(ref reader, now, failFast: false, ref violations, ref path);
+                    size = ValidateMap(ref reader, now, failFast, ref violations, ref path);
                     kind = ValidationCelValueKind.Object;
                     break;
                 default:
@@ -577,7 +585,7 @@ internal sealed class AvroValueRulePlan
                     return Validate(
                         ref reader,
                         now,
-                        failFast: false,
+                        failFast,
                         ref violations,
                         ref path);
             }
@@ -591,10 +599,10 @@ internal sealed class AvroValueRulePlan
         var value = Validate(
             ref reader,
             now,
-            failFast: false,
+            failFast,
             ref violations,
             ref path);
-        size = value.SizeIndex == 0
+        size = needsSize && value.SizeIndex == 0
             ? AvroValidationValueDecoder.Count(
                 _schema,
                 reader.Source.Slice(valueStart, reader.Position - valueStart))
@@ -651,6 +659,8 @@ internal sealed class AvroValueRulePlan
                 var value = valuePlan.ValidateAndCapture(
                     ref reader,
                     now,
+                    failFast: false,
+                    needsSize: true,
                     ref nestedViolations,
                     ref path,
                     out var size);
@@ -696,16 +706,16 @@ internal sealed class AvroValueRulePlan
         switch (_schema)
         {
             case global::Avro.RecordSchema:
-                ValidateRecord(ref reader, now, failFast: false, ref nestedViolations, ref path);
+                ValidateRecord(ref reader, now, failFast, ref nestedViolations, ref path);
                 rootSize = _fields.Length;
                 valueKind = ValidationCelValueKind.Object;
                 break;
             case global::Avro.ArraySchema:
-                rootSize = ValidateArray(ref reader, now, failFast: false, ref nestedViolations, ref path);
+                rootSize = ValidateArray(ref reader, now, failFast, ref nestedViolations, ref path);
                 valueKind = ValidationCelValueKind.Array;
                 break;
             case global::Avro.MapSchema:
-                rootSize = ValidateMap(ref reader, now, failFast: false, ref nestedViolations, ref path);
+                rootSize = ValidateMap(ref reader, now, failFast, ref nestedViolations, ref path);
                 valueKind = ValidationCelValueKind.Object;
                 break;
             default:
@@ -826,9 +836,11 @@ internal sealed class AvroValueRulePlan
                 path.Truncate(mark);
                 if (failFast && violations is not null)
                 {
-                    for (var remaining = index + 1; remaining < count; remaining++)
+                    var remainingInBlock = count - index - 1;
+                    for (long remaining = 0; remaining < remainingInBlock; remaining++)
                         AvroValidationValueDecoder.Skip(item._schema, ref reader);
-                    SkipRemainingCollection(item._schema, ref reader);
+                    itemIndex = checked(itemIndex + (int)remainingInBlock +
+                        SkipRemainingCollection(item._schema, ref reader));
                     return itemIndex;
                 }
             }
@@ -859,37 +871,43 @@ internal sealed class AvroValueRulePlan
                 path.Truncate(mark);
                 if (failFast && violations is not null)
                 {
-                    for (var remaining = index + 1; remaining < count; remaining++)
+                    var remainingInBlock = count - index - 1;
+                    for (long remaining = 0; remaining < remainingInBlock; remaining++)
                     {
                         _ = reader.ReadLengthPrefixed();
                         AvroValidationValueDecoder.Skip(valuePlan._schema, ref reader);
                     }
-                    SkipRemainingMap(valuePlan._schema, ref reader);
+                    itemCount = checked(itemCount + (int)remainingInBlock +
+                        SkipRemainingMap(valuePlan._schema, ref reader));
                     return itemCount;
                 }
             }
         }
     }
 
-    private static void SkipRemainingCollection(AvroSchema item, ref AvroValidationReader reader)
+    private static int SkipRemainingCollection(AvroSchema item, ref AvroValidationReader reader)
     {
+        var itemCount = 0;
         while (true)
         {
             var count = reader.ReadCollectionCount();
             if (count == 0)
-                return;
+                return itemCount;
+            itemCount = checked(itemCount + (int)count);
             for (long index = 0; index < count; index++)
                 AvroValidationValueDecoder.Skip(item, ref reader);
         }
     }
 
-    private static void SkipRemainingMap(AvroSchema value, ref AvroValidationReader reader)
+    private static int SkipRemainingMap(AvroSchema value, ref AvroValidationReader reader)
     {
+        var itemCount = 0;
         while (true)
         {
             var count = reader.ReadCollectionCount();
             if (count == 0)
-                return;
+                return itemCount;
+            itemCount = checked(itemCount + (int)count);
             for (long index = 0; index < count; index++)
             {
                 _ = reader.ReadLengthPrefixed();
@@ -1448,6 +1466,9 @@ internal sealed class AvroCompiledRuleSet
             resolution.Members,
             resolution.Sizes);
 
+    internal bool NeedsRecordFieldSize(int fieldIndex) =>
+        _members!.NeedsRecordFieldSize(fieldIndex);
+
     internal void ResolveUnionBranch(
         int branch,
         ReadOnlyMemory<byte> payload,
@@ -1846,6 +1867,9 @@ internal sealed class AvroMemberResolver
             node.ResolveCaptured(payload, value, size, values, sizes);
     }
 
+    internal bool NeedsRecordFieldSize(int fieldIndex) =>
+        _fields[fieldIndex]?.NeedsSize ?? false;
+
     internal void ResolveUnionBranch(
         int branch,
         ReadOnlyMemory<byte> payload,
@@ -1985,6 +2009,7 @@ internal sealed class AvroMemberResolver
         }
         internal int MemberIndex { get; private set; } = -1;
         internal bool HasTargets => MemberIndex >= 0 || _children.Count != 0;
+        internal bool NeedsSize => _needsSize;
 
         internal void AddMemberIndex(int memberIndex, bool needsSize)
         {

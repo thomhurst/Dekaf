@@ -890,6 +890,37 @@ public class AvroInlineRuleValidatorTests
     }
 
     [Test]
+    public async Task Validate_OverlappingUnionComparerGroupsUsePairCompatibility()
+    {
+        const string schemaText = """
+            {
+              "type": "record",
+              "name": "OverlappingUnionAggregateEqualityRecord",
+              "confluent:rules": [{ "name": "equal", "expr": "this.bridge == this.right" }],
+              "fields": [
+                { "name": "left", "type": { "type": "array", "items": "int" } },
+                { "name": "bridge", "type": { "type": "array", "items": ["int", "string"] } },
+                { "name": "right", "type": { "type": "array", "items": "string" } }
+              ]
+            }
+            """;
+        var validator = new AvroInlineRuleValidator(AvroSchema.Parse(schemaText));
+        ReadOnlyMemory<byte> payload = new byte[]
+        {
+            0,
+            2, 2, 2, (byte)'x', 0,
+            2, 2, (byte)'x', 0
+        };
+
+        validator.Validate(payload, 27, failFast: false);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+            validator.Validate(payload, 27, failFast: false);
+
+        await Assert.That(GC.GetAllocatedBytesForCurrentThread() - before).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task Validate_BytesLiteralDecodesHexEscapes()
     {
         const string schemaText = """

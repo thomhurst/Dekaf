@@ -8,6 +8,7 @@ namespace Dekaf.SchemaRegistry.Avro;
 internal sealed class AvroAggregateEqualityComparerFactory
 {
     private readonly List<SchemaGroup> _groups = [];
+    private readonly List<AvroAggregateEqualityComparer> _comparers = [];
 
     internal AvroAggregateEqualityComparer? Create(AvroSchema schema)
     {
@@ -17,22 +18,42 @@ internal sealed class AvroAggregateEqualityComparerFactory
             return null;
         }
 
+        SchemaGroup? selectedGroup = null;
+        var rawEqualityCompatible = true;
         for (var index = 0; index < _groups.Count; index++)
         {
             var group = _groups[index];
             if (AvroSchemaLogicalComparer.Instance.Equals(schema, group.Schema) ||
                 AvroValueSchemaComparer.AreCelCompatible(schema, group.Schema))
             {
-                return new AvroAggregateEqualityComparer(
-                    schema,
-                    group,
-                    AvroValueSchemaComparer.HaveSameEncoding(schema, group.Schema));
+                selectedGroup = group;
+                rawEqualityCompatible = AvroValueSchemaComparer.HaveSameEncoding(schema, group.Schema);
+                break;
             }
         }
 
-        var newGroup = new SchemaGroup(schema);
-        _groups.Add(newGroup);
-        return new AvroAggregateEqualityComparer(schema, newGroup, rawEqualityCompatible: true);
+        if (selectedGroup is null)
+        {
+            selectedGroup = new SchemaGroup(schema);
+            _groups.Add(selectedGroup);
+        }
+
+        var comparer = new AvroAggregateEqualityComparer(
+            schema,
+            selectedGroup,
+            rawEqualityCompatible);
+        for (var index = 0; index < _comparers.Count; index++)
+        {
+            var existing = _comparers[index];
+            if (AvroSchemaLogicalComparer.Instance.Equals(schema, existing.Schema) ||
+                AvroValueSchemaComparer.AreCelCompatible(schema, existing.Schema))
+            {
+                comparer.AddCompatible(existing);
+                existing.AddCompatible(comparer);
+            }
+        }
+        _comparers.Add(comparer);
+        return comparer;
     }
 
     private sealed class SchemaGroup(AvroSchema schema)
@@ -52,6 +73,8 @@ internal sealed class AvroAggregateEqualityComparer(
     private const int StackMapBucketCount = 32;
 
     private readonly AvroSchema _schema = schema;
+    private readonly HashSet<AvroSchema> _compatibleSchemas =
+        new(AvroSchemaReferenceComparer.Instance) { schema };
     private readonly bool _requiresSemanticEquality = ContainsFloating(schema, []);
     private readonly object _schemaToken = schemaToken;
 
@@ -64,7 +87,7 @@ internal sealed class AvroAggregateEqualityComparer(
         ReadOnlyMemory<byte> right)
     {
         if (rightComparer is not AvroAggregateEqualityComparer avroRight ||
-            !ReferenceEquals(_schemaToken, avroRight._schemaToken))
+            !_compatibleSchemas.Contains(avroRight._schema))
             return false;
 
         var leftReader = new AvroValidationReader(left);
@@ -72,6 +95,11 @@ internal sealed class AvroAggregateEqualityComparer(
         return AreEqual(_schema, avroRight._schema, ref leftReader, ref rightReader) &&
             leftReader.End && rightReader.End;
     }
+
+    internal AvroSchema Schema => _schema;
+
+    internal void AddCompatible(AvroAggregateEqualityComparer comparer) =>
+        _compatibleSchemas.Add(comparer._schema);
 
     private static bool AreEqual(
         AvroSchema leftSchema,
