@@ -297,34 +297,39 @@ public sealed partial class AdminClient
         CancellationToken cancellationToken)
     {
         var topicMaps = new Dictionary<string, OffsetTopicIdRequestMap?>(groupIds.Count, StringComparer.Ordinal);
+        var mappingErrorsByGroup = new Dictionary<string, Dictionary<TopicPartition, Protocol.ErrorCode>?>(
+            groupIds.Count,
+            StringComparer.Ordinal);
+        var mappingFailuresByGroup = new Dictionary<string, KafkaException?>(groupIds.Count, StringComparer.Ordinal);
         var requestGroups = new List<OffsetFetchRequestGroup>(groupIds.Count);
         Exception? retryFailure = null;
         foreach (var groupId in groupIds)
         {
-            IReadOnlyList<OffsetFetchRequestTopic>? topics;
-            OffsetTopicIdRequestMap? topicMap;
-            try
+            var topics = BuildOffsetFetchTopics(
+                requests[groupId],
+                apiVersion,
+                nameof(ListStreamsGroupOffsetsAsync),
+                out var topicMap,
+                out var mappingErrors,
+                out var mappingFailure);
+            if (mappingErrors is not null)
             {
-                topics = BuildOffsetFetchTopics(
-                    requests[groupId],
-                    apiVersion,
-                    nameof(ListStreamsGroupOffsetsAsync),
-                    out topicMap);
-            }
-            catch (KafkaException exception) when (exception.ErrorCode == Protocol.ErrorCode.UnknownTopicId)
-            {
-                var errorCode = exception.ErrorCode ?? Protocol.ErrorCode.UnknownTopicId;
-                retryErrors[groupId] = errorCode;
-                mappingRetryResults[groupId] = GroupOffsetsPartitionError(
+                mappingRetryResults[groupId] = GroupOffsetsPartitionErrors(
                     groupId,
                     requests[groupId],
-                    errorCode);
-                retryFailure ??= exception;
-                continue;
+                    mappingErrors,
+                    Protocol.ErrorCode.UnknownServerError);
             }
+            else
+                mappingRetryResults.Remove(groupId);
 
-            mappingRetryResults.Remove(groupId);
+            retryFailure ??= mappingFailure;
+            if (topics is { Count: 0 })
+                continue;
+
             topicMaps[groupId] = topicMap;
+            mappingErrorsByGroup[groupId] = mappingErrors;
+            mappingFailuresByGroup[groupId] = mappingFailure;
             requestGroups.Add(new OffsetFetchRequestGroup
             {
                 GroupId = groupId,
@@ -360,10 +365,19 @@ public sealed partial class AdminClient
                 response.Topics ?? [],
                 requests[groupId],
                 topicMaps[groupId],
+                mappingErrorsByGroup[groupId],
+                mappingFailuresByGroup[groupId],
                 results,
                 retryResults);
             if (failure is not null)
+            {
                 retryErrors[groupId] = GetRetryErrorCode(failure);
+                if (mappingFailuresByGroup[groupId] is not null &&
+                    retryResults.TryGetValue(groupId, out var retryResult))
+                {
+                    mappingRetryResults[groupId] = retryResult;
+                }
+            }
             retryFailure ??= failure;
             return retryFailure;
         }
@@ -382,10 +396,19 @@ public sealed partial class AdminClient
                 group.Topics,
                 requests[group.GroupId],
                 topicMaps[group.GroupId],
+                mappingErrorsByGroup[group.GroupId],
+                mappingFailuresByGroup[group.GroupId],
                 results,
                 retryResults);
             if (failure is not null)
+            {
                 retryErrors[group.GroupId] = GetRetryErrorCode(failure);
+                if (mappingFailuresByGroup[group.GroupId] is not null &&
+                    retryResults.TryGetValue(group.GroupId, out var retryResult))
+                {
+                    mappingRetryResults[group.GroupId] = retryResult;
+                }
+            }
             retryFailure ??= failure;
         }
 
@@ -411,6 +434,8 @@ public sealed partial class AdminClient
         IReadOnlyList<OffsetFetchResponseTopic> responseTopics,
         IReadOnlyList<TopicPartition>? requestedPartitions,
         OffsetTopicIdRequestMap? topicMap,
+        IReadOnlyDictionary<TopicPartition, Protocol.ErrorCode>? mappingErrors,
+        KafkaException? mappingFailure,
         Dictionary<string, StreamsGroupOffsetsResult> results,
         Dictionary<string, StreamsGroupOffsetsResult> retryResults)
     {
@@ -438,8 +463,21 @@ public sealed partial class AdminClient
 
         var requested = requestedPartitions?.ToHashSet();
         var offsets = new Dictionary<TopicPartition, StreamsGroupOffsetDescription>();
+        if (mappingErrors is not null)
+        {
+            foreach (var (topicPartition, errorCode) in mappingErrors)
+            {
+                offsets[topicPartition] = new StreamsGroupOffsetDescription
+                {
+                    TopicPartition = topicPartition,
+                    Offset = -1,
+                    LeaderEpoch = -1,
+                    ErrorCode = errorCode
+                };
+            }
+        }
         var responseSnapshot = topicMap?.CaptureResponseSnapshot();
-        Exception? retryFailure = null;
+        Exception? retryFailure = mappingFailure;
         Protocol.ErrorCode? responseMismatchError = null;
         foreach (var topic in responseTopics)
         {
@@ -647,7 +685,7 @@ public sealed partial class AdminClient
                 if (retryFailure is not null)
                 {
                     foreach (var topicPartition in pending)
-                        retryErrors[topicPartition] = Protocol.ErrorCode.UnknownServerError;
+                        retryErrors.TryAdd(topicPartition, Protocol.ErrorCode.UnknownServerError);
                     throw retryFailure;
                 }
 
@@ -956,9 +994,13 @@ public sealed partial class AdminClient
         IReadOnlyList<TopicPartition>? partitions,
         short apiVersion,
         string operation,
-        out OffsetTopicIdRequestMap? topicMap)
+        out OffsetTopicIdRequestMap? topicMap,
+        out Dictionary<TopicPartition, Protocol.ErrorCode>? mappingErrors,
+        out KafkaException? mappingFailure)
     {
         topicMap = null;
+        mappingErrors = null;
+        mappingFailure = null;
         if (partitions is null)
             return null;
 
@@ -967,13 +1009,33 @@ public sealed partial class AdminClient
             ? new OffsetTopicIdRequestMap(_metadataManager.Metadata, groups.Length)
             : null;
         topicMap = requestTopicMap;
-
-        return groups.Select(group => new OffsetFetchRequestTopic
+        var topics = new List<OffsetFetchRequestTopic>(groups.Length);
+        foreach (var group in groups)
         {
-            Name = group.Key,
-            TopicId = requestTopicMap?.AddTopic(group.Key, operation) ?? Guid.Empty,
-            PartitionIndexes = group.Select(static partition => partition.Partition).ToArray()
-        }).ToArray();
+            Guid topicId;
+            try
+            {
+                topicId = requestTopicMap?.AddTopic(group.Key, operation) ?? Guid.Empty;
+            }
+            catch (KafkaException exception) when (exception.ErrorCode == Protocol.ErrorCode.UnknownTopicId)
+            {
+                mappingFailure ??= exception;
+                mappingErrors ??= [];
+                var errorCode = exception.ErrorCode ?? Protocol.ErrorCode.UnknownTopicId;
+                foreach (var partition in group)
+                    mappingErrors[partition] = errorCode;
+                continue;
+            }
+
+            topics.Add(new OffsetFetchRequestTopic
+            {
+                Name = group.Key,
+                TopicId = topicId,
+                PartitionIndexes = group.Select(static partition => partition.Partition).ToArray()
+            });
+        }
+
+        return topics;
     }
 
     private IReadOnlyList<OffsetCommitRequestTopic> BuildOffsetCommitTopics(
@@ -1084,10 +1146,11 @@ public sealed partial class AdminClient
         Offsets = new Dictionary<TopicPartition, StreamsGroupOffsetDescription>()
     };
 
-    private static StreamsGroupOffsetsResult GroupOffsetsPartitionError(
+    private static StreamsGroupOffsetsResult GroupOffsetsPartitionErrors(
         string groupId,
         IReadOnlyList<TopicPartition>? partitions,
-        Protocol.ErrorCode errorCode)
+        IReadOnlyDictionary<TopicPartition, Protocol.ErrorCode> errors,
+        Protocol.ErrorCode fallbackError)
     {
         var offsets = new Dictionary<TopicPartition, StreamsGroupOffsetDescription>(partitions?.Count ?? 0);
         if (partitions is not null)
@@ -1099,7 +1162,7 @@ public sealed partial class AdminClient
                     TopicPartition = partition,
                     Offset = -1,
                     LeaderEpoch = -1,
-                    ErrorCode = errorCode
+                    ErrorCode = errors.GetValueOrDefault(partition, fallbackError)
                 };
             }
         }

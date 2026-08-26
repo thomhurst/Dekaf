@@ -194,6 +194,35 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
+    public async Task DeleteConsumerGroupsAsync_ActiveGroupThrowsAndPreservesOffsets()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("input");
+        IAdminClient admin = new InMemoryAdminClient(cluster);
+        const string groupId = "active-classic";
+        var partition = new TopicPartition("input", 0);
+        _ = await admin.AlterStreamsGroupOffsetsAsync(
+            groupId,
+            [new TopicPartitionOffset(partition.Topic, partition.Partition, 42)]);
+        await using var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions { GroupId = groupId });
+        consumer.Subscribe("input");
+
+        var exception = await Assert.ThrowsAsync<GroupException>(async () =>
+            await admin.DeleteConsumerGroupsAsync([groupId]));
+        var offsets = await admin.ListStreamsGroupOffsetsAsync(
+            new Dictionary<string, ListStreamsGroupOffsetsSpec>
+            {
+                [groupId] = new() { TopicPartitions = [partition] }
+            });
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.NonEmptyGroup);
+        await Assert.That(exception.GroupId).IsEqualTo(groupId);
+        await Assert.That(offsets[groupId].Offsets[partition].Offset).IsEqualTo(42);
+    }
+
+    [Test]
     public async Task StreamsGroupManagement_DeleteOffsetsRejectsSubscribedTopicAndPreservesOffsets()
     {
         var cluster = new InMemoryKafkaCluster();
