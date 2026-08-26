@@ -14,6 +14,11 @@ function Get-AllReviewThreads {
             throw 'Review-thread response did not contain pageInfo.'
         }
 
+        $hasNextPageProperty = $page.pageInfo.PSObject.Properties['hasNextPage']
+        if ($null -eq $hasNextPageProperty -or $hasNextPageProperty.Value -isnot [bool]) {
+            throw 'Review-thread pageInfo did not contain a Boolean hasNextPage.'
+        }
+
         foreach ($thread in @($page.nodes)) {
             if ($null -eq $thread) {
                 throw 'Review-thread response contained a null thread.'
@@ -22,7 +27,7 @@ function Get-AllReviewThreads {
             $threads.Add($thread)
         }
 
-        if (-not [bool]$page.pageInfo.hasNextPage) {
+        if (-not $hasNextPageProperty.Value) {
             return $threads.ToArray()
         }
 

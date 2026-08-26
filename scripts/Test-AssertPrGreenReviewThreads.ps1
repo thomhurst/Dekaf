@@ -61,6 +61,25 @@ if (-not $missingCursorThrew) {
     throw 'Expected pagination without an end cursor to fail closed.'
 }
 
+foreach ($invalidPageInfo in @(
+    [pscustomobject]@{},
+    [pscustomobject]@{ hasNextPage = $null },
+    [pscustomobject]@{ hasNextPage = 'false' }
+)) {
+    $invalidHasNextPageThrew = $false
+    try {
+        Get-AllReviewThreads -FetchPage {
+            [pscustomobject]@{ nodes = @(); pageInfo = $invalidPageInfo }
+        }
+    }
+    catch {
+        $invalidHasNextPageThrew = $true
+    }
+    if (-not $invalidHasNextPageThrew) {
+        throw 'Expected a missing, null, or non-Boolean hasNextPage to fail closed.'
+    }
+}
+
 $fetchFailureThrew = $false
 try {
     Get-AllReviewThreads -FetchPage { throw 'simulated API failure' }
