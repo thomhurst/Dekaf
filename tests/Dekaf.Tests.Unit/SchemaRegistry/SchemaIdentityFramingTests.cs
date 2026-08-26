@@ -19,6 +19,27 @@ public sealed class SchemaIdentityFramingTests
     ];
 
     [Test]
+    public async Task ResolvedSchemaContext_EqualityUsesPublicContract()
+    {
+        var schema = new Schema { SchemaString = "string" };
+        var first = new ResolvedSchemaContext("subject", 42, schema)
+        {
+            SchemaGuidFrame = SchemaIdentityFraming.CreateSchemaGuidFrame(SchemaGuid)
+        };
+        var second = new ResolvedSchemaContext("subject", 42, schema)
+        {
+            SchemaGuidFrame = SchemaIdentityFraming.CreateSchemaGuidFrame(SchemaGuid)
+        };
+        var (subject, schemaId, resolvedSchema) = first;
+        var reconstructed = new ResolvedSchemaContext(subject, schemaId, resolvedSchema);
+
+        await Assert.That(first).IsEqualTo(second);
+        await Assert.That(first == second).IsTrue();
+        await Assert.That(first.GetHashCode()).IsEqualTo(second.GetHashCode());
+        await Assert.That(first).IsEqualTo(reconstructed);
+    }
+
+    [Test]
     public async Task SerializerStrategy_DefaultMatchesConfluentPrefix()
     {
         var prefixValue = (int)SchemaIdSerializerStrategy.Prefix;

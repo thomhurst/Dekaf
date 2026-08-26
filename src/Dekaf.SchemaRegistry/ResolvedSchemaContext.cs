@@ -12,4 +12,13 @@ public readonly record struct ResolvedSchemaContext(
     Schema Schema)
 {
     internal byte[]? SchemaGuidFrame { get; init; }
+
+    /// <inheritdoc />
+    public bool Equals(ResolvedSchemaContext other) =>
+        EqualityComparer<string>.Default.Equals(Subject, other.Subject)
+        && SchemaId == other.SchemaId
+        && EqualityComparer<Schema>.Default.Equals(Schema, other.Schema);
+
+    /// <inheritdoc />
+    public override int GetHashCode() => HashCode.Combine(Subject, SchemaId, Schema);
 }
