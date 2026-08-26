@@ -233,6 +233,7 @@ namespace Dekaf.Consumer
         private readonly IDeserializer<TValue>? _valueDeserializer;
         private readonly bool _hasRecordHeaderDeserializers;
         private readonly RecordHeaderRoutingPlan? _recordHeaderRoutingPlan;
+        private readonly Headers? _recordHeaderDeserializationHeaders;
         private readonly BatchIterationGuard _iterationGuard;
         private readonly Action<TopicPartition, long, int>? _storeOffsetOnDelivery;
         private readonly Action<PendingFetchData, long>? _rewindAfterDeliveryFailure;
@@ -267,6 +268,10 @@ namespace Dekaf.Consumer
                                            keyDeserializer,
                                            valueDeserializer);
             _hasRecordHeaderDeserializers = _recordHeaderRoutingPlan is not null;
+            _recordHeaderDeserializationHeaders =
+                _recordHeaderRoutingPlan?.NeedsMaterializedHeaders is true
+                    ? new Headers(2)
+                    : null;
             if (_recordHeaderRoutingPlan is not null)
                 pendingFetchData.ConfigureHeaderRouting(_recordHeaderRoutingPlan);
         }
@@ -605,6 +610,7 @@ namespace Dekaf.Consumer
                                 timestampMs,
                                 timestampType,
                                 leaderEpoch,
+                                _batch._recordHeaderDeserializationHeaders,
                                 _batch._keyDeserializer,
                                 _batch._valueDeserializer)
                             : new ConsumeResult<TKey, TValue>(

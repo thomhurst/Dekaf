@@ -6,7 +6,7 @@ namespace Dekaf.Tests.Unit.SchemaRegistry;
 /// <summary>
 /// Mock implementation of ISchemaRegistryClient for unit testing.
 /// </summary>
-internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaRegistryCache
+internal sealed class MockSchemaRegistryClient : IFormattedSchemaRegistryClient, ISchemaRegistryCache
 {
     private readonly Dictionary<int, Schema> _schemasById = new();
     private readonly Dictionary<(Guid Guid, string? Format), Schema> _schemasByGuid = new();
@@ -25,12 +25,15 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
 
     public int GetSchemaCallCount { get; private set; }
     public CancellationToken LastGetSchemaCancellationToken { get; private set; }
+    public CancellationToken LastGetSchemaByGuidCancellationToken { get; private set; }
     public int GetOrRegisterSchemaCallCount { get; private set; }
+    public int LookupSchemaCallCount { get; private set; }
     public CancellationToken LastGetOrRegisterSchemaCancellationToken { get; private set; }
     public int TryGetCachedSchemaCallCount { get; private set; }
     internal Action? BeforeTryGetCachedSchema { get; set; }
     public int GetSchemaFailuresRemaining { get; set; }
     public int GetOrRegisterSchemaFailuresRemaining { get; set; }
+    public bool LookupRequiresRuleSetPresenceMatch { get; set; }
     public int AssociationLookupCallCount => Volatile.Read(ref _associationLookupCallCount);
     public int AssociationLookupFailuresRemaining { get; set; }
     public bool SupportsDeletedVersionLookup { get; init; }
@@ -185,6 +188,7 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
         CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
+        LastGetSchemaByGuidCancellationToken = cancellationToken;
         cancellationToken.ThrowIfCancellationRequested();
         if (Guid.TryParse(guid, out var parsedGuid))
         {
@@ -220,6 +224,13 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
 
         throw new SchemaRegistryException(40403, $"Schema {id} not found under subject '{subject}'");
     }
+
+    public Task<Schema> GetSchemaWithFormatAsync(
+        int id,
+        string subject,
+        string format,
+        CancellationToken cancellationToken = default) =>
+        GetSchemaAsync(id, subject, cancellationToken);
 
     public bool TryGetCachedSchema(int id, out Schema schema)
     {
@@ -295,6 +306,14 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
         return GetSchemaBySubjectAsync(subject, version, cancellationToken);
     }
 
+    public Task<RegisteredSchema> GetSchemaBySubjectWithFormatAsync(
+        string subject,
+        string version,
+        bool ignoreDeletedSchemas,
+        string format,
+        CancellationToken cancellationToken = default) =>
+        GetSchemaBySubjectAsync(subject, version, ignoreDeletedSchemas, cancellationToken);
+
     public Task<RegisteredSchema> LookupSchemaAsync(
         string subject,
         Schema schema,
@@ -303,11 +322,15 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient, ISchemaR
         CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
+        LookupSchemaCallCount++;
 
         if (!_schemasBySubject.TryGetValue(subject, out var list))
             throw new SchemaRegistryException(40401, $"Subject '{subject}' not found");
 
-        var entry = list.FirstOrDefault(candidate => SchemasAreEquivalent(candidate.Schema, schema));
+        var entry = list.FirstOrDefault(candidate =>
+            SchemasAreEquivalent(candidate.Schema, schema) &&
+            (!LookupRequiresRuleSetPresenceMatch ||
+             (candidate.Schema.RuleSet is null) == (schema.RuleSet is null)));
         if (entry == default)
             throw new SchemaRegistryException(40403, $"Schema not found under subject '{subject}'");
 

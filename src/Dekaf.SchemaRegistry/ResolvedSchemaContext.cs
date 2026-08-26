@@ -1,3 +1,5 @@
+using System.Runtime.CompilerServices;
+
 namespace Dekaf.SchemaRegistry;
 
 /// <summary>
@@ -9,4 +11,19 @@ namespace Dekaf.SchemaRegistry;
 public readonly record struct ResolvedSchemaContext(
     string Subject,
     int SchemaId,
-    Schema Schema);
+    Schema Schema)
+{
+    internal byte[]? SchemaGuidFrame { get; init; }
+
+    /// <inheritdoc />
+    // Preserve the CompilerGenerated attribute emitted by the previously synthesized record member.
+    [CompilerGenerated]
+    public bool Equals(ResolvedSchemaContext other) =>
+        EqualityComparer<string>.Default.Equals(Subject, other.Subject)
+        && SchemaId == other.SchemaId
+        && EqualityComparer<Schema>.Default.Equals(Schema, other.Schema);
+
+    /// <inheritdoc />
+    [CompilerGenerated]
+    public override int GetHashCode() => HashCode.Combine(Subject, SchemaId, Schema);
+}

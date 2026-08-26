@@ -383,6 +383,32 @@ public sealed class HeaderRoutingDeserializerTests
     }
 
     [Test]
+    public async Task HeaderRoutingPlan_NestedPublicDecoratorMaterializesHeaders()
+    {
+        var decorated = new PublicHeaderDeserializerDecorator(new HeaderPresenceDeserializer());
+        var router = new TopicRoutingDeserializer<string>()
+            .Register("events", decorated)
+            .Freeze();
+        var plan = RecordHeaderRoutingPlan.Create(Serializers.String, router)!;
+        var headers = new[] { new Header("event-type", "created"u8.ToArray()) };
+        var lookup = new RecordHeaderRoutingLookup(
+            plan,
+            headers,
+            headerCount: 1,
+            firstIndex: 0,
+            secondIndex: 0,
+            routedHeaderTailOffset: RecordHeaderRoutingPlan.FullyIndexedWithoutTail);
+
+        var result = RecordHeaderDeserializer.Deserialize(
+            router,
+            "payload"u8.ToArray(),
+            CreateContext(),
+            in lookup);
+
+        await Assert.That(result).IsEqualTo("headers");
+    }
+
+    [Test]
     public async Task Constructor_DuplicateRouteValuesThrows()
     {
         await Assert.That(() => new HeaderRoutingDeserializer<string>(
@@ -457,5 +483,15 @@ public sealed class HeaderRoutingDeserializerTests
     {
         public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
             context.Headers is null ? "no-headers" : "headers";
+    }
+
+    private sealed class PublicHeaderDeserializerDecorator(IDeserializer<string> inner) :
+        IDeserializer<string>,
+        IRecordHeaderDeserializer
+    {
+        public bool ConsumesRecordHeaders => true;
+
+        public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
+            inner.Deserialize(data, context);
     }
 }

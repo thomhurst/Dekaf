@@ -108,6 +108,10 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private TaskCompletionSource? _autoCommitAdvancementWaiterEntered;
     private Task? _closeTask;
     private bool _disposed;
+    // Async-only header state stays at the cold field tail so synchronous consume layout remains stable.
+    private readonly bool _keyUsesRecordHeaders;
+    private readonly bool _valueUsesRecordHeaders;
+    private readonly Headers? _asyncDeserializationHeaders;
 
     [ThreadStatic]
     private static Action? _afterLagWatermarkReadForTest;
@@ -266,9 +270,19 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         _valueDeserializer = asyncValueDeserializer is null
             ? valueDeserializer!
             : AsyncOnlyDeserializerPlaceholder<TValue>.Instance;
+        _keyUsesRecordHeaders = asyncKeyDeserializer is not null
+            ? asyncKeyDeserializer is IRecordHeaderDeserializer { ConsumesRecordHeaders: true }
+            : RecordHeaderDeserializer.UsesCallerOwnedHeaders(_keyDeserializer);
+        _valueUsesRecordHeaders = asyncValueDeserializer is not null
+            ? asyncValueDeserializer is IRecordHeaderDeserializer { ConsumesRecordHeaders: true }
+            : RecordHeaderDeserializer.UsesCallerOwnedHeaders(_valueDeserializer);
         _hasAsyncDeserializers = asyncKeyDeserializer is not null || asyncValueDeserializer is not null;
         _borrowStoredRecords = CanBorrowStoredInput(_keyDeserializer, asyncKeyDeserializer) &&
-                               CanBorrowStoredInput(_valueDeserializer, asyncValueDeserializer);
+                              CanBorrowStoredInput(_valueDeserializer, asyncValueDeserializer);
+        _asyncDeserializationHeaders = _hasAsyncDeserializers
+                                       && (_keyUsesRecordHeaders || _valueUsesRecordHeaders)
+            ? new Headers(2)
+            : null;
         _options = options ?? throw new ArgumentNullException(nameof(options));
         // Match KafkaConsumer, which treats an empty GroupId as "no consumer group"
         // (no coordinator, no commits). Normalizing here keeps every group-dependent
@@ -2247,6 +2261,15 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         InMemoryRecord record,
         CancellationToken cancellationToken)
     {
+        var serializationHeaders = _keyUsesRecordHeaders || _valueUsesRecordHeaders
+            ? _asyncDeserializationHeaders!
+            : null;
+        if (serializationHeaders is not null)
+        {
+            serializationHeaders.Clear();
+            for (var index = 0; index < record.Headers.Count; index++)
+                serializationHeaders.Add(record.Headers[index]);
+        }
         TKey? key = default;
         if (!record.IsKeyNull)
         {
@@ -2254,10 +2277,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             {
                 Topic = topicPartition.Topic,
                 Component = SerializationComponent.Key,
-                Headers = _asyncKeyDeserializer is null
-                          && _keyDeserializer is ICallerOwnedHeaderDeserializer<TKey>
-                    ? ConsumeResult<TKey, TValue>.GetCallerOwnedSerializationHeaders(record.Headers)
-                    : null,
+                Headers = _keyUsesRecordHeaders ? serializationHeaders : null,
                 KeyData = ReadOnlyMemory<byte>.Empty,
                 IsNull = false
             };
@@ -2280,10 +2300,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         {
             Topic = topicPartition.Topic,
             Component = SerializationComponent.Value,
-            Headers = _asyncValueDeserializer is null
-                      && _valueDeserializer is ICallerOwnedHeaderDeserializer<TValue>
-                ? ConsumeResult<TKey, TValue>.GetCallerOwnedSerializationHeaders(record.Headers)
-                : null,
+            Headers = _valueUsesRecordHeaders ? serializationHeaders : null,
             KeyData = SerializationContext.NormalizeKeyData(record.Key, record.IsKeyNull),
             IsNull = record.IsValueNull
         };

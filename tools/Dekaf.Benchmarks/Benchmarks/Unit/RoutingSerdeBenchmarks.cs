@@ -7,6 +7,7 @@ using BenchmarkDotNet.Reports;
 using BenchmarkDotNet.Running;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Records;
+using Dekaf.SchemaRegistry;
 using Dekaf.Serialization;
 using Dekaf.Serialization.Routing;
 
@@ -25,10 +26,12 @@ public class RoutingSerdeBenchmarks
     private readonly EventSerializer _serializer = new();
     private ArrayBufferWriter<byte> _buffer = new(16);
     private TopicRoutingDeserializer<Event> _topicDeserializer = null!;
+    private IAsyncDeserializerPreparer<Event> _preparedTopicDeserializer = null!;
     private SchemaIdRoutingDeserializer<Event> _schemaIdDeserializer = null!;
     private HeaderRoutingDeserializer<Event> _headerDeserializer = null!;
     private IDeserializer<Event> _topicHeaderDeserializer = null!;
     private IDeserializer<Event> _schemaIdHeaderDeserializer = null!;
+    private IDeserializer<Event> _decoratedHeaderDeserializer = null!;
     private TopicRoutingSerializer<Event> _topicSerializer = null!;
     private TypeRoutingSerializer<Event> _typeSerializer = null!;
     private SerializationContext _context;
@@ -58,6 +61,9 @@ public class RoutingSerdeBenchmarks
         _topicDeserializer = new TopicRoutingDeserializer<Event>()
             .Register("events", _deserializer)
             .Freeze();
+        _preparedTopicDeserializer = new TopicRoutingDeserializer<Event>()
+            .Register("events", new PreparedEventDeserializer())
+            .Freeze();
         _schemaIdDeserializer = new SchemaIdRoutingDeserializer<Event>()
             .Register(42, _deserializer)
             .Freeze();
@@ -72,6 +78,8 @@ public class RoutingSerdeBenchmarks
         _schemaIdHeaderDeserializer = new SchemaIdRoutingDeserializer<Event>()
             .Register(42, _headerDeserializer)
             .Freeze();
+        _decoratedHeaderDeserializer = RecordHeaderDeserializer.WrapIfNeeded(
+            new RecordHeaderDeserializerDecorator(_headerDeserializer));
         var headerPlan = RecordHeaderRoutingPlan.Create(_deserializer, _topicHeaderDeserializer)!;
         _headerLookup = new RecordHeaderRoutingLookup(
             headerPlan,
@@ -97,6 +105,15 @@ public class RoutingSerdeBenchmarks
     public Event DeserializeByTopic() => _topicDeserializer.Deserialize(Data, _context);
 
     [Benchmark]
+    public Event DeserializePreparedByTopic()
+    {
+        if (!_preparedTopicDeserializer.TryDeserialize(Data, _context, out var value))
+            throw new InvalidOperationException("Prepared route did not deserialize synchronously.");
+
+        return value;
+    }
+
+    [Benchmark]
     public Event DeserializeBySchemaId() => _schemaIdDeserializer.Deserialize(FramedData, _context);
 
     [Benchmark]
@@ -116,6 +133,14 @@ public class RoutingSerdeBenchmarks
         RecordHeaderDeserializer.Deserialize(
             _schemaIdHeaderDeserializer,
             FramedData,
+            _context,
+            in _headerLookup);
+
+    [Benchmark]
+    public Event DeserializeByPublicHeaderDecorator() =>
+        RecordHeaderDeserializer.Deserialize(
+            _decoratedHeaderDeserializer,
+            Data,
             _context,
             in _headerLookup);
 
@@ -162,6 +187,41 @@ public class RoutingSerdeBenchmarks
     internal sealed class EventDeserializer : IDeserializer<Event>
     {
         public Event Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) => Payload;
+    }
+
+    private sealed class RecordHeaderDeserializerDecorator(IDeserializer<Event> inner) :
+        IDeserializer<Event>,
+        IRecordHeaderDeserializer
+    {
+        public bool ConsumesRecordHeaders => true;
+
+        public Event Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
+            inner.Deserialize(data, context);
+    }
+
+    private sealed class PreparedEventDeserializer :
+        IDeserializer<Event>,
+        IAsyncDeserializerPreparer<Event>,
+        IAsyncDeserializerPreparationRequirement
+    {
+        public bool RequiresPreparation => true;
+
+        public Event Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) => Payload;
+
+        public bool TryDeserialize(
+            ReadOnlyMemory<byte> data,
+            SerializationContext context,
+            out Event value)
+        {
+            value = Payload;
+            return true;
+        }
+
+        public ValueTask PrepareAsync(
+            ReadOnlyMemory<byte> data,
+            SerializationContext context,
+            CancellationToken cancellationToken = default) =>
+            ValueTask.CompletedTask;
     }
 
     private sealed class EventSerializer : ISerializer<Event>
@@ -343,6 +403,8 @@ public class HeaderRoutingParseBenchmarks
     private readonly RoutingSerdeBenchmarks.EventDeserializer _deserializer = new();
     private byte[] _encodedRecord = null!;
     private RecordHeaderRoutingPlan _nestedPlan = null!;
+    private RecordHeaderRoutingPlan? _prefixSchemaPlan;
+    private SchemaRegistryClient _schemaRegistry = null!;
 
     [GlobalSetup]
     public void Setup()
@@ -356,6 +418,20 @@ public class HeaderRoutingParseBenchmarks
         }
 
         _nestedPlan = RecordHeaderRoutingPlan.Create(_deserializer, nested)!;
+        _schemaRegistry = new SchemaRegistryClient(new SchemaRegistryConfig
+        {
+            Url = "http://localhost:8081"
+        });
+        var prefixSchemaDeserializer = new JsonSchemaRegistryDeserializer<int>(
+            _schemaRegistry,
+            jsonOptions: null,
+            new SchemaRegistryDeserializerConfig
+            {
+                SchemaIdStrategy = SchemaIdDeserializerStrategy.Prefix
+            });
+        _prefixSchemaPlan = RecordHeaderRoutingPlan.Create<string, int>(
+            null,
+            prefixSchemaDeserializer);
         var record = new Record
         {
             Key = new byte[] { 1 },
@@ -376,14 +452,21 @@ public class HeaderRoutingParseBenchmarks
 
         _ = Parse(headerRoutingPlan: null);
         _ = Parse(_nestedPlan);
+        _ = Parse(_prefixSchemaPlan);
         _ = ParseThenAttachRouting();
     }
+
+    [GlobalCleanup]
+    public void Cleanup() => _schemaRegistry.Dispose();
 
     [Benchmark(Baseline = true)]
     public int ParseWithoutRouting() => Parse(headerRoutingPlan: null);
 
     [Benchmark]
     public int ParseNestedRouting() => Parse(_nestedPlan);
+
+    [Benchmark]
+    public int ParsePrefixSchemaRouting() => Parse(_prefixSchemaPlan);
 
     [Benchmark]
     public int ParseThenAttachNestedRouting() => ParseThenAttachRouting();

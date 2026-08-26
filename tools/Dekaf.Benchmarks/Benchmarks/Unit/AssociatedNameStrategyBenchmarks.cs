@@ -16,10 +16,14 @@ public class AssociatedNameStrategyBenchmarks
     private SchemaRegistrySerializer<int> _serializer = null!;
     private JsonSchemaRegistrySerializer<int> _jsonSerializer = null!;
     private IAsyncSerializerPreparationAdmission<int> _jsonAdmissionSerializer = null!;
+    private JsonSchemaRegistryDeserializer<int> _jsonDeserializer = null!;
+    private IAsyncDeserializerPreparer<int> _jsonDeserializerPreparer = null!;
     private SerializerPreparationAdmission _jsonAdmission;
     private DeserializerSubjectNameCache _deserializerSubjects = null!;
     private ArrayBufferWriter<byte> _jsonDestination = null!;
     private SerializationContext _serializationContext;
+    private SerializationContext _jsonDeserializationContext;
+    private ReadOnlyMemory<byte> _jsonPayload;
 
     [GlobalSetup]
     public void Setup()
@@ -54,6 +58,30 @@ public class AssociatedNameStrategyBenchmarks
         _jsonAdmission = _jsonAdmissionSerializer.PrepareForSerializationAsync(42, _serializationContext)
             .GetAwaiter()
             .GetResult();
+        _jsonDeserializer = new JsonSchemaRegistryDeserializer<int>(
+            _client,
+            jsonOptions: null,
+            new SchemaRegistryDeserializerConfig
+            {
+                SchemaIdStrategy = SchemaIdDeserializerStrategy.Header,
+                AsyncSubjectNameStrategy = _strategy
+            });
+        _jsonDeserializerPreparer = _jsonDeserializer;
+        _jsonPayload = "42"u8.ToArray();
+        var jsonHeaders = new Headers(33).Add(
+            SchemaIdentityHeaderNames.Value,
+            SchemaIdentityFraming.CreateSchemaGuidFrame(AssociationHandler.SchemaGuid));
+        for (var index = 0; index < 32; index++)
+            jsonHeaders.Add(new Header($"noise-{index}", ReadOnlyMemory<byte>.Empty));
+        _jsonDeserializationContext = new SerializationContext
+        {
+            Topic = _topic,
+            Component = SerializationComponent.Value,
+            Headers = jsonHeaders
+        };
+        _jsonDeserializerPreparer.PrepareAsync(_jsonPayload, _jsonDeserializationContext)
+            .GetAwaiter()
+            .GetResult();
         _deserializerSubjects = DeserializerSubjectNameCache.Create(
             _client,
             new SchemaRegistryDeserializerConfig { AsyncSubjectNameStrategy = _strategy })!;
@@ -73,6 +101,7 @@ public class AssociatedNameStrategyBenchmarks
     {
         await _serializer.DisposeAsync().ConfigureAwait(false);
         await _jsonSerializer.DisposeAsync().ConfigureAwait(false);
+        await _jsonDeserializer.DisposeAsync().ConfigureAwait(false);
         _client.Dispose();
     }
 
@@ -114,8 +143,14 @@ public class AssociatedNameStrategyBenchmarks
             isKey: false,
             _recordType);
 
+    [Benchmark]
+    public bool JsonGuidDeserializerPrepared() =>
+        _jsonDeserializerPreparer.TryDeserialize(_jsonPayload, _jsonDeserializationContext, out _);
+
     private sealed class AssociationHandler : HttpMessageHandler
     {
+        internal static readonly Guid SchemaGuid = new("11111111-2222-3333-4444-555555555555");
+
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
@@ -124,8 +159,10 @@ public class AssociatedNameStrategyBenchmarks
             var path = request.RequestUri!.AbsolutePath;
             var content = path switch
             {
+                var value when value.Contains("/schemas/guids/", StringComparison.Ordinal) =>
+                    """{"schemaType":"JSON","schema":"{\"type\":\"integer\"}"}""",
                 var value when value.Contains("/subjects/", StringComparison.Ordinal) =>
-                    """{"subject":"benchmark-associated-value","version":1,"id":1,"schemaType":"JSON","schema":"{\"type\":\"integer\"}"}""",
+                    $$"""{"subject":"benchmark-associated-value","version":1,"id":1,"guid":"{{SchemaGuid:D}}","schemaType":"JSON","schema":"{\"type\":\"integer\"}"}""",
                 var value when value.Contains("/schemas/ids/", StringComparison.Ordinal) =>
                     """{"schemaType":"JSON","schema":"{\"type\":\"integer\"}"}""",
                 "/associations/resources/-/benchmark-orders" => """

@@ -40,6 +40,8 @@ using Dekaf.Telemetry;
 [assembly: TypeForwardedTo(typeof(ApplicationTelemetryMetricKind))]
 
 [assembly: TypeForwardedTo(typeof(ISerializer<>))]
+[assembly: TypeForwardedTo(typeof(IRecordHeaderSerializer))]
+[assembly: TypeForwardedTo(typeof(IRecordHeaderDeserializer))]
 [assembly: TypeForwardedTo(typeof(IDeserializer<>))]
 [assembly: TypeForwardedTo(typeof(ISerde<>))]
 [assembly: TypeForwardedTo(typeof(IAsyncSerializer<>))]

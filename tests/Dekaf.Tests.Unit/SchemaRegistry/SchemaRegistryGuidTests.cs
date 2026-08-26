@@ -110,6 +110,91 @@ public sealed class SchemaRegistryGuidTests
     }
 
     [Test]
+    public async Task GetSchemaByIdAndSubjectAsync_SeparatesFormattedCacheEntries()
+    {
+        using var handler = new RecordingHandler(static (request, _) => Task.FromResult(JsonResponse(
+            HttpStatusCode.OK,
+            request.RequestUri!.Query.Contains("serialized", StringComparison.Ordinal)
+                ? """{ "schema": "serialized" }"""
+                : """{ "schema": "default" }""")));
+        using var client = CreateClient(handler, maxCachedSchemas: 8);
+
+        var defaultSchema = await client.GetSchemaAsync(42, "orders-value");
+        var serializedSchema = await client.GetSchemaAsync(42, "orders-value", "serialized");
+        var cachedDefault = await client.GetSchemaAsync(42, "orders-value");
+        var cachedSerialized = await client.GetSchemaAsync(42, "orders-value", "serialized");
+
+        await Assert.That(defaultSchema.SchemaString).IsEqualTo("default");
+        await Assert.That(serializedSchema.SchemaString).IsEqualTo("serialized");
+        await Assert.That(cachedDefault).IsSameReferenceAs(defaultSchema);
+        await Assert.That(cachedSerialized).IsSameReferenceAs(serializedSchema);
+        await Assert.That(handler.Requests).Count().IsEqualTo(2);
+        await Assert.That(handler.Requests[0].RequestUri!.Query)
+            .IsEqualTo("?subject=orders-value");
+        await Assert.That(handler.Requests[1].RequestUri!.Query)
+            .IsEqualTo("?subject=orders-value&format=serialized");
+    }
+
+    [Test]
+    public async Task GetSchemaBySubjectAsync_RequestsSerializedFormat()
+    {
+        using var handler = new RecordingHandler(static (_, _) => Task.FromResult(JsonResponse(
+            HttpStatusCode.OK,
+            """
+            {
+              "subject": "common-value",
+              "version": 1,
+              "id": 7,
+              "schema": "serialized"
+            }
+            """)));
+        using var client = CreateClient(handler);
+
+        var schema = await client.GetSchemaBySubjectAsync(
+            "common-value",
+            "1",
+            ignoreDeletedSchemas: true,
+            format: "serialized");
+
+        await Assert.That(schema.Schema.SchemaString).IsEqualTo("serialized");
+        await Assert.That(handler.Requests).Count().IsEqualTo(1);
+        await Assert.That(handler.Requests[0].RequestUri!.Query)
+            .IsEqualTo("?format=serialized");
+    }
+
+    [Test]
+    public async Task GetSchemaBySubjectAsync_FormattedResponse_DoesNotPoisonCanonicalCaches()
+    {
+        using var handler = new RecordingHandler(static (request, _) => Task.FromResult(JsonResponse(
+            HttpStatusCode.OK,
+            request.RequestUri!.Query.Contains("format=serialized", StringComparison.Ordinal)
+                ? $$"""
+                  {
+                    "subject": "common-value",
+                    "version": 1,
+                    "id": 7,
+                    "guid": "{{FirstGuid:D}}",
+                    "schema": "serialized"
+                  }
+                  """
+                : """{ "schema": "canonical" }""")));
+        using var client = CreateClient(handler);
+
+        var formatted = await client.GetSchemaBySubjectAsync(
+            "common-value",
+            "1",
+            ignoreDeletedSchemas: true,
+            format: "serialized");
+        var canonicalById = await client.GetSchemaAsync(7);
+        var canonicalByGuid = await client.GetSchemaByGuidAsync(FirstGuid.ToString("D"));
+
+        await Assert.That(formatted.Schema.SchemaString).IsEqualTo("serialized");
+        await Assert.That(canonicalById.SchemaString).IsEqualTo("canonical");
+        await Assert.That(canonicalByGuid.SchemaString).IsEqualTo("canonical");
+        await Assert.That(handler.Requests).Count().IsEqualTo(3);
+    }
+
+    [Test]
     public async Task GetSchemaBySubjectAsync_PreservesGuidContextAndSeedsGuidCache()
     {
         using var handler = new RecordingHandler(static (_, _) => Task.FromResult(JsonResponse(HttpStatusCode.OK, $$"""

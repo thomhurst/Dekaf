@@ -325,7 +325,7 @@ public class ShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         await using var consumer = await Kafka.CreateShareConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
-            .WithValueDeserializer(router)
+            .WithValueDeserializer(new RecordHeaderDeserializerDecorator<string>(router))
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
@@ -387,6 +387,16 @@ public class ShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
     {
         public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
             $"{label}:{Serializers.String.Deserialize(data, context)}";
+    }
+
+    private sealed class RecordHeaderDeserializerDecorator<T>(IDeserializer<T> inner) :
+        IDeserializer<T>,
+        IRecordHeaderDeserializer
+    {
+        bool IRecordHeaderDeserializer.ConsumesRecordHeaders => true;
+
+        public T Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
+            inner.Deserialize(data, context);
     }
 }
 

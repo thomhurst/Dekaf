@@ -228,6 +228,10 @@ Dekaf.Serialization.Ignore.Ignore() -> void
 Dekaf.Serialization.ISerde<T>
 Dekaf.Serialization.ISerializer<T>
 Dekaf.Serialization.ISerializer<T>.Serialize<TWriter>(T value, ref TWriter destination, Dekaf.Serialization.SerializationContext context) -> void
+Dekaf.Serialization.IRecordHeaderSerializer
+Dekaf.Serialization.IRecordHeaderSerializer.ProducesRecordHeaders.get -> bool
+Dekaf.Serialization.IRecordHeaderDeserializer
+Dekaf.Serialization.IRecordHeaderDeserializer.ConsumesRecordHeaders.get -> bool
 Dekaf.Serialization.SerializationComponent
 Dekaf.Serialization.SerializationComponent.Key = 0 -> Dekaf.Serialization.SerializationComponent
 Dekaf.Serialization.SerializationComponent.Value = 1 -> Dekaf.Serialization.SerializationComponent
