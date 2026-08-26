@@ -172,6 +172,87 @@ public class AvroInlineRuleValidatorTests
     }
 
     [Test]
+    public async Task Validate_EqualArraysIgnoreAvroBlockSegmentation()
+    {
+        const string schemaText = """
+            {
+              "type": "record",
+              "name": "ArrayBlockEqualityRecord",
+              "confluent:rules": [{ "name": "equal", "expr": "this.left == this.right" }],
+              "fields": [
+                { "name": "left", "type": { "type": "array", "items": "int" } },
+                { "name": "right", "type": { "type": "array", "items": "int" } }
+              ]
+            }
+            """;
+        var schema = (RecordSchema)AvroSchema.Parse(schemaText);
+        ReadOnlyMemory<byte> payload = new byte[]
+        {
+            4, 2, 4, 0,       // left: one two-item block [1, 2]
+            2, 2, 2, 4, 0     // right: two one-item blocks [1], [2]
+        };
+
+        new AvroInlineRuleValidator(schema).Validate(payload, 30, failFast: false);
+
+        await Task.CompletedTask;
+    }
+
+    [Test]
+    public async Task Validate_EqualMapsIgnoreEntryOrder()
+    {
+        const string schemaText = """
+            {
+              "type": "record",
+              "name": "MapOrderEqualityRecord",
+              "confluent:rules": [{ "name": "equal", "expr": "this.left == this.right" }],
+              "fields": [
+                { "name": "left", "type": { "type": "map", "values": "int" } },
+                { "name": "right", "type": { "type": "map", "values": "int" } }
+              ]
+            }
+            """;
+        var schema = (RecordSchema)AvroSchema.Parse(schemaText);
+        ReadOnlyMemory<byte> payload = new byte[]
+        {
+            4, 2, (byte)'a', 2, 2, (byte)'b', 4, 0,
+            4, 2, (byte)'b', 4, 2, (byte)'a', 2, 0
+        };
+
+        new AvroInlineRuleValidator(schema).Validate(payload, 31, failFast: false);
+
+        await Task.CompletedTask;
+    }
+
+    [Test]
+    public async Task Validate_NaNIsUnequalAndUnordered()
+    {
+        const string schemaText = """
+            {
+              "type": "record",
+              "name": "NaNComparisonRecord",
+              "fields": [{
+                "name": "value",
+                "type": "double",
+                "confluent:rules": [{
+                  "name": "nan",
+                  "expr": "this != this && !(this < 0) && !(this <= 0) && !(this > 0) && !(this >= 0)"
+                }]
+              }]
+            }
+            """;
+        var schema = (RecordSchema)AvroSchema.Parse(schemaText);
+        var record = new GenericRecord(schema);
+        record.Add("value", double.NaN);
+
+        new AvroInlineRuleValidator(schema).Validate(
+            Serialize(record, schema),
+            32,
+            failFast: false);
+
+        await Task.CompletedTask;
+    }
+
+    [Test]
     public async Task Validate_ArrayRuleWithoutSizeDoesNotRequireSizeStorage()
     {
         const string schemaText = """
@@ -589,6 +670,50 @@ public class AvroInlineRuleValidatorTests
 
         var exception = Assert.Throws<ValidationRulesFailedException>(() =>
             validator.Validate(Serialize(record, resolvedSchema), 29, failFast: false));
+
+        await Assert.That(exception.Message).Contains("$.child.code: code");
+    }
+
+    [Test]
+    public async Task Provider_ExecutorUsesRegisteredResolvedReferenceSchema()
+    {
+        const string referenceSchemaText = """
+            {"type":"record","name":"ReferencedChild","namespace":"Dekaf.Tests","fields":[{"name":"code","type":"int","confluent:rules":[{"name":"code","expr":"this > 0"}]}]}
+            """;
+        const string rootSchemaText = """
+            {"type":"record","name":"ReferenceRoot","namespace":"Dekaf.Tests","fields":[{"name":"child","type":"Dekaf.Tests.ReferencedChild"}]}
+            """;
+        var names = new SchemaNames();
+        _ = AvroSchema.Parse(referenceSchemaText, names);
+        var resolvedSchema = (RecordSchema)AvroSchema.Parse(rootSchemaText, names);
+        var registrySchema = new Dekaf.SchemaRegistry.Schema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = rootSchemaText,
+            References =
+            [
+                new SchemaReference
+                {
+                    Name = "Dekaf.Tests.ReferencedChild",
+                    Subject = "referenced-child",
+                    Version = 1
+                }
+            ]
+        };
+        var childSchema = (RecordSchema)resolvedSchema.Fields[0].Schema;
+        var child = new GenericRecord(childSchema);
+        child.Add("code", -1);
+        var record = new GenericRecord(resolvedSchema);
+        record.Add("child", child);
+        var provider = new AvroInlineRuleValidatorProvider();
+        _ = provider.Register(registrySchema, resolvedSchema);
+
+        var exception = Assert.Throws<ValidationRulesFailedException>(() =>
+            ((IInlineValidationRuleExecutor)provider).Validate(
+                Serialize(record, resolvedSchema),
+                33,
+                registrySchema,
+                failFast: false));
 
         await Assert.That(exception.Message).Contains("$.child.code: code");
     }

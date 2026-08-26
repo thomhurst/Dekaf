@@ -85,7 +85,8 @@ internal sealed class AvroInlineRuleValidatorProvider : IInlineValidationRuleExe
             throw new SchemaRegistryRuleException(
                 $"Schema {schemaId} is not an Avro schema (type: {schema.SchemaType}).");
         }
-        var validator = Register(schema, AvroSchema.Parse(schema.SchemaString));
+        if (!_registeredSchemas.TryGetValue(schema, out var validator))
+            validator = Register(schema, AvroSchema.Parse(schema.SchemaString));
         Volatile.Write(ref _lastSchema, new SchemaValidatorCacheEntry(schemaId, validator));
         return validator;
     }

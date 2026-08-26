@@ -618,8 +618,28 @@ internal sealed class AvroMemberResolver
     {
         private readonly Dictionary<AvroSchema, AvroMemberResolver> _children =
             new(AvroSchemaReferenceComparer.Instance);
+        private AvroSchema? _schema;
+        private AvroAggregateEqualityComparer? _aggregateComparer;
+        private AvroAggregateEqualityComparer?[]? _unionComparers;
 
-        internal AvroSchema? Schema { get; set; }
+        internal AvroSchema? Schema
+        {
+            get => _schema;
+            set
+            {
+                _schema = value;
+                var schema = AvroValueRulePlan.Unwrap(value!);
+                _aggregateComparer = AvroAggregateEqualityComparer.Create(schema);
+                if (schema is not global::Avro.UnionSchema union)
+                    return;
+                _unionComparers = new AvroAggregateEqualityComparer?[union.Count];
+                for (var index = 0; index < union.Count; index++)
+                {
+                    _unionComparers[index] = AvroAggregateEqualityComparer.Create(
+                        AvroValueRulePlan.Unwrap(union[index]));
+                }
+            }
+        }
         internal int MemberIndex { get; set; } = -1;
         internal bool HasTargets => MemberIndex >= 0 || _children.Count != 0;
 
@@ -680,14 +700,14 @@ internal sealed class AvroMemberResolver
             if (MemberIndex >= 0)
             {
                 var valueReader = new AvroValidationReader(payload);
-                var value = AvroValidationValueDecoder.Read(schema, ref valueReader);
+                var value = ReadValue(schema, ref valueReader, out var aggregateComparer);
                 if (value.SizeIndex == 0)
                 {
                     var sizeIndex = MemberIndex + 1;
                     sizes.Set(sizeIndex, AvroValidationValueDecoder.Count(schema, payload));
                     value = value with { SizeIndex = sizeIndex };
                 }
-                values.SetValue(MemberIndex, value);
+                values.SetValue(MemberIndex, value, aggregateComparer);
             }
 
             if (_children.Count == 0)
@@ -709,6 +729,26 @@ internal sealed class AvroMemberResolver
                     values,
                     sizes);
             }
+        }
+
+        private ValidationCelValue ReadValue(
+            AvroSchema schema,
+            ref AvroValidationReader reader,
+            out AvroAggregateEqualityComparer? aggregateComparer)
+        {
+            schema = AvroValueRulePlan.Unwrap(schema);
+            if (schema is not global::Avro.UnionSchema union)
+            {
+                aggregateComparer = _aggregateComparer;
+                return AvroValidationValueDecoder.Read(schema, ref reader);
+            }
+
+            var branch = reader.ReadLong();
+            if ((ulong)branch >= (ulong)union.Count)
+                throw new SchemaRegistryRuleException(
+                    $"Could not evaluate Avro validation rules: invalid union index {branch}.");
+            aggregateComparer = _unionComparers![(int)branch];
+            return AvroValidationValueDecoder.Read(union[(int)branch], ref reader);
         }
     }
 }

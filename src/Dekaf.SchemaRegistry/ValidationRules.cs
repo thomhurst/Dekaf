@@ -462,6 +462,7 @@ internal struct ValidationCelMemberSlot
     internal int Start;
     internal int Length;
     internal ValidationCelValue Value;
+    internal IValidationCelAggregateComparer? AggregateComparer;
     internal bool IsTyped;
     internal bool IsPresent;
     internal uint Generation;
@@ -497,20 +498,33 @@ internal readonly struct ValidationCelMemberValues(
             : ValidationCelValue.FromJson(source.Slice(value.Start, value.Length), index + 1);
     }
 
+    internal IValidationCelAggregateComparer? GetAggregateComparer(int index)
+    {
+        ref readonly var value = ref values[index];
+        return value.Generation == generation && value.IsTyped
+            ? value.AggregateComparer
+            : null;
+    }
+
     internal void Set(int index, int start, int length)
     {
         ref var value = ref values[index];
         value.Start = start;
         value.Length = length;
+        value.AggregateComparer = null;
         value.IsTyped = false;
         value.IsPresent = true;
         value.Generation = generation;
     }
 
-    internal void SetValue(int index, ValidationCelValue typedValue)
+    internal void SetValue(
+        int index,
+        ValidationCelValue typedValue,
+        IValidationCelAggregateComparer? aggregateComparer = null)
     {
         ref var value = ref values[index];
         value.Value = typedValue;
+        value.AggregateComparer = aggregateComparer;
         value.IsTyped = true;
         value.IsPresent = true;
         value.Generation = generation;
@@ -1047,6 +1061,14 @@ internal enum ValidationCelValueKind : byte
     Bytes,
     Object,
     Array
+}
+
+internal interface IValidationCelAggregateComparer
+{
+    bool AreEqual(
+        ReadOnlyMemory<byte> left,
+        IValidationCelAggregateComparer rightComparer,
+        ReadOnlyMemory<byte> right);
 }
 
 internal readonly record struct ValidationCelValue(
@@ -1670,17 +1692,13 @@ internal sealed class ValidationCelBinaryNode(
             ValidationCelTokenKind.And or ValidationCelTokenKind.Or =>
                 ValidationCelValue.FromBoolean(RequireBoolean(rightValue)),
             ValidationCelTokenKind.Equal => ValidationCelValue.FromBoolean(
-                AreEqual(leftValue, rightValue, context.EqualityGeneration)),
+                AreEqual(leftValue, rightValue, context)),
             ValidationCelTokenKind.NotEqual => ValidationCelValue.FromBoolean(
-                !AreEqual(leftValue, rightValue, context.EqualityGeneration)),
-            ValidationCelTokenKind.Less => ValidationCelValue.FromBoolean(
-                !HasNaN(leftValue, rightValue) && Compare(leftValue, rightValue) < 0),
-            ValidationCelTokenKind.LessOrEqual => ValidationCelValue.FromBoolean(
-                !HasNaN(leftValue, rightValue) && Compare(leftValue, rightValue) <= 0),
-            ValidationCelTokenKind.Greater => ValidationCelValue.FromBoolean(
-                !HasNaN(leftValue, rightValue) && Compare(leftValue, rightValue) > 0),
-            ValidationCelTokenKind.GreaterOrEqual => ValidationCelValue.FromBoolean(
-                !HasNaN(leftValue, rightValue) && Compare(leftValue, rightValue) >= 0),
+                !AreEqual(leftValue, rightValue, context)),
+            ValidationCelTokenKind.Less => ValidationCelValue.FromBoolean(Compare(leftValue, rightValue) is < 0),
+            ValidationCelTokenKind.LessOrEqual => ValidationCelValue.FromBoolean(Compare(leftValue, rightValue) is <= 0),
+            ValidationCelTokenKind.Greater => ValidationCelValue.FromBoolean(Compare(leftValue, rightValue) is > 0),
+            ValidationCelTokenKind.GreaterOrEqual => ValidationCelValue.FromBoolean(Compare(leftValue, rightValue) is >= 0),
             ValidationCelTokenKind.Plus => Add(leftValue, rightValue),
             ValidationCelTokenKind.Minus => Subtract(leftValue, rightValue),
             _ => throw Unsupported("Unsupported binary operator.")
@@ -1690,7 +1708,7 @@ internal sealed class ValidationCelBinaryNode(
     private bool AreEqual(
         ValidationCelValue left,
         ValidationCelValue right,
-        uint equalityGeneration)
+        ValidationCelContext context)
     {
         if (left.Kind == ValidationCelValueKind.Missing || right.Kind == ValidationCelValueKind.Missing)
             throw Unsupported("Cannot compare a missing CEL member; guard optional members with has(...).");
@@ -1700,11 +1718,11 @@ internal sealed class ValidationCelBinaryNode(
         {
             ValidationCelValueKind.Null => true,
             ValidationCelValueKind.Boolean => left.Boolean == right.Boolean,
-            ValidationCelValueKind.Number => AreNumbersEqual(left, right),
+            ValidationCelValueKind.Number => CompareNumbers(left, right) is 0,
             ValidationCelValueKind.String => ValidationCelStrings.Evaluate(left, right, ValidationCelStringOperation.Equal),
             ValidationCelValueKind.Bytes => left.Utf8Literal.Span.SequenceEqual(right.Utf8Literal.Span),
             ValidationCelValueKind.Object or ValidationCelValueKind.Array =>
-                AreAggregateValuesEqual(left, right, equalityGeneration),
+                AreAggregateValuesEqual(left, right, context),
             _ => false
         };
     }
@@ -1712,41 +1730,65 @@ internal sealed class ValidationCelBinaryNode(
     private bool AreAggregateValuesEqual(
         ValidationCelValue left,
         ValidationCelValue right,
-        uint equalityGeneration)
+        ValidationCelContext context)
     {
         if (_leftValueIndex < 0 || _rightValueIndex < 0)
             return CompareAggregateValues(left, right);
         if (CompiledValidationRule.TryGetEquality(
-                equalityGeneration,
+                context.EqualityGeneration,
                 _leftValueIndex,
                 _rightValueIndex,
                 out var value))
             return value;
 
-        value = CompareAggregateValues(left, right);
+        value = CompareAggregateValues(
+            left,
+            right,
+            GetAggregateComparer(context.MemberValues, _leftValueIndex),
+            GetAggregateComparer(context.MemberValues, _rightValueIndex));
         CompiledValidationRule.SetEquality(
-            equalityGeneration,
+            context.EqualityGeneration,
             _leftValueIndex,
             _rightValueIndex,
             value);
         return value;
     }
 
-    private static bool AreNumbersEqual(ValidationCelValue left, ValidationCelValue right) =>
-        !HasNaN(left, right) && CompareNumbers(left, right) == 0;
+    private static IValidationCelAggregateComparer? GetAggregateComparer(
+        ValidationCelMemberValues memberValues,
+        int valueIndex) => valueIndex > 0
+            ? memberValues.GetAggregateComparer(valueIndex - 1)
+            : null;
 
-    private static bool CompareAggregateValues(ValidationCelValue left, ValidationCelValue right)
+    private static bool CompareAggregateValues(ValidationCelValue left, ValidationCelValue right) =>
+        CompareAggregateValues(left, right, leftComparer: null, rightComparer: null);
+
+    private static bool CompareAggregateValues(
+        ValidationCelValue left,
+        ValidationCelValue right,
+        IValidationCelAggregateComparer? leftComparer,
+        IValidationCelAggregateComparer? rightComparer)
     {
         if (left.Json.IsEmpty || right.Json.IsEmpty)
         {
-            return left.Json.IsEmpty && right.Json.IsEmpty &&
-                left.Utf8Literal.Span.SequenceEqual(right.Utf8Literal.Span);
+            if (!left.Json.IsEmpty || !right.Json.IsEmpty)
+                return false;
+            if (left.Utf8Literal.Span.SequenceEqual(right.Utf8Literal.Span))
+                return true;
+            if (leftComparer is not null && rightComparer is not null)
+            {
+                return leftComparer.AreEqual(
+                    left.Utf8Literal,
+                    rightComparer,
+                    right.Utf8Literal);
+            }
+            return false;
         }
 
         return ValidationCelJsonEquality.AreEqual(left.Json.Span, right.Json.Span);
     }
 
-    private static int Compare(ValidationCelValue left, ValidationCelValue right)
+    private static int? Compare(ValidationCelValue left, ValidationCelValue right)
     {
         if (left.Kind == ValidationCelValueKind.Number && right.Kind == ValidationCelValueKind.Number)
             return CompareNumbers(left, right);
@@ -1770,14 +1812,15 @@ internal sealed class ValidationCelBinaryNode(
             ? value.Floating
             : (double)RequireNumber(value);
 
-    private static bool HasNaN(ValidationCelValue left, ValidationCelValue right) =>
-        left.IsFloating && double.IsNaN(left.Floating) ||
-        right.IsFloating && double.IsNaN(right.Floating);
-
-    private static int CompareNumbers(ValidationCelValue left, ValidationCelValue right)
+    private static int? CompareNumbers(ValidationCelValue left, ValidationCelValue right)
     {
         if (left.IsFloating || right.IsFloating)
         {
+            if (left.IsFloating && double.IsNaN(left.Floating) ||
+                right.IsFloating && double.IsNaN(right.Floating))
+            {
+                return null;
+            }
             if (left.IsFloating)
             {
                 if (right.IsFloating || right.IsFloatingLiteral)
