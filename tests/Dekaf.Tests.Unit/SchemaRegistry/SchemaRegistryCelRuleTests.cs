@@ -7,6 +7,30 @@ namespace Dekaf.Tests.Unit.SchemaRegistry;
 public sealed class SchemaRegistryCelRuleTests
 {
     [Test]
+    public async Task SizeConditional_TracksOnlyValueProducingBranches()
+    {
+        var memberIndexes = new Dictionary<string, int>(StringComparer.Ordinal);
+        var memberPaths = new List<byte[][]>();
+        var usedMemberIndexes = new HashSet<int>();
+        var sizedMemberIndexes = new HashSet<int>();
+
+        _ = CompiledValidationRule.Compile(
+            new ValidationRule
+            {
+                Name = "conditional-size",
+                Expr = "size(has(this.large) ? this.small : this.other) > 0"
+            },
+            memberIndexes,
+            memberPaths,
+            usedMemberIndexes,
+            sizedMemberIndexes);
+
+        await Assert.That(sizedMemberIndexes).DoesNotContain(memberIndexes["large"]);
+        await Assert.That(sizedMemberIndexes).Contains(memberIndexes["small"]);
+        await Assert.That(sizedMemberIndexes).Contains(memberIndexes["other"]);
+    }
+
+    [Test]
     public async Task ConditionRule_AllowsPayload_WhenExpressionIsTrue()
     {
         var executor = new SchemaRegistryRuleExecutor([new CelSchemaRegistryRuleHandler()]);

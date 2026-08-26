@@ -46,6 +46,7 @@ internal sealed class AvroAggregateEqualityComparer(
     object schemaToken,
     bool rawEqualityCompatible) : IValidationCelAggregateComparer
 {
+    private const int StackRecordFieldCount = 16;
     private const int StackMapEntryCount = 16;
     private const int StackMapBucketCount = 32;
 
@@ -123,18 +124,9 @@ internal sealed class AvroAggregateEqualityComparer(
             case AvroSchema.Type.Error:
                 var leftRecord = (global::Avro.RecordSchema)leftSchema;
                 var rightRecord = (global::Avro.RecordSchema)rightSchema;
-                for (var index = 0; index < leftRecord.Fields.Count; index++)
-                {
-                    if (!AreEqual(
-                            leftRecord.Fields[index].Schema,
-                            rightRecord.Fields[index].Schema,
-                            ref left,
-                            ref right))
-                    {
-                        return false;
-                    }
-                }
-                return true;
+                return ReferenceEquals(leftRecord, rightRecord)
+                    ? RecordsAreEqualInOrder(leftRecord, ref left, ref right)
+                    : RecordsAreEqualByName(leftRecord, rightRecord, ref left, ref right);
             case AvroSchema.Type.Array:
                 return ArraysAreEqual(
                     ((global::Avro.ArraySchema)leftSchema).ItemSchema,
@@ -149,6 +141,66 @@ internal sealed class AvroAggregateEqualityComparer(
                     ref right);
             default:
                 throw InvalidPayload($"unsupported schema type {leftSchema.Tag}");
+        }
+    }
+
+    private static bool RecordsAreEqualInOrder(
+        global::Avro.RecordSchema schema,
+        ref AvroValidationReader left,
+        ref AvroValidationReader right)
+    {
+        for (var index = 0; index < schema.Fields.Count; index++)
+        {
+            var fieldSchema = schema.Fields[index].Schema;
+            if (!AreEqual(fieldSchema, fieldSchema, ref left, ref right))
+                return false;
+        }
+        return true;
+    }
+
+    private static bool RecordsAreEqualByName(
+        global::Avro.RecordSchema leftSchema,
+        global::Avro.RecordSchema rightSchema,
+        ref AvroValidationReader left,
+        ref AvroValidationReader right)
+    {
+        RecordFieldPayload[]? rented = null;
+        Span<RecordFieldPayload> rightFields = rightSchema.Fields.Count <= StackRecordFieldCount
+            ? stackalloc RecordFieldPayload[StackRecordFieldCount]
+            : (rented = ArrayPool<RecordFieldPayload>.Shared.Rent(rightSchema.Fields.Count));
+        try
+        {
+            for (var index = 0; index < rightSchema.Fields.Count; index++)
+            {
+                var start = right.Position;
+                AvroValidationValueDecoder.Skip(rightSchema.Fields[index].Schema, ref right);
+                rightFields[index] = new RecordFieldPayload(start, right.Position - start);
+            }
+
+            for (var index = 0; index < leftSchema.Fields.Count; index++)
+            {
+                var leftField = leftSchema.Fields[index];
+                if (!rightSchema.TryGetField(leftField.Name, out var rightField))
+                    return false;
+                var payload = rightFields[rightField.Pos];
+                var rightFieldReader = new AvroValidationReader(
+                    right.Source.Slice(payload.Start, payload.Length));
+                if (!AreEqual(
+                        leftField.Schema,
+                        rightField.Schema,
+                        ref left,
+                        ref rightFieldReader) ||
+                    !rightFieldReader.End)
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+        finally
+        {
+            if (rented is not null)
+                ArrayPool<RecordFieldPayload>.Shared.Return(rented);
         }
     }
 
@@ -474,6 +526,8 @@ internal sealed class AvroAggregateEqualityComparer(
         internal int Next { get; } = next;
         internal bool Matched { get; set; }
     }
+
+    private readonly record struct RecordFieldPayload(int Start, int Length);
 }
 
 internal static class AvroValueSchemaComparer
@@ -581,7 +635,11 @@ internal static class AvroValueSchemaComparer
             return false;
         for (var index = 0; index < left.Fields.Count; index++)
         {
-            if (!HaveSameEncoding(left.Fields[index].Schema, right.Fields[index].Schema, pairs))
+            if (!string.Equals(
+                    left.Fields[index].Name,
+                    right.Fields[index].Name,
+                    StringComparison.Ordinal) ||
+                !HaveSameEncoding(left.Fields[index].Schema, right.Fields[index].Schema, pairs))
                 return false;
         }
         return true;
@@ -696,8 +754,7 @@ internal static class AvroValueSchemaComparer
         for (var index = 0; index < left.Fields.Count; index++)
         {
             var leftField = left.Fields[index];
-            var rightField = right.Fields[index];
-            if (!string.Equals(leftField.Name, rightField.Name, StringComparison.Ordinal) ||
+            if (!right.TryGetField(leftField.Name, out var rightField) ||
                 !AreCelCompatible(leftField.Schema, rightField.Schema, pairs))
             {
                 return false;

@@ -671,6 +671,67 @@ public class AvroInlineRuleValidatorTests
     }
 
     [Test]
+    public async Task Validate_EqualRecordsMatchFieldsByName()
+    {
+        const string schemaText = """
+            {
+              "type": "record",
+              "name": "ReorderedRecordEquality",
+              "confluent:rules": [{ "name": "equal", "expr": "this.left == this.right" }],
+              "fields": [
+                {
+                  "name": "left",
+                  "type": {
+                    "type": "record",
+                    "name": "LeftRecord",
+                    "fields": [
+                      { "name": "a", "type": "int" },
+                      { "name": "b", "type": "string" }
+                    ]
+                  }
+                },
+                {
+                  "name": "right",
+                  "type": {
+                    "type": "record",
+                    "name": "RightRecord",
+                    "fields": [
+                      { "name": "b", "type": "string" },
+                      { "name": "a", "type": "int" }
+                    ]
+                  }
+                }
+              ]
+            }
+            """;
+        var schema = (RecordSchema)AvroSchema.Parse(schemaText);
+        var leftSchema = (RecordSchema)schema.Fields[0].Schema;
+        var rightSchema = (RecordSchema)schema.Fields[1].Schema;
+        var left = new GenericRecord(leftSchema);
+        left.Add("a", 1);
+        left.Add("b", "value");
+        var right = new GenericRecord(rightSchema);
+        right.Add("b", "value");
+        right.Add("a", 1);
+        var record = new GenericRecord(schema);
+        record.Add("left", left);
+        record.Add("right", right);
+        var validator = new AvroInlineRuleValidator(schema);
+        var payload = Serialize(record, schema);
+
+        validator.Validate(payload, 27, failFast: false);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+            validator.Validate(payload, 27, failFast: false);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        right.Add("a", 2);
+        Assert.Throws<ValidationRulesFailedException>(() =>
+            validator.Validate(Serialize(record, schema), 27, failFast: false));
+        await Assert.That(allocated).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task Validate_IdenticallyEncodedAggregatesRequireCompatibleSchemas()
     {
         const string schemaText = """

@@ -2999,6 +2999,7 @@ internal sealed class ValidationCelParser
     private readonly List<byte[][]> _memberPaths;
     private readonly HashSet<int> _usedMemberIndexes;
     private readonly HashSet<int>? _sizedMemberIndexes;
+    private readonly List<int>? _sizedMemberAdditions;
     private int _sizeArgumentDepth;
     private int _position;
     private ValidationCelToken _current;
@@ -3019,6 +3020,7 @@ internal sealed class ValidationCelParser
         _equalityIndexOffset = equalityIndexOffset;
         _equalityIndexes = equalityIndexes;
         _sizedMemberIndexes = sizedMemberIndexes;
+        _sizedMemberAdditions = sizedMemberIndexes is null ? null : [];
         _current = ReadNextToken();
     }
 
@@ -3042,9 +3044,18 @@ internal sealed class ValidationCelParser
 
     private ValidationCelNode ParseConditional()
     {
+        var sizedMemberCount = _sizeArgumentDepth == 0
+            ? -1
+            : _sizedMemberAdditions?.Count ?? 0;
+        var usedRootSize = UsesRootSize;
         var condition = ParseOr();
         if (!TryTake(ValidationCelTokenKind.Question))
             return condition;
+        if (sizedMemberCount >= 0)
+        {
+            RollbackSizedMembers(sizedMemberCount);
+            UsesRootSize = usedRootSize;
+        }
         var whenTrue = ParseConditional();
         Expect(ValidationCelTokenKind.Colon);
         return new ValidationCelConditionalNode(condition, whenTrue, ParseConditional());
@@ -3291,9 +3302,19 @@ internal sealed class ValidationCelParser
             _memberPaths.Add(path);
         }
         _usedMemberIndexes.Add(memberIndex);
-        if (_sizeArgumentDepth != 0)
-            _sizedMemberIndexes?.Add(memberIndex);
+        if (_sizeArgumentDepth != 0 && _sizedMemberIndexes?.Add(memberIndex) == true)
+            _sizedMemberAdditions!.Add(memberIndex);
         return new ValidationCelThisNode(memberIndex);
+    }
+
+    private void RollbackSizedMembers(int count)
+    {
+        var additions = _sizedMemberAdditions;
+        if (additions is null || additions.Count == count)
+            return;
+        for (var index = additions.Count - 1; index >= count; index--)
+            _sizedMemberIndexes!.Remove(additions[index]);
+        additions.RemoveRange(count, additions.Count - count);
     }
 
     private ValidationCelNode ParseParenthesized()
