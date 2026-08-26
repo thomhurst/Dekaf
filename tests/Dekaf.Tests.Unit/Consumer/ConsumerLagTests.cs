@@ -45,7 +45,7 @@ public sealed class ConsumerLagTests
     }
 
     [Test]
-    public async Task GetCurrentLag_ReturnsNullAfterPartitionIsUnassigned()
+    public async Task GetCurrentLag_ReturnsNullAfterUnassignmentWhileWatermarksRemainCached()
     {
         await using var consumer = CreateConsumer();
         consumer.IncrementalAssign([new TopicPartitionOffset(Partition.Topic, Partition.Partition, 10)]);
@@ -53,6 +53,7 @@ public sealed class ConsumerLagTests
 
         consumer.IncrementalUnassign([Partition]);
 
+        await Assert.That(consumer.GetWatermarkOffsets(Partition)).IsEqualTo(new WatermarkOffsets(0, 25));
         await Assert.That(consumer.GetCurrentLag(Partition)).IsNull();
     }
 
@@ -130,8 +131,8 @@ public sealed class ConsumerLagTests
             CreateFetchResponse(100),
             previousAssignmentVersion);
 
-        await Assert.That(consumer.GetWatermarkOffsets(Partition)).IsNull();
-        await Assert.That(GetWatermarkCacheCount(consumer)).IsEqualTo(0);
+        await Assert.That(consumer.GetWatermarkOffsets(Partition)).IsEqualTo(new WatermarkOffsets(0, 25));
+        await Assert.That(GetWatermarkCacheCount(consumer)).IsEqualTo(1);
     }
 
     [Test]

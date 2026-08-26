@@ -7428,7 +7428,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             _lastConsumedLeaderEpochs.TryRemove(partition, out _);
             _committed.TryRemove(partition, out _);
             _highWatermarks.TryRemove(partition, out _);
-            _watermarks.TryRemove(partition, out _);
+            // IConsumerOffsets exposes the last cached broker watermarks even while
+            // unassigned. A later assignment removes them before position reuse.
             _eofEmitted.TryRemove(partition, out _);
             hadPaused |= _paused.TryRemove(partition, out _);
         }
@@ -9557,7 +9558,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     continue;
 
                 _watermarkAssignmentVersions.TryRemove(partition, out _);
-                _watermarks.TryRemove(partition, out _);
             }
 
             foreach (var partition in assignmentSnapshot)
