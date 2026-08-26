@@ -218,7 +218,7 @@ const config = {
             ],
           },
         ],
-        copyright: `Copyright © ${new Date().getFullYear()} Dekaf. Built with Docusaurus.`,
+        copyright: `Copyright © ${new Date().getFullYear()} Tom Longhurst. Built with Docusaurus.`,
       },
       prism: {
         theme: dekafPrismTheme,
