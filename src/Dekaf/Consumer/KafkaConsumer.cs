@@ -1491,8 +1491,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private int _lastCoordinatorAssignmentVersion = -1;
     // Deterministic test seam for assignment/revocation snapshot races.
     internal Action? BeforeCoordinatorAssignmentSnapshotForTest { get; set; }
-    // Deterministic test seam for watermark creation/assignment races.
-    internal Action? BeforeWatermarkCacheEntryCreationForTest { get; set; }
+    // Deterministic test seam for watermark creation/assignment races. Thread-local static
+    // storage avoids changing the production consumer's instance layout.
+    [ThreadStatic]
+    private static Action? _beforeWatermarkCacheEntryCreationForTest;
+    internal static Action? BeforeWatermarkCacheEntryCreationForTest
+    {
+        get => _beforeWatermarkCacheEntryCreationForTest;
+        set => _beforeWatermarkCacheEntryCreationForTest = value;
+    }
     // Foreground-applied pause state. Keep at the cold field tail so the normal consume layout
     // remains stable; only queue admission/reconciliation reads or writes it.
     private TopicPartitionSet _deliveryPausedSnapshot = new HashSet<TopicPartition>();

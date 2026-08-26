@@ -227,9 +227,9 @@ public sealed class ConsumerLagTests
         await using var consumer = CreateConsumer();
         consumer.IncrementalAssign([new TopicPartitionOffset(Partition.Topic, Partition.Partition, 10)]);
         var oldAssignmentVersion = GetAssignmentVersion(consumer);
-        consumer.BeforeWatermarkCacheEntryCreationForTest = () =>
+        KafkaConsumer<string, string>.BeforeWatermarkCacheEntryCreationForTest = () =>
         {
-            consumer.BeforeWatermarkCacheEntryCreationForTest = null;
+            KafkaConsumer<string, string>.BeforeWatermarkCacheEntryCreationForTest = null;
             consumer.IncrementalAssign([
                 new TopicPartitionOffset(otherPartition.Topic, otherPartition.Partition, 0)
             ]);
