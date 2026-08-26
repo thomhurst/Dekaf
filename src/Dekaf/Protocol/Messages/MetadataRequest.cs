@@ -100,7 +100,12 @@ public sealed class MetadataRequest : IKafkaRequest<MetadataResponse>
     /// <summary>
     /// Creates a request to fetch metadata for specific topics.
     /// </summary>
-    public static MetadataRequest ForTopics(IEnumerable<string> topicNames)
+    public static MetadataRequest ForTopics(IEnumerable<string> topicNames) =>
+        ForTopics(topicNames, allowAutoTopicCreation: true);
+
+    internal static MetadataRequest ForTopics(
+        IEnumerable<string> topicNames,
+        bool allowAutoTopicCreation)
     {
         // Optimize for common collection types to avoid multiple enumerations
         if (topicNames is ICollection<string> collection)
@@ -111,7 +116,11 @@ public sealed class MetadataRequest : IKafkaRequest<MetadataResponse>
             {
                 topics[i++] = new MetadataRequestTopic { Name = name };
             }
-            return new MetadataRequest { Topics = topics };
+            return new MetadataRequest
+            {
+                Topics = topics,
+                AllowAutoTopicCreation = allowAutoTopicCreation
+            };
         }
 
         var topicList = topicNames.TryGetNonEnumeratedCount(out var count)
@@ -123,7 +132,11 @@ public sealed class MetadataRequest : IKafkaRequest<MetadataResponse>
             topicList.Add(new MetadataRequestTopic { Name = name });
         }
 
-        return new MetadataRequest { Topics = topicList };
+        return new MetadataRequest
+        {
+            Topics = topicList,
+            AllowAutoTopicCreation = allowAutoTopicCreation
+        };
     }
 }
 

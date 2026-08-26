@@ -1,5 +1,6 @@
 using Dekaf.Admin;
 using Dekaf.Consumer;
+using Dekaf.Errors;
 using Dekaf.Networking;
 using Dekaf.Producer;
 using Dekaf.Protocol.Messages;
@@ -13,6 +14,50 @@ namespace Dekaf.Tests.Integration;
 [Category("Producer")]
 public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
+    [Test]
+    public async Task GetPartitionsForAsync_ReturnsBrokerMetadata()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-producer-partition-metadata")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        var partitions = await producer.GetPartitionsForAsync(topic);
+
+        await Assert.That(partitions.Count).IsEqualTo(3);
+        await Assert.That(partitions.Select(static partition => partition.TopicPartition.Partition))
+            .IsEquivalentTo([0, 1, 2]);
+        await Assert.That(partitions.All(partition => partition.TopicPartition.Topic == topic)).IsTrue();
+        await Assert.That(partitions.All(static partition => partition.LeaderId >= 0)).IsTrue();
+        await Assert.That(partitions.All(static partition => partition.ReplicaIds.Count > 0)).IsTrue();
+        await Assert.That(partitions.All(static partition => partition.InSyncReplicaIds.Count > 0)).IsTrue();
+    }
+
+    [Test]
+    public async Task GetPartitionsForAsync_UnknownTopicDoesNotCreateTopic()
+    {
+        var topic = $"missing-partition-metadata-{Guid.NewGuid():N}";
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-producer-partition-metadata-missing")
+            .WithMaxBlock(TimeSpan.FromSeconds(1))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        await Assert.That(async () => await producer.GetPartitionsForAsync(topic))
+            .Throws<KafkaTimeoutException>();
+
+        await using var admin = Kafka.CreateAdminClient()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .Build();
+        var topics = await admin.ListTopicsAsync();
+
+        await Assert.That(topics.Select(static listing => listing.Name)).DoesNotContain(topic);
+    }
+
     [Test]
     public async Task Producer_SchemePrefixedBootstrapServer_ProducesSuccessfully()
     {

@@ -440,3 +440,21 @@ Dekaf.Admin.AdminClientShareGroupDeletionExtensions
 Dekaf.Admin.IShareGroupDeletionAdminClient
 Dekaf.Admin.IShareGroupDeletionAdminClient.DeleteShareGroupsAsync(System.Collections.Generic.IEnumerable<string!>! groupIds, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.DeleteShareGroupResult!>!>
 static Dekaf.Admin.AdminClientShareGroupDeletionExtensions.DeleteShareGroupsAsync(this Dekaf.Admin.IAdminClient! adminClient, System.Collections.Generic.IEnumerable<string!>! groupIds, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<string!, Dekaf.Admin.DeleteShareGroupResult!>!>
+Dekaf.Producer.IProducerMetadata (forwarded, contained in Dekaf.Abstractions)
+Dekaf.Producer.IProducerMetadata.GetPartitionsForAsync(string! topic, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyList<Dekaf.Producer.ProducerPartitionMetadata!>!> (forwarded, contained in Dekaf.Abstractions)
+Dekaf.Producer.KafkaProducer<TKey, TValue>.GetPartitionsForAsync(string! topic, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyList<Dekaf.Producer.ProducerPartitionMetadata!>!>
+Dekaf.Producer.ProducerPartitionMetadata (forwarded, contained in Dekaf.Abstractions)
+Dekaf.Producer.ProducerPartitionMetadata.InSyncReplicaIds.get -> System.Collections.Generic.IReadOnlyList<int>! (forwarded, contained in Dekaf.Abstractions)
+Dekaf.Producer.ProducerPartitionMetadata.InSyncReplicaIds.init -> void (forwarded, contained in Dekaf.Abstractions)
+Dekaf.Producer.ProducerPartitionMetadata.LeaderEpoch.get -> int (forwarded, contained in Dekaf.Abstractions)
+Dekaf.Producer.ProducerPartitionMetadata.LeaderEpoch.init -> void (forwarded, contained in Dekaf.Abstractions)
+Dekaf.Producer.ProducerPartitionMetadata.LeaderId.get -> int (forwarded, contained in Dekaf.Abstractions)
+Dekaf.Producer.ProducerPartitionMetadata.LeaderId.init -> void (forwarded, contained in Dekaf.Abstractions)
+Dekaf.Producer.ProducerPartitionMetadata.OfflineReplicaIds.get -> System.Collections.Generic.IReadOnlyList<int>! (forwarded, contained in Dekaf.Abstractions)
+Dekaf.Producer.ProducerPartitionMetadata.OfflineReplicaIds.init -> void (forwarded, contained in Dekaf.Abstractions)
+Dekaf.Producer.ProducerPartitionMetadata.ProducerPartitionMetadata() -> void (forwarded, contained in Dekaf.Abstractions)
+Dekaf.Producer.ProducerPartitionMetadata.ReplicaIds.get -> System.Collections.Generic.IReadOnlyList<int>! (forwarded, contained in Dekaf.Abstractions)
+Dekaf.Producer.ProducerPartitionMetadata.ReplicaIds.init -> void (forwarded, contained in Dekaf.Abstractions)
+Dekaf.Producer.ProducerPartitionMetadata.TopicPartition.get -> Dekaf.TopicPartition (forwarded, contained in Dekaf.Abstractions)
+Dekaf.Producer.ProducerPartitionMetadata.TopicPartition.init -> void (forwarded, contained in Dekaf.Abstractions)
+static Dekaf.Producer.ProducerExtensions.GetPartitionsForAsync<TKey, TValue>(this Dekaf.Producer.IKafkaProducer<TKey, TValue>! producer, string! topic, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyList<Dekaf.Producer.ProducerPartitionMetadata!>!>

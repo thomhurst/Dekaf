@@ -25,11 +25,13 @@ using Dekaf.Telemetry;
 [assembly: TypeForwardedTo(typeof(OffsetCommitMode))]
 
 [assembly: TypeForwardedTo(typeof(IKafkaProducer<,>))]
+[assembly: TypeForwardedTo(typeof(IProducerMetadata))]
 [assembly: TypeForwardedTo(typeof(ITopicProducer<,>))]
 [assembly: TypeForwardedTo(typeof(ITransaction<,>))]
 [assembly: TypeForwardedTo(typeof(ProducerMessage<,>))]
 [assembly: TypeForwardedTo(typeof(TopicProducerMessage<,>))]
 [assembly: TypeForwardedTo(typeof(RecordMetadata))]
+[assembly: TypeForwardedTo(typeof(ProducerPartitionMetadata))]
 [assembly: TypeForwardedTo(typeof(PurgeOptions))]
 [assembly: TypeForwardedTo(typeof(PreparedTransactionState))]
 

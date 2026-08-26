@@ -686,7 +686,26 @@ public sealed partial class MetadataManager : IAsyncDisposable
         }
 
         // Slow path: need to refresh metadata
-        return await GetTopicMetadataSlowAsync(topicName, cancellationToken).ConfigureAwait(false);
+        return await GetTopicMetadataSlowAsync(
+            topicName,
+            allowAutoTopicCreation: true,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Gets topic metadata without permitting the metadata request to create the topic.
+    /// </summary>
+    internal ValueTask<TopicInfo?> GetTopicMetadataForInspectionAsync(
+        string topicName,
+        CancellationToken cancellationToken)
+    {
+        if (TryGetCachedTopicMetadata(topicName, out var topic))
+            return new ValueTask<TopicInfo?>(topic);
+
+        return GetTopicMetadataSlowAsync(
+            topicName,
+            allowAutoTopicCreation: false,
+            cancellationToken);
     }
 
     /// <summary>
@@ -713,7 +732,10 @@ public sealed partial class MetadataManager : IAsyncDisposable
         // so that other waiters (or retry callers) can benefit from the result.
         var sharedTask = _pendingTopicFetches.GetOrAdd(topicName,
             static (t, self) => new Lazy<Task<TopicInfo?>>(
-                () => self.GetTopicMetadataSlowAsync(t, self._disposalCts.Token).AsTask()),
+                () => self.GetTopicMetadataSlowAsync(
+                    t,
+                    allowAutoTopicCreation: true,
+                    self._disposalCts.Token).AsTask()),
             this);
 
         try
@@ -769,7 +791,10 @@ public sealed partial class MetadataManager : IAsyncDisposable
     /// waitOnMetadata behavior: loop until metadata is available or timeout expires,
     /// rather than giving up after a fixed number of attempts.
     /// </remarks>
-    private async ValueTask<TopicInfo?> GetTopicMetadataSlowAsync(string topicName, CancellationToken cancellationToken)
+    private async ValueTask<TopicInfo?> GetTopicMetadataSlowAsync(
+        string topicName,
+        bool allowAutoTopicCreation,
+        CancellationToken cancellationToken)
     {
         TopicInfo? topic = null;
         var failureCount = 0;
@@ -777,7 +802,12 @@ public sealed partial class MetadataManager : IAsyncDisposable
         while (!cancellationToken.IsCancellationRequested)
         {
             // Refresh metadata for this topic
-            await RefreshMetadataAsync([topicName], cancellationToken: cancellationToken).ConfigureAwait(false);
+            await RefreshMetadataAsyncCore(
+                [topicName],
+                forceRefresh: false,
+                BootstrapResolutionFailureMode.PublicException,
+                allowAutoTopicCreation,
+                cancellationToken).ConfigureAwait(false);
             topic = _metadata.GetTopic(topicName);
 
             if (topic is not null && topic.PartitionCount > 0 && topic.ErrorCode == ErrorCode.None)
@@ -803,6 +833,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
             break;
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
         return topic;
     }
 
@@ -907,6 +938,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
             topics,
             forceRefresh,
             BootstrapResolutionFailureMode.PublicException,
+            allowAutoTopicCreation: true,
             cancellationToken);
 
     private ValueTask RefreshMetadataForInitializationAsync(CancellationToken cancellationToken) =>
@@ -914,6 +946,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
             topics: null,
             forceRefresh: false,
             BootstrapResolutionFailureMode.Pending,
+            allowAutoTopicCreation: true,
             cancellationToken);
 
     private ValueTask RefreshMetadataAfterBootstrapResolutionAsync(CancellationToken cancellationToken) =>
@@ -921,12 +954,14 @@ public sealed partial class MetadataManager : IAsyncDisposable
             topics: null,
             forceRefresh: false,
             BootstrapResolutionFailureMode.MetadataFailure,
+            allowAutoTopicCreation: true,
             cancellationToken);
 
     private async ValueTask RefreshMetadataAsyncCore(
         IEnumerable<string>? topics,
         bool forceRefresh,
         BootstrapResolutionFailureMode bootstrapResolutionFailureMode,
+        bool allowAutoTopicCreation,
         CancellationToken cancellationToken)
     {
         if (Volatile.Read(ref _disposed) != 0)
@@ -949,7 +984,8 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
             try
             {
-                await RefreshMetadataInternalAsync(topics, cancellationToken).ConfigureAwait(false);
+                await RefreshMetadataInternalAsync(topics, allowAutoTopicCreation, cancellationToken)
+                    .ConfigureAwait(false);
             }
             catch (BootstrapResolutionPendingException ex) when (
                 bootstrapResolutionFailureMode != BootstrapResolutionFailureMode.Pending)
@@ -985,7 +1021,10 @@ public sealed partial class MetadataManager : IAsyncDisposable
         return true;
     }
 
-    private async ValueTask RefreshMetadataInternalAsync(IEnumerable<string>? topics, CancellationToken cancellationToken)
+    private async ValueTask RefreshMetadataInternalAsync(
+        IEnumerable<string>? topics,
+        bool allowAutoTopicCreation,
+        CancellationToken cancellationToken)
     {
         Exception? lastException = null;
         var retryRequestedRebootstrap = false;
@@ -995,7 +1034,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
         if (_options.MetadataRecoveryStrategy == MetadataRecoveryStrategy.Rebootstrap
             && TryConsumeMetadataRebootstrapRequest())
         {
-            if (await ExecuteRebootstrapAsync(topics, cancellationToken).ConfigureAwait(false))
+            if (await ExecuteRebootstrapAsync(topics, allowAutoTopicCreation, cancellationToken).ConfigureAwait(false))
             {
                 _hasSuccessfulRefresh = true;
                 return;
@@ -1037,7 +1076,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 // Build metadata request
                 var request = topics is null
                     ? MetadataRequest.ForAllTopics()
-                    : MetadataRequest.ForTopics(topics);
+                    : MetadataRequest.ForTopics(topics, allowAutoTopicCreation);
 
                 var response = await connection.SendAsync<MetadataRequest, MetadataResponse>(
                     request,
@@ -1051,7 +1090,10 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 if (response.ErrorCode == ErrorCode.RebootstrapRequired
                     && _options.MetadataRecoveryStrategy == MetadataRecoveryStrategy.Rebootstrap)
                 {
-                    var rebootstrapped = await TryRebootstrapImmediateAsync(topics, cancellationToken).ConfigureAwait(false);
+                    var rebootstrapped = await TryRebootstrapImmediateAsync(
+                        topics,
+                        cancellationToken,
+                        allowAutoTopicCreation).ConfigureAwait(false);
                     if (rebootstrapped)
                     {
                         ResetAllBrokersUnavailableTimestamp();
@@ -1126,7 +1168,10 @@ public sealed partial class MetadataManager : IAsyncDisposable
         // All known endpoints failed - try rebootstrap if configured
         if (_options.MetadataRecoveryStrategy == MetadataRecoveryStrategy.Rebootstrap)
         {
-            var rebootstrapped = await TryRebootstrapAsync(topics, cancellationToken).ConfigureAwait(false);
+            var rebootstrapped = await TryRebootstrapAsync(
+                topics,
+                cancellationToken,
+                allowAutoTopicCreation).ConfigureAwait(false);
             if (rebootstrapped)
             {
                 _hasSuccessfulRefresh = true;
@@ -1228,7 +1273,10 @@ public sealed partial class MetadataManager : IAsyncDisposable
     /// Timer-gated rebootstrap: attempts recovery by re-resolving bootstrap server DNS to discover new broker IPs.
     /// Only triggers after the configured delay has elapsed since all brokers became unavailable.
     /// </summary>
-    internal async ValueTask<bool> TryRebootstrapAsync(IEnumerable<string>? topics, CancellationToken cancellationToken)
+    internal async ValueTask<bool> TryRebootstrapAsync(
+        IEnumerable<string>? topics,
+        CancellationToken cancellationToken,
+        bool allowAutoTopicCreation = true)
     {
         var now = Dekaf.MonotonicClock.GetMilliseconds();
 
@@ -1248,17 +1296,26 @@ public sealed partial class MetadataManager : IAsyncDisposable
         }
 
         LogRebootstrapTriggered(elapsedMs);
-        return await ExecuteRebootstrapAsync(topics, cancellationToken).ConfigureAwait(false);
+        return await ExecuteRebootstrapAsync(
+            topics,
+            allowAutoTopicCreation,
+            cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
     /// Broker-directed immediate rebootstrap (KIP-1102): skips the timer delay and re-resolves DNS immediately.
     /// Called when a broker returns <see cref="ErrorCode.RebootstrapRequired"/> in a MetadataResponse.
     /// </summary>
-    internal async ValueTask<bool> TryRebootstrapImmediateAsync(IEnumerable<string>? topics, CancellationToken cancellationToken)
+    internal async ValueTask<bool> TryRebootstrapImmediateAsync(
+        IEnumerable<string>? topics,
+        CancellationToken cancellationToken,
+        bool allowAutoTopicCreation = true)
     {
         LogBrokerInitiatedRebootstrap();
-        return await ExecuteRebootstrapAsync(topics, cancellationToken).ConfigureAwait(false);
+        return await ExecuteRebootstrapAsync(
+            topics,
+            allowAutoTopicCreation,
+            cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -1266,7 +1323,10 @@ public sealed partial class MetadataManager : IAsyncDisposable
     /// Re-checks newly resolved endpoints for <see cref="ErrorCode.RebootstrapRequired"/> and
     /// advances to the next endpoint without recursively triggering another rebootstrap.
     /// </summary>
-    private async ValueTask<bool> ExecuteRebootstrapAsync(IEnumerable<string>? topics, CancellationToken cancellationToken)
+    private async ValueTask<bool> ExecuteRebootstrapAsync(
+        IEnumerable<string>? topics,
+        bool allowAutoTopicCreation,
+        CancellationToken cancellationToken)
     {
         // Re-resolve DNS for each original bootstrap server
         var newEndpoints = await ResolveBootstrapEndpointsAsync(cancellationToken).ConfigureAwait(false);
@@ -1305,7 +1365,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
                 var request = topics is null
                     ? MetadataRequest.ForAllTopics()
-                    : MetadataRequest.ForTopics(topics);
+                    : MetadataRequest.ForTopics(topics, allowAutoTopicCreation);
 
                 var response = await connection.SendAsync<MetadataRequest, MetadataResponse>(
                     request,

@@ -1,8 +1,10 @@
 using System.Buffers;
+using System.Collections.ObjectModel;
 using System.Runtime.CompilerServices;
 using Dekaf.Consumer;
 using Dekaf.Errors;
 using Dekaf.Producer;
+using Dekaf.Protocol;
 using Dekaf.Serialization;
 using Dekaf.Telemetry;
 
@@ -32,8 +34,12 @@ internal interface IInMemoryTransactionRecoveryContext
 /// </summary>
 public sealed class InMemoryProducer<TKey, TValue> :
     IKafkaProducer<TKey, TValue>,
+    IProducerMetadata,
     IInMemoryTransactionRecoveryContext
 {
+    private static readonly IReadOnlyList<int> SingleBrokerIds =
+        new ReadOnlyCollection<int>([0]);
+
     internal Action? TransactionCompletionPublishedTestHook;
 
     private readonly InMemoryKafkaCluster _cluster;
@@ -150,6 +156,40 @@ public sealed class InMemoryProducer<TKey, TValue> :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
         return ValueTask.CompletedTask;
+    }
+
+    /// <inheritdoc />
+    public ValueTask<IReadOnlyList<ProducerPartitionMetadata>> GetPartitionsForAsync(
+        string topic,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(topic);
+        ThrowIfDisposed();
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (!_cluster.TryGetTopicPartitionCount(topic, out var partitionCount))
+        {
+            throw KafkaException.FromErrorCode(
+                ErrorCode.UnknownTopicOrPartition,
+                $"Topic '{topic}' does not exist.");
+        }
+
+        var result = new ProducerPartitionMetadata[partitionCount];
+        for (var i = 0; i < partitionCount; i++)
+        {
+            result[i] = new ProducerPartitionMetadata
+            {
+                TopicPartition = new TopicPartition(topic, i),
+                LeaderId = 0,
+                LeaderEpoch = 0,
+                ReplicaIds = SingleBrokerIds,
+                InSyncReplicaIds = SingleBrokerIds,
+                OfflineReplicaIds = Array.Empty<int>()
+            };
+        }
+
+        return new ValueTask<IReadOnlyList<ProducerPartitionMetadata>>(
+            new ReadOnlyCollection<ProducerPartitionMetadata>(result));
     }
 
     public ValueTask<RecordMetadata> ProduceAsync(

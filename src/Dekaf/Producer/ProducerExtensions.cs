@@ -8,6 +8,31 @@ namespace Dekaf.Producer;
 public static class ProducerExtensions
 {
     /// <summary>
+    /// Gets the latest accepted partition metadata for a topic.
+    /// </summary>
+    /// <remarks>
+    /// Dekaf's built-in producer completes cache hits synchronously. Cache misses perform a
+    /// cancellable metadata refresh bounded by the producer's configured maximum blocking time.
+    /// Use an admin client when broader topic configuration or authorized-operation details are
+    /// required.
+    /// </remarks>
+    /// <exception cref="NotSupportedException">
+    /// The producer does not implement <see cref="IProducerMetadata"/>.
+    /// </exception>
+    public static ValueTask<IReadOnlyList<ProducerPartitionMetadata>> GetPartitionsForAsync<TKey, TValue>(
+        this IKafkaProducer<TKey, TValue> producer,
+        string topic,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(producer);
+
+        return producer is IProducerMetadata metadata
+            ? metadata.GetPartitionsForAsync(topic, cancellationToken)
+            : throw new NotSupportedException(
+                $"Producer type '{producer.GetType().FullName}' does not support topic partition metadata queries.");
+    }
+
+    /// <summary>
     /// Produces a message with headers without creating a ProducerMessage object.
     /// </summary>
     /// <typeparam name="TKey">Key type.</typeparam>

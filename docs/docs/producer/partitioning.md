@@ -143,9 +143,21 @@ The number of partitions affects:
 
 ```csharp
 // Get partition count for a topic
-var metadata = await producer.GetMetadataAsync("my-topic");
-var partitionCount = metadata.Partitions.Count;
+var partitions = await producer.GetPartitionsForAsync("my-topic", cancellationToken);
+var partitionCount = partitions.Count;
 ```
+
+`GetPartitionsForAsync` returns an immutable snapshot with each partition's leader,
+leader epoch, replicas, in-sync replicas, and offline replicas. Cached metadata completes
+synchronously. When the topic is absent from cache, Dekaf refreshes metadata over the network;
+the caller's cancellation token and producer `MaxBlockMs` both bound that work. Unknown topics
+therefore wait for metadata until cancellation or `MaxBlockMs` expires.
+
+The snapshot reflects the latest metadata accepted by the producer. Dekaf refreshes metadata
+in the background and after routing failures, but a cache hit can briefly describe the prior
+leader during a broker election. Use `IAdminClient.DescribeTopicsAsync` when you need an
+administrative view, topic IDs, authorized operations, or topic configuration rather than the
+producer's routing view.
 
 ## Ordering Guarantees
 

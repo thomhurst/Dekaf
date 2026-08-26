@@ -81,6 +81,8 @@ Dekaf.Producer.IKafkaProducer<TKey, TValue>.ProduceAsync(string! topic, TKey? ke
 Dekaf.Producer.IKafkaProducer<TKey, TValue>.PurgeAsync(Dekaf.Producer.PurgeOptions options, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask
 Dekaf.Producer.IKafkaProducer<TKey, TValue>.RegisterMetricForSubscription(Dekaf.Telemetry.ApplicationTelemetryMetric! metric) -> void
 Dekaf.Producer.IKafkaProducer<TKey, TValue>.UnregisterMetricFromSubscription(string! name) -> void
+Dekaf.Producer.IProducerMetadata
+Dekaf.Producer.IProducerMetadata.GetPartitionsForAsync(string! topic, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyList<Dekaf.Producer.ProducerPartitionMetadata!>!>
 Dekaf.Producer.ITopicProducer<TKey, TValue>
 Dekaf.Producer.ITopicProducer<TKey, TValue>.FireAsync(TKey? key, TValue value, Dekaf.Serialization.Headers! headers) -> System.Threading.Tasks.ValueTask
 Dekaf.Producer.ITopicProducer<TKey, TValue>.FireAsync(TKey? key, TValue value, System.Action<Dekaf.Producer.RecordMetadata, System.Exception?>! deliveryHandler) -> System.Threading.Tasks.ValueTask
@@ -112,6 +114,20 @@ Dekaf.Producer.PreparedTransactionState.ProducerEpoch.get -> short
 Dekaf.Producer.PreparedTransactionState.ProducerEpoch.init -> void
 Dekaf.Producer.PreparedTransactionState.ProducerId.get -> long
 Dekaf.Producer.PreparedTransactionState.ProducerId.init -> void
+Dekaf.Producer.ProducerPartitionMetadata
+Dekaf.Producer.ProducerPartitionMetadata.InSyncReplicaIds.get -> System.Collections.Generic.IReadOnlyList<int>!
+Dekaf.Producer.ProducerPartitionMetadata.InSyncReplicaIds.init -> void
+Dekaf.Producer.ProducerPartitionMetadata.LeaderEpoch.get -> int
+Dekaf.Producer.ProducerPartitionMetadata.LeaderEpoch.init -> void
+Dekaf.Producer.ProducerPartitionMetadata.LeaderId.get -> int
+Dekaf.Producer.ProducerPartitionMetadata.LeaderId.init -> void
+Dekaf.Producer.ProducerPartitionMetadata.OfflineReplicaIds.get -> System.Collections.Generic.IReadOnlyList<int>!
+Dekaf.Producer.ProducerPartitionMetadata.OfflineReplicaIds.init -> void
+Dekaf.Producer.ProducerPartitionMetadata.ProducerPartitionMetadata() -> void
+Dekaf.Producer.ProducerPartitionMetadata.ReplicaIds.get -> System.Collections.Generic.IReadOnlyList<int>!
+Dekaf.Producer.ProducerPartitionMetadata.ReplicaIds.init -> void
+Dekaf.Producer.ProducerPartitionMetadata.TopicPartition.get -> Dekaf.TopicPartition
+Dekaf.Producer.ProducerPartitionMetadata.TopicPartition.init -> void
 Dekaf.Producer.ProducerMessage<TKey, TValue>
 Dekaf.Producer.ProducerMessage<TKey, TValue>.<Clone>$() -> Dekaf.Producer.ProducerMessage<TKey, TValue>!
 Dekaf.Producer.ProducerMessage<TKey, TValue>.Equals(Dekaf.Producer.ProducerMessage<TKey, TValue>? other) -> bool
