@@ -482,6 +482,30 @@ public class AvroInlineRuleValidatorTests
     }
 
     [Test]
+    public async Task Validate_IdenticallyEncodedRootNaNAggregateUsesSemanticEquality()
+    {
+        const string schemaText = """
+            {
+              "type": "array",
+              "items": "double",
+              "confluent:rules": [{ "name": "not-equal", "expr": "this != this" }]
+            }
+            """;
+        var schema = (ArraySchema)AvroSchema.Parse(schemaText);
+        using var stream = new MemoryStream();
+        var encoder = new BinaryEncoder(stream);
+        new GenericDatumWriter<object>(schema).Write(new[] { double.NaN }, encoder);
+        encoder.Flush();
+
+        new AvroInlineRuleValidator(schema).Validate(
+            stream.ToArray(),
+            36,
+            failFast: false);
+
+        await Task.CompletedTask;
+    }
+
+    [Test]
     public async Task Validate_ArrayRuleWithoutSizeDoesNotRequireSizeStorage()
     {
         const string schemaText = """
@@ -522,12 +546,18 @@ public class AvroInlineRuleValidatorTests
         var record = new GenericRecord(schema);
         var validator = new AvroInlineRuleValidator(schema);
         record.Add("status", new GenericEnum(enumSchema, "OPEN"));
+        var payload = Serialize(record, schema);
 
-        validator.Validate(Serialize(record, schema), 34, failFast: false);
+        validator.Validate(payload, 34, failFast: false);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+            validator.Validate(payload, 34, failFast: false);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         record.Add("status", new GenericEnum(enumSchema, "CLOSED"));
         var exception = Assert.Throws<ValidationRulesFailedException>(() =>
             validator.Validate(Serialize(record, schema), 34, failFast: false));
+        await Assert.That(allocated).IsEqualTo(0);
         await Assert.That(exception.Message).Contains("$.status: open");
     }
 

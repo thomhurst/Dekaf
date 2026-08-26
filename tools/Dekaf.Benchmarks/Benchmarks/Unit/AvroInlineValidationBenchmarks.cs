@@ -27,6 +27,10 @@ public class AvroInlineValidationBenchmarks
     private ReadOnlyMemory<byte> _mixedFloatingPayload;
     private AvroInlineRuleValidator _nanAggregateValidator = null!;
     private ReadOnlyMemory<byte> _nanAggregatePayload;
+    private AvroInlineRuleValidator _rootNanAggregateValidator = null!;
+    private ReadOnlyMemory<byte> _rootNanAggregatePayload;
+    private AvroInlineRuleValidator _enumValidator = null!;
+    private ReadOnlyMemory<byte> _enumPayload;
 
     [GlobalSetup]
     public void Setup()
@@ -195,6 +199,45 @@ public class AvroInlineValidationBenchmarks
         _nanAggregatePayload = nanStream.ToArray();
         _nanAggregateValidator = new AvroInlineRuleValidator(nanSchema);
         _nanAggregateValidator.Validate(_nanAggregatePayload, 7, failFast: false);
+
+        const string rootNanAggregateSchema = """
+            {
+              "type": "array",
+              "items": "double",
+              "confluent:rules": [{ "name": "not-equal", "expr": "this != this" }]
+            }
+            """;
+        var rootNanSchema = (ArraySchema)AvroSchema.Parse(rootNanAggregateSchema);
+        using var rootNanStream = new MemoryStream();
+        var rootNanEncoder = new BinaryEncoder(rootNanStream);
+        new GenericDatumWriter<object>(rootNanSchema).Write(new[] { double.NaN }, rootNanEncoder);
+        rootNanEncoder.Flush();
+        _rootNanAggregatePayload = rootNanStream.ToArray();
+        _rootNanAggregateValidator = new AvroInlineRuleValidator(rootNanSchema);
+        _rootNanAggregateValidator.Validate(_rootNanAggregatePayload, 8, failFast: false);
+
+        const string enumSchemaText = """
+            {
+              "type": "record",
+              "name": "EnumBenchmarkRecord",
+              "fields": [{
+                "name": "status",
+                "type": { "type": "enum", "name": "BenchmarkStatus", "symbols": ["OPEN", "CLOSED"] },
+                "confluent:rules": [{ "name": "open", "expr": "this == 'OPEN'" }]
+              }]
+            }
+            """;
+        var enumSchema = (RecordSchema)AvroSchema.Parse(enumSchemaText);
+        var statusSchema = (EnumSchema)enumSchema.Fields[0].Schema;
+        var enumRecord = new GenericRecord(enumSchema);
+        enumRecord.Add("status", new GenericEnum(statusSchema, "OPEN"));
+        using var enumStream = new MemoryStream();
+        var enumEncoder = new BinaryEncoder(enumStream);
+        new GenericDatumWriter<GenericRecord>(enumSchema).Write(enumRecord, enumEncoder);
+        enumEncoder.Flush();
+        _enumPayload = enumStream.ToArray();
+        _enumValidator = new AvroInlineRuleValidator(enumSchema);
+        _enumValidator.Validate(_enumPayload, 9, failFast: false);
     }
 
     [Benchmark]
@@ -228,4 +271,12 @@ public class AvroInlineValidationBenchmarks
     [Benchmark]
     public void ValidateNaNAggregateInequality() =>
         _nanAggregateValidator.Validate(_nanAggregatePayload, 7, failFast: false);
+
+    [Benchmark]
+    public void ValidateRootNaNAggregateInequality() =>
+        _rootNanAggregateValidator.Validate(_rootNanAggregatePayload, 8, failFast: false);
+
+    [Benchmark]
+    public void ValidateEnumRule() =>
+        _enumValidator.Validate(_enumPayload, 9, failFast: false);
 }

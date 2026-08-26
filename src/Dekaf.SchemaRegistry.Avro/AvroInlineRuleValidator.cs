@@ -57,6 +57,7 @@ internal sealed class AvroValueRulePlan
 {
     private readonly AvroSchema _schema;
     private readonly AvroSchema _ruleSchema;
+    private readonly ReadOnlyMemory<byte>[]? _enumSymbols;
     private AvroCompiledRuleSet _schemaRules = AvroCompiledRuleSet.Empty;
     private AvroFieldRulePlan[] _fields = [];
     private AvroValueRulePlan[] _children = [];
@@ -65,6 +66,7 @@ internal sealed class AvroValueRulePlan
     {
         _schema = Unwrap(schema);
         _ruleSchema = schema;
+        _enumSymbols = AvroValidationValueDecoder.EncodeEnumSymbols(_schema);
     }
 
     internal bool HasAnyRules { get; private set; }
@@ -161,7 +163,7 @@ internal sealed class AvroValueRulePlan
         scoped ref AvroValidationPath path)
     {
         if (!HasAnyRules)
-            return AvroValidationValueDecoder.Read(_schema, ref reader);
+            return ReadValue(ref reader);
 
         var value = ValidationCelValue.Missing;
         var preview = default(AvroValidationReader);
@@ -169,7 +171,7 @@ internal sealed class AvroValueRulePlan
         {
             var start = reader.Position;
             preview = reader;
-            value = AvroValidationValueDecoder.Read(_schema, ref preview);
+            value = ReadValue(ref preview);
             var payload = preview.Source.Slice(start, preview.Position - start);
             var rootSize = value.SizeIndex == 0
                 ? AvroValidationValueDecoder.Count(_schema, payload)
@@ -205,7 +207,7 @@ internal sealed class AvroValueRulePlan
                 break;
             default:
                 if (_schemaRules.IsEmpty)
-                    value = AvroValidationValueDecoder.Read(_schema, ref reader);
+                    value = ReadValue(ref reader);
                 else
                     reader = preview;
                 break;
@@ -233,7 +235,7 @@ internal sealed class AvroValueRulePlan
             {
                 var fieldStart = reader.Position;
                 var preview = reader;
-                var value = AvroValidationValueDecoder.Read(field.Field.Schema, ref preview);
+                var value = field.Child.ReadValue(ref preview);
                 var payload = preview.Source.Slice(fieldStart, preview.Position - fieldStart);
                 field.Rules.Evaluate(
                     value,
@@ -372,6 +374,17 @@ internal sealed class AvroValueRulePlan
         }
     }
 
+    private ValidationCelValue ReadValue(ref AvroValidationReader reader)
+    {
+        if (_schema is not global::Avro.UnionSchema union)
+            return AvroValidationValueDecoder.Read(_schema, _enumSymbols, ref reader);
+
+        var branch = reader.ReadLong();
+        if ((ulong)branch >= (ulong)union.Count)
+            throw InvalidPayload($"invalid union index {branch}");
+        return _children[(int)branch].ReadValue(ref reader);
+    }
+
     internal static AvroSchema Unwrap(AvroSchema schema) =>
         schema is global::Avro.LogicalSchema logical ? logical.BaseSchema : schema;
 
@@ -386,11 +399,14 @@ internal sealed record AvroFieldRulePlan(
 
 internal sealed class AvroCompiledRuleSet
 {
-    internal static AvroCompiledRuleSet Empty { get; } = new([], null, false, false, 0);
+    internal static AvroCompiledRuleSet Empty { get; } = new([], null, false, false, false, 0, null);
 
     private readonly CompiledValidationRule[] _rules;
     private readonly AvroMemberResolver? _members;
+    private readonly AvroAggregateEqualityComparer? _rootAggregateComparer;
+    private readonly AvroAggregateEqualityComparer?[]? _rootUnionComparers;
     private readonly bool _usesCachedEquality;
+    private readonly bool _usesRootAggregateEquality;
     private readonly int _memberCount;
 
     private AvroCompiledRuleSet(
@@ -398,13 +414,30 @@ internal sealed class AvroCompiledRuleSet
         AvroMemberResolver? members,
         bool usesSize,
         bool usesCachedEquality,
-        int memberCount)
+        bool usesRootAggregateEquality,
+        int memberCount,
+        AvroSchema? valueSchema)
     {
         _rules = rules;
         _members = members;
         UsesSize = usesSize;
         _usesCachedEquality = usesCachedEquality;
+        _usesRootAggregateEquality = usesRootAggregateEquality;
         _memberCount = memberCount;
+        if (!usesRootAggregateEquality || valueSchema is null)
+            return;
+
+        valueSchema = AvroValueRulePlan.Unwrap(valueSchema);
+        _rootAggregateComparer = AvroAggregateEqualityComparer.Create(valueSchema);
+        if (valueSchema is not global::Avro.UnionSchema union)
+            return;
+
+        _rootUnionComparers = new AvroAggregateEqualityComparer?[union.Count];
+        for (var index = 0; index < union.Count; index++)
+        {
+            _rootUnionComparers[index] = AvroAggregateEqualityComparer.Create(
+                AvroValueRulePlan.Unwrap(union[index]));
+        }
     }
 
     internal bool IsEmpty => _rules.Length == 0;
@@ -423,6 +456,7 @@ internal sealed class AvroCompiledRuleSet
         var compiled = new CompiledValidationRule[rules.Count];
         var usesSize = false;
         var usesCachedEquality = false;
+        var usesRootAggregateEquality = false;
         for (var index = 0; index < rules.Count; index++)
         {
             var rule = CompiledValidationRule.Compile(
@@ -433,6 +467,7 @@ internal sealed class AvroCompiledRuleSet
             compiled[index] = rule;
             usesSize |= rule.UsesSize;
             usesCachedEquality |= rule.UsesCachedEquality;
+            usesRootAggregateEquality |= rule.UsesRootAggregateEquality;
         }
 
         var members = usedMemberIndexes.Count == 0
@@ -443,7 +478,9 @@ internal sealed class AvroCompiledRuleSet
             members,
             usesSize,
             usesCachedEquality,
-            memberPaths.Count);
+            usesRootAggregateEquality,
+            memberPaths.Count,
+            valueSchema);
     }
 
     internal void Evaluate(
@@ -467,6 +504,9 @@ internal sealed class AvroCompiledRuleSet
         var equalityGeneration = _usesCachedEquality
             ? CompiledValidationRule.BeginEqualityResolution()
             : 0;
+        var rootAggregateComparer = _usesRootAggregateEquality
+            ? GetRootAggregateComparer(payload)
+            : null;
 
         ValidationCelStrings.Begin(_memberCount + 1, payload.Length);
         try
@@ -476,7 +516,13 @@ internal sealed class AvroCompiledRuleSet
                 var rule = _rules[index];
                 try
                 {
-                    var result = rule.Evaluate(value, now, memberValues, sizes, equalityGeneration);
+                    var result = rule.Evaluate(
+                        value,
+                        now,
+                        memberValues,
+                        sizes,
+                        equalityGeneration,
+                        rootAggregateComparer);
                     if (result.Kind == ValidationResultKind.Boolean ? result.Boolean : result.String!.Length == 0)
                         continue;
                     (violations ??= []).Add(new ValidationRuleError(
@@ -500,6 +546,19 @@ internal sealed class AvroCompiledRuleSet
         {
             ValidationCelStrings.End();
         }
+    }
+
+    private AvroAggregateEqualityComparer? GetRootAggregateComparer(ReadOnlyMemory<byte> payload)
+    {
+        if (_rootUnionComparers is null)
+            return _rootAggregateComparer;
+
+        var reader = new AvroValidationReader(payload);
+        var branch = reader.ReadLong();
+        if ((ulong)branch >= (ulong)_rootUnionComparers.Length)
+            throw new SchemaRegistryRuleException(
+                $"Could not evaluate Avro validation rules: invalid union index {branch}.");
+        return _rootUnionComparers[(int)branch];
     }
 }
 
@@ -676,6 +735,8 @@ internal sealed class AvroMemberResolver
         private AvroSchema? _schema;
         private AvroAggregateEqualityComparer? _aggregateComparer;
         private AvroAggregateEqualityComparer?[]? _unionComparers;
+        private ReadOnlyMemory<byte>[]? _enumSymbols;
+        private ReadOnlyMemory<byte>[]?[]? _unionEnumSymbols;
 
         internal AvroSchema? Schema
         {
@@ -685,13 +746,16 @@ internal sealed class AvroMemberResolver
                 _schema = value;
                 var schema = AvroValueRulePlan.Unwrap(value!);
                 _aggregateComparer = AvroAggregateEqualityComparer.Create(schema);
+                _enumSymbols = AvroValidationValueDecoder.EncodeEnumSymbols(schema);
                 if (schema is not global::Avro.UnionSchema union)
                     return;
                 _unionComparers = new AvroAggregateEqualityComparer?[union.Count];
+                _unionEnumSymbols = new ReadOnlyMemory<byte>[]?[union.Count];
                 for (var index = 0; index < union.Count; index++)
                 {
-                    _unionComparers[index] = AvroAggregateEqualityComparer.Create(
-                        AvroValueRulePlan.Unwrap(union[index]));
+                    var branch = AvroValueRulePlan.Unwrap(union[index]);
+                    _unionComparers[index] = AvroAggregateEqualityComparer.Create(branch);
+                    _unionEnumSymbols[index] = AvroValidationValueDecoder.EncodeEnumSymbols(branch);
                 }
             }
         }
@@ -794,7 +858,7 @@ internal sealed class AvroMemberResolver
             if (schema is not global::Avro.UnionSchema union)
             {
                 aggregateComparer = _aggregateComparer;
-                return AvroValidationValueDecoder.Read(schema, ref reader);
+                return AvroValidationValueDecoder.Read(schema, _enumSymbols, ref reader);
             }
 
             var branch = reader.ReadLong();
@@ -802,7 +866,10 @@ internal sealed class AvroMemberResolver
                 throw new SchemaRegistryRuleException(
                     $"Could not evaluate Avro validation rules: invalid union index {branch}.");
             aggregateComparer = _unionComparers![(int)branch];
-            return AvroValidationValueDecoder.Read(union[(int)branch], ref reader);
+            return AvroValidationValueDecoder.Read(
+                union[(int)branch],
+                _unionEnumSymbols![(int)branch],
+                ref reader);
         }
     }
 }
@@ -917,7 +984,22 @@ internal ref struct AvroValidationReader(ReadOnlyMemory<byte> source)
 
 internal static class AvroValidationValueDecoder
 {
-    internal static ValidationCelValue Read(AvroSchema schema, ref AvroValidationReader reader)
+    internal static ReadOnlyMemory<byte>[]? EncodeEnumSymbols(AvroSchema schema)
+    {
+        schema = AvroValueRulePlan.Unwrap(schema);
+        if (schema is not global::Avro.EnumSchema enumeration)
+            return null;
+
+        var symbols = new ReadOnlyMemory<byte>[enumeration.Symbols.Count];
+        for (var index = 0; index < symbols.Length; index++)
+            symbols[index] = Encoding.UTF8.GetBytes(enumeration.Symbols[index]);
+        return symbols;
+    }
+
+    internal static ValidationCelValue Read(
+        AvroSchema schema,
+        ReadOnlyMemory<byte>[]? enumSymbols,
+        ref AvroValidationReader reader)
     {
         schema = AvroValueRulePlan.Unwrap(schema);
         switch (schema.Tag)
@@ -934,7 +1016,9 @@ internal static class AvroValidationValueDecoder
                 var symbolIndex = reader.ReadLong();
                 if ((ulong)symbolIndex >= (ulong)enumeration.Symbols.Count)
                     throw InvalidPayload($"invalid enum index {symbolIndex}");
-                return ValidationCelValue.FromString(enumeration.Symbols[(int)symbolIndex]);
+                if (enumSymbols is null)
+                    throw new InvalidOperationException("Avro enum symbols were not compiled for validation.");
+                return ValidationCelValue.FromUtf8String(enumSymbols[(int)symbolIndex]);
             case AvroSchema.Type.Float:
                 return ValidationCelValue.FromFloating(
                     BinaryPrimitives.ReadSingleLittleEndian(reader.Read(sizeof(float)).Span));
@@ -980,14 +1064,67 @@ internal static class AvroValidationValueDecoder
                 var branch = reader.ReadLong();
                 if ((ulong)branch >= (ulong)union.Count)
                     throw InvalidPayload($"invalid union index {branch}");
-                return Read(union[(int)branch], ref reader);
+                return Read(union[(int)branch], enumSymbols, ref reader);
             default:
                 throw InvalidPayload($"unsupported schema type {schema.Tag}");
         }
     }
 
-    internal static void Skip(AvroSchema schema, ref AvroValidationReader reader) =>
-        _ = Read(schema, ref reader);
+    internal static void Skip(AvroSchema schema, ref AvroValidationReader reader)
+    {
+        schema = AvroValueRulePlan.Unwrap(schema);
+        switch (schema.Tag)
+        {
+            case AvroSchema.Type.Null:
+                return;
+            case AvroSchema.Type.Boolean:
+                _ = reader.Read(1);
+                return;
+            case AvroSchema.Type.Int:
+            case AvroSchema.Type.Long:
+                _ = reader.ReadLong();
+                return;
+            case AvroSchema.Type.Enumeration:
+                var symbolIndex = reader.ReadLong();
+                if ((ulong)symbolIndex >= (ulong)((global::Avro.EnumSchema)schema).Symbols.Count)
+                    throw InvalidPayload($"invalid enum index {symbolIndex}");
+                return;
+            case AvroSchema.Type.Float:
+                _ = reader.Read(sizeof(float));
+                return;
+            case AvroSchema.Type.Double:
+                _ = reader.Read(sizeof(double));
+                return;
+            case AvroSchema.Type.String:
+            case AvroSchema.Type.Bytes:
+                _ = reader.ReadLengthPrefixed();
+                return;
+            case AvroSchema.Type.Fixed:
+                _ = reader.Read(((global::Avro.FixedSchema)schema).Size);
+                return;
+            case AvroSchema.Type.Record:
+            case AvroSchema.Type.Error:
+                var record = (global::Avro.RecordSchema)schema;
+                for (var index = 0; index < record.Fields.Count; index++)
+                    Skip(record.Fields[index].Schema, ref reader);
+                return;
+            case AvroSchema.Type.Array:
+                SkipCollection(((global::Avro.ArraySchema)schema).ItemSchema, isMap: false, ref reader);
+                return;
+            case AvroSchema.Type.Map:
+                SkipCollection(((global::Avro.MapSchema)schema).ValueSchema, isMap: true, ref reader);
+                return;
+            case AvroSchema.Type.Union:
+                var union = (global::Avro.UnionSchema)schema;
+                var branch = reader.ReadLong();
+                if ((ulong)branch >= (ulong)union.Count)
+                    throw InvalidPayload($"invalid union index {branch}");
+                Skip(union[(int)branch], ref reader);
+                return;
+            default:
+                throw InvalidPayload($"unsupported schema type {schema.Tag}");
+        }
+    }
 
     internal static int Count(AvroSchema schema, ReadOnlyMemory<byte> payload)
     {

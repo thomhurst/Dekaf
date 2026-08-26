@@ -192,19 +192,24 @@ internal sealed class CompiledValidationRule
         ValidationCelNode? expression,
         bool usesSize = false,
         ValidationCelEqualityPair[]? equalityPairs = null,
+        bool usesCachedEquality = false,
+        bool usesRootAggregateEquality = false,
         string? compilationError = null)
     {
         Rule = rule;
         _expression = expression;
         UsesSize = usesSize;
         EqualityPairs = equalityPairs ?? [];
+        UsesCachedEquality = usesCachedEquality || EqualityPairs.Length != 0;
+        UsesRootAggregateEquality = usesRootAggregateEquality;
         _compilationError = compilationError;
     }
 
     internal ValidationRule Rule { get; }
     internal bool UsesSize { get; }
     internal ValidationCelEqualityPair[] EqualityPairs { get; }
-    internal bool UsesCachedEquality => EqualityPairs.Length != 0;
+    internal bool UsesCachedEquality { get; }
+    internal bool UsesRootAggregateEquality { get; }
 
     internal static CompiledValidationRule Compile(
         ValidationRule rule,
@@ -237,7 +242,9 @@ internal sealed class CompiledValidationRule
                 rule,
                 expression,
                 parser.UsesSize,
-                parser.EqualityPairs);
+                parser.EqualityPairs,
+                parser.UsesCachedEquality,
+                parser.UsesRootAggregateEquality);
         }
         catch (SchemaRegistryRuleException exception)
         {
@@ -261,14 +268,16 @@ internal sealed class CompiledValidationRule
             nowUnixMilliseconds,
             memberValues,
             sizes,
-            equalityGeneration);
+            equalityGeneration,
+            rootAggregateComparer: null);
 
     internal ValidationResult Evaluate(
         ValidationCelValue value,
         long nowUnixMilliseconds,
         ValidationCelMemberValues memberValues,
         ValidationCelSizeValues sizes,
-        uint equalityGeneration)
+        uint equalityGeneration,
+        IValidationCelAggregateComparer? rootAggregateComparer = null)
         => EvaluateCore(
             default,
             value,
@@ -276,7 +285,8 @@ internal sealed class CompiledValidationRule
             nowUnixMilliseconds,
             memberValues,
             sizes,
-            equalityGeneration);
+            equalityGeneration,
+            rootAggregateComparer);
 
     private ValidationResult EvaluateCore(
         ReadOnlyMemory<byte> value,
@@ -285,7 +295,8 @@ internal sealed class CompiledValidationRule
         long nowUnixMilliseconds,
         ValidationCelMemberValues memberValues,
         ValidationCelSizeValues sizes,
-        uint equalityGeneration)
+        uint equalityGeneration,
+        IValidationCelAggregateComparer? rootAggregateComparer)
     {
         if (_compilationError is not null)
             throw new SchemaRegistryRuleException(_compilationError);
@@ -299,7 +310,8 @@ internal sealed class CompiledValidationRule
                 nowUnixMilliseconds,
                 memberValues,
                 sizes,
-                equalityGeneration));
+                equalityGeneration,
+                rootAggregateComparer));
             return result.Kind switch
             {
                 ValidationCelValueKind.Boolean => ValidationResult.FromBoolean(result.Boolean),
@@ -455,7 +467,8 @@ internal readonly record struct ValidationCelContext(
     long NowUnixMilliseconds,
     ValidationCelMemberValues MemberValues,
     ValidationCelSizeValues Sizes,
-    uint EqualityGeneration);
+    uint EqualityGeneration,
+    IValidationCelAggregateComparer? RootAggregateComparer);
 
 internal struct ValidationCelMemberSlot
 {
@@ -1680,6 +1693,9 @@ internal sealed class ValidationCelBinaryNode(
         _leftValueIndex >= 0 &&
         _rightValueIndex >= 0;
 
+    internal bool UsesRootAggregateEquality =>
+        UsesCachedEquality && (_leftValueIndex == 0 || _rightValueIndex == 0);
+
     internal override ValidationCelValue Evaluate(ValidationCelContext context)
     {
         var leftValue = left.Evaluate(context);
@@ -1746,8 +1762,8 @@ internal sealed class ValidationCelBinaryNode(
         value = CompareAggregateValues(
             left,
             right,
-            GetAggregateComparer(context.MemberValues, _leftValueIndex),
-            GetAggregateComparer(context.MemberValues, _rightValueIndex));
+            GetAggregateComparer(context, _leftValueIndex),
+            GetAggregateComparer(context, _rightValueIndex));
         CompiledValidationRule.SetEquality(
             context.EqualityGeneration,
             _leftValueIndex,
@@ -1757,10 +1773,10 @@ internal sealed class ValidationCelBinaryNode(
     }
 
     private static IValidationCelAggregateComparer? GetAggregateComparer(
-        ValidationCelMemberValues memberValues,
-        int valueIndex) => valueIndex > 0
-            ? memberValues.GetAggregateComparer(valueIndex - 1)
-            : null;
+        ValidationCelContext context,
+        int valueIndex) => valueIndex == 0
+            ? context.RootAggregateComparer
+            : context.MemberValues.GetAggregateComparer(valueIndex - 1);
 
     private static bool CompareAggregateValues(ValidationCelValue left, ValidationCelValue right) =>
         CompareAggregateValues(left, right, leftComparer: null, rightComparer: null);
@@ -2812,6 +2828,8 @@ internal sealed class ValidationCelParser
     private readonly List<ValidationCelEqualityPair> _equalityPairs = [];
     private readonly int _equalityIndexOffset;
     private readonly Dictionary<ValidationCelEqualityOperands, int>? _equalityIndexes;
+    internal bool UsesCachedEquality { get; private set; }
+    internal bool UsesRootAggregateEquality { get; private set; }
 
     private ValidationCelNode ParseConditional()
     {
@@ -2855,7 +2873,10 @@ internal sealed class ValidationCelParser
                     leftValue.ValueIndex,
                     rightValue.ValueIndex));
             }
-            left = new ValidationCelBinaryNode(operation, left, right);
+            var equality = new ValidationCelBinaryNode(operation, left, right);
+            UsesCachedEquality |= equality.UsesCachedEquality;
+            UsesRootAggregateEquality |= equality.UsesRootAggregateEquality;
+            left = equality;
         }
         return left;
     }
