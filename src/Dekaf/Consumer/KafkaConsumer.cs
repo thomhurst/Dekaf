@@ -11187,7 +11187,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     continue;
                 }
 
-                var latestUpdateSequence = _watermarkUpdateState & long.MaxValue;
+                var updateState = _watermarkUpdateState;
+                var latestUpdateSequence = updateState;
+                if (updateState < 0)
+                {
+                    var lagEndOffsetUpdateSequence = updateState & long.MaxValue;
+                    latestUpdateSequence = (lagEndOffsetUpdateSequence & ~uint.MaxValue)
+                        | (uint)_watermarkOffsetsUpdateSequenceLow;
+                    if (latestUpdateSequence > lagEndOffsetUpdateSequence)
+                        latestUpdateSequence -= 1L << 32;
+                }
                 var replaced = replacement._watermarkUpdateState >= latestUpdateSequence
                     && watermarks.TryUpdate(partition, replacement, this);
                 Volatile.Write(ref _version, version + 2);

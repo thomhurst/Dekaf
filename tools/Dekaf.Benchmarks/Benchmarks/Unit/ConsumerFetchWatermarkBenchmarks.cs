@@ -13,6 +13,7 @@ public class ConsumerFetchWatermarkBenchmarks
     private KafkaConsumer<byte[], byte[]> _consumer = null!;
     private TopicPartition _partition;
     private FetchResponsePartition _response = null!;
+    private UpdateLagEndOffset _updateLagEndOffset = null!;
     private UpdateWatermarks _updateWatermarks = null!;
     private int _assignmentVersion;
 
@@ -35,6 +36,9 @@ public class ConsumerFetchWatermarkBenchmarks
         _updateWatermarks = typeof(KafkaConsumer<byte[], byte[]>)
             .GetMethod("UpdateWatermarksFromFetchResponse", BindingFlags.Instance | BindingFlags.NonPublic)!
             .CreateDelegate<UpdateWatermarks>();
+        _updateLagEndOffset = typeof(KafkaConsumer<byte[], byte[]>)
+            .GetMethod("UpdateCachedLagEndOffset", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .CreateDelegate<UpdateLagEndOffset>();
         _assignmentVersion = (int)typeof(KafkaConsumer<byte[], byte[]>)
             .GetField("_assignmentEnsureVersion", BindingFlags.Instance | BindingFlags.NonPublic)!
             .GetValue(_consumer)!;
@@ -46,6 +50,13 @@ public class ConsumerFetchWatermarkBenchmarks
     public void UpdateFromFetchResponse() =>
         _updateWatermarks(_consumer, _partition, _response, _assignmentVersion, 0);
 
+    [Benchmark]
+    public void UpdateDivergentFromFetchResponse()
+    {
+        _updateLagEndOffset(_consumer, _partition, 1_100, 2);
+        _updateWatermarks(_consumer, _partition, _response, _assignmentVersion, 1);
+    }
+
     [GlobalCleanup]
     public ValueTask Cleanup() => _consumer.DisposeAsync();
 
@@ -54,5 +65,11 @@ public class ConsumerFetchWatermarkBenchmarks
         TopicPartition partition,
         FetchResponsePartition response,
         int assignmentVersion,
+        long watermarkUpdateSequence);
+
+    private delegate void UpdateLagEndOffset(
+        KafkaConsumer<byte[], byte[]> consumer,
+        TopicPartition partition,
+        long lagEndOffset,
         long watermarkUpdateSequence);
 }

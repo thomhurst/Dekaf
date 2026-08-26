@@ -127,6 +127,24 @@ public sealed class ConsumerLagTests
     }
 
     [Test]
+    public async Task UnassignedWatermarks_NewerQueryReplacesDivergentSnapshot()
+    {
+        await using var consumer = CreateConsumer();
+        consumer.IncrementalAssign([new TopicPartitionOffset(Partition.Topic, Partition.Partition, 10)]);
+        UpdateWatermarksFromFetchResponse(
+            consumer,
+            CreateFetchResponse(25),
+            watermarkUpdateSequence: 5);
+        UpdateCachedLagEndOffset(consumer, lagEndOffset: 30, watermarkUpdateSequence: 10);
+        consumer.IncrementalUnassign([Partition]);
+
+        SetQueriedCachedWatermarks(consumer, Partition, new WatermarkOffsets(10, 50), updateSequence: 7);
+
+        await Assert.That(consumer.GetWatermarkOffsets(Partition))
+            .IsEqualTo(new WatermarkOffsets(10, 50));
+    }
+
+    [Test]
     public async Task UnassignAndAssign_PublicApisClearPartitionState()
     {
         await using var consumer = CreateConsumer();

@@ -232,6 +232,41 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka) : KafkaIntegrationT
     }
 
     [Test]
+    [Timeout(60_000)]
+    public async Task AssignedQuery_RetainsWatermarksAfterUnassignAndInvalidatesOnReassign(
+        CancellationToken testTimeout)
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        var partition = new TopicPartition(topic, 0);
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("retained-watermark-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(testTimeout);
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = topic,
+            Key = "key",
+            Value = "value"
+        }, testTimeout);
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("retained-watermark-consumer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(testTimeout);
+        consumer.Assign(partition);
+
+        var queried = await consumer.QueryWatermarkOffsetsAsync(partition, testTimeout);
+        consumer.Unassign();
+
+        await Assert.That(consumer.GetWatermarkOffsets(partition)).IsEqualTo(queried);
+
+        consumer.Assign(partition);
+
+        await Assert.That(consumer.GetWatermarkOffsets(partition)).IsNull();
+    }
+
+    [Test]
     public async Task GetWatermarkOffsets_MultiplePartitions_ReturnsSeparateValues()
     {
         // Arrange - create topic with multiple partitions
