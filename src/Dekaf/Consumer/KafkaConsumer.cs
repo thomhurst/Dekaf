@@ -1247,6 +1247,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private readonly IDeserializer<TValue> _valueDeserializer;
     private readonly bool _hasRecordHeaderDeserializers;
     private readonly RecordHeaderRoutingPlan? _recordHeaderRoutingPlan;
+    private readonly Headers? _recordHeaderDeserializationHeaders;
     // Non-null when the user configured an IAsyncDeserializer for that component (issue #2309:
     // deserializers that perform per-record I/O, e.g. envelope decryption with short-lived keys).
     // When either is set, ConsumeAsync/ConsumeOneAsync await deserialization per record before
@@ -1254,7 +1255,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     // AsyncOnlyDeserializerPlaceholder and ConsumeBatchAsync (synchronous iteration) throws.
     private readonly IAsyncDeserializer<TKey>? _asyncKeyDeserializer;
     private readonly IAsyncDeserializer<TValue>? _asyncValueDeserializer;
+    private readonly bool _asyncKeyUsesRecordHeaders;
+    private readonly bool _asyncValueUsesRecordHeaders;
     private readonly bool _hasAsyncDeserializers;
+    private readonly Headers? _asyncDeserializationHeaders;
     private readonly IAsyncDeserializerPreparer<TKey>? _keyDeserializerPreparer;
     private readonly IAsyncDeserializerPreparer<TValue>? _valueDeserializerPreparer;
     private readonly bool _hasDeserializerPreparers;
@@ -1766,15 +1770,31 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // When an async deserializer is configured for a component, its sync slot is forced to
         // the throwing placeholder here — by construction, not by builder convention — so a
         // direct constructor caller can never pair an async deserializer with a live sync one.
-        _keyDeserializer = asyncKeyDeserializer is null ? keyDeserializer : AsyncOnlyDeserializerPlaceholder<TKey>.Instance;
-        _valueDeserializer = asyncValueDeserializer is null ? valueDeserializer : AsyncOnlyDeserializerPlaceholder<TValue>.Instance;
+        _keyDeserializer = asyncKeyDeserializer is null
+            ? RecordHeaderDeserializer.WrapIfNeeded(keyDeserializer)
+            : AsyncOnlyDeserializerPlaceholder<TKey>.Instance;
+        _valueDeserializer = asyncValueDeserializer is null
+            ? RecordHeaderDeserializer.WrapIfNeeded(valueDeserializer)
+            : AsyncOnlyDeserializerPlaceholder<TValue>.Instance;
         _recordHeaderRoutingPlan = RecordHeaderRoutingPlan.Create(
             _keyDeserializer,
             _valueDeserializer);
-        _hasRecordHeaderDeserializers = _recordHeaderRoutingPlan is not null;
+        _recordHeaderDeserializationHeaders = _recordHeaderRoutingPlan?.NeedsMaterializedHeaders is true
+            ? new Headers(2)
+            : null;
         _asyncKeyDeserializer = asyncKeyDeserializer;
         _asyncValueDeserializer = asyncValueDeserializer;
+        _asyncKeyUsesRecordHeaders = asyncKeyDeserializer is
+            IRecordHeaderDeserializer { ConsumesRecordHeaders: true };
+        _asyncValueUsesRecordHeaders = asyncValueDeserializer is
+            IRecordHeaderDeserializer { ConsumesRecordHeaders: true };
+        _hasRecordHeaderDeserializers = _recordHeaderRoutingPlan is not null
+                                        || _asyncKeyUsesRecordHeaders
+                                        || _asyncValueUsesRecordHeaders;
         _hasAsyncDeserializers = asyncKeyDeserializer is not null || asyncValueDeserializer is not null;
+        _asyncDeserializationHeaders = _hasAsyncDeserializers && _hasRecordHeaderDeserializers
+            ? new Headers(2)
+            : null;
         _keyDeserializerPreparer = _keyDeserializer is IAsyncDeserializerPreparer<TKey> keyDeserializerPreparer &&
             _keyDeserializer is not IAsyncDeserializerPreparationRequirement { RequiresPreparation: false }
                 ? keyDeserializerPreparer
@@ -3067,6 +3087,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                                 pooledHeaderCount,
                                                 timestampMs,
                                                 timestampType,
+                                                headerRouting,
                                                 component,
                                                 cancellationToken)
                                             .ConfigureAwait(false);
@@ -3112,6 +3133,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                         pending.CurrentPartitionLeaderEpoch >= 0
                                             ? pending.CurrentPartitionLeaderEpoch
                                             : null,
+                                        _recordHeaderDeserializationHeaders,
                                         _keyDeserializer,
                                         _valueDeserializer);
                                 }
@@ -5895,6 +5917,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                     pending.CurrentPartitionLeaderEpoch >= 0
                                         ? pending.CurrentPartitionLeaderEpoch
                                         : null,
+                                    _recordHeaderDeserializationHeaders,
                                     _keyDeserializer,
                                     _valueDeserializer);
                             }
@@ -6222,6 +6245,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                         pooledHeaderCount,
                                         timestampMs,
                                         timestampType,
+                                        headerRouting,
                                         component,
                                         cancellationToken)
                                     .ConfigureAwait(false);
@@ -6450,6 +6474,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         where TPreparedKeyMode : struct
     {
         var topic = pending.Topic;
+        var materializedHeaders = _recordHeaderDeserializationHeaders;
+        if (materializedHeaders is not null)
+            headerRouting.CopyTo(materializedHeaders);
         TKey? key = default;
         if (!isKeyNull)
         {
@@ -6463,6 +6490,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 {
                     Topic = topic,
                     Component = SerializationComponent.Key,
+                    Headers = headerRouting.KeyRequiresMaterializedHeaders
+                        ? materializedHeaders
+                        : null,
                     KeyData = ReadOnlyMemory<byte>.Empty,
                     IsNull = false
                 };
@@ -6470,7 +6500,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 {
                     if (_keyDeserializerPreparer is { } keyPreparer)
                     {
-                        if (!keyPreparer.TryDeserialize(keyData, keyContext, out key))
+                        if (!TryDeserializePrepared(
+                                keyPreparer,
+                                keyData,
+                                keyContext,
+                                in headerRouting,
+                                out key))
                         {
                             result = default!;
                             return false;
@@ -6510,6 +6545,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             Topic = topic,
             Component = SerializationComponent.Value,
+            Headers = headerRouting.ValueRequiresMaterializedHeaders
+                ? materializedHeaders
+                : null,
             KeyData = SerializationContext.NormalizeKeyData(keyData, isKeyNull),
             IsNull = isValueNull
         };
@@ -6519,7 +6557,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             if (_valueDeserializerPreparer is { } valuePreparer)
             {
-                if (!valuePreparer.TryDeserialize(valueBytes, valueContext, out value))
+                if (!TryDeserializePrepared(
+                        valuePreparer,
+                        valueBytes,
+                        valueContext,
+                        in headerRouting,
+                        out value))
                 {
                     if (!isKeyNull && typeof(TPreparedKeyMode) == typeof(DeserializeKeyMode))
                         preparedKey = new PreparedDeserializerKey(pending, offset, key);
@@ -6580,6 +6623,27 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             ? SerializationComponent.Value
             : SerializationComponent.Key;
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool TryDeserializePrepared<T>(
+        IAsyncDeserializerPreparer<T> preparer,
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        in RecordHeaderRoutingLookup headers,
+        out T value) =>
+        preparer is IRecordHeaderAsyncDeserializerPreparer<T> headerPreparer
+            ? headerPreparer.TryDeserialize(data, context, in headers, out value)
+            : preparer.TryDeserialize(data, context, out value);
+
+    private static ValueTask PrepareDeserializerAsync<T>(
+        IAsyncDeserializerPreparer<T> preparer,
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        RecordHeaderRoutingLookup headers,
+        CancellationToken cancellationToken) =>
+        preparer is IRecordHeaderAsyncDeserializerPreparer<T> headerPreparer
+            ? headerPreparer.PrepareAsync(data, context, headers, cancellationToken)
+            : preparer.PrepareAsync(data, context, cancellationToken);
+
     private static void ReserveDeserializerPreparationAttempt(
         SerializationComponent component,
         ref int keyPreparationAttempts,
@@ -6608,6 +6672,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         int pooledHeaderCount,
         long timestampMs,
         TimestampType timestampType,
+        RecordHeaderRoutingLookup headerRouting,
         SerializationComponent component,
         CancellationToken cancellationToken)
     {
@@ -6624,7 +6689,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             };
             try
             {
-                await keyPreparer.PrepareAsync(keyData, keyContext, cancellationToken).ConfigureAwait(false);
+                await PrepareDeserializerAsync(
+                        keyPreparer,
+                        keyData,
+                        keyContext,
+                        headerRouting,
+                        cancellationToken)
+                    .ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -6660,9 +6731,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         };
         try
         {
-            await valuePreparer.PrepareAsync(
+            await PrepareDeserializerAsync(
+                    valuePreparer,
                     isValueNull ? ReadOnlyMemory<byte>.Empty : valueData,
                     valueContext,
+                    headerRouting,
                     cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -6706,6 +6779,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         var topic = pending.Topic;
         var partition = pending.PartitionIndex;
+        var keyUsesRecordHeaders = _asyncKeyDeserializer is not null
+            ? _asyncKeyUsesRecordHeaders
+            : headerRouting.KeyRequiresMaterializedHeaders;
+        var valueUsesRecordHeaders = _asyncValueDeserializer is not null
+            ? _asyncValueUsesRecordHeaders
+            : headerRouting.ValueRequiresMaterializedHeaders;
+        var materializedHeaders = keyUsesRecordHeaders || valueUsesRecordHeaders
+            ? _asyncDeserializationHeaders!
+            : null;
+        if (materializedHeaders is not null)
+            headerRouting.CopyTo(materializedHeaders);
 
         TKey? key = default;
         if (!isKeyNull)
@@ -6714,6 +6798,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 Topic = topic,
                 Component = SerializationComponent.Key,
+                Headers = keyUsesRecordHeaders ? materializedHeaders : null,
                 KeyData = ReadOnlyMemory<byte>.Empty,
                 IsNull = false
             };
@@ -6730,7 +6815,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 else if (_keyDeserializerPreparer is { } keyPreparer)
                 {
                     for (var preparationAttempt = 0;
-                         !keyPreparer.TryDeserialize(keyData, keyContext, out key);
+                         !TryDeserializePrepared(
+                            keyPreparer,
+                            keyData,
+                            keyContext,
+                            in headerRouting,
+                            out key);
                          preparationAttempt++)
                     {
                         if (preparationAttempt >= 2)
@@ -6739,7 +6829,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                 "Deserializer remained unprepared after PrepareAsync completed.");
                         }
 
-                        await keyPreparer.PrepareAsync(keyData, keyContext, cancellationToken)
+                        await PrepareDeserializerAsync(
+                                keyPreparer,
+                                keyData,
+                                keyContext,
+                                headerRouting,
+                                cancellationToken)
                             .ConfigureAwait(false);
                     }
                 }
@@ -6774,6 +6869,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             Topic = topic,
             Component = SerializationComponent.Value,
+            Headers = valueUsesRecordHeaders ? materializedHeaders : null,
             KeyData = SerializationContext.NormalizeKeyData(keyData, isKeyNull),
             IsNull = isValueNull
         };
@@ -6792,7 +6888,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             else if (_valueDeserializerPreparer is { } valuePreparer)
             {
                 for (var preparationAttempt = 0;
-                     !valuePreparer.TryDeserialize(valueBytes, valueContext, out value);
+                     !TryDeserializePrepared(
+                        valuePreparer,
+                        valueBytes,
+                        valueContext,
+                        in headerRouting,
+                        out value);
                      preparationAttempt++)
                 {
                     if (preparationAttempt >= 2)
@@ -6801,7 +6902,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             "Deserializer remained unprepared after PrepareAsync completed.");
                     }
 
-                    await valuePreparer.PrepareAsync(valueBytes, valueContext, cancellationToken)
+                    await PrepareDeserializerAsync(
+                            valuePreparer,
+                            valueBytes,
+                            valueContext,
+                            headerRouting,
+                            cancellationToken)
                         .ConfigureAwait(false);
                 }
             }

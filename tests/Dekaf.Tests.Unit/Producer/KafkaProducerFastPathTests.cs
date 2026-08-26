@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Diagnostics;
 using System.Reflection;
 using System.Runtime.ExceptionServices;
@@ -38,7 +39,7 @@ public class KafkaProducerFastPathTests
         await using var producer = new KafkaProducer<string, string>(
             options,
             Serializers.String,
-            Serializers.String);
+            new RecordHeaderStringSerializer());
         await StopProducerBackgroundLoopsAsync(producer);
         AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(producer.RecordAccumulator);
         await using var pool = new ValueTaskSourcePool<RecordMetadata>();
@@ -68,12 +69,294 @@ public class KafkaProducerFastPathTests
         await Assert.That(readyBatch.RecordBatch.Records.Count).IsEqualTo(2);
         await Assert.That(GetKeyString(readyBatch.RecordBatch.Records[0])).IsEqualTo("inner");
         await Assert.That(GetValueString(readyBatch.RecordBatch.Records[0])).IsEqualTo("inner-value");
+        await Assert.That(GetHeaderValueString(readyBatch.RecordBatch.Records[0])).IsEqualTo("inner-value");
         await Assert.That(GetKeyString(readyBatch.RecordBatch.Records[1])).IsEqualTo("outer");
         await Assert.That(GetValueString(readyBatch.RecordBatch.Records[1])).IsEqualTo("outer-value");
+        await Assert.That(GetHeaderValueString(readyBatch.RecordBatch.Records[1])).IsEqualTo("outer-value");
 
         readyBatch.CompleteSend(baseOffset: 0, DateTimeOffset.UtcNow);
         _ = await innerTask;
         _ = await outerTask;
+    }
+
+    [Test]
+    public async Task FireAsync_RecordHeaderSerializerCustomPartitionerReentry_PreservesOuterKeyAndValue()
+    {
+        var partitioner = new ReentrantPartitioner();
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 4096,
+            LingerMs = 10,
+            RequestTimeoutMs = 500,
+            DeliveryTimeoutMs = 1000,
+            CloseTimeoutMs = 1000,
+            CustomPartitioner = partitioner
+        };
+
+        await using var producer = new KafkaProducer<string, string>(
+            options,
+            Serializers.String,
+            new RecordHeaderStringSerializer());
+        await StopProducerBackgroundLoopsAsync(producer);
+        SeedProducerMetadata(producer);
+        SetInstanceField(producer, "_initialized", true);
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(producer.RecordAccumulator);
+
+        partitioner.OnFirstPartition = () =>
+        {
+            var innerProduce = producer.FireAsync(Topic, "inner", "inner-value");
+            if (!innerProduce.IsCompletedSuccessfully)
+                throw new InvalidOperationException("Expected the reentrant hot path to complete synchronously.");
+        };
+
+        await producer.FireAsync(Topic, "outer", "outer-value");
+
+        var readyBatch = CompleteCurrentBatch(producer.RecordAccumulator, new TopicPartition(Topic, 0));
+        await Assert.That(readyBatch.RecordBatch.Records.Count).IsEqualTo(2);
+        await Assert.That(GetKeyString(readyBatch.RecordBatch.Records[0])).IsEqualTo("inner");
+        await Assert.That(GetValueString(readyBatch.RecordBatch.Records[0])).IsEqualTo("inner-value");
+        await Assert.That(GetHeaderValueString(readyBatch.RecordBatch.Records[0])).IsEqualTo("inner-value");
+        await Assert.That(GetKeyString(readyBatch.RecordBatch.Records[1])).IsEqualTo("outer");
+        await Assert.That(GetValueString(readyBatch.RecordBatch.Records[1])).IsEqualTo("outer-value");
+        await Assert.That(GetHeaderValueString(readyBatch.RecordBatch.Records[1])).IsEqualTo("outer-value");
+    }
+
+    [Test]
+    public async Task FireAsync_CustomPartitionerWithEmptyCallerHeaders_AppendsStagedKeyHeader()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 4096,
+            LingerMs = 10,
+            RequestTimeoutMs = 500,
+            DeliveryTimeoutMs = 1000,
+            CloseTimeoutMs = 1000,
+            CustomPartitioner = new BatchAwarePartitioner()
+        };
+
+        await using var producer = new KafkaProducer<string, string>(
+            options,
+            new RecordHeaderStringSerializer(),
+            Serializers.String);
+        await StopProducerBackgroundLoopsAsync(producer);
+        SeedProducerMetadata(producer);
+        SetInstanceField(producer, "_initialized", true);
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(producer.RecordAccumulator);
+        var headers = new Headers();
+
+        await producer.FireAsync(new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Key = "key",
+            Value = "value",
+            Headers = headers
+        });
+
+        var readyBatch = CompleteCurrentBatch(producer.RecordAccumulator, new TopicPartition(Topic, 0));
+        await Assert.That(readyBatch.RecordBatch.Records.Count).IsEqualTo(1);
+        await Assert.That(GetNamedHeaderValueString(readyBatch.RecordBatch.Records[0], "identity"))
+            .IsEqualTo("key");
+        await Assert.That(headers.Count).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task FireAsync_KeyAndValueRecordHeaderSerializers_AppendBothStagedHeaders()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 4096,
+            LingerMs = 10,
+            RequestTimeoutMs = 500,
+            DeliveryTimeoutMs = 1000,
+            CloseTimeoutMs = 1000
+        };
+
+        var serializer = new ComponentRecordHeaderStringSerializer();
+        await using var producer = new KafkaProducer<string, string>(options, serializer, serializer);
+        await StopProducerBackgroundLoopsAsync(producer);
+        SeedProducerMetadata(producer);
+        SetInstanceField(producer, "_initialized", true);
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(producer.RecordAccumulator);
+
+        await producer.FireAsync(Topic, "key", "value");
+
+        var readyBatch = CompleteCurrentBatch(producer.RecordAccumulator, new TopicPartition(Topic, 0));
+        var record = readyBatch.RecordBatch.Records[0];
+        await Assert.That(record.HeaderCount).IsEqualTo(2);
+        await Assert.That(GetNamedHeaderValueString(record, "__key_schema_id")).IsEqualTo("key");
+        await Assert.That(GetNamedHeaderValueString(record, "__value_schema_id")).IsEqualTo("value");
+    }
+
+    [Test]
+    public async Task FireAsync_CustomPartitionerReusingCallerHeaders_PreservesOuterStagedHeaders()
+    {
+        const string topic = "reentrant-caller-headers";
+        var startedActivityCount = 0;
+        var activityName = DekafDiagnostics.SendSpanName(topic);
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name == DekafDiagnostics.ActivitySourceName,
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData,
+            ActivityStarted = activity =>
+            {
+                if (activity.OperationName == activityName)
+                    startedActivityCount++;
+            }
+        };
+        ActivitySource.AddActivityListener(listener);
+        using var unrelatedSource = new ActivitySource(DekafDiagnostics.ActivitySourceName);
+        unrelatedSource.StartActivity("unrelated operation")?.Dispose();
+        var partitioner = new ReentrantPartitioner();
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 4096,
+            LingerMs = 10,
+            RequestTimeoutMs = 500,
+            DeliveryTimeoutMs = 1000,
+            CloseTimeoutMs = 1000,
+            CustomPartitioner = partitioner
+        };
+
+        await using var producer = new KafkaProducer<string, string>(
+            options,
+            new RecordHeaderStringSerializer(),
+            Serializers.String);
+        await StopProducerBackgroundLoopsAsync(producer);
+        SeedProducerMetadata(producer, topic: topic);
+        SetInstanceField(producer, "_initialized", true);
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(producer.RecordAccumulator);
+        var headers = new Headers();
+        var restoredHeaderCount = -1;
+        string? restoredHeaderKey = null;
+
+        partitioner.OnFirstPartition = () =>
+        {
+            var innerProduce = producer.FireAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Key = "inner",
+                Value = "inner-value",
+                Headers = headers
+            });
+            if (!innerProduce.IsCompletedSuccessfully)
+                throw new InvalidOperationException("Expected the reentrant hot path to complete synchronously.");
+            restoredHeaderCount = headers.Count;
+            restoredHeaderKey = headers.Count > 0 ? headers[0].Key : null;
+        };
+
+        await producer.FireAsync(new ProducerMessage<string, string>
+        {
+            Topic = topic,
+            Key = "outer",
+            Value = "outer-value",
+            Headers = headers
+        });
+
+        var readyBatch = CompleteCurrentBatch(producer.RecordAccumulator, new TopicPartition(topic, 0));
+        await Assert.That(startedActivityCount).IsEqualTo(2);
+        await Assert.That(restoredHeaderCount).IsEqualTo(1);
+        await Assert.That(restoredHeaderKey).IsEqualTo("traceparent");
+        await Assert.That(readyBatch.RecordBatch.Records.Count).IsEqualTo(2);
+        await Assert.That(GetNamedHeaderValueString(readyBatch.RecordBatch.Records[0], "identity"))
+            .IsEqualTo("inner");
+        _ = GetNamedHeaderValueString(readyBatch.RecordBatch.Records[0], "traceparent");
+        await Assert.That(GetNamedHeaderValueString(readyBatch.RecordBatch.Records[1], "identity"))
+            .IsEqualTo("outer");
+        _ = GetNamedHeaderValueString(readyBatch.RecordBatch.Records[1], "traceparent");
+        await Assert.That(headers.Count).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task FireAsync_RecordHeaderSerializerNestedPartitionerReentry_PreservesEveryKeyAndValue()
+    {
+        var partitioner = new NestedReentrantPartitioner();
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 4096,
+            LingerMs = 10,
+            RequestTimeoutMs = 500,
+            DeliveryTimeoutMs = 1000,
+            CloseTimeoutMs = 1000,
+            CustomPartitioner = partitioner
+        };
+
+        await using var producer = new KafkaProducer<string, string>(
+            options,
+            Serializers.String,
+            new RecordHeaderStringSerializer());
+        await StopProducerBackgroundLoopsAsync(producer);
+        SeedProducerMetadata(producer);
+        SetInstanceField(producer, "_initialized", true);
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(producer.RecordAccumulator);
+
+        partitioner.OnPartition = depth =>
+        {
+            var innerProduce = producer.FireAsync(Topic, $"inner-{depth}", $"inner-value-{depth}");
+            if (!innerProduce.IsCompletedSuccessfully)
+                throw new InvalidOperationException("Expected the nested reentrant hot path to complete synchronously.");
+        };
+
+        await producer.FireAsync(Topic, "outer", "outer-value");
+
+        var readyBatch = CompleteCurrentBatch(producer.RecordAccumulator, new TopicPartition(Topic, 0));
+        await Assert.That(readyBatch.RecordBatch.Records.Count).IsEqualTo(3);
+        await Assert.That(GetKeyString(readyBatch.RecordBatch.Records[0])).IsEqualTo("inner-2");
+        await Assert.That(GetValueString(readyBatch.RecordBatch.Records[0])).IsEqualTo("inner-value-2");
+        await Assert.That(GetHeaderValueString(readyBatch.RecordBatch.Records[0])).IsEqualTo("inner-value-2");
+        await Assert.That(GetKeyString(readyBatch.RecordBatch.Records[1])).IsEqualTo("inner-1");
+        await Assert.That(GetValueString(readyBatch.RecordBatch.Records[1])).IsEqualTo("inner-value-1");
+        await Assert.That(GetHeaderValueString(readyBatch.RecordBatch.Records[1])).IsEqualTo("inner-value-1");
+        await Assert.That(GetKeyString(readyBatch.RecordBatch.Records[2])).IsEqualTo("outer");
+        await Assert.That(GetValueString(readyBatch.RecordBatch.Records[2])).IsEqualTo("outer-value");
+        await Assert.That(GetHeaderValueString(readyBatch.RecordBatch.Records[2])).IsEqualTo("outer-value");
+    }
+
+    [Test]
+    public async Task FireAsync_RecordHeaderBatchAwareCustomPartitioner_TracksPartitionCount()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 4096,
+            LingerMs = 10,
+            RequestTimeoutMs = 500,
+            DeliveryTimeoutMs = 1000,
+            CloseTimeoutMs = 1000,
+            CustomPartitioner = new BatchAwarePartitioner()
+        };
+
+        await using var producer = new KafkaProducer<string, string>(
+            options,
+            Serializers.String,
+            new RecordHeaderStringSerializer());
+        await StopProducerBackgroundLoopsAsync(producer);
+        SeedProducerMetadata(producer, partitionCount: 3);
+        SetInstanceField(producer, "_initialized", true);
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(producer.RecordAccumulator);
+
+        await producer.FireAsync(Topic, key: null, value: "value");
+
+        var partitionCount = GetCurrentBatchPartitionCount(
+            producer.RecordAccumulator,
+            new TopicPartition(Topic, 0));
+        await Assert.That(partitionCount).IsEqualTo(3);
     }
 
     [Test]
@@ -156,6 +439,345 @@ public class KafkaProducerFastPathTests
         await Assert.That(headers[0].Key).IsEqualTo("existing");
 
         var readyBatch = CompleteCurrentBatch(producer.RecordAccumulator, new TopicPartition(Topic, 0));
+        readyBatch.CompleteSend(baseOffset: 7, DateTimeOffset.UtcNow);
+        _ = await produceTask;
+
+        await Assert.That(headers.Count).IsEqualTo(1);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task ProduceAsync_SerializerFailure_RestoresCallerOwnedTraceHeaders(
+        bool useAsyncSerializer)
+    {
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name == DekafDiagnostics.ActivitySourceName,
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData
+        };
+        ActivitySource.AddActivityListener(listener);
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-failing-serializer-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 4096,
+            LingerMs = 10,
+            RequestTimeoutMs = 500,
+            DeliveryTimeoutMs = 1000,
+            CloseTimeoutMs = 1000
+        };
+        var producer = useAsyncSerializer
+            ? new KafkaProducer<string, string>(
+                options,
+                Serializers.String,
+                Serializers.String,
+                asyncValueSerializer: ThrowingAsyncStringSerializer.Instance)
+            : new KafkaProducer<string, string>(
+                options,
+                Serializers.String,
+                ThrowingStringSerializer.Instance);
+        await using (producer)
+        {
+            await StopProducerBackgroundLoopsAsync(producer);
+            SeedProducerMetadata(producer);
+            SetInstanceField(producer, "_initialized", true);
+            var headers = new Headers(1).Add("existing", "value");
+
+            _ = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await producer.ProduceAsync(new ProducerMessage<string, string>
+                {
+                    Topic = Topic,
+                    Key = "key",
+                    Value = "value",
+                    Headers = headers
+                }));
+
+            await Assert.That(headers.Count).IsEqualTo(1);
+            await Assert.That(headers[0].Key).IsEqualTo("existing");
+        }
+    }
+
+    [Test]
+    public async Task ProduceAsync_RecordHeaderSerializer_DoesNotMutateCallerHeaders()
+    {
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name == DekafDiagnostics.ActivitySourceName,
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData
+        };
+        ActivitySource.AddActivityListener(listener);
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-record-header-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 4096,
+            LingerMs = 10,
+            RequestTimeoutMs = 500,
+            DeliveryTimeoutMs = 1000,
+            CloseTimeoutMs = 1000
+        };
+
+        await using var producer = new KafkaProducer<string, string>(
+            options,
+            Serializers.String,
+            new RecordHeaderStringSerializer());
+        await StopProducerBackgroundLoopsAsync(producer);
+        SeedProducerMetadata(producer);
+        SetInstanceField(producer, "_initialized", true);
+        var headers = new Headers(1).Add("caller", "owned");
+
+        var produceTask = producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Key = "key",
+            Value = "identity-value",
+            Headers = headers
+        });
+
+        await Assert.That(headers.Count).IsEqualTo(1);
+        await Assert.That(headers[0].Key).IsEqualTo("caller");
+        var readyBatch = CompleteCurrentBatch(producer.RecordAccumulator, new TopicPartition(Topic, 0));
+        var record = readyBatch.RecordBatch.Records[0];
+        await Assert.That(record.HeaderCount).IsEqualTo(3);
+        await Assert.That(record.Headers![0].Key).IsEqualTo("caller");
+        await Assert.That(record.Headers[1].Key).IsEqualTo("identity");
+        await Assert.That(record.Headers[2].Key).IsEqualTo("traceparent");
+
+        readyBatch.CompleteSend(baseOffset: 7, DateTimeOffset.UtcNow);
+        _ = await produceTask;
+        await Assert.That(headers.Count).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task ProduceAsync_RecordHeaderSerializerCanRemoveCallerAndStagedHeaders()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-record-header-removal-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 4096,
+            LingerMs = 10,
+            RequestTimeoutMs = 500,
+            DeliveryTimeoutMs = 1000,
+            CloseTimeoutMs = 1000
+        };
+
+        await using var producer = new KafkaProducer<string, string>(
+            options,
+            Serializers.String,
+            new RemovingRecordHeaderStringSerializer());
+        await StopProducerBackgroundLoopsAsync(producer);
+        SeedProducerMetadata(producer);
+        SetInstanceField(producer, "_initialized", true);
+        var headers = new Headers()
+            .Add("identity", "caller")
+            .Add("caller", "owned");
+
+        var produceTask = producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Key = "key",
+            Value = "value",
+            Headers = headers
+        });
+
+        var readyBatch = CompleteCurrentBatch(producer.RecordAccumulator, new TopicPartition(Topic, 0));
+        var record = readyBatch.RecordBatch.Records[0];
+        var recordHeaderKeys = record.Headers![..record.HeaderCount]
+            .Select(static header => header.Key)
+            .ToArray();
+        await Assert.That(recordHeaderKeys).DoesNotContain("identity");
+        await Assert.That(recordHeaderKeys).Contains("caller");
+        await Assert.That(recordHeaderKeys).Contains("retained");
+        await Assert.That(headers.Select(static header => header.Key).ToArray())
+            .IsEquivalentTo(["identity", "caller"]);
+
+        readyBatch.CompleteSend(baseOffset: 7, DateTimeOffset.UtcNow);
+        _ = await produceTask;
+    }
+
+    [Test]
+    public async Task FireAsync_ConcurrentRecordHeaderSerialization_SharingCallerHeaders_IsIsolated()
+    {
+        var serializer = new OverlappingRecordHeaderAsyncSerializer();
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-concurrent-record-header-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 4096,
+            LingerMs = 10,
+            RequestTimeoutMs = 500,
+            DeliveryTimeoutMs = 1000,
+            CloseTimeoutMs = 1000
+        };
+
+        await using var producer = new KafkaProducer<string, string>(
+            options,
+            Serializers.String,
+            Serializers.String,
+            asyncValueSerializer: serializer);
+        await StopProducerBackgroundLoopsAsync(producer);
+        SeedProducerMetadata(producer);
+        SetInstanceField(producer, "_initialized", true);
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(producer.RecordAccumulator);
+        var headers = new Headers(1).Add("caller", "owned");
+
+        var first = producer.FireAsync(new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Key = "first-key",
+            Value = "first",
+            Headers = headers
+        }).AsTask();
+        await serializer.FirstEntered;
+        var second = producer.FireAsync(new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Key = "second-key",
+            Value = "second",
+            Headers = headers
+        }).AsTask();
+
+        await serializer.SecondAddedHeader;
+        await first;
+        serializer.ReleaseSecond();
+        await second;
+
+        var readyBatch = CompleteCurrentBatch(producer.RecordAccumulator, new TopicPartition(Topic, 0));
+        await Assert.That(readyBatch.RecordBatch.Records.Count).IsEqualTo(2);
+        await Assert.That(GetNamedHeaderValueString(readyBatch.RecordBatch.Records[0], "identity"))
+            .IsEqualTo("first");
+        await Assert.That(GetNamedHeaderValueString(readyBatch.RecordBatch.Records[1], "identity"))
+            .IsEqualTo("second");
+        await Assert.That(headers[0].Key).IsEqualTo("caller");
+        await Assert.That(headers.GetFirst("identity")).IsNull();
+    }
+
+    [Test]
+    public async Task FireAsync_ConcurrentPreparedRecordHeaderSerialization_RentsOverflowWorkspace()
+    {
+        var serializer = new OverlappingPreparedRecordHeaderSerializer();
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-concurrent-prepared-header-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 4096,
+            LingerMs = 10,
+            RequestTimeoutMs = 500,
+            DeliveryTimeoutMs = 1000,
+            CloseTimeoutMs = 1000
+        };
+
+        await using var producer = new KafkaProducer<string, string>(
+            options,
+            Serializers.String,
+            serializer);
+        await StopProducerBackgroundLoopsAsync(producer);
+        SeedProducerMetadata(producer);
+        SetInstanceField(producer, "_initialized", true);
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(producer.RecordAccumulator);
+
+        var first = producer.FireAsync(Topic, "first-key", "first").AsTask();
+        var second = producer.FireAsync(Topic, "second-key", "second").AsTask();
+        serializer.ReleasePreparation();
+        await Task.WhenAll(first, second);
+
+        var readyBatch = CompleteCurrentBatch(producer.RecordAccumulator, new TopicPartition(Topic, 0));
+        await Assert.That(readyBatch.RecordBatch.Records.Count).IsEqualTo(2);
+        var identityValues = readyBatch.RecordBatch.Records
+            .Select(static record => GetNamedHeaderValueString(record, "identity"))
+            .ToArray();
+        await Assert.That(identityValues).IsEquivalentTo(["first", "second"]);
+    }
+
+    [Test]
+    public async Task ProduceAsync_PreparedRecordHeaderSerializerWithoutCallerHeaders_AppendsHeader()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-prepared-record-header-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 4096,
+            LingerMs = 10,
+            RequestTimeoutMs = 500,
+            DeliveryTimeoutMs = 1000,
+            CloseTimeoutMs = 1000
+        };
+
+        var serializer = new PreparedRecordHeaderStringSerializer();
+        await using var producer = new KafkaProducer<string, string>(
+            options,
+            Serializers.String,
+            serializer);
+        await StopProducerBackgroundLoopsAsync(producer);
+        SeedProducerMetadata(producer);
+        SetInstanceField(producer, "_initialized", true);
+
+        var produceTask = producer.ProduceAsync(Topic, "key", "identity-value");
+        var readyBatch = CompleteCurrentBatch(producer.RecordAccumulator, new TopicPartition(Topic, 0));
+        var record = readyBatch.RecordBatch.Records[0];
+
+        await Assert.That(serializer.SerializePreparedCount).IsEqualTo(1);
+        await Assert.That(GetNamedHeaderValueString(record, "identity")).IsEqualTo("identity-value");
+        readyBatch.CompleteSend(baseOffset: 7, DateTimeOffset.UtcNow);
+        _ = await produceTask;
+    }
+
+    [Test]
+    public async Task ProduceAsync_AsyncSerializerTracing_RestoresCallerOwnedHeadersAfterAppend()
+    {
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name == DekafDiagnostics.ActivitySourceName,
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData
+        };
+        ActivitySource.AddActivityListener(listener);
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 4096,
+            LingerMs = 10,
+            RequestTimeoutMs = 500,
+            DeliveryTimeoutMs = 1000,
+            CloseTimeoutMs = 1000
+        };
+
+        await using var producer = new KafkaProducer<string, string>(
+            options,
+            Serializers.String,
+            Serializers.String,
+            asyncValueSerializer: new AsyncStringSerializer());
+        await StopProducerBackgroundLoopsAsync(producer);
+        SeedProducerMetadata(producer);
+        SetInstanceField(producer, "_initialized", true);
+        var headers = new Headers(3).Add("existing", "value");
+
+        var produceTask = producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Key = "key",
+            Value = "value",
+            Headers = headers
+        });
+
+        await Assert.That(headers.Count).IsEqualTo(1);
+        await Assert.That(headers[0].Key).IsEqualTo("existing");
+        await Assert.That(() => producer.RecordAccumulator.BufferedBytes)
+            .Eventually(bytes => bytes.IsGreaterThan(0), TimeSpan.FromSeconds(5));
+
+        var topicPartition = new TopicPartition(Topic, 0);
+        await Assert.That(() => HasCurrentOrSealedBatch(producer.RecordAccumulator, topicPartition))
+            .Eventually(found => found.IsTrue(), TimeSpan.FromSeconds(5));
+        var readyBatch = CompleteCurrentBatch(producer.RecordAccumulator, topicPartition);
         readyBatch.CompleteSend(baseOffset: 7, DateTimeOffset.UtcNow);
         _ = await produceTask;
 
@@ -613,7 +1235,10 @@ public class KafkaProducerFastPathTests
             .ToArray()
     };
 
-    private static void SeedProducerMetadata(KafkaProducer<string, string> producer, int partitionCount = 1)
+    private static void SeedProducerMetadata(
+        KafkaProducer<string, string> producer,
+        int partitionCount = 1,
+        string topic = Topic)
     {
         var metadataManager = GetInstanceField<MetadataManager>(producer, "_metadataManager");
         metadataManager.Metadata.Update(new MetadataResponse
@@ -634,7 +1259,7 @@ public class KafkaProducerFastPathTests
                 new TopicMetadata
                 {
                     ErrorCode = ErrorCode.None,
-                    Name = Topic,
+                    Name = topic,
                     Partitions = Enumerable.Range(0, partitionCount)
                         .Select(partition => new PartitionMetadata
                         {
@@ -745,6 +1370,38 @@ public class KafkaProducerFastPathTests
         throw new InvalidOperationException("Partition deque did not contain a current or sealed batch.");
     }
 
+    private static int GetCurrentBatchPartitionCount(
+        RecordAccumulator accumulator,
+        TopicPartition topicPartition)
+    {
+        var deques = GetInstanceField<object>(accumulator, "_partitionDeques");
+        var tryGetValueMethod = deques.GetType().GetMethod("TryGetValue");
+        var parameters = new object[] { topicPartition, null! };
+        if (!(bool)tryGetValueMethod!.Invoke(deques, parameters)!)
+            throw new InvalidOperationException("Partition deque was not found.");
+
+        var partitionBatch = GetInstanceField<object?>(parameters[1]!, "CurrentBatch")
+            ?? throw new InvalidOperationException("Current batch was not found.");
+        return (int)partitionBatch.GetType().GetProperty("PartitionCount")!.GetValue(partitionBatch)!;
+    }
+
+    private static bool HasCurrentOrSealedBatch(
+        RecordAccumulator accumulator,
+        TopicPartition topicPartition)
+    {
+        var deques = GetInstanceField<object>(accumulator, "_partitionDeques");
+        var tryGetValueMethod = deques.GetType().GetMethod("TryGetValue");
+        var parameters = new object[] { topicPartition, null! };
+        if (!(bool)tryGetValueMethod!.Invoke(deques, parameters)!)
+            return false;
+
+        var partitionDeque = parameters[1]!;
+        if (GetInstanceField<object?>(partitionDeque, "CurrentBatch") is not null)
+            return true;
+
+        return partitionDeque.GetType().GetMethod("PeekFirst")!.Invoke(partitionDeque, null) is ReadyBatch;
+    }
+
     private static int GetSlowPathAppendCount(
         RecordAccumulator accumulator,
         TopicPartition topicPartition)
@@ -784,6 +1441,268 @@ public class KafkaProducerFastPathTests
     private static string GetValueString(Dekaf.Protocol.Records.Record record)
         => Encoding.UTF8.GetString(record.Value.Span);
 
+    private static string GetHeaderValueString(Dekaf.Protocol.Records.Record record)
+    {
+        var headers = record.Headers;
+        if (headers is null || record.HeaderCount != 1 || headers[0].Key != "identity")
+        {
+            var foundKey = headers is { Length: > 0 } ? headers[0].Key : "none";
+            throw new InvalidOperationException(
+                $"Expected one identity header; found {record.HeaderCount} ({foundKey}).");
+        }
+
+        return Encoding.UTF8.GetString(headers[0].Value.Span);
+    }
+
+    private static string GetNamedHeaderValueString(Dekaf.Protocol.Records.Record record, string key)
+    {
+        var headers = record.Headers;
+        string? value = null;
+        for (var index = 0; index < record.HeaderCount; index++)
+        {
+            if (headers![index].Key != key)
+                continue;
+            if (value is not null)
+                throw new InvalidOperationException($"Found duplicate '{key}' headers.");
+
+            value = Encoding.UTF8.GetString(headers[index].Value.Span);
+        }
+
+        return value ?? throw new InvalidOperationException($"Expected a '{key}' header.");
+    }
+
+    private sealed class RecordHeaderStringSerializer : ISerializer<string>, IRecordHeaderSerializer
+    {
+        public bool ProducesRecordHeaders => true;
+
+        public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
+            where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
+        {
+            context.Headers!.Add("identity", Encoding.UTF8.GetBytes(value));
+            Serializers.String.Serialize(value, ref destination, context);
+        }
+    }
+
+    private sealed class ComponentRecordHeaderStringSerializer : ISerializer<string>, IRecordHeaderSerializer
+    {
+        public bool ProducesRecordHeaders => true;
+
+        public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
+            where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
+        {
+            var headerName = context.Component switch
+            {
+                SerializationComponent.Key => "__key_schema_id",
+                SerializationComponent.Value => "__value_schema_id",
+                _ => throw new ArgumentOutOfRangeException(nameof(context))
+            };
+            context.Headers!.Add(headerName, Encoding.UTF8.GetBytes(value));
+            Serializers.String.Serialize(value, ref destination, context);
+        }
+    }
+
+    private sealed class RemovingRecordHeaderStringSerializer : ISerializer<string>, IRecordHeaderSerializer
+    {
+        public bool ProducesRecordHeaders => true;
+
+        public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
+            where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
+        {
+            context.Headers!.Add("identity", "staged");
+            context.Headers.Remove("identity");
+            context.Headers.Add("retained", "value");
+            Serializers.String.Serialize(value, ref destination, context);
+        }
+    }
+
+    private sealed class PreparedRecordHeaderStringSerializer :
+        ISerializer<string>,
+        IAsyncSerializerPreparationAdmission<string>,
+        IRecordHeaderSerializer
+    {
+        private static readonly object PreparedSchema = new();
+
+        public bool ProducesRecordHeaders => true;
+        public int SerializePreparedCount { get; private set; }
+
+        public ValueTask PrepareAsync(
+            string value,
+            SerializationContext context,
+            CancellationToken cancellationToken = default) =>
+            ValueTask.CompletedTask;
+
+        public ValueTask<SerializerPreparationAdmission> PrepareForSerializationAsync(
+            string value,
+            SerializationContext context,
+            CancellationToken cancellationToken = default) =>
+            new(new SerializerPreparationAdmission("subject", 1, PreparedSchema));
+
+        public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
+            where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
+            => throw new InvalidOperationException("Prepared serialization admission was not used.");
+
+        public void SerializePrepared<TWriter>(
+            string value,
+            ref TWriter destination,
+            SerializationContext context,
+            in SerializerPreparationAdmission admission)
+            where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
+        {
+            SerializePreparedCount++;
+            context.Headers!.Add("identity", Encoding.UTF8.GetBytes(value));
+            Serializers.String.Serialize(value, ref destination, context);
+        }
+    }
+
+    private sealed class OverlappingPreparedRecordHeaderSerializer :
+        ISerializer<string>,
+        IAsyncSerializerPreparationAdmission<string>,
+        IRecordHeaderSerializer
+    {
+        private static readonly object PreparedSchema = new();
+        private readonly TaskCompletionSource _preparation =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public bool ProducesRecordHeaders => true;
+
+        internal void ReleasePreparation() => _preparation.TrySetResult();
+
+        public async ValueTask PrepareAsync(
+            string value,
+            SerializationContext context,
+            CancellationToken cancellationToken = default) =>
+            await _preparation.Task.WaitAsync(cancellationToken);
+
+        public async ValueTask<SerializerPreparationAdmission> PrepareForSerializationAsync(
+            string value,
+            SerializationContext context,
+            CancellationToken cancellationToken = default)
+        {
+            await _preparation.Task.WaitAsync(cancellationToken);
+            return new SerializerPreparationAdmission("subject", 1, PreparedSchema);
+        }
+
+        public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
+            where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
+            => throw new InvalidOperationException("Prepared serialization admission was not used.");
+
+        public void SerializePrepared<TWriter>(
+            string value,
+            ref TWriter destination,
+            SerializationContext context,
+            in SerializerPreparationAdmission admission)
+            where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
+        {
+            context.Headers!.Add("identity", Encoding.UTF8.GetBytes(value));
+            Serializers.String.Serialize(value, ref destination, context);
+        }
+    }
+
+    private sealed class AsyncStringSerializer : IAsyncSerializer<string>
+    {
+        public ValueTask SerializeAsync(
+            string value,
+            IBufferWriter<byte> destination,
+            SerializationContext context,
+            CancellationToken cancellationToken = default)
+        {
+            var byteCount = Encoding.UTF8.GetByteCount(value);
+            var span = destination.GetSpan(byteCount);
+            var written = Encoding.UTF8.GetBytes(value, span);
+            destination.Advance(written);
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class ThrowingStringSerializer : ISerializer<string>
+    {
+        internal static readonly ThrowingStringSerializer Instance = new();
+
+        public void Serialize<TWriter>(
+            string value,
+            ref TWriter destination,
+            SerializationContext context)
+            where TWriter : IBufferWriter<byte>
+#if NET10_0_OR_GREATER
+            , allows ref struct
+#endif
+            => throw new InvalidOperationException("Serialization failed.");
+    }
+
+    private sealed class ThrowingAsyncStringSerializer : IAsyncSerializer<string>
+    {
+        internal static readonly ThrowingAsyncStringSerializer Instance = new();
+
+        public ValueTask SerializeAsync(
+            string value,
+            IBufferWriter<byte> destination,
+            SerializationContext context,
+            CancellationToken cancellationToken = default) =>
+            ValueTask.FromException(new InvalidOperationException("Serialization failed."));
+    }
+
+    private sealed class OverlappingRecordHeaderAsyncSerializer : IAsyncSerializer<string>, IRecordHeaderSerializer
+    {
+        private readonly TaskCompletionSource _firstEntered =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _secondAddedHeader =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _releaseSecond =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _invocation;
+
+        public bool ProducesRecordHeaders => true;
+        internal Task FirstEntered => _firstEntered.Task;
+        internal Task SecondAddedHeader => _secondAddedHeader.Task;
+
+        internal void ReleaseSecond() => _releaseSecond.TrySetResult();
+
+        public async ValueTask SerializeAsync(
+            string value,
+            IBufferWriter<byte> destination,
+            SerializationContext context,
+            CancellationToken cancellationToken = default)
+        {
+            if (Interlocked.Increment(ref _invocation) == 1)
+            {
+                _firstEntered.TrySetResult();
+                await _secondAddedHeader.Task.WaitAsync(cancellationToken);
+                context.Headers!.Add("identity", Encoding.UTF8.GetBytes(value));
+            }
+            else
+            {
+                context.Headers!.Add("identity", Encoding.UTF8.GetBytes(value));
+                _secondAddedHeader.TrySetResult();
+                await _releaseSecond.Task.WaitAsync(cancellationToken);
+            }
+
+            var bytes = Encoding.UTF8.GetBytes(value);
+            bytes.CopyTo(destination.GetSpan(bytes.Length));
+            destination.Advance(bytes.Length);
+        }
+    }
+
     private sealed class ReentrantPartitioner : IPartitioner
     {
         private bool _hasReentered;
@@ -799,6 +1718,41 @@ public class KafkaProducerFastPathTests
             }
 
             return 0;
+        }
+    }
+
+    private sealed class NestedReentrantPartitioner : IPartitioner
+    {
+        private const int MaximumDepth = 2;
+        private int _depth;
+
+        public Action<int>? OnPartition { get; set; }
+
+        public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
+        {
+            if (_depth == MaximumDepth)
+                return 0;
+
+            var depth = ++_depth;
+            try
+            {
+                OnPartition?.Invoke(depth);
+            }
+            finally
+            {
+                _depth--;
+            }
+
+            return 0;
+        }
+    }
+
+    private sealed class BatchAwarePartitioner : IPartitioner, IBatchCompletionAwarePartitioner
+    {
+        public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount) => 0;
+
+        public void OnBatchComplete(string topic, int partitionCount)
+        {
         }
     }
 }

@@ -677,8 +677,10 @@ public readonly struct ConsumeResult<TKey, TValue>
         // Resolve the thread-static address once; each direct field access otherwise
         // emits another TLS lookup before setting or copying the context.
         ref var serializationContext = ref t_serializationContext;
-        var keyUsesCallerOwnedHeaders = keyDeserializer is ICallerOwnedHeaderDeserializer<TKey>;
-        var valueUsesCallerOwnedHeaders = valueDeserializer is ICallerOwnedHeaderDeserializer<TValue>;
+        var keyUsesCallerOwnedHeaders = keyDeserializer is not null
+                                        && RecordHeaderDeserializer.UsesCallerOwnedHeaders(keyDeserializer);
+        var valueUsesCallerOwnedHeaders = valueDeserializer is not null
+                                          && RecordHeaderDeserializer.UsesCallerOwnedHeaders(valueDeserializer);
         var serializationHeaders = headers is not null
                                    && (keyUsesCallerOwnedHeaders || valueUsesCallerOwnedHeaders)
             ? GetCallerOwnedSerializationHeaders(headers)
@@ -744,16 +746,22 @@ public readonly struct ConsumeResult<TKey, TValue>
         long timestampMs,
         TimestampType timestampType,
         int? leaderEpoch,
+        Headers? headerWorkspace,
         IDeserializer<TKey>? keyDeserializer,
         IDeserializer<TValue>? valueDeserializer)
     {
         ref var serializationContext = ref t_serializationContext;
+        if (headerWorkspace is not null)
+            headerRouting.CopyTo(headerWorkspace);
+        var materializedHeaders = headerWorkspace;
         TKey? key = default;
         if (!isKeyNull && keyDeserializer is not null)
         {
             serializationContext.Topic = topic;
             serializationContext.Component = SerializationComponent.Key;
-            serializationContext.Headers = null;
+            serializationContext.Headers = headerRouting.KeyRequiresMaterializedHeaders
+                ? materializedHeaders
+                : null;
             serializationContext.KeyData = ReadOnlyMemory<byte>.Empty;
             serializationContext.IsNull = false;
             key = RecordHeaderDeserializer.Deserialize(
@@ -768,7 +776,9 @@ public readonly struct ConsumeResult<TKey, TValue>
         {
             serializationContext.Topic = topic;
             serializationContext.Component = SerializationComponent.Value;
-            serializationContext.Headers = null;
+            serializationContext.Headers = headerRouting.ValueRequiresMaterializedHeaders
+                ? materializedHeaders
+                : null;
             serializationContext.KeyData = SerializationContext.NormalizeKeyData(keyData, isKeyNull);
             serializationContext.IsNull = isValueNull;
             value = RecordHeaderDeserializer.Deserialize(

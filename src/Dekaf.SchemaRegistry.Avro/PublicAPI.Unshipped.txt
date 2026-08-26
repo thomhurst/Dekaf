@@ -5,9 +5,15 @@ Dekaf.SchemaRegistry.Avro.AvroSerializerConfig.AsyncSubjectNameStrategy.get -> D
 Dekaf.SchemaRegistry.Avro.AvroSerializerConfig.AsyncSubjectNameStrategy.init -> void
 Dekaf.SchemaRegistry.Avro.AvroSerializerConfig.MaxCachedSchemas.get -> int
 Dekaf.SchemaRegistry.Avro.AvroSerializerConfig.MaxCachedSchemas.init -> void
+Dekaf.SchemaRegistry.Avro.AvroSerializerConfig.SchemaIdStrategy.get -> Dekaf.SchemaRegistry.SchemaIdSerializerStrategy
+Dekaf.SchemaRegistry.Avro.AvroSerializerConfig.SchemaIdStrategy.init -> void
+Dekaf.SchemaRegistry.Avro.AvroSerializerConfig.UseSchemaId.get -> int?
+Dekaf.SchemaRegistry.Avro.AvroSerializerConfig.UseSchemaId.init -> void
 Dekaf.SchemaRegistry.Avro.AvroSchemaRegistrySerializer<T>.PrepareAsync(string! topic, T value, bool isKey = false, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask<Dekaf.SchemaRegistry.ResolvedSchemaContext>
 Dekaf.SchemaRegistry.Avro.AvroDeserializerConfig.CustomSubjectNameStrategy.get -> Dekaf.SchemaRegistry.ISubjectNameStrategy?
 Dekaf.SchemaRegistry.Avro.AvroDeserializerConfig.CustomSubjectNameStrategy.init -> void
+Dekaf.SchemaRegistry.Avro.AvroDeserializerConfig.SchemaIdStrategy.get -> Dekaf.SchemaRegistry.SchemaIdDeserializerStrategy
+Dekaf.SchemaRegistry.Avro.AvroDeserializerConfig.SchemaIdStrategy.init -> void
 Dekaf.SchemaRegistry.Avro.AvroDeserializerConfig.SubjectNameStrategy.get -> Dekaf.SchemaRegistry.SubjectNameStrategy
 Dekaf.SchemaRegistry.Avro.AvroDeserializerConfig.SubjectNameStrategy.init -> void
 Dekaf.SchemaRegistry.Avro.AvroDeserializerConfig.UseLegacySubjectNames.get -> bool
@@ -64,6 +70,7 @@ Dekaf.SchemaRegistry.Avro.Poco.AvroPocoSchemaRegistryDeserializer<T, TCodec>.Des
 Dekaf.SchemaRegistry.Avro.Poco.AvroPocoSchemaRegistryDeserializer<T, TCodec>.DisposeAsync() -> System.Threading.Tasks.ValueTask
 Dekaf.SchemaRegistry.Avro.Poco.AvroPocoSchemaRegistryDeserializer<T, TCodec>.WarmupAsync(int schemaId, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task!
 Dekaf.SchemaRegistry.Avro.Poco.AvroPocoSchemaRegistryDeserializer<T, TCodec>.WarmupAsync(int schemaId, Dekaf.Serialization.SerializationContext context, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task!
+Dekaf.SchemaRegistry.Avro.Poco.AvroPocoSchemaRegistryDeserializer<T, TCodec>.WarmupAsync(System.Guid schemaGuid, Dekaf.Serialization.SerializationContext context, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task!
 Dekaf.SchemaRegistry.Avro.Poco.AvroPocoSchemaRegistrySerializer<T, TCodec>
 Dekaf.SchemaRegistry.Avro.Poco.AvroPocoSchemaRegistrySerializer<T, TCodec>.AvroPocoSchemaRegistrySerializer(Dekaf.SchemaRegistry.ISchemaRegistryClient! schemaRegistry, Dekaf.SchemaRegistry.Avro.AvroSerializerConfig? config = null, bool ownsClient = false) -> void
 Dekaf.SchemaRegistry.Avro.Poco.AvroPocoSchemaRegistrySerializer<T, TCodec>.DisposeAsync() -> System.Threading.Tasks.ValueTask

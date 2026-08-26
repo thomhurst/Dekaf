@@ -1,3 +1,5 @@
+using System.Runtime.CompilerServices;
+
 namespace Dekaf.Serialization;
 
 /// <summary>
@@ -5,10 +7,11 @@ namespace Dekaf.Serialization;
 /// require asynchronous work, such as fetching a writer schema from Schema Registry.
 /// </summary>
 /// <remarks>
-/// <c>ConsumeAsync</c> and <c>ConsumeOneAsync</c> await <see cref="PrepareAsync"/> after
-/// <see cref="TryDeserialize"/> reports a cold miss. Once prepared, <see cref="TryDeserialize"/>
-/// should complete synchronously without allocating. Batch records are iterated synchronously, so
-/// callers using <c>ConsumeBatchAsync</c> must explicitly warm asynchronous prerequisites first.
+/// <c>ConsumeAsync</c>, <c>ConsumeOneAsync</c>, and the share consumer's <c>PollAsync</c> await
+/// <see cref="PrepareAsync"/> after <see cref="TryDeserialize"/> reports a cold miss. Once prepared,
+/// <see cref="TryDeserialize"/> should complete synchronously without allocating. Batch records are
+/// iterated synchronously, so callers using <c>ConsumeBatchAsync</c> must explicitly warm
+/// asynchronous prerequisites first.
 /// The supplied data references pooled fetch storage and must not be retained after the returned
 /// task completes.
 /// </remarks>
@@ -28,6 +31,88 @@ public interface IAsyncDeserializerPreparer<T>
         ReadOnlyMemory<byte> data,
         SerializationContext context,
         CancellationToken cancellationToken = default);
+}
+
+internal interface IRecordHeaderAsyncDeserializerPreparer<T>
+{
+    bool TryDeserialize(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        in RecordHeaderRoutingLookup headers,
+        out T value);
+
+    ValueTask PrepareAsync(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        RecordHeaderRoutingLookup headers,
+        CancellationToken cancellationToken);
+}
+
+internal static class DeserializerPreparation
+{
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static bool RequiresPreparation<T>(IDeserializer<T> deserializer) =>
+        deserializer is IAsyncDeserializerPreparer<T> &&
+        deserializer is not IAsyncDeserializerPreparationRequirement { RequiresPreparation: false };
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static bool TryDeserialize<T>(
+        IDeserializer<T> deserializer,
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        out T value)
+    {
+        if (deserializer is IAsyncDeserializerPreparer<T> preparer)
+            return preparer.TryDeserialize(data, context, out value);
+
+        value = RecordHeaderDeserializer.DeserializeCallerOwned(deserializer, data, context);
+        return true;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static bool TryDeserialize<T>(
+        IDeserializer<T> deserializer,
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        in RecordHeaderRoutingLookup headers,
+        out T value)
+    {
+        if (deserializer is IRecordHeaderAsyncDeserializerPreparer<T> headerPreparer)
+            return headerPreparer.TryDeserialize(data, context, in headers, out value);
+        if (deserializer is IAsyncDeserializerPreparer<T> preparer)
+            return preparer.TryDeserialize(data, context, out value);
+
+        value = RecordHeaderDeserializer.DeserializeChild(deserializer, data, context, in headers);
+        return true;
+    }
+
+    internal static ValueTask PrepareAsync<T>(
+        IDeserializer<T> deserializer,
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        CancellationToken cancellationToken) =>
+        deserializer is IAsyncDeserializerPreparer<T> preparer
+            ? preparer.PrepareAsync(data, context, cancellationToken)
+            : default;
+
+    internal static ValueTask PrepareAsync<T>(
+        IDeserializer<T> deserializer,
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        RecordHeaderRoutingLookup headers,
+        CancellationToken cancellationToken)
+    {
+        if (deserializer is IRecordHeaderAsyncDeserializerPreparer<T> headerPreparer)
+        {
+            return headerPreparer.PrepareAsync(
+                data,
+                context,
+                headers,
+                cancellationToken);
+        }
+
+        return PrepareAsync(deserializer, data, context, cancellationToken);
+    }
 }
 
 /// <summary>

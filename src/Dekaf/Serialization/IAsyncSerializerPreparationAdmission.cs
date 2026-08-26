@@ -32,10 +32,12 @@ internal interface IAsyncSerializerPreparationAdmission<in T> : IAsyncSerializer
 internal readonly struct SerializerPreparationAdmission(
     string subject,
     int schemaId,
-    object schema)
+    object schema,
+    byte[]? schemaGuidFrame = null)
 {
     internal string? Subject { get; } = subject;
     internal int SchemaId { get; } = schemaId;
     internal object? Schema { get; } = schema;
+    internal byte[]? SchemaGuidFrame { get; } = schemaGuidFrame;
     internal bool IsPrepared => Subject is not null;
 }

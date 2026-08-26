@@ -283,6 +283,10 @@ Dekaf.Producer.KafkaProducer<TKey, TValue>.GetStatus() -> Dekaf.Diagnostics.Kafk
 Dekaf.Serialization.IAsyncDeserializerPreparer<T> (forwarded, contained in Dekaf.Abstractions)
 Dekaf.Serialization.IAsyncDeserializerPreparer<T>.TryDeserialize(System.ReadOnlyMemory<byte> data, Dekaf.Serialization.SerializationContext context, out T value) -> bool (forwarded, contained in Dekaf.Abstractions)
 Dekaf.Serialization.IAsyncDeserializerPreparer<T>.PrepareAsync(System.ReadOnlyMemory<byte> data, Dekaf.Serialization.SerializationContext context, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.ValueTask (forwarded, contained in Dekaf.Abstractions)
+Dekaf.Serialization.IRecordHeaderSerializer (forwarded, contained in Dekaf.Abstractions)
+Dekaf.Serialization.IRecordHeaderSerializer.ProducesRecordHeaders.get -> bool (forwarded, contained in Dekaf.Abstractions)
+Dekaf.Serialization.IRecordHeaderDeserializer (forwarded, contained in Dekaf.Abstractions)
+Dekaf.Serialization.IRecordHeaderDeserializer.ConsumesRecordHeaders.get -> bool (forwarded, contained in Dekaf.Abstractions)
 Dekaf.Serialization.IAsyncDeserializerPreparationRequirement (forwarded, contained in Dekaf.Abstractions)
 Dekaf.Serialization.IAsyncDeserializerPreparationRequirement.RequiresPreparation.get -> bool (forwarded, contained in Dekaf.Abstractions)
 Dekaf.Consumer.ConsumerOptions.PartitionStopTimeout.get -> System.TimeSpan

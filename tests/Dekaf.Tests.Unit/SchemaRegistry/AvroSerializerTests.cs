@@ -359,6 +359,179 @@ public sealed class AvroSerializerTests
     }
 
     [Test]
+    public async Task HeaderStrategy_GenericRecord_WritesExactVectorAndRoundTrips()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(
+            schemaRegistry,
+            new AvroSerializerConfig
+            {
+                SchemaIdStrategy = SchemaIdSerializerStrategy.Header,
+                SubjectNameStrategy = SubjectNameStrategy.RecordName
+            });
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(SimpleRecordSchema);
+        var record = new GenericRecord(schema);
+        record.Add("id", 42);
+        record.Add("name", "test");
+        var buffer = new ArrayBufferWriter<byte>();
+        var headers = new Headers();
+        var context = new SerializationContext
+        {
+            Topic = "avro-header",
+            Component = SerializationComponent.Value,
+            Headers = headers
+        };
+
+        serializer.Serialize(record, ref buffer, context);
+
+        var expectedPayload = SerializeAvroRecord(record, schema);
+        var expectedGuidFrame = SchemaIdentityFraming.CreateSchemaGuidFrame(
+            new Guid(1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0));
+        await Assert.That(buffer.WrittenSpan.ToArray()).IsEquivalentTo(expectedPayload);
+        await Assert.That(headers.Count).IsEqualTo(1);
+        await Assert.That(headers[0].Key).IsEqualTo(SchemaIdentityHeaderNames.Value);
+        await Assert.That(headers[0].Value.ToArray()).IsEquivalentTo(expectedGuidFrame);
+        for (var index = 0; index < 32; index++)
+            headers.Add(new Header($"application-{index}", ReadOnlyMemory<byte>.Empty));
+        var lookupCountBeforeDeserialize = schemaRegistry.LookupSchemaCallCount;
+
+        await using var deserializer = new AvroSchemaRegistryDeserializer<GenericRecord>(
+            schemaRegistry,
+            new AvroDeserializerConfig
+            {
+                SchemaIdStrategy = SchemaIdDeserializerStrategy.Header
+            });
+        var result = deserializer.Deserialize(buffer.WrittenMemory, context);
+        await Assert.That(result["id"]).IsEqualTo(42);
+        await Assert.That(result["name"].ToString()).IsEqualTo("test");
+        await Assert.That(schemaRegistry.LastGetSchemaByGuidCancellationToken.CanBeCanceled).IsTrue();
+        await Assert.That(schemaRegistry.LookupSchemaCallCount).IsEqualTo(lookupCountBeforeDeserialize);
+    }
+
+    [Test]
+    public async Task HeaderStrategy_LookupMode_UsesRuntimeGenericRecordSchema()
+    {
+        const string subject = "avro-lookup-value";
+        const string writerSchemaText =
+            """
+            {"type":"record","name":"LookupRecord","fields":[{"name":"id","type":"int"}]}
+            """;
+        const string latestSchemaText =
+            """
+            {"type":"record","name":"LookupRecord","fields":[{"name":"id","type":"int"},{"name":"name","type":"string","default":""}]}
+            """;
+        using var schemaRegistry = new MockSchemaRegistryClient
+        {
+            LookupRequiresRuleSetPresenceMatch = true
+        };
+        var writerSchemaId = await schemaRegistry.RegisterSchemaAsync(
+            subject,
+            new RegistrySchema
+            {
+                SchemaType = SchemaType.Avro,
+                SchemaString = writerSchemaText,
+                RuleSet = new SchemaRuleSet { DomainRules = [] }
+            });
+        _ = await schemaRegistry.RegisterSchemaAsync(
+            subject,
+            new RegistrySchema { SchemaType = SchemaType.Avro, SchemaString = latestSchemaText });
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(
+            schemaRegistry,
+            new AvroSerializerConfig
+            {
+                AutoRegisterSchemas = false,
+                SchemaIdStrategy = SchemaIdSerializerStrategy.Header
+            });
+        var writerSchema = (Avro.RecordSchema)AvroSchema.Parse(writerSchemaText);
+        var record = new GenericRecord(writerSchema);
+        record.Add("id", 42);
+        var destination = new ArrayBufferWriter<byte>();
+        var headers = new Headers();
+
+        serializer.Serialize(record, ref destination, new SerializationContext
+        {
+            Topic = "avro-lookup",
+            Component = SerializationComponent.Value,
+            Headers = headers
+        });
+
+        var expectedFrame = SchemaIdentityFraming.CreateSchemaGuidFrame(
+            new Guid(writerSchemaId, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0));
+        await Assert.That(headers.Single().Value.ToArray()).IsEquivalentTo(expectedFrame);
+    }
+
+    [Test]
+    [Arguments(SchemaIdDeserializerStrategy.Header)]
+    [Arguments(SchemaIdDeserializerStrategy.Dual)]
+    public async Task GuidStrategy_ReferencedGenericRecord_ResolvesWriterReferences(
+        SchemaIdDeserializerStrategy strategy)
+    {
+        const string addressSchemaJson =
+            """
+            {"type":"record","name":"Address","namespace":"test","fields":[{"name":"city","type":"string"}]}
+            """;
+        const string rootSchemaJson =
+            """
+            {"type":"record","name":"ReferencedRoot","namespace":"test","fields":[{"name":"address","type":"test.Address"}]}
+            """;
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        _ = await schemaRegistry.RegisterSchemaAsync(
+            "address-value",
+            new RegistrySchema
+            {
+                SchemaType = SchemaType.Avro,
+                SchemaString = addressSchemaJson
+            });
+        var rootSchemaId = await schemaRegistry.RegisterSchemaAsync(
+            "avro-reference-value",
+            new RegistrySchema
+            {
+                SchemaType = SchemaType.Avro,
+                SchemaString = rootSchemaJson,
+                References =
+                [
+                    new SchemaReference
+                    {
+                        Name = "test.Address",
+                        Subject = "address-value",
+                        Version = 1
+                    }
+                ]
+            });
+        var names = new Avro.SchemaNames();
+        var addressSchema = (Avro.RecordSchema)AvroSchema.Parse(addressSchemaJson, names);
+        var rootSchema = (Avro.RecordSchema)AvroSchema.Parse(rootSchemaJson, names);
+        var address = new GenericRecord(addressSchema);
+        address.Add("city", "London");
+        var record = new GenericRecord(rootSchema);
+        record.Add("address", address);
+        var headers = new Headers
+        {
+            new(
+                SchemaIdentityHeaderNames.Value,
+                SchemaIdentityFraming.CreateSchemaGuidFrame(
+                    new Guid(rootSchemaId, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)))
+        };
+        var context = new SerializationContext
+        {
+            Topic = "avro-reference",
+            Component = SerializationComponent.Value,
+            Headers = headers
+        };
+        await using var deserializer = new AvroSchemaRegistryDeserializer<GenericRecord>(
+            schemaRegistry,
+            new AvroDeserializerConfig
+            {
+                SchemaIdStrategy = strategy
+            });
+
+        var result = deserializer.Deserialize(SerializeAvroRecord(record, rootSchema), context);
+
+        var resolvedAddress = (GenericRecord)result["address"];
+        await Assert.That(resolvedAddress["city"].ToString()).IsEqualTo("London");
+    }
+
+    [Test]
     public async Task Serializer_DirectPath_RetainsPayloadSizeHighWaterMark()
     {
         using var schemaRegistry = new MockSchemaRegistryClient();
@@ -1800,6 +1973,130 @@ public sealed class AvroSerializerTests
     }
 
     [Test]
+    public async Task Config_SchemaIdentity_DefaultsMatchConfluent()
+    {
+        var serializerConfig = new AvroSerializerConfig();
+        var deserializerConfig = new AvroDeserializerConfig();
+
+        await Assert.That(serializerConfig.UseSchemaId).IsNull();
+        await Assert.That(serializerConfig.SchemaIdStrategy).IsEqualTo(SchemaIdSerializerStrategy.Prefix);
+        await Assert.That(deserializerConfig.SchemaIdStrategy).IsEqualTo(SchemaIdDeserializerStrategy.Dual);
+    }
+
+    [Test]
+    public void Serializer_NegativeUseSchemaId_Throws()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+        {
+            var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(
+                schemaRegistry,
+                new AvroSerializerConfig { UseSchemaId = -1 });
+            GC.KeepAlive(serializer);
+        });
+    }
+
+    [Test]
+    public async Task Serializer_UseSchemaId_TakesPrecedenceOverLatestAndRegistration()
+    {
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        var registrySchema = new RegistrySchema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = SimpleRecordSchema
+        };
+        var explicitId = await schemaRegistry.RegisterSchemaAsync("explicit-value", registrySchema);
+        _ = await schemaRegistry.RegisterSchemaAsync("explicit-value", registrySchema);
+
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(
+            schemaRegistry,
+            new AvroSerializerConfig
+            {
+                UseSchemaId = explicitId,
+                UseLatestVersion = true,
+                AutoRegisterSchemas = true
+            });
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(SimpleRecordSchema);
+        var record = new GenericRecord(schema);
+        record.Add("id", 1);
+        record.Add("name", "explicit");
+
+        var resolvedId = await serializer.WarmupAsync("explicit", record);
+        var buffer = new ArrayBufferWriter<byte>();
+        serializer.Serialize(record, ref buffer, CreateContext(topic: "explicit"));
+
+        await Assert.That(resolvedId).IsEqualTo(explicitId);
+        await Assert.That(BinaryPrimitives.ReadInt32BigEndian(buffer.WrittenSpan[1..5])).IsEqualTo(explicitId);
+    }
+
+    [Test]
+    public async Task Serializer_UseSchemaIdWithJsonSchema_Throws()
+    {
+        const string topic = "avro-wrong-format";
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        var schemaId = await schemaRegistry.RegisterSchemaAsync(
+            $"{topic}-value",
+            new RegistrySchema { SchemaType = SchemaType.Json, SchemaString = "{\"type\":\"object\"}" });
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(
+            schemaRegistry,
+            new AvroSerializerConfig { UseSchemaId = schemaId });
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(SimpleRecordSchema);
+        var record = new GenericRecord(schema);
+        record.Add("id", 1);
+        record.Add("name", "wrong-format");
+
+        await Assert.That(async () => await serializer.WarmupAsync(topic, record))
+            .Throws<InvalidOperationException>();
+    }
+
+    [Test]
+    public async Task Serializer_UseSchemaIdWithDifferentAvroSchema_Throws()
+    {
+        const string topic = "avro-wrong-writer-schema";
+        const string differentSchema =
+            "{\"type\":\"record\",\"name\":\"DifferentRecord\",\"fields\":[{\"name\":\"id\",\"type\":\"int\"}]}";
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        var schemaId = await schemaRegistry.RegisterSchemaAsync(
+            $"{topic}-value",
+            new RegistrySchema { SchemaType = SchemaType.Avro, SchemaString = differentSchema });
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(
+            schemaRegistry,
+            new AvroSerializerConfig { UseSchemaId = schemaId });
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(SimpleRecordSchema);
+        var record = new GenericRecord(schema);
+        record.Add("id", 1);
+        record.Add("name", "wrong-schema");
+
+        await Assert.That(async () => await serializer.WarmupAsync(topic, record))
+            .Throws<InvalidOperationException>()
+            .WithMessageContaining("does not match");
+    }
+
+    [Test]
+    public async Task Serializer_UseLatestVersionWithDifferentAvroSchema_Throws()
+    {
+        const string topic = "avro-latest-wrong-writer-schema";
+        const string differentSchema =
+            "{\"type\":\"record\",\"name\":\"DifferentRecord\",\"fields\":[{\"name\":\"id\",\"type\":\"int\"}]}";
+        using var schemaRegistry = new MockSchemaRegistryClient();
+        _ = await schemaRegistry.RegisterSchemaAsync(
+            $"{topic}-value",
+            new RegistrySchema { SchemaType = SchemaType.Avro, SchemaString = differentSchema });
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(
+            schemaRegistry,
+            new AvroSerializerConfig { UseLatestVersion = true });
+        var schema = (Avro.RecordSchema)AvroSchema.Parse(SimpleRecordSchema);
+        var record = new GenericRecord(schema);
+        record.Add("id", 1);
+        record.Add("name", "wrong-latest-schema");
+
+        await Assert.That(async () => await serializer.WarmupAsync(topic, record))
+            .Throws<InvalidOperationException>()
+            .WithMessageContaining("does not match");
+    }
+
+    [Test]
     public async Task Serializer_WarmupAsync_PreCachesSchemaId()
     {
         // Arrange
@@ -2008,7 +2305,10 @@ public sealed class AvroSerializerTests
     [Test]
     public async Task Serializer_PrepareAsync_WithRuleExecutor_CachesRegisteredRuleMetadata()
     {
-        using var schemaRegistry = new MockSchemaRegistryClient();
+        using var schemaRegistry = new MockSchemaRegistryClient
+        {
+            LookupRequiresRuleSetPresenceMatch = true
+        };
         var registeredSchema = new RegistrySchema
         {
             SchemaType = SchemaType.Avro,

@@ -501,6 +501,13 @@ public sealed class SubjectNameStrategyTests
             serializer.PrepareAsync(records[i], context).GetAwaiter().GetResult();
         var prepareAllocated = GC.GetAllocatedBytesForCurrentThread() - prepareBefore;
 
+        // Preparation can publish a new cache state. Warm both lookup shapes after that
+        // publication so the allocation comparison excludes one-time runtime/cache setup.
+        buffer.ResetWrittenCount();
+        serializer.Serialize(records[0], ref buffer, context);
+        buffer.ResetWrittenCount();
+        serializer.Serialize(records[2], ref buffer, context);
+
         var stableBefore = GC.GetAllocatedBytesForCurrentThread();
         for (var i = 2; i < records.Length; i++)
         {

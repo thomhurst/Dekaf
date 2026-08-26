@@ -308,6 +308,103 @@ public sealed class InMemoryAsyncSerdeTests
     }
 
     [Test]
+    public async Task Consumer_AsyncRecordHeaderDeserializerReceivesHeaders()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        var deserializer = new AsyncHeaderCapturingDeserializer();
+        var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            Serializers.String,
+            deserializer,
+            new InMemoryConsumerOptions
+            {
+                GroupId = "async-header-consumer",
+                AutoOffsetReset = AutoOffsetReset.Earliest
+            });
+
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = "orders",
+            Key = "key",
+            Value = "value",
+            Headers = Headers.Create("trace-id", "abc")
+        });
+        consumer.Subscribe("orders");
+
+        _ = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1));
+
+        await Assert.That(deserializer.Headers).IsNotNull();
+        await Assert.That(deserializer.Headers!).Count().IsEqualTo(1);
+        await Assert.That(deserializer.Headers![0].Key).IsEqualTo("trace-id");
+    }
+
+    [Test]
+    public async Task Consumer_AsyncKeySuspensionPreservesSyncValueHeadersAcrossConsumers()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        var firstKeyDeserializer = new BlockingAsyncDeserializer();
+        var firstValueDeserializer = new HeaderValueCapturingDeserializer();
+        var secondValueDeserializer = new HeaderValueCapturingDeserializer();
+        await using var firstConsumer = new InMemoryConsumer<string, string>(
+            cluster,
+            firstKeyDeserializer,
+            firstValueDeserializer,
+            new InMemoryConsumerOptions
+            {
+                GroupId = "first-header-consumer",
+                AutoOffsetReset = AutoOffsetReset.Earliest
+            });
+        await using var secondConsumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new CompletedAsyncDeserializer(),
+            secondValueDeserializer,
+            new InMemoryConsumerOptions
+            {
+                GroupId = "second-header-consumer",
+                AutoOffsetReset = AutoOffsetReset.Earliest
+            });
+
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = "first-records",
+            Key = "first-key",
+            Value = "first-value",
+            Headers = Headers.Create("record-id", "first")
+        });
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = "second-records",
+            Key = "second-key",
+            Value = "second-value",
+            Headers = Headers.Create("record-id", "second")
+        });
+        firstConsumer.Subscribe("first-records");
+        secondConsumer.Subscribe("second-records");
+
+        var firstConsume = firstConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(10));
+        if (firstConsume.IsCompleted)
+            throw new InvalidOperationException("The first key deserializer did not suspend.");
+
+        try
+        {
+            var secondConsume = secondConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(1));
+            if (!secondConsume.IsCompletedSuccessfully)
+                throw new InvalidOperationException("The second consume unexpectedly suspended.");
+            _ = secondConsume.Result;
+        }
+        finally
+        {
+            firstKeyDeserializer.Release();
+        }
+        _ = await firstConsume;
+
+        await Assert.That(firstValueDeserializer.HeaderValue).IsEqualTo("first");
+        await Assert.That(secondValueDeserializer.HeaderValue).IsEqualTo("second");
+    }
+
+    [Test]
     public async Task ShareConsumer_AsyncDeserializers_RoundTripAndAcknowledge()
     {
         var cluster = new InMemoryKafkaCluster();
@@ -334,6 +431,34 @@ public sealed class InMemoryAsyncSerdeTests
         await Assert.That(Encoding.UTF8.GetString(serde.LastDeserializeContext.KeyData.Span)).IsEqualTo("v:k");
         await Assert.That(serde.LastDeserializeContext.IsKeyNull).IsFalse();
         await Assert.That(offsets.Single().StartOffset).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task ShareConsumer_AsyncRecordHeaderDeserializerReceivesHeaders()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        var deserializer = new AsyncHeaderCapturingDeserializer();
+        var consumer = new InMemoryShareConsumer<string, string>(
+            cluster,
+            Serializers.String,
+            deserializer,
+            new InMemoryShareConsumerOptions { GroupId = "async-header-share" });
+
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = "shared",
+            Key = "key",
+            Value = "value",
+            Headers = Headers.Create("trace-id", "abc")
+        });
+        consumer.Subscribe("shared");
+
+        _ = await consumer.PollAsync().FirstAsync();
+
+        await Assert.That(deserializer.Headers).IsNotNull();
+        await Assert.That(deserializer.Headers!).Count().IsEqualTo(1);
+        await Assert.That(deserializer.Headers![0].Key).IsEqualTo("trace-id");
     }
 
     [Test]
@@ -575,6 +700,48 @@ public sealed class InMemoryAsyncSerdeTests
         }
 
         public void Release() => _release.TrySetResult();
+    }
+
+    private sealed class AsyncHeaderCapturingDeserializer :
+        IAsyncDeserializer<string>,
+        IRecordHeaderDeserializer
+    {
+        public bool ConsumesRecordHeaders => true;
+
+        public Headers? Headers { get; private set; }
+
+        public ValueTask<string> DeserializeAsync(
+            ReadOnlyMemory<byte> data,
+            SerializationContext context,
+            CancellationToken cancellationToken = default)
+        {
+            Headers = context.Headers;
+            return ValueTask.FromResult(Encoding.UTF8.GetString(data.Span));
+        }
+    }
+
+    private sealed class CompletedAsyncDeserializer : IAsyncDeserializer<string>
+    {
+        public ValueTask<string> DeserializeAsync(
+            ReadOnlyMemory<byte> data,
+            SerializationContext context,
+            CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult(Encoding.UTF8.GetString(data.Span));
+    }
+
+    private sealed class HeaderValueCapturingDeserializer :
+        IDeserializer<string>,
+        IRecordHeaderDeserializer
+    {
+        public bool ConsumesRecordHeaders => true;
+
+        public string? HeaderValue { get; private set; }
+
+        public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
+        {
+            HeaderValue = context.Headers?[0].GetValueAsString();
+            return Encoding.UTF8.GetString(data.Span);
+        }
     }
 
     /// <summary>
