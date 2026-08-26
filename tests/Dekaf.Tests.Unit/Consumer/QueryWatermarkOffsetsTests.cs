@@ -277,6 +277,37 @@ public sealed class QueryWatermarkOffsetsTests
     }
 
     [Test]
+    public async Task QueryWatermarkOffsetsAsync_ConcurrentPublishDuringFirstDispatchPublishesQueryResult()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = new LeaseTrackingConnection();
+        connectionPool.GetConnectionByIndexAsync(0, 1, Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult<IKafkaConnection>(connection));
+        await using var consumer = CreateConsumer(connectionPool);
+        var partition = new TopicPartition(Topic, Partition);
+        var publishedDuringDispatch = false;
+
+        connection.SendHandler = request =>
+        {
+            var timestamp = request.Topics[0].Partitions[0].Timestamp;
+            if (timestamp == EarliestOffsetTimestamp && !publishedDuringDispatch)
+            {
+                publishedDuringDispatch = true;
+                var competingSequence = AdvanceWatermarkUpdateSequence(consumer);
+                UpdateQueriedCachedWatermarks(consumer, partition, 1, 50, competingSequence);
+            }
+
+            var offset = timestamp == EarliestOffsetTimestamp ? 10 : 100;
+            return ValueTask.FromResult(CreateListOffsetsResponse(request, offset));
+        };
+
+        await Assert.That(await consumer.QueryWatermarkOffsetsAsync(partition))
+            .IsEqualTo(new WatermarkOffsets(10, 100));
+        await Assert.That(consumer.GetWatermarkOffsets(partition))
+            .IsEqualTo(new WatermarkOffsets(10, 100));
+    }
+
+    [Test]
     public async Task QueryCurrentLagAsync_AssignmentChangeDuringRefreshReturnsNull()
     {
         var connectionPool = Substitute.For<IConnectionPool>();
@@ -721,6 +752,20 @@ public sealed class QueryWatermarkOffsetsTests
             BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("UpdateCachedLagEndOffset method not found.");
         method.Invoke(consumer, [partition, lagEndOffset, watermarkUpdateSequence]);
+    }
+
+    private static void UpdateQueriedCachedWatermarks(
+        KafkaConsumer<string, string> consumer,
+        TopicPartition partition,
+        long low,
+        long high,
+        long watermarkUpdateSequence)
+    {
+        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+            "UpdateQueriedCachedWatermarks",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("UpdateQueriedCachedWatermarks method not found.");
+        method.Invoke(consumer, [partition, low, high, high, null, watermarkUpdateSequence]);
     }
 
     private static async ValueTask InvokeHandleTopicIdentityChangesAsync(

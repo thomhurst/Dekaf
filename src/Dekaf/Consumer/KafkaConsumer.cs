@@ -8658,12 +8658,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     LatestOffsetTimestamp,
                     currentLeaderEpoch);
 
-                var watermarkUpdateSequence = Interlocked.Increment(ref _watermarkUpdateSequence);
                 var earliestResponseTask = connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
                     earliestRequest,
                     listOffsetsVersion,
                     apiTimeout.Token).AsTask();
 
+                var watermarkUpdateSequence = Interlocked.Increment(ref _watermarkUpdateSequence);
                 var latestResponseTask = connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
                     latestRequest,
                     listOffsetsVersion,
