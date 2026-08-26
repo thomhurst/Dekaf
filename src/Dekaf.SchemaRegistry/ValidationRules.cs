@@ -1169,8 +1169,11 @@ internal readonly record struct ValidationCelValue(
             SizeIndex: sizeIndex,
             IsUtf8Literal: true);
 
-    internal static ValidationCelValue FromCollection(ValidationCelValueKind kind, int sizeIndex) =>
-        new(kind, default, false, 0, null, default, SizeIndex: sizeIndex);
+    internal static ValidationCelValue FromCollection(
+        ValidationCelValueKind kind,
+        int sizeIndex,
+        ReadOnlyMemory<byte> binaryPayload = default) =>
+        new(kind, default, false, 0, null, binaryPayload, SizeIndex: sizeIndex);
 
     internal static ValidationCelValue FromJson(ReadOnlyMemory<byte> json, int sizeIndex = -1)
     {

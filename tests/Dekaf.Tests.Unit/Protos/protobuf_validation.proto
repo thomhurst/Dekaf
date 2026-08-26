@@ -211,6 +211,34 @@ message ValidationMapEqualityChild {
   map<string, ValidationEqualityChild> children = 2;
 }
 
+message ValidationCollectionEnvelope {
+  option (confluent.message_meta) = {
+    rules: {
+      name: "map-size-uses-unique-keys"
+      expr: "size(this.left_labels) == 2"
+    }
+    rules: {
+      name: "collection-member-equality"
+      expr: "this.left_tags == this.right_tags && this.left_labels == this.right_labels"
+    }
+  };
+
+  repeated string left_tags = 1 [(confluent.field_meta) = {
+    rules: {
+      name: "repeated-field-self-equality"
+      expr: "this == this"
+    }
+  }];
+  repeated string right_tags = 2;
+  map<string, int32> left_labels = 3 [(confluent.field_meta) = {
+    rules: {
+      name: "map-field-self-equality"
+      expr: "this == this"
+    }
+  }];
+  map<string, int32> right_labels = 4;
+}
+
 enum ValidationStatus {
   VALIDATION_STATUS_UNSPECIFIED = 0;
   VALIDATION_STATUS_ACTIVE = 1;

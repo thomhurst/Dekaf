@@ -560,6 +560,35 @@ public sealed class ProtobufInlineRuleValidatorTests
     }
 
     [Test]
+    public async Task Validate_CollectionsUseParsedEqualityAndMapSizeSemantics()
+    {
+        var payload = CreateCollectionEqualityPayload();
+        var validator = new ProtobufInlineRuleValidator(ValidationCollectionEnvelope.Descriptor);
+
+        validator.Validate(payload, schemaId: 17, failFast: false);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 100; index++)
+            validator.Validate(payload, schemaId: 17, failFast: false);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        var reorderedTags = Assert.Throws<ValidationRulesFailedException>(() =>
+            validator.Validate(
+                CreateCollectionEqualityPayload(reverseRightTags: true),
+                schemaId: 17,
+                failFast: false));
+        var unequalMap = Assert.Throws<ValidationRulesFailedException>(() =>
+            validator.Validate(
+                CreateCollectionEqualityPayload(rightB: 3),
+                schemaId: 17,
+                failFast: false));
+
+        await Assert.That(allocated).IsEqualTo(0);
+        await Assert.That(reorderedTags.Violations[0].Rule.Name)
+            .IsEqualTo("collection-member-equality");
+        await Assert.That(unequalMap.Violations[0].Rule.Name)
+            .IsEqualTo("collection-member-equality");
+    }
+
+    [Test]
     public async Task Validate_MapMessageEqualityMergesRepeatedValueFields()
     {
         var firstValue = new ArrayBufferWriter<byte>();
@@ -1145,6 +1174,23 @@ public sealed class ProtobufInlineRuleValidatorTests
         WriteVarint(entry, 2u << 3);
         WriteVarint(entry, value);
         return entry.WrittenSpan.ToArray();
+    }
+
+    private static byte[] CreateCollectionEqualityPayload(
+        bool reverseRightTags = false,
+        ulong rightB = 2)
+    {
+        var payload = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(payload, fieldNumber: 1, "first"u8);
+        WriteLengthDelimited(payload, fieldNumber: 1, "second"u8);
+        WriteLengthDelimited(payload, fieldNumber: 2, reverseRightTags ? "second"u8 : "first"u8);
+        WriteLengthDelimited(payload, fieldNumber: 2, reverseRightTags ? "first"u8 : "second"u8);
+        WriteLengthDelimited(payload, fieldNumber: 3, CreateInt32MapEntry("a", 0));
+        WriteLengthDelimited(payload, fieldNumber: 3, CreateInt32MapEntry("b", 2));
+        WriteLengthDelimited(payload, fieldNumber: 3, CreateInt32MapEntry("a", 1));
+        WriteLengthDelimited(payload, fieldNumber: 4, CreateInt32MapEntry("b", rightB));
+        WriteLengthDelimited(payload, fieldNumber: 4, CreateInt32MapEntry("a", 1));
+        return payload.WrittenSpan.ToArray();
     }
 
     private static byte[] CreateMessageEqualityPayload(

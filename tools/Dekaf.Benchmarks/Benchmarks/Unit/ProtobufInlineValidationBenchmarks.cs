@@ -22,6 +22,7 @@ public class ProtobufInlineValidationBenchmarks
     private ProtobufInlineRuleValidator _validator = null!;
     private ProtobufInlineRuleValidator _semanticEqualityValidator = null!;
     private ProtobufInlineRuleValidator _mapEqualityValidator = null!;
+    private ProtobufInlineRuleValidator _collectionEqualityValidator = null!;
     private ProtobufInlineRuleExecutor _alternatingSchemaExecutor = null!;
     private Schema _serializedSchema = null!;
     private ProtobufSchemaRegistrySerializer<ValidationEnvelope> _serializer = null!;
@@ -34,6 +35,7 @@ public class ProtobufInlineValidationBenchmarks
     private byte[] _floatingSemanticEqualityPayload = null!;
     private byte[] _unknownSemanticEqualityPayload = null!;
     private byte[] _mapEqualityPayload = null!;
+    private byte[] _collectionEqualityPayload = null!;
     private int _schemaIndex;
     private SerializationContext _context;
 
@@ -47,11 +49,14 @@ public class ProtobufInlineValidationBenchmarks
         _floatingSemanticEqualityPayload = CreateFloatingSemanticEqualityPayload();
         _unknownSemanticEqualityPayload = CreateUnknownSemanticEqualityPayload();
         _mapEqualityPayload = CreateMapEqualityPayload();
+        _collectionEqualityPayload = CreateCollectionEqualityPayload();
         _validator = new ProtobufInlineRuleValidator(ValidationEnvelope.Descriptor);
         _semanticEqualityValidator = new ProtobufInlineRuleValidator(
             ValidationMessageEqualityEnvelope.Descriptor);
         _mapEqualityValidator = new ProtobufInlineRuleValidator(
             ValidationMapEqualityEnvelope.Descriptor);
+        _collectionEqualityValidator = new ProtobufInlineRuleValidator(
+            ValidationCollectionEnvelope.Descriptor);
         _alternatingSchemaExecutor = new ProtobufInlineRuleExecutor(
             new BenchmarkSchemaRegistryClient(),
             ValidationEnvelope.Descriptor);
@@ -87,6 +92,10 @@ public class ProtobufInlineValidationBenchmarks
         _semanticEqualityValidator.Validate(_floatingSemanticEqualityPayload, schemaId: 1, failFast: false);
         _semanticEqualityValidator.Validate(_unknownSemanticEqualityPayload, schemaId: 1, failFast: false);
         _mapEqualityValidator.Validate(_mapEqualityPayload, schemaId: 1, failFast: false);
+        _collectionEqualityValidator.Validate(
+            _collectionEqualityPayload,
+            schemaId: 1,
+            failFast: false);
         _alternatingSchemaExecutor.Validate(_payload, schemaId: 2, _serializedSchema, failFast: false);
         _alternatingSchemaExecutor.Validate(_payload, schemaId: 3, _serializedSchema, failFast: false);
         var destination = _destination;
@@ -125,6 +134,13 @@ public class ProtobufInlineValidationBenchmarks
     [Benchmark]
     public void ValidateMapMessageEquality() =>
         _mapEqualityValidator.Validate(_mapEqualityPayload, schemaId: 1, failFast: false);
+
+    [Benchmark]
+    public void ValidateCollectionEquality() =>
+        _collectionEqualityValidator.Validate(
+            _collectionEqualityPayload,
+            schemaId: 1,
+            failFast: false);
 
     [Benchmark]
     public void ValidateAlternatingRegisteredSchemas()
@@ -267,6 +283,21 @@ public class ProtobufInlineValidationBenchmarks
         var payload = new ArrayBufferWriter<byte>();
         WriteLengthDelimited(payload, 1, left.WrittenSpan);
         WriteLengthDelimited(payload, 2, right.WrittenSpan);
+        return payload.WrittenSpan.ToArray();
+    }
+
+    private static byte[] CreateCollectionEqualityPayload()
+    {
+        var payload = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(payload, 1, "first"u8);
+        WriteLengthDelimited(payload, 1, "second"u8);
+        WriteLengthDelimited(payload, 2, "first"u8);
+        WriteLengthDelimited(payload, 2, "second"u8);
+        WriteLengthDelimited(payload, 3, CreateMapEntry("a"u8, 0));
+        WriteLengthDelimited(payload, 3, CreateMapEntry("b"u8, 2));
+        WriteLengthDelimited(payload, 3, CreateMapEntry("a"u8, 1));
+        WriteLengthDelimited(payload, 4, CreateMapEntry("b"u8, 2));
+        WriteLengthDelimited(payload, 4, CreateMapEntry("a"u8, 1));
         return payload.WrittenSpan.ToArray();
     }
 
