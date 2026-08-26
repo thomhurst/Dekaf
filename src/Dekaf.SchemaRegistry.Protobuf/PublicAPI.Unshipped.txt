@@ -1,4 +1,12 @@
 #nullable enable
+Dekaf.SchemaRegistry.Protobuf.ProtobufDeserializerConfig.ValidationRulesExecution.get -> Dekaf.SchemaRegistry.ValidationRulesExecution
+Dekaf.SchemaRegistry.Protobuf.ProtobufDeserializerConfig.ValidationRulesExecution.init -> void
+Dekaf.SchemaRegistry.Protobuf.ProtobufDeserializerConfig.ValidationRulesFailFast.get -> bool
+Dekaf.SchemaRegistry.Protobuf.ProtobufDeserializerConfig.ValidationRulesFailFast.init -> void
+Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig.ValidationRulesExecution.get -> Dekaf.SchemaRegistry.ValidationRulesExecution
+Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig.ValidationRulesExecution.init -> void
+Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig.ValidationRulesFailFast.get -> bool
+Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig.ValidationRulesFailFast.init -> void
 Dekaf.SchemaRegistry.Protobuf.ProtobufDeserializerConfig.AsyncSubjectNameStrategy.get -> Dekaf.SchemaRegistry.IAsyncSubjectNameStrategy?
 Dekaf.SchemaRegistry.Protobuf.ProtobufDeserializerConfig.AsyncSubjectNameStrategy.init -> void
 Dekaf.SchemaRegistry.Protobuf.ProtobufSerializerConfig.AsyncSubjectNameStrategy.get -> Dekaf.SchemaRegistry.IAsyncSubjectNameStrategy?

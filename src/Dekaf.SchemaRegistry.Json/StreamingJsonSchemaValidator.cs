@@ -1705,6 +1705,7 @@ internal sealed class SchemaCompiler : IDisposable
     private readonly List<CompiledSchemaNode> _compiledNodeList = [];
     private readonly Dictionary<string, int> _validationMemberIndexes = new(StringComparer.Ordinal);
     private readonly List<byte[][]> _validationMemberPaths = [];
+    private readonly Dictionary<ValidationCelEqualityOperands, int> _validationEqualityIndexes = [];
     private int _nextDocumentId;
 
     internal SchemaCompiler(
@@ -2109,7 +2110,8 @@ internal sealed class SchemaCompiler : IDisposable
                 rule,
                 _validationMemberIndexes,
                 _validationMemberPaths,
-                usedMemberIndexes);
+                usedMemberIndexes,
+                equalityIndexes: _validationEqualityIndexes);
             usesSize |= compiledRule.UsesSize;
             usesCachedEquality |= compiledRule.UsesCachedEquality;
             compiled.Add(compiledRule);

@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package dekaf.validation;
+
+import "confluent/meta.proto";
+
+option csharp_namespace = "Dekaf.Tests.Unit.SchemaRegistry.ProtobufFixtures";
+
+enum ImportedOpenStatus {
+  IMPORTED_OPEN_STATUS_UNSPECIFIED = 0;
+  IMPORTED_OPEN_STATUS_ACTIVE = 1;
+}
+
+message ValidationChild {
+  option (confluent.message_meta) = {
+    rules: {
+      name: "positive-child-value"
+      expr: "this.value > 0"
+    }
+  };
+
+  int32 value = 1;
+  ValidationChild child = 2;
+}

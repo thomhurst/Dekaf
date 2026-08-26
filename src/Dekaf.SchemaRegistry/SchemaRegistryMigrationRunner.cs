@@ -285,7 +285,31 @@ internal sealed class SchemaRegistryMigrationRunner
         IJsonSchemaValidatorFactory validationRulesFactory,
         bool validationRulesFailFast,
         ISchemaRegistryTaggedFieldTransformerProvider? taggedFieldTransformers = null,
+        bool skipLatestRefresh = false) =>
+        TransformWithBeforeDomainValidation(
+            payload,
+            schemaId,
+            subject,
+            writerSchema,
+            serializationContext,
+            payloadFormat,
+            new JsonInlineValidationRuleExecutor(validationRulesFactory),
+            validationRulesFailFast,
+            taggedFieldTransformers,
+            skipLatestRefresh);
+
+    internal MigrationResult TransformWithBeforeDomainValidation<TValidationRules>(
+        ReadOnlyMemory<byte> payload,
+        int schemaId,
+        string subject,
+        Schema writerSchema,
+        SerializationContext serializationContext,
+        SchemaRegistryPayloadFormat payloadFormat,
+        TValidationRules validationRules,
+        bool validationRulesFailFast,
+        ISchemaRegistryTaggedFieldTransformerProvider? taggedFieldTransformers = null,
         bool skipLatestRefresh = false)
+        where TValidationRules : IInlineValidationRuleExecutor
     {
         var isNewPlan = false;
         var plan = Volatile.Read(ref _lastPlan);
@@ -322,8 +346,9 @@ internal sealed class SchemaRegistryMigrationRunner
                 ValidateBeforeDomainRules(
                     payload,
                     schemaId,
+                    subject,
                     writerSchema,
-                    validationRulesFactory,
+                    validationRules,
                     validationRulesFailFast);
                 return new MigrationResult(payload, plan.ReaderSchema, schemaId, writerSchema);
             }
@@ -350,8 +375,9 @@ internal sealed class SchemaRegistryMigrationRunner
             ValidateBeforeDomainRules(
                 payload,
                 legacyReaderDomainTransformed ? plan.ReaderSchema.Id : schemaId,
+                subject,
                 legacyReaderDomainTransformed ? plan.ReaderSchema.Schema : writerSchema,
-                validationRulesFactory,
+                validationRules,
                 validationRulesFailFast);
             return legacyReaderDomainTransformed
                 ? new MigrationResult(
@@ -370,8 +396,9 @@ internal sealed class SchemaRegistryMigrationRunner
             ValidateBeforeDomainRules(
                 payload,
                 schemaId,
+                subject,
                 writerSchema,
-                validationRulesFactory,
+                validationRules,
                 validationRulesFailFast);
             return new MigrationResult(payload, plan.ReaderSchema, schemaId, writerSchema);
         }
@@ -395,8 +422,9 @@ internal sealed class SchemaRegistryMigrationRunner
         ValidateBeforeDomainRules(
             payload,
             schemaId,
+            subject,
             writerSchema,
-            validationRulesFactory,
+            validationRules,
             validationRulesFailFast);
 
         var payloadSchemaId = schemaId;
@@ -418,8 +446,9 @@ internal sealed class SchemaRegistryMigrationRunner
                 ValidateBeforeDomainRules(
                     payload,
                     payloadSchemaId,
+                    subject,
                     payloadSchema,
-                    validationRulesFactory,
+                    validationRules,
                     validationRulesFailFast);
             }
 
@@ -467,15 +496,15 @@ internal sealed class SchemaRegistryMigrationRunner
         !input.Equals(output) && !input.Span.SequenceEqual(output.Span);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void ValidateBeforeDomainRules(
+    private static void ValidateBeforeDomainRules<TValidationRules>(
         ReadOnlyMemory<byte> payload,
         int schemaId,
+        string subject,
         Schema schema,
-        IJsonSchemaValidatorFactory validationRulesFactory,
-        bool validationRulesFailFast) =>
-        validationRulesFactory
-            .GetOrCreate(schema)
-            .ValidateRules(payload, schemaId, validationRulesFailFast);
+        TValidationRules validationRules,
+        bool validationRulesFailFast)
+        where TValidationRules : IInlineValidationRuleExecutor =>
+        validationRules.Validate(payload, schemaId, subject, schema, validationRulesFailFast);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool IsExpired(MigrationPlan plan) =>

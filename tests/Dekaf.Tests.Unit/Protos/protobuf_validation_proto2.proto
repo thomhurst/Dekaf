@@ -1,0 +1,93 @@
+syntax = "proto2";
+
+package dekaf.validation;
+
+import "confluent/meta.proto";
+import "protobuf_validation_child.proto";
+
+option csharp_namespace = "Dekaf.Tests.Unit.SchemaRegistry.ProtobufFixtures";
+
+message Proto2ValidationMessage {
+  optional int32 value = 1 [(confluent.field_meta) = {
+    rules: {
+      name: "positive-when-present"
+      expr: "this > 0"
+    }
+  }];
+
+  optional group Details = 2 [(confluent.field_meta) = {
+    rules: {
+      name: "group-value-positive"
+      expr: "this.value > 0"
+    }
+  }] {
+    optional int32 value = 3;
+  }
+}
+
+message Proto2PresenceValidationMessage {
+  option (confluent.message_meta) = {
+    rules: {
+      name: "absent-proto2-scalar-uses-default"
+      expr: "!has(this.value) && this.value == 0 && !has(this.limit) && this.limit == 5 && !has(this.label) && this.label == 'legacy' && !has(this.token) && this.token == b'\\x01\\xff' && !has(this.enabled) && this.enabled && !has(this.status) && this.status == 1"
+    }
+  };
+
+  optional int32 value = 1;
+  optional int32 limit = 2 [default = 5];
+  optional string label = 3 [default = "legacy"];
+  optional bytes token = 4 [default = "\001\377"];
+  optional bool enabled = 5 [default = true];
+  optional Proto2PresenceStatus status = 6 [default = PROTO2_PRESENCE_STATUS_ACTIVE];
+}
+
+message Proto2PackedEnumValidationMessage {
+  repeated Proto2PresenceStatus statuses = 1 [packed = true, (confluent.field_meta) = {
+    rules: {
+      name: "known-packed-status-count"
+      expr: "size(this) <= 1"
+    }
+  }];
+}
+
+message Proto2PackedEnumEqualityEnvelope {
+  option (confluent.message_meta) = {
+    rules: {
+      name: "packed-enum-message-equality"
+      expr: "this.left == this.right"
+    }
+  };
+
+  optional Proto2PackedEnumValidationMessage left = 1;
+  optional Proto2PackedEnumValidationMessage right = 2;
+}
+
+message Proto2ImportedOpenEnumValidationMessage {
+  option (confluent.message_meta) = {
+    rules: {
+      name: "imported-open-enum-values"
+      expr: "has(this.status) && this.status == 99 && size(this.statuses) == 2"
+    }
+  };
+
+  optional ImportedOpenStatus status = 1;
+  repeated ImportedOpenStatus statuses = 2 [packed = true];
+}
+
+message Proto2AbsentGroupValidationMessage {
+  option (confluent.message_meta) = {
+    rules: {
+      name: "absent-group-uses-default-message"
+      expr: "!has(this.details) && this.details == this.details && this.details.value == 0"
+    }
+  };
+
+  optional group Details = 1 {
+    optional int32 value = 2;
+  }
+}
+
+enum Proto2PresenceStatus {
+  PROTO2_PRESENCE_STATUS_UNSPECIFIED = 0;
+  PROTO2_PRESENCE_STATUS_ACTIVE = 1;
+}

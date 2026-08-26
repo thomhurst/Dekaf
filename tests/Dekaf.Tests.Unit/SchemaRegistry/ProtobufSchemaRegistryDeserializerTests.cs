@@ -307,6 +307,32 @@ public class ProtobufSchemaRegistryDeserializerTests
     }
 
     [Test]
+    public async Task Deserialize_InlineValidation_SkipSchemaValidation_LoadsRegisteredDescriptor()
+    {
+        var schemaRegistry = Substitute.For<ISchemaRegistryClient>();
+        schemaRegistry.GetSchemaAsync(123, Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(new Schema
+            {
+                SchemaType = SchemaType.Protobuf,
+                SchemaString = TestMessage.Descriptor.File.SerializedData.ToBase64()
+            }));
+        var config = new ProtobufDeserializerConfig
+        {
+            SkipSchemaValidation = true,
+            ValidationRulesExecution = ValidationRulesExecution.AfterDomainRules
+        };
+        await using var deserializer = new ProtobufSchemaRegistryDeserializer<TestMessage>(
+            schemaRegistry,
+            config);
+        var wireBytes = CreateWireBytes(123, new TestMessage { Id = 42 });
+
+        var result = deserializer.Deserialize(wireBytes, CreateContext());
+
+        await schemaRegistry.Received(1).GetSchemaAsync(123, Arg.Any<CancellationToken>());
+        await Assert.That(result.Id).IsEqualTo(42);
+    }
+
+    [Test]
     public async Task Deserialize_SkipsConfluentZigZagEncodedMessageIndexes()
     {
         // Arrange

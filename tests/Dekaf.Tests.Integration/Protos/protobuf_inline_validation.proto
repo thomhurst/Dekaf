@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package dekaf.tests.rules;
+
+import "confluent/meta.proto";
+
+option csharp_namespace = "Dekaf.Tests.Integration.Protos";
+
+message ProtobufInlineValidationMessage {
+  int32 value = 1 [(confluent.field_meta) = {
+    rules: {
+      name: "positive-value"
+      expr: "this > 0"
+    }
+  }];
+}

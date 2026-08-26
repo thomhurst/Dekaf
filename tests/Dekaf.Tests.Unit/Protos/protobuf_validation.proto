@@ -1,0 +1,272 @@
+syntax = "proto3";
+
+package dekaf.validation;
+
+import "confluent/meta.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/wrappers.proto";
+import "protobuf_validation_child.proto";
+
+option csharp_namespace = "Dekaf.Tests.Unit.SchemaRegistry.ProtobufFixtures";
+
+message ValidationEnvelope {
+  option (confluent.message_meta) = {
+    rules: {
+      name: "age-upper-bound"
+      expr: "this.age <= 150"
+    }
+    rules: {
+      name: "oneof-last-wins"
+      expr: "!has(this.email) || size(this.email) > 0"
+    }
+    rules: {
+      name: "outer-wrapper-last-wins"
+      expr: "!has(this.label) || this.label == 'b'"
+    }
+  };
+
+  int32 age = 1 [(confluent.field_meta) = {
+    rules: {
+      name: "age-lower-bound"
+      expr: "this >= 0"
+    }
+  }];
+
+  string name = 2 [(confluent.field_meta) = {
+    rules: {
+      name: "name-required"
+      expr: "size(this) > 0"
+    }
+  }];
+
+  optional string nickname = 3 [(confluent.field_meta) = {
+    rules: {
+      name: "nickname-not-empty"
+      expr: "size(this) > 0"
+    }
+  }];
+
+  repeated string tags = 4 [(confluent.field_meta) = {
+    rules: {
+      name: "tag-limit"
+      expr: "size(this) <= 2"
+    }
+  }];
+
+  repeated ValidationChild children = 5;
+  map<string, ValidationChild> children_by_name = 6 [(confluent.field_meta) = {
+    rules: {
+      name: "child-map-size"
+      expr: "size(this) <= 1"
+    }
+  }];
+
+  oneof contact {
+    string email = 7 [(confluent.field_meta) = {
+      rules: {
+        name: "email-not-empty"
+        expr: "size(this) > 0"
+      }
+    }];
+    string phone = 8;
+  }
+
+  bytes token = 9 [(confluent.field_meta) = {
+    rules: {
+      name: "token-size"
+      expr: "size(this) == 3"
+    }
+    rules: {
+      name: "token-value"
+      expr: "this == b'abc'"
+    }
+  }];
+
+  ValidationStatus status = 10 [(confluent.field_meta) = {
+    rules: {
+      name: "known-status"
+      expr: "this >= 0"
+    }
+  }];
+
+  google.protobuf.Timestamp created_at = 11 [(confluent.field_meta) = {
+    rules: {
+      name: "modern-date"
+      expr: "this >= timestamp('2020-01-01T00:00:00Z')"
+    }
+  }];
+
+  google.protobuf.Int32Value score = 12 [(confluent.field_meta) = {
+    rules: {
+      name: "score-not-negative"
+      expr: "this >= 0"
+    }
+  }];
+
+  repeated int32 codes = 13 [(confluent.field_meta) = {
+    rules: {
+      name: "packed-code-count"
+      expr: "size(this) == 3"
+    }
+  }];
+
+  ValidationChild primary_child = 14 [(confluent.field_meta) = {
+    rules: {
+      name: "message-self-equality"
+      expr: "this == this && this.value > 0"
+    }
+  }];
+
+  google.protobuf.StringValue label = 15 [(confluent.field_meta) = {
+    rules: {
+      name: "label-last-wins"
+      expr: "this == 'b'"
+    }
+  }];
+
+}
+
+message ValidationTemporalEnvelope {
+  option (confluent.message_meta) = {
+    rules: {
+      name: "temporal-components-merge"
+      expr: "this.created_at >= timestamp('2020-01-01T00:00:00Z') && this.elapsed > 1000"
+    }
+  };
+
+  google.protobuf.Timestamp created_at = 1 [(confluent.field_meta) = {
+    rules: {
+      name: "timestamp-components-merge"
+      expr: "this >= timestamp('2020-01-01T00:00:00Z')"
+    }
+  }];
+
+  google.protobuf.Duration elapsed = 2 [(confluent.field_meta) = {
+    rules: {
+      name: "duration-components-merge"
+      expr: "this > 1000"
+    }
+  }];
+}
+
+message ValidationMessageEqualityEnvelope {
+  option (confluent.message_meta) = {
+    rules: {
+      name: "child-message-equality"
+      expr: "this.left_child == this.right_child"
+    }
+  };
+
+  ValidationEqualityChild left_child = 1;
+  ValidationEqualityChild right_child = 2;
+}
+
+message ValidationEqualityChild {
+  int32 value = 1;
+  ValidationEqualityChild child = 2;
+  repeated int32 codes = 3;
+  double double_value = 4;
+  float float_value = 5;
+}
+
+message ValidationPresenceEnvelope {
+  option (confluent.message_meta) = {
+    rules: {
+      name: "absent-scalars-use-defaults"
+      expr: "!has(this.nickname) && this.nickname == ''"
+    }
+    rules: {
+      name: "inactive-oneof-scalars-use-defaults"
+      expr: "!has(this.phone) && this.phone == ''"
+    }
+    rules: {
+      name: "implicit-default-scalars-are-absent"
+      expr: "!has(this.age) && this.age == 0"
+    }
+    rules: {
+      name: "wrapper-presence-preserves-null"
+      expr: "has(this.score) ? this.score == 0 : this.score == null"
+    }
+  };
+
+  optional string nickname = 1;
+  oneof contact {
+    string email = 2;
+    string phone = 3;
+  }
+  int32 age = 4;
+  google.protobuf.Int32Value score = 5;
+}
+
+message ValidationMapEqualityEnvelope {
+  option (confluent.message_meta) = {
+    rules: {
+      name: "map-message-equality"
+      expr: "this.left_child == this.right_child"
+    }
+  };
+
+  ValidationMapEqualityChild left_child = 1;
+  ValidationMapEqualityChild right_child = 2;
+}
+
+message ValidationMapEqualityChild {
+  map<string, int32> labels = 1;
+  map<string, ValidationEqualityChild> children = 2;
+}
+
+message ValidationCollectionEnvelope {
+  option (confluent.message_meta) = {
+    rules: {
+      name: "map-size-uses-unique-keys"
+      expr: "size(this.left_labels) == 2"
+    }
+    rules: {
+      name: "collection-member-equality"
+      expr: "this.left_tags == this.right_tags && this.left_labels == this.right_labels"
+    }
+  };
+
+  repeated string left_tags = 1 [(confluent.field_meta) = {
+    rules: {
+      name: "repeated-field-self-equality"
+      expr: "this == this"
+    }
+  }];
+  repeated string right_tags = 2;
+  map<string, int32> left_labels = 3 [(confluent.field_meta) = {
+    rules: {
+      name: "map-field-self-equality"
+      expr: "this == this"
+    }
+  }];
+  map<string, int32> right_labels = 4;
+}
+
+message ValidationMapOnlyEnvelope {
+  map<string, ValidationChild> children = 1;
+}
+
+message ValidationSint32Envelope {
+  sint32 value = 1 [(confluent.field_meta) = {
+    rules: {
+      name: "sint32-zero"
+      expr: "this == 0"
+    }
+  }];
+}
+
+message ValidationSint32BenchmarkEnvelope {
+  sint32 value = 1 [(confluent.field_meta) = {
+    rules: {
+      name: "sint32-non-positive"
+      expr: "this <= 0"
+    }
+  }];
+}
+
+enum ValidationStatus {
+  VALIDATION_STATUS_UNSPECIFIED = 0;
+  VALIDATION_STATUS_ACTIVE = 1;
+}

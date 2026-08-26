@@ -558,6 +558,80 @@ public sealed class SchemaRegistryRuleIntegrationTests(KafkaWithSchemaRegistryCo
         await Assert.That(consumed).IsEqualTo(new InlineValidationPayload("valid"));
     }
 
+    [Test]
+    public async Task RegisteredProtobufInlineRules_ProduceConsumeAndRejectInvalidPayload()
+    {
+        var topic = await testInfra.CreateTestTopicAsync();
+        using var registryClient = new SchemaRegistryClient(new SchemaRegistryConfig
+        {
+            Url = testInfra.RegistryUrl
+        });
+        await registryClient.RegisterSchemaAsync($"{topic}-value", new Schema
+        {
+            SchemaType = SchemaType.Protobuf,
+            SchemaString = ProtobufInlineValidationMessage.Descriptor.File.SerializedData.ToBase64()
+        });
+        var serializerConfig = new ProtobufSerializerConfig
+        {
+            AutoRegisterSchemas = false,
+            UseSchemaReferences = false,
+            ValidationRulesExecution = ValidationRulesExecution.AfterDomainRules
+        };
+        var deserializerConfig = new ProtobufDeserializerConfig
+        {
+            ValidationRulesExecution = ValidationRulesExecution.AfterDomainRules
+        };
+        await using var serializer = new ProtobufSchemaRegistrySerializer<ProtobufInlineValidationMessage>(
+            registryClient,
+            serializerConfig);
+        await using var deserializer = new ProtobufSchemaRegistryDeserializer<ProtobufInlineValidationMessage>(
+            registryClient,
+            deserializerConfig);
+        var context = CreateContext(topic);
+        var invalid = new ArrayBufferWriter<byte>();
+        Assert.Throws<ValidationRulesFailedException>(() => serializer.Serialize(
+            new ProtobufInlineValidationMessage { Value = 0 },
+            ref invalid,
+            context));
+
+        await using var producer = await Kafka.CreateProducer<string, ProtobufInlineValidationMessage>()
+            .WithBootstrapServers(testInfra.BootstrapServers)
+            .WithValueSerializer(serializer)
+            .BuildAsync();
+        await Assert.That(async () => await producer.ProduceAsync(
+            new ProducerMessage<string, ProtobufInlineValidationMessage>
+            {
+                Topic = topic,
+                Key = "invalid",
+                Value = new ProtobufInlineValidationMessage { Value = 0 }
+            }))
+            .Throws<ValidationRulesFailedException>();
+        await producer.ProduceAsync(new ProducerMessage<string, ProtobufInlineValidationMessage>
+        {
+            Topic = topic,
+            Key = "valid",
+            Value = new ProtobufInlineValidationMessage { Value = 7 }
+        });
+
+        await using var consumer = await Kafka.CreateConsumer<string, ProtobufInlineValidationMessage>()
+            .WithBootstrapServers(testInfra.BootstrapServers)
+            .WithGroupId($"protobuf-inline-validation-{Guid.NewGuid():N}")
+            .WithValueDeserializer(deserializer)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .BuildAsync();
+        consumer.Subscribe(topic);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        ProtobufInlineValidationMessage? consumed = null;
+        await foreach (var message in consumer.ConsumeAsync(timeout.Token))
+        {
+            consumed = message.Value;
+            break;
+        }
+
+        await Assert.That(consumed).IsNotNull();
+        await Assert.That(consumed!.Value).IsEqualTo(7);
+    }
+
     private static Schema CreateSchema(SchemaType schemaType, string schemaString) =>
         new()
         {

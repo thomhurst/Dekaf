@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using Dekaf.Serialization;
 using Google.Protobuf;
+using Google.Protobuf.Reflection;
 
 namespace Dekaf.SchemaRegistry.Protobuf;
 
@@ -33,13 +34,15 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
 {
     private static readonly TimeSpan SchemaRegistryTimeout = TimeSpan.FromSeconds(30);
     private const int MaxCachedGuidSchemas = 1024;
-    private static readonly string RecordName = new T().Descriptor.FullName;
+    private static readonly MessageDescriptor Descriptor = new T().Descriptor;
+    private static readonly string RecordName = Descriptor.FullName;
 
     private readonly ISchemaRegistryClient _schemaRegistry;
     private readonly ProtobufDeserializerConfig _config;
     private readonly bool _ownsClient;
     private readonly ISchemaRegistryRuleExecutor? _ruleExecutor;
     private readonly MessageParser<T> _parser;
+    private readonly ProtobufInlineRuleExecutor? _inlineRuleExecutor;
     private readonly DeserializerSubjectNameCache? _subjectNames;
     private readonly SchemaRegistryMigrationRunner? _migrationRunner;
     private readonly ConcurrentDictionary<GuidTopicKey, Lazy<Task<GuidResolvedSchema>>> _guidSchemaCache = new();
@@ -62,6 +65,11 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
         _config = config ?? new ProtobufDeserializerConfig();
         ValidateSchemaIdStrategy(_config.SchemaIdStrategy);
         _ruleExecutor = _config.RuleExecutor;
+        _inlineRuleExecutor = ProtobufValidationConfiguration.Create(
+            _config.ValidationRulesExecution,
+            _config.RuleExecutor,
+            _schemaRegistry,
+            Descriptor);
         _ownsClient = ownsClient;
         _parser = new MessageParser<T>(() => new T());
         _subjectNames = DeserializerSubjectNameCache.Create(
@@ -311,6 +319,7 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
         var schemaId = identity.SchemaId ?? -1;
         var needsSchema = !_config.SkipSchemaValidation
                           || _config.RuleExecutor is SchemaRegistryRuleExecutor
+                          || _inlineRuleExecutor is not null
                           || _migrationRunner is not null;
         var guidSchema = identity.SchemaGuid is { } schemaGuid
                          && RequiresGuidSchema
@@ -324,24 +333,36 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
         string? ruleSubject = null;
         if (needsSchema && guidSchema is null)
         {
-            if (preparedSubject is not null)
+            try
             {
-                ruleSubject = preparedSubject;
-                schema = _schemaRegistry.GetSchemaSync(schemaId, ruleSubject, SchemaRegistryTimeout);
+                if (preparedSubject is not null)
+                {
+                    ruleSubject = preparedSubject;
+                    schema = _schemaRegistry.GetSchemaSync(schemaId, ruleSubject, SchemaRegistryTimeout);
+                }
+                else if (_config.RuleExecutor is not null && _subjectNames is null)
+                {
+                    ruleSubject = SubjectNameResolver.GetTopicSubjectName(
+                        context.Topic,
+                        context.Component == SerializationComponent.Key);
+                    schema = _schemaRegistry.GetSchemaSync(schemaId, ruleSubject, SchemaRegistryTimeout);
+                }
+                else
+                {
+                    schema = _schemaRegistry.GetSchemaSync(schemaId, SchemaRegistryTimeout);
+                }
             }
-            else if (_config.RuleExecutor is not null && _subjectNames is null)
+            catch (Exception exception) when (
+                _config.SkipSchemaValidation &&
+                _inlineRuleExecutor is not null &&
+                _config.RuleExecutor is null &&
+                _migrationRunner is null &&
+                exception is TimeoutException or HttpRequestException or SchemaRegistryException)
             {
-                ruleSubject = SubjectNameResolver.GetTopicSubjectName(
-                    context.Topic,
-                    context.Component == SerializationComponent.Key);
-                schema = _schemaRegistry.GetSchemaSync(schemaId, ruleSubject, SchemaRegistryTimeout);
-            }
-            else
-            {
-                schema = _schemaRegistry.GetSchemaSync(schemaId, SchemaRegistryTimeout);
+                schema = null;
             }
 
-            if (!_config.SkipSchemaValidation && schema.SchemaType != SchemaType.Protobuf)
+            if (!_config.SkipSchemaValidation && schema!.SchemaType != SchemaType.Protobuf)
                 throw new InvalidOperationException($"Schema {schemaId} is not a Protobuf schema (type: {schema.SchemaType})");
         }
 
@@ -380,9 +401,18 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
             protobufData = data[(payloadOffset + bytesRead)..];
         }
 
+        var validationSubject = guidSchema?.Subject ?? ruleSubject;
+        if (_inlineRuleExecutor is not null &&
+            validationSubject is null &&
+            schema is not null &&
+            (_ruleExecutor is not null || _inlineRuleExecutor.RequiresSubject(schemaId, schema)))
+        {
+            validationSubject = GetSubjectName(schemaId, schema, context);
+        }
+
         if (_ruleExecutor is not null)
         {
-            var subject = guidSchema?.Subject ?? ruleSubject ?? GetSubjectName(schemaId, schema, context);
+            var subject = validationSubject ?? GetSubjectName(schemaId, schema, context);
             if (guidSchema is null && schema is not null && ruleSubject is null)
                 schema = _schemaRegistry.GetSchemaSync(schemaId, subject, SchemaRegistryTimeout);
             if (_migrationRunner is null)
@@ -396,7 +426,38 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
                     SchemaRegistryPayloadFormat.Protobuf);
                 try
                 {
-                    protobufData = _ruleExecutor.TransformDeserializedPayload(protobufData, ruleContext);
+                    if (_inlineRuleExecutor is not null &&
+                        _ruleExecutor is SchemaRegistryRuleExecutor builtInRuleExecutor)
+                    {
+                        protobufData = builtInRuleExecutor.TransformDeserializedEncodingPayload(
+                            protobufData,
+                            ruleContext);
+                        if (_config.ValidationRulesExecution == ValidationRulesExecution.BeforeDomainRules)
+                        {
+                            _inlineRuleExecutor.Validate(
+                                protobufData,
+                                schemaId,
+                                subject,
+                                schema,
+                                _config.ValidationRulesFailFast);
+                        }
+                        protobufData = builtInRuleExecutor.TransformDeserializedDomainPayload(
+                            protobufData,
+                            ruleContext);
+                        if (_config.ValidationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+                        {
+                            _inlineRuleExecutor.Validate(
+                                protobufData,
+                                schemaId,
+                                subject,
+                                schema,
+                                _config.ValidationRulesFailFast);
+                        }
+                    }
+                    else
+                    {
+                        protobufData = _ruleExecutor.TransformDeserializedPayload(protobufData, ruleContext);
+                    }
                 }
                 finally
                 {
@@ -405,15 +466,44 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
             }
             else
             {
-                var migration = _migrationRunner.Transform(
-                    protobufData,
-                    schemaId,
-                    subject,
-                    schema!,
-                    context,
-                    SchemaRegistryPayloadFormat.Protobuf);
+                var migration = _config.ValidationRulesExecution == ValidationRulesExecution.BeforeDomainRules
+                    ? _migrationRunner.TransformWithBeforeDomainValidation(
+                        protobufData,
+                        schemaId,
+                        subject,
+                        schema!,
+                        context,
+                        SchemaRegistryPayloadFormat.Protobuf,
+                        _inlineRuleExecutor!,
+                        _config.ValidationRulesFailFast)
+                    : _migrationRunner.Transform(
+                        protobufData,
+                        schemaId,
+                        subject,
+                        schema!,
+                        context,
+                        SchemaRegistryPayloadFormat.Protobuf);
                 protobufData = migration.Payload;
+                schemaId = migration.PayloadSchemaId;
+                if (_config.ValidationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+                {
+                    ((IInlineValidationRuleExecutor)_inlineRuleExecutor!).Validate(
+                        protobufData,
+                        schemaId,
+                        subject,
+                        migration.PayloadSchema,
+                        _config.ValidationRulesFailFast);
+                }
             }
+        }
+        else
+        {
+            _inlineRuleExecutor?.Validate(
+                protobufData,
+                schemaId,
+                validationSubject,
+                schema,
+                _config.ValidationRulesFailFast);
         }
 
         // Parse directly from span — zero allocation (Google.Protobuf 3.21+).
@@ -448,7 +538,8 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
         && lazy.Value.IsCompletedSuccessfully;
 
     private bool RequiresGuidSchema =>
-        !_config.SkipSchemaValidation || _ruleExecutor is not null || _migrationRunner is not null;
+        !_config.SkipSchemaValidation || _ruleExecutor is not null || _inlineRuleExecutor is not null ||
+        _migrationRunner is not null;
 
     private Task<GuidResolvedSchema> GetGuidSchemaAsync(
         GuidTopicKey key,
@@ -502,7 +593,7 @@ public sealed class ProtobufSchemaRegistryDeserializer<T>
                 $"Schema with GUID {key.SchemaGuid:D} is not a Protobuf schema. Type: {unscopedSchema.SchemaType}");
         }
 
-        if (_ruleExecutor is null && _migrationRunner is null)
+        if (_ruleExecutor is null && _inlineRuleExecutor is null && _migrationRunner is null)
             return new GuidResolvedSchema(-1, null, unscopedSchema);
 
         var subject = _subjectNames is null

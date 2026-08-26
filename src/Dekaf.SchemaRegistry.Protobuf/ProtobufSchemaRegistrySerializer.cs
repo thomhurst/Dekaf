@@ -46,6 +46,8 @@ public sealed class ProtobufSchemaRegistrySerializer<
     private readonly SubjectSchemaIdCache _subjectSchemaIdCache = new();
     private readonly string _schemaString;
     private readonly byte[] _encodedMessageIndexes;
+    private readonly ProtobufInlineRuleExecutor? _inlineRuleExecutor;
+    private readonly ProtobufPayloadTransformMode _payloadTransformMode;
     private readonly SchemaResolutionCache<SubjectSchemaIdCache.SubjectSchemaIdCacheValue> _schemaResolutionCache = new();
     private readonly SchemaResolutionCache<RegisteredDependency> _referenceResolutionCache = new();
     private readonly Schema _resolutionIdentitySchema;
@@ -86,6 +88,16 @@ public sealed class ProtobufSchemaRegistrySerializer<
 
         // Get the message descriptor from the type
         _descriptor = GetMessageDescriptor();
+        _inlineRuleExecutor = ProtobufValidationConfiguration.Create(
+            _config.ValidationRulesExecution,
+            _config.RuleExecutor,
+            _schemaRegistry,
+            _descriptor);
+        _payloadTransformMode = _config.RuleExecutor is not null
+            ? ProtobufPayloadTransformMode.RuleExecutor
+            : _inlineRuleExecutor is not null
+                ? ProtobufPayloadTransformMode.InlineValidation
+                : ProtobufPayloadTransformMode.None;
 
         // Schema Registry's canonical Protobuf representation is the serialized FileDescriptorProto.
         _schemaString = _descriptor.File.SerializedData.ToBase64();
@@ -185,7 +197,7 @@ public sealed class ProtobufSchemaRegistrySerializer<
 
         var protoSize = value.CalculateSize();
         ReadOnlyMemory<byte> transformedPayload = default;
-        if (_config.RuleExecutor is not null)
+        if (_payloadTransformMode == ProtobufPayloadTransformMode.RuleExecutor)
         {
             var ruleContext = SchemaRegistryRuleContext.Rent(
                 context.Topic,
@@ -196,7 +208,7 @@ public sealed class ProtobufSchemaRegistrySerializer<
                 SchemaRegistryPayloadFormat.Protobuf);
             try
             {
-                transformedPayload = _config.RuleExecutor.TransformSerializedPayload(value.ToByteArray(), ruleContext);
+                transformedPayload = TransformSerializedPayload(value.ToByteArray(), ruleContext, schemaId);
             }
             finally
             {
@@ -204,11 +216,36 @@ public sealed class ProtobufSchemaRegistrySerializer<
             }
         }
 
-        var protobufPayloadLength = _config.RuleExecutor is null ? protoSize : transformedPayload.Length;
+        var protobufPayloadLength = _payloadTransformMode == ProtobufPayloadTransformMode.RuleExecutor
+            ? transformedPayload.Length
+            : protoSize;
         var payloadOffset = _schemaIdStrategy == SchemaIdSerializerStrategy.Prefix
             ? SchemaIdentityFraming.SchemaIdFrameSize + _encodedMessageIndexes.Length
             : 0;
         var totalSize = payloadOffset + protobufPayloadLength;
+        if (_payloadTransformMode == ProtobufPayloadTransformMode.InlineValidation)
+        {
+            var memory = destination.GetMemory(totalSize);
+            var validatedSpan = memory.Span;
+            if (_schemaIdStrategy == SchemaIdSerializerStrategy.Prefix)
+            {
+                SchemaIdentityFraming.WriteSchemaId(validatedSpan, schemaId);
+                _encodedMessageIndexes.CopyTo(
+                    validatedSpan[SchemaIdentityFraming.SchemaIdFrameSize..]);
+            }
+
+            value.WriteTo(validatedSpan.Slice(payloadOffset, protoSize));
+            _inlineRuleExecutor!.Validate(
+                memory.Slice(payloadOffset, protoSize),
+                schemaId,
+                schemaEntry.Schema,
+                _config.ValidationRulesFailFast);
+            if (_schemaIdStrategy == SchemaIdSerializerStrategy.Header)
+                WriteIdentityHeader(context, in schemaEntry);
+            destination.Advance(totalSize);
+            return;
+        }
+
         var span = destination.GetSpan(totalSize);
 
         if (_schemaIdStrategy == SchemaIdSerializerStrategy.Prefix)
@@ -217,7 +254,7 @@ public sealed class ProtobufSchemaRegistrySerializer<
             _encodedMessageIndexes.CopyTo(span[SchemaIdentityFraming.SchemaIdFrameSize..]);
         }
 
-        if (_config.RuleExecutor is null)
+        if (_payloadTransformMode == ProtobufPayloadTransformMode.None)
             value.WriteTo(span.Slice(payloadOffset, protoSize));
         else
             transformedPayload.Span.CopyTo(span.Slice(payloadOffset, transformedPayload.Length));
@@ -258,7 +295,7 @@ public sealed class ProtobufSchemaRegistrySerializer<
 
         var protoSize = value.CalculateSize();
         ReadOnlyMemory<byte> transformedPayload = default;
-        if (_config.RuleExecutor is not null)
+        if (_payloadTransformMode == ProtobufPayloadTransformMode.RuleExecutor)
         {
             var ruleContext = SchemaRegistryRuleContext.Rent(
                 context.Topic,
@@ -269,18 +306,43 @@ public sealed class ProtobufSchemaRegistrySerializer<
                 SchemaRegistryPayloadFormat.Protobuf);
             try
             {
-                transformedPayload = _config.RuleExecutor.TransformSerializedPayload(value.ToByteArray(), ruleContext);
+                transformedPayload = TransformSerializedPayload(value.ToByteArray(), ruleContext, schemaId);
             }
             finally
             {
                 ruleContext.Return();
             }
         }
-        var protobufPayloadLength = _config.RuleExecutor is null ? protoSize : transformedPayload.Length;
+        var protobufPayloadLength = _payloadTransformMode == ProtobufPayloadTransformMode.RuleExecutor
+            ? transformedPayload.Length
+            : protoSize;
         var payloadOffset = _schemaIdStrategy == SchemaIdSerializerStrategy.Prefix
             ? SchemaIdentityFraming.SchemaIdFrameSize + _encodedMessageIndexes.Length
             : 0;
         var totalSize = payloadOffset + protobufPayloadLength;
+        if (_payloadTransformMode == ProtobufPayloadTransformMode.InlineValidation)
+        {
+            var memory = destination.GetMemory(totalSize);
+            var validatedSpan = memory.Span;
+            if (_schemaIdStrategy == SchemaIdSerializerStrategy.Prefix)
+            {
+                SchemaIdentityFraming.WriteSchemaId(validatedSpan, schemaId);
+                _encodedMessageIndexes.CopyTo(
+                    validatedSpan[SchemaIdentityFraming.SchemaIdFrameSize..]);
+            }
+
+            value.WriteTo(validatedSpan.Slice(payloadOffset, protoSize));
+            _inlineRuleExecutor!.Validate(
+                memory.Slice(payloadOffset, protoSize),
+                schemaId,
+                schemaEntry.Schema,
+                _config.ValidationRulesFailFast);
+            if (_schemaIdStrategy == SchemaIdSerializerStrategy.Header)
+                WriteIdentityHeader(context, in schemaEntry);
+            destination.Advance(totalSize);
+            return;
+        }
+
         var span = destination.GetSpan(totalSize);
 
         if (_schemaIdStrategy == SchemaIdSerializerStrategy.Prefix)
@@ -290,7 +352,7 @@ public sealed class ProtobufSchemaRegistrySerializer<
         }
 
         // Write the protobuf message
-        if (_config.RuleExecutor is null)
+        if (_payloadTransformMode == ProtobufPayloadTransformMode.None)
             value.WriteTo(span.Slice(payloadOffset, protoSize));
         else
             transformedPayload.Span.CopyTo(span.Slice(payloadOffset, transformedPayload.Length));
@@ -299,6 +361,29 @@ public sealed class ProtobufSchemaRegistrySerializer<
             WriteIdentityHeader(context, in schemaEntry);
 
         destination.Advance(totalSize);
+    }
+
+    private ReadOnlyMemory<byte> TransformSerializedPayload(
+        ReadOnlyMemory<byte> payload,
+        SchemaRegistryRuleContext context,
+        int schemaId)
+    {
+        if (_inlineRuleExecutor is null || _config.RuleExecutor is not SchemaRegistryRuleExecutor ruleExecutor)
+            return _config.RuleExecutor!.TransformSerializedPayload(payload, context);
+
+        if (_config.ValidationRulesExecution == ValidationRulesExecution.BeforeDomainRules)
+            _inlineRuleExecutor.Validate(payload, schemaId, context.Schema, _config.ValidationRulesFailFast);
+        payload = ruleExecutor.TransformSerializedDomainPayload(payload, context);
+        if (_config.ValidationRulesExecution == ValidationRulesExecution.AfterDomainRules)
+            _inlineRuleExecutor.Validate(payload, schemaId, context.Schema, _config.ValidationRulesFailFast);
+        return ruleExecutor.TransformSerializedEncodingPayload(payload, context);
+    }
+
+    private enum ProtobufPayloadTransformMode : byte
+    {
+        None,
+        InlineValidation,
+        RuleExecutor
     }
 
     private static SerializerPreparationAdmission ToAdmission(

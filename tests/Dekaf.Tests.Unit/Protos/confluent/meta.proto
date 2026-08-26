@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package confluent;
+
+import "google/protobuf/descriptor.proto";
+
+option csharp_namespace = "Dekaf.Tests.Unit.SchemaRegistry.ProtobufFixtures.Confluent";
+
+message Meta {
+  string doc = 1;
+  map<string, string> params = 2;
+  repeated string tags = 3;
+  repeated Rule rules = 4;
+}
+
+message Rule {
+  string name = 1;
+  string doc = 2;
+  string expr = 3;
+  string sql = 4;
+}
+
+extend google.protobuf.FileOptions {
+  Meta file_meta = 1088;
+}
+
+extend google.protobuf.MessageOptions {
+  Meta message_meta = 1088;
+}
+
+extend google.protobuf.FieldOptions {
+  Meta field_meta = 1088;
+}
+
+extend google.protobuf.EnumOptions {
+  Meta enum_meta = 1088;
+}
+
+extend google.protobuf.EnumValueOptions {
+  Meta enum_value_meta = 1088;
+}
