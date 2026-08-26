@@ -430,7 +430,7 @@ public sealed class InMemoryKafkaClusterTests
             ]);
 
         await Assert.That(altered[valid].ErrorCode).IsEqualTo(ErrorCode.None);
-        await Assert.That(altered[missingTopic].ErrorCode).IsEqualTo(ErrorCode.UnknownTopicOrPartition);
+        await Assert.That(altered[missingTopic].ErrorCode).IsEqualTo(ErrorCode.UnknownTopicId);
         await Assert.That(altered[missingPartition].ErrorCode).IsEqualTo(ErrorCode.UnknownTopicOrPartition);
         await Assert.That(cluster.GetCommittedOffset(groupId, valid)).IsEqualTo(42);
         await Assert.That(cluster.GetCommittedOffset(groupId, missingTopic)).IsNull();
@@ -458,7 +458,7 @@ public sealed class InMemoryKafkaClusterTests
 
         var offsets = listed["streams-app"].Offsets;
         await Assert.That(offsets[valid].ErrorCode).IsEqualTo(ErrorCode.None);
-        await Assert.That(offsets[missingTopic].ErrorCode).IsEqualTo(ErrorCode.UnknownTopicOrPartition);
+        await Assert.That(offsets[missingTopic].ErrorCode).IsEqualTo(ErrorCode.UnknownTopicId);
         await Assert.That(offsets[missingPartition].ErrorCode).IsEqualTo(ErrorCode.UnknownTopicOrPartition);
     }
 
@@ -480,7 +480,7 @@ public sealed class InMemoryKafkaClusterTests
             groupId,
             [missingTopic, missingPartition]);
 
-        await Assert.That(deleted[missingTopic].ErrorCode).IsEqualTo(ErrorCode.UnknownTopicOrPartition);
+        await Assert.That(deleted[missingTopic].ErrorCode).IsEqualTo(ErrorCode.UnknownTopicId);
         await Assert.That(deleted[missingPartition].ErrorCode).IsEqualTo(ErrorCode.UnknownTopicOrPartition);
         await Assert.That(cluster.GetCommittedOffset(groupId, valid)).IsEqualTo(42);
     }

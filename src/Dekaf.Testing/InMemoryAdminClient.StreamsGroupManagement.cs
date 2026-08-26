@@ -68,9 +68,7 @@ public sealed partial class InMemoryAdminClient
                 foreach (var partition in partitions)
                 {
                     var hasOffset = storedOffsets.TryGetValue(partition, out var storedOffset);
-                    var errorCode = _cluster.ContainsTopicPartition(partition)
-                        ? ErrorCode.None
-                        : ErrorCode.UnknownTopicOrPartition;
+                    var errorCode = _cluster.GetTopicPartitionError(partition);
                     offsets[partition] = new StreamsGroupOffsetDescription
                     {
                         TopicPartition = partition,

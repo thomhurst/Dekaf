@@ -182,6 +182,12 @@ public sealed class InMemoryKafkaCluster
             return ContainsTopicPartitionUnderLock(topicPartition);
     }
 
+    internal ErrorCode GetTopicPartitionError(TopicPartition topicPartition)
+    {
+        lock (_gate)
+            return GetTopicPartitionErrorUnderLock(topicPartition);
+    }
+
     internal int RegisterConsumerGroupMember(
         string groupId,
         string memberId,
@@ -1230,9 +1236,10 @@ public sealed class InMemoryKafkaCluster
             foreach (var offset in offsets)
             {
                 var partition = new TopicPartition(offset.Topic, offset.Partition);
-                if (!ContainsTopicPartitionUnderLock(partition))
+                var errorCode = GetTopicPartitionErrorUnderLock(partition);
+                if (errorCode != ErrorCode.None)
                 {
-                    results[partition] = ErrorCode.UnknownTopicOrPartition;
+                    results[partition] = errorCode;
                     continue;
                 }
 
@@ -1262,9 +1269,10 @@ public sealed class InMemoryKafkaCluster
             _consumerGroupMembers.TryGetValue(groupId, out var members);
             foreach (var partition in partitions)
             {
-                if (!ContainsTopicPartitionUnderLock(partition))
+                var errorCode = GetTopicPartitionErrorUnderLock(partition);
+                if (errorCode != ErrorCode.None)
                 {
-                    results[partition] = ErrorCode.UnknownTopicOrPartition;
+                    results[partition] = errorCode;
                     continue;
                 }
 
@@ -1580,8 +1588,17 @@ public sealed class InMemoryKafkaCluster
     }
 
     private bool ContainsTopicPartitionUnderLock(TopicPartition topicPartition) =>
-        _topics.TryGetValue(topicPartition.Topic, out var topic)
-        && (uint)topicPartition.Partition < (uint)topic.Partitions.Count;
+        GetTopicPartitionErrorUnderLock(topicPartition) == ErrorCode.None;
+
+    private ErrorCode GetTopicPartitionErrorUnderLock(TopicPartition topicPartition)
+    {
+        if (!_topics.TryGetValue(topicPartition.Topic, out var topic))
+            return ErrorCode.UnknownTopicId;
+
+        return (uint)topicPartition.Partition < (uint)topic.Partitions.Count
+            ? ErrorCode.None
+            : ErrorCode.UnknownTopicOrPartition;
+    }
 
     private bool RemoveConsumerGroupUnderLock(string groupId)
     {
