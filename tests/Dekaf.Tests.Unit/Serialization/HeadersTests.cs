@@ -562,6 +562,26 @@ public class HeadersTests
         await Assert.That(headers.TryGetLastSchemaIdentity(SerializationComponent.Value, out _)).IsFalse();
     }
 
+    [Test]
+    public async Task Clear_SerializationWorkspaceRemovesDeferredTraceContextFromReusedSource()
+    {
+        var source = new Headers(3).Add("caller", "owned");
+        var workspace = new Headers();
+
+        for (var index = 0; index < 2; index++)
+        {
+            source.AddDeferredTraceContext(new object(), "vendor=value");
+            workspace.BeginRecordHeaderStaging(source);
+
+            workspace.Clear();
+
+            await Assert.That(workspace.Count).IsEqualTo(0);
+            await Assert.That(source.Count).IsEqualTo(1);
+            await Assert.That(source[0].Key).IsEqualTo("caller");
+            workspace.ResetSerializationWorkspace();
+        }
+    }
+
     #endregion
 
     #region AddRange Tests

@@ -23,6 +23,7 @@ public class CustomPartitionerFireHotPathBenchmarks
     private static readonly string[] Keys = BenchmarkData.CreateKeys(10_000);
     private static readonly Header IdentityHeader = new("identity", new byte[] { 1 });
     private static readonly Header CallerHeader = new("caller", new byte[] { 2 });
+    private static readonly object TraceparentToken = new();
 
     private KafkaProducer<string, string> _producer = null!;
     private KafkaProducer<string, string> _recursiveProducer = null!;
@@ -35,6 +36,8 @@ public class CustomPartitionerFireHotPathBenchmarks
     private readonly Headers _nestedStagingHeaders = new();
     private readonly Headers _removalSourceHeaders = new Headers().Add(IdentityHeader).Add(CallerHeader);
     private readonly Headers _removalWorkspaceHeaders = new(2);
+    private readonly Headers _clearSourceHeaders = new Headers(2).Add(CallerHeader);
+    private readonly Headers _clearWorkspaceHeaders = new();
 
     [GlobalSetup]
     public async Task Setup()
@@ -103,6 +106,7 @@ public class CustomPartitionerFireHotPathBenchmarks
         NestedCallerHeaderStaging();
         FourCallerHeadersStaging();
         RemoveCallerAndStagedHeaders();
+        ClearSerializationWorkspace();
     }
 
     private static async Task<KafkaProducer<string, string>> CreateProducerAsync(
@@ -223,6 +227,17 @@ public class CustomPartitionerFireHotPathBenchmarks
         var serializationCount = headers.SerializationCount;
         headers.Clear();
         return serializationCount;
+    }
+
+    [Benchmark]
+    public int ClearSerializationWorkspace()
+    {
+        _clearSourceHeaders.AddDeferredTraceContext(TraceparentToken, traceState: null);
+        _clearWorkspaceHeaders.BeginRecordHeaderStaging(_clearSourceHeaders);
+        _clearWorkspaceHeaders.Clear();
+        _clearWorkspaceHeaders.ResetSerializationWorkspace();
+        _clearSourceHeaders.RemoveDeferredTraceContext();
+        return _clearSourceHeaders.Count;
     }
 
     private void DrainLoop(CancellationToken cancellationToken)

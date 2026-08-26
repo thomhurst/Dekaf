@@ -350,7 +350,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
                 _asyncSerializationHeadersPool!.Return(headers!);
             else
             {
-                headers!.Clear();
+                headers!.ResetSerializationWorkspace();
                 Volatile.Write(ref cache.AsyncSerializationHeaders, headers);
             }
             return;
@@ -368,7 +368,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
     {
         if (usesWorkspace)
         {
-            headers!.Clear();
+            headers!.ResetSerializationWorkspace();
             cache.SerializationHeaderWorkspaceDepth--;
             return;
         }
@@ -426,7 +426,7 @@ public sealed partial class KafkaProducer<TKey, TValue> :
 
         protected override Headers Create() => new(2);
 
-        protected override void Reset(Headers item) => item.Clear();
+        protected override void Reset(Headers item) => item.ResetSerializationWorkspace();
     }
 
     private readonly struct SerializerPreparationLease(

@@ -253,6 +253,7 @@ public sealed class Headers : IReadOnlyList<Header>
     /// </summary>
     public void Clear()
     {
+        _serializationSource?.RemoveDeferredTraceContext();
         _headers.Clear();
         _deferredTraceparentIndex = -1;
         _deferredTracestateIndex = -1;
@@ -263,6 +264,16 @@ public sealed class Headers : IReadOnlyList<Header>
         EndRecordHeaderStaging();
         ClearPreviousStagedRecordHeaders();
         ClearPreviousDeferredTraceContexts();
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void ResetSerializationWorkspace()
+    {
+        if (_serializationSource is null && _headers.Count == 0 && !_stagingRecordHeaders)
+            return;
+
+        _serializationSource = null;
+        Clear();
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
