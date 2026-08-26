@@ -306,7 +306,7 @@ Port custom serializers to those contracts instead of allocating an intermediate
 For Schema Registry, configure Dekaf's Avro or Protobuf serializer with the same registry and
 subject-naming strategy. Validate existing payloads and subjects in staging before switching
 writers. See [Schema Registry](./serialization/schema-registry.md), especially its subject naming
-and compatibility guidance.
+and [identity-framing migration guidance](./serialization/schema-registry.md#schema-identity-framing-and-confluent-interoperability).
 
 ## Migrate transactions
 

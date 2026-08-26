@@ -9,6 +9,7 @@ namespace Dekaf.Tests.Unit.SchemaRegistry;
 internal sealed class MockSchemaRegistryClient : IFormattedSchemaRegistryClient, ISchemaRegistryCache
 {
     private readonly Dictionary<int, Schema> _schemasById = new();
+    private readonly Dictionary<int, Guid> _schemaGuidsById = new();
     private readonly Dictionary<(Guid Guid, string? Format), Schema> _schemasByGuid = new();
     private readonly Dictionary<string, List<(int Version, int Id, Schema Schema)>> _schemasBySubject = new();
     private readonly Dictionary<(string Namespace, string Name), List<Association>> _associationsByResource = new();
@@ -131,8 +132,10 @@ internal sealed class MockSchemaRegistryClient : IFormattedSchemaRegistryClient,
         ThrowIfDisposed();
 
         var id = _nextId++;
+        var guid = GuidFromId(id);
         _schemasById[id] = schema;
-        _schemasByGuid[(GuidFromId(id), null)] = schema;
+        _schemaGuidsById[id] = guid;
+        _schemasByGuid[(guid, null)] = schema;
 
         if (!_schemasBySubject.TryGetValue(subject, out var list))
         {
@@ -144,6 +147,19 @@ internal sealed class MockSchemaRegistryClient : IFormattedSchemaRegistryClient,
         list.Add((version, id, schema));
 
         return Task.FromResult(id);
+    }
+
+    internal void AddRegisteredSchema(
+        int id,
+        Guid guid,
+        string subject,
+        Schema schema)
+    {
+        _schemasById.Add(id, schema);
+        _schemaGuidsById.Add(id, guid);
+        _schemasByGuid.Add((guid, null), schema);
+        _schemasBySubject.Add(subject, [(1, id, schema)]);
+        _nextId = Math.Max(_nextId, id + 1);
     }
 
     internal void AddSchemaSubject(int id, string subject)
@@ -284,7 +300,7 @@ internal sealed class MockSchemaRegistryClient : IFormattedSchemaRegistryClient,
         return Task.FromResult(new RegisteredSchema
         {
             Id = entry.Id,
-            Guid = GuidFromId(entry.Id).ToString(),
+            Guid = _schemaGuidsById[entry.Id].ToString(),
             Subject = subject,
             Version = entry.Version,
             Schema = entry.Schema
@@ -337,7 +353,7 @@ internal sealed class MockSchemaRegistryClient : IFormattedSchemaRegistryClient,
         return Task.FromResult(new RegisteredSchema
         {
             Id = entry.Id,
-            Guid = GuidFromId(entry.Id).ToString(),
+            Guid = _schemaGuidsById[entry.Id].ToString(),
             Subject = subject,
             Version = entry.Version,
             Schema = entry.Schema
@@ -436,7 +452,8 @@ internal sealed class MockSchemaRegistryClient : IFormattedSchemaRegistryClient,
         foreach (var entry in list)
         {
             _schemasById.Remove(entry.Id);
-            var guid = GuidFromId(entry.Id);
+            var guid = _schemaGuidsById[entry.Id];
+            _schemaGuidsById.Remove(entry.Id);
             foreach (var key in _schemasByGuid.Keys.Where(key => key.Guid == guid).ToArray())
             {
                 _schemasByGuid.Remove(key);
