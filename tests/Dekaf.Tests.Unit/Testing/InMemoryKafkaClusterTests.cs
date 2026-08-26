@@ -68,6 +68,424 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
+    public async Task StreamsGroupManagement_RoundTripsOffsetsAndDeletesGroup()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("input", partitionCount: 2);
+        IAdminClient admin = new InMemoryAdminClient(cluster);
+        const string groupId = "streams-app";
+        var first = new TopicPartition("input", 0);
+        var second = new TopicPartition("input", 1);
+
+        var altered = await admin.AlterStreamsGroupOffsetsAsync(groupId,
+        [
+            new TopicPartitionOffset(first.Topic, first.Partition, 42, 7) { Metadata = "checkpoint" },
+            new TopicPartitionOffset(second.Topic, second.Partition, 84)
+        ]);
+        var listed = await admin.ListStreamsGroupOffsetsAsync(
+            new Dictionary<string, ListStreamsGroupOffsetsSpec>
+            {
+                [groupId] = new() { TopicPartitions = [first, second] }
+            });
+
+        await Assert.That(altered).Count().IsEqualTo(2);
+        await Assert.That(altered[first].ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(altered[second].ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(listed[groupId].Offsets[first].Offset).IsEqualTo(42);
+        await Assert.That(listed[groupId].Offsets[first].LeaderEpoch).IsEqualTo(7);
+        await Assert.That(listed[groupId].Offsets[first].Metadata).IsEqualTo("checkpoint");
+
+        var deletedOffsets = await admin.DeleteStreamsGroupOffsetsAsync(groupId, [first]);
+        var afterOffsetDeletion = await admin.ListStreamsGroupOffsetsAsync(
+            new Dictionary<string, ListStreamsGroupOffsetsSpec> { [groupId] = new() });
+
+        await Assert.That(deletedOffsets[first].ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(afterOffsetDeletion[groupId].Offsets.ContainsKey(first)).IsFalse();
+        await Assert.That(afterOffsetDeletion[groupId].Offsets[second].Offset).IsEqualTo(84);
+
+        var deletedGroups = await admin.DeleteStreamsGroupsAsync([groupId]);
+        var afterGroupDeletion = await admin.ListStreamsGroupOffsetsAsync(
+            new Dictionary<string, ListStreamsGroupOffsetsSpec> { [groupId] = new() });
+        var groupsAfterDeletion = await admin.ListStreamsGroupsAsync();
+
+        await Assert.That(deletedGroups[groupId].ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(afterGroupDeletion[groupId].Offsets).IsEmpty();
+        await Assert.That(groupsAfterDeletion.Any(group => group.GroupId == groupId)).IsFalse();
+    }
+
+    [Test]
+    public async Task StreamsGroupManagement_EmptyAlterDoesNotCreateGroup()
+    {
+        IAdminClient admin = new InMemoryAdminClient(new InMemoryKafkaCluster());
+
+        var altered = await admin.AlterStreamsGroupOffsetsAsync("empty-streams", []);
+        var groups = await admin.ListStreamsGroupsAsync();
+
+        await Assert.That(altered).IsEmpty();
+        await Assert.That(groups.Any(group => group.GroupId == "empty-streams")).IsFalse();
+    }
+
+    [Test]
+    public async Task StreamsGroupManagement_DeleteMissingGroupReportsGroupIdNotFound()
+    {
+        IAdminClient admin = new InMemoryAdminClient(new InMemoryKafkaCluster());
+        const string groupId = "missing-streams";
+        var partition = new TopicPartition("input", 0);
+
+        var deletedOffsets = await admin.DeleteStreamsGroupOffsetsAsync(groupId, [partition]);
+        var deletedGroups = await admin.DeleteStreamsGroupsAsync([groupId]);
+
+        await Assert.That(deletedOffsets[partition].ErrorCode).IsEqualTo(ErrorCode.GroupIdNotFound);
+        await Assert.That(deletedGroups[groupId].ErrorCode).IsEqualTo(ErrorCode.GroupIdNotFound);
+    }
+
+    [Test]
+    public async Task StreamsGroupManagement_DeletesEmptyGroupWithoutCommittedOffsets()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("input");
+        IAdminClient admin = new InMemoryAdminClient(cluster);
+        const string groupId = "empty-streams";
+        await using var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions { GroupId = groupId });
+        consumer.Subscribe("input");
+        consumer.Unsubscribe();
+
+        var groupsBeforeDeletion = await admin.ListStreamsGroupsAsync();
+        var deletedGroups = await admin.DeleteStreamsGroupsAsync([groupId]);
+        var groupsAfterDeletion = await admin.ListStreamsGroupsAsync();
+
+        await Assert.That(groupsBeforeDeletion.Any(group => group.GroupId == groupId)).IsTrue();
+        await Assert.That(deletedGroups[groupId].ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(groupsAfterDeletion.Any(group => group.GroupId == groupId)).IsFalse();
+    }
+
+    [Test]
+    public async Task StreamsGroupManagement_DeleteActiveGroupReportsNonEmptyGroup()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("input");
+        IAdminClient admin = new InMemoryAdminClient(cluster);
+        const string groupId = "active-streams";
+        var partition = new TopicPartition("input", 0);
+        _ = await admin.AlterStreamsGroupOffsetsAsync(
+            groupId,
+            [new TopicPartitionOffset(partition.Topic, partition.Partition, 42)]);
+        await using var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions { GroupId = groupId });
+        consumer.Subscribe("input");
+
+        var activeDeletion = await admin.DeleteStreamsGroupsAsync([groupId]);
+        var offsetsAfterRejection = await admin.ListStreamsGroupOffsetsAsync(
+            new Dictionary<string, ListStreamsGroupOffsetsSpec>
+            {
+                [groupId] = new() { TopicPartitions = [partition] }
+            });
+
+        await Assert.That(activeDeletion[groupId].ErrorCode).IsEqualTo(ErrorCode.NonEmptyGroup);
+        await Assert.That(offsetsAfterRejection[groupId].Offsets[partition].Offset).IsEqualTo(42);
+
+        consumer.Unsubscribe();
+        var inactiveDeletion = await admin.DeleteStreamsGroupsAsync([groupId]);
+
+        await Assert.That(inactiveDeletion[groupId].ErrorCode).IsEqualTo(ErrorCode.None);
+    }
+
+    [Test]
+    public async Task DeleteConsumerGroupsAsync_ActiveGroupThrowsAndPreservesOffsets()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("input");
+        IAdminClient admin = new InMemoryAdminClient(cluster);
+        const string groupId = "active-classic";
+        var partition = new TopicPartition("input", 0);
+        _ = await admin.AlterStreamsGroupOffsetsAsync(
+            groupId,
+            [new TopicPartitionOffset(partition.Topic, partition.Partition, 42)]);
+        await using var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions { GroupId = groupId });
+        consumer.Subscribe("input");
+
+        var exception = await Assert.ThrowsAsync<GroupException>(async () =>
+            await admin.DeleteConsumerGroupsAsync([groupId]));
+        var offsets = await admin.ListStreamsGroupOffsetsAsync(
+            new Dictionary<string, ListStreamsGroupOffsetsSpec>
+            {
+                [groupId] = new() { TopicPartitions = [partition] }
+            });
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.NonEmptyGroup);
+        await Assert.That(exception.GroupId).IsEqualTo(groupId);
+        await Assert.That(offsets[groupId].Offsets[partition].Offset).IsEqualTo(42);
+    }
+
+    [Test]
+    public async Task DeleteConsumerGroupsAsync_MissingGroupThrowsGroupIdNotFound()
+    {
+        IAdminClient admin = new InMemoryAdminClient(new InMemoryKafkaCluster());
+
+        var exception = await Assert.ThrowsAsync<GroupException>(async () =>
+            await admin.DeleteConsumerGroupsAsync(["missing-classic"]));
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.GroupIdNotFound);
+        await Assert.That(exception.GroupId).IsEqualTo("missing-classic");
+    }
+
+    [Test]
+    public async Task DeleteConsumerGroupOffsetsAsync_MissingGroupThrowsGroupIdNotFound()
+    {
+        IAdminClient admin = new InMemoryAdminClient(new InMemoryKafkaCluster());
+
+        var exception = await Assert.ThrowsAsync<GroupException>(async () =>
+            await admin.DeleteConsumerGroupOffsetsAsync(
+                "missing-classic",
+                [new TopicPartition("input", 0)]));
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.GroupIdNotFound);
+        await Assert.That(exception.GroupId).IsEqualTo("missing-classic");
+    }
+
+    [Test]
+    public async Task DeleteConsumerGroupOffsetsAsync_KnownEmptyGroupSucceeds()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("input");
+        IAdminClient admin = new InMemoryAdminClient(cluster);
+        await using var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions { GroupId = "empty-classic" });
+        consumer.Subscribe("input");
+        consumer.Unsubscribe();
+
+        await admin.DeleteConsumerGroupOffsetsAsync(
+            "empty-classic",
+            [new TopicPartition("input", 0)]);
+    }
+
+    [Test]
+    public async Task DeleteConsumerGroupsAsync_ContinuesAfterMissingGroup()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("input");
+        IAdminClient admin = new InMemoryAdminClient(cluster);
+        const string deletableGroup = "deletable-classic";
+        _ = await admin.AlterStreamsGroupOffsetsAsync(
+            deletableGroup,
+            [new TopicPartitionOffset("input", 0, 42)]);
+
+        var exception = await Assert.ThrowsAsync<GroupException>(async () =>
+            await admin.DeleteConsumerGroupsAsync(["missing-classic", deletableGroup]));
+        var remainingGroups = await admin.ListConsumerGroupsAsync();
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.GroupIdNotFound);
+        await Assert.That(exception.GroupId).IsEqualTo("missing-classic");
+        await Assert.That(remainingGroups.Any(group => group.GroupId == deletableGroup)).IsFalse();
+    }
+
+    [Test]
+    public async Task DeleteConsumerGroupsAsync_DuplicateGroupDeletesOnce()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("input");
+        IAdminClient admin = new InMemoryAdminClient(cluster);
+        const string groupId = "deletable-classic";
+        _ = await admin.AlterStreamsGroupOffsetsAsync(
+            groupId,
+            [new TopicPartitionOffset("input", 0, 42)]);
+
+        await admin.DeleteConsumerGroupsAsync([groupId, groupId]);
+        var remainingGroups = await admin.ListConsumerGroupsAsync();
+
+        await Assert.That(remainingGroups.Any(group => group.GroupId == groupId)).IsFalse();
+    }
+
+    [Test]
+    public async Task StreamsGroupManagement_DeleteOffsetsRejectsSubscribedTopicAndPreservesOffsets()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("input", partitionCount: 2);
+        IAdminClient admin = new InMemoryAdminClient(cluster);
+        const string groupId = "active-streams";
+        var subscribed = new TopicPartition("input", 0);
+        var inactive = new TopicPartition("input", 1);
+        _ = await admin.AlterStreamsGroupOffsetsAsync(
+            groupId,
+            [
+                new TopicPartitionOffset(subscribed.Topic, subscribed.Partition, 42),
+                new TopicPartitionOffset(inactive.Topic, inactive.Partition, 84)
+            ]);
+        await using var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions { GroupId = groupId });
+        consumer.Assign(subscribed);
+
+        var deletion = await admin.DeleteStreamsGroupOffsetsAsync(groupId, [subscribed, inactive]);
+        var offsetsAfterRejection = await admin.ListStreamsGroupOffsetsAsync(
+            new Dictionary<string, ListStreamsGroupOffsetsSpec>
+            {
+                [groupId] = new()
+            });
+
+        await Assert.That(deletion[subscribed].ErrorCode).IsEqualTo(ErrorCode.GroupSubscribedToTopic);
+        await Assert.That(deletion[inactive].ErrorCode).IsEqualTo(ErrorCode.GroupSubscribedToTopic);
+        await Assert.That(offsetsAfterRejection[groupId].Offsets[subscribed].Offset).IsEqualTo(42);
+        await Assert.That(offsetsAfterRejection[groupId].Offsets[inactive].Offset).IsEqualTo(84);
+
+        consumer.Unassign();
+        var inactiveDeletion = await admin.DeleteStreamsGroupOffsetsAsync(groupId, [subscribed, inactive]);
+        var offsetsAfterDeletion = await admin.ListStreamsGroupOffsetsAsync(
+            new Dictionary<string, ListStreamsGroupOffsetsSpec> { [groupId] = new() });
+
+        await Assert.That(inactiveDeletion[subscribed].ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(inactiveDeletion[inactive].ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(offsetsAfterDeletion[groupId].Offsets).IsEmpty();
+    }
+
+    [Test]
+    public async Task StreamsGroupManagement_DeleteOffsetsRejectsSubscribedTopicWithoutCommittedOffsets()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("input");
+        IAdminClient admin = new InMemoryAdminClient(cluster);
+        const string groupId = "active-streams";
+        var partition = new TopicPartition("input", 0);
+        await using var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions { GroupId = groupId });
+        consumer.Subscribe("input");
+
+        var deletion = await admin.DeleteStreamsGroupOffsetsAsync(groupId, [partition]);
+
+        await Assert.That(deletion[partition].ErrorCode).IsEqualTo(ErrorCode.GroupSubscribedToTopic);
+    }
+
+    [Test]
+    public async Task StreamsGroupManagement_AlterOffsetsRejectsActiveGroupAndPreservesOffsets()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("input");
+        IAdminClient admin = new InMemoryAdminClient(cluster);
+        const string groupId = "active-streams";
+        var partition = new TopicPartition("input", 0);
+        _ = await admin.AlterStreamsGroupOffsetsAsync(
+            groupId,
+            [new TopicPartitionOffset(partition.Topic, partition.Partition, 42)]);
+        await using var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions { GroupId = groupId });
+        consumer.Subscribe("input");
+
+        var rejected = await admin.AlterStreamsGroupOffsetsAsync(
+            groupId,
+            [new TopicPartitionOffset(partition.Topic, partition.Partition, 84)]);
+        var afterRejection = await admin.ListStreamsGroupOffsetsAsync(
+            new Dictionary<string, ListStreamsGroupOffsetsSpec>
+            {
+                [groupId] = new() { TopicPartitions = [partition] }
+            });
+
+        await Assert.That(rejected[partition].ErrorCode).IsEqualTo(ErrorCode.UnknownMemberId);
+        await Assert.That(afterRejection[groupId].Offsets[partition].Offset).IsEqualTo(42);
+
+        consumer.Unsubscribe();
+        var altered = await admin.AlterStreamsGroupOffsetsAsync(
+            groupId,
+            [new TopicPartitionOffset(partition.Topic, partition.Partition, 84)]);
+
+        await Assert.That(altered[partition].ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(cluster.GetCommittedOffset(groupId, partition)).IsEqualTo(84);
+    }
+
+    [Test]
+    public async Task StreamsGroupManagement_RejectsNegativeOffsets()
+    {
+        IAdminClient admin = new InMemoryAdminClient(new InMemoryKafkaCluster());
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(async () =>
+            await admin.AlterStreamsGroupOffsetsAsync(
+                "streams-app",
+                [new TopicPartitionOffset("input", 0, -1)]));
+    }
+
+    [Test]
+    public async Task StreamsGroupManagement_AlterOffsetsRejectsUnknownPartitions()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("input");
+        IAdminClient admin = new InMemoryAdminClient(cluster);
+        const string groupId = "streams-app";
+        var valid = new TopicPartition("input", 0);
+        var missingTopic = new TopicPartition("missing", 0);
+        var missingPartition = new TopicPartition("input", 1);
+
+        var altered = await admin.AlterStreamsGroupOffsetsAsync(
+            groupId,
+            [
+                new TopicPartitionOffset(valid.Topic, valid.Partition, 42),
+                new TopicPartitionOffset(missingTopic.Topic, missingTopic.Partition, 84),
+                new TopicPartitionOffset(missingPartition.Topic, missingPartition.Partition, 126)
+            ]);
+
+        await Assert.That(altered[valid].ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(altered[missingTopic].ErrorCode).IsEqualTo(ErrorCode.UnknownTopicId);
+        await Assert.That(altered[missingPartition].ErrorCode).IsEqualTo(ErrorCode.UnknownTopicOrPartition);
+        await Assert.That(cluster.GetCommittedOffset(groupId, valid)).IsEqualTo(42);
+        await Assert.That(cluster.GetCommittedOffset(groupId, missingTopic)).IsNull();
+        await Assert.That(cluster.GetCommittedOffset(groupId, missingPartition)).IsNull();
+    }
+
+    [Test]
+    public async Task StreamsGroupManagement_ListOffsetsRejectsUnknownPartitions()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("input");
+        IAdminClient admin = new InMemoryAdminClient(cluster);
+        var valid = new TopicPartition("input", 0);
+        var missingTopic = new TopicPartition("missing", 0);
+        var missingPartition = new TopicPartition("input", 1);
+
+        var listed = await admin.ListStreamsGroupOffsetsAsync(
+            new Dictionary<string, ListStreamsGroupOffsetsSpec>
+            {
+                ["streams-app"] = new()
+                {
+                    TopicPartitions = [valid, missingTopic, missingPartition]
+                }
+            });
+
+        var offsets = listed["streams-app"].Offsets;
+        await Assert.That(offsets[valid].ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(offsets[missingTopic].ErrorCode).IsEqualTo(ErrorCode.UnknownTopicId);
+        await Assert.That(offsets[missingPartition].ErrorCode).IsEqualTo(ErrorCode.UnknownTopicOrPartition);
+    }
+
+    [Test]
+    public async Task StreamsGroupManagement_DeleteOffsetsRejectsUnknownPartitions()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("input");
+        IAdminClient admin = new InMemoryAdminClient(cluster);
+        const string groupId = "streams-app";
+        var valid = new TopicPartition("input", 0);
+        var missingTopic = new TopicPartition("missing", 0);
+        var missingPartition = new TopicPartition("input", 1);
+        _ = await admin.AlterStreamsGroupOffsetsAsync(
+            groupId,
+            [new TopicPartitionOffset(valid.Topic, valid.Partition, 42)]);
+
+        var deleted = await admin.DeleteStreamsGroupOffsetsAsync(
+            groupId,
+            [missingTopic, missingPartition]);
+
+        await Assert.That(deleted[missingTopic].ErrorCode).IsEqualTo(ErrorCode.UnknownTopicId);
+        await Assert.That(deleted[missingPartition].ErrorCode).IsEqualTo(ErrorCode.UnknownTopicOrPartition);
+        await Assert.That(cluster.GetCommittedOffset(groupId, valid)).IsEqualTo(42);
+    }
+
+    [Test]
     public async Task ProducerConsumer_RoundTripsThroughSerializers()
     {
         var cluster = new InMemoryKafkaCluster();

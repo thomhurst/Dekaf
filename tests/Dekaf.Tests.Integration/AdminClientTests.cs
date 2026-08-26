@@ -422,6 +422,76 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
 
     #endregion
 
+    #region Streams Group Management Tests
+
+    [Test]
+    [SupportsKafka(431)]
+    public async Task StreamsGroupManagement_ListsAltersAndDeletesOffsetsAndGroup()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
+        var groupId = $"streams-admin-{Guid.NewGuid():N}";
+        var partition = new TopicPartition(topic, 0);
+        await using var admin = CreateAdminClient();
+
+        var altered = await AlterStreamsGroupOffsetsWhenCoordinatorReadyAsync(
+            admin,
+            groupId,
+            new TopicPartitionOffset(topic, 0, 42, 3) { Metadata = "checkpoint" })
+            .ConfigureAwait(false);
+        var listed = await admin.ListStreamsGroupOffsetsAsync(
+            new Dictionary<string, ListStreamsGroupOffsetsSpec>
+            {
+                [groupId] = new() { TopicPartitions = [partition] }
+            }).ConfigureAwait(false);
+
+        await Assert.That(altered[partition].ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(listed[groupId].ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(listed[groupId].Offsets[partition].Offset).IsEqualTo(42);
+        await Assert.That(listed[groupId].Offsets[partition].LeaderEpoch).IsEqualTo(3);
+        await Assert.That(listed[groupId].Offsets[partition].Metadata).IsEqualTo("checkpoint");
+
+        var deletedOffsets = await admin.DeleteStreamsGroupOffsetsAsync(groupId, [partition])
+            .ConfigureAwait(false);
+        var afterOffsetDeletion = await admin.ListStreamsGroupOffsetsAsync(
+            new Dictionary<string, ListStreamsGroupOffsetsSpec>
+            {
+                [groupId] = new() { TopicPartitions = [partition] }
+            }).ConfigureAwait(false);
+
+        await Assert.That(deletedOffsets[partition].ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(afterOffsetDeletion[groupId].Offsets[partition].ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(afterOffsetDeletion[groupId].Offsets[partition].Offset).IsEqualTo(-1);
+
+        await AlterStreamsGroupOffsetsWhenCoordinatorReadyAsync(
+            admin,
+            groupId,
+            new TopicPartitionOffset(topic, 0, 84)).ConfigureAwait(false);
+        var deletedGroups = await admin.DeleteStreamsGroupsAsync([groupId]).ConfigureAwait(false);
+
+        await Assert.That(deletedGroups[groupId].ErrorCode).IsEqualTo(ErrorCode.None);
+    }
+
+    private static async ValueTask<IReadOnlyDictionary<TopicPartition, StreamsGroupOffsetOperationResult>>
+        AlterStreamsGroupOffsetsWhenCoordinatorReadyAsync(
+            IAdminClient admin,
+            string groupId,
+            TopicPartitionOffset offset)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        while (true)
+        {
+            var results = await admin.AlterStreamsGroupOffsetsAsync(
+                groupId,
+                [offset],
+                cancellationToken: timeout.Token).ConfigureAwait(false);
+            var errorCode = results[new TopicPartition(offset.Topic, offset.Partition)].ErrorCode;
+            if (!errorCode.IsRetriable())
+                return results;
+        }
+    }
+
+    #endregion
+
     #region DeleteConsumerGroupOffsets Tests
 
     [Test]

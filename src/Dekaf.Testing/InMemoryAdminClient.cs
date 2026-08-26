@@ -9,10 +9,11 @@ namespace Dekaf.Testing;
 /// <summary>
 /// In-memory <see cref="IAdminClient"/> for common topic and group-offset test operations.
 /// </summary>
-public sealed class InMemoryAdminClient :
+public sealed partial class InMemoryAdminClient :
     IAdminClient,
     IReplicaLogDirAdminClient,
     ITopicIdAdminClient,
+    IStreamsGroupManagementAdminClient,
     ITransactionRemediationAdminClient,
     IShareGroupDeletionAdminClient
 {
@@ -368,12 +369,29 @@ public sealed class InMemoryAdminClient :
         ValidateNames(groups, nameof(groupIds), requireDistinct: false);
         if (groups.Length == 0)
             await ApplyAdminFaultAsync(cancellationToken).ConfigureAwait(false);
+        var processedGroups = new HashSet<string>(StringComparer.Ordinal);
+        GroupException? firstError = null;
         for (var index = 0; index < groups.Length; index++)
         {
             var groupId = groups[index];
+            if (!processedGroups.Add(groupId))
+                continue;
+
             await ApplyAdminFaultAsync(cancellationToken, groupId: groupId).ConfigureAwait(false);
-            _cluster.DeleteGroup(groupId);
+            var errorCode = _cluster.DeleteGroup(groupId);
+            if (errorCode != ErrorCode.None && firstError is null)
+            {
+                firstError = new GroupException(
+                    errorCode,
+                    $"DeleteConsumerGroups failed for group '{groupId}': {errorCode}")
+                {
+                    GroupId = groupId
+                };
+            }
         }
+
+        if (firstError is not null)
+            throw firstError;
     }
 
     public async ValueTask<RemoveMembersFromConsumerGroupResult> RemoveMembersFromConsumerGroupAsync(
@@ -816,7 +834,15 @@ public sealed class InMemoryAdminClient :
                 partition.Topic,
                 partition.Partition,
                 groupId).ConfigureAwait(false);
-            _cluster.DeleteGroupOffsets(groupId, [partition]);
+            if (!_cluster.DeleteGroupOffsets(groupId, [partition]))
+            {
+                throw new GroupException(
+                    ErrorCode.GroupIdNotFound,
+                    $"DeleteConsumerGroupOffsets failed for group '{groupId}': {ErrorCode.GroupIdNotFound}")
+                {
+                    GroupId = groupId
+                };
+            }
         }
     }
 

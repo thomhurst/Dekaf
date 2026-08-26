@@ -1,5 +1,6 @@
 using System.Threading.Tasks.Sources;
 using Dekaf.Admin;
+using Dekaf.Errors;
 using Dekaf.Producer;
 using Dekaf.ShareConsumer;
 using Dekaf.Testing;
@@ -52,6 +53,120 @@ public sealed class InMemoryAdminShareFaultTests
 
         await admin.CreateTopicsAsync([new NewTopic { Name = "orders", NumPartitions = 1 }]);
         await Assert.That(cluster.ListTopics()).IsEquivalentTo(["orders"]);
+    }
+
+    [Test]
+    public async Task StreamsAdminFaults_HonorResourceScopeBeforeReadOrMutation()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var admin = new InMemoryAdminClient(cluster);
+        const string groupId = "streams-app";
+        var partition = new TopicPartition("input", 0);
+        var scope = new KafkaFaultScope(
+            KafkaFaultOperation.Admin,
+            partition.Topic,
+            partition.Partition,
+            groupId);
+        cluster.CreateTopic(partition.Topic);
+        _ = await admin.AlterStreamsGroupOffsetsAsync(
+            groupId,
+            [new TopicPartitionOffset(partition.Topic, partition.Partition, 42)]);
+
+        var listFailure = new InvalidOperationException("list blocked");
+        cluster.FaultPlan.Fail(scope, listFailure);
+        var actualListFailure = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            admin.ListStreamsGroupOffsetsAsync(
+                new Dictionary<string, ListStreamsGroupOffsetsSpec>
+                {
+                    [groupId] = new() { TopicPartitions = [partition] }
+                }).AsTask());
+
+        var alterFailure = new InvalidOperationException("alter blocked");
+        cluster.FaultPlan.Fail(scope, alterFailure);
+        var actualAlterFailure = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            admin.AlterStreamsGroupOffsetsAsync(
+                groupId,
+                [new TopicPartitionOffset(partition.Topic, partition.Partition, 84)]).AsTask());
+
+        var deleteOffsetsFailure = new InvalidOperationException("offset deletion blocked");
+        cluster.FaultPlan.Fail(scope, deleteOffsetsFailure);
+        var actualDeleteOffsetsFailure = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            admin.DeleteStreamsGroupOffsetsAsync(groupId, [partition]).AsTask());
+
+        var deleteGroupFailure = new InvalidOperationException("group deletion blocked");
+        cluster.FaultPlan.Fail(
+            new KafkaFaultScope(KafkaFaultOperation.Admin, groupId: groupId),
+            deleteGroupFailure);
+        var actualDeleteGroupFailure = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            admin.DeleteStreamsGroupsAsync([groupId]).AsTask());
+
+        await Assert.That(actualListFailure).IsSameReferenceAs(listFailure);
+        await Assert.That(actualAlterFailure).IsSameReferenceAs(alterFailure);
+        await Assert.That(actualDeleteOffsetsFailure).IsSameReferenceAs(deleteOffsetsFailure);
+        await Assert.That(actualDeleteGroupFailure).IsSameReferenceAs(deleteGroupFailure);
+        await Assert.That(cluster.GetGroupOffsetDetails(groupId)[partition].Offset).IsEqualTo(42);
+        await Assert.That(cluster.ListGroups()).Contains(groupId);
+    }
+
+    [Test]
+    public async Task StreamsAdminBarrier_CancellationPreventsOffsetDeletion()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var admin = new InMemoryAdminClient(cluster);
+        const string groupId = "streams-app";
+        var partition = new TopicPartition("input", 0);
+        cluster.CreateTopic(partition.Topic);
+        _ = await admin.AlterStreamsGroupOffsetsAsync(
+            groupId,
+            [new TopicPartitionOffset(partition.Topic, partition.Partition, 42)]);
+        var barrier = cluster.FaultPlan.PauseNext(
+            new KafkaFaultScope(
+                KafkaFaultOperation.Admin,
+                partition.Topic,
+                partition.Partition,
+                groupId));
+        using var cancellation = new CancellationTokenSource();
+
+        var pending = admin.DeleteStreamsGroupOffsetsAsync(
+            groupId,
+            [partition],
+            cancellationToken: cancellation.Token).AsTask();
+        await barrier.WaitUntilEnteredAsync();
+        cancellation.Cancel();
+
+        _ = await Assert.ThrowsAsync<OperationCanceledException>(() => pending);
+        await Assert.That(cluster.GetGroupOffsetDetails(groupId)[partition].Offset).IsEqualTo(42);
+        await Assert.That(barrier.Release()).IsTrue();
+    }
+
+    [Test]
+    public async Task StreamsAdminFaults_EnforceConfiguredTimeoutBeforeMutation()
+    {
+        await AssertStreamsAdminTimeoutAsync(
+            static (admin, groupId, partition) => admin.ListStreamsGroupOffsetsAsync(
+                new Dictionary<string, ListStreamsGroupOffsetsSpec>
+                {
+                    [groupId] = new() { TopicPartitions = [partition] }
+                },
+                new ListStreamsGroupOffsetsOptions { TimeoutMs = 20 }).AsTask(),
+            partitionScoped: true);
+        await AssertStreamsAdminTimeoutAsync(
+            static (admin, groupId, partition) => admin.AlterStreamsGroupOffsetsAsync(
+                groupId,
+                [new TopicPartitionOffset(partition.Topic, partition.Partition, 84)],
+                new AlterStreamsGroupOffsetsOptions { TimeoutMs = 20 }).AsTask(),
+            partitionScoped: true);
+        await AssertStreamsAdminTimeoutAsync(
+            static (admin, groupId, partition) => admin.DeleteStreamsGroupOffsetsAsync(
+                groupId,
+                [partition],
+                new DeleteStreamsGroupOffsetsOptions { TimeoutMs = 20 }).AsTask(),
+            partitionScoped: true);
+        await AssertStreamsAdminTimeoutAsync(
+            static (admin, groupId, _) => admin.DeleteStreamsGroupsAsync(
+                [groupId],
+                new DeleteStreamsGroupsOptions { TimeoutMs = 20 }).AsTask(),
+            partitionScoped: false);
     }
 
     [Test]
@@ -166,6 +281,15 @@ public sealed class InMemoryAdminShareFaultTests
             static admin => admin.DescribeReplicaLogDirsAsync(Array.Empty<TopicPartitionReplica>()).AsTask());
         await AssertEmptyAdminBatchConsumesFaultAsync(
             static admin => admin.DescribeStreamsGroupsAsync(Array.Empty<string>()).AsTask());
+        await AssertEmptyAdminBatchConsumesFaultAsync(
+            static admin => admin.ListStreamsGroupOffsetsAsync(
+                new Dictionary<string, ListStreamsGroupOffsetsSpec>()).AsTask());
+        await AssertEmptyAdminBatchConsumesFaultAsync(
+            static admin => admin.AlterStreamsGroupOffsetsAsync("streams", []).AsTask());
+        await AssertEmptyAdminBatchConsumesFaultAsync(
+            static admin => admin.DeleteStreamsGroupOffsetsAsync("streams", []).AsTask());
+        await AssertEmptyAdminBatchConsumesFaultAsync(
+            static admin => admin.DeleteStreamsGroupsAsync([]).AsTask());
         await AssertEmptyAdminBatchConsumesFaultAsync(
             static admin => admin.DescribeShareGroupsAsync(Array.Empty<string>()).AsTask());
     }
@@ -952,6 +1076,44 @@ public sealed class InMemoryAdminShareFaultTests
         await consumer.CommitAsync();
 
         await Assert.That(faultPlan.GetResultCount).IsEqualTo(1);
+    }
+
+    private static async Task AssertStreamsAdminTimeoutAsync(
+        Func<InMemoryAdminClient, string, TopicPartition, Task> operation,
+        bool partitionScoped)
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var admin = new InMemoryAdminClient(cluster);
+        const string groupId = "streams-timeout";
+        var partition = new TopicPartition("input", 0);
+        cluster.CreateTopic(partition.Topic);
+        _ = await admin.AlterStreamsGroupOffsetsAsync(
+            groupId,
+            [new TopicPartitionOffset(partition.Topic, partition.Partition, 42)]);
+        var scope = partitionScoped
+            ? new KafkaFaultScope(
+                KafkaFaultOperation.Admin,
+                partition.Topic,
+                partition.Partition,
+                groupId)
+            : new KafkaFaultScope(KafkaFaultOperation.Admin, groupId: groupId);
+        var barrier = cluster.FaultPlan.PauseNext(scope);
+        var pending = operation(admin, groupId, partition);
+
+        try
+        {
+            await barrier.WaitUntilEnteredAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+            var exception = await Assert.ThrowsAsync<KafkaTimeoutException>(() => pending);
+            await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Api);
+            await Assert.That(exception.Configured).IsEqualTo(TimeSpan.FromMilliseconds(20));
+        }
+        finally
+        {
+            barrier.Release();
+        }
+
+        await Assert.That(cluster.GetGroupOffsetDetails(groupId)[partition].Offset).IsEqualTo(42);
+        await Assert.That(cluster.ListGroups()).Contains(groupId);
     }
 
     private static async Task AssertEmptyAdminBatchConsumesFaultAsync(

@@ -122,3 +122,87 @@ public sealed class ListStreamsGroupsOptions
 {
     public IReadOnlyList<string>? States { get; init; }
 }
+
+/// <summary>
+/// Selects the partitions whose committed offsets should be listed for a streams group.
+/// </summary>
+public sealed class ListStreamsGroupOffsetsSpec
+{
+    /// <summary>
+    /// Partitions to list, or null to list every committed partition in the group.
+    /// </summary>
+    public IReadOnlyList<TopicPartition>? TopicPartitions { get; init; }
+}
+
+/// <summary>
+/// Options for listing streams-group offsets.
+/// </summary>
+public sealed class ListStreamsGroupOffsetsOptions
+{
+    public bool RequireStable { get; init; }
+    public int TimeoutMs { get; init; } = 30000;
+}
+
+/// <summary>
+/// Result of listing one streams group's committed offsets.
+/// </summary>
+public sealed class StreamsGroupOffsetsResult
+{
+    public required string GroupId { get; init; }
+    public Protocol.ErrorCode ErrorCode { get; init; }
+    public required IReadOnlyDictionary<TopicPartition, StreamsGroupOffsetDescription> Offsets { get; init; }
+}
+
+/// <summary>
+/// A committed streams-group offset and its partition-level result.
+/// </summary>
+public sealed class StreamsGroupOffsetDescription
+{
+    public required TopicPartition TopicPartition { get; init; }
+    public long Offset { get; init; } = -1;
+    public int LeaderEpoch { get; init; } = -1;
+    public string? Metadata { get; init; }
+    public Protocol.ErrorCode ErrorCode { get; init; }
+}
+
+/// <summary>
+/// Options for altering streams-group offsets.
+/// </summary>
+public sealed class AlterStreamsGroupOffsetsOptions
+{
+    public int TimeoutMs { get; init; } = 30000;
+}
+
+/// <summary>
+/// Options for deleting streams-group offsets.
+/// </summary>
+public sealed class DeleteStreamsGroupOffsetsOptions
+{
+    public int TimeoutMs { get; init; } = 30000;
+}
+
+/// <summary>
+/// Result of altering or deleting one streams-group partition offset.
+/// </summary>
+public sealed class StreamsGroupOffsetOperationResult
+{
+    public required TopicPartition TopicPartition { get; init; }
+    public Protocol.ErrorCode ErrorCode { get; init; }
+}
+
+/// <summary>
+/// Options for deleting streams groups.
+/// </summary>
+public sealed class DeleteStreamsGroupsOptions
+{
+    public int TimeoutMs { get; init; } = 30000;
+}
+
+/// <summary>
+/// Result of deleting one streams group.
+/// </summary>
+public sealed class DeleteStreamsGroupResult
+{
+    public required string GroupId { get; init; }
+    public Protocol.ErrorCode ErrorCode { get; init; }
+}
