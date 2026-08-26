@@ -179,6 +179,7 @@ public sealed class QueryWatermarkOffsetsTests
         }
 
         await Assert.That(await pending.WaitAsync(TimeSpan.FromSeconds(1))).IsNull();
+        await Assert.That(consumer.GetCurrentLag(partition)).IsNull();
     }
 
     private static async Task<ListOffsetsResponse> CreateListOffsetsResponseAsync(long timestamp, Task release)

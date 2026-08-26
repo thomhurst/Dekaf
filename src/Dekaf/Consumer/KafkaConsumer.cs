@@ -1404,9 +1404,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     // Lock ordering (always acquire in this order to prevent deadlocks):
     //   1. _initLock          — guards one-time initialization; never held while acquiring other locks
     //   2. _assignmentLock    — serializes assignment changes between the consume loop and prefetch loop
-    //   3. _autoCommitStartLock / _prefetchStartLock — guard background loop start/stop snapshots;
+    //   3. _snapshotStateGate — publishes assignment/snapshot state; may also be acquired independently,
+    //      but never acquire _assignmentLock while holding it
+    //   4. _autoCommitStartLock / _prefetchStartLock — guard background loop start/stop snapshots;
     //      never held while awaiting. When both are needed, acquire auto-commit before prefetch.
-    //   4. _partitionCacheLock / _fetchCacheLock — guard per-broker partition cache and fetch request
+    //   5. _partitionCacheLock / _fetchCacheLock — guard per-broker partition cache and fetch request
     //      cache respectively; acquired under _assignmentLock (via InvalidatePartitionCache /
     //      InvalidateFetchRequestCache) and independently; never nested with each other
     private readonly SemaphoreSlim _initLock = new(1, 1);
@@ -2413,9 +2415,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 }
             }
 
-            hadPaused = RemovePartitionState(partitions);
-
-            PublishAssignmentSnapshot();
+            lock (_snapshotStateGate)
+            {
+                hadPaused = RemovePartitionState(partitions);
+                PublishAssignmentSnapshot();
+            }
         }
         finally
         {
@@ -8396,16 +8400,24 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         int assignmentVersion,
         CancellationToken cancellationToken)
     {
-        var watermarks = await QueryWatermarkOffsetsAsync(partition, cancellationToken).ConfigureAwait(false);
-        if (!_assignmentSnapshot.Contains(partition)
-            || GetPositionWithoutCaching(partition) is not { } position
-            || position < 0
-            || assignmentVersion != Volatile.Read(ref _assignmentEnsureVersion))
+        var watermarks = await QueryWatermarkOffsetsCoreAsync(
+                partition,
+                cacheResult: false,
+                cancellationToken)
+            .ConfigureAwait(false);
+        lock (_snapshotStateGate)
         {
-            return null;
-        }
+            if (!_assignmentSnapshot.Contains(partition)
+                || GetPositionWithoutCaching(partition) is not { } position
+                || position < 0
+                || assignmentVersion != Volatile.Read(ref _assignmentEnsureVersion))
+            {
+                return null;
+            }
 
-        return CalculateLag(position, watermarks.High);
+            UpdateCachedWatermarks(partition, watermarks.Low, watermarks.High, watermarks.High);
+            return CalculateLag(position, watermarks.High);
+        }
     }
 
     private static long CalculateLag(long position, long endOffset) =>
@@ -8458,9 +8470,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         return null;
     }
 
-    public async ValueTask<WatermarkOffsets> QueryWatermarkOffsetsAsync(
+    public ValueTask<WatermarkOffsets> QueryWatermarkOffsetsAsync(
         TopicPartition topicPartition,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        QueryWatermarkOffsetsCoreAsync(topicPartition, cacheResult: true, cancellationToken);
+
+    private async ValueTask<WatermarkOffsets> QueryWatermarkOffsetsCoreAsync(
+        TopicPartition topicPartition,
+        bool cacheResult,
+        CancellationToken cancellationToken)
     {
         if (Volatile.Read(ref _consumerDisposed) != 0)
             throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
@@ -8539,8 +8557,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                 var watermarks = new WatermarkOffsets(lowWatermark, highWatermark);
 
-                // Cache the result
-                UpdateCachedWatermarks(topicPartition, lowWatermark, highWatermark, highWatermark);
+                if (cacheResult)
+                    UpdateCachedWatermarks(topicPartition, lowWatermark, highWatermark, highWatermark);
 
                 return watermarks;
             }, _metadataManager, apiTimeout.Token, _options.RetryBackoffMs, _options.RetryBackoffMaxMs)
@@ -8848,19 +8866,23 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     {
                         _assignment.Add(partition);
                     }
-                    PublishAssignmentSnapshot();
+                    lock (_snapshotStateGate)
+                    {
+                        PublishAssignmentSnapshot();
+
+                        // Clean up state for removed partitions while lag-query cache publication
+                        // is excluded from the assignment transition.
+                        if (removedPartitions is not null)
+                        {
+                            if (RemovePartitionState(removedPartitions))
+                                PublishPausedSnapshot();
+                        }
+                    }
                     InvalidatePartitionCache();
                     InvalidateFetchRequestCache();
 
                     // Ratchet pool sizes based on actual partition count
                     RatchetConsumerPoolSizes(_assignment.Count);
-
-                    // Clean up state for removed partitions
-                    if (removedPartitions is not null)
-                    {
-                        if (RemovePartitionState(removedPartitions))
-                            PublishPausedSnapshot();
-                    }
 
                     // Initialize positions for new partitions
                     if (newPartitions is { Count: > 0 })
@@ -9446,8 +9468,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 _batchIterationEpoch.EndPublication();
             }
+
+            Interlocked.Increment(ref _assignmentEnsureVersion);
         }
-        Interlocked.Increment(ref _assignmentEnsureVersion);
         Volatile.Write(ref _lastCoordinatorAssignmentVersion, -1);
         Volatile.Write(ref _observedTopicIdentityMarker, assignmentSnapshot);
     }
