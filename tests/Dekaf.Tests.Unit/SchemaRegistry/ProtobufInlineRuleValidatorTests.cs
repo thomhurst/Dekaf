@@ -353,6 +353,32 @@ public sealed class ProtobufInlineRuleValidatorTests
     }
 
     [Test]
+    public async Task Validate_MessageEqualityUsesBitwiseFloatingSemantics()
+    {
+        var validator = new ProtobufInlineRuleValidator(ValidationMessageEqualityEnvelope.Descriptor);
+        var positiveZero = new ArrayBufferWriter<byte>();
+        WriteFixed64(positiveZero, fieldNumber: 4, 0x0000_0000_0000_0000);
+        var negativeZero = new ArrayBufferWriter<byte>();
+        WriteFixed64(negativeZero, fieldNumber: 4, 0x8000_0000_0000_0000);
+        var signedZeroPayload = CreateMessageEqualityPayload(positiveZero.WrittenSpan, negativeZero.WrittenSpan);
+        var firstNaN = new ArrayBufferWriter<byte>();
+        WriteFixed32(firstNaN, fieldNumber: 5, 0x7fc0_0001);
+        var secondNaN = new ArrayBufferWriter<byte>();
+        WriteFixed32(secondNaN, fieldNumber: 5, 0x7fc0_0002);
+        var nanPayload = CreateMessageEqualityPayload(firstNaN.WrittenSpan, secondNaN.WrittenSpan);
+
+        var signedZeroException = Assert.Throws<ValidationRulesFailedException>(() =>
+            validator.Validate(signedZeroPayload, schemaId: 17, failFast: false));
+        var nanException = Assert.Throws<ValidationRulesFailedException>(() =>
+            validator.Validate(nanPayload, schemaId: 17, failFast: false));
+
+        await Assert.That(signedZeroException.Violations[0].Rule.Name)
+            .IsEqualTo("child-message-equality");
+        await Assert.That(nanException.Violations[0].Rule.Name)
+            .IsEqualTo("child-message-equality");
+    }
+
+    [Test]
     public async Task Validate_MessageEqualityUsesUnknownFieldSetSemantics()
     {
         var left = new ArrayBufferWriter<byte>();
@@ -958,6 +984,16 @@ public sealed class ProtobufInlineRuleValidatorTests
         return entry.WrittenSpan.ToArray();
     }
 
+    private static byte[] CreateMessageEqualityPayload(
+        ReadOnlySpan<byte> left,
+        ReadOnlySpan<byte> right)
+    {
+        var payload = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(payload, fieldNumber: 1, left);
+        WriteLengthDelimited(payload, fieldNumber: 2, right);
+        return payload.WrittenSpan.ToArray();
+    }
+
     private static void WriteLengthDelimited(
         IBufferWriter<byte> writer,
         int fieldNumber,
@@ -978,6 +1014,22 @@ public sealed class ProtobufInlineRuleValidatorTests
         WriteVarint(writer, second << 3);
         WriteVarint(writer, second);
         WriteVarint(writer, 101u << 3 | 4u);
+    }
+
+    private static void WriteFixed32(IBufferWriter<byte> writer, int fieldNumber, uint value)
+    {
+        WriteVarint(writer, (uint)(fieldNumber << 3 | 5));
+        var span = writer.GetSpan(sizeof(uint));
+        BinaryPrimitives.WriteUInt32LittleEndian(span, value);
+        writer.Advance(sizeof(uint));
+    }
+
+    private static void WriteFixed64(IBufferWriter<byte> writer, int fieldNumber, ulong value)
+    {
+        WriteVarint(writer, (uint)(fieldNumber << 3 | 1));
+        var span = writer.GetSpan(sizeof(ulong));
+        BinaryPrimitives.WriteUInt64LittleEndian(span, value);
+        writer.Advance(sizeof(ulong));
     }
 
     private static void WriteVarint(IBufferWriter<byte> writer, ulong value)

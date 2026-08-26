@@ -2309,9 +2309,7 @@ internal static class ProtobufSemanticEquality
             if (descriptor.HasPresence)
                 return false;
             var present = left.IsSet ? left.Field : right.Field;
-            return AreScalarValuesEqual(
-                ProtobufValidationValueDecoder.Decode(descriptor, present),
-                ProtobufValidationValueDecoder.Default(descriptor));
+            return IsScalarDefaultValue(descriptor, present);
         }
         if (!left.IsSet)
             return true;
@@ -2323,9 +2321,7 @@ internal static class ProtobufSemanticEquality
                 right.Field.Payload,
                 remainingDepth - 1);
         }
-        return AreScalarValuesEqual(
-            ProtobufValidationValueDecoder.Decode(descriptor, left.Field),
-            ProtobufValidationValueDecoder.Decode(descriptor, right.Field));
+        return AreScalarFieldsEqual(descriptor, left.Field, right.Field);
     }
 
     private static bool AreRepeatedValuesEqual(
@@ -2351,9 +2347,7 @@ internal static class ProtobufSemanticEquality
                         remainingDepth - 1))
                     return false;
             }
-            else if (!AreScalarValuesEqual(
-                         ProtobufValidationValueDecoder.Decode(descriptor, leftField),
-                         ProtobufValidationValueDecoder.Decode(descriptor, rightField)))
+            else if (!AreScalarFieldsEqual(descriptor, leftField, rightField))
             {
                 return false;
             }
@@ -2400,6 +2394,29 @@ internal static class ProtobufSemanticEquality
             leftMap.Dispose();
         }
     }
+
+    private static bool IsScalarDefaultValue(
+        FieldDescriptor descriptor,
+        ProtobufValidationWireField field) => descriptor.FieldType switch
+    {
+        FieldType.Double => field.Fixed64 == 0,
+        FieldType.Float => field.Fixed32 == 0,
+        _ => AreScalarValuesEqual(
+            ProtobufValidationValueDecoder.Decode(descriptor, field),
+            ProtobufValidationValueDecoder.Default(descriptor))
+    };
+
+    private static bool AreScalarFieldsEqual(
+        FieldDescriptor descriptor,
+        ProtobufValidationWireField left,
+        ProtobufValidationWireField right) => descriptor.FieldType switch
+    {
+        FieldType.Double => left.Fixed64 == right.Fixed64,
+        FieldType.Float => left.Fixed32 == right.Fixed32,
+        _ => AreScalarValuesEqual(
+            ProtobufValidationValueDecoder.Decode(descriptor, left),
+            ProtobufValidationValueDecoder.Decode(descriptor, right))
+    };
 
     private static bool AreScalarValuesEqual(ValidationCelValue left, ValidationCelValue right)
     {

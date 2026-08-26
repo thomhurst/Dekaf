@@ -141,6 +141,8 @@ message ValidationEqualityChild {
   int32 value = 1;
   ValidationEqualityChild child = 2;
   repeated int32 codes = 3;
+  double double_value = 4;
+  float float_value = 5;
 }
 
 message ValidationPresenceEnvelope {

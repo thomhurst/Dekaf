@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Buffers.Binary;
 using BenchmarkDotNet.Attributes;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Protobuf;
@@ -28,6 +29,7 @@ public class ProtobufInlineValidationBenchmarks
     private byte[] _payload = null!;
     private byte[] _mergedMapValuePayload = null!;
     private byte[] _semanticEqualityPayload = null!;
+    private byte[] _floatingSemanticEqualityPayload = null!;
     private byte[] _unknownSemanticEqualityPayload = null!;
     private byte[] _mapEqualityPayload = null!;
     private SerializationContext _context;
@@ -39,6 +41,7 @@ public class ProtobufInlineValidationBenchmarks
         _payload = _message.ToByteArray();
         _mergedMapValuePayload = CreateMergedMapValuePayload();
         _semanticEqualityPayload = CreateSemanticEqualityPayload();
+        _floatingSemanticEqualityPayload = CreateFloatingSemanticEqualityPayload();
         _unknownSemanticEqualityPayload = CreateUnknownSemanticEqualityPayload();
         _mapEqualityPayload = CreateMapEqualityPayload();
         _validator = new ProtobufInlineRuleValidator(ValidationEnvelope.Descriptor);
@@ -70,6 +73,7 @@ public class ProtobufInlineValidationBenchmarks
         _validator.Validate(_payload, schemaId: 1, failFast: false);
         _validator.Validate(_mergedMapValuePayload, schemaId: 1, failFast: false);
         _semanticEqualityValidator.Validate(_semanticEqualityPayload, schemaId: 1, failFast: false);
+        _semanticEqualityValidator.Validate(_floatingSemanticEqualityPayload, schemaId: 1, failFast: false);
         _semanticEqualityValidator.Validate(_unknownSemanticEqualityPayload, schemaId: 1, failFast: false);
         _mapEqualityValidator.Validate(_mapEqualityPayload, schemaId: 1, failFast: false);
         var destination = _destination;
@@ -96,6 +100,10 @@ public class ProtobufInlineValidationBenchmarks
     [Benchmark]
     public void ValidateSemanticMessageEquality() =>
         _semanticEqualityValidator.Validate(_semanticEqualityPayload, schemaId: 1, failFast: false);
+
+    [Benchmark]
+    public void ValidateFloatingSemanticMessageEquality() =>
+        _semanticEqualityValidator.Validate(_floatingSemanticEqualityPayload, schemaId: 1, failFast: false);
 
     [Benchmark]
     public void ValidateUnknownFieldSemanticEquality() =>
@@ -197,6 +205,20 @@ public class ProtobufInlineValidationBenchmarks
         return payload.WrittenSpan.ToArray();
     }
 
+    private static byte[] CreateFloatingSemanticEqualityPayload()
+    {
+        var left = new ArrayBufferWriter<byte>();
+        WriteFixed64(left, fieldNumber: 4, 0x8000_0000_0000_0000);
+        WriteFixed32(left, fieldNumber: 5, 0x7fc0_0001);
+        var right = new ArrayBufferWriter<byte>();
+        WriteFixed64(right, fieldNumber: 4, 0x8000_0000_0000_0000);
+        WriteFixed32(right, fieldNumber: 5, 0x7fc0_0001);
+        var payload = new ArrayBufferWriter<byte>();
+        WriteLengthDelimited(payload, fieldNumber: 1, left.WrittenSpan);
+        WriteLengthDelimited(payload, fieldNumber: 2, right.WrittenSpan);
+        return payload.WrittenSpan.ToArray();
+    }
+
     private static byte[] CreateMergedMapValuePayload()
     {
         var entry = new ArrayBufferWriter<byte>();
@@ -253,6 +275,22 @@ public class ProtobufInlineValidationBenchmarks
             span[0] = value == 0 ? current : (byte)(current | 0x80);
             writer.Advance(1);
         } while (value != 0);
+    }
+
+    private static void WriteFixed32(IBufferWriter<byte> writer, int fieldNumber, uint value)
+    {
+        WriteVarint(writer, (uint)(fieldNumber << 3 | 5));
+        var span = writer.GetSpan(sizeof(uint));
+        BinaryPrimitives.WriteUInt32LittleEndian(span, value);
+        writer.Advance(sizeof(uint));
+    }
+
+    private static void WriteFixed64(IBufferWriter<byte> writer, int fieldNumber, ulong value)
+    {
+        WriteVarint(writer, (uint)(fieldNumber << 3 | 1));
+        var span = writer.GetSpan(sizeof(ulong));
+        BinaryPrimitives.WriteUInt64LittleEndian(span, value);
+        writer.Advance(sizeof(ulong));
     }
 
     private sealed class BenchmarkSchemaRegistryClient : ISchemaRegistryClient
