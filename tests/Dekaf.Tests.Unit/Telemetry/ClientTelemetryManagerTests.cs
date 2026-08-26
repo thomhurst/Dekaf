@@ -297,6 +297,7 @@ public sealed class ClientTelemetryManagerTests
 
         await Assert.That(context.Manager.IsDisabled).IsTrue();
         await Assert.That(context.Manager.IsStarted).IsFalse();
+        await Assert.That(context.Manager.ClientInstanceId).IsNull();
         await Assert.That(context.Connection.RequestsOfType<PushTelemetryRequest>().Count).IsEqualTo(0);
     }
 

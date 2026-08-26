@@ -73,8 +73,8 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
         _payloadProvider = payloadProvider ?? new ClientTelemetryPayloadProvider(_compressionCodecs);
     }
 
-    internal Guid ClientInstanceId => _subscription?.ClientInstanceId ?? Guid.Empty;
-    internal int SubscriptionId => _subscription?.SubscriptionId ?? -1;
+    internal Guid? ClientInstanceId => Volatile.Read(ref _subscription)?.ClientInstanceId;
+    internal int SubscriptionId => Volatile.Read(ref _subscription)?.SubscriptionId ?? -1;
     internal bool IsDisabled => Volatile.Read(ref _disabled) != 0;
     internal bool IsStarted => Volatile.Read(ref _started) != 0;
 
@@ -112,7 +112,7 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
                 return;
             }
 
-            _subscription = subscription;
+            Volatile.Write(ref _subscription, subscription);
             var loopCts = new CancellationTokenSource();
             _loopCts = loopCts;
             Volatile.Write(ref _started, 1);
@@ -164,7 +164,7 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
 
             if (!stopToken.IsCancellationRequested &&
                 Volatile.Read(ref _disabled) == 0 &&
-                _subscription is { } subscription)
+                Volatile.Read(ref _subscription) is { } subscription)
             {
                 try
                 {
@@ -207,7 +207,7 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
         {
             while (!cancellationToken.IsCancellationRequested && Volatile.Read(ref _disabled) == 0)
             {
-                var subscription = _subscription;
+                var subscription = Volatile.Read(ref _subscription);
                 if (subscription is null)
                 {
                     return;
@@ -230,7 +230,7 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
 
                     if (refreshed is not null)
                     {
-                        _subscription = refreshed;
+                        Volatile.Write(ref _subscription, refreshed);
                     }
                 }
             }

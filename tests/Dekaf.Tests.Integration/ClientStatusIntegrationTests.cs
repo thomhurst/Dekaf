@@ -14,7 +14,8 @@ public sealed class ClientStatusIntegrationTests(KafkaTestContainer kafka) : Kaf
     [Test]
     [SupportsKafka(420)]
     [Timeout(90_000)]
-    public async Task SharedClients_ReportSameClusterIdentity(CancellationToken cancellationToken)
+    public async Task SharedClients_ReportSameClusterIdentityAndUnavailableTelemetry(
+        CancellationToken cancellationToken)
     {
         await using var client = Kafka.Connect(KafkaContainer.BootstrapServers);
         await using var producer = await client.CreateProducer<string, string>()
@@ -26,18 +27,22 @@ public sealed class ClientStatusIntegrationTests(KafkaTestContainer kafka) : Kaf
         await using var admin = client.CreateAdminClient().Build();
         _ = await admin.ListTopicsAsync(cancellationToken: cancellationToken);
 
-        var identities = new IKafkaClientIdentity[]
+        var identities = new (string Role, IKafkaClientIdentity Identity)[]
         {
-            (IKafkaClientIdentity)producer,
-            (IKafkaClientIdentity)consumer,
-            (IKafkaClientIdentity)shareConsumer,
-            (IKafkaClientIdentity)admin
+            ("producer", (IKafkaClientIdentity)producer),
+            ("consumer", (IKafkaClientIdentity)consumer),
+            ("share consumer", (IKafkaClientIdentity)shareConsumer),
+            ("admin", (IKafkaClientIdentity)admin)
         };
-        var clusterId = identities[0].ClusterId;
+        var clusterId = identities[0].Identity.ClusterId;
 
         await Assert.That(clusterId).IsNotNull();
-        foreach (var identity in identities)
-            await Assert.That(identity.ClusterId).IsEqualTo(clusterId);
+        foreach (var (role, identity) in identities)
+        {
+            await Assert.That(identity.ClusterId).IsEqualTo(clusterId).Because($"{role} cluster ID");
+            await Assert.That(identity.ClientInstanceId).IsNull()
+                .Because($"{role} client instance ID without a broker telemetry receiver");
+        }
     }
 
     [Test]

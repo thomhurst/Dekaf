@@ -2073,6 +2073,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     public string? ClusterId => _metadataManager.ClusterId;
 
     /// <inheritdoc />
+    public Guid? ClientInstanceId => _telemetryManager.ClientInstanceId;
+
+    /// <inheritdoc />
     public KafkaClientStatus GetStatus()
     {
         var stopped = Volatile.Read(ref _closed) != 0 || Volatile.Read(ref _consumerDisposed) != 0;
@@ -2101,6 +2104,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             _connectionPool,
             _metadataManager,
             stopped,
+            clientInstanceId: ClientInstanceId,
             consumerGroup: consumerGroup);
     }
 

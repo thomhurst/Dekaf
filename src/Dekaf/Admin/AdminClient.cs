@@ -169,6 +169,9 @@ public sealed class AdminClient :
         : _metadataManager.ClusterId;
 
     /// <inheritdoc />
+    public Guid? ClientInstanceId => _telemetryManager.ClientInstanceId;
+
+    /// <inheritdoc />
     public KafkaClientStatus GetStatus()
     {
         var stopped = Volatile.Read(ref _disposed) != 0;
@@ -178,7 +181,8 @@ public sealed class AdminClient :
                 KafkaClientRole.Admin,
                 _connectionPool,
                 _metadataManager,
-                stopped);
+                stopped,
+                clientInstanceId: ClientInstanceId);
         }
 
         var snapshot = controllerMetadataManager.Snapshot;
@@ -204,6 +208,7 @@ public sealed class AdminClient :
             snapshot.ClusterId,
             snapshot.LastRefreshed,
             stopped,
+            clientInstanceId: ClientInstanceId,
             brokers: brokers);
     }
 

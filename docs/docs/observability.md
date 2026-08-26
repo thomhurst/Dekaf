@@ -133,3 +133,27 @@ All observable gauges are registered per client instance and stop reporting when
 Independently of OpenTelemetry, Dekaf implements [KIP-714 client metrics push telemetry](https://cwiki.apache.org/confluence/display/KAFKA/KIP-714%3A+Client+metrics+and+observability). When a broker has a client-metrics subscription configured, Dekaf clients automatically push standard client metrics to the broker at the subscribed interval — no client configuration required.
 
 Applications can also contribute their own metrics to broker subscriptions via `ProducerOptions.ApplicationMetrics` / `ConsumerOptions.ApplicationMetrics` with `ApplicationTelemetryMetric` (name, kind, and an observe callback).
+
+### Client instance IDs
+
+Built-in producers, consumers, Share Consumers, and Admin clients implement the optional
+`IKafkaClientIdentity` capability. Its `ClientInstanceId` property exposes the latest
+broker-assigned KIP-714 identity without blocking or starting network I/O:
+
+```csharp
+using Dekaf.Diagnostics;
+
+var identity = (IKafkaClientIdentity)producer;
+Guid? clientInstanceId = identity.ClientInstanceId;
+```
+
+The property is `null` before telemetry negotiation succeeds, and remains `null` when
+telemetry is unavailable or unsupported by the broker. Reads use an allocation-free cache.
+After assignment, a refreshed subscription publishes its latest accepted identity atomically;
+the last assigned value remains readable after disposal.
+
+`IKafkaClientStatusProvider.GetStatus()` includes the same value in its immutable
+`KafkaClientStatus.ClientInstanceId` snapshot. Status snapshots are intended for low-frequency
+readiness and support diagnostics because snapshot construction allocates. Use the direct
+identity property for frequent reads, and use the `Dekaf` OpenTelemetry meter above for
+continuous client metrics.

@@ -16,6 +16,16 @@ public interface IKafkaClientIdentity
     /// before metadata supplies one.
     /// </summary>
     string? ClusterId { get; }
+
+    /// <summary>
+    /// Gets the broker-assigned KIP-714 client instance ID, or <see langword="null"/>
+    /// before telemetry negotiation succeeds or when the broker does not support telemetry.
+    /// </summary>
+    /// <remarks>
+    /// The value is the latest accepted immutable identity. It remains available after disposal
+    /// when negotiation completed before the client stopped.
+    /// </remarks>
+    Guid? ClientInstanceId { get; }
 }
 
 /// <summary>
@@ -60,6 +70,9 @@ public sealed class KafkaClientStatus
 
     /// <summary>The latest accepted Kafka cluster ID, when known.</summary>
     public string? ClusterId { get; init; }
+
+    /// <summary>The latest broker-assigned KIP-714 client instance ID, when known.</summary>
+    public Guid? ClientInstanceId { get; init; }
 
     /// <summary>UTC time of the latest accepted metadata update, when available.</summary>
     public DateTimeOffset? MetadataLastRefreshedAtUtc { get; init; }

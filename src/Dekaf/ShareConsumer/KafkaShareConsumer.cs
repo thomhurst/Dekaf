@@ -9,6 +9,7 @@ using Dekaf.Protocol.Messages;
 using Dekaf.Protocol.Records;
 using Dekaf.Retry;
 using Dekaf.Serialization;
+using Dekaf.Telemetry;
 using Microsoft.Extensions.Logging;
 #if NETSTANDARD2_0
 using StringSet = System.Collections.Generic.IReadOnlyCollection<string>;
@@ -39,6 +40,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
     private readonly ShareSessionManager _sessionManager = new();
     private readonly AcknowledgementTracker _ackTracker = new();
     private readonly CompressionCodecRegistry _compressionCodecs;
+    private readonly ClientTelemetryManager _telemetryManager;
     private readonly ILogger _logger;
 
     // ThreadStatic reusable SerializationContext to avoid per-record allocations in ParsePartitionRecords.
@@ -159,6 +161,11 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
             ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<KafkaShareConsumer<TKey, TValue>>.Instance;
 
         _compressionCodecs = CompressionCodecRegistry.Default;
+        _telemetryManager = new ClientTelemetryManager(
+            _connectionPool,
+            _metadataManager,
+            loggerFactory?.CreateLogger<ClientTelemetryManager>(),
+            payloadProvider: EmptyClientTelemetryPayloadProvider.Instance);
 
         _coordinator = new ShareConsumerCoordinator(
             options,
@@ -175,6 +182,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
     public string? ClusterId => _metadataManager.ClusterId;
 
     /// <inheritdoc />
+    public Guid? ClientInstanceId => _telemetryManager.ClientInstanceId;
+
+    /// <inheritdoc />
     public KafkaClientStatus GetStatus()
     {
         var stopped = Volatile.Read(ref _closed) != 0 || Volatile.Read(ref _disposed) != 0;
@@ -183,6 +193,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
             _connectionPool,
             _metadataManager,
             stopped,
+            clientInstanceId: ClientInstanceId,
             consumerGroup: _coordinator.CaptureGroupStatus());
     }
 
@@ -212,6 +223,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
                 return;
 
             await _metadataManager.InitializeAsync(cancellationToken).ConfigureAwait(false);
+            await _telemetryManager.StartAsync(cancellationToken).ConfigureAwait(false);
             _initialized = true;
         }
         finally
@@ -582,6 +594,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
 
         // Step 3: Leave the share group
         await _coordinator.LeaveGroupAsync(cancellationToken).ConfigureAwait(false);
+
+        await _telemetryManager.StopAsync(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask DisposeAsync()
@@ -623,6 +637,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> :
         }
 
         await _coordinator.DisposeAsync().ConfigureAwait(false);
+        await _telemetryManager.DisposeAsync().ConfigureAwait(false);
 
         if (_ownsInfrastructure)
         {
